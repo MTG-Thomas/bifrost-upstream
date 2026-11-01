@@ -1,0 +1,95 @@
+name: Floorplan refresh
+
+# Keeps the map's authored metadata current without a person in the loop for the
+# mechanical half: moved and renamed files carry their descriptions across, deleted
+# entries are dropped, and entries whose exports or requests changed get a "review" note.
+# Anything that needs judgement (a new module, a changed route's wording) is collected in
+# the pull request this opens for a follow-up pass.
+#
+# Why a pull request rather than a push to main: main uses a merge queue, so a direct
+# push would skip the checks the queue exists to run.
+
+on:
+  schedule:
+    # Mondays, 06:00 UTC, after the weekly dependency and nightly jobs.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: floorplan-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: Refresh map metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Refresh mechanically
+        run: node scripts/floorplan.mjs refresh | tee "${RUNNER_TEMP}/floorplan-refresh.txt"
+
+      # A GITHUB_TOKEN push does not trigger CI for the pull request it opens, so the
+      # repository may set FLOORPLAN_BOT_TOKEN (an App installation token) to get a
+      # normal PR run. Without it the pull request still lands, but its checks have to
+      # be started by hand before the merge queue will accept it.
+      - name: Open a pull request when descriptions changed
+        env:
+          GH_TOKEN: ${{ secrets.FLOORPLAN_BOT_TOKEN || secrets.GITHUB_TOKEN }}
+          REFRESH_LOG: ${{ runner.temp }}/floorplan-refresh.txt
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A docs/architecture/floorplan
+          if git diff --cached --quiet; then
+            echo "Map metadata is already current."
+            exit 0
+          fi
+
+          branch="floorplan/refresh-$(date -u +%Y-%m-%d)"
+          git checkout -b "$branch"
+          git commit -m "chore(floorplan): refresh map metadata"
+
+          {
+            echo "Mechanical refresh of the architecture map."
+            echo
+            echo "Moved and renamed files kept their descriptions, deleted files were dropped,"
+            echo "and entries whose exports or requests changed are marked for review."
+            echo "Recent work is not rewritten here, because it needs to know what was asked for."
+            echo
+            echo "<details><summary>Refresh report</summary>"
+            echo
+            echo '```'
+            cat "$REFRESH_LOG"
+            echo '```'
+            echo "</details>"
+            echo
+            echo "To clear a review note, run \`node scripts/floorplan.mjs describe\`, update the"
+            echo "wording with Claude Code or Codex, then \`node scripts/floorplan.mjs build\`."
+          } > "${RUNNER_TEMP}/floorplan-pr-body.md"
+
+          git push --force-with-lease origin "$branch"
+          existing="$(gh pr list --head "$branch" --json number --jq '.[0].number // empty')"
+          if [[ -n "$existing" ]]; then
+            gh pr edit "$existing" --body-file "${RUNNER_TEMP}/floorplan-pr-body.md"
+          else
+            gh pr create \
+              --base main \
+              --head "$branch" \
+              --title "chore(floorplan): refresh map metadata" \
+              --body-file "${RUNNER_TEMP}/floorplan-pr-body.md"
+          fi
