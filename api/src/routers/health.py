@@ -20,12 +20,14 @@ from src.config import Settings, get_settings
 from src.core.database import get_db, get_session_factory
 from src.core.s3_transport import S3Transport
 from shared.version import get_version
+from shared.runtime_database_identity import IDENTITY_QUERY, RuntimeDatabaseIdentityObserver
 
 router = APIRouter(prefix="/health", tags=["health"])
 logger = logging.getLogger(__name__)
 
 CHECK_TIMEOUT_SECONDS = 2.0
 ComponentStatus = dict[str, str]
+_database_identity_observer = RuntimeDatabaseIdentityObserver()
 
 
 class RedisHealthConnection:
@@ -191,7 +193,14 @@ async def _checked_component(
 
 
 async def check_database(db: AsyncSession) -> tuple[str, ComponentStatus]:
-    return await _checked_component("database", "postgresql", db.execute(text("SELECT 1")))
+    async def ping() -> None:
+        result = await db.execute(text(IDENTITY_QUERY))
+        # execute() already checked out this connection and started its transaction.
+        # Reuse it: no second session, engine, pool checkout or identity query.
+        connection = await db.connection()
+        _database_identity_observer.observe(result.mappings().one(), connection.info)
+
+    return await _checked_component("database", "postgresql", ping())
 
 
 async def check_redis(settings: Settings) -> tuple[str, ComponentStatus]:
