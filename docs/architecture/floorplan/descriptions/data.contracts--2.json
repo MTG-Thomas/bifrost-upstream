@@ -1,0 +1,144 @@
+{
+  "files": {
+    "api/src/models/contracts/kubernetes.py": {
+      "name": "Run server settings",
+      "description": "Defines the settings screen that controls how many helper servers run and which jobs get their own."
+    },
+    "api/src/models/contracts/llm.py": {
+      "name": "AI model settings",
+      "description": "Defines the model list and the search embedding setup, including connection tests before saving."
+    },
+    "api/src/models/contracts/maintenance.py": {
+      "name": "Workspace checks",
+      "description": "Defines the results of checking the workspace for broken links, orphans and other problems."
+    },
+    "api/src/models/contracts/mcp.py": {
+      "name": "AI assistant connection",
+      "description": "Defines what is sent when letting an AI assistant look things up in the platform and run its tools."
+    },
+    "api/src/models/contracts/memory.py": {
+      "name": "Assistant memory settings",
+      "description": "Defines the memory settings and the saved memories a person or organization can see and search."
+    },
+    "api/src/models/contracts/notifications.py": {
+      "name": "Notification messages",
+      "description": "Defines how alerts and progress messages are created, listed and marked as read."
+    },
+    "api/src/models/contracts/oauth_config.py": {
+      "name": "Single sign-on setup",
+      "description": "Defines the settings for signing in with Microsoft, Google or another identity provider."
+    },
+    "api/src/models/contracts/oauth.py": {
+      "name": "Service connection sign-in",
+      "description": "Defines the messages for connecting an outside service and handing its access pass to a workflow."
+    },
+    "api/src/models/contracts/operation_catalog.py": {
+      "name": "Action catalogue",
+      "description": "Defines the master list of actions the platform offers and which surface provides each one."
+    },
+    "api/src/models/contracts/organizations.py": {
+      "name": "Organization details",
+      "description": "Defines how a customer organization is created, renamed and listed."
+    },
+    "api/src/models/contracts/passkeys.py": {
+      "name": "Passkey sign-in",
+      "description": "Defines what is sent and returned when someone signs in with a passkey or sets one up."
+    },
+    "api/src/models/contracts/permissions.py": {
+      "name": "Permission names",
+      "description": "Defines the fixed set of permission names and how each one is worded for people to read."
+    },
+    "api/src/models/contracts/platform_jobs.py": {
+      "name": "Background job status",
+      "description": "Defines what the screens show about a long background job: progress, errors and cancellation."
+    },
+    "api/src/models/contracts/platform.py": {
+      "name": "Server health controls",
+      "description": "Defines the admin views of helper server pools, waiting work and stuck runs."
+    },
+    "api/src/models/contracts/policies.py": {
+      "name": "Record access rules",
+      "description": "Defines the rule language that decides who may read or change each table row and file."
+    },
+    "api/src/models/contracts/policy_rule.py": {
+      "name": "Reusable rule messages",
+      "description": "Defines how named reusable access rules are created, updated and checked for use."
+    },
+    "api/src/models/contracts/product_updates.py": {
+      "name": "Release notes",
+      "description": "Defines the release notes bundle and the receipts that stop it being shown twice."
+    },
+    "api/src/models/contracts/profile.py": {
+      "name": "Personal profile",
+      "description": "Defines what a person can change about their own name, photo and password."
+    },
+    "api/src/models/contracts/recommended_access.py": {
+      "name": "Suggested permissions",
+      "description": "Defines the suggestions for extra permissions a workflow's account appears to need, based on its past runs."
+    },
+    "api/src/models/contracts/refs.py": {
+      "name": "Portable code references",
+      "description": "Defines how links to workflows are written so they still work when moved between workspaces."
+    },
+    "api/src/models/contracts/required_instructions.py": {
+      "name": "Platform instructions",
+      "description": "Defines the built-in guidance every assistant receives and where it can be edited."
+    },
+    "api/src/models/contracts/roi.py": {
+      "name": "Time and cost savings",
+      "description": "Defines the savings settings and the figures shown by workflow, organization and period."
+    },
+    "api/src/models/contracts/role_assignments.py": {
+      "name": "Who has which role",
+      "description": "Defines how roles are granted to a person, where each applies and what a role allows."
+    },
+    "api/src/models/contracts/run_retention.py": {
+      "name": "Run history lifetimes",
+      "description": "Defines how long finished runs and events are kept, with previews before anything is cleared."
+    },
+    "api/src/models/contracts/scheduler_diagnostics.py": {
+      "name": "Scheduled task status",
+      "description": "Defines the admin view of scheduled task history, which server is leading and available capacity."
+    },
+    "api/src/models/contracts/scheduling.py": {
+      "name": "Timed and queued runs",
+      "description": "Defines the timetable checks and status for runs started on a schedule or handed off in the background."
+    },
+    "api/src/models/contracts/sdk.py": {
+      "name": "Workflow helper messages",
+      "description": "Defines what workflow code sends and receives when reading files, settings and service passes."
+    },
+    "api/src/models/contracts/services.py": {
+      "name": "Service status views",
+      "description": "Defines how always-on services, their attempts and recent logs are shown."
+    },
+    "api/src/models/contracts/solutions.py": {
+      "name": "Solution install messages",
+      "description": "Defines everything sent and returned when installing, updating, backing up or removing a Solution."
+    },
+    "api/src/models/contracts/tables.py": {
+      "name": "Table and row messages",
+      "description": "Defines how custom tables and their rows are created, searched and changed in bulk."
+    },
+    "api/src/models/contracts/user_access.py": {
+      "name": "Access map",
+      "description": "Defines the picture of what one person can do and where they can do it."
+    },
+    "api/src/models/contracts/user_invites.py": {
+      "name": "Invitation messages",
+      "description": "Defines how invitation links are created, sent and accepted."
+    },
+    "api/src/models/contracts/users.py": {
+      "name": "Staff account messages",
+      "description": "Defines how staff accounts are created, updated, changed in bulk and listed."
+    },
+    "api/src/models/contracts/workflow_permissions.py": {
+      "name": "Workflow permission requests",
+      "description": "Defines the extra capabilities a restricted workflow asks for and what was granted."
+    },
+    "api/src/models/contracts/workflows.py": {
+      "name": "Workflow details",
+      "description": "Defines the details, settings and validation results shown for each runnable piece of code."
+    }
+  }
+}

@@ -1,0 +1,164 @@
+{
+  "files": {
+    "client/src/components/integrations/ConfigOverridesTab.tsx": {
+      "name": "Organization setting overrides",
+      "description": "Lists the settings one organization has changed from the shared defaults and lets an admin adjust them."
+    },
+    "client/src/components/integrations/ConfigurationOverrideRecord.tsx": {
+      "name": "Override row",
+      "description": "Shows one organization's changed setting, what it now is, and the actions available on it."
+    },
+    "client/src/components/integrations/CreateIntegrationDialog.tsx": {
+      "name": "Connect a service",
+      "description": "Walks an admin through adding a service the platform can talk to, including its sign-in details."
+    },
+    "client/src/components/integrations/EntityIdSourcePicker.tsx": {
+      "name": "Pick a matching record",
+      "description": "Offers likely matches for a record that needs linking, so an admin can accept one instead of typing an ID."
+    },
+    "client/src/components/integrations/EntitySelector.tsx": {
+      "name": "Record picker",
+      "description": "Lets an admin search the records a connection offers and pick one, or type an ID instead."
+    },
+    "client/src/components/integrations/GeneratedSDKSummary.tsx": {
+      "name": "Generated connection summary",
+      "description": "Summarises the ready-made code produced for a connection, with a copy button."
+    },
+    "client/src/components/integrations/GenerateSDKDialog.tsx": {
+      "name": "Generate connection code",
+      "description": "Creates ready-made code for a service connection so automations can call it without extra setup."
+    },
+    "client/src/components/integrations/IntegrationDefaultsDialog.tsx": {
+      "name": "Shared connection defaults",
+      "description": "Sets the default values every organization inherits for a connection."
+    },
+    "client/src/components/integrations/IntegrationDeleteDialog.tsx": {
+      "name": "Remove a connection",
+      "description": "Confirms before removing a connection and keeps it on screen until the removal succeeds."
+    },
+    "client/src/components/integrations/IntegrationMappingsTab.tsx": {
+      "name": "Organization mappings",
+      "description": "Links each organization to its own account in a connected service so records land in the right place."
+    },
+    "client/src/components/integrations/IntegrationOverview.tsx": {
+      "name": "Connection overview",
+      "description": "Shows a connection's status, sign-in state and which organizations use it."
+    },
+    "client/src/components/integrations/IntegrationPageHeader.tsx": {
+      "name": "Connection page header",
+      "description": "Shows a connection's name and status with its main actions at the top of its page."
+    },
+    "client/src/components/integrations/IntegrationReadError.tsx": {
+      "name": "Connection load error",
+      "description": "Explains that a connection could not be loaded and offers to try again."
+    },
+    "client/src/components/integrations/IntegrationSchemaEditor.tsx": {
+      "name": "Connection field list",
+      "description": "Edits the list of setup questions a connection asks and which of them are required."
+    },
+    "client/src/components/integrations/IntegrationTestPanel.tsx": {
+      "name": "Test a connection",
+      "description": "Sends a live test through a connection so an admin can confirm the sign-in details work."
+    },
+    "client/src/components/integrations/IntegrationTestResult.tsx": {
+      "name": "Test result",
+      "description": "Shows whether a connection test succeeded, with the reply from the service."
+    },
+    "client/src/components/integrations/ManualEntityIdInput.tsx": {
+      "name": "Type a record ID",
+      "description": "Lets an admin enter a record's ID by hand when searching for it is not possible."
+    },
+    "client/src/components/integrations/mapping-save.ts": {
+      "name": "Mapping save results",
+      "description": "Works out which organizations failed to link so the screen can name them and their reasons."
+    },
+    "client/src/components/integrations/MatchSuggestionBadge.tsx": {
+      "name": "Suggested match",
+      "description": "Shows a suggested match with how confident it is, and lets an admin accept or reject it."
+    },
+    "client/src/components/integrations/OrgConfigDialog.tsx": {
+      "name": "Organization connection settings",
+      "description": "Sets one organization's own settings and account for a shared connection."
+    },
+    "client/src/components/integrations/OverrideValueEditor.tsx": {
+      "name": "Override value editor",
+      "description": "Edits the value an organization uses instead of the shared default."
+    },
+    "client/src/components/mcp/MCPServerForm.tsx": {
+      "name": "AI assistant connection",
+      "description": "Sets up a connection AI assistants can use, starting by finding what the outside system offers."
+    },
+    "client/src/components/oauth/CreateOAuthConnectionDialog.tsx": {
+      "name": "Add a sign-in connection",
+      "description": "Connects an outside service through its normal sign-in screen so the platform can act for that account."
+    },
+    "client/src/components/oauth/OAuthConnectionCard.tsx": {
+      "name": "Sign-in connection card",
+      "description": "Shows one connected account, whether it still works, and offers reconnect or disconnect."
+    },
+    "client/src/components/oauth/OAuthProviderEditor.tsx": {
+      "name": "Sign-in provider setup",
+      "description": "Fills in the details a service needs before people can connect their accounts to it."
+    },
+    "client/src/components/oauth/RefreshJobStatus.tsx": {
+      "name": "Connection refresh status",
+      "description": "Reports how a bulk reconnection or sign-in refresh is going and what is left."
+    },
+    "client/src/components/policy-rules/PolicyRuleActions.tsx": {
+      "name": "Policy rule actions",
+      "description": "Offers edit and delete for a named policy rule."
+    },
+    "client/src/components/policy-rules/PolicyRulesManager.tsx": {
+      "name": "Policy rules",
+      "description": "Creates and maintains named rules that decide who may read or change records in a table."
+    },
+    "client/src/components/policy-rules/PolicyRuleSurface.tsx": {
+      "name": "Policy rule panel",
+      "description": "Frames the policy rules list with its loading, empty and error states."
+    },
+    "client/src/components/reports/formatters.ts": {
+      "name": "Report formatting",
+      "description": "Turns usage numbers into readable dates, money, file sizes and durations for the reports."
+    },
+    "client/src/components/reports/report-csv.ts": {
+      "name": "Report download",
+      "description": "Builds a spreadsheet file of a usage report and downloads it, keeping labels intact."
+    },
+    "client/src/components/reports/ReportRecordList.tsx": {
+      "name": "Compact report records",
+      "description": "Shows each report entry on phones without hiding any of its figures."
+    },
+    "client/src/components/reports/UsageCharts.tsx": {
+      "name": "Usage charts",
+      "description": "Draws the trends behind usage and spending over the chosen period."
+    },
+    "client/src/components/reports/UsageSummaryCards.tsx": {
+      "name": "Usage summary cards",
+      "description": "Shows the headline usage and cost totals for the period at the top of the report."
+    },
+    "client/src/components/reports/UsageTables.tsx": {
+      "name": "Usage tables",
+      "description": "Breaks usage and cost down by workflow, agent, conversation, organization and stored knowledge."
+    },
+    "client/src/components/roles/ConsumerCards.tsx": {
+      "name": "Role usage cards",
+      "description": "Summarises how many people and organizations hold a role."
+    },
+    "client/src/components/roles/ConsumerTab.tsx": {
+      "name": "Who holds a role",
+      "description": "Lists the people, identities and organizations a role applies to, with where each one uses it."
+    },
+    "client/src/components/roles/RoleDeleteDialog.tsx": {
+      "name": "Delete role",
+      "description": "Confirms before deleting a role and warns what its holders will lose."
+    },
+    "client/src/components/roles/RoleDetailHeader.tsx": {
+      "name": "Role page header",
+      "description": "Shows a role's name and description above its permissions and holders."
+    },
+    "client/src/components/roles/RoleDialog.tsx": {
+      "name": "Role editor",
+      "description": "Creates or edits a role's name and description."
+    }
+  }
+}

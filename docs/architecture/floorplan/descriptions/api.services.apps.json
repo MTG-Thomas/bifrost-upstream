@@ -1,0 +1,116 @@
+{
+  "files": {
+    "api/src/services/app_bundler/__init__.py": {
+      "name": "App builder",
+      "description": "Turns an app's source files into a ready-to-run bundle and reports any build errors in plain language."
+    },
+    "api/src/services/app_bundler/auto_migrate.py": {
+      "name": "Automatic source updates",
+      "description": "Rewrites older app source files into the current style before a build so they keep working."
+    },
+    "api/src/services/app_bundler/bundle.js": {
+      "name": "Bundle script",
+      "description": "Packs an app's source files and its dependencies into one runnable file the browser can load."
+    },
+    "api/src/services/app_bundler/package.json": {
+      "name": "Builder dependencies",
+      "description": "Lists the build tools the app builder needs so the build environment can install them."
+    },
+    "api/src/services/app_compiler/__init__.py": {
+      "name": "App code compiler",
+      "description": "Converts app source into code browsers can run and generates the styling, so apps preview and load."
+    },
+    "api/src/services/app_compiler/compile.js": {
+      "name": "Compile script",
+      "description": "Translates one app source file into plain browser code that previews and live apps can run."
+    },
+    "api/src/services/app_compiler/package.json": {
+      "name": "Compiler dependencies",
+      "description": "Lists the translation tools the app compiler needs so the build environment can install them."
+    },
+    "api/src/services/app_compiler/tailwind.js": {
+      "name": "Style sheet builder",
+      "description": "Scans an app's screens for the styles they use and writes the matching style sheet."
+    },
+    "api/src/services/app_dependencies.py": {
+      "name": "App workflow links",
+      "description": "Reads an app's source to find which workflows it relies on, so the platform knows what an app needs."
+    },
+    "api/src/services/app_storage.py": {
+      "name": "Built app storage",
+      "description": "Keeps each app's built files in cloud storage and serves the right version to whoever opens it."
+    },
+    "api/src/services/application_build.py": {
+      "name": "App rebuild and release",
+      "description": "Rebuilds an app from its saved source, uploads the result and switches people over to the new version."
+    },
+    "api/src/services/application_deploy_storage.py": {
+      "name": "Deploy upload staging",
+      "description": "Holds an uploaded app source file just long enough for one deploy, then discards it."
+    },
+    "api/src/services/application_sdk_status.py": {
+      "name": "App toolkit version status",
+      "description": "Says whether an app uses the current app toolkit and whether it needs a routine or a breaking update."
+    },
+    "api/src/services/application_source_archive.py": {
+      "name": "Source archive checks",
+      "description": "Checks an uploaded app source archive is safe and complete, and strips anything that should not be kept."
+    },
+    "api/src/services/application_source_artifact.py": {
+      "name": "Saved app source copies",
+      "description": "Keeps a clean read-only copy of each app release's source so the app can be rebuilt without a full reinstall."
+    },
+    "api/src/services/application_source_resolver.py": {
+      "name": "App source lookup",
+      "description": "Finds the saved source for one app so it can be rebuilt or updated on its own."
+    },
+    "api/src/services/editor/file_filter.py": {
+      "name": "Hidden file rules",
+      "description": "Decides which files the editor and search skip, such as caches, build output and hidden system files."
+    },
+    "api/src/services/package_generation.py": {
+      "name": "Package change log",
+      "description": "Records each change to the extra Python packages a workspace needs so every server applies them in order."
+    },
+    "api/src/services/package_manager.py": {
+      "name": "Package installer",
+      "description": "Finds and installs extra Python packages a workspace needs, and reports their versions and any failures."
+    },
+    "api/src/services/repo_sync_writer.py": {
+      "name": "Workspace inventory writer",
+      "description": "Rewrites the saved inventory of workspace apps, agents and workflows after something changes."
+    },
+    "api/src/services/sdk_generator.py": {
+      "name": "Integration code generator",
+      "description": "Writes ready-to-use Python code for talking to another service, using sign-in details already saved in Bifrost."
+    },
+    "api/src/services/sdk_package/__init__.py": {
+      "name": "App toolkit release",
+      "description": "Builds and versions the helper code apps use to talk to Bifrost, and serves the current copy to browsers."
+    },
+    "api/src/services/sdk_package/build_sdk.js": {
+      "name": "Toolkit build script",
+      "description": "Produces either the small installed copy of the app toolkit or the full copy browsers load from the server."
+    },
+    "api/src/services/sdk_package/build_types.js": {
+      "name": "Editor hints for app code",
+      "description": "Writes the companion description file that lets code editors suggest and check Bifrost calls in app code."
+    },
+    "api/src/services/sdk_package/package.json": {
+      "name": "Toolkit package settings",
+      "description": "Names and versions the toolkit package that apps install so every release can be identified."
+    },
+    "api/src/services/sdk_package/tsconfig.types.json": {
+      "name": "Toolkit type settings",
+      "description": "Sets how the toolkit's companion description file is generated for code editors."
+    },
+    "api/src/services/sdk_reference_scanner.py": {
+      "name": "Missing setting checker",
+      "description": "Checks workflows for the settings and integrations they use and flags any that do not exist yet."
+    },
+    "api/src/services/templates/sdk.py.j2": {
+      "name": "Generated code template",
+      "description": "The fill-in-the-blanks layout used when writing ready-to-use Python code for another service."
+    }
+  }
+}

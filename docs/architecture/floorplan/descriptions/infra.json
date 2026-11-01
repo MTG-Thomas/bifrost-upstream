@@ -1,0 +1,64 @@
+{
+  "files": {
+    ".devcontainer/devcontainer.json": {
+      "name": "Dev container setup",
+      "description": "Prepares a ready-made coding workspace with the languages, tools and editor extensions needed to work on the platform."
+    },
+    "api/Dockerfile": {
+      "name": "Server container image",
+      "description": "Builds the shipping server package used by the main server, background tasks and setup, with every dependency pinned for safety."
+    },
+    "api/Dockerfile.dev": {
+      "name": "Dev server image",
+      "description": "Builds a lean server image with dependencies only, so live code from your machine is mounted and reloads instantly."
+    },
+    "api/entrypoint.sh": {
+      "name": "Server startup script",
+      "description": "Applies memory settings, fixes mounted folder permissions, then starts the server as an unprivileged user."
+    },
+    "client/Dockerfile": {
+      "name": "Web app image",
+      "description": "Compiles the browser app and serves the finished screens from a small, hardened web server."
+    },
+    "client/Dockerfile.dev": {
+      "name": "Dev web app image",
+      "description": "Installs the browser app's dependencies once so edited screens refresh instantly during local work."
+    },
+    "client/Dockerfile.playwright": {
+      "name": "Browser test image",
+      "description": "Prepares a container with a real browser and test runner so automated click-through checks can drive the app."
+    },
+    "client/entrypoint.sh": {
+      "name": "Web app launcher",
+      "description": "Starts the live-reloading development web server for the browser app inside its container."
+    },
+    "client/nginx.conf": {
+      "name": "Web server routing",
+      "description": "Serves the app's pages and assets and forwards requests meant for the main server, with caching and upload limits set."
+    },
+    "docker-compose.debug.port.yml": {
+      "name": "Local port access",
+      "description": "Exposes the local preview on an ordinary localhost port instead of a private network link."
+    },
+    "docker-compose.debug.yml": {
+      "name": "Local preview stack",
+      "description": "Runs a full private copy of the platform for one working folder, with live reload and storage that survives restarts."
+    },
+    "docker-compose.dev.yml": {
+      "name": "Development overrides",
+      "description": "Adds live reload, debug ports and convenient defaults on top of the standard stack for local work."
+    },
+    "docker-compose.docs.yml": {
+      "name": "Docs screenshot overlay",
+      "description": "Points the browser test runner at the documentation project so fresh product screenshots land in the docs."
+    },
+    "docker-compose.test.yml": {
+      "name": "Test stack",
+      "description": "Runs a throwaway copy of the platform with a fresh database for automatic checks, separate from the preview stack."
+    },
+    "docker-compose.yml": {
+      "name": "Production stack",
+      "description": "Describes a real installation: database, cache, file storage, main server, background tasks and web app."
+    }
+  }
+}

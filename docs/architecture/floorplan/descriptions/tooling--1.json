@@ -1,0 +1,164 @@
+{
+  "files": {
+    ".claude/hooks/bifrost-detect.sh": {
+      "name": "Assistant setup check",
+      "description": "Runs when an AI coding assistant opens the project and reports whether it can reach the code, sign-in and services."
+    },
+    ".claude/settings.json": {
+      "name": "Assistant hook settings",
+      "description": "Registers the startup check that runs whenever an AI coding assistant opens this project."
+    },
+    ".claude/skills/bifrost-build/references/sources.yaml": {
+      "name": "Build skill sources",
+      "description": "Lists the code and documentation places the build assistant reads so its answers stay accurate."
+    },
+    ".claude/skills/bifrost-copilot-cowork-package/pack.py": {
+      "name": "Copilot plugin packager",
+      "description": "Bundles an agent into a Microsoft 365 Copilot plugin zip with its manifest, skills and connection details."
+    },
+    ".claude/workflows/solutions-qa-fanout.mjs": {
+      "name": "Solutions QA sweep",
+      "description": "Sets out a multi-agent quality pass that drives the real screens and command line, verifies findings and ranks them."
+    },
+    ".claude/workflows/solutions-scope-shakeout.mjs": {
+      "name": "Solutions scope review",
+      "description": "Sets out a multi-agent audit of who can see and change Solutions, plus a critic pass for untested cases."
+    },
+    "api/scripts/__init__.py": {
+      "name": "Admin scripts package",
+      "description": "Marks the folder of administrative scripts as one importable package."
+    },
+    "api/scripts/agent_code_mode_spike.py": {
+      "name": "Agent tool-mode trial",
+      "description": "Runs a credential-free trial of an agent calling its tools directly, to prove that path works end to end."
+    },
+    "api/scripts/api-allocator.sh": {
+      "name": "Shared memory tuning",
+      "description": "Applies the memory allocator settings the server needs, shared by both the normal and direct startup paths."
+    },
+    "api/scripts/build_cli_artifact.py": {
+      "name": "Command-line bundle builder",
+      "description": "Packages the command-line tool into the archive the server hands out for download."
+    },
+    "api/scripts/check_github_action_pins.py": {
+      "name": "Action pin check",
+      "description": "Fails when a GitHub automation step is not locked to an exact commit, or its version comment is wrong."
+    },
+    "api/scripts/check_live_reasoning.py": {
+      "name": "Live reasoning check",
+      "description": "Asks real AI providers the configured reasoning questions to confirm the settings actually reach them."
+    },
+    "api/scripts/elastic_runtime_memory.py": {
+      "name": "Memory footprint probe",
+      "description": "Measures how much memory the server uses while starting up and building its parts in fresh processes."
+    },
+    "api/scripts/generate_access_list.py": {
+      "name": "Access list generator",
+      "description": "Turns the hand-maintained access list into the machine-readable file the app ships with."
+    },
+    "api/scripts/init_container.py": {
+      "name": "Startup preparation task",
+      "description": "Applies database changes and warms caches before the server starts, and refuses to run against a newer database."
+    },
+    "api/scripts/inspect_agent_run_step_streams.py": {
+      "name": "Agent run stream inspector",
+      "description": "Shows one bounded page of an agent run's live step records without changing anything."
+    },
+    "api/scripts/install-npm.sh": {
+      "name": "Pinned package tool installer",
+      "description": "Installs one specific, checksum-verified version of the JavaScript package tool inside the image."
+    },
+    "api/scripts/kubernetes_build_spike.py": {
+      "name": "Cluster build trial",
+      "description": "Exercises app builds as short-lived cluster tasks in a local test cluster from start to finish."
+    },
+    "api/scripts/lean_runner_spike.py": {
+      "name": "Lean job runner trial",
+      "description": "Probes how little memory a slim background-job parent and its helper processes can get by with."
+    },
+    "api/scripts/migrate_app_files_to_s3.py": {
+      "name": "App file move",
+      "description": "Copies stored app files out of the database into cloud file storage and indexes them for search."
+    },
+    "api/scripts/operation_catalog/generate.py": {
+      "name": "Operation catalog builder",
+      "description": "Generates the list of operations and the compact reference the build assistant relies on."
+    },
+    "api/scripts/quality_api.sh": {
+      "name": "Server code checks",
+      "description": "Runs the type checker and linter over the server code inside its container."
+    },
+    "api/scripts/report_test_costs.py": {
+      "name": "Slow test report",
+      "description": "Ranks automatic checks by how long each test file takes, using the recorded run results."
+    },
+    "api/scripts/scheduler_fixture_server.py": {
+      "name": "Test service stand-in",
+      "description": "Stands in for outside services during tests, answering with fixed AI, tool and repository responses."
+    },
+    "api/scripts/skill-truth/dump-app-sdk-surface.mjs": {
+      "name": "App building-block listing",
+      "description": "Writes a sorted list of everything the in-app building blocks offer, so documentation stays accurate."
+    },
+    "api/scripts/skill-truth/generate.py": {
+      "name": "Assistant reference generator",
+      "description": "Rebuilds the assistant's command, code and type references from the real source."
+    },
+    "api/scripts/skill-truth/lint_claims.py": {
+      "name": "Command reference check",
+      "description": "Checks every command example in the assistant's notes against the real command tree."
+    },
+    "api/scripts/skill-truth/lint_examples.py": {
+      "name": "Code example check",
+      "description": "Runs every code sample in the assistant's notes against the real building blocks to catch stale snippets."
+    },
+    "api/scripts/thin_provider_fixture.py": {
+      "name": "Provider stand-in",
+      "description": "Pretends to be an outside AI provider so background-job tests can run without real credentials."
+    },
+    "api/scripts/update_model_catalog_snapshot.py": {
+      "name": "Model list refresh",
+      "description": "Refreshes the bundled list of available AI models that ships with the server."
+    },
+    "api/scripts/uvicorn-shim.sh": {
+      "name": "Direct server launcher",
+      "description": "Applies the memory settings even when the cluster starts the server directly and skips normal startup."
+    },
+    "api/scripts/verify_merge_candidate.py": {
+      "name": "Merge safety check",
+      "description": "Refuses to proceed unless that exact code revision passed the full pre-merge checks."
+    },
+    "api/scripts/worker_memory_probe.py": {
+      "name": "Worker memory sampler",
+      "description": "Samples the memory each running background task container uses on the host machine."
+    },
+    "plugins/bifrost/skills/bifrost-build/references/sources.yaml": {
+      "name": "Plugin build sources",
+      "description": "Lists the same authoritative sources for the packaged plugin copy of the build assistant."
+    },
+    "plugins/bifrost/skills/bifrost-copilot-cowork-package/pack.py": {
+      "name": "Plugin packager copy",
+      "description": "Packages an agent as a Copilot plugin and is kept identical to the assistant-folder copy."
+    },
+    "scripts/bench/cluster.py": {
+      "name": "Cluster access for benchmarks",
+      "description": "Reads pod memory, database counters and worker processes from the local cluster during benchmark runs."
+    },
+    "scripts/bench/incluster/driver.py": {
+      "name": "In-cluster benchmark driver",
+      "description": "Runs each timed workload class from inside the cluster against a live platform."
+    },
+    "scripts/bench/incluster/fake_llm.py": {
+      "name": "Fake model for benchmarks",
+      "description": "Answers model requests with fixed replies so timing runs are repeatable and need no real provider."
+    },
+    "scripts/bench/manifests/bench.yaml": {
+      "name": "Benchmark cluster setup",
+      "description": "Describes the pods and settings used to run the benchmark harness in the local cluster."
+    },
+    "scripts/bench/report.py": {
+      "name": "Benchmark report",
+      "description": "Turns a benchmark result file into a readable summary for comparison."
+    }
+  }
+}

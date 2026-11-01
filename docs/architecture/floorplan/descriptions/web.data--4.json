@@ -1,0 +1,84 @@
+{
+  "files": {
+    "client/src/services/tools.ts": {
+      "name": "Tool list",
+      "description": "Lists the actions and helpers available to AI agents and automations."
+    },
+    "client/src/services/usage.ts": {
+      "name": "Usage and cost report",
+      "description": "Totals AI use, workflow runs and storage over a period, with trends by team."
+    },
+    "client/src/services/user-invites.ts": {
+      "name": "Invitation actions",
+      "description": "Sends and revokes the emails that invite new people to join."
+    },
+    "client/src/services/websocket.ts": {
+      "name": "Live updates",
+      "description": "Keeps the screens current by listening for changes over a live connection to the server."
+    },
+    "client/src/services/workers.ts": {
+      "name": "Processing capacity",
+      "description": "Shows the machines that run work, their waiting lines, and lets staff recycle a stuck one."
+    },
+    "client/src/services/workflow-resources.ts": {
+      "name": "Workflow resource report",
+      "description": "Reports how much computing time and memory each workflow used over a period."
+    },
+    "client/src/services/workflowAccess.ts": {
+      "name": "Workflow run permissions",
+      "description": "Chooses which identity a workflow runs as and reports the access it still lacks."
+    },
+    "client/src/services/workflowKeys.ts": {
+      "name": "Workflow keys",
+      "description": "Issues and revokes the access keys outside systems use to start a workflow."
+    },
+    "client/src/stores/agentRunStepStore.ts": {
+      "name": "Agent step memory",
+      "description": "Remembers which step of an agent run someone has open on screen."
+    },
+    "client/src/stores/app-builder-editor.store.ts": {
+      "name": "App builder edit state",
+      "description": "Tracks which parts of an app have unsaved changes and keeps screen and server versions aligned."
+    },
+    "client/src/stores/app-builder.store.ts": {
+      "name": "App runtime state",
+      "description": "Holds an app's live values, loaded data and running actions while someone uses it."
+    },
+    "client/src/stores/chatStore.ts": {
+      "name": "Chat state",
+      "description": "Keeps the open conversation, its messages and whether a reply is being written."
+    },
+    "client/src/stores/editorStore.ts": {
+      "name": "Editor state",
+      "description": "Holds everything the code editor needs: open files, cursor position, output, save state and layout."
+    },
+    "client/src/stores/executionStreamStore.ts": {
+      "name": "Run progress state",
+      "description": "Keeps the live status and log lines of the runs currently being watched."
+    },
+    "client/src/stores/fileActivityStore.ts": {
+      "name": "File activity state",
+      "description": "Keeps the record of who is editing which files right now."
+    },
+    "client/src/stores/notificationStore.ts": {
+      "name": "Notification state",
+      "description": "Holds current notifications, alerts and unread counts for the bell menu."
+    },
+    "client/src/stores/quickAccessStore.ts": {
+      "name": "Quick access memory",
+      "description": "Remembers recently visited places and favourites for the quick search palette."
+    },
+    "client/src/stores/scopeStore.ts": {
+      "name": "Organization scope memory",
+      "description": "Keeps the chosen organization available to screens and the file editors."
+    },
+    "client/src/stores/uploadStore.ts": {
+      "name": "Upload progress",
+      "description": "Tracks file uploads in progress, how far along they are and any failures."
+    },
+    "client/src/stores/workflowsStore.ts": {
+      "name": "Workflow list memory",
+      "description": "Keeps the loaded list of workflows to hand so screens and editors open quickly."
+    }
+  }
+}

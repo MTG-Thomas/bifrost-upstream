@@ -1,0 +1,164 @@
+{
+  "files": {
+    "client/src/components/app-builder/AppInfoDialog.tsx": {
+      "name": "App details dialog",
+      "description": "Creates a new app or edits an existing one's name, address, description and access."
+    },
+    "client/src/components/app-builder/AppUpdateIndicator.tsx": {
+      "name": "Who changed the app",
+      "description": "Briefly shows whose edit just changed the app being worked on."
+    },
+    "client/src/components/app-builder/EmbedSettingsDialog.tsx": {
+      "name": "Embedding settings",
+      "description": "Creates the secret and instructions for showing an app inside another website."
+    },
+    "client/src/components/app-builder/index.ts": {
+      "name": "App viewer parts",
+      "description": "Gathers the pieces that display code-built apps."
+    },
+    "client/src/components/app-builder/NewVersionBanner.tsx": {
+      "name": "New version notice",
+      "description": "Tells an app's viewer that a newer published version exists and offers a refresh."
+    },
+    "client/src/components/app-code-editor/AppCodeEditor.tsx": {
+      "name": "App code editor",
+      "description": "Edits an app's code files with colouring and shows build errors as they appear."
+    },
+    "client/src/components/app-code-editor/AppCodeEditorLayout.tsx": {
+      "name": "App coding workspace",
+      "description": "Puts the app's file list, code editor and live preview side by side."
+    },
+    "client/src/components/app-code-editor/DependencyPanel.tsx": {
+      "name": "App libraries panel",
+      "description": "Adds and removes the extra software libraries an app needs, with versions."
+    },
+    "client/src/components/app-code-editor/index.ts": {
+      "name": "App code editor parts",
+      "description": "Gathers the pieces of the app coding workspace."
+    },
+    "client/src/components/app-code-editor/useAppCodeEditor.ts": {
+      "name": "App editor state",
+      "description": "Keeps an app file's draft text, unsaved changes and build errors."
+    },
+    "client/src/components/editor/ChangesList.tsx": {
+      "name": "Changed files list",
+      "description": "Lists the files changed since the last save point, with counts."
+    },
+    "client/src/components/editor/CodeEditor.tsx": {
+      "name": "Code editor",
+      "description": "Edits workspace files with colouring, automatic saving and a manual save."
+    },
+    "client/src/components/editor/CommitHistorySection.tsx": {
+      "name": "Commit history",
+      "description": "Shows past save points with who made them and when."
+    },
+    "client/src/components/editor/ConflictDiffView.tsx": {
+      "name": "Conflict comparison",
+      "description": "Shows a file's local and server versions side by side so someone can choose one."
+    },
+    "client/src/components/editor/ConflictResolutionBanner.tsx": {
+      "name": "Conflict banner",
+      "description": "Warns that a file changed elsewhere and offers ways to resolve it."
+    },
+    "client/src/components/editor/EditorCloseDialog.tsx": {
+      "name": "Close editor prompt",
+      "description": "Asks what to do with unsaved files before the editor closes."
+    },
+    "client/src/components/editor/EditorFileStatus.tsx": {
+      "name": "File status",
+      "description": "Shows whether the open file is saved, changed or in conflict."
+    },
+    "client/src/components/editor/EditorLayout.tsx": {
+      "name": "Editor workspace",
+      "description": "Arranges the file list, tabs, code area, output and status bar, and restores them next visit."
+    },
+    "client/src/components/editor/EditorOverlay.tsx": {
+      "name": "Full-screen editor",
+      "description": "Opens the editor over the current page and shrinks it to the dock when minimised."
+    },
+    "client/src/components/editor/EditorSearchForm.tsx": {
+      "name": "Search form",
+      "description": "Takes the words to find in workspace files and any filters."
+    },
+    "client/src/components/editor/EditorUploadStatus.tsx": {
+      "name": "Upload status",
+      "description": "Shows the progress of files being uploaded into the workspace."
+    },
+    "client/src/components/editor/FileTabConflictMenu.tsx": {
+      "name": "Tab conflict options",
+      "description": "Offers the choices for a file whose server copy changed, such as keeping your version."
+    },
+    "client/src/components/editor/FileTabs.tsx": {
+      "name": "Open file tabs",
+      "description": "Shows open files as tabs that can be reordered, switched and closed."
+    },
+    "client/src/components/editor/FileTree.tsx": {
+      "name": "File list",
+      "description": "Shows the workspace's folders and files as a tree people can browse."
+    },
+    "client/src/components/editor/FileTreeContextMenu.tsx": {
+      "name": "File actions menu",
+      "description": "Offers actions such as rename, delete and download for a file or folder."
+    },
+    "client/src/components/editor/FileTreeNode.tsx": {
+      "name": "File row",
+      "description": "Draws one file or folder in the tree with the right icon."
+    },
+    "client/src/components/editor/IndexingOverlay.tsx": {
+      "name": "Preparing workspace",
+      "description": "Blocks the editor briefly while the workspace is being indexed."
+    },
+    "client/src/components/editor/InstalledPackageList.tsx": {
+      "name": "Installed packages",
+      "description": "Lists the software packages currently available to scripts."
+    },
+    "client/src/components/editor/PackageInstallForm.tsx": {
+      "name": "Install a package",
+      "description": "Takes a package name and version to add."
+    },
+    "client/src/components/editor/PackagePanel.tsx": {
+      "name": "Package manager",
+      "description": "Installs, updates and removes the software packages scripts rely on."
+    },
+    "client/src/components/editor/packageProgress.ts": {
+      "name": "Install progress",
+      "description": "Tracks an installation's progress messages so the panel can show them."
+    },
+    "client/src/components/editor/RegisterWorkflowDialog.tsx": {
+      "name": "Register workflow",
+      "description": "Turns a function in an existing file into a workflow the platform can run."
+    },
+    "client/src/components/editor/runGitOperation.ts": {
+      "name": "Version control actions",
+      "description": "Sends a save, fetch, push or pull to the background and follows it until it finishes."
+    },
+    "client/src/components/editor/RunPanel.tsx": {
+      "name": "Try it panel",
+      "description": "Runs the open workflow, lookup or script with sample inputs and shows the result."
+    },
+    "client/src/components/editor/SearchPanel.tsx": {
+      "name": "Search in files",
+      "description": "Searches inside workspace files and lists each match with its context."
+    },
+    "client/src/components/editor/SearchResultItem.tsx": {
+      "name": "Search result",
+      "description": "Shows one file's matches, ready to open at the right line."
+    },
+    "client/src/components/editor/Sidebar.tsx": {
+      "name": "Editor side menu",
+      "description": "Switches the editor between files, search, run, packages and version control."
+    },
+    "client/src/components/editor/SourceChangesSection.tsx": {
+      "name": "Pending changes",
+      "description": "Lists files changed since the last save point so they can be committed."
+    },
+    "client/src/components/editor/SourceControlActions.tsx": {
+      "name": "Commit and push",
+      "description": "Groups the buttons for saving changes to the shared repository."
+    },
+    "client/src/components/editor/SourceControlFileRecords.tsx": {
+      "name": "Changed file rows",
+      "description": "Shows one changed or conflicting file with its status and actions."
+    }
+  }
+}

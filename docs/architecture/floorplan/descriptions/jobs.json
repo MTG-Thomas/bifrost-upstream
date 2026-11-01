@@ -1,0 +1,16 @@
+{
+  "files": {
+    "api/src/jobs/__init__.py": {
+      "name": "Jobs package",
+      "description": "Groups the background work the platform runs outside a normal request."
+    },
+    "api/src/jobs/agent_run_child.py": {
+      "name": "Agent run child entry",
+      "description": "Runs one agent conversation handed to a freshly started child process."
+    },
+    "api/src/jobs/summarize_worker.py": {
+      "name": "Summary consumer",
+      "description": "Picks up a finished agent run that is waiting to be summarised and writes its summary."
+    }
+  }
+}

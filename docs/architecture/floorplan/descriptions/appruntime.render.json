@@ -1,0 +1,28 @@
+{
+  "files": {
+    "client/src/components/jsx-app/app-load-error.ts": {
+      "name": "Load failure message",
+      "description": "Turns an app loading failure into a short message someone can understand."
+    },
+    "client/src/components/jsx-app/AppLoadingSkeleton.tsx": {
+      "name": "Loading placeholder",
+      "description": "Shows a neutral placeholder while an app's screens are still loading."
+    },
+    "client/src/components/jsx-app/BundledAppShell.tsx": {
+      "name": "Built app loader",
+      "description": "Loads an app's built code, keeps it current and shows it inside the platform."
+    },
+    "client/src/components/jsx-app/BundleFeedback.tsx": {
+      "name": "Build notices",
+      "description": "Explains build failures, automatic upgrades and other notices when an app cannot load as expected."
+    },
+    "client/src/components/jsx-app/index.ts": {
+      "name": "App rendering pieces",
+      "description": "Collects the pieces used to display a built app inside the platform."
+    },
+    "client/src/components/jsx-app/StandaloneV2App.tsx": {
+      "name": "Standalone app frame",
+      "description": "Runs a newer standalone app inside the platform page and hands it the platform's shared features."
+    }
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "files": {
+    "api/shared/sdk_agent_runs.py": {
+      "name": "Starting agent runs",
+      "description": "Queues an agent run on a workflow's behalf and reports back its progress and result."
+    },
+    "api/shared/sdk_ai.py": {
+      "name": "AI answers for workflows",
+      "description": "Asks the configured AI service for an answer, in one go or streamed, and reports which model replied."
+    },
+    "api/shared/sdk_artifact_generation.py": {
+      "name": "Making files from workflows",
+      "description": "Creates PDFs, Word files, spreadsheets, text files and images from a workflow and stores them for download."
+    },
+    "api/shared/sdk_artifacts.py": {
+      "name": "Workflow file store",
+      "description": "Saves the files a workflow produces, lists and reads them back, and hands out short-lived download links."
+    },
+    "api/shared/sdk_config.py": {
+      "name": "Workflow settings",
+      "description": "Reads and writes the saved settings a workflow uses, keeping secret values hidden from listings."
+    },
+    "api/shared/sdk_context.py": {
+      "name": "Run context lookup",
+      "description": "Tells a starting workflow who is running it, where it runs and what it is allowed to reach."
+    },
+    "api/shared/sdk_execution_reads.py": {
+      "name": "Run history lookups",
+      "description": "Lists the workflows and past runs a person may see, with paging, filters and full detail for one run."
+    },
+    "api/shared/sdk_files.py": {
+      "name": "Workflow file access",
+      "description": "Reads, writes, moves and shares files from a workflow, checking permission on every folder it touches."
+    },
+    "api/shared/sdk_forms.py": {
+      "name": "Form lookups for workflows",
+      "description": "Lists and loads the forms a person may see, including each form's logo."
+    },
+    "api/shared/sdk_integrations.py": {
+      "name": "Connected service access",
+      "description": "Gives a workflow its connected service details, keeps sign-ins fresh, and manages each workspace's connection."
+    },
+    "api/shared/sdk_knowledge.py": {
+      "name": "Knowledge document store",
+      "description": "Stores, searches and removes knowledge documents in the workspaces a workflow may reach."
+    },
+    "api/shared/sdk_modules.py": {
+      "name": "Workflow source loading",
+      "description": "Finds and loads the saved code a running workflow imports, and refuses paths outside that run's reach."
+    },
+    "api/shared/sdk_organizations.py": {
+      "name": "Workspace management",
+      "description": "Lists, creates, updates and closes the workspaces a person may manage."
+    },
+    "api/shared/sdk_provider_cache.py": {
+      "name": "Saved data-source answers",
+      "description": "Keeps a short-lived copy of data-source answers so repeated workflow steps need not ask again, tied to current permissions."
+    },
+    "api/shared/sdk_roles.py": {
+      "name": "Role management",
+      "description": "Creates and changes roles and reports who holds them and what each one grants, within the caller's reach."
+    },
+    "api/shared/sdk_table_metadata.py": {
+      "name": "Table setup from workflows",
+      "description": "Creates, lists and deletes the tables a workflow works with, inside the workspaces it may reach."
+    },
+    "api/shared/sdk_users.py": {
+      "name": "User management",
+      "description": "Adds, changes, lists and removes user accounts and their roles, within the workspaces the caller may manage."
+    },
+    "api/shared/sdk_video.py": {
+      "name": "Video generation jobs",
+      "description": "Queues a video generation request, tracks its progress and hands back the finished video."
+    },
+    "api/shared/sdk_workflow_execution.py": {
+      "name": "Running workflows",
+      "description": "Starts a workflow, data source or short script, and can cancel one that is still waiting to run."
+    }
+  }
+}

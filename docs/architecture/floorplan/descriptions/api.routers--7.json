@@ -1,0 +1,394 @@
+{
+  "files": {
+    "api/src/routers/services.py": {
+      "name": "Supervised services",
+      "description": "Runs and watches the long-lived helper programs workflows depend on, starting them again if they stop."
+    },
+    "api/src/routers/solutions.py": {
+      "name": "Packaged solutions",
+      "description": "Packages apps, forms, automations and settings so they can be installed elsewhere, kept in step with source control and updated."
+    },
+    "api/src/routers/tables.py": {
+      "name": "Data tables",
+      "description": "Stores the records apps and workflows read and write, with rules about who may see them."
+    },
+    "api/src/routers/tools.py": {
+      "name": "Available tools",
+      "description": "Lists every tool workflows and AI assistants can use, both built in and made by workflows."
+    },
+    "api/src/routers/usage_reports.py": {
+      "name": "Usage reports",
+      "description": "Reports how much processing time and AI cost each workflow and run has used."
+    },
+    "api/src/routers/users.py": {
+      "name": "Staff accounts",
+      "description": "Invites, updates and removes the people who use the platform, and shows what each of them can reach."
+    },
+    "api/src/routers/version.py": {
+      "name": "Version details",
+      "description": "Reports which version of the platform is running so the app and companion tools can check they match."
+    },
+    "api/src/routers/websocket.py": {
+      "name": "Live updates",
+      "description": "Keeps screens current by pushing run progress, notifications and other changes as they happen."
+    },
+    "api/src/routers/workflow_keys.py": {
+      "name": "Automation keys",
+      "description": "Issues and revokes the secret keys that let outside systems start an automation."
+    }
+  },
+  "routes": {
+    "GET /api/services": {
+      "name": "Supervised services list",
+      "description": "Lists the helper programs the platform supervises and whether each is running."
+    },
+    "GET /api/services/{service_id}": {
+      "name": "Service details",
+      "description": "Shows one service's settings and its current state."
+    },
+    "PATCH /api/services/{service_id}": {
+      "name": "Change service policy",
+      "description": "Adjusts how a service is restarted, how many tries it gets and how long it waits between them."
+    },
+    "POST /api/services/{service_id}/start": {
+      "name": "Start a service",
+      "description": "Asks for a service to run and clears anything that was blocking it."
+    },
+    "POST /api/services/{service_id}/stop": {
+      "name": "Stop a service",
+      "description": "Records that a service should be off, then shuts the running copy down."
+    },
+    "POST /api/services/{service_id}/restart": {
+      "name": "Restart a service",
+      "description": "Stops the running copy so a fresh one starts, without marking the service as off."
+    },
+    "POST /api/services/{service_id}/enable": {
+      "name": "Enable a service",
+      "description": "Allows a service to run again without starting it straight away."
+    },
+    "POST /api/services/{service_id}/disable": {
+      "name": "Disable a service",
+      "description": "Stops a service and blocks it from starting until it is enabled again."
+    },
+    "GET /api/services/{service_id}/attempts": {
+      "name": "Service run history",
+      "description": "Lists each attempt to run a service, newest first, with how it ended."
+    },
+    "GET /api/services/{service_id}/logs": {
+      "name": "Service output",
+      "description": "Returns the most recent log lines from a service."
+    },
+    "POST /api/solutions/{solution_id}/dev-context": {
+      "name": "Start solution development",
+      "description": "Gives a short-lived pass so a developer can work on one app inside a solution."
+    },
+    "POST /api/solutions/import-workspace/preview": {
+      "name": "Preview a workspace upload",
+      "description": "Reads an uploaded workspace package and reports what it would add or clash with."
+    },
+    "POST /api/solutions/import-workspace": {
+      "name": "Import a workspace",
+      "description": "Loads an uploaded workspace package into the platform as a background task."
+    },
+    "POST /api/solutions/import-workspace/preview-repo": {
+      "name": "Preview from a repository",
+      "description": "Reads a one-off snapshot from a code repository and reports what installing it would do."
+    },
+    "POST /api/solutions": {
+      "name": "Create a solution",
+      "description": "Starts a new solution that will hold a packaged set of apps, automations and settings."
+    },
+    "GET /api/solutions": {
+      "name": "Solutions list",
+      "description": "Lists the packaged solutions available in this workspace."
+    },
+    "GET /api/solutions/{solution_id}/sdk/status": {
+      "name": "App building-block status",
+      "description": "Reports which versions of the app building blocks each app in a solution uses."
+    },
+    "POST /api/solutions/sdk/update": {
+      "name": "Refresh several solutions",
+      "description": "Rebuilds every app in the chosen solutions against the current building blocks."
+    },
+    "POST /api/solutions/{solution_id}/sdk/update": {
+      "name": "Refresh a solution's apps",
+      "description": "Rebuilds one solution's apps against the current building blocks."
+    },
+    "GET /api/solutions/{solution_id}": {
+      "name": "Solution details",
+      "description": "Shows one solution's settings, source and current status."
+    },
+    "GET /api/solutions/{solution_id}/logo": {
+      "name": "Solution icon",
+      "description": "Returns the picture shown on the solution's catalog card."
+    },
+    "GET /api/solutions/{solution_id}/readme": {
+      "name": "Solution description",
+      "description": "Returns the long description shown on the solution's page."
+    },
+    "PUT /api/solutions/{solution_id}/readme": {
+      "name": "Edit solution description",
+      "description": "Replaces the solution's long description, or clears it."
+    },
+    "GET /api/solutions/{solution_id}/setup": {
+      "name": "Solution setup checklist",
+      "description": "Lists the settings a solution needs and whether each one has been filled in."
+    },
+    "POST /api/solutions/{solution_id}/export": {
+      "name": "Export a solution",
+      "description": "Builds a fresh package from everything the solution currently owns, ready to share."
+    },
+    "POST /api/solutions/{solution_id}/export-jobs": {
+      "name": "Start a backup export",
+      "description": "Queues a background task that packages the solution for backup."
+    },
+    "GET /api/solutions/{solution_id}/export-jobs": {
+      "name": "Backup exports",
+      "description": "Lists the backup exports made for a solution."
+    },
+    "GET /api/solutions/export-jobs/{job_id}": {
+      "name": "Export progress",
+      "description": "Shows how a packaging task is going and where its file is."
+    },
+    "POST /api/solutions/export-jobs/{job_id}/download-link": {
+      "name": "Get a download link",
+      "description": "Creates a temporary link for downloading a finished export."
+    },
+    "GET /api/solutions/export-jobs/{job_id}/download": {
+      "name": "Download an export",
+      "description": "Downloads the packaged solution file."
+    },
+    "GET /api/solutions/{solution_id}/entities": {
+      "name": "What a solution owns",
+      "description": "Lists everything a solution owns and which of its settings still need values."
+    },
+    "GET /api/solutions/{solution_id}/capture/candidates": {
+      "name": "Things to capture",
+      "description": "Lists the existing apps, automations and settings that could be folded into a solution."
+    },
+    "POST /api/solutions/{solution_id}/capture/preview": {
+      "name": "Preview a capture",
+      "description": "Shows everything that would come along with the chosen items before capturing them."
+    },
+    "PATCH /api/solutions/{solution_id}": {
+      "name": "Update a solution",
+      "description": "Changes a solution's name, who it covers or how it connects to source control."
+    },
+    "POST /api/solutions/{solution_id}/uninstall": {
+      "name": "Uninstall a solution",
+      "description": "Marks a solution as no longer in use without deleting what it created."
+    },
+    "GET /api/solutions/{solution_id}/deletion-summary": {
+      "name": "What deletion would remove",
+      "description": "Counts everything that would be destroyed before a solution is deleted for good."
+    },
+    "DELETE /api/solutions/{solution_id}": {
+      "name": "Delete a solution",
+      "description": "Permanently deletes a solution and everything it created, once confirmed."
+    },
+    "POST /api/solutions/{solution_id}/deploy": {
+      "name": "Deploy a solution",
+      "description": "Puts the solution's latest content live and updates what it installed."
+    },
+    "GET /api/solutions/deploy-jobs/{job_id}": {
+      "name": "Deployment progress",
+      "description": "Shows how a deployment is going and any errors so far."
+    },
+    "POST /api/solutions/{solution_id}/capture": {
+      "name": "Capture into a solution",
+      "description": "Adopts existing apps, automations and settings into a solution without moving them."
+    },
+    "POST /api/solutions/{solution_id}/pull/ack": {
+      "name": "Confirm pulled changes",
+      "description": "Clears the list of changes already brought in from source control."
+    },
+    "POST /api/solutions/{solution_id}/sync": {
+      "name": "Sync from source control",
+      "description": "Queues a refresh that brings in the latest changes from the connected repository."
+    },
+    "POST /api/solutions/install/preview": {
+      "name": "Preview installing a package",
+      "description": "Reads a solution package and reports what installing it would create."
+    },
+    "POST /api/solutions/install/preview-repo": {
+      "name": "Preview installing from a repository",
+      "description": "Clones a repository and reports what installing the solution there would create."
+    },
+    "POST /api/solutions/install/from-repo": {
+      "name": "Install from a repository",
+      "description": "Creates a source-controlled solution install and starts its first deployment."
+    },
+    "POST /api/solutions/install": {
+      "name": "Install a solution",
+      "description": "Starts installing a solution package as a background task."
+    },
+    "POST /api/tables": {
+      "name": "Create a table",
+      "description": "Creates a new table for storing records used by apps and automations."
+    },
+    "GET /api/tables": {
+      "name": "Tables list",
+      "description": "Lists the tables the signed-in person is allowed to see."
+    },
+    "POST /api/tables/policies/validate": {
+      "name": "Check table rules",
+      "description": "Checks a proposed set of access rules for a table before they are saved."
+    },
+    "GET /api/tables/{table_id}": {
+      "name": "Table details",
+      "description": "Shows one table's settings and which client its records belong to."
+    },
+    "PATCH /api/tables/{table_id}": {
+      "name": "Update a table",
+      "description": "Changes a table's name, description or access rules."
+    },
+    "DELETE /api/tables/{table_id}": {
+      "name": "Delete a table",
+      "description": "Deletes a table and every record in it."
+    },
+    "POST /api/tables/{table_id}/documents": {
+      "name": "Add a record",
+      "description": "Stores a new record in the table."
+    },
+    "POST /api/tables/{table_id}/documents/upsert": {
+      "name": "Save a record",
+      "description": "Adds a record, or replaces the existing one with the same identity, in one step."
+    },
+    "GET /api/tables/{table_id}/documents/count": {
+      "name": "Count records",
+      "description": "Counts how many records a table holds."
+    },
+    "GET /api/tables/{table_id}/documents/{doc_id}": {
+      "name": "Read a record",
+      "description": "Returns one record from the table."
+    },
+    "PATCH /api/tables/{table_id}/documents/{doc_id}": {
+      "name": "Update a record",
+      "description": "Changes some fields of a record and leaves the rest as they were."
+    },
+    "DELETE /api/tables/{table_id}/documents/{doc_id}": {
+      "name": "Delete a record",
+      "description": "Removes one record from the table."
+    },
+    "POST /api/tables/{table_id}/documents/query": {
+      "name": "Search a table",
+      "description": "Finds records matching filters, with paging and sorting."
+    },
+    "POST /api/tables/{table_id}/documents/batch": {
+      "name": "Save many records",
+      "description": "Adds or updates a batch of records in a single step."
+    },
+    "POST /api/tables/{table_id}/documents/batch-delete": {
+      "name": "Delete many records",
+      "description": "Removes a batch of records by their identities."
+    },
+    "GET /api/tools": {
+      "name": "All available tools",
+      "description": "Lists every tool a workflow or AI assistant can call, built in and workflow-made."
+    },
+    "GET /api/tools/system": {
+      "name": "Built-in tools",
+      "description": "Lists the tools the platform provides out of the box."
+    },
+    "GET /api/reports/usage": {
+      "name": "Usage report",
+      "description": "Shows run counts, processing time and AI cost over a chosen period."
+    },
+    "GET /api/reports/workflow-resources": {
+      "name": "Cost per run",
+      "description": "Shows processing time and AI cost for each run or each automation."
+    },
+    "GET /api/users": {
+      "name": "Staff list",
+      "description": "Lists the people who can sign in, with their status and roles."
+    },
+    "POST /api/users": {
+      "name": "Invite a person",
+      "description": "Creates an account and sends the person a sign-in invitation."
+    },
+    "PATCH /api/users/bulk": {
+      "name": "Change several people",
+      "description": "Applies one change, such as a status or role, to many people at once."
+    },
+    "POST /api/users/{user_id}/invite/resend": {
+      "name": "Resend an invitation",
+      "description": "Sends the sign-in invitation again."
+    },
+    "POST /api/users/{user_id}/invite/send": {
+      "name": "Send an invitation",
+      "description": "Sends a fresh sign-in invitation to a person."
+    },
+    "POST /api/users/{user_id}/invite/regenerate": {
+      "name": "Replace an invitation",
+      "description": "Issues a new invitation link and cancels the previous one."
+    },
+    "DELETE /api/users/{user_id}/invite": {
+      "name": "Cancel an invitation",
+      "description": "Withdraws a pending invitation so it can no longer be used."
+    },
+    "GET /api/users/{user_id}": {
+      "name": "Person details",
+      "description": "Shows one person's account details and access."
+    },
+    "PATCH /api/users/{user_id}": {
+      "name": "Update a person",
+      "description": "Changes a person's name, contact details or account status."
+    },
+    "DELETE /api/users/{user_id}": {
+      "name": "Delete a person",
+      "description": "Permanently removes a person's account."
+    },
+    "POST /api/users/{user_id}/mfa/reset": {
+      "name": "Reset someone's extra step",
+      "description": "Clears a person's two-step sign-in so they can set it up again."
+    },
+    "GET /api/users/{user_id}/roles": {
+      "name": "A person's roles",
+      "description": "Lists the roles assigned to one person."
+    },
+    "GET /api/users/{user_id}/forms": {
+      "name": "Forms a person can open",
+      "description": "Lists the forms one person is allowed to use."
+    },
+    "GET /api/users/{user_id}/role-assignments": {
+      "name": "Where a person has roles",
+      "description": "Shows which role applies to a person in each client organization."
+    },
+    "GET /api/users/{user_id}/access": {
+      "name": "What a person can reach",
+      "description": "Summarises everything one person is allowed to see and do."
+    },
+    "PUT /api/users/{user_id}/role-assignments": {
+      "name": "Set a person's roles",
+      "description": "Replaces which roles a person holds in each client organization."
+    },
+    "POST /api/users/{user_id}/access/check": {
+      "name": "Check a permission",
+      "description": "Answers whether a person may perform a particular action in a particular place."
+    },
+    "GET /api/version": {
+      "name": "Version details",
+      "description": "Reports which version is running so the app and companion tools can check they match."
+    },
+    "WEBSOCKET /ws/connect": {
+      "name": "Live update connection",
+      "description": "Opens a live link so screens receive run progress and notices the moment they happen."
+    },
+    "WEBSOCKET /ws/execution/{execution_id}": {
+      "name": "Follow one run live",
+      "description": "Streams the progress and output of a single run as it happens."
+    },
+    "GET /api/workflow-keys": {
+      "name": "Automations with keys",
+      "description": "Lists the automations that outside systems can start with a key."
+    },
+    "POST /api/workflow-keys": {
+      "name": "Issue an automation key",
+      "description": "Creates a secret key that lets an outside system start an automation; shown only once."
+    },
+    "DELETE /api/workflow-keys/{workflow_id}": {
+      "name": "Revoke an automation key",
+      "description": "Disables an automation's key so outside systems can no longer start it."
+    }
+  }
+}

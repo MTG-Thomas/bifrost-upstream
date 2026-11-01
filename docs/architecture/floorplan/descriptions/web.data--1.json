@@ -1,0 +1,164 @@
+{
+  "files": {
+    "client/src/contexts/AuthContext.tsx": {
+      "name": "Sign-in state",
+      "description": "Remembers who is signed in, keeps them signed in, and lets support staff view the app as someone else."
+    },
+    "client/src/contexts/FormContext.tsx": {
+      "name": "Form answers in progress",
+      "description": "Holds what someone has filled in so far and decides which follow-up questions to show."
+    },
+    "client/src/contexts/KeyboardContext.tsx": {
+      "name": "Keyboard shortcuts",
+      "description": "Runs the app's keyboard shortcuts, such as saving with Ctrl+S, from any screen."
+    },
+    "client/src/contexts/OrgScopeContext.tsx": {
+      "name": "Chosen organization",
+      "description": "Remembers which organization's records the staff member is currently looking at."
+    },
+    "client/src/contexts/ThemeContext.tsx": {
+      "name": "Light and dark display",
+      "description": "Remembers whether someone prefers the light or dark look and keeps that choice between visits."
+    },
+    "client/src/hooks/executionHistoryCache.ts": {
+      "name": "Live run history",
+      "description": "Adds live run updates to the history list without disturbing the pages already loaded."
+    },
+    "client/src/hooks/useAgentRunUpdates.ts": {
+      "name": "Live agent run updates",
+      "description": "Refreshes an agent run on screen as soon as the server reports new progress."
+    },
+    "client/src/hooks/useAgents.ts": {
+      "name": "AI agents",
+      "description": "Lists, creates, edits and retires AI agents, including the tools and helpers each one may use."
+    },
+    "client/src/hooks/useAppCodeUpdates.ts": {
+      "name": "Live app code",
+      "description": "Streams edits to an app's code files so open editors show changes without a reload."
+    },
+    "client/src/hooks/useAppDependencies.ts": {
+      "name": "App add-on libraries",
+      "description": "Adds, updates and removes the extra software libraries an app relies on."
+    },
+    "client/src/hooks/useApplications.ts": {
+      "name": "Apps",
+      "description": "Creates, builds, publishes, exports and deletes the apps people use in the workspace."
+    },
+    "client/src/hooks/useApplicationSdkUpdateJobs.ts": {
+      "name": "App update progress",
+      "description": "Tracks the background work that brings apps onto the latest platform tooling."
+    },
+    "client/src/hooks/useAppLiveUpdates.ts": {
+      "name": "Live app preview",
+      "description": "Refreshes an app preview as pages change and announces when a newly published version is ready."
+    },
+    "client/src/hooks/useAssignEntityRole.ts": {
+      "name": "Add a role",
+      "description": "Gives a workflow, form or agent one more role without disturbing the roles it already has."
+    },
+    "client/src/hooks/useAuditLog.ts": {
+      "name": "Activity history",
+      "description": "Shows the record of who did what, groups it, and re-checks access decisions made in the past."
+    },
+    "client/src/hooks/useAutoMatch.ts": {
+      "name": "Records found by name",
+      "description": "Suggests matches between records by comparing their names and values."
+    },
+    "client/src/hooks/useAutoReload.ts": {
+      "name": "Reload on change",
+      "description": "Reloads a list automatically when the chosen organization or filters change."
+    },
+    "client/src/hooks/useAutoSave.ts": {
+      "name": "Automatic saving",
+      "description": "Saves edits in the background as people work so nothing is lost when they move on."
+    },
+    "client/src/hooks/useBifrostMonacoTheme.ts": {
+      "name": "Editor colours",
+      "description": "Keeps every code editing panel matching the current light or dark display setting."
+    },
+    "client/src/hooks/useBranding.ts": {
+      "name": "Organization branding",
+      "description": "Loads and changes the logo, main colour and application name shown across the platform."
+    },
+    "client/src/hooks/useChat.ts": {
+      "name": "Chat conversations",
+      "description": "Starts conversations with an AI agent, loads past messages and sends new ones."
+    },
+    "client/src/hooks/useChatAvailability.ts": {
+      "name": "Chat availability",
+      "description": "Tells screens whether the chat assistant is ready to use."
+    },
+    "client/src/hooks/useChatStream.ts": {
+      "name": "Live chat replies",
+      "description": "Streams an AI agent's answer into the chat window as it is written and keeps it if the page reloads."
+    },
+    "client/src/hooks/useCollectionOrder.ts": {
+      "name": "Personal list order",
+      "description": "Remembers the order one person arranged a collection's items in, on this browser only."
+    },
+    "client/src/hooks/useComparisonLayout.ts": {
+      "name": "Side-by-side code view",
+      "description": "Gives two code versions a comfortable side-by-side view inside a comparison panel."
+    },
+    "client/src/hooks/useConfig.ts": {
+      "name": "Connected service settings",
+      "description": "Reads and saves the stored settings that connect the platform to outside services."
+    },
+    "client/src/hooks/useDashboardMetrics.ts": {
+      "name": "Dashboard numbers",
+      "description": "Loads the headline counts and figures shown on the dashboard."
+    },
+    "client/src/hooks/useDependencyGraph.ts": {
+      "name": "What depends on what",
+      "description": "Maps which workflows, forms and apps rely on an item before someone changes or deletes it."
+    },
+    "client/src/hooks/useDialogReturnFocus.ts": {
+      "name": "Focus after closing",
+      "description": "Returns the keyboard highlight to the button that opened a popup once it closes."
+    },
+    "client/src/hooks/useEditorSession.ts": {
+      "name": "Editor session memory",
+      "description": "Keeps an open editor's tabs and state so people can leave a screen and come back to it."
+    },
+    "client/src/hooks/useEventStream.ts": {
+      "name": "Incoming events",
+      "description": "Streams new events from connected services into the event list as they arrive."
+    },
+    "client/src/hooks/useExecutions.ts": {
+      "name": "Workflow runs",
+      "description": "Lists workflow runs, follows a running one until it ends, and lets staff cancel it."
+    },
+    "client/src/hooks/useExecutionStream.ts": {
+      "name": "Live run tracking",
+      "description": "Follows a workflow run's progress live and refreshes the history list as runs start and finish."
+    },
+    "client/src/hooks/useExecutionTimeSeries.ts": {
+      "name": "Run volume chart",
+      "description": "Supplies the numbers behind the chart of how many workflow runs happened over a period."
+    },
+    "client/src/hooks/useFieldManager.ts": {
+      "name": "Form field editing",
+      "description": "Adds, reorders, changes and removes the questions on a form."
+    },
+    "client/src/hooks/useFileActivity.ts": {
+      "name": "Who else is editing",
+      "description": "Shows which colleagues are working in the shared file workspace right now."
+    },
+    "client/src/hooks/useFileLoader.ts": {
+      "name": "Opening files safely",
+      "description": "Opens a file while checking whether unsaved edits elsewhere would be lost."
+    },
+    "client/src/hooks/useFileTree.ts": {
+      "name": "File tree state",
+      "description": "Keeps the workspace file tree's open folders and loaded contents."
+    },
+    "client/src/hooks/useFileTreeActions.ts": {
+      "name": "File management actions",
+      "description": "Creates, renames, moves, deletes and uploads workspace files, and confirms clashes before overwriting."
+    },
+    "client/src/hooks/useFormFileUpload.ts": {
+      "name": "Form file uploads",
+      "description": "Uploads files attached to a form, showing progress and checking size and type first."
+    }
+  }
+}

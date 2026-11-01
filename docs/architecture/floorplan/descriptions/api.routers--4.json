@@ -1,0 +1,382 @@
+{
+  "files": {
+    "api/src/routers/github.py": {
+      "name": "GitHub connection",
+      "description": "Connects the workspace to a GitHub repository so code and settings can be saved, shared and kept in step."
+    },
+    "api/src/routers/health.py": {
+      "name": "Health checks",
+      "description": "Reports whether the platform and its database, cache and file storage are working, for monitoring tools."
+    },
+    "api/src/routers/home.py": {
+      "name": "Home screen",
+      "description": "Builds each person's home screen with their shortcuts and collections, and remembers their preferences."
+    },
+    "api/src/routers/hooks.py": {
+      "name": "Incoming messages",
+      "description": "Receives messages that outside services send when something happens, and passes them to the event system."
+    },
+    "api/src/routers/identities.py": {
+      "name": "Service identities",
+      "description": "Manages the accounts used for work no person started, such as each organization's default."
+    },
+    "api/src/routers/integrations.py": {
+      "name": "Outside service connections",
+      "description": "Sets up connections to outside services, their sign-in, their logos and which organization uses which account."
+    },
+    "api/src/routers/jobs.py": {
+      "name": "Background job status",
+      "description": "Lets screens check how a long background task is going and collect its result."
+    },
+    "api/src/routers/knowledge_sources.py": {
+      "name": "Knowledge library",
+      "description": "Organizes the documents the AI can search, grouped by topic, with editing and removal."
+    },
+    "api/src/routers/kubernetes.py": {
+      "name": "Background computing",
+      "description": "Controls how much computing power is available for background work and which jobs run in isolation."
+    },
+    "api/src/routers/llm_config.py": {
+      "name": "Search settings",
+      "description": "Chooses the AI service that makes text searchable by meaning, and rebuilds the search index when it changes."
+    }
+  },
+  "routes": {
+    "GET /api/github/config": {
+      "name": "GitHub settings",
+      "description": "Shows which repository the workspace is connected to."
+    },
+    "GET /api/github/status": {
+      "name": "Source control status",
+      "description": "Shows whether the workspace is connected and whether there are unsaved changes."
+    },
+    "GET /api/github/repo-status": {
+      "name": "Unsaved changes check",
+      "description": "Quickly reports whether local files differ from what is saved, so the command-line tool can warn before pushing."
+    },
+    "POST /api/github/validate": {
+      "name": "Connect a GitHub account",
+      "description": "Checks a GitHub access pass, saves it, and lists the repositories it can reach."
+    },
+    "GET /api/github/repositories": {
+      "name": "GitHub repositories",
+      "description": "Lists the repositories your saved GitHub account can use."
+    },
+    "GET /api/github/branches": {
+      "name": "Repository branches",
+      "description": "Lists the branches in a chosen repository."
+    },
+    "POST /api/github/create-repository": {
+      "name": "Create a repository",
+      "description": "Makes a new GitHub repository for this workspace."
+    },
+    "POST /api/github/disconnect": {
+      "name": "Disconnect GitHub",
+      "description": "Removes the saved GitHub connection from the workspace."
+    },
+    "GET /api/github/commits": {
+      "name": "Commit history",
+      "description": "Lists past saved versions with who made them and when, a page at a time."
+    },
+    "POST /api/github/connect/preview": {
+      "name": "Compare before connecting",
+      "description": "Shows how the workspace differs from a remote branch before either is changed."
+    },
+    "POST /api/github/connect": {
+      "name": "Connect to a branch",
+      "description": "Links the workspace to a branch using a comparison you already saw."
+    },
+    "POST /api/github/fetch": {
+      "name": "Fetch latest from GitHub",
+      "description": "Downloads the newest changes from GitHub without merging them."
+    },
+    "POST /api/github/commit": {
+      "name": "Save a version",
+      "description": "Records the workspace's changes as a saved version with a message."
+    },
+    "POST /api/github/sync": {
+      "name": "Sync with GitHub",
+      "description": "Pulls the latest changes, sends yours up, and refreshes the platform's settings from the repository."
+    },
+    "POST /api/github/abort-merge": {
+      "name": "Cancel a merge",
+      "description": "Stops an in-progress merge and returns the files to how they were."
+    },
+    "POST /api/github/changes": {
+      "name": "Check changed files",
+      "description": "Lists which files have changed since the last saved version."
+    },
+    "POST /api/github/resolve": {
+      "name": "Resolve a conflict",
+      "description": "Marks a conflicting file as settled so the merge can finish."
+    },
+    "POST /api/github/diff": {
+      "name": "Compare file versions",
+      "description": "Shows exactly what changed in a file."
+    },
+    "POST /api/github/discard": {
+      "name": "Discard changes",
+      "description": "Throws away unsaved changes to chosen files."
+    },
+    "GET /health": {
+      "name": "Is it up",
+      "description": "Answers whether the platform is running, for monitoring tools."
+    },
+    "GET /health/live": {
+      "name": "Is it alive",
+      "description": "Confirms the main server is responding at all."
+    },
+    "GET /health/ready": {
+      "name": "Ready for traffic",
+      "description": "Confirms the platform can serve requests and reach what it depends on."
+    },
+    "GET /health/detailed": {
+      "name": "Component health",
+      "description": "Shows whether the database, cache and file storage are each working."
+    },
+    "GET /api/home": {
+      "name": "Home screen",
+      "description": "Builds your home screen with shortcuts, collections and recent items."
+    },
+    "POST /api/home/collections": {
+      "name": "New collection",
+      "description": "Creates a named group of shortcuts on the home screen."
+    },
+    "PUT /api/home/collections/{collection_id}": {
+      "name": "Rename a collection",
+      "description": "Changes a home screen collection's name or contents."
+    },
+    "DELETE /api/home/collections/{collection_id}": {
+      "name": "Delete a collection",
+      "description": "Removes a collection from the home screen."
+    },
+    "PUT /api/home/preferences/{resource_key}": {
+      "name": "Remember a preference",
+      "description": "Saves how you like one part of the home screen to look."
+    },
+    "GET /api/hooks/health": {
+      "name": "Incoming message health",
+      "description": "Confirms the platform is ready to receive messages from outside services."
+    },
+    "GET /api/hooks/{source_id}": {
+      "name": "Verify message address",
+      "description": "Answers an outside service's setup check so it will start sending messages here."
+    },
+    "POST /api/hooks/{source_id}": {
+      "name": "Receive external message",
+      "description": "Accepts a message from an outside service and queues it for the event system."
+    },
+    "PUT /api/hooks/{source_id}": {
+      "name": "Receive external update",
+      "description": "Accepts an update message from a service that announces changes this way."
+    },
+    "PATCH /api/hooks/{source_id}": {
+      "name": "Receive external change",
+      "description": "Accepts a change message from a service that reports edits this way."
+    },
+    "DELETE /api/hooks/{source_id}": {
+      "name": "Receive external removal",
+      "description": "Accepts a removal message from a service that reports deletions this way."
+    },
+    "GET /api/identities": {
+      "name": "Service identities",
+      "description": "Lists the accounts used for automated work, including each organization's default."
+    },
+    "POST /api/identities": {
+      "name": "Add a service identity",
+      "description": "Creates a named account for automated work."
+    },
+    "PATCH /api/identities/{identity_id}": {
+      "name": "Rename a service identity",
+      "description": "Changes a service identity's display name."
+    },
+    "DELETE /api/identities/{identity_id}": {
+      "name": "Delete a service identity",
+      "description": "Removes a service identity that is no longer needed."
+    },
+    "POST /api/integrations": {
+      "name": "Add a connection",
+      "description": "Sets up a new outside service the platform can talk to."
+    },
+    "GET /api/integrations": {
+      "name": "Connections list",
+      "description": "Lists the outside services the platform is connected to."
+    },
+    "GET /api/integrations/{integration_id}": {
+      "name": "Connection details",
+      "description": "Shows one connection's settings, sign-in details and organization links."
+    },
+    "GET /api/integrations/by-name/{name}": {
+      "name": "Connection by name",
+      "description": "Finds a connection using the short name people know it by."
+    },
+    "PUT /api/integrations/{integration_id}": {
+      "name": "Edit a connection",
+      "description": "Changes a connection's settings, name or sign-in details."
+    },
+    "DELETE /api/integrations/{integration_id}": {
+      "name": "Remove a connection",
+      "description": "Retires a connection so workflows can no longer use it."
+    },
+    "POST /api/integrations/{integration_id}/logo": {
+      "name": "Upload connection logo",
+      "description": "Sets the small square picture shown for the service."
+    },
+    "GET /api/integrations/{integration_id}/logo": {
+      "name": "Connection logo",
+      "description": "Shows the service's picture."
+    },
+    "DELETE /api/integrations/{integration_id}/logo": {
+      "name": "Remove connection logo",
+      "description": "Clears the service's picture so the default is shown."
+    },
+    "PUT /api/integrations/{integration_id}/config": {
+      "name": "Save connection defaults",
+      "description": "Saves settings used for the connection unless an organization overrides them."
+    },
+    "GET /api/integrations/{integration_id}/config": {
+      "name": "Show connection defaults",
+      "description": "Shows the settings used for the connection unless an organization overrides them."
+    },
+    "POST /api/integrations/{integration_id}/mappings": {
+      "name": "Link an organization",
+      "description": "Connects one organization to its own account with the outside service."
+    },
+    "GET /api/integrations/{integration_id}/mappings": {
+      "name": "Organization links",
+      "description": "Lists which organizations are linked to which outside accounts."
+    },
+    "GET /api/integrations/{integration_id}/mappings/{mapping_id}": {
+      "name": "Link details",
+      "description": "Shows one organization's link to its outside account."
+    },
+    "GET /api/integrations/{integration_id}/mappings/by-org/{org_id}": {
+      "name": "Organization link",
+      "description": "Finds the outside account linked to a particular organization."
+    },
+    "PUT /api/integrations/{integration_id}/mappings/{mapping_id}": {
+      "name": "Edit an organization link",
+      "description": "Changes an organization's outside account details or settings."
+    },
+    "POST /api/integrations/{integration_id}/mappings/batch": {
+      "name": "Link many organizations",
+      "description": "Creates or updates several organization links at once."
+    },
+    "DELETE /api/integrations/{integration_id}/mappings/{mapping_id}": {
+      "name": "Remove an organization link",
+      "description": "Unlinks an organization from its outside account."
+    },
+    "POST /api/integrations/{integration_id}/mappings/{mapping_id}/oauth/authorize": {
+      "name": "Sign in to a service",
+      "description": "Starts the sign-in that lets one organization's outside account be used."
+    },
+    "POST /api/integrations/{integration_id}/mappings/{mapping_id}/oauth/disconnect": {
+      "name": "Disconnect an organization account",
+      "description": "Removes the saved sign-in for one organization's outside account."
+    },
+    "POST /api/integrations/{integration_id}/mappings/{mapping_id}/oauth/refresh": {
+      "name": "Renew an organization sign-in",
+      "description": "Gets a fresh sign-in pass for an organization's outside account."
+    },
+    "GET /api/integrations/{integration_id}/oauth": {
+      "name": "Sign-in method",
+      "description": "Shows how the connection signs in to the outside service."
+    },
+    "GET /api/integrations/{integration_id}/oauth/authorize": {
+      "name": "Get a sign-in link",
+      "description": "Creates the link that starts signing in to the outside service."
+    },
+    "PATCH /api/integrations/{integration_id}/oauth/entity_id_source": {
+      "name": "Choose account identifier",
+      "description": "Decides where the outside service's account identifier comes from."
+    },
+    "DELETE /api/integrations/{integration_id}/oauth/entity_id_source": {
+      "name": "Reset account identifier",
+      "description": "Returns the account identifier choice to its default."
+    },
+    "POST /api/integrations/{integration_id}/test": {
+      "name": "Test a connection",
+      "description": "Checks that the platform can still reach and use the outside service."
+    },
+    "POST /api/integrations/{integration_id}/generate-sdk": {
+      "name": "Build ready-made code",
+      "description": "Creates ready-made code for talking to a service described in an API document."
+    },
+    "GET /api/jobs/{job_id}": {
+      "name": "Background job progress",
+      "description": "Shows how a long-running task is going and its result when finished."
+    },
+    "GET /api/knowledge-sources": {
+      "name": "Knowledge topics",
+      "description": "Lists the topics documents are filed under, with how much each holds."
+    },
+    "GET /api/knowledge-sources/documents": {
+      "name": "All knowledge documents",
+      "description": "Lists documents across every topic, with filters for finding one."
+    },
+    "PATCH /api/knowledge-sources/documents/scope": {
+      "name": "Change document sharing",
+      "description": "Moves several documents to a different sharing scope at once."
+    },
+    "GET /api/knowledge-sources/{namespace}/documents": {
+      "name": "Documents in a topic",
+      "description": "Lists the documents filed under one topic."
+    },
+    "POST /api/knowledge-sources/{namespace}/documents": {
+      "name": "Add a knowledge document",
+      "description": "Saves a document under a topic and makes it searchable."
+    },
+    "GET /api/knowledge-sources/{namespace}/documents/{doc_id}": {
+      "name": "Knowledge document",
+      "description": "Shows one stored document."
+    },
+    "PUT /api/knowledge-sources/{namespace}/documents/{doc_id}": {
+      "name": "Update a knowledge document",
+      "description": "Saves changes to a document and refreshes how it is found in search."
+    },
+    "DELETE /api/knowledge-sources/{namespace}/documents/{doc_id}": {
+      "name": "Delete a knowledge document",
+      "description": "Removes a document and every part of it from search."
+    },
+    "DELETE /api/knowledge-sources/{namespace}": {
+      "name": "Delete a knowledge topic",
+      "description": "Deletes a topic and every document in it."
+    },
+    "GET /api/admin/kubernetes/status": {
+      "name": "Computing status",
+      "description": "Shows whether the platform's background computing is healthy and how busy it is."
+    },
+    "GET /api/admin/kubernetes/execution": {
+      "name": "Background work settings",
+      "description": "Shows how background work is set to run and how much computing it may use."
+    },
+    "PUT /api/admin/kubernetes/execution": {
+      "name": "Change background work settings",
+      "description": "Adjusts how background work runs and how much computing it may use."
+    },
+    "PUT /api/admin/kubernetes/policy": {
+      "name": "Change isolation rules",
+      "description": "Decides which jobs run in their own isolated space instead of sharing."
+    },
+    "GET /api/admin/llm/embedding-config": {
+      "name": "Search service settings",
+      "description": "Shows which AI service turns text into something searchable by meaning."
+    },
+    "POST /api/admin/llm/embedding-config": {
+      "name": "Choose a search service",
+      "description": "Sets the AI service used to make documents searchable by meaning."
+    },
+    "DELETE /api/admin/llm/embedding-config": {
+      "name": "Reset search service",
+      "description": "Returns search to the platform's shared AI service choice."
+    },
+    "POST /api/admin/llm/embedding-reindex": {
+      "name": "Rebuild the search index",
+      "description": "Re-reads every stored document so search works with the newly chosen service."
+    },
+    "POST /api/admin/llm/embedding-test": {
+      "name": "Check search service",
+      "description": "Tests the sign-in details for a search service and lists the models it offers."
+    }
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "files": {
+    "api/bifrost/solution_dev/__init__.py": {
+      "name": "Local Solution preview",
+      "description": "Groups the pieces that let someone preview a Solution's app on their own machine before publishing it."
+    },
+    "api/bifrost/solution_dev/app_select.py": {
+      "name": "Preview app chooser",
+      "description": "Picks which app in a Solution the local preview should show."
+    },
+    "api/bifrost/solution_dev/function_host.py": {
+      "name": "Local workflow runner",
+      "description": "Finds a Solution's workflows and runs them on the spot, so the preview behaves like the real thing."
+    },
+    "api/bifrost/solution_dev/proxy.py": {
+      "name": "Local preview server",
+      "description": "Serves a Solution's app and its workflows from one local address, standing in for the live platform."
+    },
+    "api/bifrost/solution_dev/reload.py": {
+      "name": "Preview refresh",
+      "description": "Notices when a workflow file changes and reloads it in the running preview."
+    },
+    "api/bifrost/solution_dev/scaffold_check.py": {
+      "name": "Preview setup check",
+      "description": "Spots app project files that are too old for local preview and says what to update."
+    },
+    "api/bifrost/solution_dev/session.py": {
+      "name": "Preview sign-in",
+      "description": "Keeps the local preview's temporary sign-in in memory rather than in the browser or a saved password."
+    },
+    "api/bifrost/tui/__init__.py": {
+      "name": "Terminal screens",
+      "description": "Provides the shared interactive screens the terminal tool shows."
+    },
+    "api/bifrost/tui/connection_select.py": {
+      "name": "Connection chooser",
+      "description": "Asks which saved Bifrost connection to use when more than one is available."
+    },
+    "api/bifrost/tui/file_select.py": {
+      "name": "File chooser",
+      "description": "Lets someone tick which files to send up or fetch down."
+    },
+    "api/bifrost/tui/progress.py": {
+      "name": "Transfer progress",
+      "description": "Shows each file's status and the overall progress while files are sent or fetched."
+    },
+    "api/bifrost/tui/sync_app.py": {
+      "name": "Sync review screen",
+      "description": "Shows pending file and entity changes and lets someone choose what to do with each one."
+    },
+    "api/bifrost/tui/theme.py": {
+      "name": "Terminal look and feel",
+      "description": "Gives every terminal screen the same Bifrost colours and styling."
+    },
+    "api/bifrost/tui/watch.py": {
+      "name": "Live change monitor",
+      "description": "Watches a workspace and shows activity as code changes are picked up and sent."
+    }
+  }
+}

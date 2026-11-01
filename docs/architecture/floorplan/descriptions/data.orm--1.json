@@ -1,0 +1,164 @@
+{
+  "files": {
+    "api/src/models/orm/__init__.py": {
+      "name": "Stored record shapes",
+      "description": "Declares every kind of record the platform keeps and the fields each one holds."
+    },
+    "api/src/models/orm/agent_prompt_history.py": {
+      "name": "Agent instruction history",
+      "description": "Keeps each earlier version of an assistant's instructions so a change can be reviewed or undone."
+    },
+    "api/src/models/orm/agent_run_flag_conversations.py": {
+      "name": "Run flag discussions",
+      "description": "Stores the back-and-forth where someone discusses and adjusts a flagged assistant run."
+    },
+    "api/src/models/orm/agent_run_verdict_history.py": {
+      "name": "Verdict change history",
+      "description": "Keeps every change to an assistant run's verdict, with who changed it and why."
+    },
+    "api/src/models/orm/agent_runs.py": {
+      "name": "Assistant run records",
+      "description": "Holds each assistant run and its individual steps, so progress, cost and outcome can be shown."
+    },
+    "api/src/models/orm/agents.py": {
+      "name": "Assistants and chats",
+      "description": "Holds assistants, the tools and roles they may use, and the conversations and messages people have with them."
+    },
+    "api/src/models/orm/ai_models.py": {
+      "name": "AI provider settings",
+      "description": "Holds each AI provider connection, the model choices built on it, and which model each job uses."
+    },
+    "api/src/models/orm/ai_usage.py": {
+      "name": "AI call records",
+      "description": "Records each AI call's usage and its price, so spend can be totalled per run, person or month."
+    },
+    "api/src/models/orm/app_embed_secrets.py": {
+      "name": "App embed passwords",
+      "description": "Holds the shared password that proves a request really comes from an app embedded in another website."
+    },
+    "api/src/models/orm/app_roles.py": {
+      "name": "App role access",
+      "description": "Links each app to the roles allowed to open it."
+    },
+    "api/src/models/orm/applications.py": {
+      "name": "App records",
+      "description": "Holds each built app's details, version, build state and who may use it."
+    },
+    "api/src/models/orm/artifacts.py": {
+      "name": "Generated files",
+      "description": "Holds one record per generated file — document, image or spreadsheet — so it can be downloaded later from anywhere."
+    },
+    "api/src/models/orm/audit_archive.py": {
+      "name": "Archived activity days",
+      "description": "Stores each archived day of activity history for an organization after the live log is trimmed."
+    },
+    "api/src/models/orm/audit.py": {
+      "name": "Activity log entries",
+      "description": "Records who did what and when, with the details needed to review a change."
+    },
+    "api/src/models/orm/authz.py": {
+      "name": "Permission versions",
+      "description": "Tracks when a person's permissions last changed and which older sign-in formats are still in use."
+    },
+    "api/src/models/orm/base.py": {
+      "name": "Record base",
+      "description": "The common starting point every stored record type builds on."
+    },
+    "api/src/models/orm/branding.py": {
+      "name": "Brand appearance",
+      "description": "Holds the platform's shared name, logos and colour settings."
+    },
+    "api/src/models/orm/config.py": {
+      "name": "Stored settings",
+      "description": "Stores settings and their values, per organization or for the whole platform, including hidden system settings."
+    },
+    "api/src/models/orm/custom_claims.py": {
+      "name": "Custom user facts",
+      "description": "Holds named facts about a signed-in person, such as their team or region, that access rules can check."
+    },
+    "api/src/models/orm/events.py": {
+      "name": "Incoming events",
+      "description": "Holds where events come from — a timetable, an incoming message or a topic — which workflows listen, and every event received."
+    },
+    "api/src/models/orm/execution_workers.py": {
+      "name": "Run helper servers",
+      "description": "Tracks each helper server that carries out runs and which runs it took on, so a lost server's work can be closed."
+    },
+    "api/src/models/orm/executions.py": {
+      "name": "Workflow runs",
+      "description": "Holds every workflow run with its status, inputs, results and log lines."
+    },
+    "api/src/models/orm/external_mcp.py": {
+      "name": "AI tool connections",
+      "description": "Holds outside tool catalogues, each organization's connection to them, their tool lists and each person's sign-in."
+    },
+    "api/src/models/orm/file_index.py": {
+      "name": "Workspace file search",
+      "description": "Indexes workspace and Solution source files so the editor and assistants can search them quickly."
+    },
+    "api/src/models/orm/file_metadata.py": {
+      "name": "File details and rules",
+      "description": "Stores details about uploaded files and the access rules attached to folders."
+    },
+    "api/src/models/orm/form_embed_secrets.py": {
+      "name": "Form embed passwords",
+      "description": "Holds the shared password proving a form shown on another website is genuinely ours."
+    },
+    "api/src/models/orm/form_publications.py": {
+      "name": "Public form links",
+      "description": "Holds each shareable public link to a form and whether it is still live."
+    },
+    "api/src/models/orm/forms.py": {
+      "name": "Forms and fields",
+      "description": "Holds each form, the fields it asks for, and which roles may open it."
+    },
+    "api/src/models/orm/home.py": {
+      "name": "Personal launcher",
+      "description": "Holds each person's own launcher layout and favourite shortcuts, and never grants access to anything."
+    },
+    "api/src/models/orm/human_sessions.py": {
+      "name": "Staying signed in",
+      "description": "Keeps one record per device a person stays signed in on, so a session can be ended from elsewhere."
+    },
+    "api/src/models/orm/integrations.py": {
+      "name": "Outside service links",
+      "description": "Holds each outside service connection, the settings it needs, and which organization maps to which outside account."
+    },
+    "api/src/models/orm/knowledge.py": {
+      "name": "Knowledge library",
+      "description": "Holds reference documents and their searchable pieces so assistants and workflows can answer from them."
+    },
+    "api/src/models/orm/memory.py": {
+      "name": "Assistant memory",
+      "description": "Stores what assistants remember between conversations, kept private to a person or shared with an organization."
+    },
+    "api/src/models/orm/metrics.py": {
+      "name": "Daily totals",
+      "description": "Holds the daily run, time-saved and storage totals the dashboards chart."
+    },
+    "api/src/models/orm/mfa.py": {
+      "name": "Extra sign-in checks",
+      "description": "Holds each person's second sign-in method, recovery codes, trusted devices and passkeys."
+    },
+    "api/src/models/orm/oauth.py": {
+      "name": "Service access passes",
+      "description": "Holds the configured outside services and the access passes kept for them."
+    },
+    "api/src/models/orm/organizations.py": {
+      "name": "Customer organizations",
+      "description": "Holds each customer organization and its settings."
+    },
+    "api/src/models/orm/package_changes.py": {
+      "name": "Package change history",
+      "description": "Records each change to the workspace's installed packages so every server ends up with the same set."
+    },
+    "api/src/models/orm/pending_capture.py": {
+      "name": "Pending Solution captures",
+      "description": "Queues records marked for capture into a Solution before they are copied into its source."
+    },
+    "api/src/models/orm/platform_job_memory_profiles.py": {
+      "name": "Job memory learnings",
+      "description": "Remembers how much memory each kind of background job actually needed, so the next run is sized correctly."
+    }
+  }
+}

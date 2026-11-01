@@ -1,0 +1,56 @@
+{
+  "files": {
+    "api/shared/event_deliveries.py": {
+      "name": "Event retry rules",
+      "description": "Says whether a failed event delivery may be sent again by hand."
+    },
+    "api/shared/event_emission.py": {
+      "name": "Sending topic events",
+      "description": "Checks the sender may post to a topic, then records the event so interested workflows can pick it up."
+    },
+    "api/shared/event_filters.py": {
+      "name": "Event filter checks",
+      "description": "Tests each event against a subscription's filter so only matching events are delivered."
+    },
+    "api/shared/execution_context.py": {
+      "name": "Child run identity",
+      "description": "Checks that work started by a parent run has a usable identity before it is allowed to continue."
+    },
+    "api/shared/execution_liveness.py": {
+      "name": "Is the run alive",
+      "description": "Answers whether a run is still in progress, so anyone waiting stops waiting at the right moment."
+    },
+    "api/shared/execution_timeseries.py": {
+      "name": "Run activity chart",
+      "description": "Counts finished runs into time buckets for the dashboard chart without loading every run."
+    },
+    "api/shared/execution_visibility.py": {
+      "name": "Who sees which run",
+      "description": "Limits run lists and run details to the runs a person started themselves."
+    },
+    "api/shared/run_cancellation.py": {
+      "name": "Cancelling waiting runs",
+      "description": "Stops runs that were queued but never started, and marks a run as taken just before a worker picks it up."
+    },
+    "api/shared/run_lineage.py": {
+      "name": "Who a run is for",
+      "description": "Records once, where a run starts, which person or stand-in it acts for, and passes that down to child runs."
+    },
+    "api/shared/runtime_io.py": {
+      "name": "Live logs and service control",
+      "description": "Keeps a run's log lines on its own stream for reading back, and reports whether a long-running service should keep going."
+    },
+    "api/shared/subprocess_env.py": {
+      "name": "Clean tool settings",
+      "description": "Gives package-install tools a predictable set of settings so outside libraries install the same way every time."
+    },
+    "api/shared/unattended_execution.py": {
+      "name": "Scheduled run identity",
+      "description": "Builds the context for work no person started, using the chosen stand-in account for anything it does."
+    },
+    "api/shared/usage_reporting.py": {
+      "name": "Daily usage report",
+      "description": "Sends one anonymous daily count of workflow and agent runs so the product team can see adoption."
+    }
+  }
+}

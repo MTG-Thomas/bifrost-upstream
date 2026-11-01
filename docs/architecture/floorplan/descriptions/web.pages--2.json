@@ -1,0 +1,164 @@
+{
+  "files": {
+    "client/src/pages/Config.tsx": {
+      "name": "Configuration values",
+      "description": "Lists the stored settings keys and their values, searchable by key, description or the system they belong to."
+    },
+    "client/src/pages/Dashboard.tsx": {
+      "name": "Dashboard overview",
+      "description": "Summarises what is running, what ran lately and what the automation has returned."
+    },
+    "client/src/pages/DevicePage.tsx": {
+      "name": "Device approval page",
+      "description": "Lets a signed-in person approve a sign-in from a terminal by entering the short code it shows."
+    },
+    "client/src/pages/diagnostics/components/ContainerTable.tsx": {
+      "name": "Server process table",
+      "description": "Shows the running server processes with their memory and processing use."
+    },
+    "client/src/pages/diagnostics/components/ExecutionRow.tsx": {
+      "name": "Diagnostic run row",
+      "description": "Shows one run inside the diagnostics view with its status and timing."
+    },
+    "client/src/pages/diagnostics/components/ForkTable.tsx": {
+      "name": "Process activity table",
+      "description": "Shows which processes are spawning others or growing, so a misbehaving one is easy to spot."
+    },
+    "client/src/pages/diagnostics/components/MemoryChart.tsx": {
+      "name": "Memory chart",
+      "description": "Charts memory use over time for each server process so a slow climb is visible."
+    },
+    "client/src/pages/diagnostics/components/PlatformJobRecord.tsx": {
+      "name": "Background job record",
+      "description": "Shows one background job's state, progress and any error it hit."
+    },
+    "client/src/pages/diagnostics/components/PlatformJobsPanel.tsx": {
+      "name": "Background jobs panel",
+      "description": "Lists long-running platform jobs with their progress and lets an operator cancel one."
+    },
+    "client/src/pages/diagnostics/components/QueueBadge.tsx": {
+      "name": "Queue badge",
+      "description": "Shows how many runs are waiting in a queue, with the full identifiers available on tap."
+    },
+    "client/src/pages/diagnostics/components/QueueSection.tsx": {
+      "name": "Queue section",
+      "description": "Shows the state of one waiting line of work and how far behind it is."
+    },
+    "client/src/pages/diagnostics/components/SchedulerLogRecord.tsx": {
+      "name": "Scheduler log line",
+      "description": "Shows one line from the scheduled-task service's own log."
+    },
+    "client/src/pages/diagnostics/components/SchedulerReplicaList.tsx": {
+      "name": "Scheduler copies",
+      "description": "Lists the copies of the scheduling service that are running and which one is in charge."
+    },
+    "client/src/pages/diagnostics/components/SchedulerRunDrawer.tsx": {
+      "name": "Scheduled run details",
+      "description": "Opens a scheduled run to show what triggered it, what it did and how long it took."
+    },
+    "client/src/pages/diagnostics/components/SchedulerTab.tsx": {
+      "name": "Scheduler tab",
+      "description": "Shows how the scheduled-task service is doing and warns when it needs attention."
+    },
+    "client/src/pages/diagnostics/components/SchedulerTaskList.tsx": {
+      "name": "Scheduled tasks list",
+      "description": "Lists the recurring jobs the scheduler will run and when each one is next due."
+    },
+    "client/src/pages/diagnostics/components/WorkersTab.tsx": {
+      "name": "Run workers tab",
+      "description": "Shows the pool of machines that carry out runs, their load and whether they are online."
+    },
+    "client/src/pages/diagnostics/DiagnosticsPage.tsx": {
+      "name": "Diagnostics page",
+      "description": "Gives support staff a live picture of the platform's servers, queues and background jobs."
+    },
+    "client/src/pages/diagnostics/hooks/useWorkerWebSocket.ts": {
+      "name": "Live worker updates",
+      "description": "Keeps the diagnostics view current by listening for changes to the run workers as they happen."
+    },
+    "client/src/pages/diagnostics/index.ts": {
+      "name": "Diagnostics parts",
+      "description": "Bundles the panels that make up the diagnostics screen."
+    },
+    "client/src/pages/EntityManagement.tsx": {
+      "name": "Shared items list",
+      "description": "Lists workflows, forms, agents and apps together so ownership, access and cleanup can be handled in one place."
+    },
+    "client/src/pages/Events.tsx": {
+      "name": "Events list",
+      "description": "Lists the event sources that start work automatically, such as incoming email or Microsoft 365 changes."
+    },
+    "client/src/pages/events/EventSourceCard.tsx": {
+      "name": "Event source card",
+      "description": "Shows one event source's state, the events it produces and the ways to manage it."
+    },
+    "client/src/pages/ExecuteForms.tsx": {
+      "name": "Form picker",
+      "description": "Lets someone choose one of the available forms and open it to fill in."
+    },
+    "client/src/pages/ExecuteWorkflow.tsx": {
+      "name": "Run a workflow",
+      "description": "Takes the inputs for a workflow and starts a run, with the option to schedule it for later."
+    },
+    "client/src/pages/ExecutionDetails.tsx": {
+      "name": "Run detail page",
+      "description": "Shows one run in full: what was sent in, the logs, the result, the timing and the cost."
+    },
+    "client/src/pages/ExecutionHistory.tsx": {
+      "name": "Run history",
+      "description": "Lists every run with filters, day grouping and a summary of how many worked or failed."
+    },
+    "client/src/pages/ExecutionHistory/components/ExecutionCancelAction.tsx": {
+      "name": "Stop a run",
+      "description": "Stops a run that is still going, after asking for confirmation."
+    },
+    "client/src/pages/ExecutionHistory/components/ExecutionCleanupDialog.tsx": {
+      "name": "Clean up old runs",
+      "description": "Clears old run history for a chosen period, showing how much will be removed before it happens."
+    },
+    "client/src/pages/ExecutionHistory/components/ExecutionDrawer.tsx": {
+      "name": "Run slide-over",
+      "description": "Opens a run's full details in a panel that slides over the list and closes back to it."
+    },
+    "client/src/pages/ExecutionHistory/components/ExecutionPreviewPanel.tsx": {
+      "name": "Run preview panel",
+      "description": "Shows a run's full details beside the history list on wide screens so the list stays in view."
+    },
+    "client/src/pages/ExecutionHistory/components/ExecutionRecord.tsx": {
+      "name": "Run history row",
+      "description": "Shows one run in the history feed with its status, timing and quick actions."
+    },
+    "client/src/pages/ExecutionHistory/components/historyView.ts": {
+      "name": "History grouping",
+      "description": "Groups runs by day, totals them for the header, and formats their times and durations."
+    },
+    "client/src/pages/ExecutionHistory/components/LogRecord.tsx": {
+      "name": "Log entry",
+      "description": "Shows a single log entry with its severity, time and message."
+    },
+    "client/src/pages/ExecutionHistory/components/LogsTable.tsx": {
+      "name": "Logs table",
+      "description": "Lists log entries in a table that can be filtered and paged through."
+    },
+    "client/src/pages/ExecutionHistory/components/LogsView.tsx": {
+      "name": "Logs view",
+      "description": "Shows the logs table and opens a single entry for a closer look."
+    },
+    "client/src/pages/ExecutionHistory/navigation.ts": {
+      "name": "History navigation",
+      "description": "Remembers how someone reached a run so going back returns them to the same list and filters."
+    },
+    "client/src/pages/Files.tsx": {
+      "name": "Files page",
+      "description": "Opens the shared file workspace for browsing documents and uploads."
+    },
+    "client/src/pages/FormBuilder.tsx": {
+      "name": "Form builder",
+      "description": "Builds a form's fields, rules and layout, with a preview before it is published."
+    },
+    "client/src/pages/Forms.tsx": {
+      "name": "Forms list",
+      "description": "Lists every form with its availability, access and the actions available on it."
+    }
+  }
+}

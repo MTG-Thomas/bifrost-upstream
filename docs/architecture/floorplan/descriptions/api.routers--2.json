@@ -1,0 +1,438 @@
+{
+  "files": {
+    "api/src/routers/auth.py": {
+      "name": "Sign-in and accounts",
+      "description": "Handles signing in, staying signed in, two-step codes, passkeys, invites and command-line sign-ins."
+    },
+    "api/src/routers/authorization.py": {
+      "name": "My permissions",
+      "description": "Tells the screens what the signed-in person may do, so controls they cannot use stay hidden."
+    },
+    "api/src/routers/branding.py": {
+      "name": "Platform look",
+      "description": "Sets the platform's name, main colour and logos, with one-click resets back to the factory look."
+    },
+    "api/src/routers/chat.py": {
+      "name": "Assistant chat",
+      "description": "Runs the assistant chat: conversations, replies, file attachments and generated files."
+    },
+    "api/src/routers/claims.py": {
+      "name": "Custom claims",
+      "description": "Stores reusable named claims about people or organizations for workflows and access rules to rely on."
+    },
+    "api/src/routers/cli.py": {
+      "name": "Command-line services",
+      "description": "Gives command-line tools and workflows what they need: settings, connection details, documents, AI answers and knowledge search."
+    },
+    "api/src/routers/config.py": {
+      "name": "Settings values",
+      "description": "Keeps the named settings that workflows and connections read, for the whole platform or one organization."
+    },
+    "api/src/routers/decorator_properties.py": {
+      "name": "Workflow trigger settings",
+      "description": "Reads and saves the settings written on a workflow's trigger line, such as when it runs or what it is called."
+    },
+    "api/src/routers/dependencies.py": {
+      "name": "What depends on what",
+      "description": "Shows which records use a workflow, form, app or table, so you can see what a change would affect."
+    },
+    "api/src/routers/docs.py": {
+      "name": "Documentation feed",
+      "description": "Serves all of the platform's help documentation as one page that AI assistants can read."
+    }
+  },
+  "routes": {
+    "POST /auth/login": {
+      "name": "Sign in",
+      "description": "Checks an email and password, then either signs you in or asks for your second code."
+    },
+    "POST /auth/mfa/setup": {
+      "name": "Set up two-step codes",
+      "description": "Starts setting up an authenticator app during first-time account setup."
+    },
+    "POST /auth/mfa/verify": {
+      "name": "Confirm two-step setup",
+      "description": "Checks the first code from your authenticator app to finish turning on two-step sign-in."
+    },
+    "POST /auth/mfa/login": {
+      "name": "Enter second code",
+      "description": "Checks the code from your authenticator app and finishes signing you in."
+    },
+    "POST /auth/impersonate/{user_id}": {
+      "name": "Sign in as someone",
+      "description": "Lets a platform administrator see the platform as another person, with the switch recorded."
+    },
+    "POST /auth/impersonation/end": {
+      "name": "Stop acting as someone",
+      "description": "Returns a platform administrator to their own account, even after the switch expired."
+    },
+    "POST /auth/refresh": {
+      "name": "Stay signed in",
+      "description": "Issues a fresh sign-in pass as the old one ages out, without asking for a password."
+    },
+    "GET /auth/me": {
+      "name": "Who am I",
+      "description": "Shows the signed-in person's name, email, roles and organization."
+    },
+    "POST /auth/logout": {
+      "name": "Sign out",
+      "description": "Ends the current sign-in and cancels the pass that kept you signed in."
+    },
+    "POST /auth/revoke-all": {
+      "name": "Sign out everywhere",
+      "description": "Cancels every sign-in for your account on all devices."
+    },
+    "POST /auth/admin/revoke-user": {
+      "name": "Sign someone out",
+      "description": "Cancels every sign-in for a chosen person, for administrators handling a lost device."
+    },
+    "POST /auth/register": {
+      "name": "Create an account",
+      "description": "Creates a new person's account and signs them in."
+    },
+    "GET /auth/status": {
+      "name": "Sign-in page status",
+      "description": "Tells the sign-in page whether accounts exist yet and whether two-step codes are required."
+    },
+    "POST /auth/device/code": {
+      "name": "Start command-line sign-in",
+      "description": "Gives the command-line tool a short code to show you, starting the sign-in process."
+    },
+    "POST /auth/device/token": {
+      "name": "Finish command-line sign-in",
+      "description": "Checks whether a command-line sign-in was approved and hands over the sign-in pass."
+    },
+    "POST /auth/setup/passkey/options": {
+      "name": "Start passkey setup",
+      "description": "Begins setting up fingerprint or face sign-in for the first administrator account."
+    },
+    "POST /auth/setup/passkey/verify": {
+      "name": "Confirm passkey setup",
+      "description": "Finishes setting up fingerprint or face sign-in for the first administrator account."
+    },
+    "POST /auth/device/authorize": {
+      "name": "Approve command-line sign-in",
+      "description": "Lets you confirm that a command-line sign-in request is really yours."
+    },
+    "POST /auth/device/deny": {
+      "name": "Refuse command-line sign-in",
+      "description": "Rejects a command-line sign-in request you did not start."
+    },
+    "POST /auth/register-from-invite": {
+      "name": "Join from an invite",
+      "description": "Uses a one-time invite link to create an account and sign in."
+    },
+    "POST /auth/register-from-invite/passkey/options": {
+      "name": "Start passkey from invite",
+      "description": "Begins setting up fingerprint or face sign-in while joining from an invite."
+    },
+    "POST /auth/register-from-invite/passkey/verify": {
+      "name": "Finish passkey from invite",
+      "description": "Completes an invite sign-up using a passkey and signs the new person in."
+    },
+    "GET /auth/authorization": {
+      "name": "My permissions",
+      "description": "Lists what the signed-in person may do, so the screens can show or hide controls."
+    },
+    "GET /api/branding": {
+      "name": "Current branding",
+      "description": "Shows the platform's name, colour and logos, including on the sign-in page."
+    },
+    "PUT /api/branding": {
+      "name": "Change branding",
+      "description": "Saves the platform's name and main colour."
+    },
+    "POST /api/branding/logo/{logo_type}": {
+      "name": "Upload logo",
+      "description": "Replaces the square or wide logo shown across the platform."
+    },
+    "GET /api/branding/logo/{logo_type}": {
+      "name": "Show logo",
+      "description": "Serves the current logo image."
+    },
+    "DELETE /api/branding/logo/{logo_type}": {
+      "name": "Reset logo",
+      "description": "Puts the default logo back."
+    },
+    "DELETE /api/branding/color": {
+      "name": "Reset colour",
+      "description": "Puts the default main colour back."
+    },
+    "DELETE /api/branding/application-name": {
+      "name": "Reset platform name",
+      "description": "Puts the default platform name back."
+    },
+    "DELETE /api/branding": {
+      "name": "Reset all branding",
+      "description": "Returns the name, colour and logos to the factory look."
+    },
+    "GET /api/chat/model-profiles": {
+      "name": "Chat model choices",
+      "description": "Lists the approved model settings people can pick when starting a chat."
+    },
+    "POST /api/chat/conversations": {
+      "name": "Start a chat",
+      "description": "Opens a new conversation, with or without a chosen agent."
+    },
+    "GET /api/chat/conversations": {
+      "name": "My chats",
+      "description": "Lists your conversations, most recent first."
+    },
+    "GET /api/chat/conversations/{conversation_id}": {
+      "name": "Chat details",
+      "description": "Shows one conversation's details and who it belongs to."
+    },
+    "DELETE /api/chat/conversations/{conversation_id}": {
+      "name": "Delete a chat",
+      "description": "Hides a conversation from your list without destroying the record."
+    },
+    "POST /api/chat/runs": {
+      "name": "Send message to agent",
+      "description": "Saves your message and starts the agent's reply in the background so the screen can reconnect."
+    },
+    "GET /api/chat/conversations/{conversation_id}/state": {
+      "name": "Reconnect to a chat",
+      "description": "Returns the full current state of a conversation so the screen can pick up where it left off."
+    },
+    "POST /api/chat/runs/{run_id}/cancel": {
+      "name": "Stop a chat reply",
+      "description": "Cancels a reply that is still being worked on."
+    },
+    "GET /api/chat/artifacts": {
+      "name": "My chat files",
+      "description": "Lists files you uploaded or the assistant created in chat."
+    },
+    "PATCH /api/chat/artifacts/{attachment_id}": {
+      "name": "Rename a chat file",
+      "description": "Changes a chat file's name without moving the file itself."
+    },
+    "DELETE /api/chat/artifacts/{attachment_id}": {
+      "name": "Delete a chat file",
+      "description": "Removes one of your chat files."
+    },
+    "POST /api/chat/conversations/{conversation_id}/attachments": {
+      "name": "Attach files to a message",
+      "description": "Checks and stores files you want to send with your next message."
+    },
+    "DELETE /api/chat/conversations/{conversation_id}/attachments/{attachment_id}": {
+      "name": "Remove an attachment",
+      "description": "Deletes a file you attached but never sent."
+    },
+    "GET /api/chat/conversations/{conversation_id}/attachments/{attachment_id}/content": {
+      "name": "Open an attachment",
+      "description": "Shows or downloads an attached file after checking it belongs to your conversation."
+    },
+    "GET /api/chat/conversations/{conversation_id}/messages": {
+      "name": "Chat messages",
+      "description": "Lists the messages in a conversation in order."
+    },
+    "POST /api/chat/conversations/{conversation_id}/messages": {
+      "name": "Send a message",
+      "description": "Sends a message and waits for the whole reply instead of streaming it."
+    },
+    "GET /api/claims": {
+      "name": "Custom claims",
+      "description": "Lists the named claims recorded for organizations, with a filter for administrators working across all of them."
+    },
+    "GET /api/claims/{name}": {
+      "name": "Claim details",
+      "description": "Shows one custom claim and its value."
+    },
+    "POST /api/claims": {
+      "name": "Add a claim",
+      "description": "Records a new named claim for an organization."
+    },
+    "PATCH /api/claims/{name}": {
+      "name": "Update a claim",
+      "description": "Changes a claim's value or description."
+    },
+    "DELETE /api/claims/{name}": {
+      "name": "Delete a claim",
+      "description": "Removes a claim that is no longer used."
+    },
+    "GET /api/sdk/context": {
+      "name": "Command-line start-up details",
+      "description": "Tells the command-line tools which platform, organization and person they are working as."
+    },
+    "POST /api/sdk/config/get": {
+      "name": "Read a setting",
+      "description": "Returns one saved setting so command-line tools can use it."
+    },
+    "POST /api/sdk/config/set": {
+      "name": "Save a setting",
+      "description": "Stores a setting from the command line."
+    },
+    "POST /api/sdk/config/list": {
+      "name": "List settings",
+      "description": "Lists the saved settings available to the command-line tools."
+    },
+    "POST /api/sdk/config/delete": {
+      "name": "Delete a setting",
+      "description": "Removes a saved setting."
+    },
+    "POST /api/sdk/integrations/get": {
+      "name": "Connection details",
+      "description": "Returns an organization's connection details for an outside service."
+    },
+    "POST /api/sdk/integrations/list_mappings": {
+      "name": "Connection links",
+      "description": "Lists which organizations are linked to which outside accounts for a service."
+    },
+    "POST /api/sdk/integrations/get_mapping": {
+      "name": "One connection link",
+      "description": "Returns the link between an organization and its outside account."
+    },
+    "POST /api/sdk/integrations/upsert_mapping": {
+      "name": "Save a connection link",
+      "description": "Creates or updates the link between an organization and an outside account."
+    },
+    "POST /api/sdk/integrations/delete_mapping": {
+      "name": "Remove a connection link",
+      "description": "Deletes the link between an organization and an outside account."
+    },
+    "POST /api/sdk/integrations/refresh_token": {
+      "name": "Renew a connection pass",
+      "description": "Asks an outside service for a fresh sign-in pass so workflows keep working."
+    },
+    "POST /api/sdk/artifacts": {
+      "name": "Store a workflow file",
+      "description": "Saves a file a workflow produced and gives back a reference to it."
+    },
+    "GET /api/sdk/artifacts": {
+      "name": "Workflow files",
+      "description": "Lists the files saved in one workflow run's workspace."
+    },
+    "POST /api/sdk/artifacts/document": {
+      "name": "Make a document",
+      "description": "Builds a PDF or Word document from workflow content and stores it."
+    },
+    "POST /api/sdk/artifacts/spreadsheet": {
+      "name": "Make a spreadsheet",
+      "description": "Builds an Excel spreadsheet from workflow content and stores it."
+    },
+    "POST /api/sdk/artifacts/text": {
+      "name": "Make a text file",
+      "description": "Builds a plain text or comma-separated file from workflow content and stores it."
+    },
+    "POST /api/sdk/artifacts/image": {
+      "name": "Generate an image",
+      "description": "Asks the chosen image service to create a picture and stores it."
+    },
+    "POST /api/sdk/artifacts/video": {
+      "name": "Generate a video",
+      "description": "Starts making a video in the background and stores it when ready."
+    },
+    "GET /api/sdk/artifacts/{artifact_id}/content": {
+      "name": "Read a workflow file",
+      "description": "Returns a stored file after checking the caller may see it."
+    },
+    "GET /api/sdk/artifacts/{artifact_id}/download-url": {
+      "name": "Get a file download link",
+      "description": "Creates a link that works for a short time so a file can be downloaded."
+    },
+    "POST /api/sdk/ai/complete": {
+      "name": "Ask the AI",
+      "description": "Gets one complete answer from the platform's chosen AI service."
+    },
+    "POST /api/sdk/ai/stream": {
+      "name": "Ask AI with live output",
+      "description": "Gets an AI answer that arrives word by word as it is written."
+    },
+    "GET /api/sdk/ai/info": {
+      "name": "AI service details",
+      "description": "Shows which AI service and model the platform is using."
+    },
+    "POST /api/sdk/knowledge/store": {
+      "name": "Add to knowledge",
+      "description": "Saves a document in the searchable knowledge store so chat and workflows can find it."
+    },
+    "POST /api/sdk/knowledge/store-many": {
+      "name": "Add many to knowledge",
+      "description": "Saves several documents at once in the searchable knowledge store."
+    },
+    "POST /api/sdk/knowledge/search": {
+      "name": "Search knowledge",
+      "description": "Finds the most relevant stored documents for a question, using both words and meaning."
+    },
+    "POST /api/sdk/knowledge/delete": {
+      "name": "Delete from knowledge",
+      "description": "Removes one stored document from the knowledge store."
+    },
+    "DELETE /api/sdk/knowledge/namespace/{namespace}": {
+      "name": "Clear a knowledge group",
+      "description": "Deletes every document in one knowledge group."
+    },
+    "GET /api/sdk/knowledge/namespaces": {
+      "name": "Knowledge groups",
+      "description": "Lists the knowledge groups with how many documents each holds."
+    },
+    "GET /api/sdk/knowledge/get": {
+      "name": "Read a knowledge document",
+      "description": "Returns one stored document from the knowledge store."
+    },
+    "GET /api/cli/download": {
+      "name": "Download the command-line tool",
+      "description": "Serves the command-line tool that matches this platform version."
+    },
+    "GET /api/cli/download/{CLI_DOWNLOAD_ALIAS}": {
+      "name": "Download with a file extension",
+      "description": "Serves the same command-line tool at an address that packaging tools accept."
+    },
+    "GET /api/cli/artifacts/{filename}": {
+      "name": "Download a tool file",
+      "description": "Serves a piece of the command-line tool that matches this platform build."
+    },
+    "GET /api/sdk/download": {
+      "name": "Download the coding toolkit",
+      "description": "Packages the ready-made code that lets people's own programs talk to the platform."
+    },
+    "POST /api/sdk/tables/create": {
+      "name": "Create a table",
+      "description": "Sets up a new table for storing records from the command line."
+    },
+    "POST /api/sdk/tables/list": {
+      "name": "List tables",
+      "description": "Lists the tables the caller may see, within the scope they are allowed to use."
+    },
+    "GET /api/config": {
+      "name": "Settings list",
+      "description": "Lists saved settings the signed-in person is allowed to see."
+    },
+    "GET /api/config/{config_id}": {
+      "name": "Setting details",
+      "description": "Shows one saved setting by its identifier."
+    },
+    "POST /api/config": {
+      "name": "Save a setting",
+      "description": "Stores a named setting value for the platform or an organization."
+    },
+    "PUT /api/config/{config_id}": {
+      "name": "Update a setting",
+      "description": "Changes the value of an existing setting."
+    },
+    "DELETE /api/config/{config_id}": {
+      "name": "Delete a setting",
+      "description": "Removes a setting that is no longer used."
+    },
+    "GET /api/decorator-properties": {
+      "name": "Trigger settings",
+      "description": "Reads the settings written on a workflow's trigger line in its code."
+    },
+    "PUT /api/decorator-properties": {
+      "name": "Change trigger settings",
+      "description": "Saves changes to a workflow trigger's settings, such as its schedule."
+    },
+    "GET /api/dependencies/{entity_type}/{entity_id}": {
+      "name": "Dependency map",
+      "description": "Shows everything a workflow, form, app or table is linked to, in both directions."
+    },
+    "POST /api/dependencies/availability": {
+      "name": "Check for dependencies",
+      "description": "Tells you which of the chosen records have links worth showing on the map."
+    },
+    "GET /api/llms.txt": {
+      "name": "Documentation for AI",
+      "description": "Serves all platform help pages as one document that AI assistants can read."
+    }
+  }
+}

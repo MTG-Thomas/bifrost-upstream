@@ -1,0 +1,100 @@
+{
+  "files": {
+    "api/src/repositories/__init__.py": {
+      "name": "Record access",
+      "description": "Gathers the single place for each kind of record where it is read and written, so access rules are applied the same way everywhere."
+    },
+    "api/src/repositories/agents.py": {
+      "name": "Agent records",
+      "description": "Creates, finds and updates assistants, keeping each one limited to the organizations and roles allowed to use it."
+    },
+    "api/src/repositories/ai_usage.py": {
+      "name": "AI spend records",
+      "description": "Records every AI call's usage and cost, and holds the price list used to work out what each run cost."
+    },
+    "api/src/repositories/applications.py": {
+      "name": "App records",
+      "description": "Stores each app's details, versions and build state, and checks the caller may change them."
+    },
+    "api/src/repositories/audit_logs.py": {
+      "name": "Activity history",
+      "description": "Stores and searches the log of who changed what, grouped by person or record so admins can review it."
+    },
+    "api/src/repositories/base.py": {
+      "name": "Shared record steps",
+      "description": "Gives every kind of record the same basic create, read, update and delete steps."
+    },
+    "api/src/repositories/branding.py": {
+      "name": "Brand settings",
+      "description": "Holds the platform-wide name, logos and colour choices that every screen and email uses."
+    },
+    "api/src/repositories/config.py": {
+      "name": "Setting values",
+      "description": "Reads and writes settings such as connection details and service passwords, and warns when a required one is missing."
+    },
+    "api/src/repositories/data_providers.py": {
+      "name": "Lookup source list",
+      "description": "Keeps the catalogue of lookup sources that forms and workflows can offer as choices."
+    },
+    "api/src/repositories/events.py": {
+      "name": "Event records",
+      "description": "Stores where events come from, which workflows listen for them, and whether each event was delivered."
+    },
+    "api/src/repositories/execution_logs.py": {
+      "name": "Run logs",
+      "description": "Stores the log lines each run produces and pages through them in order for the run detail screen."
+    },
+    "api/src/repositories/executions.py": {
+      "name": "Run records",
+      "description": "Creates, updates and lists workflow runs, including their status, results, timing and cost."
+    },
+    "api/src/repositories/external_mcp.py": {
+      "name": "AI tool connections",
+      "description": "Stores the outside tool catalogues assistants can use, each organization's connection and each person's own sign-in."
+    },
+    "api/src/repositories/forms.py": {
+      "name": "Form records",
+      "description": "Creates, finds and updates forms with the same organization and role limits as the rest of the platform."
+    },
+    "api/src/repositories/integrations.py": {
+      "name": "Integration records",
+      "description": "Stores each outside service connection, the settings it needs, and which organization maps to which outside account."
+    },
+    "api/src/repositories/knowledge.py": {
+      "name": "Knowledge documents",
+      "description": "Stores and searches the reference documents assistants draw on, including the pieces used for search."
+    },
+    "api/src/repositories/oauth.py": {
+      "name": "Service sign-in passes",
+      "description": "Stores the outside services people connect and the access passes kept for them, refreshing passes when they expire."
+    },
+    "api/src/repositories/org_scoped.py": {
+      "name": "Organization-scoped records",
+      "description": "The one shared gate every organization-owned record passes through to apply access rules and organization limits."
+    },
+    "api/src/repositories/organizations.py": {
+      "name": "Customer organizations",
+      "description": "Stores each customer organization and its settings, and looks them up by name or identifier."
+    },
+    "api/src/repositories/policy_rule.py": {
+      "name": "Reusable access rules",
+      "description": "Keeps named, reusable access rules that record and file policies can point to instead of repeating themselves."
+    },
+    "api/src/repositories/solutions.py": {
+      "name": "Solution installs",
+      "description": "Stores each installed Solution and the details needed to update or remove it."
+    },
+    "api/src/repositories/tables.py": {
+      "name": "Custom table records",
+      "description": "Stores custom tables and their rows, and checks the caller may read or change each one."
+    },
+    "api/src/repositories/users.py": {
+      "name": "Staff accounts",
+      "description": "Stores staff accounts and looks them up for sign-in, roles and attribution."
+    },
+    "api/src/repositories/workflows.py": {
+      "name": "Workflow register",
+      "description": "Keeps the register of every runnable piece of code with its name, settings, owner and permissions."
+    }
+  }
+}

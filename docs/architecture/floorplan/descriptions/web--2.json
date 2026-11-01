@@ -1,0 +1,164 @@
+{
+  "files": {
+    "client/src/components/execution/ExecutionSidebar.tsx": {
+      "name": "Run side panel",
+      "description": "Gathers a run's facts in one panel: who started it, when, what it was given and what it cost."
+    },
+    "client/src/components/execution/index.ts": {
+      "name": "Run display parts",
+      "description": "Bundles the pieces that show a run: its status, logs, results and side panel."
+    },
+    "client/src/components/execution/InputDisplayToolbar.tsx": {
+      "name": "Data view toolbar",
+      "description": "Switches data between a readable outline and a full tree, and copies it to the clipboard."
+    },
+    "client/src/components/execution/JsonValuePreview.tsx": {
+      "name": "Data preview",
+      "description": "Shows a bounded, scrollable preview of structured data without stretching the layout."
+    },
+    "client/src/components/execution/LogEntryRow.tsx": {
+      "name": "Log line",
+      "description": "Shows one log line coloured by how serious it is so errors stand out from routine notes."
+    },
+    "client/src/components/execution/PrettyInputDisplay.tsx": {
+      "name": "Readable data view",
+      "description": "Renders a run's input or result as labelled rows and small tables instead of raw text."
+    },
+    "client/src/components/execution/prettyShape.ts": {
+      "name": "Readable data rules",
+      "description": "Decides whether a value reads best as rows, a table or plain text, collapsing values that are too big."
+    },
+    "client/src/components/execution/RunDetailHeading.tsx": {
+      "name": "Run title bar",
+      "description": "Keeps the run's title and its action buttons lined up however much detail sits beneath."
+    },
+    "client/src/components/execution/RunRemovedNotice.tsx": {
+      "name": "Removed run notice",
+      "description": "Says that a run someone linked to has since been deleted."
+    },
+    "client/src/components/execution/RunStatusBadge.tsx": {
+      "name": "Run status badge",
+      "description": "Shows whether a run succeeded, failed or is still going, with failures made the most obvious."
+    },
+    "client/src/components/execution/SafeHTMLRenderer.tsx": {
+      "name": "Report viewer",
+      "description": "Displays a formatted report safely so its own styling cannot affect the rest of the app."
+    },
+    "client/src/components/execution/ScheduleControls.tsx": {
+      "name": "Run scheduling",
+      "description": "Chooses when a workflow should run later, or repeats it on a timetable."
+    },
+    "client/src/components/execution/TextExecutionResult.tsx": {
+      "name": "Plain text result",
+      "description": "Shows a run's plain-text output in a readable block."
+    },
+    "client/src/components/files/Breadcrumbs.tsx": {
+      "name": "Folder path",
+      "description": "Shows where you are in the file explorer and lets you jump back up the folders."
+    },
+    "client/src/components/files/DeleteConfirmation.tsx": {
+      "name": "File delete prompt",
+      "description": "Confirms deleting a file or folder, naming the path and warning when a folder still holds files."
+    },
+    "client/src/components/files/EffectiveAccessPanel.tsx": {
+      "name": "File access summary",
+      "description": "Explains who can read, write, list or delete a file, and which rule decided it."
+    },
+    "client/src/components/files/file-policy-templates.ts": {
+      "name": "File policy templates",
+      "description": "Provides ready-made starting points for common file access rules."
+    },
+    "client/src/components/files/fileContextMenu.tsx": {
+      "name": "File action menu",
+      "description": "Gives files, folders and shares the same set of actions wherever they appear."
+    },
+    "client/src/components/files/FileEntryActions.tsx": {
+      "name": "File row actions",
+      "description": "Offers the available actions for a single file or folder straight from the listing."
+    },
+    "client/src/components/files/FilePolicyEditor.tsx": {
+      "name": "File policy editor",
+      "description": "Writes the rules deciding who may read, write, list or delete files in a folder."
+    },
+    "client/src/components/files/FilePolicyReferencePanel.tsx": {
+      "name": "File policy reference",
+      "description": "Explains the wording, actions and fields available when writing file access rules."
+    },
+    "client/src/components/files/FilePreview.tsx": {
+      "name": "File preview",
+      "description": "Shows a picture, document or text file inline so nobody has to download it first."
+    },
+    "client/src/components/files/FilesExplorer.tsx": {
+      "name": "File workspace",
+      "description": "Browses, uploads, previews and organises stored files and folders in one workspace."
+    },
+    "client/src/components/files/FilesInspector.tsx": {
+      "name": "File details panel",
+      "description": "Shows the details of the selected file or folder beside the listing, and closes cleanly."
+    },
+    "client/src/components/files/FolderListing.tsx": {
+      "name": "Folder contents",
+      "description": "Lists what is inside a folder with versions, sharing state and actions on each entry."
+    },
+    "client/src/components/files/InlineLoader.tsx": {
+      "name": "Loading indicator",
+      "description": "Shows a small spinner and label while part of a screen is still loading."
+    },
+    "client/src/components/files/NewShareDialog.tsx": {
+      "name": "New share dialog",
+      "description": "Creates a share so a file or folder becomes available outside its own organization."
+    },
+    "client/src/components/files/PoliciesView.tsx": {
+      "name": "All file policies",
+      "description": "Lists every file access rule in the current scope so they can be reviewed together."
+    },
+    "client/src/components/files/policyDraft.ts": {
+      "name": "Policy lookup",
+      "description": "Finds which access rule governs a given file path, and starts a blank one when none exists."
+    },
+    "client/src/components/files/PolicyEditorModal.tsx": {
+      "name": "Policy editor window",
+      "description": "Opens the file access rule editor for a path, either in a dialog or in place."
+    },
+    "client/src/components/files/SharesOverview.tsx": {
+      "name": "Shares overview",
+      "description": "Summarises the shares in scope and what each one makes available."
+    },
+    "client/src/components/files/ShareTree.tsx": {
+      "name": "Share contents",
+      "description": "Shows what a share holds, with the same browsing and actions as the folder listing."
+    },
+    "client/src/components/files/TestAccessModal.tsx": {
+      "name": "Access test",
+      "description": "Checks whether a chosen person or role would be allowed to act on a file before anyone relies on it."
+    },
+    "client/src/components/files/useFileUpload.ts": {
+      "name": "File uploading",
+      "description": "Uploads chosen files into the current folder and refreshes the listing as each one arrives."
+    },
+    "client/src/components/ImportDialog.tsx": {
+      "name": "Import from file",
+      "description": "Reads a portable bundle and previews what it will add before bringing entities into the platform."
+    },
+    "client/src/components/knowledge/KnowledgeDocumentDrawer.tsx": {
+      "name": "Knowledge document editor",
+      "description": "Writes and edits a knowledge document, including its title, content and who it is shared with."
+    },
+    "client/src/components/LogoDropZone.tsx": {
+      "name": "Logo uploader",
+      "description": "Accepts a dropped or chosen image, checks it and crops it into a square logo."
+    },
+    "client/src/components/NoAccess.tsx": {
+      "name": "Access denied screen",
+      "description": "Tells someone their account has no access here and offers a way to sign out."
+    },
+    "client/src/components/OrgScopeQueryInvalidator.tsx": {
+      "name": "Organization switch refresh",
+      "description": "Clears saved screen data when the chosen organization changes so every view shows the new scope."
+    },
+    "client/src/components/PageErrorBoundary.tsx": {
+      "name": "Page crash catcher",
+      "description": "Catches a failed page and offers a retry without taking down the rest of the app."
+    }
+  }
+}

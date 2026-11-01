@@ -1,0 +1,164 @@
+{
+  "files": {
+    "api/src/models/contracts/__init__.py": {
+      "name": "Shared message shapes",
+      "description": "Defines the fields every screen, command-line tool and outside caller sends and receives."
+    },
+    "api/src/models/contracts/access_checks.py": {
+      "name": "Access explanations",
+      "description": "Defines the answers that explain, step by step, why a person was allowed or refused."
+    },
+    "api/src/models/contracts/access_list.py": {
+      "name": "Permission records",
+      "description": "Defines the checked-in record of which requests and AI tools each permission covers."
+    },
+    "api/src/models/contracts/agent_run_flag_conversations.py": {
+      "name": "Run flag discussion messages",
+      "description": "Defines the messages exchanged when someone discusses a flagged assistant run."
+    },
+    "api/src/models/contracts/agent_runs.py": {
+      "name": "Assistant run views",
+      "description": "Defines what the screens show about an assistant run, its steps, cost and verdict."
+    },
+    "api/src/models/contracts/agent_stats.py": {
+      "name": "Assistant performance totals",
+      "description": "Defines the spend and success figures shown for one assistant or the whole fleet."
+    },
+    "api/src/models/contracts/agent_tuning.py": {
+      "name": "Instruction tuning results",
+      "description": "Defines what is sent and returned when proposing, test-running and applying changes to an assistant's instructions."
+    },
+    "api/src/models/contracts/agents.py": {
+      "name": "Assistants and chat fields",
+      "description": "Defines everything sent and received when creating assistants, conversations and messages."
+    },
+    "api/src/models/contracts/ai_behavior.py": {
+      "name": "AI behavior settings",
+      "description": "Defines the platform-wide choices about how AI features behave, whatever model is in use."
+    },
+    "api/src/models/contracts/ai_models.py": {
+      "name": "AI provider setup",
+      "description": "Defines what is sent when adding an AI provider, saving a model choice and testing the connection."
+    },
+    "api/src/models/contracts/ai_usage.py": {
+      "name": "AI spend reports",
+      "description": "Defines the AI usage and cost figures shown in reports and their breakdowns."
+    },
+    "api/src/models/contracts/applications.py": {
+      "name": "App build fields",
+      "description": "Defines what the app builder sends and receives for app details, drafts, publishing and rebuilds."
+    },
+    "api/src/models/contracts/artifact_retention.py": {
+      "name": "Generated file lifetimes",
+      "description": "Defines the setting that decides how long generated files and chat attachments are kept."
+    },
+    "api/src/models/contracts/artifacts.py": {
+      "name": "Generated file requests",
+      "description": "Defines the shapes for asking for a document, image, spreadsheet or download link."
+    },
+    "api/src/models/contracts/audit_retention.py": {
+      "name": "History lifetime settings",
+      "description": "Defines the settings, status and previews for how long activity history is kept and exported."
+    },
+    "api/src/models/contracts/audit.py": {
+      "name": "Activity history views",
+      "description": "Defines how each activity entry, the person behind it and grouped results are shown."
+    },
+    "api/src/models/contracts/auth.py": {
+      "name": "Sign-in messages",
+      "description": "Defines what is sent and returned when someone signs in, adds a second check or uses single sign-on."
+    },
+    "api/src/models/contracts/authz.py": {
+      "name": "Legacy sign-in report",
+      "description": "Defines what the screens show about runs and connections still using an older sign-in format."
+    },
+    "api/src/models/contracts/base.py": {
+      "name": "Shared field basics",
+      "description": "Defines small shared pieces used across the platform's messages, such as retry settings and integration kinds."
+    },
+    "api/src/models/contracts/claims.py": {
+      "name": "Custom user facts",
+      "description": "Defines the named facts about a signed-in person that access rules can check."
+    },
+    "api/src/models/contracts/cli.py": {
+      "name": "Command-line messages",
+      "description": "Defines what the command-line tool sends and receives for files, settings and service connections."
+    },
+    "api/src/models/contracts/common.py": {
+      "name": "Shared reply fields",
+      "description": "Defines messages used everywhere: errors, branding, uploads and installed packages."
+    },
+    "api/src/models/contracts/config.py": {
+      "name": "Setting messages",
+      "description": "Defines how settings and stored service passwords are created, updated and shown."
+    },
+    "api/src/models/contracts/dashboard.py": {
+      "name": "Dashboard figures",
+      "description": "Defines the numbers, charts and resource usage shown on the dashboard and metrics screens."
+    },
+    "api/src/models/contracts/data_providers.py": {
+      "name": "Lookup requests",
+      "description": "Defines what is sent to a lookup source and the choices it returns."
+    },
+    "api/src/models/contracts/decorators.py": {
+      "name": "Code marker settings",
+      "description": "Defines how the settings attached to marked-up code are listed and changed in the editor."
+    },
+    "api/src/models/contracts/dependencies.py": {
+      "name": "Linked record checks",
+      "description": "Defines the answer to whether selected records are linked to each other."
+    },
+    "api/src/models/contracts/editor.py": {
+      "name": "Code editor messages",
+      "description": "Defines what the code editor sends and receives for files, saves, conflicts and validation warnings."
+    },
+    "api/src/models/contracts/events.py": {
+      "name": "Event setup messages",
+      "description": "Defines how timetables, incoming messages and topic listeners are created, tested and listed."
+    },
+    "api/src/models/contracts/executions.py": {
+      "name": "Run detail views",
+      "description": "Defines what the run screens show: status, logs, inputs, results and cost."
+    },
+    "api/src/models/contracts/export_import.py": {
+      "name": "Workspace export files",
+      "description": "Defines the file format used to move knowledge, tables, settings and connections between workspaces."
+    },
+    "api/src/models/contracts/external_mcp.py": {
+      "name": "AI tool setup messages",
+      "description": "Defines what is sent when adding an outside tool catalogue, connecting it and listing its tools."
+    },
+    "api/src/models/contracts/files.py": {
+      "name": "File transfer messages",
+      "description": "Defines what the command-line tool sends to pull files and keep a folder in step."
+    },
+    "api/src/models/contracts/forms.py": {
+      "name": "Form definitions",
+      "description": "Defines how a form's fields, rules, public links and submissions are described."
+    },
+    "api/src/models/contracts/github.py": {
+      "name": "GitHub workspace sync",
+      "description": "Defines every message for connecting a GitHub repository, comparing changes and resolving clashes."
+    },
+    "api/src/models/contracts/health.py": {
+      "name": "Health check replies",
+      "description": "Defines the short answers that say whether the platform and its key services are working."
+    },
+    "api/src/models/contracts/home.py": {
+      "name": "Launcher layouts",
+      "description": "Defines the personal launcher's collections, shortcuts and saved preferences."
+    },
+    "api/src/models/contracts/identities.py": {
+      "name": "Service identities",
+      "description": "Defines the accounts that run work no person started, and the roles they hold."
+    },
+    "api/src/models/contracts/integrations.py": {
+      "name": "Integration setup",
+      "description": "Defines what is sent when connecting an outside service, mapping organizations and signing in."
+    },
+    "api/src/models/contracts/knowledge.py": {
+      "name": "Knowledge document fields",
+      "description": "Defines how knowledge documents and namespaces are created, updated and listed."
+    }
+  }
+}

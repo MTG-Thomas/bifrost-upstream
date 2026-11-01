@@ -1,0 +1,120 @@
+{
+  "files": {
+    "api/src/services/solutions/__init__.py": {
+      "name": "Solution packaging",
+      "description": "Groups the code that packs workflows, apps, forms and tables into one installable package."
+    },
+    "api/src/services/solutions/app_build.py": {
+      "name": "App builds",
+      "description": "Builds a Solution's custom app screens on the server and publishes them ready to open."
+    },
+    "api/src/services/solutions/authorization.py": {
+      "name": "Solution authority checks",
+      "description": "Confirms the person asking really is the Solution's original owner before any change is allowed."
+    },
+    "api/src/services/solutions/capture.py": {
+      "name": "Gathering a Solution",
+      "description": "Collects loose workflows, apps, forms and tables into a Solution so they can be shipped together."
+    },
+    "api/src/services/solutions/dependency_walker.py": {
+      "name": "Package contents check",
+      "description": "Works out everything a chosen set of items needs so the package is complete and nothing is left behind."
+    },
+    "api/src/services/solutions/deploy_job_storage.py": {
+      "name": "Deploy input storage",
+      "description": "Holds an uploaded package safely until the background deploy is ready to read it."
+    },
+    "api/src/services/solutions/deploy.py": {
+      "name": "Solution deploy",
+      "description": "Installs or replaces a Solution's contents in one step so the destination always matches the package."
+    },
+    "api/src/services/solutions/export_jobs.py": {
+      "name": "Backup exports",
+      "description": "Prepares downloadable backups in the background, with choices for secrets, sample data and passwords."
+    },
+    "api/src/services/solutions/export.py": {
+      "name": "Backup packages",
+      "description": "Builds the downloadable package of a Solution's code, settings and sample data."
+    },
+    "api/src/services/solutions/file_locations.py": {
+      "name": "Solution file locations",
+      "description": "Remembers where each Solution's runtime files live so links and access rules stay correct after a deploy."
+    },
+    "api/src/services/solutions/file_payloads.py": {
+      "name": "Encrypted backup contents",
+      "description": "Encrypts large file contents inside a backup so sensitive material is unreadable without the password."
+    },
+    "api/src/services/solutions/git_sync.py": {
+      "name": "Solution auto-pull",
+      "description": "Pulls a Solution's GitHub repository and installs the newest version without manual steps."
+    },
+    "api/src/services/solutions/guard.py": {
+      "name": "Solution item protection",
+      "description": "Stops anyone editing items a Solution owns so an upgrade cannot silently wipe their changes."
+    },
+    "api/src/services/solutions/integration_shells.py": {
+      "name": "Connection placeholders",
+      "description": "Creates the shared connection entries a Solution needs without overwriting connections already in use."
+    },
+    "api/src/services/solutions/integration_template.py": {
+      "name": "Connection skeleton",
+      "description": "Makes a blank, secret-free copy of a connection so a Solution can declare what it needs."
+    },
+    "api/src/services/solutions/pending.py": {
+      "name": "Setup blockers",
+      "description": "Lists items still waiting to be pulled in that would block a deploy."
+    },
+    "api/src/services/solutions/ref_rewriter.py": {
+      "name": "Renamed workflow links",
+      "description": "Updates every reference to a renamed workflow so forms and code keep working."
+    },
+    "api/src/services/solutions/ref_scanner.py": {
+      "name": "Reference finder",
+      "description": "Reads code to find which tables, settings, workflows and connections it uses."
+    },
+    "api/src/services/solutions/secrets_blob.py": {
+      "name": "Encrypted secrets pack",
+      "description": "Packs a Solution's passwords, settings and sample records into one encrypted file for backup."
+    },
+    "api/src/services/solutions/setup_status.py": {
+      "name": "Setup checklist",
+      "description": "Works out what still needs doing after an install, such as connections and settings, and shows it."
+    },
+    "api/src/services/solutions/source_artifact.py": {
+      "name": "Solution source copy",
+      "description": "Keeps a copy of a deployed Solution's source so its app screens can be rebuilt later."
+    },
+    "api/src/services/solutions/storage.py": {
+      "name": "Solution file storage",
+      "description": "Keeps each Solution's files in their own folder in cloud storage so installs never mix."
+    },
+    "api/src/services/solutions/update_check.py": {
+      "name": "Update detection",
+      "description": "Checks a git-connected Solution for a newer published version and flags it as ready to update."
+    },
+    "api/src/services/solutions/vendoring.py": {
+      "name": "Bundled dependencies",
+      "description": "Points to the shared helpers that make a Solution's outside code libraries travel with it."
+    },
+    "api/src/services/solutions/workspace_bundle_import.py": {
+      "name": "Apply reviewed package",
+      "description": "Applies a reviewed package to the workspace, settling each clash exactly the way the reviewer chose."
+    },
+    "api/src/services/solutions/workspace_bundle_plan.py": {
+      "name": "Package review plan",
+      "description": "Turns an uploaded package into a clear list of what will be added or changed before anything happens."
+    },
+    "api/src/services/solutions/workspace_bundle_storage.py": {
+      "name": "Package preview storage",
+      "description": "Holds uploaded packages while they are being reviewed and clears out previews that have expired."
+    },
+    "api/src/services/solutions/write_lock.py": {
+      "name": "One deploy at a time",
+      "description": "Stops two deploys of the same Solution running at once so its contents cannot be half-written."
+    },
+    "api/src/services/solutions/zip_install.py": {
+      "name": "Package install",
+      "description": "Installs a Solution from an uploaded file, previewing what it would do and then applying it safely."
+    }
+  }
+}

@@ -1,0 +1,164 @@
+{
+  "files": {
+    "client/src/pages/ServiceDetail.tsx": {
+      "name": "Service detail page",
+      "description": "Shows one supervised service with its health, recent restarts and the controls to start or stop it."
+    },
+    "client/src/pages/Services.tsx": {
+      "name": "Services list",
+      "description": "Lists the services the platform supervises and whether each one is healthy."
+    },
+    "client/src/pages/Settings.tsx": {
+      "name": "Settings home",
+      "description": "Gathers every settings area in one place, from branding and sign-in to AI models and retention."
+    },
+    "client/src/pages/settings/AIBehaviorSettings.tsx": {
+      "name": "AI behaviour settings",
+      "description": "Sets the standing guidance given to every AI assistant and whether it plans its own steps."
+    },
+    "client/src/pages/settings/AIEmbeddingSettings.tsx": {
+      "name": "AI search settings",
+      "description": "Chooses the service that turns text into searchable meaning so knowledge search works."
+    },
+    "client/src/pages/settings/AIModelSettings.tsx": {
+      "name": "AI model settings",
+      "description": "Chooses which AI models are offered, their access keys and prices, and which one is used by default."
+    },
+    "client/src/pages/settings/AIUsageSettings.tsx": {
+      "name": "AI spend settings",
+      "description": "Shows what AI usage has cost and sets the limits on how much is allowed."
+    },
+    "client/src/pages/settings/AppSdkUpgradeSettings.tsx": {
+      "name": "App runtime upgrades",
+      "description": "Chooses whether published apps quietly pick up improvements to the platform they run on."
+    },
+    "client/src/pages/settings/ArtifactRetentionSettings.tsx": {
+      "name": "Output retention settings",
+      "description": "Sets how long the files and reports produced by runs are kept before being removed."
+    },
+    "client/src/pages/settings/AuditRetentionSettings.tsx": {
+      "name": "Audit retention settings",
+      "description": "Sets how long the audit history is kept and what happens when it ages out."
+    },
+    "client/src/pages/settings/Branding.tsx": {
+      "name": "Branding settings",
+      "description": "Sets the product name, logo, colours and wording people see throughout the app."
+    },
+    "client/src/pages/settings/GitHub.tsx": {
+      "name": "GitHub settings",
+      "description": "Connects the workspace to GitHub so workflows and apps can be versioned and kept in step."
+    },
+    "client/src/pages/settings/GitHubConnectionSummary.tsx": {
+      "name": "GitHub connection summary",
+      "description": "Shows which GitHub account and repository the workspace is connected to."
+    },
+    "client/src/pages/settings/GitHubCreateRepositoryDialog.tsx": {
+      "name": "Create repository dialog",
+      "description": "Creates a new GitHub repository for the workspace without leaving the settings."
+    },
+    "client/src/pages/settings/GitHubDisconnectDialog.tsx": {
+      "name": "GitHub disconnect prompt",
+      "description": "Confirms breaking the link to GitHub and explains what stops being kept in step."
+    },
+    "client/src/pages/settings/GitHubResourceSelect.tsx": {
+      "name": "Repository picker",
+      "description": "Chooses which GitHub organization and repository the workspace should use."
+    },
+    "client/src/pages/settings/GitHubTokenField.tsx": {
+      "name": "GitHub access field",
+      "description": "Takes the GitHub access key used to act on the workspace's behalf."
+    },
+    "client/src/pages/settings/KubernetesSettings.tsx": {
+      "name": "Kubernetes settings",
+      "description": "Connects a Kubernetes cluster so the platform can run its work there, and shows the current state."
+    },
+    "client/src/pages/settings/Maintenance.tsx": {
+      "name": "Maintenance tools",
+      "description": "Groups the upkeep tasks an operator can run, such as rebuilding the search index or scanning app dependencies."
+    },
+    "client/src/pages/settings/maintenance/MaintenanceActionRow.tsx": {
+      "name": "Maintenance action row",
+      "description": "Shows one upkeep task with its button and the outcome of running it."
+    },
+    "client/src/pages/settings/maintenance/MaintenanceResults.tsx": {
+      "name": "Maintenance results",
+      "description": "Shows what an upkeep task found or fixed, including anything that needs follow-up."
+    },
+    "client/src/pages/settings/MCP.tsx": {
+      "name": "AI assistant settings",
+      "description": "Sets up the connections that let AI assistants look things up and act inside the platform."
+    },
+    "client/src/pages/settings/MCPConnectionDetails.tsx": {
+      "name": "AI connection details",
+      "description": "Shows the details of one AI assistant connection."
+    },
+    "client/src/pages/settings/MCPResetDialog.tsx": {
+      "name": "AI connection reset prompt",
+      "description": "Confirms resetting an AI assistant connection and warns that its current setup is lost."
+    },
+    "client/src/pages/settings/MCPToolPicker.tsx": {
+      "name": "AI tool picker",
+      "description": "Chooses which tools an AI assistant connection is allowed to use."
+    },
+    "client/src/pages/settings/MemorySettings.tsx": {
+      "name": "Memory switch",
+      "description": "Chooses whether the platform remembers useful context between conversations."
+    },
+    "client/src/pages/settings/OAuth.tsx": {
+      "name": "Company sign-in settings",
+      "description": "Connects company sign-in providers so people can use the work account they already have."
+    },
+    "client/src/pages/settings/oauth/OAuthProviderCard.tsx": {
+      "name": "Sign-in provider card",
+      "description": "Shows one company sign-in provider with its state and the fields needed to set it up."
+    },
+    "client/src/pages/settings/oauth/OAuthReadError.tsx": {
+      "name": "Sign-in settings error",
+      "description": "Says the company sign-in settings could not be loaded."
+    },
+    "client/src/pages/settings/oauth/PreferredSignIn.tsx": {
+      "name": "Preferred sign-in",
+      "description": "Chooses which sign-in method people are offered first on the login screen."
+    },
+    "client/src/pages/settings/RequiredInstructionsSettings.tsx": {
+      "name": "Required instructions",
+      "description": "Sets guidance every agent must follow, without editing each agent's own instructions."
+    },
+    "client/src/pages/settings/RunRetentionSettings.tsx": {
+      "name": "Run history retention",
+      "description": "Sets how long run history and its logs are kept before being cleared away."
+    },
+    "client/src/pages/settings/SettingsReadError.tsx": {
+      "name": "Settings load error",
+      "description": "Says a settings section could not be loaded and offers to try again."
+    },
+    "client/src/pages/settings/workflow-keys/WorkflowKeyDialogs.tsx": {
+      "name": "Workflow key dialogs",
+      "description": "Creates, reveals once and revokes the keys that let outside systems start a workflow."
+    },
+    "client/src/pages/settings/workflow-keys/WorkflowKeysList.tsx": {
+      "name": "Workflow keys list",
+      "description": "Lists the keys that can start workflows, with when each was created and last used."
+    },
+    "client/src/pages/settings/WorkflowKeys.tsx": {
+      "name": "Workflow keys page",
+      "description": "Manages the keys outside systems use to start workflows without a person signing in."
+    },
+    "client/src/pages/Setup.tsx": {
+      "name": "First-run setup",
+      "description": "Guides the very first administrator through creating their account on a brand-new install."
+    },
+    "client/src/pages/SolutionDetail.tsx": {
+      "name": "Solution detail page",
+      "description": "Shows one Solution's contents, versions and installations, with the controls to deploy or update it."
+    },
+    "client/src/pages/Solutions.tsx": {
+      "name": "Solutions list",
+      "description": "Lists the packaged sets of workflows, forms, agents and apps that install in one step."
+    },
+    "client/src/pages/solutions/SolutionCounts.tsx": {
+      "name": "Solution contents count",
+      "description": "Shows how many workflows, forms, agents and apps a Solution brings with it."
+    }
+  }
+}

@@ -1,0 +1,164 @@
+{
+  "files": {
+    "client/src/pages/Home.tsx": {
+      "name": "Home catalog",
+      "description": "The starting screen where people find the workflows, forms, agents and apps they can use, then start one."
+    },
+    "client/src/pages/Home/components/CatalogFilters.tsx": {
+      "name": "Catalog filters",
+      "description": "Narrows the home catalog by search term, resource type or collection."
+    },
+    "client/src/pages/Home/components/CollectionEditor.tsx": {
+      "name": "Collection editor",
+      "description": "Creates and edits a collection, the named group of items shown on the home catalog."
+    },
+    "client/src/pages/Home/components/CollectionIconPicker.tsx": {
+      "name": "Collection icon picker",
+      "description": "Chooses the icon that marks a collection on the home catalog."
+    },
+    "client/src/pages/Home/components/CollectionNavigation.tsx": {
+      "name": "Collection navigation",
+      "description": "Shows collections as links that filter the catalog without changing what anyone is allowed to open."
+    },
+    "client/src/pages/Home/components/HomeBrowse.tsx": {
+      "name": "Catalog browsing",
+      "description": "Shows the browsable resources on the home screen, with empty states when nothing matches."
+    },
+    "client/src/pages/Home/components/ResourceCard.tsx": {
+      "name": "Resource card",
+      "description": "Shows one workflow, form, agent or app as a card with the action that starts it."
+    },
+    "client/src/pages/Home/components/ResourceList.tsx": {
+      "name": "Resource list view",
+      "description": "Shows the same catalog resources as a compact list instead of cards."
+    },
+    "client/src/pages/Home/home-search.css": {
+      "name": "Home search styling",
+      "description": "Sets the look of the home screen's search box and the results beneath it."
+    },
+    "client/src/pages/Identities.tsx": {
+      "name": "Service identities",
+      "description": "Shows the accounts that run automated work no person started, per organization and platform-wide."
+    },
+    "client/src/pages/IntegrationDetail.tsx": {
+      "name": "Integration detail page",
+      "description": "Shows one integration's connection, settings, field mappings and who it is shared with."
+    },
+    "client/src/pages/Integrations.tsx": {
+      "name": "Integrations list",
+      "description": "Lists the outside systems the platform works with, such as Microsoft 365, GitHub or a service desk."
+    },
+    "client/src/pages/Integrations/IntegrationConnectionStatus.tsx": {
+      "name": "Connection status",
+      "description": "Says whether an integration is connected, needs reconnecting, or failed, and why."
+    },
+    "client/src/pages/Integrations/IntegrationList.tsx": {
+      "name": "Integration cards",
+      "description": "Shows the available integrations as cards with their state and a shortcut to manage each."
+    },
+    "client/src/pages/Knowledge.tsx": {
+      "name": "Knowledge page",
+      "description": "Manages the documents agents and workflows can draw on, with search, editing and sharing."
+    },
+    "client/src/pages/knowledge/KnowledgeDeleteDialog.tsx": {
+      "name": "Delete document prompt",
+      "description": "Confirms removing a knowledge document and says who will lose access to it."
+    },
+    "client/src/pages/knowledge/KnowledgeDocumentList.tsx": {
+      "name": "Knowledge document list",
+      "description": "Lists knowledge documents with their titles, who can see them and when they last changed."
+    },
+    "client/src/pages/knowledge/KnowledgeEditorPane.tsx": {
+      "name": "Knowledge editor",
+      "description": "Holds the writing area for a knowledge document while it is being edited."
+    },
+    "client/src/pages/knowledge/KnowledgeFilters.tsx": {
+      "name": "Knowledge filters",
+      "description": "Narrows the knowledge list by search and sharing, staying in reach on narrow screens."
+    },
+    "client/src/pages/knowledge/KnowledgeScopeDialog.tsx": {
+      "name": "Knowledge sharing dialog",
+      "description": "Chooses which organizations and roles can use a knowledge document."
+    },
+    "client/src/pages/Login.tsx": {
+      "name": "Sign-in page",
+      "description": "Signs people in with a password, an extra verification step, a passkey or their company account."
+    },
+    "client/src/pages/mcp/components/ConnectionToolCatalog.tsx": {
+      "name": "Connection tool catalog",
+      "description": "Lists the tools an AI connection offers and what each one lets the assistant do."
+    },
+    "client/src/pages/mcp/components/NewConnectionDialog.tsx": {
+      "name": "New AI connection dialog",
+      "description": "Starts a new connection for an AI assistant, choosing the organization and the first sign-in details."
+    },
+    "client/src/pages/mcp/components/ServerConnectionList.tsx": {
+      "name": "Server connections list",
+      "description": "Lists the connections made to one AI assistant server."
+    },
+    "client/src/pages/mcp/components/ServerSettingsSummary.tsx": {
+      "name": "Server settings summary",
+      "description": "Summarises an AI assistant server's key settings at a glance."
+    },
+    "client/src/pages/MCPCallback.tsx": {
+      "name": "AI connection return",
+      "description": "Finishes connecting an AI assistant after it sends the person back from its own sign-in."
+    },
+    "client/src/pages/MCPConnectionEdit.tsx": {
+      "name": "AI connection editor",
+      "description": "Edits an AI assistant connection: the tools it may use, the organization it works in and who can use it."
+    },
+    "client/src/pages/MCPServerDetail.tsx": {
+      "name": "AI server detail page",
+      "description": "Shows one AI assistant server with its connections, available tools and settings."
+    },
+    "client/src/pages/MCPServers.tsx": {
+      "name": "AI servers list",
+      "description": "Lists the AI assistant servers the platform offers, with their connections and actions."
+    },
+    "client/src/pages/MFASetup.tsx": {
+      "name": "Extra sign-in setup",
+      "description": "Sets up the additional verification step someone's account needs before it can be used."
+    },
+    "client/src/pages/OAuthCallback.tsx": {
+      "name": "Connection return",
+      "description": "Finishes signing in to an outside service and saves the connection to it."
+    },
+    "client/src/pages/Organizations.tsx": {
+      "name": "Organizations page",
+      "description": "Manages the organizations that separate access, along with their members, settings and branding."
+    },
+    "client/src/pages/ProductUpdates.tsx": {
+      "name": "Product updates page",
+      "description": "Shows what has changed in the platform recently, newest first."
+    },
+    "client/src/pages/Register.tsx": {
+      "name": "Invitation sign-up",
+      "description": "Accepts an invitation and creates the account for it, with a password or a passkey."
+    },
+    "client/src/pages/ROIReports.tsx": {
+      "name": "Savings report",
+      "description": "Estimates the time and money automation has saved over a chosen period, with a downloadable copy."
+    },
+    "client/src/pages/RoleDetail.tsx": {
+      "name": "Role detail page",
+      "description": "Shows one role's permissions and everywhere it applies, with ways to change both."
+    },
+    "client/src/pages/Roles.tsx": {
+      "name": "Roles list",
+      "description": "Lists the roles that decide what people and automation may do, with where each applies."
+    },
+    "client/src/pages/roles/RoleActionsMenu.tsx": {
+      "name": "Role actions menu",
+      "description": "Offers what can be done with a role, such as editing, copying or deleting it."
+    },
+    "client/src/pages/run-form-route.tsx": {
+      "name": "Form run route",
+      "description": "Opens a form for someone to fill in, loading it ahead of time so it appears quickly."
+    },
+    "client/src/pages/RunForm.tsx": {
+      "name": "Fill in a form",
+      "description": "Asks a form's questions, checks the answers and submits them to start the work."
+    }
+  }
+}

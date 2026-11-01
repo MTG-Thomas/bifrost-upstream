@@ -1,0 +1,56 @@
+{
+  "files": {
+    "client/src/lib/preload-error-handler.ts": {
+      "name": "Failed update recovery",
+      "description": "Reloads the page when a freshly deployed version fails to load, while guarding against an endless reload loop."
+    },
+    "client/src/lib/queryClient.ts": {
+      "name": "Screen data refresh",
+      "description": "Decides when screens reload their data, pausing while the tab is hidden and never retrying a change that might run twice."
+    },
+    "client/src/lib/resolve-editor-conflict.ts": {
+      "name": "Conflict save guard",
+      "description": "Saves a resolved conflict into the file that was actually reviewed, even if another tab has moved on."
+    },
+    "client/src/lib/role-boundaries.ts": {
+      "name": "Role placement wording",
+      "description": "Names where a role applies in plain words, such as All Customer Organizations or Global."
+    },
+    "client/src/lib/route-reveal-key.ts": {
+      "name": "Screen transition key",
+      "description": "Keeps the page transition still when moving between screens that belong together, like settings tabs."
+    },
+    "client/src/lib/run-usage.ts": {
+      "name": "Run usage summary",
+      "description": "Summarises what a run cost, how much context it used and how much of that came from the provider's cache."
+    },
+    "client/src/lib/solution-back-nav.ts": {
+      "name": "Solution return link",
+      "description": "Remembers that a page was opened from a Solution so the back link returns there."
+    },
+    "client/src/lib/terminology.ts": {
+      "name": "Custom wording",
+      "description": "Lets an organization rename product terms, such as calling an agent an assistant, across every screen."
+    },
+    "client/src/lib/useDocumentChrome.ts": {
+      "name": "Browser tab title",
+      "description": "Sets the browser tab's title and icon to match the item currently open."
+    },
+    "client/src/lib/utils.ts": {
+      "name": "Shared formatting",
+      "description": "Formats dates, times, file sizes, numbers, money and durations the same way across the whole app."
+    },
+    "client/src/lib/uuid.ts": {
+      "name": "Unique reference codes",
+      "description": "Creates unique reference codes for tracking actions, even on less secure private networks."
+    },
+    "client/src/lib/validation.ts": {
+      "name": "Workflow check",
+      "description": "Checks a workflow file quietly in the background and updates the run panel with any problems found."
+    },
+    "client/src/lib/version.ts": {
+      "name": "App version",
+      "description": "Records which version of the screens is currently running."
+    }
+  }
+}

@@ -1,0 +1,74 @@
+{
+  "files": {
+    "api/src/worker/__init__.py": {
+      "name": "Worker package",
+      "description": "Marks the part of the platform that runs queued work away from the main server."
+    },
+    "api/src/worker/admission.py": {
+      "name": "Memory admission",
+      "description": "Decides whether a worker has enough free memory to take on another piece of work."
+    },
+    "api/src/worker/api_agent.py": {
+      "name": "In-server summary runner",
+      "description": "Runs run summaries inside the main server process whenever there is spare memory for it."
+    },
+    "api/src/worker/health.py": {
+      "name": "Worker readiness",
+      "description": "Tells the platform when a worker has finished starting and is ready to take work."
+    },
+    "api/src/worker/main.py": {
+      "name": "Worker entry point",
+      "description": "Starts the worker that picks up queued work on a machine of its own."
+    },
+    "api/src/worker/pool_main.py": {
+      "name": "Work-claiming executor",
+      "description": "Claims waiting runs from the shared job list and runs each one in a fresh process."
+    },
+    "api/src/worker/remote/__init__.py": {
+      "name": "Remote workers package",
+      "description": "Groups the pieces that let machines outside the main server run work for the platform."
+    },
+    "api/src/worker/remote/agent_route.py": {
+      "name": "Remote agent runs",
+      "description": "Connects agent runs claimed by a remote machine back to the platform, with the right time limit applied."
+    },
+    "api/src/worker/remote/fencing.py": {
+      "name": "Single owner guard",
+      "description": "Makes sure only the current connection may act for a remote worker, so a replaced one cannot interfere."
+    },
+    "api/src/worker/remote/host.py": {
+      "name": "Remote worker control",
+      "description": "Keeps the connection to each remote worker, sends it work and takes back the results."
+    },
+    "api/src/worker/remote/identity.py": {
+      "name": "Worker identity",
+      "description": "Loads a remote worker's fixed identity once, so reconnecting cannot turn it into a different machine."
+    },
+    "api/src/worker/remote/launcher.py": {
+      "name": "Remote runner",
+      "description": "Supervises the processes on a remote machine and reconnects without killing work already running."
+    },
+    "api/src/worker/remote/ownership.py": {
+      "name": "Connection ownership",
+      "description": "Gives one live connection the right to act for a remote worker, and lets it renew or hand over cleanly."
+    },
+    "api/src/worker/remote/package_helper.py": {
+      "name": "Remote package installs",
+      "description": "Runs a single package installation command for a remote worker when the platform asks."
+    },
+    "api/src/worker/remote/protocol.py": {
+      "name": "Secure worker messages",
+      "description": "Defines the signed, size-limited messages the platform and remote workers exchange."
+    },
+    "api/src/worker/remote/remote_pool.py": {
+      "name": "Remote process pool",
+      "description": "Runs isolated work on remote machines while keeping the same bookkeeping as local workers."
+    }
+  },
+  "routes": {
+    "WEBSOCKET /api/worker-control": {
+      "name": "Remote worker connection",
+      "description": "Keeps a live link to each remote worker so the platform can send it work and hear back what happened."
+    }
+  }
+}

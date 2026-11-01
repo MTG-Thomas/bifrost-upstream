@@ -1,0 +1,164 @@
+{
+  "files": {
+    "client/src/services/artifactRetention.ts": {
+      "name": "File retention",
+      "description": "Sets how long generated files are kept and clears out the expired ones."
+    },
+    "client/src/services/auditRetention.ts": {
+      "name": "Activity record retention",
+      "description": "Sets how long the activity record is kept, previews what would be removed and archives the rest."
+    },
+    "client/src/services/auth.ts": {
+      "name": "Sign-in",
+      "description": "Handles signing in and out, two-factor checks and outside sign-in providers."
+    },
+    "client/src/services/authorization.ts": {
+      "name": "My access summary",
+      "description": "Tells the screens what the signed-in person is allowed to see and do."
+    },
+    "client/src/services/bifrostRun.ts": {
+      "name": "Desktop runner download",
+      "description": "Downloads the helper that runs jobs on someone's own machine."
+    },
+    "client/src/services/chatAttachments.ts": {
+      "name": "Chat attachments",
+      "description": "Uploads files and images into a chat after checking their size and type."
+    },
+    "client/src/services/chatModels.ts": {
+      "name": "Chat model choices",
+      "description": "Lists the AI models a person can pick for a chat."
+    },
+    "client/src/services/chatRuns.ts": {
+      "name": "Chat run control",
+      "description": "Starts, checks and stops a chat answer that is still being produced."
+    },
+    "client/src/services/claims.ts": {
+      "name": "Custom profile fields",
+      "description": "Manages the extra pieces of information carried in a person's sign-in details."
+    },
+    "client/src/services/dataProviders.ts": {
+      "name": "Dropdown choices",
+      "description": "Fills dropdowns and pickers with live choices from workflows, for forms and admin screens."
+    },
+    "client/src/services/dependencies.ts": {
+      "name": "Dependency availability",
+      "description": "Checks whether another item an app needs already exists before someone relies on it."
+    },
+    "client/src/services/events.ts": {
+      "name": "Incoming events",
+      "description": "Manages the connections and subscriptions that bring events in from outside services and pass them on."
+    },
+    "client/src/services/exportImport.ts": {
+      "name": "Bulk export and import",
+      "description": "Copies chosen records out to a file and loads them into another environment."
+    },
+    "client/src/services/filePolicies.ts": {
+      "name": "File access rules",
+      "description": "Sets who may read, change or delete workspace files, and tests a rule against a person."
+    },
+    "client/src/services/fileService.ts": {
+      "name": "Workspace files",
+      "description": "Reads, writes, moves and deletes the workspace's files and flags clashes with someone else's edits."
+    },
+    "client/src/services/fileStructure.ts": {
+      "name": "Folders and sharing",
+      "description": "Lists the folder structure and who each folder is shared with."
+    },
+    "client/src/services/home.ts": {
+      "name": "Home page shortcuts",
+      "description": "Decides which shortcut collections appear on the home page and hides the empty ones."
+    },
+    "client/src/services/identities.ts": {
+      "name": "Automation identities",
+      "description": "Manages the identities that automations run as, separate from any real person."
+    },
+    "client/src/services/integrations.ts": {
+      "name": "Connected services",
+      "description": "Connects outside services, stores their settings and links them to organizations."
+    },
+    "client/src/services/kubernetes.ts": {
+      "name": "Server capacity settings",
+      "description": "Shows how the platform's servers are running and changes their scaling and separation settings."
+    },
+    "client/src/services/memory.ts": {
+      "name": "Assistant memory",
+      "description": "Stores what the AI assistant remembers, for each person and across the platform."
+    },
+    "client/src/services/mfa.ts": {
+      "name": "Two-factor sign-in",
+      "description": "Sets up and manages the extra security check used at sign-in."
+    },
+    "client/src/services/modelNames.ts": {
+      "name": "AI model names",
+      "description": "Turns stored model identifiers into the friendly names people recognise."
+    },
+    "client/src/services/notifications.ts": {
+      "name": "Notification list",
+      "description": "Loads and dismisses notifications, and clears a stuck file upload lock."
+    },
+    "client/src/services/oauth-config.ts": {
+      "name": "Outside sign-in setup",
+      "description": "Configures signing in through Microsoft, Google and other identity providers."
+    },
+    "client/src/services/orgScopedFileOperations.ts": {
+      "name": "Organization file scoping",
+      "description": "Limits the shared file workspace to the files that belong to the chosen organization."
+    },
+    "client/src/services/passkeys.ts": {
+      "name": "Passkey sign-in",
+      "description": "Registers and uses fingerprints or face scans instead of a password."
+    },
+    "client/src/services/platformJobs.ts": {
+      "name": "Background task status",
+      "description": "Tracks long-running jobs, recovers their status when a notice is missed and lets staff cancel them."
+    },
+    "client/src/services/policyRules.ts": {
+      "name": "Reusable rules",
+      "description": "Manages named rules shared by several policies and warns when one is still in use."
+    },
+    "client/src/services/productUpdates.ts": {
+      "name": "What's new",
+      "description": "Loads the notes for new releases and remembers which ones someone has read."
+    },
+    "client/src/services/profile.ts": {
+      "name": "Personal profile",
+      "description": "Lets people change their own details, photo and password."
+    },
+    "client/src/services/reports.ts": {
+      "name": "Savings report",
+      "description": "Estimates the time and money each automation saves, by team and over time."
+    },
+    "client/src/services/required-instructions.ts": {
+      "name": "Standing instructions",
+      "description": "Sets the standing instructions every AI agent must follow."
+    },
+    "client/src/services/runRetention.ts": {
+      "name": "Run history retention",
+      "description": "Sets how long finished runs are kept, previews what would be removed and starts the cleanup."
+    },
+    "client/src/services/schedulerDiagnostics.ts": {
+      "name": "Scheduled task health",
+      "description": "Shows whether timetabled tasks are running on time and what happened at each attempt."
+    },
+    "client/src/services/sdk.ts": {
+      "name": "Developer kit download",
+      "description": "Provides the download for the ready-made code that talks to the platform."
+    },
+    "client/src/services/searchService.ts": {
+      "name": "Code search",
+      "description": "Searches inside workspace and packaged files and returns each match with its context."
+    },
+    "client/src/services/services.ts": {
+      "name": "Supervised services",
+      "description": "Starts, stops and inspects the background services the platform looks after."
+    },
+    "client/src/services/solutions.ts": {
+      "name": "Packaged solutions",
+      "description": "Installs, upgrades and removes bundled sets of apps, automations and settings."
+    },
+    "client/src/services/tables.ts": {
+      "name": "Data tables",
+      "description": "Creates and edits the platform's own data tables and the records inside them."
+    }
+  }
+}

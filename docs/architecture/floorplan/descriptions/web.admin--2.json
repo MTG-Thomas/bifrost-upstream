@@ -1,0 +1,164 @@
+{
+  "files": {
+    "client/src/components/forms/FieldConfigDialog.tsx": {
+      "name": "Field settings",
+      "description": "Sets up one form question: its label, answer type, rules, choices and where the answer is kept."
+    },
+    "client/src/components/forms/FieldsPanel.tsx": {
+      "name": "Form fields panel",
+      "description": "Lists a form's questions and lets an author add, change or remove them."
+    },
+    "client/src/components/forms/FieldsPanelDnD.tsx": {
+      "name": "Form field builder",
+      "description": "Lets an author build a form by dragging questions into place, with a live preview alongside."
+    },
+    "client/src/components/forms/FileUploadField.tsx": {
+      "name": "File upload question",
+      "description": "Adds a file question to a form, checking size and type before the file is sent."
+    },
+    "client/src/components/forms/FormCaptcha.tsx": {
+      "name": "Spam protection",
+      "description": "Adds a human check to a public form so automated submissions are turned away."
+    },
+    "client/src/components/forms/FormConfirmation.tsx": {
+      "name": "Thank-you message",
+      "description": "Shows the confirmation someone sees after submitting a form, with their answers filled in."
+    },
+    "client/src/components/forms/FormConfirmationEditor.tsx": {
+      "name": "Confirmation message editor",
+      "description": "Lets an author write the thank-you message shown after someone submits the form."
+    },
+    "client/src/components/forms/FormContextPanel.tsx": {
+      "name": "Form context viewer",
+      "description": "Shows the hidden values a form is working with, for admins checking a live submission."
+    },
+    "client/src/components/forms/FormEmbedCodePanel.tsx": {
+      "name": "Embed code",
+      "description": "Gives the snippet to paste into a website so the form appears inside the page."
+    },
+    "client/src/components/forms/FormEmbedOptions.tsx": {
+      "name": "Embed appearance options",
+      "description": "Chooses the theme and layout used when the form is embedded on a website."
+    },
+    "client/src/components/forms/FormEmbedSection.tsx": {
+      "name": "Website embedding",
+      "description": "Collects everything for putting a form on a website: the code, appearance and allowed sites."
+    },
+    "client/src/components/forms/FormInfoDialog.tsx": {
+      "name": "Form details",
+      "description": "Edits a form's name, description, logo, access and what happens after submission."
+    },
+    "client/src/components/forms/FormInfoPanel.tsx": {
+      "name": "Form summary panel",
+      "description": "Shows a form's key details and current status at a glance beside the builder."
+    },
+    "client/src/components/forms/FormListSurface.tsx": {
+      "name": "Forms list",
+      "description": "Lists every form with its status, owner and last change, and opens the one you pick."
+    },
+    "client/src/components/forms/FormLogoEditor.tsx": {
+      "name": "Form logo",
+      "description": "Uploads or replaces the logo shown at the top of a form."
+    },
+    "client/src/components/forms/FormPreview.tsx": {
+      "name": "Form preview",
+      "description": "Shows the form as a visitor will see it before it goes live."
+    },
+    "client/src/components/forms/FormPrivateLinkPanel.tsx": {
+      "name": "Private form link",
+      "description": "Shows the private link that lets invited people open a restricted form."
+    },
+    "client/src/components/forms/FormPublicationReviewDialog.tsx": {
+      "name": "Publish review",
+      "description": "Checks a public form before it goes live and lists anything that would expose it or its answers."
+    },
+    "client/src/components/forms/FormRenderer.tsx": {
+      "name": "Live form",
+      "description": "Runs a form for the person filling it in: questions, checks, branching and the final submission."
+    },
+    "client/src/components/forms/FormShareDialog.tsx": {
+      "name": "Share form",
+      "description": "Gives the link, embed code and access settings for sharing a form with the right people."
+    },
+    "client/src/components/forms/FormSharingToggle.tsx": {
+      "name": "Form sharing switch",
+      "description": "Turns public sharing of a form on or off."
+    },
+    "client/src/components/forms/FormWebsiteRestrictions.tsx": {
+      "name": "Allowed websites",
+      "description": "Limits which websites may embed the form so stray copies elsewhere stop working."
+    },
+    "client/src/components/forms/HmacSecretCreateForm.tsx": {
+      "name": "Signing secret setup",
+      "description": "Creates a shared secret that lets an outside system prove its messages really came from it."
+    },
+    "client/src/components/forms/HmacSecretDeleteDialog.tsx": {
+      "name": "Delete signing secret",
+      "description": "Confirms before removing a signing secret, after which messages signed with it are refused."
+    },
+    "client/src/components/forms/HmacSecretList.tsx": {
+      "name": "Signing secrets",
+      "description": "Lists the shared secrets used to verify incoming messages, with when each was last used."
+    },
+    "client/src/components/forms/HmacSecretReveal.tsx": {
+      "name": "Show signing secret",
+      "description": "Reveals a signing secret so it can be copied into the outside system that signs messages."
+    },
+    "client/src/components/forms/MultiCombobox.tsx": {
+      "name": "Multi-choice picker",
+      "description": "Lets someone pick several values from a searchable list."
+    },
+    "client/src/components/forms/OptionsEditor.tsx": {
+      "name": "Answer options editor",
+      "description": "Edits the list of choices a dropdown, radio group or checklist offers."
+    },
+    "client/src/components/forms/OrganizationSelect.tsx": {
+      "name": "Organization picker",
+      "description": "Lets someone choose which organization, or only themselves, a setting or record applies to."
+    },
+    "client/src/components/forms/RolesMultiSelect.tsx": {
+      "name": "Role picker",
+      "description": "Lets an admin search for and pick several roles at once."
+    },
+    "client/src/components/forms/WorkflowSelector.tsx": {
+      "name": "Workflow picker",
+      "description": "Lets someone choose the automation a form, app or agent should run, limited to what they can see."
+    },
+    "client/src/components/identities/BulkDeleteIdentitiesDialog.tsx": {
+      "name": "Delete identities in bulk",
+      "description": "Removes the chosen custom identities in one go, skipping built-in ones and saying how many were kept."
+    },
+    "client/src/components/identities/IdentityActions.tsx": {
+      "name": "Identity actions",
+      "description": "Offers rename and delete for a custom identity and hides them for the built-in ones."
+    },
+    "client/src/components/identities/IdentityGlyph.tsx": {
+      "name": "Identity mark",
+      "description": "Shows a hexagon mark for a non-human identity where a person would show initials."
+    },
+    "client/src/components/identities/IdentityKindBadge.tsx": {
+      "name": "Identity kind label",
+      "description": "Labels an identity as built-in, global or custom so its scope is obvious."
+    },
+    "client/src/components/identities/IdentityName.tsx": {
+      "name": "Identity name with owner",
+      "description": "Shows an identity's mark, name and home organization, since built-in identities all share one name."
+    },
+    "client/src/components/identities/NewIdentityDialog.tsx": {
+      "name": "New identity",
+      "description": "Creates a custom identity for automations to act as, with a name and home organization."
+    },
+    "client/src/components/identities/RenameIdentityDialog.tsx": {
+      "name": "Rename identity",
+      "description": "Renames a custom identity and explains on the spot when that name is already taken."
+    },
+    "client/src/components/integrations/AutoMatchControls.tsx": {
+      "name": "Automatic matching",
+      "description": "Suggests which organization each connected record belongs to and applies the matches in one pass."
+    },
+    "client/src/components/integrations/ConfigFieldInput.tsx": {
+      "name": "Connection field input",
+      "description": "Renders one setup question for a connection in the right control for its type."
+    }
+  }
+}

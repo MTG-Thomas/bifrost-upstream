@@ -1,0 +1,108 @@
+{
+  "files": {
+    "client/src/pages/table-detail/DocumentCollectionState.tsx": {
+      "name": "Record list state",
+      "description": "Shows the loading, empty and failed states while a table's records are being fetched."
+    },
+    "client/src/pages/table-detail/DocumentDeleteDialog.tsx": {
+      "name": "Delete record prompt",
+      "description": "Confirms deleting a record from a table, naming it and warning that it cannot be undone."
+    },
+    "client/src/pages/table-detail/DocumentPagination.tsx": {
+      "name": "Record paging",
+      "description": "Moves through a table's records one page at a time."
+    },
+    "client/src/pages/table-detail/TableDetailHeader.tsx": {
+      "name": "Table detail header",
+      "description": "Titles a table's page with its name and the actions available on it."
+    },
+    "client/src/pages/TableDetail.tsx": {
+      "name": "Table detail page",
+      "description": "Shows one table's records and rules, with search, editing and a way to take the data out."
+    },
+    "client/src/pages/Tables.tsx": {
+      "name": "Tables list",
+      "description": "Lists the data tables the platform keeps, with how much they hold and who can see them."
+    },
+    "client/src/pages/tables/ClaimDeleteDialog.tsx": {
+      "name": "Delete claim prompt",
+      "description": "Confirms removing an access claim from a table."
+    },
+    "client/src/pages/tables/TableActionsMenu.tsx": {
+      "name": "Table actions menu",
+      "description": "Offers what can be done with a table, such as editing, exporting or deleting it."
+    },
+    "client/src/pages/tables/TableDeleteDialog.tsx": {
+      "name": "Delete table prompt",
+      "description": "Confirms deleting a table and says how many records will go with it."
+    },
+    "client/src/pages/TablesClaimsTab.tsx": {
+      "name": "Table claims tab",
+      "description": "Manages the access claims that decide who may read or change which records in a table."
+    },
+    "client/src/pages/UsageReports.demo.ts": {
+      "name": "Sample usage figures",
+      "description": "Makes up placeholder usage figures so the usage report can be previewed without real activity."
+    },
+    "client/src/pages/UsageReports.tsx": {
+      "name": "Usage report",
+      "description": "Breaks down AI and workflow usage over a chosen period by agent, workflow, organization and storage."
+    },
+    "client/src/pages/user-settings/BasicInfo.tsx": {
+      "name": "Personal details",
+      "description": "Shows and edits your name, email address and other basic profile details."
+    },
+    "client/src/pages/user-settings/Developer.tsx": {
+      "name": "Developer tools",
+      "description": "Offers the ready-made tools for building on the platform, with setup steps that can be copied."
+    },
+    "client/src/pages/user-settings/Preferences.tsx": {
+      "name": "Personal memory",
+      "description": "Chooses whether the platform remembers things for you, and manages the notes it has kept."
+    },
+    "client/src/pages/user-settings/ProfilePasswordField.tsx": {
+      "name": "Password field",
+      "description": "Takes a new password, with a way to reveal it while typing."
+    },
+    "client/src/pages/user-settings/SavedMemoryRecord.tsx": {
+      "name": "Saved memory note",
+      "description": "Shows one thing the platform remembers about you, with a way to remove it."
+    },
+    "client/src/pages/user-settings/Security.tsx": {
+      "name": "Security settings",
+      "description": "Manages your sign-in security: password, extra verification, passkeys and where you are signed in."
+    },
+    "client/src/pages/user-settings/SecurityFeedback.tsx": {
+      "name": "Security feedback",
+      "description": "Confirms a security change worked or explains why it did not."
+    },
+    "client/src/pages/user-settings/SecurityMfaDialogs.tsx": {
+      "name": "Extra verification dialogs",
+      "description": "Walks through adding or removing the second step used when signing in."
+    },
+    "client/src/pages/user-settings/SecurityPasskeyDialogs.tsx": {
+      "name": "Passkey dialogs",
+      "description": "Walks through adding or removing a passkey used for signing in."
+    },
+    "client/src/pages/UserAccessPage.tsx": {
+      "name": "Person's access page",
+      "description": "Shows one person's details, how far their access reaches and what they can do in each place."
+    },
+    "client/src/pages/Users.tsx": {
+      "name": "People list",
+      "description": "Lists everyone with an account, their organizations, their roles and how they sign in."
+    },
+    "client/src/pages/UserSettings.tsx": {
+      "name": "Your settings",
+      "description": "Holds your personal settings in one place, with tabs for details, preferences and security."
+    },
+    "client/src/pages/WorkflowResourcesReport.tsx": {
+      "name": "Workflow resource report",
+      "description": "Shows which workflows used the most processing power, memory and AI cost over a period."
+    },
+    "client/src/pages/Workflows.tsx": {
+      "name": "Workflows list",
+      "description": "Lists every workflow with its schedule, last run, owner and the actions available on it."
+    }
+  }
+}

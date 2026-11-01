@@ -1,0 +1,136 @@
+{
+  "files": {
+    "api/src/services/events/__init__.py": {
+      "name": "Announcing events",
+      "description": "Provides the shared way to announce that something happened so interested automations can react."
+    },
+    "api/src/services/events/builtins.py": {
+      "name": "Built-in announcements",
+      "description": "Announces the standard platform happenings, such as a workflow finishing, failing, or a new version appearing."
+    },
+    "api/src/services/events/processor.py": {
+      "name": "Incoming events",
+      "description": "Takes messages arriving from outside systems, checks them and starts the automations waiting for them."
+    },
+    "api/src/services/events/registry.py": {
+      "name": "Event topics",
+      "description": "Lists the approved event topics with an example of each message so builders know what they can react to."
+    },
+    "api/src/services/events/validation.py": {
+      "name": "Event topic check",
+      "description": "Rejects event topics that are not on the approved list."
+    },
+    "api/src/services/git_repo_manager.py": {
+      "name": "Workspace working copy",
+      "description": "Keeps a working copy of the workspace in step with cloud file storage so version history has a home."
+    },
+    "api/src/services/github_api.py": {
+      "name": "GitHub file operations",
+      "description": "Reads and writes files, branches and saves to GitHub on the workspace's behalf."
+    },
+    "api/src/services/github_config.py": {
+      "name": "GitHub settings",
+      "description": "Stores the GitHub connection details and sign-in pass, encrypted, for the workspace repository."
+    },
+    "api/src/services/github_sync_entity_metadata.py": {
+      "name": "Sync item labels",
+      "description": "Reads a file being synced to work out what kind of thing it is so the review screen can label it."
+    },
+    "api/src/services/github_sync.py": {
+      "name": "Workspace sync",
+      "description": "Copies workflows, apps, forms and settings between the workspace and GitHub, flagging clashes for review."
+    },
+    "api/src/services/manifest_generator.py": {
+      "name": "Workspace description files",
+      "description": "Turns the live workspace into portable description files that can be stored in version history or shared."
+    },
+    "api/src/services/manifest_import.py": {
+      "name": "Import workspace contents",
+      "description": "Recreates workflows, forms, apps, tables and roles from description files, leaving anything unlisted untouched."
+    },
+    "api/src/services/oauth_config_service.py": {
+      "name": "Sign-in providers",
+      "description": "Stores the outside sign-in providers staff can use and which one is preferred."
+    },
+    "api/src/services/oauth_entity_id.py": {
+      "name": "Provider account identity",
+      "description": "Reads the account identifier a sign-in provider returns so each connection is tied to the right company."
+    },
+    "api/src/services/oauth_provider.py": {
+      "name": "Access pass handling",
+      "description": "Gets and renews the access passes that let the platform call outside services on a customer's behalf."
+    },
+    "api/src/services/oauth_sso.py": {
+      "name": "Staff single sign-in",
+      "description": "Signs staff in through their company identity provider and reads their name, email and groups."
+    },
+    "api/src/services/oauth_state_core.py": {
+      "name": "Sign-in safety check",
+      "description": "Protects the sign-in round trip with a one-time code so a faked reply cannot take over an account."
+    },
+    "api/src/services/oauth_state.py": {
+      "name": "Connection safety check",
+      "description": "Protects each connection round trip with a one-time code so an old reply cannot be replayed."
+    },
+    "api/src/services/oauth_storage.py": {
+      "name": "Connection storage",
+      "description": "Saves each connected account's access passes encrypted and keeps them up to date."
+    },
+    "api/src/services/service_lifecycle.py": {
+      "name": "Always-on services",
+      "description": "Keeps services that run on a timetable in step with their workflow, hands out the work and stops them safely."
+    },
+    "api/src/services/sync_lock.py": {
+      "name": "One sync at a time",
+      "description": "Stops two syncs running at once so the workspace and GitHub never overwrite each other."
+    },
+    "api/src/services/sync_ops.py": {
+      "name": "Sync changes",
+      "description": "Describes each change a sync makes, such as add, update, replace roles or retire, so it can be reviewed."
+    },
+    "api/src/services/webhooks/__init__.py": {
+      "name": "Incoming messages",
+      "description": "Groups the code that receives messages from outside services and turns them into events."
+    },
+    "api/src/services/webhooks/adapters/__init__.py": {
+      "name": "Message translators",
+      "description": "Groups the translators that understand each outside service's own message format."
+    },
+    "api/src/services/webhooks/adapters/generic.py": {
+      "name": "Simple web messages",
+      "description": "Receives messages from any service that can send to a web address you paste in."
+    },
+    "api/src/services/webhooks/adapters/local_fixture.py": {
+      "name": "Test message source",
+      "description": "Pretends to be an outside service during development so subscription renewal can be tried safely."
+    },
+    "api/src/services/webhooks/adapters/microsoft_bot_framework.py": {
+      "name": "Teams messages",
+      "description": "Checks and tidies messages from Microsoft Teams so chats and mentions can start automations."
+    },
+    "api/src/services/webhooks/adapters/microsoft_graph.py": {
+      "name": "Microsoft 365 messages",
+      "description": "Receives Microsoft 365 change notices for mail, calendar and files, and keeps those subscriptions alive."
+    },
+    "api/src/services/webhooks/auth.py": {
+      "name": "Message credentials",
+      "description": "Finds the right connection and access pass for a message arriving from a specific customer."
+    },
+    "api/src/services/webhooks/lifecycle.py": {
+      "name": "Subscription upkeep",
+      "description": "Sets up, refreshes and removes the subscriptions outside services need to keep sending messages."
+    },
+    "api/src/services/webhooks/protocol.py": {
+      "name": "Message handling rules",
+      "description": "Sets the shared rules every message translator follows: check it, deliver it or reject it."
+    },
+    "api/src/services/webhooks/registry.py": {
+      "name": "Message translator list",
+      "description": "Keeps the list of available translators so the right one is picked for each incoming source."
+    },
+    "api/src/services/webhooks/signing_secret.py": {
+      "name": "Message signing secret",
+      "description": "Stores the secret that proves a message really came from the expected service, and keeps it hidden."
+    }
+  }
+}

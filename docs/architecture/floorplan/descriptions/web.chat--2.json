@@ -1,0 +1,164 @@
+{
+  "files": {
+    "client/src/components/ai/ModelPricingList.tsx": {
+      "name": "Model prices",
+      "description": "Lists what each model costs per unit so spending can be estimated."
+    },
+    "client/src/components/ai/ModelProfileCard.tsx": {
+      "name": "Model setup card",
+      "description": "Shows one saved model setup with its provider, model and key limits."
+    },
+    "client/src/components/ai/ModelProfileDeleteDialog.tsx": {
+      "name": "Delete model setup",
+      "description": "Confirms before removing a saved model setup."
+    },
+    "client/src/components/ai/ModelProfileEditDialog.tsx": {
+      "name": "Edit model setup",
+      "description": "Changes a saved model setup's provider, model and limits."
+    },
+    "client/src/components/ai/ModelProfileMergeDialog.tsx": {
+      "name": "Merge model setups",
+      "description": "Combines two saved model setups into one, choosing what to keep."
+    },
+    "client/src/components/ai/ModelProfileSelector.tsx": {
+      "name": "Model setup picker",
+      "description": "Lets someone choose which saved model setup an agent or feature should use."
+    },
+    "client/src/components/ai/ModelSettingsReadError.tsx": {
+      "name": "Model settings error",
+      "description": "Says that model settings could not be loaded."
+    },
+    "client/src/components/ai/PricingDeleteDialog.tsx": {
+      "name": "Delete price",
+      "description": "Confirms before removing a model's price entry."
+    },
+    "client/src/components/ai/PricingEditDialog.tsx": {
+      "name": "Edit model price",
+      "description": "Sets what a model costs for input and output."
+    },
+    "client/src/components/ai/ProfileCreateDialog.tsx": {
+      "name": "New model setup",
+      "description": "Creates a saved model setup from a provider, model and limits."
+    },
+    "client/src/components/ai/ProviderCatalogField.tsx": {
+      "name": "Provider picker",
+      "description": "Chooses an AI provider from the known list, or adds one that is not listed."
+    },
+    "client/src/components/ai/ProviderConnectionCard.tsx": {
+      "name": "Provider connection card",
+      "description": "Shows one AI provider connection with whether it works and what it is used for."
+    },
+    "client/src/components/ai/ProviderConnectionFields.tsx": {
+      "name": "Provider connection fields",
+      "description": "Collects the address and sign-in details for an AI provider connection."
+    },
+    "client/src/components/ai/ProviderCreateDialog.tsx": {
+      "name": "Add an AI provider",
+      "description": "Connects a new AI provider so its models can be used."
+    },
+    "client/src/components/ai/ProviderDeleteDialog.tsx": {
+      "name": "Remove an AI provider",
+      "description": "Confirms before removing an AI provider connection."
+    },
+    "client/src/components/ai/ProviderEditDialog.tsx": {
+      "name": "Edit an AI provider",
+      "description": "Changes an AI provider connection's address or sign-in details."
+    },
+    "client/src/components/ai/ProviderModelField.tsx": {
+      "name": "Model picker",
+      "description": "Lists the models a chosen provider offers and lets one be selected."
+    },
+    "client/src/components/ai/providerOptions.ts": {
+      "name": "Provider formats",
+      "description": "Lists the ways the platform can talk to an AI service, with readable names."
+    },
+    "client/src/components/ai/ReasoningEffortField.tsx": {
+      "name": "Reasoning effort",
+      "description": "Sets how much thinking a model may do before answering, where that model supports it."
+    },
+    "client/src/components/ai/warnIfProfileFails.ts": {
+      "name": "Test after saving",
+      "description": "Sends one real request after a model setup is saved and warns if it fails."
+    },
+    "client/src/components/chat/ArtifactDialogs.tsx": {
+      "name": "Rename or delete artifact",
+      "description": "Renames or removes a file the assistant produced in a conversation."
+    },
+    "client/src/components/chat/ArtifactRecord.tsx": {
+      "name": "Artifact row",
+      "description": "Shows one produced file with its name, kind and a way to open it."
+    },
+    "client/src/components/chat/ArtifactsLibrary.tsx": {
+      "name": "Produced files library",
+      "description": "Collects the documents, images and files the assistant has produced, ready to reopen."
+    },
+    "client/src/components/chat/ChatAttachmentList.tsx": {
+      "name": "Attached files",
+      "description": "Shows the files attached to a message, with a way to preview or remove them."
+    },
+    "client/src/components/chat/ChatInput.tsx": {
+      "name": "Message box",
+      "description": "Takes the message, attachments and agent mentions someone types and sends them."
+    },
+    "client/src/components/chat/ChatLayout.tsx": {
+      "name": "Chat screen frame",
+      "description": "Frames the chat screen with its sidebar, conversation area and message box."
+    },
+    "client/src/components/chat/ChatMessage.tsx": {
+      "name": "Chat message",
+      "description": "Shows one message from the user or the assistant, with formatting and any attachments."
+    },
+    "client/src/components/chat/ChatRunActivity.tsx": {
+      "name": "Live run indicator",
+      "description": "Shows what the assistant is doing right now and how long it has been running."
+    },
+    "client/src/components/chat/ChatSidebar.tsx": {
+      "name": "Conversation sidebar",
+      "description": "Lists agents and recent conversations, and starts a new one."
+    },
+    "client/src/components/chat/ChatSystemEvent.tsx": {
+      "name": "Chat notices",
+      "description": "Shows small inline notices such as an agent switch or an error."
+    },
+    "client/src/components/chat/ChatWindow.tsx": {
+      "name": "Conversation window",
+      "description": "Displays the conversation and keeps it scrolled to the newest message."
+    },
+    "client/src/components/chat/ConversationRecord.tsx": {
+      "name": "Conversation row",
+      "description": "Shows one past conversation with its agent, title and when it happened."
+    },
+    "client/src/components/chat/DraftAttachment.tsx": {
+      "name": "Pending attachment",
+      "description": "Shows a file waiting to be sent with the next message."
+    },
+    "client/src/components/chat/FilePreviewSheet.tsx": {
+      "name": "File preview",
+      "description": "Opens a document or image in a side sheet without leaving the conversation."
+    },
+    "client/src/components/chat/index.ts": {
+      "name": "Chat screens",
+      "description": "Gathers the chat screens so the rest of the app can reach them from one place."
+    },
+    "client/src/components/chat/MentionPicker.tsx": {
+      "name": "Mention an agent",
+      "description": "Suggests agents as someone types an @mention in a conversation."
+    },
+    "client/src/components/chat/MessageHistoryError.tsx": {
+      "name": "History error",
+      "description": "Says that earlier messages could not be loaded."
+    },
+    "client/src/components/chat/NeedsReauthCard.tsx": {
+      "name": "Reconnect prompt",
+      "description": "Asks someone to reconnect an account that has stopped working, right where it failed."
+    },
+    "client/src/components/chat/TodoList.tsx": {
+      "name": "Assistant checklist",
+      "description": "Shows the running checklist an assistant keeps while working through a task."
+    },
+    "client/src/components/chat/ToolExecutionBadge.tsx": {
+      "name": "Tool step badge",
+      "description": "Shows one tool the assistant used as a compact row that expands for detail."
+    }
+  }
+}

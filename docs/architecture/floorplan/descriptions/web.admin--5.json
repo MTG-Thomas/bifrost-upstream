@@ -1,0 +1,100 @@
+{
+  "files": {
+    "client/src/components/tables/TableRecordList.tsx": {
+      "name": "Table records",
+      "description": "Lists a table's records with the columns chosen and a way into each one."
+    },
+    "client/src/components/users/BulkActionBar.tsx": {
+      "name": "Selection actions bar",
+      "description": "Appears when rows are selected, showing how many and what can be done to them at once."
+    },
+    "client/src/components/users/BulkUserDialogs.tsx": {
+      "name": "Bulk people changes",
+      "description": "Moves, deactivates or re-roles many people and identities at once, then reports what worked."
+    },
+    "client/src/components/users/CreateUserDialog.tsx": {
+      "name": "Add a person",
+      "description": "Adds someone to the platform with their organization, role and sign-in setup."
+    },
+    "client/src/components/users/EditUserDialog.tsx": {
+      "name": "Edit a person",
+      "description": "Changes a person's basic details and organization."
+    },
+    "client/src/components/users/ImpersonateUserButton.tsx": {
+      "name": "Support sign-in",
+      "description": "Starts a support session as another person when policy allows, so an admin can see what they see."
+    },
+    "client/src/components/users/RegistrationLinkDialog.tsx": {
+      "name": "Invite link",
+      "description": "Creates a one-time link someone can use to set up their account."
+    },
+    "client/src/components/users/SelectableTable.tsx": {
+      "name": "Multi-select table",
+      "description": "Adds row checkboxes and a select-all control to lists, including on phones."
+    },
+    "client/src/components/users/UserAccountActionDialog.tsx": {
+      "name": "Confirm account action",
+      "description": "Asks for confirmation before a sensitive account action and explains what it does."
+    },
+    "client/src/components/users/UserActionsMenu.tsx": {
+      "name": "Person actions",
+      "description": "Gathers the actions available on a person, such as editing, resetting access and deactivating."
+    },
+    "client/src/components/users/UserEmailCell.tsx": {
+      "name": "Email cell",
+      "description": "Shows an email address neatly shortened to fit, with one-click copying."
+    },
+    "client/src/components/users/UserLookupNotice.tsx": {
+      "name": "Lookup notice",
+      "description": "Explains why a person's details could not be found and what to do next."
+    },
+    "client/src/components/users/UserProfileForm.tsx": {
+      "name": "Person profile",
+      "description": "Edits a person's display name, status, organization and external flag where the caller is allowed."
+    },
+    "client/src/components/users/UserRoleAssignmentsPanel.tsx": {
+      "name": "Person roles",
+      "description": "Sets a person's main role and any extra roles, with where each extra role applies."
+    },
+    "client/src/components/users/UserStatusBadge.tsx": {
+      "name": "Person status badge",
+      "description": "Shows whether a person is active, invited or deactivated."
+    },
+    "client/src/components/users/UsersViewTabs.tsx": {
+      "name": "People and identities tabs",
+      "description": "Switches between the list of people and the list of non-human identities."
+    },
+    "client/src/components/users/useUserAccountActions.tsx": {
+      "name": "Account action rules",
+      "description": "Holds the invite, reset, sign-out, disable and delete actions for a person, with their permissions and confirmations."
+    },
+    "client/src/components/workflows/OrphanedWorkflowDialog.tsx": {
+      "name": "Orphaned automations",
+      "description": "Finds automations whose records have gone missing and helps an admin repair or remove them."
+    },
+    "client/src/components/workflows/WorkflowAccessPanel.tsx": {
+      "name": "Automation access",
+      "description": "Shows who an automation runs as on its own, what access it still needs, and where each run reaches."
+    },
+    "client/src/components/workflows/WorkflowEditDialog.tsx": {
+      "name": "Automation settings",
+      "description": "Edits an automation's details, limits, running costs, tools, access and public link in one place."
+    },
+    "client/src/components/workflows/WorkflowListSurface.tsx": {
+      "name": "Automations list",
+      "description": "Lists automations with their state, owner and last run, and opens the one you pick."
+    },
+    "client/src/components/workflows/WorkflowParametersForm.tsx": {
+      "name": "Automation inputs",
+      "description": "Collects the values an automation needs before it runs."
+    },
+    "client/src/components/workflows/WorkflowSelectorDialog.tsx": {
+      "name": "Choose an automation",
+      "description": "Lets an admin pick an automation for a record and warns when its access does not match."
+    },
+    "client/src/components/workflows/WorkflowSidebar.tsx": {
+      "name": "Automation filters",
+      "description": "Filters automations by category and by which forms, apps or agents use them."
+    }
+  }
+}

@@ -1,0 +1,442 @@
+{
+  "files": {
+    "api/src/routers/maintenance.py": {
+      "name": "Workspace upkeep",
+      "description": "Holds the settings and clean-up runs that decide how long the platform keeps old records, files and activity history."
+    },
+    "api/src/routers/mcp_connections.py": {
+      "name": "AI service links",
+      "description": "Lets each client connect Claude and other AI assistants to outside services, and choose which tools each one may use."
+    },
+    "api/src/routers/mcp_oauth_callback.py": {
+      "name": "Service sign-in return",
+      "description": "Welcomes people back from an outside service after they approve access, then stores the connection."
+    },
+    "api/src/routers/mcp_servers.py": {
+      "name": "AI service catalog",
+      "description": "Keeps the list of outside services AI assistants can be connected to, with how each one signs people in."
+    },
+    "api/src/routers/mcp.py": {
+      "name": "AI assistant gateway",
+      "description": "Serves and controls the connection that lets AI assistants look things up and run approved tools in the platform."
+    },
+    "api/src/routers/memory.py": {
+      "name": "Assistant memory",
+      "description": "Stores and searches the notes AI assistants keep between conversations, with settings for each person and the whole platform."
+    },
+    "api/src/routers/metrics.py": {
+      "name": "Dashboard figures",
+      "description": "Works out the activity, cost and resource numbers shown on the dashboard and its charts."
+    },
+    "api/src/routers/mfa.py": {
+      "name": "Two-step sign-in",
+      "description": "Sets up and manages the extra security code asked for at sign-in, including recovery codes and remembered devices."
+    },
+    "api/src/routers/model_catalog.py": {
+      "name": "Model names",
+      "description": "Turns raw model codes into readable names wherever run history, usage and settings show them."
+    },
+    "api/src/routers/notifications.py": {
+      "name": "In-app notices",
+      "description": "Lists and clears the messages shown to a person in the app, and lets an administrator release a stuck upload."
+    },
+    "api/src/routers/oauth_config.py": {
+      "name": "Company sign-in settings",
+      "description": "Sets up Microsoft, Google or another company sign-in for the platform and tests that each one answers correctly."
+    },
+    "api/src/routers/oauth_connections.py": {
+      "name": "Workflow sign-ins",
+      "description": "Keeps the sign-ins workflows use to reach outside services, renewing them before they expire."
+    }
+  },
+  "routes": {
+    "GET /api/maintenance/app-sdk-upgrades/settings": {
+      "name": "App update settings",
+      "description": "Shows whether published apps may be refreshed automatically onto newer building blocks."
+    },
+    "PUT /api/maintenance/app-sdk-upgrades/settings": {
+      "name": "Change app update settings",
+      "description": "Sets whether published apps are refreshed automatically and how quickly a rollout moves."
+    },
+    "GET /api/maintenance/artifact-retention/settings": {
+      "name": "File retention settings",
+      "description": "Shows how long generated files and run attachments are kept before clean-up deletes them."
+    },
+    "PUT /api/maintenance/artifact-retention/settings": {
+      "name": "Change file retention",
+      "description": "Sets how long generated files and run attachments are kept before clean-up deletes them."
+    },
+    "POST /api/maintenance/artifact-retention/cleanup": {
+      "name": "Clean up old files",
+      "description": "Deletes stored files past their retention window, freeing space."
+    },
+    "GET /api/maintenance/audit-retention/settings": {
+      "name": "Activity retention settings",
+      "description": "Shows how long the record of who changed what is kept before being archived."
+    },
+    "PUT /api/maintenance/audit-retention/settings": {
+      "name": "Change activity retention",
+      "description": "Sets how long the record of who changed what is kept before being archived or deleted."
+    },
+    "POST /api/maintenance/audit-retention/run": {
+      "name": "Archive old activity",
+      "description": "Starts a background run that archives activity records past their retention window."
+    },
+    "GET /api/maintenance/audit-retention/preview": {
+      "name": "Preview activity archiving",
+      "description": "Estimates how many activity records the current retention setting would archive."
+    },
+    "GET /api/maintenance/authz/legacy-status": {
+      "name": "Old access leftovers",
+      "description": "Reports whether anything from the older permission system still needs attention."
+    },
+    "GET /api/maintenance/run-retention/settings": {
+      "name": "Run retention settings",
+      "description": "Shows how long finished run histories are kept before being removed."
+    },
+    "PUT /api/maintenance/run-retention/settings": {
+      "name": "Change run retention",
+      "description": "Sets how long finished run histories are kept before being removed."
+    },
+    "POST /api/maintenance/run-retention/run": {
+      "name": "Remove old runs",
+      "description": "Starts a background clean-up that removes run histories older than the retention window."
+    },
+    "GET /api/maintenance/run-retention/preview": {
+      "name": "Preview run removal",
+      "description": "Estimates how many run histories the current retention window would remove."
+    },
+    "GET /api/maintenance/status": {
+      "name": "Workspace health",
+      "description": "Reports how the workspace is doing: what is set up, what is behind and what needs attention."
+    },
+    "POST /api/maintenance/index-docs": {
+      "name": "Index the help pages",
+      "description": "Rebuilds the searchable copy of platform help so AI assistants can answer questions about Bifrost."
+    },
+    "POST /api/maintenance/reimport": {
+      "name": "Reload from source files",
+      "description": "Rebuilds all saved automations, forms and apps from the stored source files."
+    },
+    "POST /api/maintenance/cleanup-orphaned": {
+      "name": "Retire missing automations",
+      "description": "Switches off automations whose source file no longer exists so they stop being offered."
+    },
+    "POST /api/maintenance/scan-app-dependencies": {
+      "name": "Scan app dependencies",
+      "description": "Reads published app code to record which shared building blocks each app relies on."
+    },
+    "POST /api/maintenance/preflight": {
+      "name": "Check before publishing",
+      "description": "Runs the pre-publish checks on the current workspace and reports anything that would break."
+    },
+    "GET /api/mcp-connections": {
+      "name": "Connected AI services",
+      "description": "Lists each client's links to outside services that AI assistants can use."
+    },
+    "POST /api/mcp-connections": {
+      "name": "Connect an AI service",
+      "description": "Links an outside service for a client so assistants can use its tools."
+    },
+    "GET /api/mcp-connections/{connection_id}": {
+      "name": "Connection details",
+      "description": "Shows one AI service connection's settings and the tools it offers."
+    },
+    "PATCH /api/mcp-connections/{connection_id}": {
+      "name": "Update a connection",
+      "description": "Changes an AI service connection's settings, replacing its password when a new one is given."
+    },
+    "DELETE /api/mcp-connections/{connection_id}": {
+      "name": "Remove a connection",
+      "description": "Deletes an AI service connection along with everything stored for it."
+    },
+    "PATCH /api/mcp-connections/{connection_id}/tools/{tool_id}": {
+      "name": "Allow or block a tool",
+      "description": "Turns one tool on or off for a connection without removing the whole service."
+    },
+    "POST /api/mcp-connections/{connection_id}/refresh-tools": {
+      "name": "Refresh available tools",
+      "description": "Re-reads the service's tool list so newly added tools can be switched on."
+    },
+    "POST /api/mcp-connections/{connection_id}/connect": {
+      "name": "Sign in to a service",
+      "description": "Starts the sign-in trip to an outside service, or connects directly when the service allows it."
+    },
+    "GET /api/me/mcp-connections/{connection_id}/connect": {
+      "name": "Finish service sign-in",
+      "description": "Completes the sign-in trip and saves the personal connection for the signed-in person."
+    },
+    "GET /api/me/mcp-connections": {
+      "name": "My connected services",
+      "description": "Lists the outside services the signed-in person has connected for their own use."
+    },
+    "DELETE /api/me/mcp-connections/{connection_id}": {
+      "name": "Disconnect my service",
+      "description": "Removes the signed-in person's own link to an outside service."
+    },
+    "GET /api/mcp/oauth/callback": {
+      "name": "Service sign-in return",
+      "description": "Receives people back from an outside service after they approve or refuse access, then saves the result."
+    },
+    "GET /api/mcp-servers": {
+      "name": "AI services available",
+      "description": "Lists the outside services that AI assistants can be connected to."
+    },
+    "GET /api/mcp-servers/{server_id}": {
+      "name": "Service template details",
+      "description": "Shows one service template, its connections and the tools it offers."
+    },
+    "POST /api/mcp-servers": {
+      "name": "Add a service template",
+      "description": "Adds a new outside service that clients can connect assistants to."
+    },
+    "PATCH /api/mcp-servers/{server_id}": {
+      "name": "Update a service template",
+      "description": "Changes a service template's name, address or sign-in details."
+    },
+    "DELETE /api/mcp-servers/{server_id}": {
+      "name": "Remove a service template",
+      "description": "Hides a service template from the catalog, or deletes it outright when forced."
+    },
+    "POST /api/mcp-servers/discover": {
+      "name": "Look up a service's sign-in",
+      "description": "Checks a service address and reports how it expects people to sign in."
+    },
+    "POST /api/mcp/gateway/capabilities/search": {
+      "name": "Find an assistant tool",
+      "description": "Searches the assistants and tools an AI client may use, or opens one exact entry."
+    },
+    "GET /api/mcp/gateway/executions/{execution_id}": {
+      "name": "Assistant task status",
+      "description": "Shows how a task an AI assistant started is going, with the start of its results."
+    },
+    "POST /api/mcp/gateway/agents/{agent_id}/tools/{tool_ref}/execute": {
+      "name": "Run a tool for an assistant",
+      "description": "Checks the request and then runs one approved tool on the AI assistant's behalf."
+    },
+    "GET /api/mcp/run": {
+      "name": "Assistant install guide",
+      "description": "Explains how to add this platform to an AI assistant, with the settings to copy."
+    },
+    "GET /api/mcp/run/plugin": {
+      "name": "Download assistant add-on",
+      "description": "Downloads the matching add-on package so an AI assistant can talk to this platform."
+    },
+    "GET /api/mcp/status": {
+      "name": "Assistant connection status",
+      "description": "Reports whether the assistant connection is on and which tools the signed-in person can use."
+    },
+    "GET /api/mcp/config": {
+      "name": "Assistant access settings",
+      "description": "Shows whether outside AI assistants are allowed in, and within what limits."
+    },
+    "PUT /api/mcp/config": {
+      "name": "Change assistant access",
+      "description": "Turns outside AI assistant access on or off and sets its limits."
+    },
+    "DELETE /api/mcp/config": {
+      "name": "Reset assistant access",
+      "description": "Removes custom assistant access settings and returns to the defaults."
+    },
+    "GET /api/mcp/tools": {
+      "name": "Tools for assistants",
+      "description": "Lists the tools the signed-in person may use through an AI assistant."
+    },
+    "GET /api/admin/memory/settings": {
+      "name": "Platform memory settings",
+      "description": "Shows whether saved AI memory is available across the whole platform."
+    },
+    "PUT /api/admin/memory/settings": {
+      "name": "Change platform memory",
+      "description": "Turns platform-wide AI memory on or off for everyone."
+    },
+    "GET /api/memory/settings": {
+      "name": "My memory settings",
+      "description": "Shows whether the signed-in person's AI memory is switched on."
+    },
+    "PUT /api/memory/settings": {
+      "name": "Change my memory settings",
+      "description": "Lets a person turn their own AI memory on or off."
+    },
+    "GET /api/memory": {
+      "name": "My saved notes",
+      "description": "Lists the notes an AI assistant has saved for the signed-in person."
+    },
+    "POST /api/memory": {
+      "name": "Save a memory",
+      "description": "Stores a note the assistant can recall in later conversations."
+    },
+    "POST /api/memory/search": {
+      "name": "Search my memories",
+      "description": "Finds saved notes matching a phrase so an assistant can bring back earlier context."
+    },
+    "DELETE /api/memory/{memory_id}": {
+      "name": "Forget a memory",
+      "description": "Deletes one saved note for good."
+    },
+    "GET /api/metrics": {
+      "name": "Dashboard totals",
+      "description": "Returns the headline counts and costs shown on the dashboard."
+    },
+    "GET /api/metrics/snapshot": {
+      "name": "Full metrics snapshot",
+      "description": "Gathers every dashboard figure at once for a complete picture of activity."
+    },
+    "GET /api/metrics/executions/timeseries": {
+      "name": "Activity chart",
+      "description": "Returns run counts over time for the dashboard chart, limited to what the viewer may see."
+    },
+    "GET /api/metrics/executions/daily": {
+      "name": "Daily activity",
+      "description": "Returns day-by-day run counts and outcomes for trend charts."
+    },
+    "GET /api/metrics/organizations": {
+      "name": "Activity by client",
+      "description": "Breaks run activity down by client organization."
+    },
+    "GET /api/metrics/resources": {
+      "name": "Memory and processor use",
+      "description": "Shows how much memory and processing power the platform has used over time."
+    },
+    "GET /api/metrics/workflows": {
+      "name": "Activity by automation",
+      "description": "Breaks run activity down by automation so the busiest ones stand out."
+    },
+    "GET /auth/mfa/status": {
+      "name": "Two-step sign-in status",
+      "description": "Shows whether the extra sign-in step is on for this person and how many recovery codes remain."
+    },
+    "POST /auth/mfa/totp/setup": {
+      "name": "Start setting up codes",
+      "description": "Creates a new authenticator code for the person to add to their phone app."
+    },
+    "POST /auth/mfa/totp/verify": {
+      "name": "Confirm the authenticator",
+      "description": "Checks the first code from the phone app and finishes turning on the extra step."
+    },
+    "DELETE /auth/mfa": {
+      "name": "Turn off the extra step",
+      "description": "Removes the extra sign-in step after confirming the person's password."
+    },
+    "POST /auth/mfa/recovery-codes/regenerate": {
+      "name": "Replace recovery codes",
+      "description": "Issues a fresh set of one-time recovery codes and cancels the old ones."
+    },
+    "GET /auth/mfa/recovery-codes/count": {
+      "name": "Recovery codes left",
+      "description": "Shows how many unused one-time recovery codes the person has left."
+    },
+    "GET /auth/mfa/trusted-devices": {
+      "name": "Remembered devices",
+      "description": "Lists the devices that can skip the extra sign-in step."
+    },
+    "DELETE /auth/mfa/trusted-devices/{device_id}": {
+      "name": "Forget one device",
+      "description": "Removes one device's ability to skip the extra sign-in step."
+    },
+    "DELETE /auth/mfa/trusted-devices": {
+      "name": "Forget all devices",
+      "description": "Makes every device ask for the extra sign-in step again."
+    },
+    "GET /api/model-catalog/names": {
+      "name": "Friendly model names",
+      "description": "Turns raw model codes into readable names for run history, usage and settings."
+    },
+    "GET /api/notifications": {
+      "name": "My notifications",
+      "description": "Lists the notices waiting for the signed-in person."
+    },
+    "GET /api/notifications/{notification_id}": {
+      "name": "Read one notification",
+      "description": "Shows a single notice in full."
+    },
+    "DELETE /api/notifications/{notification_id}": {
+      "name": "Dismiss a notification",
+      "description": "Clears one notice from the person's list."
+    },
+    "GET /api/notifications/locks/upload": {
+      "name": "Upload lock status",
+      "description": "Tells an administrator whether an upload is currently blocked and why."
+    },
+    "DELETE /api/notifications/locks/upload": {
+      "name": "Clear a stuck upload",
+      "description": "Releases a stuck upload so people can try again."
+    },
+    "GET /api/settings/oauth": {
+      "name": "Company sign-in options",
+      "description": "Lists the outside sign-in providers with whether each one is set up."
+    },
+    "PUT /api/settings/oauth/login-preference": {
+      "name": "Choose sign-in behaviour",
+      "description": "Decides whether people must use company sign-in or may still use a password."
+    },
+    "GET /api/settings/oauth/{provider}": {
+      "name": "One sign-in provider",
+      "description": "Shows the saved settings for one company sign-in provider."
+    },
+    "PUT /api/settings/oauth/microsoft": {
+      "name": "Set up Microsoft sign-in",
+      "description": "Saves Microsoft work-account sign-in details so staff can use their work account."
+    },
+    "PUT /api/settings/oauth/google": {
+      "name": "Set up Google sign-in",
+      "description": "Saves Google sign-in details so people can use their Google account."
+    },
+    "PUT /api/settings/oauth/oidc": {
+      "name": "Set up another provider",
+      "description": "Saves sign-in details for any other standards-based identity provider."
+    },
+    "DELETE /api/settings/oauth/{provider}": {
+      "name": "Remove a sign-in provider",
+      "description": "Deletes a provider's sign-in settings so it can no longer be used."
+    },
+    "POST /api/settings/oauth/{provider}/test": {
+      "name": "Test a sign-in provider",
+      "description": "Checks that a sign-in provider answers correctly before people rely on it."
+    },
+    "GET /api/oauth/connections/{connection_name}": {
+      "name": "Workflow sign-in details",
+      "description": "Shows one saved service sign-in used by workflows, without revealing the password."
+    },
+    "POST /api/oauth/connections": {
+      "name": "Add a workflow sign-in",
+      "description": "Saves the details a workflow needs to reach an outside service."
+    },
+    "PUT /api/oauth/connections/{connection_name}": {
+      "name": "Update a workflow sign-in",
+      "description": "Changes the saved details for a service a workflow uses."
+    },
+    "DELETE /api/oauth/connections/{connection_name}": {
+      "name": "Remove a workflow sign-in",
+      "description": "Deletes a saved service sign-in that workflows no longer use."
+    },
+    "POST /api/oauth/connections/{connection_name}/authorize": {
+      "name": "Start service sign-in",
+      "description": "Sends someone to the outside service to approve access for a workflow."
+    },
+    "POST /api/oauth/connections/{connection_name}/cancel": {
+      "name": "Cancel service sign-in",
+      "description": "Stops an approval that is in progress and puts the connection back to unused."
+    },
+    "POST /api/oauth/connections/{connection_name}/refresh": {
+      "name": "Renew a sign-in",
+      "description": "Gets a fresh access pass before the current one runs out."
+    },
+    "POST /api/oauth/callback/{connection_name}": {
+      "name": "Service approval return",
+      "description": "Receives the approval from the outside service and stores the resulting access pass."
+    },
+    "GET /api/oauth/credentials/{connection_name}": {
+      "name": "Sign-in summary",
+      "description": "Shows what kind of sign-in is stored and when it expires, with passwords hidden."
+    },
+    "GET /api/oauth/refresh_job_status": {
+      "name": "Renewal run progress",
+      "description": "Shows how the latest round of sign-in renewals is going."
+    },
+    "POST /api/oauth/refresh_all": {
+      "name": "Renew every sign-in",
+      "description": "Queues a background round that renews all service sign-ins at once."
+    }
+  }
+}

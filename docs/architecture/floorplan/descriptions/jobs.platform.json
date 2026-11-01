@@ -1,0 +1,104 @@
+{
+  "files": {
+    "api/src/jobs/platform/__init__.py": {
+      "name": "Platform jobs package",
+      "description": "Groups the long-running platform operations that survive restarts and report their progress."
+    },
+    "api/src/jobs/platform/application_deploy.py": {
+      "name": "App build and release",
+      "description": "Builds a standalone app and switches it live in one step, or leaves the previous version running."
+    },
+    "api/src/jobs/platform/application_publish.py": {
+      "name": "App publishing",
+      "description": "Publishes a finished app so it becomes available to the people it is shared with."
+    },
+    "api/src/jobs/platform/application_sdk_update.py": {
+      "name": "App toolkit rebuild",
+      "description": "Rebuilds one app on the current app toolkit and makes the result live without touching anything else."
+    },
+    "api/src/jobs/platform/audit_archive.py": {
+      "name": "Audit log archiving",
+      "description": "Moves older audit history into verified long-term storage, either on request or on a timetable."
+    },
+    "api/src/jobs/platform/audit_query.py": {
+      "name": "Audit history export",
+      "description": "Exports archived and current audit history into one file for an administrator."
+    },
+    "api/src/jobs/platform/base.py": {
+      "name": "Platform job contracts",
+      "description": "Defines how a long-running platform task reports failure, waits for a person, or hands off to outside work."
+    },
+    "api/src/jobs/platform/catalog.py": {
+      "name": "Platform job catalog",
+      "description": "Lists every long-running platform task, what it needs and how it should be run."
+    },
+    "api/src/jobs/platform/embedding_reindex.py": {
+      "name": "Search index rebuild",
+      "description": "Rebuilds the search index for knowledge documents so search results become accurate again."
+    },
+    "api/src/jobs/platform/file_move.py": {
+      "name": "Moving files in the background",
+      "description": "Moves or copies files between folders reliably, including many at once and name clashes."
+    },
+    "api/src/jobs/platform/git_operation.py": {
+      "name": "Workspace Git actions",
+      "description": "Runs a requested Git action on the workspace, such as pulling or pushing changes."
+    },
+    "api/src/jobs/platform/kubernetes_client.py": {
+      "name": "Hosted job client",
+      "description": "Talks to the hosting platform to start, watch and stop build jobs, and to report when memory ran out."
+    },
+    "api/src/jobs/platform/kubernetes_runner.py": {
+      "name": "Hosted job entry",
+      "description": "Runs one long platform task inside its own dedicated hosted machine."
+    },
+    "api/src/jobs/platform/policy.py": {
+      "name": "Platform job policies",
+      "description": "Holds the simple rules that say how a long-running task may be run and retried."
+    },
+    "api/src/jobs/platform/registry.py": {
+      "name": "Job handler list",
+      "description": "Finds the handler for a requested long-running task only at the moment it is needed."
+    },
+    "api/src/jobs/platform/reimport.py": {
+      "name": "Workspace reimport",
+      "description": "Reloads the workspace's saved files after an outside change so the platform sees the current version."
+    },
+    "api/src/jobs/platform/run_retention.py": {
+      "name": "Old run cleanup",
+      "description": "Deletes finished runs and their events once they pass the retention window, on request or on a timetable."
+    },
+    "api/src/jobs/platform/runner.py": {
+      "name": "Platform job runner",
+      "description": "Runs one claimed long platform task in a separate process so a failure cannot harm the server."
+    },
+    "api/src/jobs/platform/solution_deploy.py": {
+      "name": "Solution install",
+      "description": "Installs or updates a packaged Solution, whether starting fresh or upgrading an existing install."
+    },
+    "api/src/jobs/platform/solution_export.py": {
+      "name": "Solution backup",
+      "description": "Produces a backup copy of a Solution that can be stored or shared."
+    },
+    "api/src/jobs/platform/solution_git_sync.py": {
+      "name": "Solution Git update",
+      "description": "Pulls the latest changes for a Solution that is connected to a Git repository."
+    },
+    "api/src/jobs/platform/summary_backfill.py": {
+      "name": "Summary backfill",
+      "description": "Re-summarises a chosen set of past agent runs and tracks the whole batch to completion."
+    },
+    "api/src/jobs/platform/system_maintenance.py": {
+      "name": "Nightly upkeep",
+      "description": "Runs the recurring housekeeping: refreshing sign-ins, renewing message subscriptions, checking updates and clearing old files."
+    },
+    "api/src/jobs/platform/video_generation.py": {
+      "name": "Video generation",
+      "description": "Creates a video from a prompt in the background and stores it for the person who asked."
+    },
+    "api/src/jobs/platform/workspace_bundle_import.py": {
+      "name": "Solution archive import",
+      "description": "Imports a reviewed Solution archive into the shared workspace."
+    }
+  }
+}

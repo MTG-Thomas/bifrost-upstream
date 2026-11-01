@@ -1,0 +1,100 @@
+{
+  "files": {
+    "client/src/lib/app-sdk/bifrost-header.tsx": {
+      "name": "App header bar",
+      "description": "Draws the Bifrost bar across the top of an app, with section links and the signed-in person's menu."
+    },
+    "client/src/lib/app-sdk/brand-palette.ts": {
+      "name": "Brand colours",
+      "description": "Builds a matching set of colours from one brand colour and checks that text stays readable on them."
+    },
+    "client/src/lib/app-sdk/branding-theme.ts": {
+      "name": "Brand styling",
+      "description": "Applies the organization's colours and logo settings across an app's screens."
+    },
+    "client/src/lib/app-sdk/errors.ts": {
+      "name": "Access error types",
+      "description": "Provides the standard errors an app shows when a table or file is missing or off limits."
+    },
+    "client/src/lib/app-sdk/execution-stream.ts": {
+      "name": "Live run updates",
+      "description": "Lets an app watch a workflow run and update as new log lines and status changes arrive."
+    },
+    "client/src/lib/app-sdk/files.ts": {
+      "name": "File access for apps",
+      "description": "Lets an app list, read, write, move and share files, and hand out temporary download links."
+    },
+    "client/src/lib/app-sdk/hosted-binding.tsx": {
+      "name": "App toolkit entry",
+      "description": "Provides the ready-made pieces an app imports: sign-in details, tables, files, workflows and access checks."
+    },
+    "client/src/lib/app-sdk/hosted-contract.ts": {
+      "name": "Toolkit version contract",
+      "description": "Records which version of the app toolkit an app was built against, so it can be loaded safely."
+    },
+    "client/src/lib/app-sdk/hosted-loader.ts": {
+      "name": "Toolkit loader",
+      "description": "Loads the matching app toolkit once per page and reuses it, so every app on the page shares one copy."
+    },
+    "client/src/lib/app-sdk/index.v2.ts": {
+      "name": "App toolkit exports",
+      "description": "Lists everything an app can import from the Bifrost toolkit in one place."
+    },
+    "client/src/lib/app-sdk/provider.tsx": {
+      "name": "App setup wrapper",
+      "description": "Wraps an app in the shared settings it needs, such as which organization and person it is acting for."
+    },
+    "client/src/lib/app-sdk/tables.ts": {
+      "name": "Table access for apps",
+      "description": "Lets an app read, add, change and watch records in a data table."
+    },
+    "client/src/lib/app-sdk/transport.ts": {
+      "name": "Connection handling",
+      "description": "Holds the app's connection details and quietly renews a stale sign-in before retrying."
+    },
+    "client/src/lib/app-sdk/use-api-query.ts": {
+      "name": "Data loading helper",
+      "description": "Gives a screen a simple way to load data once and refresh it on demand."
+    },
+    "client/src/lib/app-sdk/use-branding.ts": {
+      "name": "Brand settings hook",
+      "description": "Loads the organization's logo and colours for an app to use."
+    },
+    "client/src/lib/app-sdk/use-files.ts": {
+      "name": "File list hook",
+      "description": "Gives a screen a live list of files in a folder, with upload and delete helpers."
+    },
+    "client/src/lib/app-sdk/use-infinite-table.ts": {
+      "name": "Endless table hook",
+      "description": "Loads table records a page at a time as someone scrolls, and keeps them updating live."
+    },
+    "client/src/lib/app-sdk/use-organizations.ts": {
+      "name": "Organization list hook",
+      "description": "Lists the organizations the signed-in person is allowed to see."
+    },
+    "client/src/lib/app-sdk/use-table.ts": {
+      "name": "Live table hook",
+      "description": "Shows table records with paging and filters, and keeps the list current as records change."
+    },
+    "client/src/lib/app-sdk/use-user.tsx": {
+      "name": "Signed-in person hook",
+      "description": "Tells a screen who is signed in and hides parts of it from people without the right role."
+    },
+    "client/src/lib/app-sdk/use-workflow-hooks.ts": {
+      "name": "Workflow data and action hooks",
+      "description": "Gives screens a familiar way to load a workflow's result and to trigger a workflow as an action."
+    },
+    "client/src/lib/app-sdk/use-workflow.ts": {
+      "name": "Workflow run hook",
+      "description": "Starts a workflow from an app and reports its status, result and log lines."
+    },
+    "client/src/lib/app-sdk/wire-surface.ts": {
+      "name": "Connection surface record",
+      "description": "Lists every server call the app toolkit makes, so changes to that surface are caught before release."
+    },
+    "client/src/lib/app-sdk/ws-client.ts": {
+      "name": "Live update connection",
+      "description": "Keeps a live connection open so table and file changes reach the app without a refresh."
+    }
+  }
+}

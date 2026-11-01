@@ -1,0 +1,40 @@
+{
+  "files": {
+    "api/src/services/worker_pool/__init__.py": {
+      "name": "Worker pool package",
+      "description": "Brings together the parts that decide how many workers run and how much each can hold."
+    },
+    "api/src/services/worker_pool/claims.py": {
+      "name": "Claiming work",
+      "description": "Lets each worker join the pool, take the oldest work it can handle, and step out gracefully."
+    },
+    "api/src/services/worker_pool/controller.py": {
+      "name": "Capacity controller",
+      "description": "Starts and stops workers as the queue and free memory change, keeping a small warm minimum."
+    },
+    "api/src/services/worker_pool/liveness.py": {
+      "name": "Spotting lost workers",
+      "description": "Finds workers that have stopped reporting and marks the work they held as over."
+    },
+    "api/src/services/worker_pool/maintenance.py": {
+      "name": "Registry cleanup",
+      "description": "Removes long-finished workers from the records so the list stays accurate."
+    },
+    "api/src/services/worker_pool/manifest.py": {
+      "name": "Worker launch settings",
+      "description": "Describes how to start one more worker with the same identity and memory settings as the controller."
+    },
+    "api/src/services/worker_pool/recovery.py": {
+      "name": "Ending lost work",
+      "description": "Closes out runs a lost worker had started and tells anyone waiting, rather than replaying them."
+    },
+    "api/src/services/worker_pool/sizing.py": {
+      "name": "Memory sizing rule",
+      "description": "Works out how much memory each kind of job needs, so machines are neither too small nor wasteful."
+    },
+    "api/src/services/worker_pool/unfit.py": {
+      "name": "Work that cannot fit",
+      "description": "Fails or blocks work larger than any worker can hold, with a clear message, instead of leaving it waiting forever."
+    }
+  }
+}

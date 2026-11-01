@@ -1,0 +1,104 @@
+{
+  "files": {
+    "api/shared/access_checks.py": {
+      "name": "Access check recorder",
+      "description": "Records each permission decision as a request runs, so administrators can see exactly why someone was allowed or refused."
+    },
+    "api/shared/access_trace_storage.py": {
+      "name": "Access trace storage",
+      "description": "Stores recorded permission checks in a compact form and reads them back for the access log view."
+    },
+    "api/shared/account_guards.py": {
+      "name": "Account safety rules",
+      "description": "Blocks changes that would leave the workspace without an administrator or give outside users privileged access."
+    },
+    "api/shared/auth_cookies.py": {
+      "name": "Browser sign-in cookies",
+      "description": "Keeps a signed-in person's browser pass intact even for large accounts, and clears it properly on sign-out."
+    },
+    "api/shared/browser_impersonation.py": {
+      "name": "Support view as user",
+      "description": "Lets an administrator see the platform as a specific person for a short time, with the session recorded and revocable."
+    },
+    "api/shared/claims/__init__.py": {
+      "name": "Rule facts package",
+      "description": "Groups the pieces that work out the facts a permission rule may depend on."
+    },
+    "api/shared/claims/preresolve.py": {
+      "name": "Gathering rule facts",
+      "description": "Looks up every fact a set of permission rules depends on before checking them, so a decision never stalls halfway."
+    },
+    "api/shared/claims/registry.py": {
+      "name": "Shared fact list",
+      "description": "Keeps the workspace's named facts that permission rules may use, and spots definitions that depend on each other in a circle."
+    },
+    "api/shared/external_access.py": {
+      "name": "Provider workspace marker",
+      "description": "Notes at sign-in whether a person belongs to the provider's own workspace, so provider-only rules can apply."
+    },
+    "api/shared/file_access.py": {
+      "name": "File permission checks",
+      "description": "Decides whether someone may read, list or change a stored file, applying workspace, Solution and folder rules in order."
+    },
+    "api/shared/file_paths.py": {
+      "name": "File location naming",
+      "description": "Works out where a file actually lives from its named location, workspace and path."
+    },
+    "api/shared/file_policies_seed.py": {
+      "name": "New folder defaults",
+      "description": "Gives each new shared folder a starting rule that lets administrators through while other rules are added."
+    },
+    "api/shared/file_policies.py": {
+      "name": "Folder permission rules",
+      "description": "Chooses the most specific rule for a folder and path, then checks one action against it."
+    },
+    "api/shared/human_sessions.py": {
+      "name": "Staying signed in",
+      "description": "Issues and refreshes the passes that keep a person signed in, and can end every session for an account at once."
+    },
+    "api/shared/policies/__init__.py": {
+      "name": "Permission rules package",
+      "description": "Groups the pieces that store, check and apply the platform's permission rules."
+    },
+    "api/shared/policies/compile.py": {
+      "name": "Rules as database filters",
+      "description": "Turns permission rules into a database filter, so lists only return the records a person may see."
+    },
+    "api/shared/policies/evaluate.py": {
+      "name": "Rule checker",
+      "description": "Judges one record against one permission rule for one person, without touching stored data."
+    },
+    "api/shared/policies/functions.py": {
+      "name": "Rule helper list",
+      "description": "Keeps the set of built-in helpers that permission rules are allowed to use."
+    },
+    "api/shared/policies/probe.py": {
+      "name": "Permission probes",
+      "description": "Answers common permission questions, such as whether any record is readable or one action is allowed."
+    },
+    "api/shared/policies/subscription.py": {
+      "name": "Live table visibility",
+      "description": "Decides which table changes each viewer receives live, including when an edit makes a record appear or vanish for them."
+    },
+    "api/shared/resource_access.py": {
+      "name": "App, form and agent access",
+      "description": "Decides who may open, change or inspect an app, form or agent the workspace owns."
+    },
+    "api/shared/role_cache.py": {
+      "name": "Role lookup cache",
+      "description": "Remembers each person's roles so checks stay fast, and refreshes them the moment a role changes."
+    },
+    "api/shared/scope_resolver.py": {
+      "name": "Workspace reach",
+      "description": "Works out which workspaces a request may touch, refusing anything outside the signed-in person's reach."
+    },
+    "api/shared/system_account_guard.py": {
+      "name": "System account guard",
+      "description": "Stops the platform's own automation account from being given a human role."
+    },
+    "api/shared/workflow_access.py": {
+      "name": "Workflow tool access",
+      "description": "Answers the single question of whether a person may use a workflow as a tool inside an agent."
+    }
+  }
+}

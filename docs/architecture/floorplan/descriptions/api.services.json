@@ -1,0 +1,44 @@
+{
+  "files": {
+    "api/src/services/__init__.py": {
+      "name": "Business logic package",
+      "description": "Groups the business rules that do the platform's real work behind the screens."
+    },
+    "api/src/services/deployment_environment.py": {
+      "name": "Startup settings check",
+      "description": "Warns at startup about old or renamed settings still present, so nothing quietly stops taking effect."
+    },
+    "api/src/services/durable_impersonation.py": {
+      "name": "Who started background work",
+      "description": "Keeps a note of the staff member who started work that runs in the background, so the activity record names the right person."
+    },
+    "api/src/services/embed_auth.py": {
+      "name": "Embedded app sign-in check",
+      "description": "Confirms a request from an embedded app is genuine before trusting the customer details it carries."
+    },
+    "api/src/services/node_subprocess.py": {
+      "name": "Website build helpers",
+      "description": "Runs the small helper programs that bundle and style an app's code when that app is built."
+    },
+    "api/src/services/openapi_endpoints.py": {
+      "name": "Workflow web addresses",
+      "description": "Turns workflows marked as callable into public web addresses, and keeps that list current as workflows change."
+    },
+    "api/src/services/solution_deploy_preflight.py": {
+      "name": "Solution deploy check",
+      "description": "Checks a solution's workflows before deployment, so a bundle that could never run is rejected up front."
+    },
+    "api/src/services/solution_files.py": {
+      "name": "Solution files",
+      "description": "Stores and serves the files that belong to an installed solution, kept apart from other customers' files."
+    },
+    "api/src/services/solution_scope.py": {
+      "name": "Solution access rules",
+      "description": "Decides which installed solution may reach which stored files and records, including requests between solutions."
+    },
+    "api/src/services/table_policy_loader.py": {
+      "name": "Table rule loading",
+      "description": "Loads the access rules attached to a table in one place, so every check sees the same rules."
+    }
+  }
+}

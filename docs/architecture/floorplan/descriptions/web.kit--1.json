@@ -1,0 +1,164 @@
+{
+  "files": {
+    "client/src/components/branding/Logo.tsx": {
+      "name": "Company logo",
+      "description": "Shows the organization's own logo, falling back to the platform mark when none is set."
+    },
+    "client/src/components/common/HoverCopyText.tsx": {
+      "name": "Copy on hover",
+      "description": "Lets someone copy a value by hovering over it and clicking a copy button."
+    },
+    "client/src/components/common/MarkdownContent.tsx": {
+      "name": "Formatted text",
+      "description": "Renders simple formatting in descriptions and notes, safely and compactly."
+    },
+    "client/src/components/common/RecordActionsMenu.tsx": {
+      "name": "Row actions menu",
+      "description": "Puts a compact menu of actions on a list row or card."
+    },
+    "client/src/components/icons/DiscordIcon.tsx": {
+      "name": "Discord icon",
+      "description": "Shows the Discord logo for community links."
+    },
+    "client/src/components/icons/GithubIcon.tsx": {
+      "name": "GitHub icon",
+      "description": "Shows the GitHub logo wherever repository links appear."
+    },
+    "client/src/components/icons/KubernetesIcon.tsx": {
+      "name": "Kubernetes icon",
+      "description": "Shows the Kubernetes logo on screens about server capacity."
+    },
+    "client/src/components/icons/YouTubeIcon.tsx": {
+      "name": "YouTube icon",
+      "description": "Shows the YouTube logo for tutorial and video links."
+    },
+    "client/src/components/layout/AccountMenuContent.tsx": {
+      "name": "Account menu",
+      "description": "Lists the signed-in person's account options, such as profile, settings and signing out."
+    },
+    "client/src/components/layout/AppHeader.tsx": {
+      "name": "Embedded app header",
+      "description": "Gives a shared or previewed app its own compact header with branding and account access."
+    },
+    "client/src/components/layout/AppLayout.tsx": {
+      "name": "App frame",
+      "description": "Frames a published or previewed app edge to edge on the screen."
+    },
+    "client/src/components/layout/BifrostRunMenu.tsx": {
+      "name": "Desktop runner menu",
+      "description": "Offers the download and setup for the helper that runs jobs on someone's own machine."
+    },
+    "client/src/components/layout/ContentLayout.tsx": {
+      "name": "Full-width content area",
+      "description": "Gives wide surfaces such as editors the full width of the window."
+    },
+    "client/src/components/layout/FileActivityIndicator.tsx": {
+      "name": "Who is editing",
+      "description": "Shows small photos of the colleagues currently working in shared files."
+    },
+    "client/src/components/layout/Header.tsx": {
+      "name": "Main header",
+      "description": "Holds the top bar of the staff app: menu, search, help, notifications and account."
+    },
+    "client/src/components/layout/HeaderStatusIndicators.tsx": {
+      "name": "Header status badges",
+      "description": "Shows small status badges in the top bar, such as connection health."
+    },
+    "client/src/components/layout/HelpMenu.tsx": {
+      "name": "Help menu",
+      "description": "Gathers links to documentation, support and release notes for platform admins."
+    },
+    "client/src/components/layout/ImpersonationBanner.tsx": {
+      "name": "Support session warning",
+      "description": "Warns that the current session is a support login acting as someone else."
+    },
+    "client/src/components/layout/Layout.tsx": {
+      "name": "Main layout",
+      "description": "Wraps every staff screen in the shared frame and side menu."
+    },
+    "client/src/components/layout/ListLoadError.tsx": {
+      "name": "Couldn't load notice",
+      "description": "Says a list failed to load without hiding records already on screen."
+    },
+    "client/src/components/layout/ListPageHeader.tsx": {
+      "name": "List page header",
+      "description": "Gives list screens a consistent title row with actions and tabs."
+    },
+    "client/src/components/layout/ListToolbar.tsx": {
+      "name": "List toolbar",
+      "description": "Arranges filters, search and buttons above a list."
+    },
+    "client/src/components/layout/navigationStyles.ts": {
+      "name": "Menu highlight styles",
+      "description": "Keeps the highlighted look of the selected menu item the same everywhere."
+    },
+    "client/src/components/layout/NotificationCenter.tsx": {
+      "name": "Notification centre",
+      "description": "Shows the bell menu with notifications, their progress and any action to take."
+    },
+    "client/src/components/layout/PageShell.tsx": {
+      "name": "Page frame",
+      "description": "Gives each page its standard title, spacing and scrolling behaviour."
+    },
+    "client/src/components/layout/PageWorkspace.tsx": {
+      "name": "Workspace page area",
+      "description": "Keeps a page's controls visible while the content below scrolls on its own."
+    },
+    "client/src/components/layout/ProductUpdateContent.tsx": {
+      "name": "Release notes content",
+      "description": "Renders a release's new features, fixes and credits in a readable layout."
+    },
+    "client/src/components/layout/ProductUpdatesDialog.tsx": {
+      "name": "What's new dialog",
+      "description": "Presents new release notes to admins once, when they sign in."
+    },
+    "client/src/components/layout/RouteLoadError.tsx": {
+      "name": "Screen load failure",
+      "description": "Explains that a screen could not load and offers a way to try again."
+    },
+    "client/src/components/layout/RouteOpeningState.tsx": {
+      "name": "Screen opening state",
+      "description": "Shows a tidy placeholder while a screen is still opening."
+    },
+    "client/src/components/layout/RouteReadyReveal.tsx": {
+      "name": "Screen reveal",
+      "description": "Fades a screen in once it has finished loading."
+    },
+    "client/src/components/layout/RouteTransitionProgress.tsx": {
+      "name": "Navigation progress bar",
+      "description": "Shows a thin progress bar while a new screen is loading."
+    },
+    "client/src/components/layout/RouteUnavailableState.tsx": {
+      "name": "Screen unavailable",
+      "description": "Explains that a screen is not available, such as when access is missing."
+    },
+    "client/src/components/layout/Sidebar.tsx": {
+      "name": "Main side menu",
+      "description": "Lets people move between the platform's main areas from a side menu they can collapse."
+    },
+    "client/src/components/layout/sidebarLinks.tsx": {
+      "name": "Side menu links",
+      "description": "Draws one side menu entry with its icon, label and selected state."
+    },
+    "client/src/components/layout/UnifiedDock.tsx": {
+      "name": "Minimised windows dock",
+      "description": "Collects minimised editor and panel windows into one strip along the bottom."
+    },
+    "client/src/components/layout/VersionMenuItem.tsx": {
+      "name": "Version entry",
+      "description": "Shows which version of the platform is running in the account menu."
+    },
+    "client/src/components/layout/VersionUpdateBanner.tsx": {
+      "name": "New version banner",
+      "description": "Nudges people to reload when a newer version has been released."
+    },
+    "client/src/components/layout/WorkspaceHeader.tsx": {
+      "name": "Workspace header",
+      "description": "Gives a workspace area a steady title band across its views."
+    },
+    "client/src/components/layout/WorkspacePrimaryAction.tsx": {
+      "name": "Main action button",
+      "description": "Places the workspace's main action at the right end of its toolbar."
+    }
+  }
+}

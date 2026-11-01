@@ -1,0 +1,112 @@
+{
+  "files": {
+    "api/src/services/artifact_retention.py": {
+      "name": "Attachment clean-up",
+      "description": "Sets how long chat attachments are kept and deletes the ones past their time."
+    },
+    "api/src/services/artifacts.py": {
+      "name": "Chat attachments",
+      "description": "Stores files made or attached during chats and shows each one only to people allowed to see it."
+    },
+    "api/src/services/file_backend.py": {
+      "name": "File storage switch",
+      "description": "Chooses whether files are kept on this machine or in cloud storage so the same commands work in both setups."
+    },
+    "api/src/services/file_index_reconciler.py": {
+      "name": "Search index repair",
+      "description": "Compares the file search index with the files actually stored and fixes anything that has drifted apart."
+    },
+    "api/src/services/file_index_service.py": {
+      "name": "File search index",
+      "description": "Keeps the searchable list of workspace files up to date as files are added, changed or removed."
+    },
+    "api/src/services/file_policy_service.py": {
+      "name": "File access rules",
+      "description": "Decides who may read, change or move each file and folder, and checks those rules everywhere."
+    },
+    "api/src/services/file_storage/__init__.py": {
+      "name": "Workspace files",
+      "description": "Gathers the pieces that read, write, move and tidy the files people keep in their workspace."
+    },
+    "api/src/services/file_storage/ast_parser.py": {
+      "name": "Workflow file reader",
+      "description": "Reads the labels on workflow and tool code so the platform can list and connect them."
+    },
+    "api/src/services/file_storage/code_surgery.py": {
+      "name": "Remove code block",
+      "description": "Deletes one workflow or function from a file cleanly, leaving the rest of the file intact."
+    },
+    "api/src/services/file_storage/deactivation.py": {
+      "name": "Workflow off switch guard",
+      "description": "Warns before a save would switch off a live workflow and offers a replacement instead."
+    },
+    "api/src/services/file_storage/diagnostics.py": {
+      "name": "File problem alerts",
+      "description": "Spots problems in saved files and tells the person who made the change what needs fixing."
+    },
+    "api/src/services/file_storage/entity_detector.py": {
+      "name": "File type detector",
+      "description": "Works out whether a file holds a workflow, a tool or plain notes that belong in the database."
+    },
+    "api/src/services/file_storage/entity_resolution.py": {
+      "name": "Reference lookup",
+      "description": "Matches names used in files to the actual workflow or agent records they point at."
+    },
+    "api/src/services/file_storage/file_ops.py": {
+      "name": "Single file changes",
+      "description": "Reads, writes, deletes and moves one file at a time while keeping its record in step."
+    },
+    "api/src/services/file_storage/folder_ops.py": {
+      "name": "Folders and bulk actions",
+      "description": "Lists folders and moves or deletes many files at once."
+    },
+    "api/src/services/file_storage/indexers/__init__.py": {
+      "name": "File cataloguing",
+      "description": "Brings together the readers that turn agent, form and workflow files into searchable records."
+    },
+    "api/src/services/file_storage/indexers/agent.py": {
+      "name": "Agent file indexer",
+      "description": "Reads agent definition files and keeps the saved agents matching what those files say."
+    },
+    "api/src/services/file_storage/indexers/form.py": {
+      "name": "Form file indexer",
+      "description": "Reads form definition files and keeps the saved forms matching what those files say."
+    },
+    "api/src/services/file_storage/indexers/workflow.py": {
+      "name": "Workflow file indexer",
+      "description": "Reads workflow and data-source code and keeps the matching records and their details up to date."
+    },
+    "api/src/services/file_storage/models.py": {
+      "name": "File change results",
+      "description": "Describes what happened during a file change, including any warnings shown before saving."
+    },
+    "api/src/services/file_storage/move_names.py": {
+      "name": "Rename suggestions",
+      "description": "Proposes the next free name, like 'report (2).pdf', when a file would land on an existing one."
+    },
+    "api/src/services/file_storage/move.py": {
+      "name": "Moving one file",
+      "description": "Moves a single file to a new place safely, without leaving duplicates or half-copied versions."
+    },
+    "api/src/services/file_storage/s3_client.py": {
+      "name": "Cloud file storage",
+      "description": "Talks to the cloud storage that holds workspace files and makes sure copies and moves never clash."
+    },
+    "api/src/services/file_storage/service.py": {
+      "name": "File workspace",
+      "description": "The one place every screen and workflow goes to read, save, move or remove workspace files."
+    },
+    "api/src/services/file_structure_service.py": {
+      "name": "File structure listing",
+      "description": "Gives administrators a full view of every share, folder and file for support and audits."
+    },
+    "api/src/services/media_generation.py": {
+      "name": "Image and video generation",
+      "description": "Creates images and short videos on request with the chosen AI provider and records what each one costs."
+    },
+    "api/src/services/repo_storage.py": {
+      "name": "Workspace source storage",
+      "description": "Keeps the workspace's code and configuration files in cloud storage alongside the apps that use them."
+    }
+  }
+}

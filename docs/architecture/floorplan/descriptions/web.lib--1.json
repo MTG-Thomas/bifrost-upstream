@@ -1,0 +1,164 @@
+{
+  "files": {
+    "client/src/lib/access-operations.ts": {
+      "name": "Access test examples",
+      "description": "Offers a short list of everyday operations to try when checking who is allowed to do what."
+    },
+    "client/src/lib/access-trace.ts": {
+      "name": "Access explanations",
+      "description": "Turns the server's technical access decisions into sentences naming roles, organizations and permissions."
+    },
+    "client/src/lib/agent-run-navigation.ts": {
+      "name": "Agent run return path",
+      "description": "Remembers where someone came from so closing an agent run returns them to the right place."
+    },
+    "client/src/lib/api-client.ts": {
+      "name": "Server connection",
+      "description": "The one way the screens talk to the main server, handling sign-in, safety checks and clear failures."
+    },
+    "client/src/lib/api-error.ts": {
+      "name": "Error messages",
+      "description": "Turns a failed request into a plain message people can read, including when too many requests were made."
+    },
+    "client/src/lib/app-code-platform.d.ts": {
+      "name": "App building tools",
+      "description": "Catalogue of the ready-made pieces an app builder may use, from fetching data to running a workflow."
+    },
+    "client/src/lib/app-code-runtime.ts": {
+      "name": "App code runner",
+      "description": "Turns an app's code into working screens by handing it the platform's tools and design pieces."
+    },
+    "client/src/lib/application-update.ts": {
+      "name": "App update tracking",
+      "description": "Tracks when a newer version of an app is being installed and tells open screens to reload."
+    },
+    "client/src/lib/applicationName.ts": {
+      "name": "Product name",
+      "description": "Supplies the product name to display, using the organization's own branding when it has some."
+    },
+    "client/src/lib/auth-token.ts": {
+      "name": "Sign-in passes",
+      "description": "Keeps the pass proving who is signed in, including embedded sessions and temporary support access."
+    },
+    "client/src/lib/authorization.ts": {
+      "name": "Who may do what",
+      "description": "Answers whether the signed-in person may do something in one organization or platform-wide, so screens show only what fits."
+    },
+    "client/src/lib/bifrost-runtime.ts": {
+      "name": "Shared app toolbox",
+      "description": "Provides the standard tools and building blocks an app can use when it runs inside the platform."
+    },
+    "client/src/lib/brand-palette.ts": {
+      "name": "Brand colours",
+      "description": "Exposes the organization's brand colours, with a way to check text stays readable on them."
+    },
+    "client/src/lib/branding.ts": {
+      "name": "Branding loader",
+      "description": "Fetches the organization's branding and applies it as the app starts."
+    },
+    "client/src/lib/builtin-roles.ts": {
+      "name": "Built-in roles",
+      "description": "Identifies the roles that ship with the platform and which of their permissions nothing checks yet."
+    },
+    "client/src/lib/chat-runtime.ts": {
+      "name": "Chat session handling",
+      "description": "Keeps a conversation with an agent in step as replies stream in, including tool steps and interruptions."
+    },
+    "client/src/lib/chat-utils.ts": {
+      "name": "Message identifiers",
+      "description": "Creates unique identifiers for chat messages so replies are matched to the right question."
+    },
+    "client/src/lib/client-types.ts": {
+      "name": "Screen data shapes",
+      "description": "Defines the shapes of data the screens use but the server does not describe, such as form fields and run listings."
+    },
+    "client/src/lib/clipboard.ts": {
+      "name": "Copy to clipboard",
+      "description": "Copies text to the clipboard reliably, including on less secure network addresses."
+    },
+    "client/src/lib/detail-route-loaders.ts": {
+      "name": "Prefetched detail pages",
+      "description": "Loads an agent or app's details before its page opens so it appears without a wait."
+    },
+    "client/src/lib/esm-react-shim.ts": {
+      "name": "App runtime globals",
+      "description": "Makes the platform's core building blocks available to apps loaded while the app is running."
+    },
+    "client/src/lib/execution-buckets.ts": {
+      "name": "Run outcome counting",
+      "description": "Sorts runs into worked, failed or cancelled and turns the counts into chart data."
+    },
+    "client/src/lib/executionLogs.ts": {
+      "name": "Log merging",
+      "description": "Combines saved logs with live ones, skipping lines that arrive twice."
+    },
+    "client/src/lib/file-filter.ts": {
+      "name": "Workspace file filtering",
+      "description": "Decides which files are left out of workspace operations, such as build output and secret files."
+    },
+    "client/src/lib/form-embed-presentation.ts": {
+      "name": "Embedded form appearance",
+      "description": "Reads the appearance options for a form embedded in another website."
+    },
+    "client/src/lib/graph-source.ts": {
+      "name": "Microsoft 365 event health",
+      "description": "Describes where Microsoft 365 change notifications come from and whether that link is healthy."
+    },
+    "client/src/lib/icons.ts": {
+      "name": "Icon lookup",
+      "description": "Finds the right icon by name so every screen draws from a consistent set of pictures."
+    },
+    "client/src/lib/lazy-with-reload.ts": {
+      "name": "Reload on new version",
+      "description": "Loads a screen only when it is needed, and quietly reloads the page when a newer version has gone live."
+    },
+    "client/src/lib/matching.ts": {
+      "name": "Automatic matching",
+      "description": "Suggests pairings between records from two systems, exact matches first and close matches after."
+    },
+    "client/src/lib/model-info.ts": {
+      "name": "Model descriptions",
+      "description": "Summarises one AI model's price, context size and reasoning options in a single line."
+    },
+    "client/src/lib/monaco-setup.ts": {
+      "name": "Code editor setup",
+      "description": "Prepares the code editor with colouring, comments and formatting for the languages used here."
+    },
+    "client/src/lib/monaco-theme.ts": {
+      "name": "Editor colours",
+      "description": "Colours the code editor to match the current theme and the organization's brand."
+    },
+    "client/src/lib/monaco/conflictDecorator.ts": {
+      "name": "Conflict highlighting",
+      "description": "Marks conflicting lines in the code editor and offers buttons to keep one side or both."
+    },
+    "client/src/lib/monaco/conflictDetector.ts": {
+      "name": "Conflict detection",
+      "description": "Finds conflicting sections in a file and can settle each by keeping one side or both."
+    },
+    "client/src/lib/monaco/conflictWidgets.ts": {
+      "name": "Conflict action links",
+      "description": "Places the keep-this-side and keep-both links directly between conflicting lines."
+    },
+    "client/src/lib/motion.ts": {
+      "name": "Animation timing",
+      "description": "Converts the design's animation speeds into values motion can use, honouring reduced-motion preferences."
+    },
+    "client/src/lib/npm-search.ts": {
+      "name": "Package search",
+      "description": "Searches the public package catalogue so app builders can add a library by name."
+    },
+    "client/src/lib/paginated-query.ts": {
+      "name": "Page request comparison",
+      "description": "Tells whether two list requests ask for the same thing so views do not reload needlessly."
+    },
+    "client/src/lib/permission-words.ts": {
+      "name": "Permission wording",
+      "description": "Rewrites technical permission names into the phrases people read, such as Read and Write Users."
+    },
+    "client/src/lib/platform-modules.ts": {
+      "name": "Shared module list",
+      "description": "Lists the platform pieces an app loaded at runtime is allowed to draw on."
+    }
+  }
+}

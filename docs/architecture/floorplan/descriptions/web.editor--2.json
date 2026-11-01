@@ -1,0 +1,136 @@
+{
+  "files": {
+    "client/src/components/editor/SourceControlPanel.tsx": {
+      "name": "Version control panel",
+      "description": "Works like a desktop code client: shows changes, commits them and syncs with GitHub."
+    },
+    "client/src/components/editor/SourceControlPrompts.tsx": {
+      "name": "Source cleanup prompts",
+      "description": "Asks before files are discarded or removed from version control."
+    },
+    "client/src/components/editor/SourceControlSetupState.tsx": {
+      "name": "Connect version control",
+      "description": "Guides someone through connecting the workspace to a shared code repository."
+    },
+    "client/src/components/editor/SourceControlStatus.tsx": {
+      "name": "Version control status",
+      "description": "Shows the current branch, whether it is behind, and any merge in progress."
+    },
+    "client/src/components/editor/SourceDiscardDialog.tsx": {
+      "name": "Discard changes",
+      "description": "Confirms throwing away changes to a fixed set of files."
+    },
+    "client/src/components/editor/SourceOperationDialog.tsx": {
+      "name": "Version control dialog",
+      "description": "Runs one version control action and reports whether it worked."
+    },
+    "client/src/components/editor/StatusBar.tsx": {
+      "name": "Editor status bar",
+      "description": "Shows the open file, cursor position and save state along the bottom."
+    },
+    "client/src/components/editor/SyncDiffControls.tsx": {
+      "name": "Sync choices",
+      "description": "Offers the options for reconciling a file that changed on both sides."
+    },
+    "client/src/components/editor/SyncDiffView.tsx": {
+      "name": "Sync comparison",
+      "description": "Shows both versions of a changed file so someone can reconcile them."
+    },
+    "client/src/components/editor/TerminalExecutionResult.tsx": {
+      "name": "Run result",
+      "description": "Shows the outcome of a run in the output area."
+    },
+    "client/src/components/editor/TerminalLogMessage.tsx": {
+      "name": "Output line",
+      "description": "Shows one line of run output, turning links into clickable text."
+    },
+    "client/src/components/editor/TerminalPanel.tsx": {
+      "name": "Output panel",
+      "description": "Shows the log output of the workflow or script that was run."
+    },
+    "client/src/components/editor/TerminalResultModal.tsx": {
+      "name": "Rich result window",
+      "description": "Shows a run's formatted result, such as a rendered report, in a popup."
+    },
+    "client/src/components/editor/UnsavedFileList.tsx": {
+      "name": "Unsaved files",
+      "description": "Lists the open files that still have unsaved changes."
+    },
+    "client/src/components/editor/UnsavedTabsDialog.tsx": {
+      "name": "Unsaved tabs prompt",
+      "description": "Asks whether to save, discard or cancel when closing files with changes."
+    },
+    "client/src/components/editor/WorkflowDeactivationDialog.tsx": {
+      "name": "Workflow deactivation warning",
+      "description": "Warns that saving a file would switch off workflows that are still in use."
+    },
+    "client/src/components/editor/WorkflowIdConflictDialog.tsx": {
+      "name": "Workflow clash warning",
+      "description": "Warns that saving a file would replace existing workflows and lose their history."
+    },
+    "client/src/components/file-tree/adapters/appCodeOperations.ts": {
+      "name": "App file actions",
+      "description": "Carries out file actions inside an app's own code folder."
+    },
+    "client/src/components/file-tree/adapters/workspaceOperations.ts": {
+      "name": "Workspace file actions",
+      "description": "Carries out file actions across the shared workspace."
+    },
+    "client/src/components/file-tree/FileTree.tsx": {
+      "name": "Shared file tree",
+      "description": "Shows files and folders as a tree that works for workspace files and app code alike."
+    },
+    "client/src/components/file-tree/FileTreeReadError.tsx": {
+      "name": "File list error",
+      "description": "Says a folder's contents could not be loaded and offers a retry."
+    },
+    "client/src/components/file-tree/icons.ts": {
+      "name": "File icons",
+      "description": "Picks the right icon for each file based on what kind of item it is."
+    },
+    "client/src/components/file-tree/index.ts": {
+      "name": "File tree parts",
+      "description": "Gathers the reusable file tree pieces used by the editors."
+    },
+    "client/src/components/file-tree/types.ts": {
+      "name": "File tree definitions",
+      "description": "Defines the shared shape of files and folders used by every file tree."
+    },
+    "client/src/components/file-tree/useFileTree.ts": {
+      "name": "File tree state",
+      "description": "Keeps each folder's expanded state, loaded contents and refresh behaviour."
+    },
+    "client/src/components/file-tree/validation.ts": {
+      "name": "File naming rules",
+      "description": "Checks that a new file sits in an allowed folder and follows the app's naming rules."
+    },
+    "client/src/components/file-tree/WorkspaceFileTree.tsx": {
+      "name": "Workspace files tree",
+      "description": "Shows the shared workspace's files with the actions the editor needs."
+    },
+    "client/src/components/window-management/animations.ts": {
+      "name": "Window animations",
+      "description": "Sets the slide and fade effects used when editor windows open, shrink and close."
+    },
+    "client/src/components/window-management/index.ts": {
+      "name": "Window parts",
+      "description": "Gathers the pieces that manage editor windows and the dock."
+    },
+    "client/src/components/window-management/types.ts": {
+      "name": "Window definitions",
+      "description": "Defines the shared shapes for docked and full-screen windows."
+    },
+    "client/src/components/window-management/WindowDock.tsx": {
+      "name": "Window dock",
+      "description": "Collects minimised editor windows into one bar at the bottom."
+    },
+    "client/src/components/window-management/WindowDockItem.tsx": {
+      "name": "Dock item",
+      "description": "Shows one minimised window in the dock, with a way to reopen it."
+    },
+    "client/src/components/window-management/WindowOverlay.tsx": {
+      "name": "Full-screen window",
+      "description": "Animates a window expanding to fill the screen and shrinking back."
+    }
+  }
+}

@@ -1,0 +1,100 @@
+{
+  "files": {
+    "api/src/services/mcp_server/tools/__init__.py": {
+      "name": "Assistant tool catalogue",
+      "description": "Registers the full set of tools an AI assistant can use and the short discovery route for finding them."
+    },
+    "api/src/services/mcp_server/tools/_http_bridge.py": {
+      "name": "Tool to platform bridge",
+      "description": "Sends each assistant tool call through the same signed-in path the platform's own screens use."
+    },
+    "api/src/services/mcp_server/tools/agents.py": {
+      "name": "Assistant agent tools",
+      "description": "Lets an AI assistant list, read, create, change and delete agents."
+    },
+    "api/src/services/mcp_server/tools/apps.py": {
+      "name": "Assistant app tools",
+      "description": "Lets an AI assistant list, create, publish, validate and inspect apps and the packages they use."
+    },
+    "api/src/services/mcp_server/tools/claims.py": {
+      "name": "Assistant claim tools",
+      "description": "Lets an AI assistant list, read, create, change and delete custom claims."
+    },
+    "api/src/services/mcp_server/tools/code_editor.py": {
+      "name": "Assistant code editing",
+      "description": "Lets an AI assistant search, read, write, patch and delete workspace code and app files."
+    },
+    "api/src/services/mcp_server/tools/configs.py": {
+      "name": "Assistant setting tools",
+      "description": "Lets an AI assistant list, read, create, change and delete stored settings."
+    },
+    "api/src/services/mcp_server/tools/data_providers.py": {
+      "name": "Assistant data feed help",
+      "description": "Explains how to build a piece that supplies data to workflows, so an assistant can write one correctly."
+    },
+    "api/src/services/mcp_server/tools/db.py": {
+      "name": "Assistant database access",
+      "description": "Opens the shared database session assistant tools use while they work."
+    },
+    "api/src/services/mcp_server/tools/docs.py": {
+      "name": "Assistant platform docs",
+      "description": "Returns the full Bifrost documentation so an assistant can answer questions about the platform."
+    },
+    "api/src/services/mcp_server/tools/events.py": {
+      "name": "Assistant event tools",
+      "description": "Lets an AI assistant manage event sources, subscriptions and the incoming-message adapters on offer."
+    },
+    "api/src/services/mcp_server/tools/execution.py": {
+      "name": "Assistant run history tools",
+      "description": "Lets an AI assistant list recent runs and read one run's details and log lines."
+    },
+    "api/src/services/mcp_server/tools/files.py": {
+      "name": "Assistant file policy tools",
+      "description": "Lets an AI assistant read, set and remove who may reach a folder."
+    },
+    "api/src/services/mcp_server/tools/forms.py": {
+      "name": "Assistant form tools",
+      "description": "Lets an AI assistant list, read, create, change and delete forms, and check how a form is put together."
+    },
+    "api/src/services/mcp_server/tools/gateway.py": {
+      "name": "Assistant starting tools",
+      "description": "Gives an AI assistant a short set of entry tools to search capabilities, follow instructions and keep memory."
+    },
+    "api/src/services/mcp_server/tools/integrations.py": {
+      "name": "Assistant integration tools",
+      "description": "Lets an AI assistant list, read, create and change connected outside services and their organization links."
+    },
+    "api/src/services/mcp_server/tools/knowledge.py": {
+      "name": "Assistant knowledge search",
+      "description": "Lets an AI assistant search the organization's knowledge base."
+    },
+    "api/src/services/mcp_server/tools/organizations.py": {
+      "name": "Assistant organization tools",
+      "description": "Lets an AI assistant list, read, create, change and delete organizations."
+    },
+    "api/src/services/mcp_server/tools/platform_jobs.py": {
+      "name": "Assistant long task tracking",
+      "description": "Lets an AI assistant check on the progress of a long platform task."
+    },
+    "api/src/services/mcp_server/tools/policy_rules.py": {
+      "name": "Assistant access rule tools",
+      "description": "Lets an AI assistant list, read, create, change, delete and trace reusable access rules."
+    },
+    "api/src/services/mcp_server/tools/roles.py": {
+      "name": "Assistant role tools",
+      "description": "Lets an AI assistant list, read, create, change and delete roles."
+    },
+    "api/src/services/mcp_server/tools/sdk.py": {
+      "name": "Assistant toolkit reference",
+      "description": "Gives an AI assistant accurate documentation for building with the platform's workflow code library."
+    },
+    "api/src/services/mcp_server/tools/tables.py": {
+      "name": "Assistant table tools",
+      "description": "Lets an AI assistant list, read, create, change and delete data tables."
+    },
+    "api/src/services/mcp_server/tools/workflow.py": {
+      "name": "Assistant workflow tools",
+      "description": "Lets an AI assistant list, check, run, register, change and delete workflows and their access."
+    }
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "files": {
+    "client/src/lib/app-code-platform/components.ts": {
+      "name": "App building blocks",
+      "description": "Gives app code ready-made buttons, cards, inputs, tables and dialogs that match the platform's look."
+    },
+    "client/src/lib/app-code-platform/index.ts": {
+      "name": "App runtime features",
+      "description": "Collects everything handed to app code: navigation, data hooks, person details and shared memory."
+    },
+    "client/src/lib/app-code-platform/navigate.ts": {
+      "name": "App navigation",
+      "description": "Moves someone between an app's pages while keeping them inside the app's own address."
+    },
+    "client/src/lib/app-code-platform/navigation.tsx": {
+      "name": "App page links",
+      "description": "Provides link and redirect pieces that keep an app's pages under the app's own address."
+    },
+    "client/src/lib/app-code-platform/RequireRole.tsx": {
+      "name": "Role-only content",
+      "description": "Shows a piece of an app only to people holding a given role."
+    },
+    "client/src/lib/app-code-platform/scope.ts": {
+      "name": "App feature bundle",
+      "description": "Assembles the full set of platform features handed to app code when it runs."
+    },
+    "client/src/lib/app-code-platform/useAppState.ts": {
+      "name": "Page-to-page memory",
+      "description": "Remembers choices as someone moves between an app's pages, and clears them when the app closes."
+    },
+    "client/src/lib/app-code-platform/useLocation.ts": {
+      "name": "Current page address",
+      "description": "Tells app code which page it is on, relative to the app's own address."
+    },
+    "client/src/lib/app-code-platform/useParams.ts": {
+      "name": "Address values",
+      "description": "Reads the changing parts of a page address, such as a customer number."
+    },
+    "client/src/lib/app-code-platform/useSearchParams.ts": {
+      "name": "Address filters",
+      "description": "Reads and sets filter values carried in a page address."
+    },
+    "client/src/lib/app-code-platform/useUser.ts": {
+      "name": "Signed-in person",
+      "description": "Tells app code who is signed in, including their name, email and roles."
+    },
+    "client/src/lib/app-code-platform/useWorkflowMutation.ts": {
+      "name": "Workflow action hook",
+      "description": "Runs a workflow when someone acts, and reports progress, results and errors to the screen."
+    },
+    "client/src/lib/app-code-platform/useWorkflowQuery.ts": {
+      "name": "Workflow data hook",
+      "description": "Loads a workflow's result for a screen and refreshes it when its inputs change."
+    }
+  }
+}

@@ -1,0 +1,120 @@
+{
+  "files": {
+    ".env.debug": {
+      "name": "Debug defaults",
+      "description": "Sets development defaults for the local preview, such as the built-in admin login and relaxed sign-in rules."
+    },
+    ".env.example": {
+      "name": "Settings template",
+      "description": "Lists every setting a real installation needs, with comments, so an operator can copy and fill it in."
+    },
+    ".env.test.example": {
+      "name": "Test settings template",
+      "description": "Lists the settings the automatic test environment expects, without any real secrets."
+    },
+    ".vscode/launch.json": {
+      "name": "Debug launch setups",
+      "description": "Defines ready-made debugging configurations for editors opened on this workspace."
+    },
+    ".vscode/settings.json": {
+      "name": "Editor settings",
+      "description": "Sets workspace-wide editor preferences used while working on this project."
+    },
+    ".vscode/tasks.json": {
+      "name": "Editor task shortcuts",
+      "description": "Adds one-click commands for starting, stopping and restarting the local stack."
+    },
+    "api/.coveragerc": {
+      "name": "Coverage settings",
+      "description": "Tells the coverage tool which server files to measure and which to ignore."
+    },
+    "api/alembic.ini": {
+      "name": "Database change settings",
+      "description": "Points the database change tool at its scripts and the connection details it should use."
+    },
+    "api/pyproject.toml": {
+      "name": "Server tool settings",
+      "description": "Configures the code formatter, linter and type checker for the server code."
+    },
+    "api/pyrightconfig.json": {
+      "name": "Type checker setup",
+      "description": "Tells the server type checker where the code lives and how strict to be."
+    },
+    "api/pytest.ini": {
+      "name": "Test runner settings",
+      "description": "Sets how the server's automatic checks are discovered, marked and reported."
+    },
+    "client/.devcontainer/devcontainer.json": {
+      "name": "Web app dev container",
+      "description": "Prepares a coding environment for working on the screens with the tools they need."
+    },
+    "client/.env.example": {
+      "name": "Web app settings template",
+      "description": "Lists the settings the browser app build can read, such as where the server lives."
+    },
+    "client/.github/workflows/azure-static-web-apps-happy-grass-0ce5af40f.yml": {
+      "name": "Legacy web hosting deploy",
+      "description": "An older workflow that published the web app to Azure static hosting and is kept only for reference."
+    },
+    "client/.github/workflows/release.yml": {
+      "name": "Web app release",
+      "description": "Builds the browser app bundle and publishes it when a version is released."
+    },
+    "client/.prettierrc": {
+      "name": "Formatting preferences",
+      "description": "Sets the code formatting rules applied to the web app's files."
+    },
+    "client/components.json": {
+      "name": "Screen block config",
+      "description": "Tells the building-block generator where shared screen parts live and how to name them."
+    },
+    "client/manual-verify/solutions-deployed-verify.manual.ts": {
+      "name": "Deployed Solutions check",
+      "description": "A by-hand script that inspects installed Solutions in a live environment and never runs automatically."
+    },
+    "client/manual-verify/solutions-live-verify.manual.ts": {
+      "name": "Live Solutions check",
+      "description": "A by-hand script that exercises Solutions against a running server to confirm behaviour."
+    },
+    "client/package.json": {
+      "name": "Web app dependencies",
+      "description": "Lists the libraries the browser app uses and the commands that build, test and check it."
+    },
+    "client/public/fonts/fonts.css": {
+      "name": "Typeface definitions",
+      "description": "Declares the custom typefaces and weights the screens use so text renders consistently."
+    },
+    "client/tsconfig.app.json": {
+      "name": "Web app compile settings",
+      "description": "Sets how the browser app's code is compiled for production."
+    },
+    "client/tsconfig.json": {
+      "name": "Root compile settings",
+      "description": "Points the editor and build tools at the main compile settings for the screens."
+    },
+    "client/tsconfig.node.json": {
+      "name": "Build tool compile settings",
+      "description": "Sets compile rules for the scripts that build and serve the browser app."
+    },
+    "debug.sh": {
+      "name": "Local preview launcher",
+      "description": "Starts, stops and inspects a private copy of the platform for one working folder, with its own login."
+    },
+    "Initialize-Bifrost.ps1": {
+      "name": "Windows setup script",
+      "description": "Prepares a Windows machine for a first run: creates the settings file with fresh secrets and starts the stack."
+    },
+    "pyproject.toml": {
+      "name": "Project dependencies",
+      "description": "Lists the Python packages the platform needs and the settings its checks use."
+    },
+    "setup.sh": {
+      "name": "First-time setup",
+      "description": "Creates the settings file with secure random passwords and the web address for a new installation."
+    },
+    "test.sh": {
+      "name": "Test runner",
+      "description": "Starts an isolated set of containers and runs the automatic server, screen and browser checks."
+    }
+  }
+}
