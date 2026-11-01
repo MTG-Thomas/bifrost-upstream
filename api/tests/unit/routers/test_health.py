@@ -9,8 +9,16 @@ from src.routers import health
 
 
 class DummyDB:
+    def __init__(self):
+        self.info = {}
+
     async def execute(self, statement):
-        return None
+        return SimpleNamespace(mappings=lambda: SimpleNamespace(one=lambda: {
+            "session_user": "bifrost", "current_user": "bifrost", "current_database": "bifrost",
+        }))
+
+    async def connection(self):
+        return SimpleNamespace(info=self.info)
 
 
 @asynccontextmanager
@@ -377,3 +385,26 @@ async def test_detailed_uses_same_component_status_logic(monkeypatch):
     assert result.status == "unhealthy"
     assert isinstance(result.timestamp, datetime)
     assert result.timestamp.tzinfo == timezone.utc
+
+
+@pytest.mark.asyncio
+async def test_database_probe_uses_one_statement_and_keeps_identity_out_of_response(monkeypatch, caplog):
+    from shared.runtime_database_identity import IDENTITY_QUERY, RuntimeDatabaseIdentityObserver
+
+    class TrackingDB(DummyDB):
+        def __init__(self):
+            super().__init__()
+            self.statements = []
+
+        async def execute(self, statement):
+            self.statements.append(str(statement))
+            return await super().execute(statement)
+
+    db = TrackingDB()
+    monkeypatch.setattr(health, "_database_identity_observer", RuntimeDatabaseIdentityObserver())
+    with caplog.at_level("INFO"):
+        first = await health.check_database(db)
+        second = await health.check_database(db)
+    assert first == second == ("database", {"status": "healthy", "type": "postgresql"})
+    assert db.statements == [IDENTITY_QUERY, IDENTITY_QUERY]
+    assert len([r for r in caplog.records if "Runtime database session identity" in r.message]) == 1
