@@ -9,6 +9,12 @@ calls between them. It is built with [Floorplan](https://github.com/haydenschmit
 upstream review, not an established convention. The questions at the end are the ones
 worth settling before this becomes a required check.
 
+**View it:** <https://mtg-thomas.github.io/bifrost-upstream/> is the rendered map,
+published from the fork's `gh-pages` branch. It is a static export (no Ask bar, no
+health panel, no local paths), so it opens on a phone. Regenerate it with
+`node floorplan/serve.mjs --export floorplan/bifrost-map.html` and push that file as
+`index.html` on `gh-pages`.
+
 ## What is tracked, and what is not
 
 | Path | Tracked | Why |
