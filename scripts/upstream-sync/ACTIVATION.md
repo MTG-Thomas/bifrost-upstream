@@ -1,4 +1,4 @@
-# Activation Decision Packet — Candidate 0.2.0
+# Activation Decision Packet — Candidate 0.3.0
 
 Prepared only. No task, credentials, permissions, workflow grants, Actions
 settings, production resources, or customer resources changed. No main sync.
@@ -13,12 +13,12 @@ The exported writer remains a tested candidate without an activation entrypoint.
 | Windows principal | Existing `AzureAD\ThomasBray`, verified by `whoami` |
 | GitHub actor | Existing GitHub CLI OAuth identity `MTG-Thomas`, user ID `87775189` |
 | Credential | Existing Windows keyring entry used by `gh`, never exported or copied |
-| Controller | Reviewed source copied to `C:\Users\ThomasBray\AppData\Local\MTG\bifrost-upstream-sync\releases\<approved-full-source-SHA>` after approval; task pins that immutable path |
+| Controller | Existing task-owned worktree `C:\Users\ThomasBray\.t3\worktrees\bifrost\upstream-sync-f2ab3925`, exact reviewed source SHA and clean status required on every run; any branch movement stops the launcher |
 | State | `C:\Users\ThomasBray\AppData\Local\MTG\bifrost-upstream-sync\state`, retained across releases; one local directory for every invocation |
 | Scheduler | Windows Task Scheduler task `MTG Bifrost Upstream Sync`, created only after separate approval |
 | Logon | `InteractiveToken`, least privilege; only while Thomas is logged on; no password, service account, S4U, SYSTEM, or elevation |
 | Cadence | Hourly at minute 17 local time; `IgnoreNew`; five-minute execution limit; no restart-on-failure, no catch-up backlog, no wake-to-run |
-| Runtime | Existing `C:\Program Files\nodejs\node.exe`; existing `C:\Program Files\GitHub CLI\gh.exe`; absolute paths pinned by the future launcher |
+| Runtime | Existing `C:\Program Files\nodejs\node.exe`, `C:\Program Files\Git\cmd\git.exe`, and `C:\Program Files\GitHub CLI\gh.exe`; paths checked by the offline candidate; only Git is executed locally |
 | Scheduling cost | Existing local machine; no paid scheduler or new hosted runner subscription |
 | Failure visibility | Nonzero task result plus bounded local run logs and persistent receipt/hold; no new email/webhook credentials |
 
@@ -51,9 +51,11 @@ user/machine. Credential-store access under the selected task principal still
 needs a read-only scheduled-context qualification after approval. A login or MFA
 challenge is a human step, not permission to mint another credential.
 
-These launcher checks are specified activation work, not implemented or claimed
-tested by the current library. Scope availability and unattended-use approval
-remain separate facts.
+The offline launcher now tests the source/env/path/ref/scheduler consistency
+checks with fixtures. It does not qualify a real Windows interactive session,
+GitHub actor, or keyring: it never runs `gh` or a network transport. Actual native
+identity/credential checks remain activation-adapter work requiring approval.
+Scope availability and unattended-use approval remain separate facts.
 
 ## Exact Remote Operation
 
@@ -121,12 +123,18 @@ behavior after this OAuth push. No API denial or permission failure was observed
 **Zero-settings-change path:** obtain authoritative evidence that inherited
 publication/expensive workflows remain inactive for an OAuth main update, and
 owner confirmation that this fork has no external production/customer consumer.
-Then add a reviewed pre-write trigger-safety gate to the activation adapter:
-compare the proposed commit's complete `.github/workflows/` path/blob-SHA map
+The offline trigger-safety gate is now implemented/tested in `trigger-gate.mjs`.
+It compares the proposed commit's complete `.github/workflows/` and
+`.github/actions/` path/blob-SHA/mode map
 and live workflow/Actions settings against the approved evidence. Unknown/new
 workflow definitions or changed settings must hold before writing. Record exact
 reviewed SHAs/settings with approval; never execute proposed upstream code to
-make this determination. This gate is not implemented in candidate 0.2.0.
+make this determination. Its snapshot includes commit/tree binding, complete
+pagination, freshness, rules/protection, workflow inventory, Actions settings,
+and workflow permissions. It refuses 404/incomplete inventories. The future live
+adapter must collect authoritative evidence and invoke this gate while holding
+the same state lock immediately before intent/PATCH; the fixture-only launcher
+does not collect that evidence or expose a write path.
 
 If inactivity cannot be established, this zero-settings-change path is blocked
 on evidence, not on a denied permission. The owner would need a separately
@@ -153,7 +161,8 @@ Proposed owner approval wording, **not yet granted**:
 > Approve scheduled use of the existing MTG-Thomas GitHub CLI keyring identity
 > under AzureAD\ThomasBray on LT002-H8WL8H4, logged-on session only, for an hourly
 > minute-17 fast-forward-only update of MTG-Thomas/bifrost-upstream:main from
-> gobifrost/bifrost:main. Use the reviewed immutable controller release, stable
+> gobifrost/bifrost:main. Use the reviewed clean controller worktree pinned to
+> the exact approved commit, stable
 > local receipt/lock directory, IgnoreNew, five-minute limit, no retries, no new
 > credentials/scopes/permissions, and no settings or production/customer changes.
 > Accept that it will not run while logged out/asleep/off. Install/activate only
@@ -167,10 +176,38 @@ external consumers, without testing it by an unsafe write. If that proof is
 unavailable, the owner must select a separately scoped control/source change;
 the task remains inactive.
 
-Once both decisions/evidence are settled: implement/review the launcher and
-trigger gate, qualify credential access with a scheduled read-only run, verify
-task principal/command/cadence/state paths, perform one bounded authorized main
-sync plus terminal receipt and readback, then a fresh no-op, and activate the
-hourly schedule. Report source, publication/review/merge disposition, scheduler
-activation, and actual synchronization independently. Never merge the controller
-branch into pristine main merely to obtain a PR merge receipt.
+## Separate Activation Checklist — All Unchecked
+
+- [ ] Receive Thomas's exact logged-on-only identity/keyring scheduling approval;
+  the question has been asked, and there is no answer yet. Fixture approval
+  strings and agent reports cannot satisfy this item.
+- [ ] Receive owner confirmation of no external production/customer polling
+  consumers for this personal fork.
+- [ ] Establish known eligible reset evidence for the preserved Actions HTTP 403
+  rate-limit denial before any retry; preserve the same caller/credential. There
+  was no retry or identity swap during offline preparation.
+- [ ] Qualify inherited workflow effects independently. Capture the complete
+  current settings/inventory and commit-bound workflow/local-action blob map;
+  record exact safety evidence and reviewer/owner approval. A matching map,
+  workflow 404, or empty secrets is insufficient proof of inactivity.
+- [ ] Review the exact source commit and pass normal applicable gates. Keep the
+  controller branch out of pristine main. Fill a separately approved external
+  config with the exact source pin and evidence references; do not edit the
+  template into a claimed approval or store credentials with it.
+- [ ] Implement/review the **live** adapter after approval: native session and
+  keyring/actor qualification, bounded authoritative evidence collection, a hard
+  outer deadline, and invocation of the tested gate under the shared lock before
+  intent/PATCH. Never reuse fixture runtime/snapshot declarations as live proof.
+  Preserve direct-writer refusal if branch protections require review/queue.
+- [ ] After approval, register only the reviewed logged-on-only task and qualify
+  read-only credential access in that actual context; read back its principal,
+  action path/source pin, state directory, minute-17 cadence, IgnoreNew,
+  five-minute timeout, zero retries, no wake and no catch-up.
+- [ ] Perform one bounded authorized main sync with terminal receipt and remote
+  readback, followed by a separate no-op; then enable/read back hourly operation.
+  Do not report registration, acknowledgement, or a fixture test as a real sync.
+
+Today only the offline launcher, consistency gate, templates, and refusal tests
+are prepared. There is no scheduler, credential reuse, main sync, or changed
+Actions/security setting. Source, publication/review/merge disposition, scheduler
+activation, and actual synchronization remain separate acceptance items.

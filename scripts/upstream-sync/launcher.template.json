@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "mode": "offline-check",
+  "authority": {
+    "status": "pending",
+    "approvalReference": null,
+    "noProductionConsumersConfirmed": false
+  },
+  "host": "LT002-H8WL8H4",
+  "windowsPrincipal": "azuread\\thomasbray",
+  "githubActor": "MTG-Thomas",
+  "githubActorId": 87775189,
+  "worktree": "C:/Users/ThomasBray/.t3/worktrees/bifrost/upstream-sync-f2ab3925",
+  "controllerBranch": "automation/upstream-sync-f2ab3925",
+  "sourceCommit": "REVIEWED_FULL_COMMIT_SHA_REQUIRED",
+  "stateDirectory": "C:/Users/ThomasBray/AppData/Local/MTG/bifrost-upstream-sync/state",
+  "nodePath": "C:/Program Files/nodejs/node.exe",
+  "gitPath": "C:/Program Files/Git/cmd/git.exe",
+  "ghPath": "C:/Program Files/GitHub CLI/gh.exe",
+  "maxCommandSeconds": 10,
+  "maxRunSeconds": 240,
+  "scheduler": {
+    "hourlyMinute": 17,
+    "logon": "InteractiveToken",
+    "runLevel": "LeastPrivilege",
+    "multipleInstances": "IgnoreNew",
+    "executionTimeLimitSeconds": 300,
+    "restartCount": 0,
+    "startWhenAvailable": false,
+    "wakeToRun": false
+  },
+  "triggerPolicy": {
+    "status": "pending",
+    "approvalReference": null,
+    "safety": {
+      "decision": "pending",
+      "evidenceReference": null,
+      "noProductionConsumersConfirmed": false
+    },
+    "definitionBlobs": {},
+    "actions": null,
+    "workflowPermissions": null,
+    "registeredWorkflows": null,
+    "rulesets": null,
+    "protection": null
+  }
+}

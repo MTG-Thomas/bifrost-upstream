@@ -1,6 +1,8 @@
-# Personal Fork Sync Candidate 0.2.0
+# Personal Fork Sync Candidate 0.3.0
 
-Status: source and tests prepared; no schedule or live sync activated.
+Status: offline source and tests prepared; no schedule or live sync activated.
+Owner approval for logged-on scheduled identity/keyring use and external
+production/customer-consumer confirmation is pending; no answer has been received.
 Task: `f2ab3925-3645-4f2e-8a37-6fac141adb19`.
 
 ## Scope and Design
@@ -37,6 +39,58 @@ GitHub still enforces repository protections on the write. This candidate does
 not implement a review/queue adapter if future protections require one.
 
 ## Proposed Recurrence (Not Installed)
+
+### Offline Launcher and Trigger-Manifest Gate
+
+`launcher.mjs`, `trigger-gate.mjs`, `launcher.template.json`, and
+`snapshot.template.json` prepare the proposed launcher without an activation
+entrypoint or scheduler registration code. The CLI accepts only:
+
+```powershell
+node scripts/upstream-sync/launcher.mjs --check scripts/upstream-sync/launcher.template.json scripts/upstream-sync/snapshot.template.json
+```
+
+The checked-in templates deliberately refuse: approvals remain pending, consumer
+confirmation is false, source pin is unset, and the snapshot is incomplete.
+Tests build explicitly synthetic fixtures; setting a fixture field to approved
+does not confer owner authority. The launcher accepts only `fixtureOnly:true`
+data, constructs a fixed GET-only in-memory API, and never uses `gh`, a credential,
+the network, or the exported writer. Its declared fixture identity is not a live
+Windows-session or GitHub-actor attestation. The result labels those facts false.
+
+The offline launcher checks the exact host/principal/session declaration; refuses
+credential, Git, and Node environment overrides; pins the known absolute binary
+paths; and checks the controller's clean Git worktree, exact HEAD, branch,
+repository root, and fork/upstream remote URLs. Git receives literal argv arrays,
+`shell:false`, disabled fsmonitor, hidden windows, ten-second command timeouts,
+and bounded output. No input is expanded as shell code. Source/environment/pin
+changes stop validation rather than selecting another identity or checkout.
+
+The shared exclusive process lock covers source validation, the durable hold
+check, and the plan. State stays outside the source checkout; no new plan runs
+with an unresolved receipt. Operational logs retain the existing bounds.
+The scheduler data is validated for InteractiveToken, least privilege, hourly
+minute 17, IgnoreNew, a five-minute limit, zero retries, no wake, and no catch-up.
+The offline run has a four-minute deadline, and at most six ten-second read-only
+Git commands; input JSON is limited to four MiB. No scheduler is created by this
+template, and no logged-on token or keyring is accessed by it.
+
+The trigger gate requires explicit safety evidence/consumer approval, a fresh
+complete snapshot, exact repo/main IDs, a commit-bound untruncated recursive Git
+tree, and a complete registered-workflow inventory. It compares every blob and
+mode under `.github/workflows/` and `.github/actions/` to the reviewed manifest,
+including unregistered definitions. Unknown/new/removed/changed definitions,
+symlinks, incomplete pages, 404 inventory, changed Actions settings/grants,
+rules, or branch protection all hold. It does not parse or execute YAML. A
+matching fingerprint is only a consistency check against separately qualified
+safety evidence; it cannot establish that workflows are inactive. A new
+non-workflow upstream commit can pass if its definitions/settings remain exactly
+reviewed and the refreshed evidence is bound to that commit.
+
+The live evidence collector, actual session/keyring qualification, exact-source
+approval, and live activation adapter are still separate gated work. Do not feed
+the fixture API or declared fixture identities into a future write path. See the
+explicit checklist in [ACTIVATION.md](ACTIVATION.md).
 
 Use one approved external controller, hourly at minute 17, rather than placing
 fork-only workflow commits on the mirror branch. On Windows, Task Scheduler
@@ -144,6 +198,22 @@ review/merge, schedule activation, and successful synchronization are separate
 acceptance items. None of the latter three is claimed here.
 
 ## Validation
+
+Revision 0.3.0 adds fixture-only launcher/gate tests alongside the 23 durable sync
+tests; all 74 targeted tests pass. Syntax checks and `git diff --check` also pass.
+No broad application/CI suites were run because this changes only the isolated
+controller candidate. No live API read/dry-run was repeated in this revision. The final Actions
+inventory denial remains HTTP 403 / rate limit, request ID
+`173D:3AFD6F:451A3C:E3E785:6AE89435`, `2026-11-02 13:46:29 UTC`.
+There is no known eligible reset evidence, so no retry or identity substitution
+was attempted. Source publication uses the already-established Git SSH remote;
+it is not an alternate way to retrieve the denied Actions inventory.
+
+Targeted command for 0.3.0:
+
+```powershell
+node --test scripts/upstream-sync/sync.test.mjs scripts/upstream-sync/launcher.test.mjs
+```
 
 Revision 0.2.0: all 23 targeted tests passed. Refreshed live dry-run found 11
 upstream-only commits ending at `20c9db7be9fdbdd617ecd338adba11eb4657c292`;

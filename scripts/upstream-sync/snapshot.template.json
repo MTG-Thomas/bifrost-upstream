@@ -1,0 +1,23 @@
+{
+  "fixtureOnly": true,
+  "complete": false,
+  "capturedAt": null,
+  "runtimeFixture": {
+    "host": "LT002-H8WL8H4",
+    "principal": "azuread\\thomasbray",
+    "interactiveSession": false
+  },
+  "fork": null,
+  "upstream": null,
+  "before": null,
+  "targetCommit": null,
+  "targetTree": null,
+  "targetCommitMetadata": null,
+  "comparison": null,
+  "tree": null,
+  "actions": null,
+  "workflowPermissions": null,
+  "registeredWorkflows": null,
+  "rulesets": null,
+  "protection": null
+}
