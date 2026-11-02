@@ -1,4 +1,4 @@
-# Personal Fork Sync Candidate 0.1.0
+# Personal Fork Sync Candidate 0.2.0
 
 Status: source and tests prepared; no schedule or live sync activated.
 Task: `f2ab3925-3645-4f2e-8a37-6fac141adb19`.
@@ -15,17 +15,24 @@ The Node standard-library implementation has no dependencies or stored secrets.
 Its CLI is read-only, using the existing authenticated `gh` installation:
 
 ```powershell
-node scripts/upstream-sync/sync.mjs --dry-run
+node scripts/upstream-sync/sync.mjs --dry-run --state-dir C:\Users\ThomasBray\AppData\Local\MTG\bifrost-upstream-sync\state
 node --test scripts/upstream-sync/sync.test.mjs
 ```
 
+Every invocation, including dry-run and reconciliation, must use the same
+absolute local state directory. Changing directories to evade a hold is unsafe.
 The candidate writer is exported for testing and future integration with an
 approved controller. It pins both 40-character commits, verifies numeric repo
 and parent identities and default branches, rejects ahead/diverged histories,
 checks for a concurrent fork edit, and requests a server-enforced fast-forward
 with `force: false`. It never merges, resets, deletes branches, changes rules,
-approves reviews, or retries writes. Lost responses receive one readback;
-anything other than the intended commit is a stop requiring reconciliation.
+approves reviews, or retries writes. Before PATCH it appends and fsyncs an intent
+containing the exact before/after commits and unique attempt ID. Exact readback
+appends a terminal `synced` receipt; a read failure or mismatch appends an
+`uncertain` receipt. A crash before either receipt leaves the intent unresolved.
+The next invocation checks the journal before any API calls and refuses even a
+new dry-run/plan until explicit reconciliation. Lost responses receive one
+readback; anything other than the intended commit retains the durable hold.
 GitHub still enforces repository protections on the write. This candidate does
 not implement a review/queue adapter if future protections require one.
 
@@ -39,18 +46,48 @@ Do not copy the interactive credential into a task, secret, or environment file.
 The account must already have approved unattended access; interactive `gh auth
 status` alone does not establish that approval or availability while logged out.
 
-Each run should retain timestamp, source version, before/after commits, outcome,
-and exit code in a bounded local log (30 daily files), with Task Scheduler's last
-result providing failure visibility. A failed or divergent run must not launch
-repair work. No-op runs perform no write. The next hourly run re-plans from live
-state; it must never blindly replay a failed PATCH. Runtime installation,
-locking/logging wrapper, and scheduler acceptance remain pending the gates below.
+The implementation already uses an exclusive-create filesystem process lock,
+with host/PID/unique ownership and no automatic stale-lock stealing. Operational
+logs retain at most 30 run files, each at most 16 KiB. They contain timestamped
+status events, never credentials or API response bodies. The separate append-only
+receipt ledger is safety state and is never rotated with those logs. It records
+attempt IDs, target scope, commits, and intent/uncertain/terminal outcomes; retain
+it across upgrades. Task Scheduler's last exit result would add failure visibility
+after installation. A future reviewed launcher must pin the source version;
+there is no installed launcher or task today.
+
+A failed or divergent run must not launch repair work. No-op runs perform no
+write. A later hourly invocation re-plans only if no prior attempt is unresolved.
+Runtime installation and scheduler acceptance remain pending the gates below.
 
 Manual recovery: disable only the controller task; inspect live main and the
 recorded intended SHA; run the dry-run command. Preserve fork-only commits on
 their existing branches and obtain a reviewed resolution for any divergence.
 Never reset main or force-push it to resume. If a write outcome is uncertain,
-read the current reference before taking any further write action.
+read the current reference before taking any further write action. With no active
+process lock, the read-only reconciliation command is:
+
+```powershell
+node scripts/upstream-sync/sync.mjs --reconcile --state-dir C:\Users\ThomasBray\AppData\Local\MTG\bifrost-upstream-sync\state
+```
+
+This command makes only GET requests and updates local receipts. It clears a
+hold only when main exactly equals the recorded intended SHA. Observing the old
+SHA, another SHA, or a failed GET never establishes that the earlier request
+cannot still complete, so the hold remains. There is deliberately no automatic
+"abandon and retry" command.
+
+After a process crash, `process.lock` remains. Stop/disable the controller and
+confirm the recorded host and PID against native process evidence. A running or
+reused PID, different host, partial lock, or uncertain process state is a stop.
+Only after the exact process is confirmed dead may the operator remove that
+single lock file from the fixed state directory. Do not delete the directory,
+journal, or any receipts. Then reconcile as above; deleting the lock never clears
+the intent hold. A torn or corrupt journal also blocks; retain it for evidence
+and reviewed recovery. The tests rehearse these steps with real child processes.
+Crash durability uses fsynced files on one local filesystem; network storage,
+cross-host locking, power-loss/storage-controller guarantees, and adversarial
+state-file changes are not qualified by these tests.
 
 ## Verified Preflight, 2026-11-02
 
@@ -85,24 +122,22 @@ read the current reference before taking any further write action.
   `1176-chat-restoration` at
   `8487e192c1ddeb781386c2dcc9a99c806d7508e9` (upstream PR 1179).
 
-## Activation Gates and Smallest Owner Action
+## Activation Packet
 
-No permitted recurring writer was established by this preflight. The existing
-interactive credential is not an unattended-access approval. An in-fork
-scheduled Actions writer would need a new write grant and fork-only main
-history; neither is permitted by the request. An external personal-token writer
-does not suppress inherited push workflows.
+See [ACTIVATION.md](ACTIVATION.md) for the exact proposed Windows identity,
+host, scheduler configuration, credential handling, API contract, trigger
+consequences, approval wording, and unimplemented activation gates.
 
-The owner must designate an **already-approved external scheduler and unattended
-writer for this exact fork**, and provide an approved way to establish that its
-main update cannot cause registry publication, deployment, or unbounded inherited
-CI. If those approvals do not already exist, the current request explicitly
-requires a stop. Do not create a credential, widen a workflow grant, disable
-security workflows, change Actions policy, or use another repository as a
-controller to work around this gate.
+No permission denial was observed: the CLI reports existing `repo` and
+`workflow` OAuth scopes and repository push authority. Those observations do not
+authorize scheduled reuse. Choosing an external controller is an architecture
+decision to keep main pristine, not a provider refusal. No new scope or account
+grant is proposed for that design. Do not create a credential, widen a workflow
+grant, disable security workflows, change Actions policy, or use another
+repository as a controller to work around an unsettled activation decision.
 
-After that evidence is available: integrate the tested writer with that host's
-existing scheduling/locking/logging adapter, review the exact source there, pass
+After the packet is approved and trigger safety is established: integrate the
+tested writer with the proposed reviewed launcher, review the exact source, pass
 its normal CI/review gates, perform one bounded update and readback, verify a
 second no-op, then activate and read back the hourly schedule. Source publication,
 review/merge, schedule activation, and successful synchronization are separate
@@ -110,9 +145,24 @@ acceptance items. None of the latter three is claimed here.
 
 ## Validation
 
+Revision 0.2.0: all 23 targeted tests passed. Refreshed live dry-run found 11
+upstream-only commits ending at `20c9db7be9fdbdd617ecd338adba11eb4657c292`;
+fork main remained `e611d31bbba3d7601980271c774cad5e821b1e97`. The earlier
+nine-commit snapshot above is historical, not a pinned update authorization.
+The 11-commit comparison response was 1,059,719 JSON characters and initially
+exceeded Node's subprocess buffer (`spawnSync gh ENOBUFS`). The adapter now asks
+`gh --jq` for ancestry fields only, without transporting patches. Its regression
+test and the refreshed live dry-run passed; no buffer limit was increased.
+Read-only reconciliation against the local live state returned `no-hold`.
+The real PATCH cases remain synthetic; no main synchronization was attempted.
+
 `node --test scripts/upstream-sync/sync.test.mjs` covers dry-run, no-op,
 fast-forward request/readback/idempotency, ahead/diverged histories, identity
 mismatch, concurrent edit, lost successful response, denial, and wrong readback.
+It also covers fsync/receipt failure, intent before PATCH, timeout plus failed
+readback followed by a fresh process, actual child crashes before PATCH and after
+simulated server acceptance, cross-process lock exclusion, safe reconciliation,
+torn-journal blocking, bounded logs, and CLI rejection of writes.
 The mutation cases use a fake GitHub API; they do not prove live write permission,
 workflow suppression, runtime scheduling, or a successful repository sync.
 `node --check scripts/upstream-sync/sync.mjs` checks syntax. The live dry-run is
