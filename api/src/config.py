@@ -9,7 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import AliasChoices, Field, computed_field
+from pydantic import AliasChoices, Field, SecretStr, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,6 +28,9 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
+
+    worker_capacity_url: str | None = Field(default=None, description="External physical-capacity provider HTTPS endpoint")
+    worker_capacity_token: SecretStr | None = Field(default=None, repr=False, exclude=True)
 
     # ==========================================================================
     # Environment
@@ -67,12 +70,20 @@ class Settings(BaseSettings):
 
     database_pool_size: int = Field(
         default=5,
-        description="Database connection pool size"
+        description=(
+            "Base main-pool connection allowance. For bounded settings, the "
+            "main pool retains this plus database_max_overflow for reuse; "
+            "connections open lazily. Zero preserves SQLAlchemy's unlimited pool."
+        )
     )
 
     database_max_overflow: int = Field(
         default=10,
-        description="Max overflow connections beyond pool size"
+        description=(
+            "Additional main-pool connection allowance, retained for reuse "
+            "within the same total connection ceiling. -1 preserves "
+            "SQLAlchemy's unlimited overflow."
+        )
     )
 
     database_dispatch_pool_size: int = Field(
