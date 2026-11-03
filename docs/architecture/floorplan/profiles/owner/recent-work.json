@@ -1,0 +1,33 @@
+{
+  "updatedAt": "2026-11-01T08:15:00Z",
+  "tasks": [
+    {
+      "title": "SDK updates served by the instance",
+      "request": "App SDK updates should come from the running Bifrost instance instead of being bundled into every app build",
+      "summary": "The instance now builds the app SDK itself and serves it to hosted apps, so an SDK fix reaches apps without rebuilding each one. Apps record which SDK they were built with, and a rebuild runs as a background job that switches the app over when it finishes.",
+      "items": [
+        { "ref": "api/src/services/sdk_package/__init__.py", "change": "changed", "note": "Builds the app SDK and its type definitions once per instance, and stamps a fingerprint so the platform knows exactly which SDK an app is running." },
+        { "ref": "api/src/routers/app_sdk_runtime.py", "change": "new", "note": "The request a hosted app makes to load its SDK. It only ever serves the build the instance produced, which is what makes hosted updates possible." },
+        { "ref": "api/src/jobs/platform/application_sdk_update.py", "change": "changed", "note": "An SDK-only rebuild runs as a durable background job and activates the new app version in one step, without touching git, manifests or Solutions." },
+        { "ref": "api/src/services/application_sdk_status.py", "change": "new", "note": "Compares each app's recorded SDK with the current one, so the platform can tell which apps need a rebuild and which are already current." },
+        { "ref": "api/shared/application_sdk_upgrades.py", "change": "changed", "note": "Decides when an app can move to a newer SDK automatically and when the change is big enough to need a reviewed upgrade instead." },
+        { "ref": "api/src/models/orm/applications.py", "change": "changed", "note": "Now remembers which SDK version and contract each app was built with, which is the record the upgrade decisions are based on." },
+        { "ref": "api/src/routers/version.py", "change": "changed", "note": "Reports the SDK build the instance is serving, so the app and the development proxy ask for the right one." },
+        { "ref": "api/bifrost/solution_dev/proxy.py", "change": "changed", "note": "The local preview proxy now fetches the SDK from the instance too, so what a developer sees locally matches what is served in production." },
+        { "ref": "api/Dockerfile", "change": "changed", "note": "The server image ships the prebuilt SDK, so a freshly installed instance can serve app SDK requests on its first boot." }
+      ]
+    },
+    {
+      "title": "Daily usage reporting",
+      "request": "Report daily, aggregate installation usage so the maintainers can see how the platform is used",
+      "summary": "Each installation now sends one small daily summary of counts, with no customer or workflow content, and it can be switched off. It runs on the existing timetable alongside the other recurring tasks.",
+      "items": [
+        { "ref": "api/shared/usage_reporting.py", "change": "new", "note": "Collects the daily counts and sends them once a day. Rate-limited, retried safely, and skipped entirely when reporting is turned off." },
+        { "ref": "api/src/jobs/schedulers/usage_reporting.py", "change": "changed", "note": "Puts the daily report on the scheduler's timetable so it runs without anyone triggering it." },
+        { "ref": "api/src/config.py", "change": "changed", "note": "Adds the setting that switches usage reporting on or off and points it at the collection endpoint." },
+        { "ref": "k8s/configmap.yaml", "change": "changed", "note": "Carries the reporting setting into a Kubernetes install so it behaves the same as a Compose install." },
+        { "ref": "docker-compose.yml", "change": "changed", "note": "Adds the same default to a local install, keeping the two deployment paths in step." }
+      ]
+    }
+  ]
+}

@@ -9,19 +9,44 @@ calls between them. It is built with [Floorplan](https://github.com/haydenschmit
 upstream review, not an established convention. The questions at the end are the ones
 worth settling before this becomes a required check.
 
-**View it:** <https://mtg-thomas.github.io/bifrost-upstream/> is the rendered map,
-published from the fork's `gh-pages` branch. It is a static export (no Ask bar, no
-health panel, no local paths), so it opens on a phone. Regenerate it with
-`node floorplan/serve.mjs --export floorplan/bifrost-map.html` and push that file as
-`index.html` on `gh-pages`.
+**View it:** <https://mtg-thomas.github.io/bifrost-upstream/> is the landing page for the owner and
+engineer views (see Profiles below), published from the fork's `gh-pages` branch. Both are static
+exports (no Ask bar, no health panel, no local paths), so they open on a phone. Regenerate with
+`node scripts/floorplan.mjs build [--profile <name>]`,
+`node floorplan/serve.mjs --export floorplan/<name>-map.html`, then push that file as `index.html`
+under `owner/` or `engineer/` on `gh-pages`.
+
+## Profiles
+
+The same codebase can be drawn for different readers. A profile is a folder under
+`docs/architecture/floorplan/profiles/<name>/` with its own `architecture.json`; the rendered map
+always comes from the shared `floorplan/` folder, one profile at a time.
+
+| Profile | Reader | Wording | Journeys |
+|---|---|---|---|
+| `owner` (default) | the people who run the business | plain language, business wording | what a workflow, an app deploy and an agent turn mean for staff |
+| `engineer` | people working on the platform | layers, contracts and processes | request paths from HTTP to child process to persisted row |
+
+An inheriting profile sets `{"descriptionsFrom": "../owner"}` in its `profile.json`: the build
+reuses the owner's descriptions (keyed by file path) and overrides only what it wants to say
+differently, so the views share one description set instead of duplicating 2,095 entries. `save`
+never writes descriptions for an inheriting profile.
+
+```bash
+node scripts/floorplan.mjs profiles                    # list profiles
+node scripts/floorplan.mjs check --profile engineer    # validate one profile
+node scripts/floorplan.mjs build --profile engineer    # render it into floorplan/
+```
+
+A repository with no `profiles/` folder behaves exactly as before: the source root is the profile.
 
 ## What is tracked, and what is not
 
 | Path | Tracked | Why |
 |---|---|---|
-| `docs/architecture/floorplan/architecture.json` | yes | What the parts of the platform are, and how they connect |
-| `docs/architecture/floorplan/descriptions/*.json` | yes | A name and one-line description per file and request |
-| `docs/architecture/floorplan/recent-work.json` | yes | The "what changed and why" notes shown on the map |
+| `docs/architecture/floorplan/profiles/<name>/architecture.json` | yes | What the parts of the platform are, and how they connect |
+| `docs/architecture/floorplan/profiles/<name>/descriptions/*.json` | yes | A name and one-line description per file and request |
+| `docs/architecture/floorplan/profiles/<name>/recent-work.json` | yes | The "what changed and why" notes shown on the map |
 | `floorplan/` | no | The rendered map (`index.html`, `graph.json`), rebuilt on demand |
 
 The authored part is tracked; the rendered part is generated. They are in different

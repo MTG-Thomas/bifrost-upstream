@@ -30,9 +30,15 @@ concurrency:
 
 jobs:
   check:
-    name: Floorplan map
+    name: Floorplan map (${{ matrix.profile }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # One check per reader: the owner view and the engineer view share descriptions but
+        # differ in structure and wording.
+        profile: [owner, engineer]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -45,7 +51,7 @@ jobs:
           node-version: 22
 
       - name: Check the map still matches the code
-        run: node scripts/floorplan.mjs check
+        run: node scripts/floorplan.mjs check --profile ${{ matrix.profile }}
 
       # The rendered map is 5 MB; keep it only when the check fails, so a reviewer can
       # open it and see exactly which cards drifted.
