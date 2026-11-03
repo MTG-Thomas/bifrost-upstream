@@ -153,19 +153,38 @@ const copy = (from, to) => {
   fs.copyFileSync(from, to);
 };
 
+/** Which profile produced the map currently in floorplan/. */
+function activeProfile() {
+  try {
+    return fs.readFileSync(path.join(MAP, '.profile'), 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
+const needsLoad = () =>
+  !fs.existsSync(path.join(MAP, 'architecture.json')) || activeProfile() !== PROFILE;
+
+
 const descriptionFiles = (dir) =>
   fs.existsSync(dir) ? fs.readdirSync(dir).filter((name) => name.endsWith('.json')) : [];
 
 /** Copy the tracked inputs into the generated map folder. Never deletes there. */
-function load() {
+function loadArchitecture() {
   if (!fs.existsSync(path.join(SOURCE, 'architecture.json'))) {
     throw new Error(`No map source found at ${path.relative(ROOT, SOURCE)}`);
   }
-  fs.mkdirSync(path.join(MAP, DESCRIPTION_DIR), { recursive: true });
+  fs.mkdirSync(MAP, { recursive: true });
   for (const name of AUTHORED) {
     const from = path.join(SOURCE, name);
     if (fs.existsSync(from)) copy(from, path.join(MAP, name));
   }
+  fs.writeFileSync(path.join(MAP, '.profile'), `${PROFILE}\n`);
+}
+
+function load() {
+  loadArchitecture();
+  fs.mkdirSync(path.join(MAP, DESCRIPTION_DIR), { recursive: true });
   // A profile can borrow another profile's descriptions (keyed by file path) and override only
   // the ones it wants to say differently.
   if (INHERITED_DESCRIPTIONS) {
@@ -176,6 +195,12 @@ function load() {
   for (const name of descriptionFiles(path.join(SOURCE, DESCRIPTION_DIR))) {
     copy(path.join(SOURCE, DESCRIPTION_DIR, name), path.join(MAP, DESCRIPTION_DIR, name));
   }
+}
+
+/** Switching profiles reloads descriptions too; otherwise only the architecture is refreshed. */
+function prepare() {
+  if (needsLoad()) load();
+  else loadArchitecture();
 }
 
 /** Copy metadata the plugin wrote back into the tracked source. */
@@ -223,7 +248,7 @@ function pruneMissing() {
 }
 
 function build() {
-  if (!fs.existsSync(path.join(MAP, 'architecture.json'))) load();
+  prepare();
   pruneMissing();
   process.stdout.write(runScript('scan.mjs'));
   process.stdout.write(runScript('build.mjs'));
@@ -232,13 +257,14 @@ function build() {
 
 function refresh() {
   if (!fs.existsSync(path.join(MAP, 'graph.json'))) load();
+  else prepare();
   pruneMissing();
   process.stdout.write(runScript('refresh.mjs'));
   save();
 }
 
 function describe() {
-  if (!fs.existsSync(path.join(MAP, 'architecture.json'))) load();
+  prepare();
   pruneMissing();
   process.stdout.write(runScript('describe.mjs'));
   save();

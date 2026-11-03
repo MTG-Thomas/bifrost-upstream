@@ -2,7 +2,7 @@
   "$schema": "floorplan/architecture@1",
   "project": {
     "name": "Bifrost Integrations",
-    "summary": "An open-source automation platform for MSP integration work. A React web app talks to a FastAPI control plane, which stores everything in PostgreSQL and Redis, keeps files in S3-compatible storage, and hands workflow and AI-agent runs to execution workers. A scheduler drives recurring work, a CLI and an MCP gateway let other tools drive the platform, and a small app runtime lets people build and host their own React apps inside it.",
+    "summary": "FastAPI control plane, React SPA on Vite, and a separate execution plane for workflows and agents. PostgreSQL is the source of truth, Redis carries cache and pub/sub, S3-compatible storage holds repo files and app bundles, and Kubernetes runs isolated build jobs.",
     "entrypoints": [
       "api/src/main.py",
       "api/src/worker/main.py",
@@ -11,7 +11,10 @@
       "client/src/main.tsx"
     ]
   },
-  "include": ["code", "config"],
+  "include": [
+    "code",
+    "config"
+  ],
   "ignore": [
     "api/alembic/versions/**",
     "client/src/lib/v1.d.ts",
@@ -36,38 +39,38 @@
   "tour": [
     {
       "node": "web",
-      "title": "Start with the app people use",
-      "note": "A single React app. Left to right, it holds the list screens (workflows, forms, agents, tables, integrations), the editors, the chat, and a settings area."
+      "title": "Client build and routing",
+      "note": "React SPA: router, screens, TanStack Query for server state, Radix UI, Monaco editor."
     },
     {
-      "node": "api.routers",
-      "title": "Every button becomes a request",
-      "note": "Each of these files is one group of web addresses. A screen calls one, and the handler checks who is asking before anything happens."
+      "node": "api",
+      "title": "API process",
+      "note": "FastAPI app: routers enforce authz, services own the rules, repositories own SQL."
     },
     {
       "node": "api.services",
-      "title": "Where the real rules live",
-      "note": "Handlers stay thin. The thinking - permissions, OAuth, builds, deployments, agent runs - happens in these services, which is why it is the biggest part of the platform."
+      "title": "Service layer",
+      "note": "The bulk of the domain logic and side effects, including transactional boundaries."
     },
     {
       "node": "workers",
-      "title": "Where slow work actually runs",
-      "note": "Workflows and agents need minutes, not milliseconds, so the API hands them to separated worker processes. These run the code, stream the logs back, and record the result."
+      "title": "Execution plane",
+      "note": "Separate processes: claim work, import modules, run in a child process, stream logs."
     },
     {
       "node": "data",
-      "title": "What the platform remembers",
-      "note": "Almost everything durable is a PostgreSQL row: organizations, users, roles, workflows, runs, jobs. Redis holds caches and live channels; S3 holds files and built apps."
+      "title": "Persistence",
+      "note": "SQLAlchemy models, Pydantic contracts and the Alembic chain; Postgres is the source of truth."
     },
     {
-      "node": "api.services.integrations",
-      "title": "How it talks to other systems",
-      "note": "Connections, OAuth tokens, Git sync and manifests all live here. This is what lets one workflow talk to NinjaOne on Monday and HaloPSA on Tuesday."
+      "node": "shared",
+      "title": "Shared runtime",
+      "note": "Access checks and the workflow SDK used by API and workers alike."
     },
     {
       "node": "appruntime",
-      "title": "Apps built inside Bifrost",
-      "note": "People can build their own React apps against the platform. This part compiles them, serves the SDK and renders them, which is why Bifrost can host dashboards as well as automations."
+      "title": "Hosted app runtime",
+      "note": "SDK contract, compiler and host that serve apps built inside the platform."
     }
   ],
   "nodes": [
@@ -75,8 +78,13 @@
       "id": "web",
       "label": "Web App",
       "kind": "ui",
-      "summary": "The React single-page app where people manage workflows, forms, agents, apps, integrations and settings.",
-      "paths": ["client/src", "client/index.html", "client/*.ts", "client/*.js"],
+      "summary": "React 18 SPA built by Vite (React Router, TanStack Query, Radix, Zustand, Monaco), served from nginx.",
+      "paths": [
+        "client/src",
+        "client/index.html",
+        "client/*.ts",
+        "client/*.js"
+      ],
       "exclude": [
         "client/src/lib/app-sdk/**",
         "client/src/lib/app-code-platform/**",
@@ -88,15 +96,17 @@
       "parent": "web",
       "label": "Screens",
       "kind": "feature",
-      "summary": "One file per page: lists, detail pages, editors and the login and setup flows.",
-      "paths": ["client/src/pages"]
+      "summary": "Route components under src/pages, one module per screen, lazy-loaded through AppRouter.",
+      "paths": [
+        "client/src/pages"
+      ]
     },
     {
       "id": "web.editor",
       "parent": "web",
       "label": "Editors",
       "kind": "feature",
-      "summary": "The in-browser code and file editors, including the app builder and its window management.",
+      "summary": "Monaco-backed code and file editors, app builder, file tree and window manager.",
       "paths": [
         "client/src/components/app-builder",
         "client/src/components/app-code-editor",
@@ -110,7 +120,7 @@
       "parent": "web",
       "label": "Chat & agents",
       "kind": "feature",
-      "summary": "The chat surface for talking to Bifrost agents, plus the parts that show agent runs and their tools.",
+      "summary": "Chat runtime and stream consumers for agent runs, tool calls and artifacts.",
       "paths": [
         "client/src/components/chat",
         "client/src/components/ai",
@@ -122,7 +132,7 @@
       "parent": "web",
       "label": "Admin screens' parts",
       "kind": "feature",
-      "summary": "The panels behind the admin pages: integrations, services, workflows, forms, tables, Solutions, roles, users, audit and reports.",
+      "summary": "Feature components for admin surfaces: integrations, services, workflows, forms, tables, Solutions, roles, users, audit.",
       "paths": [
         "client/src/components/integrations",
         "client/src/components/services",
@@ -152,7 +162,7 @@
       "parent": "web",
       "label": "Design kit",
       "kind": "library",
-      "summary": "Shared building blocks: buttons, dialogs, tables, layout, icons, search and pagination used on every screen.",
+      "summary": "Shared UI primitives, layout shell and interaction patterns over Radix and Tailwind.",
       "paths": [
         "client/src/components/ui",
         "client/src/components/common",
@@ -171,15 +181,17 @@
       "parent": "web",
       "label": "Browser helpers",
       "kind": "library",
-      "summary": "The small pieces the browser needs: the API client, sign-in handling, formatting, routing helpers and terminology.",
-      "paths": ["client/src/lib"]
+      "summary": "Client utilities: api-client, auth-token, error shaping, codecs and terminology maps.",
+      "paths": [
+        "client/src/lib"
+      ]
     },
     {
       "id": "web.data",
       "parent": "web",
       "label": "Data & state",
       "kind": "library",
-      "summary": "Everything that fetches and caches server data for the screens: API wrappers, hooks, stores and contexts.",
+      "summary": "TanStack Query hooks, Zustand stores and React contexts holding server state.",
       "paths": [
         "client/src/services",
         "client/src/hooks",
@@ -187,29 +199,34 @@
         "client/src/contexts"
       ]
     },
-
     {
       "id": "api",
       "label": "Platform API",
       "kind": "service",
-      "summary": "The FastAPI control plane: sign-in, tenants, permissions, workflows, agents, apps, Solutions, files and every endpoint the app and CLI call.",
-      "paths": ["api/src"]
+      "summary": "FastAPI application (Python 3.11): routers over services, async SQLAlchemy, Redis, S3 and WebSockets.",
+      "paths": [
+        "api/src"
+      ]
     },
     {
       "id": "api.routers",
       "parent": "api",
       "label": "Endpoints",
       "kind": "feature",
-      "summary": "One file per group of web addresses; each handler checks access, then hands the work to a service.",
-      "paths": ["api/src/routers"]
+      "summary": "Thin HTTP handlers: parse the request, enforce authz, delegate to a service.",
+      "paths": [
+        "api/src/routers"
+      ]
     },
     {
       "id": "api.services",
       "parent": "api",
       "label": "Business logic",
       "kind": "feature",
-      "summary": "The rules and the heavy lifting: OAuth flows, builds, deployments, agent runs, Git sync and access checks.",
-      "paths": ["api/src/services"],
+      "summary": "Domain services; most business rules, transactions and side effects live here.",
+      "paths": [
+        "api/src/services"
+      ],
       "exclude": [
         "api/src/services/mcp_server/**",
         "api/src/services/mcp_client/**",
@@ -222,7 +239,7 @@
       "parent": "api.services",
       "label": "Agents & AI",
       "kind": "feature",
-      "summary": "Runs AI agents and chat: prompts, model choice, tools, budgets, retries and usage accounting.",
+      "summary": "Pydantic AI agent runtime: model factory, toolset, budgets, retries, usage metering.",
       "paths": [
         "api/src/services/agent_*.py",
         "api/src/services/chat_*.py",
@@ -247,7 +264,7 @@
       "parent": "api.services",
       "label": "Apps & SDK",
       "kind": "feature",
-      "summary": "Builds, stores and publishes the React apps people create inside Bifrost, and keeps the app SDK versions in step.",
+      "summary": "App deploy pipeline, SDK packaging and retained source.",
       "paths": [
         "api/src/services/app_*.py",
         "api/src/services/application_*.py",
@@ -266,7 +283,7 @@
       "parent": "api.services",
       "label": "Integrations & sync",
       "kind": "feature",
-      "summary": "Keeps connections to outside systems working: OAuth tokens, provider calls, webhooks, Git sync and the manifest that describes the workspace.",
+      "summary": "OAuth token lifecycle, provider clients, Git sync/manifest and webhook delivery.",
       "paths": [
         "api/src/services/github*.py",
         "api/src/services/git_*.py",
@@ -283,15 +300,17 @@
       "parent": "api.services",
       "label": "Solutions",
       "kind": "feature",
-      "summary": "Packages a set of workflows, apps, forms and tables into one installable Solution, then deploys and upgrades it in another environment.",
-      "paths": ["api/src/services/solutions"]
+      "summary": "Solution capture, export, deploy and upgrade: bundling, rewriting and preflight.",
+      "paths": [
+        "api/src/services/solutions"
+      ]
     },
     {
       "id": "api.services.access",
       "parent": "api.services",
       "label": "Access & identity",
       "kind": "feature",
-      "summary": "Who may see or change what: roles, permissions, organization scoping, MFA, passkeys and sign-in identities.",
+      "summary": "Authz primitives: access checks, policy rules, roles, org scoping, MFA and passkeys.",
       "paths": [
         "api/src/services/access_*.py",
         "api/src/services/authorization",
@@ -315,7 +334,7 @@
       "parent": "api.services",
       "label": "Knowledge & search",
       "kind": "feature",
-      "summary": "Indexes documents and source code so agents and people can search them, including embeddings and retrieval.",
+      "summary": "Embedding and indexing pipeline plus retrieval for knowledge sources.",
       "paths": [
         "api/src/services/knowledge",
         "api/src/services/embeddings",
@@ -329,7 +348,7 @@
       "parent": "api.services",
       "label": "Files & artifacts",
       "kind": "feature",
-      "summary": "Stores and serves files, keeps the searchable file index, and generates artifacts such as documents and images.",
+      "summary": "S3 file storage, file-index sync and artifact generation.",
       "paths": [
         "api/src/services/file_*.py",
         "api/src/services/file_storage",
@@ -343,7 +362,7 @@
       "parent": "api.services",
       "label": "Jobs, events & ops",
       "kind": "feature",
-      "summary": "The platform's own housekeeping and durable work: platform jobs, notifications, audit, metrics, retention and Kubernetes isolation.",
+      "summary": "PlatformJob registry and runner, notifications, audit, metrics, retention, Kubernetes isolation.",
       "paths": [
         "api/src/services/platform_job*.py",
         "api/src/services/notification_*.py",
@@ -370,23 +389,26 @@
       "parent": "api",
       "label": "Core plumbing",
       "kind": "library",
-      "summary": "The shared foundation of the API: database sessions, Redis, caching, CSRF, rate limits, auth context and settings.",
-      "paths": ["api/src/core"]
+      "summary": "Cross-cutting infrastructure: DB sessions, Redis, cache invalidation, CSRF, rate limits, auth dependencies.",
+      "paths": [
+        "api/src/core"
+      ]
     },
     {
       "id": "api.repositories",
       "parent": "api",
       "label": "Repositories",
       "kind": "data",
-      "summary": "The only code that reads and writes stored records, keeping organization scoping consistent.",
-      "paths": ["api/src/repositories"]
+      "summary": "Data-access layer; SQLAlchemy queries scoped by organization.",
+      "paths": [
+        "api/src/repositories"
+      ]
     },
-
     {
       "id": "workers",
       "label": "Execution Workers",
       "kind": "worker",
-      "summary": "Separate processes that actually run workflows and agents, stream their logs and report results back to the API.",
+      "summary": "Execution plane: worker launcher, process pool, sandboxed workflow and agent execution.",
       "paths": [
         "api/src/worker",
         "api/src/services/execution",
@@ -398,103 +420,127 @@
       "parent": "workers",
       "label": "Worker launcher",
       "kind": "worker",
-      "summary": "Starts a worker, keeps it healthy, and lets it claim and run work handed out by the API.",
-      "paths": ["api/src/worker"]
+      "summary": "Remote launcher, work claims and the control channel back to the API.",
+      "paths": [
+        "api/src/worker"
+      ]
     },
     {
       "id": "workers.engine",
       "parent": "workers",
       "label": "Execution engine",
       "kind": "worker",
-      "summary": "Loads a workflow's code, runs it in a sandboxed process, and captures logs, memory, CPU and the result.",
-      "paths": ["api/src/services/execution"]
+      "summary": "Module loading, sandboxed child process, log/CPU/memory capture.",
+      "paths": [
+        "api/src/services/execution"
+      ]
     },
     {
       "id": "workers.pool",
       "parent": "workers",
       "label": "Worker pool",
       "kind": "worker",
-      "summary": "Decides how much memory and capacity each worker has and how runs are spread across them.",
-      "paths": ["api/src/services/worker_pool"]
+      "summary": "Worker sizing, admission and capacity policy.",
+      "paths": [
+        "api/src/services/worker_pool"
+      ]
     },
     {
       "id": "workers.scheduler",
       "parent": "workers",
       "label": "Scheduler process",
       "kind": "worker",
-      "summary": "The scheduler container: heartbeats, runs the launcher, and manages Kubernetes control when deployed there.",
-      "paths": ["api/src/scheduler"]
+      "summary": "Scheduler process: heartbeat, readiness files, optional Kubernetes control.",
+      "paths": [
+        "api/src/scheduler"
+      ]
     },
-
     {
       "id": "jobs",
       "label": "Jobs & Scheduled Tasks",
       "kind": "worker",
-      "summary": "The durable job system and every recurring loop: builds, deploys, exports, token refresh, retention and cleanup.",
-      "paths": ["api/src/jobs", "api/src/services/platform_job*.py"]
+      "summary": "Durable PlatformJob system plus the APScheduler loops.",
+      "paths": [
+        "api/src/jobs",
+        "api/src/services/platform_job*.py"
+      ]
     },
     {
       "id": "jobs.platform",
       "parent": "jobs",
       "label": "Durable jobs",
       "kind": "worker",
-      "summary": "Long operations that survive a restart: each one has status, progress, retries, cancellation and a place in PostgreSQL.",
-      "paths": ["api/src/jobs/platform"]
+      "summary": "Job definitions: registry, policy, leases, retries and the Kubernetes runner.",
+      "paths": [
+        "api/src/jobs/platform"
+      ]
     },
     {
       "id": "jobs.schedulers",
       "parent": "jobs",
       "label": "Recurring loops",
       "kind": "worker",
-      "summary": "Time-based work: cron triggers, OAuth token refresh, webhook renewal, retention, cleanups and metrics sampling.",
-      "paths": ["api/src/jobs/schedulers"]
+      "summary": "Periodic loops: cron triggers, token refresh, webhook renewal, retention, metrics.",
+      "paths": [
+        "api/src/jobs/schedulers"
+      ]
     },
     {
       "id": "jobs.consumers",
       "parent": "jobs",
       "label": "Consumers",
       "kind": "worker",
-      "summary": "Background consumers that pick up queued work and run it outside a request.",
-      "paths": ["api/src/jobs/consumers"]
+      "summary": "Queue consumers that execute dispatched work outside a request.",
+      "paths": [
+        "api/src/jobs/consumers"
+      ]
     },
-
     {
       "id": "cli",
       "label": "Bifrost CLI",
       "kind": "script",
-      "summary": "The `bifrost` command people use from a terminal: create and edit entities, sync a workspace, deploy Solutions and drive the API.",
-      "paths": ["api/bifrost", "api/bifrost.py"]
+      "summary": "`bifrost` CLI: Click commands over the REST API, with sync/watch and a Textual TUI.",
+      "paths": [
+        "api/bifrost",
+        "api/bifrost.py"
+      ]
     },
     {
       "id": "cli.commands",
       "parent": "cli",
       "label": "Commands",
       "kind": "script",
-      "summary": "One module per entity type, so `bifrost workflows ...`, `bifrost apps ...` and friends behave the same way.",
-      "paths": ["api/bifrost/commands"]
+      "summary": "Per-entity Click command modules generated against shared DTOs.",
+      "paths": [
+        "api/bifrost/commands"
+      ]
     },
     {
       "id": "cli.contracts",
       "parent": "cli",
       "label": "CLI contracts",
       "kind": "library",
-      "summary": "The request and response shapes the CLI shares with the server, so both stay compatible.",
-      "paths": ["api/bifrost/contracts"]
+      "summary": "Shared CLI request/response models and contract version gates.",
+      "paths": [
+        "api/bifrost/contracts"
+      ]
     },
     {
       "id": "cli.tui",
       "parent": "cli",
       "label": "Terminal UI",
       "kind": "script",
-      "summary": "Interactive terminal screens for file selection, progress and sync.",
-      "paths": ["api/bifrost/tui", "api/bifrost/solution_dev"]
+      "summary": "Textual screens for file selection, progress and sync.",
+      "paths": [
+        "api/bifrost/tui",
+        "api/bifrost/solution_dev"
+      ]
     },
-
     {
       "id": "mcp",
       "label": "MCP Gateway",
       "kind": "service",
-      "summary": "Exposes Bifrost to AI assistants through the Model Context Protocol, and connects Bifrost agents to outside MCP servers.",
+      "summary": "MCP server (Streamable HTTP) plus a client for external MCP servers.",
       "paths": [
         "api/src/services/mcp_server",
         "api/src/services/mcp_client"
@@ -505,31 +551,36 @@
       "parent": "mcp",
       "label": "Gateway tools",
       "kind": "feature",
-      "summary": "The individual tools an AI assistant can call, each a thin wrapper over a normal Bifrost endpoint.",
-      "paths": ["api/src/services/mcp_server/tools"]
+      "summary": "Thin, HTTP-bridged MCP tool wrappers over existing endpoints.",
+      "paths": [
+        "api/src/services/mcp_server/tools"
+      ]
     },
     {
       "id": "mcp.server",
       "parent": "mcp",
       "label": "Server & auth",
       "kind": "service",
-      "summary": "Serves the MCP endpoint, authenticates callers and decides which tools each one may see.",
-      "paths": ["api/src/services/mcp_server"]
+      "summary": "FastMCP app, auth middleware and tool exposure rules.",
+      "paths": [
+        "api/src/services/mcp_server"
+      ]
     },
     {
       "id": "mcp.client",
       "parent": "mcp",
       "label": "Client",
       "kind": "library",
-      "summary": "Calls outside MCP servers on an agent's behalf, including their sign-in and tool discovery.",
-      "paths": ["api/src/services/mcp_client"]
+      "summary": "Outbound MCP client, OAuth and tool discovery.",
+      "paths": [
+        "api/src/services/mcp_client"
+      ]
     },
-
     {
       "id": "appruntime",
       "label": "App Runtime & SDK",
       "kind": "library",
-      "summary": "The machinery behind apps built inside Bifrost: the SDK they code against, the compiler that builds them and the runtime that serves them.",
+      "summary": "Web SDK, host runtime and the compiler/bundler that produce hosted app deployments.",
       "paths": [
         "client/src/lib/app-sdk",
         "client/src/lib/app-code-platform",
@@ -544,83 +595,98 @@
       "parent": "appruntime",
       "label": "App SDK",
       "kind": "library",
-      "summary": "What app authors import: data access, files, AI, forms and UI pieces, with a stable versioned contract.",
-      "paths": ["client/src/lib/app-sdk"]
+      "summary": "SDK surface: data, files, AI, forms and UI, versioned by binding major.",
+      "paths": [
+        "client/src/lib/app-sdk"
+      ]
     },
     {
       "id": "appruntime.platform",
       "parent": "appruntime",
       "label": "App platform",
       "kind": "library",
-      "summary": "Runs an app's code in the browser and connects it to the platform's runtime services.",
-      "paths": ["client/src/lib/app-code-platform"]
+      "summary": "Hosted app runtime bridge: platform modules and RPC to the API.",
+      "paths": [
+        "client/src/lib/app-code-platform"
+      ]
     },
     {
       "id": "appruntime.render",
       "parent": "appruntime",
       "label": "App host",
       "kind": "feature",
-      "summary": "The React host that mounts a built app and gives it the SDK.",
-      "paths": ["client/src/components/jsx-app"]
+      "summary": "JSX app host: mounts a deployment with the SDK context.",
+      "paths": [
+        "client/src/components/jsx-app"
+      ]
     },
     {
       "id": "appruntime.builder",
       "parent": "appruntime",
       "label": "Build service",
       "kind": "service",
-      "summary": "Compiles and bundles an app's source into something the platform can host, and packages the SDK types it codes against.",
+      "summary": "esbuild/Vite build, type packaging and bundle fingerprinting.",
       "paths": [
         "api/src/services/app_compiler",
         "api/src/services/app_bundler",
         "api/src/services/sdk_package"
       ]
     },
-
     {
       "id": "data",
       "label": "Database & Models",
       "kind": "data",
-      "summary": "Every stored record and its shape: organizations, users, roles, workflows, runs, agents, jobs, apps and Solutions.",
-      "paths": ["api/src/models", "api/alembic"]
+      "summary": "Persistence layer: SQLAlchemy ORM, Pydantic contracts and Alembic migrations.",
+      "paths": [
+        "api/src/models",
+        "api/alembic"
+      ]
     },
     {
       "id": "data.orm",
       "parent": "data",
       "label": "Tables",
       "kind": "data",
-      "summary": "The database tables as Python classes, one file per area of the product.",
-      "paths": ["api/src/models/orm"]
+      "summary": "SQLAlchemy models and relationships, one module per record family.",
+      "paths": [
+        "api/src/models/orm"
+      ]
     },
     {
       "id": "data.contracts",
       "parent": "data",
       "label": "API shapes",
       "kind": "data",
-      "summary": "The request and response shapes every endpoint, the CLI and the generated TypeScript types agree on.",
-      "paths": ["api/src/models/contracts"]
+      "summary": "Pydantic request/response DTOs; source of the generated TypeScript types.",
+      "paths": [
+        "api/src/models/contracts"
+      ]
     },
     {
       "id": "data.migrations",
       "parent": "data",
       "label": "Migrations",
       "kind": "data",
-      "summary": "The ordered changes that turn an older database into the current schema.",
-      "paths": ["api/alembic"]
+      "summary": "Alembic environment and revision chain.",
+      "paths": [
+        "api/alembic"
+      ]
     },
-
     {
       "id": "shared",
       "label": "Shared Business Logic",
       "kind": "library",
-      "summary": "Rules used by both the API and the workers, so a permission or file decision means the same thing everywhere.",
-      "paths": ["api/shared"]
+      "summary": "Code imported by both the API and workers; no HTTP layer.",
+      "paths": [
+        "api/shared"
+      ]
     },
     {
       "id": "shared.access",
       "parent": "shared",
       "label": "Access rules",
       "kind": "library",
-      "summary": "Shared checks for who may use a file, table, workflow or form, including organization scoping and role caches.",
+      "summary": "Access-check helpers, policy evaluation, org scoping and role caches.",
       "paths": [
         "api/shared/access_*.py",
         "api/shared/policies",
@@ -643,15 +709,17 @@
       "parent": "shared",
       "label": "Workflow SDK",
       "kind": "library",
-      "summary": "What a workflow author calls at runtime: tables, files, forms, AI, integrations, users and executions.",
-      "paths": ["api/shared/sdk_*.py"]
+      "summary": "Workflow runtime SDK: tables, files, forms, AI, integrations, users, executions.",
+      "paths": [
+        "api/shared/sdk_*.py"
+      ]
     },
     {
       "id": "shared.events",
       "parent": "shared",
       "label": "Execution & events",
       "kind": "library",
-      "summary": "Run context, liveness, cancellation, event delivery and usage reporting shared across the platform.",
+      "summary": "Run context, cancellation, event delivery and usage reporting.",
       "paths": [
         "api/shared/event_*.py",
         "api/shared/execution_*.py",
@@ -662,12 +730,11 @@
         "api/shared/usage_reporting.py"
       ]
     },
-
     {
       "id": "infra",
       "label": "Deploy & CI",
       "kind": "infra",
-      "summary": "How Bifrost is built, tested and shipped: Docker Compose for local and test, Kubernetes manifests, and GitHub Actions.",
+      "summary": "Deployment and CI: Compose for local/test, Kubernetes/Kustomize, GitHub Actions.",
       "paths": [
         "k8s",
         "deploy",
@@ -687,74 +754,111 @@
       "parent": "infra",
       "label": "Kubernetes",
       "kind": "infra",
-      "summary": "The manifests that run the API, client, worker, scheduler, Postgres, Redis and SeaweedFS in a cluster.",
-      "paths": ["k8s", "deploy"]
+      "summary": "Kubernetes manifests for api, client, worker, scheduler, Postgres, Redis and SeaweedFS.",
+      "paths": [
+        "k8s",
+        "deploy"
+      ]
     },
     {
       "id": "infra.ci",
       "parent": "infra",
       "label": "CI pipelines",
       "kind": "infra",
-      "summary": "The GitHub Actions that lint, test, scan for security problems and publish releases.",
-      "paths": [".github"]
+      "summary": "GitHub Actions: lint, tests, CodeQL, releases and image publishing.",
+      "paths": [
+        ".github"
+      ]
     },
     {
       "id": "tooling",
       "label": "Repo Tooling",
       "kind": "script",
-      "summary": "Developer and maintenance scripts: type generation, SDK generation, releases, benchmarks and local helpers.",
-      "paths": ["scripts", "plugins", "api/scripts", ".claude"]
+      "summary": "Repository scripts: type and SDK generation, releases, benchmarks.",
+      "paths": [
+        "scripts",
+        "plugins",
+        "api/scripts",
+        ".claude"
+      ]
     },
-
     {
       "id": "postgres",
       "label": "PostgreSQL",
       "kind": "external",
-      "summary": "The main database. Workflows, runs, users, roles, apps and jobs are all rows here.",
-      "packages": ["pypi:sqlalchemy", "pypi:asyncpg", "pypi:alembic", "pypi:greenlet"]
+      "summary": "Primary datastore, accessed through asyncpg and SQLAlchemy.",
+      "packages": [
+        "pypi:sqlalchemy",
+        "pypi:asyncpg",
+        "pypi:alembic",
+        "pypi:greenlet"
+      ]
     },
     {
       "id": "redis",
       "label": "Redis",
       "kind": "external",
-      "summary": "Caches, sessions, rate limits, live channels and the compiled module cache.",
-      "packages": ["pypi:redis"]
+      "summary": "Cache, pub/sub fan-out and the compiled module cache.",
+      "packages": [
+        "pypi:redis"
+      ]
     },
     {
       "id": "objectstore",
       "label": "S3 storage",
       "kind": "external",
-      "summary": "The workspace files, built apps and artifacts, stored in any S3-compatible service (SeaweedFS locally).",
-      "packages": ["pypi:awscrt"]
+      "summary": "S3-compatible blob store for repo files, bundles and artifacts.",
+      "packages": [
+        "pypi:awscrt"
+      ]
     },
     {
       "id": "github",
       "label": "GitHub",
       "kind": "external",
-      "summary": "Where Bifrost pushes and pulls workspace changes, and where integrations and apps can be sourced from.",
-      "packages": ["pypi:github", "pypi:git"],
-      "hosts": ["github.com", "api.github.com", "raw.githubusercontent.com"]
+      "summary": "GitHub API/App integration and Git remotes.",
+      "packages": [
+        "pypi:github",
+        "pypi:git"
+      ],
+      "hosts": [
+        "github.com",
+        "api.github.com",
+        "raw.githubusercontent.com"
+      ]
     },
     {
       "id": "microsoft",
       "label": "Microsoft 365",
       "kind": "external",
-      "summary": "The Microsoft sign-in and Graph endpoints used for OAuth connections and single sign-on.",
-      "hosts": ["login.microsoftonline.com", "graph.microsoft.com"]
+      "summary": "Microsoft Entra ID and Graph endpoints.",
+      "hosts": [
+        "login.microsoftonline.com",
+        "graph.microsoft.com"
+      ]
     },
     {
       "id": "llm",
       "label": "AI model providers",
       "kind": "external",
-      "summary": "The AI services agents and chat run on, chosen per model and billed back in usage reports.",
-      "packages": ["pypi:pydantic_ai", "pypi:pydantic_ai_harness", "pypi:openai"],
-      "hosts": ["openrouter.ai", "api.openai.com", "api.anthropic.com", "opencode.ai"]
+      "summary": "Model provider APIs: OpenRouter, OpenAI, Anthropic, Google.",
+      "packages": [
+        "pypi:pydantic_ai",
+        "pypi:pydantic_ai_harness",
+        "pypi:openai"
+      ],
+      "hosts": [
+        "openrouter.ai",
+        "api.openai.com",
+        "api.anthropic.com",
+        "opencode.ai"
+      ]
     },
     {
       "id": "kubernetes",
       "label": "Kubernetes",
       "kind": "external",
-      "summary": "Used to run heavy build and deploy jobs in temporary pods, sized from what each job actually needed last time."
+      "summary": "Kubernetes API used for isolated build jobs."
     }
   ],
   "edges": [
@@ -854,58 +958,119 @@
     {
       "path": "api/src/models/contracts/cli.py",
       "note": "The shared CLI/SDK contract. A change here can break installed CLIs, so version gates live next to it.",
-      "tags": ["hotspot"]
+      "tags": [
+        "hotspot"
+      ]
     },
     {
       "path": "api/src/services/platform_jobs.py",
       "note": "The canonical durable-job system. New long-running work should extend this rather than add its own job table.",
-      "tags": ["hotspot"]
+      "tags": [
+        "hotspot"
+      ]
     },
     {
       "path": "client/src/lib/api-client.ts",
       "note": "Every screen's requests pass through here, including sign-in expiry and error shaping.",
-      "tags": ["hotspot"]
+      "tags": [
+        "hotspot"
+      ]
     }
   ],
   "flows": [
     {
       "id": "run-workflow",
-      "title": "Run a workflow",
-      "description": "What happens between someone pressing Run and seeing the result.",
+      "title": "Execute a workflow",
+      "description": "From HTTP request to sandboxed execution and persisted result.",
       "steps": [
-        { "node": "web.pages", "note": "Someone fills in a form or presses Run on a workflow" },
-        { "node": "api.routers", "note": "POST to the executions endpoint, after a permission check" },
-        { "node": "api.services", "note": "The API records the run, picks the workflow version and makes it claimable" },
-        { "node": "workers.engine", "note": "A worker claims the run, loads the Python and executes it in a sandboxed process" },
-        { "node": "shared.sdk", "note": "The workflow calls tables, files, integrations and AI through the workflow SDK" },
-        { "node": "data.orm", "note": "Results and logs are written back as rows, and the screen updates live" }
+        {
+          "node": "web.pages",
+          "note": "POST /api/executions from the run screen"
+        },
+        {
+          "node": "api.routers",
+          "note": "executions handler: authorize, validate input, resolve workflow version"
+        },
+        {
+          "node": "api.services",
+          "note": "Insert the execution row and make it claimable (work dispatch)"
+        },
+        {
+          "node": "workers.engine",
+          "note": "Worker leases the claim; process pool imports the module in a child process"
+        },
+        {
+          "node": "shared.sdk",
+          "note": "Workflow calls sdk.tables/files/integrations; each is an HTTP call back to the API"
+        },
+        {
+          "node": "data.orm",
+          "note": "Result, logs and usage persisted; WebSocket fan-out to the screen"
+        }
       ]
     },
     {
       "id": "build-app",
-      "title": "Build and publish an app",
-      "description": "How a custom React app goes from the editor to a URL people can open.",
+      "title": "Build and deploy an app",
+      "description": "App source to an active hosted deployment.",
       "steps": [
-        { "node": "web.editor", "note": "The author edits the app's files in the browser editor" },
-        { "node": "api.routers", "note": "Saving and deploying go through the app endpoints" },
-        { "node": "jobs.platform", "note": "The deploy becomes a durable platform job instead of a long request" },
-        { "node": "appruntime.builder", "note": "The compiler and bundler build the app against the current SDK" },
-        { "node": "objectstore", "note": "The built bundle is stored and activated as the live deployment" },
-        { "node": "appruntime.render", "note": "The host fetches the live bundle and mounts the app with the SDK" }
+        {
+          "node": "web.editor",
+          "note": "PUT /api/applications/{id}/code-files from the editor"
+        },
+        {
+          "node": "api.routers",
+          "note": "applications handler stores source and enqueues the deploy"
+        },
+        {
+          "node": "jobs.platform",
+          "note": "application.deploy PlatformJob with retries and progress"
+        },
+        {
+          "node": "appruntime.builder",
+          "note": "esbuild bundle against the served SDK, fingerprinted output"
+        },
+        {
+          "node": "objectstore",
+          "note": "Deployment bundle written; the deployment row is activated atomically"
+        },
+        {
+          "node": "appruntime.render",
+          "note": "Host fetches the active deployment and mounts it with the SDK"
+        }
       ]
     },
     {
       "id": "ask-agent",
-      "title": "Ask an agent",
-      "description": "A chat message becoming an answer with real tool calls.",
+      "title": "Run an agent turn",
+      "description": "A chat message through the agent runtime and back.",
       "steps": [
-        { "node": "web.chat", "note": "Someone types a question into the chat" },
-        { "node": "api.routers", "note": "The chat endpoint starts a run for the chosen agent" },
-        { "node": "api.services.agents", "note": "Prompts, model choice, tools, budgets and retries are assembled here" },
-        { "node": "llm", "note": "The model is called with the tools it is allowed to use" },
-        { "node": "workers.engine", "note": "The run executes outside the request, calling platform tools and recording every step" },
-        { "node": "web.chat", "note": "Steps, tool results and the answer stream back to the conversation" }
+        {
+          "node": "web.chat",
+          "note": "POST /api/chat; the client consumes the SSE stream"
+        },
+        {
+          "node": "api.routers",
+          "note": "chat handler creates the run and returns the stream"
+        },
+        {
+          "node": "api.services.agents",
+          "note": "Pydantic AI agent: instructions, toolset, budget, retry policy"
+        },
+        {
+          "node": "llm",
+          "note": "Provider request with tool schemas; the model chooses tool calls"
+        },
+        {
+          "node": "workers.engine",
+          "note": "Agent run executes in the worker, persisting steps and usage"
+        },
+        {
+          "node": "web.chat",
+          "note": "Messages, tool results and artifacts streamed to the conversation"
+        }
       ]
     }
-  ]
+  ],
+  "audience": "developers"
 }
