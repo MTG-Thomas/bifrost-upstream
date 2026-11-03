@@ -26,7 +26,8 @@
     },
     "api/src/core/cache/keys.py": {
       "name": "Saved-copy labels",
-      "description": "Names each saved copy by organization and record so the right one is found, replaced or cleared."
+      "description": "Names each saved copy by organization and record so the right one is found, replaced or cleared.",
+      "review": "new exports: config_scope_version_key, config_cache_field"
     },
     "api/src/core/cache/redis_client.py": {
       "name": "Shared saved-copy connection",

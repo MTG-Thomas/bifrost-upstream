@@ -34,7 +34,8 @@
     },
     "api/src/services/execution/backfill_tracker.py": {
       "name": "Backfill progress",
-      "description": "Keeps count of a summary backfill's progress and cost, and reports it as the batch moves along."
+      "description": "Keeps count of a summary backfill's progress and cost, and reports it as the batch moves along.",
+      "review": "new exports: refresh_backfill_progress; removed exports: record_backfill_outcome"
     },
     "api/src/services/execution/cpu_sampler.py": {
       "name": "CPU and memory sampling",
@@ -106,7 +107,8 @@
     },
     "api/src/services/execution/summary_dispatch.py": {
       "name": "Summary hand-off",
-      "description": "Queues, claims and retries the work of summarising agent runs."
+      "description": "Queues, claims and retries the work of summarising agent runs.",
+      "review": "new exports: SummaryOwnershipLost, summary_owner_session, release_summary, fail_remote_summary"
     },
     "api/src/services/execution/template_process.py": {
       "name": "Warm worker template",

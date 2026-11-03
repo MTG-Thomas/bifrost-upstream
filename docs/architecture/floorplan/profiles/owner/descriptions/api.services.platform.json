@@ -46,11 +46,13 @@
     },
     "api/src/services/kubernetes_control.py": {
       "name": "Cluster upkeep loops",
-      "description": "Starts the automatic upkeep tasks only in the parts of the system allowed to run them."
+      "description": "Starts the automatic upkeep tasks only in the parts of the system allowed to run them.",
+      "review": "docstring or structure changed"
     },
     "api/src/services/kubernetes_execution.py": {
       "name": "Task sizing settings",
-      "description": "Holds the settings that decide how much memory each background task gets and whether it runs on its own."
+      "description": "Holds the settings that decide how much memory each background task gets and whether it runs on its own.",
+      "review": "new exports: effective_job_max_concurrency"
     },
     "api/src/services/legacy_broker_drain.py": {
       "name": "Upgrade work recovery",

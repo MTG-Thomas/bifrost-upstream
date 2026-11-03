@@ -67,6 +67,10 @@
     ".github/workflows/floorplan.yml": {
       "name": "Architecture map check",
       "description": "Re-reads the code on every change and fails when the map no longer matches it."
+    },
+    ".github/workflows/dev-worker-image.yml": {
+      "name": "Dev worker image",
+      "description": "Builds a worker container image for a dev branch so external capacity can run it."
     }
   }
 }

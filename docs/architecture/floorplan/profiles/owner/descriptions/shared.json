@@ -82,7 +82,8 @@
     },
     "api/shared/models.py": {
       "name": "Shared request and reply shapes",
-      "description": "Holds the shared definitions of what the platform sends and receives where no single area owns them."
+      "description": "Holds the shared definitions of what the platform sends and receives where no single area owns them.",
+      "review": "new exports: WorkerCapacityProfile, WorkerCapacityReservation, WorkerCapacityResource"
     },
     "api/shared/path_glob.py": {
       "name": "File pattern matching",

@@ -86,7 +86,8 @@
     },
     "api/src/repositories/tables.py": {
       "name": "Custom table records",
-      "description": "Stores custom tables and their rows, and checks the caller may read or change each one."
+      "description": "Stores custom tables and their rows, and checks the caller may read or change each one.",
+      "review": "new exports: is_ad_hoc_table_name_conflict"
     },
     "api/src/repositories/users.py": {
       "name": "Staff accounts",

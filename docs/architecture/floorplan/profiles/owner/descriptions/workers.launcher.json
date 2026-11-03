@@ -8,10 +8,6 @@
       "name": "Memory admission",
       "description": "Decides whether a worker has enough free memory to take on another piece of work."
     },
-    "api/src/worker/api_agent.py": {
-      "name": "In-server summary runner",
-      "description": "Runs run summaries inside the main server process whenever there is spare memory for it."
-    },
     "api/src/worker/health.py": {
       "name": "Worker readiness",
       "description": "Tells the platform when a worker has finished starting and is ready to take work."
@@ -22,7 +18,8 @@
     },
     "api/src/worker/pool_main.py": {
       "name": "Work-claiming executor",
-      "description": "Claims waiting runs from the shared job list and runs each one in a fresh process."
+      "description": "Claims waiting runs from the shared job list and runs each one in a fresh process.",
+      "review": "removed exports: executor_database_settings"
     },
     "api/src/worker/remote/__init__.py": {
       "name": "Remote workers package",
@@ -58,11 +55,16 @@
     },
     "api/src/worker/remote/protocol.py": {
       "name": "Secure worker messages",
-      "description": "Defines the signed, size-limited messages the platform and remote workers exchange."
+      "description": "Defines the signed, size-limited messages the platform and remote workers exchange.",
+      "review": "new exports: hello_execution_handlers"
     },
     "api/src/worker/remote/remote_pool.py": {
       "name": "Remote process pool",
       "description": "Runs isolated work on remote machines while keeping the same bookkeeping as local workers."
+    },
+    "api/src/worker/network.py": {
+      "name": "Worker private transport",
+      "description": "Optional private network link to workers so job traffic stays off the public internet."
     }
   },
   "routes": {

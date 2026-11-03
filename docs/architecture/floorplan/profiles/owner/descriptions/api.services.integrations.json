@@ -78,7 +78,8 @@
     },
     "api/src/services/service_lifecycle.py": {
       "name": "Always-on services",
-      "description": "Keeps services that run on a timetable in step with their workflow, hands out the work and stops them safely."
+      "description": "Keeps services that run on a timetable in step with their workflow, hands out the work and stops them safely.",
+      "review": "new exports: sync_service_organization, pending_service_statement"
     },
     "api/src/services/sync_lock.py": {
       "name": "One sync at a time",

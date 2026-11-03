@@ -2,7 +2,8 @@
   "files": {
     "api/src/routers/workflows.py": {
       "name": "Automations",
-      "description": "Finds, runs, checks and retires the automations in the workspace, and controls who may run each one."
+      "description": "Finds, runs, checks and retires the automations in the workspace, and controls who may run each one.",
+      "review": "new exports: get_workflow_parameters; 1 new route(s)"
     }
   },
   "routes": {

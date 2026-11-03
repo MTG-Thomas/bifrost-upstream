@@ -6,11 +6,13 @@
     },
     "api/src/services/worker_pool/claims.py": {
       "name": "Claiming work",
-      "description": "Lets each worker join the pool, take the oldest work it can handle, and step out gracefully."
+      "description": "Lets each worker join the pool, take the oldest work it can handle, and step out gracefully.",
+      "review": "new exports: admit_external_worker, report_worker_handlers"
     },
     "api/src/services/worker_pool/controller.py": {
       "name": "Capacity controller",
-      "description": "Starts and stops workers as the queue and free memory change, keeping a small warm minimum."
+      "description": "Starts and stops workers as the queue and free memory change, keeping a small warm minimum.",
+      "review": "new exports: WorkerCapacityController"
     },
     "api/src/services/worker_pool/liveness.py": {
       "name": "Spotting lost workers",
@@ -35,6 +37,22 @@
     "api/src/services/worker_pool/unfit.py": {
       "name": "Work that cannot fit",
       "description": "Fails or blocks work larger than any worker can hold, with a clear message, instead of leaving it waiting forever."
+    },
+    "api/src/services/worker_pool/demand.py": {
+      "name": "Worker demand",
+      "description": "Works out how much physical worker capacity the queued jobs actually need, read-only."
+    },
+    "api/src/services/worker_pool/external_client.py": {
+      "name": "Capacity provider client",
+      "description": "Talks to an outside capacity provider to reserve workers, with retries that cannot double-book."
+    },
+    "api/src/services/worker_pool/external_controller.py": {
+      "name": "External capacity controller",
+      "description": "Keeps reservations with the capacity provider in step with what the platform has claimed."
+    },
+    "api/src/services/worker_pool/external_policy.py": {
+      "name": "Capacity policy check",
+      "description": "Rejects a capacity policy the provider cannot honour before any work is provisioned."
     }
   }
 }

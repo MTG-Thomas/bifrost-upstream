@@ -74,7 +74,8 @@
     },
     "api/shared/sdk_workflow_execution.py": {
       "name": "Running workflows",
-      "description": "Starts a workflow, data source or short script, and can cancel one that is still waiting to run."
+      "description": "Starts a workflow, data source or short script, and can cancel one that is still waiting to run.",
+      "review": "new exports: ResolvedSdkWorkflow, resolve_sdk_workflow_for_execution"
     }
   }
 }
