@@ -1,0 +1,164 @@
+{
+  "files": {
+    "api/bifrost.py": {
+      "name": "Workflow import shortcuts",
+      "description": "Lets workflow code import Bifrost helpers by short, friendly names instead of long internal paths."
+    },
+    "api/bifrost/__init__.py": {
+      "name": "Platform toolkit for code",
+      "description": "Gives workflow code ready-made access to agents, AI answers, files, tables, forms, people and settings."
+    },
+    "api/bifrost/__main__.py": {
+      "name": "Terminal entry point",
+      "description": "Starts the Bifrost terminal tool when someone launches it from a script."
+    },
+    "api/bifrost/_context.py": {
+      "name": "Run context",
+      "description": "Keeps track of which run, organization and permission scope the current piece of workflow code is acting for."
+    },
+    "api/bifrost/_device_auth.py": {
+      "name": "Browser sign-in prompt",
+      "description": "Shows the short code and browser link that let someone approve a terminal sign-in from another device."
+    },
+    "api/bifrost/_execution_context.py": {
+      "name": "Run and organization details",
+      "description": "Holds the organization, caller, event details and savings tracking that every workflow run receives."
+    },
+    "api/bifrost/_logging.py": {
+      "name": "Live run logs",
+      "description": "Streams messages to anyone watching a run, keeps them for the live view and saves them into the run's history."
+    },
+    "api/bifrost/_refreshing.py": {
+      "name": "Sign-in renewal",
+      "description": "Quietly renews an expired sign-in and retries the request so long sessions keep working."
+    },
+    "api/bifrost/_runtime_io.py": {
+      "name": "Runtime activity feed",
+      "description": "Sends log lines from running code back over the same signed-in connection the rest of the tool uses."
+    },
+    "api/bifrost/_service_runtime.py": {
+      "name": "Always-on service control",
+      "description": "Lets a long-running service announce it is ready, notice a stop request and shut down cleanly."
+    },
+    "api/bifrost/_solution_workspace.py": {
+      "name": "Solution folder guard",
+      "description": "Stops whole-workspace commands from running inside a single Solution's folder, where they would do the wrong thing."
+    },
+    "api/bifrost/_version_notice.py": {
+      "name": "Update reminder",
+      "description": "Shows the new-version-available note once per version instead of on every command."
+    },
+    "api/bifrost/_workspace_lock.py": {
+      "name": "Workspace lock",
+      "description": "Stops two terminals from syncing or watching the same workspace at the same time."
+    },
+    "api/bifrost/agents.py": {
+      "name": "Agent calls from code",
+      "description": "Lets workflow code start an agent and read back its answer, its pauses or its progress."
+    },
+    "api/bifrost/ai.py": {
+      "name": "AI answers from code",
+      "description": "Lets workflow code ask the organization's configured AI providers for answers without handling keys itself."
+    },
+    "api/bifrost/api.py": {
+      "name": "Direct request helper",
+      "description": "Gives advanced scripts a signed-in way to call any part of the platform directly."
+    },
+    "api/bifrost/app_binding.py": {
+      "name": "App project link",
+      "description": "Remembers which Bifrost app a local app project belongs to, so running and deploying reach the right one."
+    },
+    "api/bifrost/app_migration.py": {
+      "name": "App upgrade from v1",
+      "description": "Rewrites an older app's code into the newer project layout during an upgrade."
+    },
+    "api/bifrost/artifacts.py": {
+      "name": "Generated file sharing",
+      "description": "Creates, reads and shares files a workflow produces, such as reports, exports and documents."
+    },
+    "api/bifrost/cli.py": {
+      "name": "Bifrost command",
+      "description": "The main Bifrost command: sign in, run and push code, deploy Solutions and call the platform from a terminal."
+    },
+    "api/bifrost/client.py": {
+      "name": "Platform connection",
+      "description": "Handles the signed-in connection to a Bifrost site, including sign-in, pass renewal and clear error messages."
+    },
+    "api/bifrost/config.py": {
+      "name": "Settings access",
+      "description": "Reads and writes the platform's stored settings from workflow code."
+    },
+    "api/bifrost/contract_version.py": {
+      "name": "Compatibility version",
+      "description": "Reports which older command-line versions the server still accepts."
+    },
+    "api/bifrost/credentials.py": {
+      "name": "Saved sign-ins",
+      "description": "Stores one sign-in per Bifrost address, using the operating system's password vault where possible."
+    },
+    "api/bifrost/decorator_validation.py": {
+      "name": "Workflow declaration checks",
+      "description": "Checks that a workflow's declared settings are valid before the platform tries to run it."
+    },
+    "api/bifrost/decorators.py": {
+      "name": "Workflow and tool labels",
+      "description": "Marks a function as a workflow, an AI tool, a data feed or a long-running service, and records what it offers."
+    },
+    "api/bifrost/definition_validation.py": {
+      "name": "Workspace file checks",
+      "description": "Reads workspace definition files strictly and reports clear problems with duplicate or unknown settings."
+    },
+    "api/bifrost/dto_flags.py": {
+      "name": "Command option builder",
+      "description": "Builds command options and request contents from the same shared shape the server expects, keeping terminal and AI access in step."
+    },
+    "api/bifrost/events.py": {
+      "name": "Event publishing",
+      "description": "Lets workflow code announce an event that other workflows and subscriptions can react to."
+    },
+    "api/bifrost/executions.py": {
+      "name": "Run history",
+      "description": "Lists past runs and opens one run's details and log lines."
+    },
+    "api/bifrost/field_classes.py": {
+      "name": "Shared field metadata",
+      "description": "Tags each shared setting with how it should be treated when a workspace is exported or installed elsewhere."
+    },
+    "api/bifrost/files.py": {
+      "name": "Workspace files",
+      "description": "Reads, writes, moves, lists and deletes workspace files, with clear errors when access is refused."
+    },
+    "api/bifrost/forms.py": {
+      "name": "Form lookup",
+      "description": "Looks up forms and their questions from workflow code."
+    },
+    "api/bifrost/git_commands.py": {
+      "name": "Source control commands",
+      "description": "Mirrors the app's source-control panel in the terminal: fetch, status, commit, sync, resolve conflicts and discard changes."
+    },
+    "api/bifrost/ignore_patterns.py": {
+      "name": "Skipped file patterns",
+      "description": "Lists which files and folders are left out when a workspace is uploaded or packaged."
+    },
+    "api/bifrost/integrations.py": {
+      "name": "Integration access",
+      "description": "Reads and manages the outside services an organization has connected."
+    },
+    "api/bifrost/knowledge.py": {
+      "name": "Knowledge search",
+      "description": "Searches the organization's knowledge base and returns the matching passages."
+    },
+    "api/bifrost/manifest_codec.py": {
+      "name": "Settings file conversion",
+      "description": "Converts workspace settings between their file form and the records the platform stores."
+    },
+    "api/bifrost/manifest.py": {
+      "name": "Workspace definition files",
+      "description": "Describes every kind of entity a workspace's settings files can hold, from workflows and forms to integrations."
+    },
+    "api/bifrost/migrate_imports.py": {
+      "name": "App code upgrade",
+      "description": "Rewrites older app imports, icons and component usage into the current app format."
+    }
+  }
+}

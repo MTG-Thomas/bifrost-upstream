@@ -1,0 +1,120 @@
+{
+  "files": {
+    "scripts/memory_sampler.py": {
+      "name": "Container memory sampler",
+      "description": "Records a running container's memory use at a set interval into a spreadsheet-friendly file."
+    },
+    "scripts/netbird-debug-entrypoint.sh": {
+      "name": "Private network starter",
+      "description": "Starts the private network link and a public tunnel for a local preview stack."
+    },
+    "scripts/prepare_product_updates_image.py": {
+      "name": "Release notes bundling",
+      "description": "Copies the approved release notes and their images into every server image."
+    },
+    "scripts/prepare-release-body.sh": {
+      "name": "Release notes renderer",
+      "description": "Lays out the reviewed release notes into a release body before the version tag exists."
+    },
+    "scripts/product_updates_scope.cjs": {
+      "name": "Update scope resolver",
+      "description": "Works out which changes a queued batch of pull requests actually contains, for release-note checks."
+    },
+    "scripts/product_updates.py": {
+      "name": "Release notes toolchain",
+      "description": "Validates, stores and renders the product-update decisions and prose recorded for each change."
+    },
+    "scripts/release_gate.py": {
+      "name": "Release note gate",
+      "description": "Refuses to render a release body unless the reviewed product updates are present and valid."
+    },
+    "scripts/release-check.sh": {
+      "name": "Pre-release checks",
+      "description": "Runs the safety checks that must pass before a version tag is created."
+    },
+    "scripts/release/check-docs-freshness.sh": {
+      "name": "Docs freshness check",
+      "description": "Compares commit dates between the platform and the public documentation to spot stale pages."
+    },
+    "scripts/runtime_checklist_summary.py": {
+      "name": "Checklist summary reader",
+      "description": "Prints a short readable summary of a runtime checklist result file."
+    },
+    "scripts/runtime_checklist.py": {
+      "name": "Live runtime checklist",
+      "description": "Checks schedules, background jobs and workflows on a running installation before a rollout."
+    },
+    "scripts/seed-review-pack.py": {
+      "name": "Review data seeder",
+      "description": "Fills a running preview copy with sample content so screens can be reviewed without hand entry."
+    },
+    "scripts/seed-spot-check-users.sh": {
+      "name": "Demo user seeder",
+      "description": "Creates a small set of demo users and a second organisation for access spot checks."
+    },
+    "scripts/stack_template_init.sh": {
+      "name": "Test database template",
+      "description": "Builds or refreshes the reusable starting database used to reset the test stack quickly."
+    },
+    "scripts/sync-codex-skills.sh": {
+      "name": "Assistant copy sync",
+      "description": "Regenerates both plain-file copies of the coding assistant's instructions from the canonical set."
+    },
+    "scripts/sync-docs.py": {
+      "name": "Documentation sync",
+      "description": "Copies and cleans the public documentation into the app so the help pages stay current."
+    },
+    "scripts/test_codeql_changed_lines.py": {
+      "name": "Changed-line filter tests",
+      "description": "Checks that changed lines are identified correctly for local security scans."
+    },
+    "scripts/test_dependabot_alert_lookup.cjs": {
+      "name": "Alert lookup tests",
+      "description": "Checks that dependency updates are matched to the right security alerts."
+    },
+    "scripts/test_dependabot_product_updates.cjs": {
+      "name": "Update notes tests",
+      "description": "Checks the release-note decisions written for dependency updates."
+    },
+    "scripts/test_e2e_shard.py": {
+      "name": "Test split tests",
+      "description": "Checks that end-to-end test files are spread evenly across batches."
+    },
+    "scripts/test_pool_drills.py": {
+      "name": "Pool drill tests",
+      "description": "Checks the safety rules the task-pool failure drills rely on."
+    },
+    "scripts/test_prepare_release_body.sh": {
+      "name": "Release body tests",
+      "description": "Guards the pre-tag release-notes step against regressions."
+    },
+    "scripts/test_product_updates_scope.cjs": {
+      "name": "Update scope tests",
+      "description": "Checks that queued change batches resolve to the correct set of changes."
+    },
+    "scripts/test_product_updates.py": {
+      "name": "Release notes tests",
+      "description": "Checks the release-note toolchain's validation, storage and rendering rules."
+    },
+    "scripts/test_release_check.sh": {
+      "name": "Pre-release check tests",
+      "description": "Confirms the pre-tag check still requires reviewed release notes."
+    },
+    "scripts/test_release_gate.py": {
+      "name": "Release gate tests",
+      "description": "Checks the gate accepts complete material and rejects anything missing."
+    },
+    "scripts/test-compute-dev-version.sh": {
+      "name": "Dev version tests",
+      "description": "Checks development version numbering inside disposable code repositories."
+    },
+    "scripts/test-product-updates-preview.sh": {
+      "name": "Release notes preview test",
+      "description": "Exercises the live release-notes feed against the running preview copy."
+    },
+    "scripts/update-plugin-version.sh": {
+      "name": "Plugin version bump",
+      "description": "Updates the version number in every Bifrost plugin file in one pass."
+    }
+  }
+}

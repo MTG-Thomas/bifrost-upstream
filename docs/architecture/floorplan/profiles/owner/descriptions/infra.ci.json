@@ -1,0 +1,76 @@
+{
+  "files": {
+    ".github/actions/prepare-product-updates/action.yml": {
+      "name": "Release notes bundling",
+      "description": "Bundles the approved release notes and screenshots into the server image before it is built."
+    },
+    ".github/codeql/codeql-config.yml": {
+      "name": "Security scan settings",
+      "description": "Tells the security scanner which generated and third-party folders to skip and which warnings are expected."
+    },
+    ".github/dependabot.yml": {
+      "name": "Dependency update bot",
+      "description": "Checks weekly for newer versions of libraries and base images and opens a pull request for each group."
+    },
+    ".github/ISSUE_TEMPLATE/bug.yml": {
+      "name": "Bug report form",
+      "description": "Asks for a clear summary, reproduction steps and expected behaviour when someone reports a fault."
+    },
+    ".github/ISSUE_TEMPLATE/chore.yml": {
+      "name": "Maintenance request form",
+      "description": "Collects a short description and scope for small upkeep tasks that are neither bugs nor new features."
+    },
+    ".github/ISSUE_TEMPLATE/config.yml": {
+      "name": "Issue form settings",
+      "description": "Controls whether blank issues are allowed and which outside links appear when someone starts a new issue."
+    },
+    ".github/ISSUE_TEMPLATE/feature.yml": {
+      "name": "Feature request form",
+      "description": "Asks what problem a new capability solves and how it should behave before any work starts."
+    },
+    ".github/workflows/ci-noop.yml": {
+      "name": "Doc-only change pass",
+      "description": "Reports the required checks as passed for documentation and config changes so they are not blocked from merging."
+    },
+    ".github/workflows/ci.yml": {
+      "name": "Main checks",
+      "description": "Runs the code checks, automatic tests and browser tests on every proposed change before it can merge."
+    },
+    ".github/workflows/codeql.yml": {
+      "name": "Security scanning",
+      "description": "Scans the code for known unsafe patterns and reports any findings in the repository's security tab."
+    },
+    ".github/workflows/dependabot-auto-merge.yml": {
+      "name": "Safe dependency merging",
+      "description": "Merges routine library updates once checks pass, while leaving major upgrades and base images for a person to review."
+    },
+    ".github/workflows/dependabot-lockfile-regen.yml": {
+      "name": "Dependency lock refresh",
+      "description": "Rebuilds the pinned dependency list on update pull requests so their checks run against a current lock."
+    },
+    ".github/workflows/nightly.yml": {
+      "name": "Nightly browser sweep",
+      "description": "Runs the full set of browser journeys every night to catch problems the quick checks miss."
+    },
+    ".github/workflows/product-updates.yml": {
+      "name": "Release note checks",
+      "description": "Verifies that each change records a product-update decision and that the approved notes read correctly."
+    },
+    ".github/workflows/scorecard.yml": {
+      "name": "Open source health score",
+      "description": "Scores the project's security practices weekly and publishes the result in the repository and on a public badge."
+    },
+    ".github/workflows/floorplan-refresh.yml": {
+      "name": "Architecture map upkeep",
+      "description": "Refreshes the map on a timetable and opens a pull request when file names or requests have changed."
+    },
+    ".github/workflows/floorplan.yml": {
+      "name": "Architecture map check",
+      "description": "Re-reads the code on every change and fails when the map no longer matches it."
+    },
+    ".github/workflows/dev-worker-image.yml": {
+      "name": "Dev worker image",
+      "description": "Builds a worker container image for a dev branch so external capacity can run it."
+    }
+  }
+}

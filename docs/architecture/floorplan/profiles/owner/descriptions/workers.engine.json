@@ -1,0 +1,146 @@
+{
+  "files": {
+    "api/src/services/execution/__init__.py": {
+      "name": "Execution package",
+      "description": "Brings together the parts that run workflow and script code for the platform."
+    },
+    "api/src/services/execution/agent_helpers.py": {
+      "name": "Agent setup helpers",
+      "description": "Prepares an agent's instructions and tools, and lets one agent hand work to another."
+    },
+    "api/src/services/execution/agent_run_access.py": {
+      "name": "Who sees agent runs",
+      "description": "Limits agent run records to the people allowed to see them."
+    },
+    "api/src/services/execution/agent_run_dispatch.py": {
+      "name": "Handing off agent runs",
+      "description": "Moves an agent run from waiting to a worker that will run it, and releases it if that worker never starts."
+    },
+    "api/src/services/execution/agent_run_service.py": {
+      "name": "Agent run lifecycle",
+      "description": "Queues agent runs, waits for their results, and stops or closes them cleanly."
+    },
+    "api/src/services/execution/agent_workflow_tools.py": {
+      "name": "Agent workflow launches",
+      "description": "Checks an agent may use a bound workflow, then starts it and keeps the evidence it returns."
+    },
+    "api/src/services/execution/async_executor.py": {
+      "name": "Queuing runs",
+      "description": "Accepts workflow and short-script runs and hands them to background processing."
+    },
+    "api/src/services/execution/autonomous_agent_executor.py": {
+      "name": "Agent runner",
+      "description": "Runs an agent step by step without a chat window, calling its tools and handling delegated child agents."
+    },
+    "api/src/services/execution/backfill_tracker.py": {
+      "name": "Backfill progress",
+      "description": "Keeps count of a summary backfill's progress and cost, and reports it as the batch moves along.",
+      "review": "new exports: refresh_backfill_progress; removed exports: record_backfill_outcome"
+    },
+    "api/src/services/execution/cpu_sampler.py": {
+      "name": "CPU and memory sampling",
+      "description": "Measures how much processor and memory a running workflow actually uses."
+    },
+    "api/src/services/execution/dry_run.py": {
+      "name": "Prompt comparison test",
+      "description": "Tests a proposed agent instruction against a past run to see whether it would have decided differently."
+    },
+    "api/src/services/execution/engine.py": {
+      "name": "Execution engine",
+      "description": "Runs workflows, scripts and data sources in one place and reports their logs, resource use and result."
+    },
+    "api/src/services/execution/import_restrictor.py": {
+      "name": "Customer code isolation",
+      "description": "Stops customer code from reaching into the platform's internals while still allowing the approved tools."
+    },
+    "api/src/services/execution/install_progress.py": {
+      "name": "Fleet install progress",
+      "description": "Collects how each worker is doing during a fleet-wide install and shows one combined progress line."
+    },
+    "api/src/services/execution/memory_monitor.py": {
+      "name": "Memory watch",
+      "description": "Reads how much memory the container is using so the platform can avoid running out."
+    },
+    "api/src/services/execution/model_selection.py": {
+      "name": "Choosing the AI model",
+      "description": "Picks which AI model to use for summarising runs and for tuning suggestions."
+    },
+    "api/src/services/execution/module_loader.py": {
+      "name": "Loading workflow code",
+      "description": "Finds, loads and reads the details of workflows and data sources from the saved workspace."
+    },
+    "api/src/services/execution/oom_priority.py": {
+      "name": "Memory sacrifice order",
+      "description": "Marks the work process as the first to be stopped when memory runs short, protecting the executors."
+    },
+    "api/src/services/execution/process_pool.py": {
+      "name": "Isolated process pool",
+      "description": "Keeps a supply of separate processes so each run stands alone and one bad run cannot take down the platform."
+    },
+    "api/src/services/execution/queue_tracker.py": {
+      "name": "Queue positions",
+      "description": "Shows where each waiting run sits in line so people can see roughly when theirs will start."
+    },
+    "api/src/services/execution/requirements_setup_helper.py": {
+      "name": "Package setup entry",
+      "description": "Runs the package installation step for a worker in its own separate process."
+    },
+    "api/src/services/execution/requirements_setup_result.py": {
+      "name": "Package setup results",
+      "description": "Records which packages installed cleanly and which failed during worker setup."
+    },
+    "api/src/services/execution/run_metadata.py": {
+      "name": "Run notes",
+      "description": "Lets an agent attach short notes to a run while leaving the platform's own fields untouched."
+    },
+    "api/src/services/execution/run_summarizer.py": {
+      "name": "Run summaries",
+      "description": "Writes a short account of what an agent was asked, what it did and how confident it was."
+    },
+    "api/src/services/execution/service.py": {
+      "name": "Running workflows and code",
+      "description": "Starts a workflow, short script or data source and returns its result."
+    },
+    "api/src/services/execution/simple_worker.py": {
+      "name": "Worker package install",
+      "description": "Installs a workspace's extra packages in a worker process and keeps going if one package fails."
+    },
+    "api/src/services/execution/summary_dispatch.py": {
+      "name": "Summary hand-off",
+      "description": "Queues, claims and retries the work of summarising agent runs.",
+      "review": "new exports: SummaryOwnershipLost, summary_owner_session, release_summary, fail_remote_summary"
+    },
+    "api/src/services/execution/template_process.py": {
+      "name": "Warm worker template",
+      "description": "Keeps a prepared process ready so new runs start quickly from a known state."
+    },
+    "api/src/services/execution/tuning_service.py": {
+      "name": "Agent tuning conversations",
+      "description": "Runs the back-and-forth that helps an owner improve an agent's instructions, then applies the agreed changes."
+    },
+    "api/src/services/execution/type_inference.py": {
+      "name": "Parameter descriptions",
+      "description": "Reads a workflow's settings from its code so forms can show the right fields and choices."
+    },
+    "api/src/services/execution/virtual_import.py": {
+      "name": "Loading saved code",
+      "description": "Loads a workspace's code from saved storage rather than disk, so every worker runs the current version."
+    },
+    "api/src/services/execution/worker_sdk_http.py": {
+      "name": "Worker tool access",
+      "description": "Gives a running workflow its own private route to platform tools without going through the public server."
+    },
+    "api/src/services/execution/worker.py": {
+      "name": "Worker run core",
+      "description": "Runs one piece of work in its own process and records its time, memory and result."
+    },
+    "api/src/services/execution/workflow_dispatch.py": {
+      "name": "Workflow run hand-off",
+      "description": "Accepts a workflow run durably, hands it to an executor, and reclaims it if that executor disappears."
+    },
+    "api/src/services/execution/workspace_modules.py": {
+      "name": "Code cache refresh",
+      "description": "Clears out old loaded code when the workspace changes, so reused processes run the current version."
+    }
+  }
+}

@@ -1,0 +1,120 @@
+{
+  "files": {
+    "deploy/kubernetes/builds/api-env-patch.yaml": {
+      "name": "App build settings patch",
+      "description": "Adds the app-build settings to the main server so it can start build tasks in the cluster."
+    },
+    "deploy/kubernetes/builds/build-config.yaml": {
+      "name": "App build task settings",
+      "description": "Sets the identity, waiting limit and machine size used when the platform builds an app as an isolated task."
+    },
+    "deploy/kubernetes/builds/kustomization.yaml": {
+      "name": "Builds overlay",
+      "description": "Combines the base cluster setup with the extra permissions and settings needed for isolated app builds."
+    },
+    "deploy/kubernetes/builds/rbac.yaml": {
+      "name": "App build permissions",
+      "description": "Lets the main server create and watch the short-lived tasks that build apps, and nothing else."
+    },
+    "deploy/kubernetes/builds/scheduler-controller-patch.yaml": {
+      "name": "Scheduler build patch",
+      "description": "Gives the timetable service the same app-build settings as the main server."
+    },
+    "deploy/kubernetes/builds/serviceaccounts.yaml": {
+      "name": "App build identities",
+      "description": "Defines two cluster identities: one allowed to start build tasks, and one that runs them with no access at all."
+    },
+    "k8s/api/deployment.yaml": {
+      "name": "Main server pods",
+      "description": "Runs two copies of the main server so work continues if one restarts, with health checks and resource limits."
+    },
+    "k8s/api/rbac.yaml": {
+      "name": "Server cluster permissions",
+      "description": "Allows the main server to start, watch and clean up the short-lived background task pods."
+    },
+    "k8s/api/service.yaml": {
+      "name": "Main server address",
+      "description": "Gives the main server a stable internal address that the web app and other services call."
+    },
+    "k8s/client/deployment.yaml": {
+      "name": "Web app pods",
+      "description": "Runs two copies of the web app so the screens stay available during upgrades."
+    },
+    "k8s/client/service.yaml": {
+      "name": "Web app address",
+      "description": "Gives the web app a stable internal address where visitors' requests arrive."
+    },
+    "k8s/configmap.yaml": {
+      "name": "Platform settings",
+      "description": "Holds non-secret settings such as sign-in lifetimes, the public web address and the file storage location."
+    },
+    "k8s/kustomization.yml": {
+      "name": "Cluster bundle",
+      "description": "Lists the pieces that make up a full installation so an operator can apply them together."
+    },
+    "k8s/local/api-rbac.yaml": {
+      "name": "Local server permissions",
+      "description": "Lets the local test cluster's main server start and manage background task pods."
+    },
+    "k8s/local/bifrost.yaml": {
+      "name": "Local platform stack",
+      "description": "Runs two main server copies in the local cluster, wired to local settings and sample secrets."
+    },
+    "k8s/local/build-jobs.yaml": {
+      "name": "Local build identities",
+      "description": "Defines the no-access identity and settings used when building apps inside the local cluster."
+    },
+    "k8s/local/config.yaml": {
+      "name": "Local settings",
+      "description": "Holds the local cluster's addresses, passwords and storage names for a throwaway environment."
+    },
+    "k8s/local/init.yaml": {
+      "name": "Local setup task",
+      "description": "Prepares the database once in the local cluster before the main server starts."
+    },
+    "k8s/local/kind-config.yaml": {
+      "name": "Local cluster shape",
+      "description": "Describes the single-machine test cluster used for local experiments."
+    },
+    "k8s/local/kustomization.yaml": {
+      "name": "Local bundle",
+      "description": "Lists the pieces of the local test setup so they can be applied in one go."
+    },
+    "k8s/local/namespace.yaml": {
+      "name": "Local namespace",
+      "description": "Reserves the separate area inside the cluster where local test pods live."
+    },
+    "k8s/local/pgbouncer.yaml": {
+      "name": "Local database pooler",
+      "description": "Adds a connection-sharing service in front of the local database so many tasks can share it."
+    },
+    "k8s/local/postgres.yaml": {
+      "name": "Local database",
+      "description": "Runs the database that holds all platform records inside the local cluster."
+    },
+    "k8s/local/redis.yaml": {
+      "name": "Local cache",
+      "description": "Runs the fast in-memory store used for sessions and short-lived work inside the local cluster."
+    },
+    "k8s/local/seaweedfs.yaml": {
+      "name": "Local file storage",
+      "description": "Runs S3-compatible file storage for uploads and workspace files inside the local cluster."
+    },
+    "k8s/namespace.yaml": {
+      "name": "Platform namespace",
+      "description": "Reserves a separate area in the cluster where all of the platform's pods live."
+    },
+    "k8s/scheduler/deployment.yaml": {
+      "name": "Retired timetable pods",
+      "description": "Keeps the old always-on timetable pods at zero now that the main server starts work only when needed."
+    },
+    "k8s/secret.yaml": {
+      "name": "Secret settings template",
+      "description": "Shows which passwords and connection details an operator must supply, holding no real values itself."
+    },
+    "k8s/worker/deployment.yaml": {
+      "name": "Retired worker pods",
+      "description": "Keeps the old always-on background task pods at zero now that the main server starts them on demand."
+    }
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "files": {
+    "api/src/services/docs_indexer.py": {
+      "name": "Documentation search index",
+      "description": "Loads Bifrost's own help pages into search so assistants can answer questions about the platform."
+    },
+    "api/src/services/embeddings/__init__.py": {
+      "name": "Meaning-based search",
+      "description": "Gives the platform one shared way to turn text into patterns that let search match on meaning."
+    },
+    "api/src/services/embeddings/base.py": {
+      "name": "Search provider groundwork",
+      "description": "Sets the shared settings and rules that every meaning-based search provider must follow."
+    },
+    "api/src/services/embeddings/factory.py": {
+      "name": "Search provider choice",
+      "description": "Picks which provider turns text into search patterns, based on the AI settings the platform saved."
+    },
+    "api/src/services/embeddings/openai_client.py": {
+      "name": "OpenAI meaning search",
+      "description": "Asks OpenAI to turn text into searchable patterns so documents can be found by meaning, not just words."
+    },
+    "api/src/services/embeddings/reindex.py": {
+      "name": "Search rebuild",
+      "description": "Rebuilds the search patterns for stored knowledge after the AI provider or model changes, and can be stopped."
+    },
+    "api/src/services/embeddings/url_safety.py": {
+      "name": "Provider address checks",
+      "description": "Blocks unsafe web addresses from being used as a search provider so the server cannot reach internal systems."
+    },
+    "api/src/services/knowledge/__init__.py": {
+      "name": "Knowledge search helpers",
+      "description": "Groups the helpers that prepare documents and answers for meaning-based search."
+    },
+    "api/src/services/knowledge/chunking.py": {
+      "name": "Document splitting",
+      "description": "Cuts long text into overlapping pieces so search can find and quote the right passage."
+    },
+    "api/src/services/knowledge/search_budget.py": {
+      "name": "Search limits for assistants",
+      "description": "Caps how much an assistant may search and read in one turn, and drops repeated results."
+    },
+    "api/src/services/llms_txt.py": {
+      "name": "Assistant guide file",
+      "description": "Writes the plain-text guide that tells outside AI assistants what Bifrost can do and how to call it."
+    },
+    "api/src/services/source_search/__init__.py": {
+      "name": "Source code search",
+      "description": "Searches workspace and installed solution files by text or pattern and returns matches page by page."
+    },
+    "api/src/services/source_search/candidates.py": {
+      "name": "Result paging",
+      "description": "Walks the files a search should look at in a steady order so results arrive a page at a time."
+    },
+    "api/src/services/source_search/cursor.py": {
+      "name": "Page position tokens",
+      "description": "Remembers exactly where a search stopped so the next page continues correctly even as files change."
+    },
+    "api/src/services/source_search/guidance.py": {
+      "name": "Search next-step hint",
+      "description": "Tells the caller in plain words what the results mean and how to see more."
+    },
+    "api/src/services/source_search/matching.py": {
+      "name": "Line matching",
+      "description": "Finds matching lines inside a file, keeps very long lines readable and stops runaway patterns."
+    }
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "files": {
+    "api/src/__init__.py": {
+      "name": "Server package",
+      "description": "Marks the main server folder as one importable package so its parts can load each other."
+    },
+    "api/src/config.py": {
+      "name": "Server settings",
+      "description": "Reads the server's settings from its environment and checks them before anything starts."
+    },
+    "api/src/dev/__init__.py": {
+      "name": "Development helpers",
+      "description": "Holds tools used only on development machines, never when the product is running."
+    },
+    "api/src/dev/scheduler_fixtures.py": {
+      "name": "Scheduled-work sample data",
+      "description": "Fills a test install with predictable scheduled work, runs it, and checks every piece happened as expected."
+    },
+    "api/src/main.py": {
+      "name": "Server startup",
+      "description": "Starts the main server: connects the database and saved copies, loads every area of requests, and creates the first admin account."
+    },
+    "api/src/sdk/__init__.py": {
+      "name": "Workflow toolkit",
+      "description": "The markers workflow authors use to label their work, data lookups and AI tools."
+    },
+    "api/src/sdk/context.py": {
+      "name": "Workflow context",
+      "description": "Hands the current run's context to workflow code from one shared place."
+    },
+    "api/src/sdk/decorators.py": {
+      "name": "Workflow markers",
+      "description": "Marks which functions are workflows, agent tools, data lookups or always-on services."
+    },
+    "api/src/sdk/error_handling.py": {
+      "name": "Workflow errors",
+      "description": "The standard error types a workflow can raise so a failure reaches people with a reason they can act on."
+    },
+    "api/src/sdk/errors.py": {
+      "name": "Error types",
+      "description": "Defines the errors workflow code can raise, including ones whose message is shown to the person running it."
+    }
+  },
+  "routes": {
+    "GET /": {
+      "name": "Server availability",
+      "description": "Confirms the main server is up and answering before anything else is asked of it."
+    }
+  }
+}

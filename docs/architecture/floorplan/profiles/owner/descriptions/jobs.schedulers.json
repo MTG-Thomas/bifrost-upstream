@@ -1,0 +1,92 @@
+{
+  "files": {
+    "api/src/jobs/schedulers/__init__.py": {
+      "name": "Schedulers package",
+      "description": "Groups the tasks that run automatically on a timetable."
+    },
+    "api/src/jobs/schedulers/artifact_retention.py": {
+      "name": "Artifact cleanup schedule",
+      "description": "Starts the daily removal of expired chat files."
+    },
+    "api/src/jobs/schedulers/audit_archive.py": {
+      "name": "Audit archive schedule",
+      "description": "Starts the daily move of older audit history into long-term storage."
+    },
+    "api/src/jobs/schedulers/cron_scheduler.py": {
+      "name": "Cron triggers",
+      "description": "Runs workflows set to start on a timetable, at the times their schedule says."
+    },
+    "api/src/jobs/schedulers/deferred_execution_promoter.py": {
+      "name": "Starting due runs",
+      "description": "Releases runs whose scheduled time has arrived and hands them to the executors."
+    },
+    "api/src/jobs/schedulers/event_cleanup.py": {
+      "name": "Stuck event cleanup",
+      "description": "Closes out event deliveries whose run has already finished, checking every few minutes."
+    },
+    "api/src/jobs/schedulers/execution_cleanup.py": {
+      "name": "Stuck run cleanup",
+      "description": "Ends workflow runs and agent runs left in progress long after they should have finished."
+    },
+    "api/src/jobs/schedulers/knowledge_storage_refresh.py": {
+      "name": "Knowledge storage totals",
+      "description": "Counts each workspace's stored knowledge daily so its usage is visible."
+    },
+    "api/src/jobs/schedulers/kubernetes_jobs.py": {
+      "name": "Hosted build watcher",
+      "description": "Watches long platform tasks running on hosted machines and keeps their status current without tying up local capacity."
+    },
+    "api/src/jobs/schedulers/logo_thumbnail_backfill.py": {
+      "name": "Logo thumbnail catch-up",
+      "description": "Gradually creates missing logo thumbnails for workspaces that were set up before thumbnails existed."
+    },
+    "api/src/jobs/schedulers/metrics_refresh.py": {
+      "name": "Platform metrics refresh",
+      "description": "Updates the dashboard's platform-wide numbers on a timetable."
+    },
+    "api/src/jobs/schedulers/oauth_token_refresh.py": {
+      "name": "Connected service renewal",
+      "description": "Refreshes connected-service sign-ins before they expire so automations keep working."
+    },
+    "api/src/jobs/schedulers/platform_jobs.py": {
+      "name": "Long task runner",
+      "description": "Claims queued long-running platform tasks and runs them in a process that can be stopped safely."
+    },
+    "api/src/jobs/schedulers/run_retention.py": {
+      "name": "Run retention schedule",
+      "description": "Starts the daily deletion of runs and events past the retention window."
+    },
+    "api/src/jobs/schedulers/solution_export_jobs.py": {
+      "name": "Solution backup jobs",
+      "description": "Builds Solution backup files and clears out old ones while keeping the record of past jobs."
+    },
+    "api/src/jobs/schedulers/solution_update_check.py": {
+      "name": "Solution update checks",
+      "description": "Checks Git-connected Solutions for newer versions and flags the ones that can be updated."
+    },
+    "api/src/jobs/schedulers/usage_reporting.py": {
+      "name": "Usage report schedule",
+      "description": "Sends the anonymous daily usage count at the end of each day."
+    },
+    "api/src/jobs/schedulers/webhook_renewal.py": {
+      "name": "Message subscription renewal",
+      "description": "Renews message subscriptions before they lapse so incoming updates keep arriving."
+    },
+    "api/src/jobs/schedulers/worker_metrics_cleanup.py": {
+      "name": "Worker metrics cleanup",
+      "description": "Deletes worker performance records older than a week."
+    },
+    "api/src/jobs/schedulers/worker_metrics_sampling.py": {
+      "name": "Worker metrics sampling",
+      "description": "Records each worker's latest heartbeat numbers for the performance view."
+    },
+    "api/src/jobs/schedulers/workflow_operation_usage_flush.py": {
+      "name": "Usage counter flush",
+      "description": "Saves today's and yesterday's workflow usage counts so none are lost."
+    },
+    "api/src/jobs/schedulers/workspace_bundle_cleanup.py": {
+      "name": "Bundle staging cleanup",
+      "description": "Removes leftover temporary files from Solution imports."
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "files": {
+    "client/src/services/workflowParameters.ts": {
+      "name": "Workflow inputs lookup",
+      "description": "Fetches the input fields a workflow needs so the run screen can show them."
+    }
+  }
+}

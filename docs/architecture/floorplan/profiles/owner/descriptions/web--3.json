@@ -1,0 +1,52 @@
+{
+  "files": {
+    "client/src/components/PageLoader.tsx": {
+      "name": "Page loading",
+      "description": "Holds the screen with a spinner while a page's information is still arriving."
+    },
+    "client/src/components/PasskeySetupBadge.tsx": {
+      "name": "Passkey prompt",
+      "description": "Offers a small header nudge to set up a passkey for quicker, safer sign-in."
+    },
+    "client/src/components/ProtectedRoute.tsx": {
+      "name": "Sign-in gate",
+      "description": "Keeps a page hidden from anyone who is not signed in or lacks the role it needs."
+    },
+    "client/src/components/ResourceIcon.tsx": {
+      "name": "Resource icon",
+      "description": "Draws the icon that matches each kind of resource, whether a workflow, form, agent or app."
+    },
+    "client/src/components/theme-toggle.tsx": {
+      "name": "Theme switch",
+      "description": "Switches the app between light and dark appearance and remembers the choice."
+    },
+    "client/src/index.css": {
+      "name": "Global styling",
+      "description": "Sets the base look shared by every screen, including text sizes, spacing and dark mode."
+    },
+    "client/src/main.tsx": {
+      "name": "App start-up",
+      "description": "Starts the browser app and places it on the page."
+    },
+    "client/src/styles/bifrost-tokens.css": {
+      "name": "Design values",
+      "description": "Defines the colours, spacing and corner rounding every screen draws from so the app looks consistent."
+    },
+    "client/src/vite-env.d.ts": {
+      "name": "Build tool reference",
+      "description": "Tells the code editor about the built-in helpers the build process provides."
+    },
+    "client/tailwind.config.js": {
+      "name": "Styling configuration",
+      "description": "Points the styling system at the app's files and sets its screen-size breakpoints and fonts."
+    },
+    "client/vite.config.ts": {
+      "name": "Build and dev server",
+      "description": "Assembles the app for the browser, serves it while developing and applies the safety rules for embedded forms."
+    },
+    "client/vitest.config.ts": {
+      "name": "Automatic check setup",
+      "description": "Sets up the automatic checks that verify the app's screens and helpers still behave."
+    }
+  }
+}

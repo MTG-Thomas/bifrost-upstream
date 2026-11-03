@@ -1,0 +1,164 @@
+{
+  "files": {
+    "client/src/components/layout/WorkspaceTabs.tsx": {
+      "name": "Title tabs",
+      "description": "Turns sibling views into tabs in the page title."
+    },
+    "client/src/components/pagination/ListPagination.tsx": {
+      "name": "Page controls",
+      "description": "Lets someone move between pages of a list."
+    },
+    "client/src/components/pagination/PaginationFooter.tsx": {
+      "name": "Pagination footer",
+      "description": "Shows how many records there are and moves between pages."
+    },
+    "client/src/components/quick-access/QuickAccess.tsx": {
+      "name": "Quick search palette",
+      "description": "Opens a keyboard-first search to jump straight to a form, workflow, script or screen."
+    },
+    "client/src/components/search/SearchBox.tsx": {
+      "name": "Search box",
+      "description": "Gives lists a standard box for filtering by typing."
+    },
+    "client/src/components/shared/HelpSlideout.tsx": {
+      "name": "Help panel",
+      "description": "Opens a side panel of guidance from a help button."
+    },
+    "client/src/components/shared/JsonYamlEditor.tsx": {
+      "name": "Settings file editor",
+      "description": "Edits structured settings text with formatting help and a choice of two notations."
+    },
+    "client/src/components/shared/PolicyExampleBlock.tsx": {
+      "name": "Rule example",
+      "description": "Shows a worked example of a rule with a copy button."
+    },
+    "client/src/components/shared/SettingsLoadError.tsx": {
+      "name": "Settings load failure",
+      "description": "Says a settings page could not be loaded and offers a retry."
+    },
+    "client/src/components/shared/SettingsToggleRow.tsx": {
+      "name": "Setting switch row",
+      "description": "Presents one on/off setting with its label, explanation and switch."
+    },
+    "client/src/components/ui/accordion.tsx": {
+      "name": "Expandable sections",
+      "description": "Lets long pages fold into sections people open one at a time."
+    },
+    "client/src/components/ui/alert-dialog.tsx": {
+      "name": "Confirmation dialog",
+      "description": "Asks people to confirm before an action that cannot be undone."
+    },
+    "client/src/components/ui/alert.tsx": {
+      "name": "Notice banner",
+      "description": "Shows a short message with an icon for information, warnings and errors."
+    },
+    "client/src/components/ui/avatar.tsx": {
+      "name": "Person photo",
+      "description": "Shows a person's photo or their initials when no photo is set."
+    },
+    "client/src/components/ui/badge.tsx": {
+      "name": "Status label",
+      "description": "Shows a small coloured label for a status, count or category."
+    },
+    "client/src/components/ui/button.tsx": {
+      "name": "Button",
+      "description": "Gives every screen the same buttons in consistent styles and sizes."
+    },
+    "client/src/components/ui/calendar.tsx": {
+      "name": "Date chooser",
+      "description": "Lets someone pick a date from a month view."
+    },
+    "client/src/components/ui/card.tsx": {
+      "name": "Card panel",
+      "description": "Groups related information in a bordered panel with a title and actions."
+    },
+    "client/src/components/ui/chart.tsx": {
+      "name": "Chart frame",
+      "description": "Draws the charts used in reports, with hover details, legends and matching colours."
+    },
+    "client/src/components/ui/chat-composer.tsx": {
+      "name": "Message box",
+      "description": "Gives the chat window its typing box with attachments and a send button."
+    },
+    "client/src/components/ui/checkbox.tsx": {
+      "name": "Tick box",
+      "description": "Lets someone tick one or more options."
+    },
+    "client/src/components/ui/collapsible.tsx": {
+      "name": "Fold-out panel",
+      "description": "Shows extra detail only when someone opens it."
+    },
+    "client/src/components/ui/combobox.tsx": {
+      "name": "Searchable picker",
+      "description": "Lets someone search a long list and pick one entry."
+    },
+    "client/src/components/ui/command.tsx": {
+      "name": "Command menu",
+      "description": "Provides the searchable menu used by quick search and pickers."
+    },
+    "client/src/components/ui/context-menu.tsx": {
+      "name": "Right-click menu",
+      "description": "Shows a menu of actions when someone right-clicks an item."
+    },
+    "client/src/components/ui/context-viewer.tsx": {
+      "name": "Context viewer",
+      "description": "Shows the information a form or run was given, formatted and scrollable."
+    },
+    "client/src/components/ui/data-table.tsx": {
+      "name": "Data table",
+      "description": "Displays records in a scrolling table with a header and footer."
+    },
+    "client/src/components/ui/date-range-picker.tsx": {
+      "name": "Date range chooser",
+      "description": "Lets someone pick a start and end date for reports and filters."
+    },
+    "client/src/components/ui/date-time-picker.tsx": {
+      "name": "Date and time chooser",
+      "description": "Lets someone pick both a date and a time of day."
+    },
+    "client/src/components/ui/dialog.tsx": {
+      "name": "Popup window",
+      "description": "Opens a focused window over the page for forms and details."
+    },
+    "client/src/components/ui/dropdown-menu.tsx": {
+      "name": "Dropdown menu",
+      "description": "Shows a list of actions from a button."
+    },
+    "client/src/components/ui/empty-state.tsx": {
+      "name": "Nothing here yet",
+      "description": "Explains what to do when a list or panel has nothing in it."
+    },
+    "client/src/components/ui/expression-editor.tsx": {
+      "name": "Condition editor",
+      "description": "Helps someone write the conditions that show or hide form fields, checking as they type."
+    },
+    "client/src/components/ui/form.tsx": {
+      "name": "Form field wrapper",
+      "description": "Pairs a form field with its label, help text and error message."
+    },
+    "client/src/components/ui/hover-card.tsx": {
+      "name": "Hover preview",
+      "description": "Shows a small preview card when someone hovers over a name or link."
+    },
+    "client/src/components/ui/infinite-scroll-sentinel.tsx": {
+      "name": "Load more on scroll",
+      "description": "Loads the next batch of results when someone scrolls to the bottom."
+    },
+    "client/src/components/ui/input-group.tsx": {
+      "name": "Text box group",
+      "description": "Combines a text box with attached buttons or labels."
+    },
+    "client/src/components/ui/input.tsx": {
+      "name": "Text box",
+      "description": "Gives every screen the same single-line box for typing."
+    },
+    "client/src/components/ui/jsx-template-renderer.tsx": {
+      "name": "Template renderer",
+      "description": "Renders a small reusable layout snippet with values filled in."
+    },
+    "client/src/components/ui/label.tsx": {
+      "name": "Field label",
+      "description": "Gives every form field the same label styling."
+    }
+  }
+}

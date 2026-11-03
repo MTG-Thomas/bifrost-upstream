@@ -1,0 +1,164 @@
+{
+  "files": {
+    "client/src/hooks/useForms.ts": {
+      "name": "Forms",
+      "description": "Creates, edits, deletes and submits the forms people fill in, including their startup steps."
+    },
+    "client/src/hooks/useGitHub.ts": {
+      "name": "GitHub connection",
+      "description": "Connects the workspace to GitHub so code changes can be saved, committed and pushed to a shared repository."
+    },
+    "client/src/hooks/useIntegrationEntities.ts": {
+      "name": "Outside service records",
+      "description": "Fetches records from a connected service so they can be chosen inside the platform."
+    },
+    "client/src/hooks/useKnowledge.ts": {
+      "name": "Knowledge sources",
+      "description": "Lists the knowledge collections an AI agent can look things up in."
+    },
+    "client/src/hooks/useLaunchWorkflow.ts": {
+      "name": "Form opening steps",
+      "description": "Runs a form's setup workflow when the form opens so it starts with the right information."
+    },
+    "client/src/hooks/useLogs.ts": {
+      "name": "Run logs",
+      "description": "Shows detailed logs of past workflow runs, filtered by person, workflow or outcome."
+    },
+    "client/src/hooks/useManualWorkflowExecution.ts": {
+      "name": "Trial run",
+      "description": "Runs a workflow by hand so its author can try it before the form goes live."
+    },
+    "client/src/hooks/useMediaQuery.ts": {
+      "name": "Screen size awareness",
+      "description": "Tells screens how wide the window is so layouts adapt to phones and desktops."
+    },
+    "client/src/hooks/useMultiSelect.ts": {
+      "name": "Selecting many records",
+      "description": "Keeps track of which rows are ticked in a list or popup."
+    },
+    "client/src/hooks/useNotifications.ts": {
+      "name": "Notifications",
+      "description": "Delivers the notification list and keeps it current as new notices arrive."
+    },
+    "client/src/hooks/useOAuth.ts": {
+      "name": "Outside sign-in connections",
+      "description": "Connects outside services through their own sign-in and renews the connection when it expires."
+    },
+    "client/src/hooks/useOrganizationName.ts": {
+      "name": "Organization names",
+      "description": "Turns organization identifiers into friendly names for labels and filters."
+    },
+    "client/src/hooks/useOrganizations.ts": {
+      "name": "Organizations",
+      "description": "Lists, creates and updates the organizations that own records and keep access separate."
+    },
+    "client/src/hooks/useOrgScope.ts": {
+      "name": "Organization in view",
+      "description": "Holds the single agreed answer to which organization is currently in view."
+    },
+    "client/src/hooks/usePackages.ts": {
+      "name": "Software packages",
+      "description": "Installs, lists and updates the extra software packages available to scripts."
+    },
+    "client/src/hooks/usePasskeys.ts": {
+      "name": "Passkeys",
+      "description": "Signs people in with a fingerprint or face scan and manages their registered devices."
+    },
+    "client/src/hooks/useProfile.ts": {
+      "name": "Profile",
+      "description": "Loads the signed-in person's own profile details and keeps them handy across screens."
+    },
+    "client/src/hooks/useRoles.ts": {
+      "name": "Roles and permissions",
+      "description": "Manages who is allowed to do what, by role, organization and assignment."
+    },
+    "client/src/hooks/useSaveQueue.ts": {
+      "name": "Queued saves",
+      "description": "Lines up file saves so several edits are written in order without overwriting each other."
+    },
+    "client/src/hooks/useSearch.ts": {
+      "name": "List filtering",
+      "description": "Filters and ranks a list's rows as someone types in a search box."
+    },
+    "client/src/hooks/useSidebar.ts": {
+      "name": "Side menu state",
+      "description": "Remembers whether the side menu is open or collapsed."
+    },
+    "client/src/hooks/useTools.ts": {
+      "name": "Agent tools",
+      "description": "Lists the abilities an AI agent can use, grouped by kind."
+    },
+    "client/src/hooks/useTraceNames.ts": {
+      "name": "Access trace labels",
+      "description": "Turns the technical names in an access check into readable roles, organizations and permissions."
+    },
+    "client/src/hooks/useUserInvites.ts": {
+      "name": "Invitations",
+      "description": "Sends, resends, replaces and cancels invitations for new people to join."
+    },
+    "client/src/hooks/useUserPermissions.ts": {
+      "name": "My permissions",
+      "description": "Loads the signed-in person's details and what they are allowed to do."
+    },
+    "client/src/hooks/useUsers.ts": {
+      "name": "People",
+      "description": "Adds, edits and deactivates people, and manages their roles, security settings and sign-ins."
+    },
+    "client/src/hooks/useUserSelection.ts": {
+      "name": "Choosing people",
+      "description": "Keeps track of which people are selected in a table or picker."
+    },
+    "client/src/hooks/useVersionCheck.ts": {
+      "name": "New version notice",
+      "description": "Checks whether a newer version of the platform has gone live and tells the screen."
+    },
+    "client/src/hooks/useWindowFocusRefresh.ts": {
+      "name": "Refresh on return",
+      "description": "Refreshes the file list when someone comes back to the browser window after working elsewhere."
+    },
+    "client/src/hooks/useWorkflowKeys.ts": {
+      "name": "Workflow access keys",
+      "description": "Creates and revokes the keys other systems use to start a workflow."
+    },
+    "client/src/hooks/useWorkflowPolling.ts": {
+      "name": "Watching trial runs",
+      "description": "Checks on several trial runs until they all finish and reports how each one ended."
+    },
+    "client/src/hooks/useWorkflowRoles.ts": {
+      "name": "Workflow permissions",
+      "description": "Decides which roles are needed to run a workflow and applies role changes in bulk."
+    },
+    "client/src/hooks/useWorkflows.ts": {
+      "name": "Workflows",
+      "description": "Lists, edits, checks, registers and runs the automations that do the platform's work."
+    },
+    "client/src/services/access.ts": {
+      "name": "Access checks",
+      "description": "Explains why someone can or cannot reach a record and what to change to grant access."
+    },
+    "client/src/services/agentRuns.ts": {
+      "name": "Agent run records",
+      "description": "Loads the record of an AI agent's runs: each step, its cost and any flagged answers."
+    },
+    "client/src/services/agents.ts": {
+      "name": "Agent spend and use",
+      "description": "Totals how often and how expensively each AI agent has run over recent days."
+    },
+    "client/src/services/agentTuning.ts": {
+      "name": "Agent tuning",
+      "description": "Proposes prompt changes from flagged answers, tests them on past runs, then applies the accepted version."
+    },
+    "client/src/services/ai-pricing.ts": {
+      "name": "AI model pricing",
+      "description": "Keeps the price list for AI models so usage can be costed accurately."
+    },
+    "client/src/services/aiModels.ts": {
+      "name": "AI models",
+      "description": "Connects AI providers and chooses which model handles each kind of job."
+    },
+    "client/src/services/appSdkUpgradeSettings.ts": {
+      "name": "App upgrade settings",
+      "description": "Chooses whether apps are moved onto newer platform tooling automatically."
+    }
+  }
+}

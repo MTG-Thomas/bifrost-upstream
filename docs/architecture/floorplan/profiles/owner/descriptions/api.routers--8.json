@@ -1,0 +1,91 @@
+{
+  "files": {
+    "api/src/routers/workflows.py": {
+      "name": "Automations",
+      "description": "Finds, runs, checks and retires the automations in the workspace, and controls who may run each one.",
+      "review": "new exports: get_workflow_parameters; 1 new route(s)"
+    }
+  },
+  "routes": {
+    "GET /api/workflows": {
+      "name": "Automations list",
+      "description": "Lists the automations in the workspace and where each one lives."
+    },
+    "GET /api/workflows/usage-stats": {
+      "name": "How automations are used",
+      "description": "Counts where each automation is referenced, such as in forms, schedules and buttons."
+    },
+    "POST /api/workflows/execute": {
+      "name": "Run an automation",
+      "description": "Starts an automation, an outside data lookup or a one-off script, and returns the run it began."
+    },
+    "POST /api/workflows/executions/{execution_id}/cancel": {
+      "name": "Cancel a scheduled run",
+      "description": "Stops a run that is waiting to start, as long as it has not begun."
+    },
+    "POST /api/workflows/validate": {
+      "name": "Check an automation",
+      "description": "Reads an automation's code and reports problems before it is put to use."
+    },
+    "POST /api/workflows/register": {
+      "name": "Add an automation",
+      "description": "Makes an existing piece of code available as an automation."
+    },
+    "PATCH /api/workflows/{workflow_id}": {
+      "name": "Update an automation",
+      "description": "Changes an automation's name, description or other editable details."
+    },
+    "GET /api/workflows/orphaned": {
+      "name": "Missing automations",
+      "description": "Lists automations whose code file has gone missing."
+    },
+    "GET /api/workflows/{workflow_id}/compatible-replacements": {
+      "name": "Possible replacements",
+      "description": "Suggests existing code that could stand in for a missing automation."
+    },
+    "POST /api/workflows/{workflow_id}/replace": {
+      "name": "Replace a missing automation",
+      "description": "Points a missing automation at a different code file so it works again."
+    },
+    "POST /api/workflows/{workflow_id}/remap": {
+      "name": "Move automation references",
+      "description": "Moves forms, schedules and buttons from one automation over to another."
+    },
+    "POST /api/workflows/{workflow_id}/recreate": {
+      "name": "Restore an automation's file",
+      "description": "Writes the code file back from the copy saved with the automation."
+    },
+    "POST /api/workflows/{workflow_id}/deactivate": {
+      "name": "Retire a missing automation",
+      "description": "Switches off an automation whose code has gone for good."
+    },
+    "GET /api/workflows/{workflow_id}/roles": {
+      "name": "Who may run it",
+      "description": "Lists the roles allowed to run an automation."
+    },
+    "POST /api/workflows/{workflow_id}/roles": {
+      "name": "Allow roles to run it",
+      "description": "Gives one or more roles permission to run an automation."
+    },
+    "DELETE /api/workflows/{workflow_id}/roles/{role_id}": {
+      "name": "Stop a role running it",
+      "description": "Takes away one role's permission to run an automation."
+    },
+    "GET /api/workflows/{workflow_id}": {
+      "name": "Automation details",
+      "description": "Shows one automation's details, whichever client it belongs to."
+    },
+    "GET /api/workflows/{workflow_id}/run-identities": {
+      "name": "Who has run it",
+      "description": "Lists the people and services that have run an automation."
+    },
+    "GET /api/workflows/{workflow_id}/recommended-access": {
+      "name": "Suggested access",
+      "description": "Suggests which roles should be allowed to run an automation, based on how it is used."
+    },
+    "DELETE /api/workflows/{workflow_id}": {
+      "name": "Delete an automation",
+      "description": "Removes an automation from the workspace and deletes its code."
+    }
+  }
+}

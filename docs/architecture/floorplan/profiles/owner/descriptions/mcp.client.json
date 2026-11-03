@@ -1,0 +1,36 @@
+{
+  "files": {
+    "api/src/services/mcp_client/__init__.py": {
+      "name": "Outside tool connections",
+      "description": "Connects Bifrost out to outside services that offer their own tools, so agents can use them."
+    },
+    "api/src/services/mcp_client/auth_resolution.py": {
+      "name": "Connection sign-in choice",
+      "description": "Chooses which saved sign-in to use for an outside service, covering shared, per-person and per-connection cases."
+    },
+    "api/src/services/mcp_client/catalog_sync.py": {
+      "name": "Outside tool list refresh",
+      "description": "Fetches the current list of tools an outside service offers and keeps the saved copy up to date."
+    },
+    "api/src/services/mcp_client/client.py": {
+      "name": "Outside service session",
+      "description": "Opens a working session with one outside service so its tools can be listed or called."
+    },
+    "api/src/services/mcp_client/discovery.py": {
+      "name": "Outside sign-in discovery",
+      "description": "Asks an outside service how it wants people to sign in before connecting."
+    },
+    "api/src/services/mcp_client/dispatch.py": {
+      "name": "Outside tool call",
+      "description": "Calls one tool on an outside service and returns a clean, consistent answer to the agent."
+    },
+    "api/src/services/mcp_client/errors.py": {
+      "name": "Outside connection errors",
+      "description": "Names the ways an outside service call can fail, so the platform can ask for a fresh sign-in or explain the problem."
+    },
+    "api/src/services/mcp_client/oauth_state.py": {
+      "name": "Sign-in handshake protection",
+      "description": "Makes the return trip from an outside sign-in tamper-proof and good for one use only."
+    }
+  }
+}

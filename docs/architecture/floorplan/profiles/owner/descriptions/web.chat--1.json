@@ -1,0 +1,164 @@
+{
+  "files": {
+    "client/src/components/agents/AgentMCPConnectionsPanel.tsx": {
+      "name": "Agent AI connections",
+      "description": "Chooses which outside connections an agent may use when it runs."
+    },
+    "client/src/components/agents/AgentOverviewTab.tsx": {
+      "name": "Agent overview",
+      "description": "Summarises an agent's recent runs, spending, settings and anything waiting for review."
+    },
+    "client/src/components/agents/AgentRunRecord.tsx": {
+      "name": "Run record",
+      "description": "Shows one agent run in a list with its outcome and the reviewer's verdict."
+    },
+    "client/src/components/agents/AgentRunSheet.tsx": {
+      "name": "Run details sheet",
+      "description": "Opens a run in a side sheet with its summary, steps and review."
+    },
+    "client/src/components/agents/AgentRunsPanel.tsx": {
+      "name": "Agent runs list",
+      "description": "Lists an agent's runs with filters, totals and a way into each one's review."
+    },
+    "client/src/components/agents/AgentRunsTab.tsx": {
+      "name": "Agent runs tab",
+      "description": "Shows an agent's runs tab, including flagged runs and their summaries."
+    },
+    "client/src/components/agents/AgentSelectorDialog.tsx": {
+      "name": "Choose an agent",
+      "description": "Lets someone search and pick an agent, showing its organization and what it does."
+    },
+    "client/src/components/agents/AgentSettingsTab.tsx": {
+      "name": "Agent settings",
+      "description": "Edits an agent's instructions, model, limits, tools and behaviour."
+    },
+    "client/src/components/agents/CapturedDataFilter.tsx": {
+      "name": "Captured data filter",
+      "description": "Narrows a run list by details captured during runs, such as a ticket or customer number."
+    },
+    "client/src/components/agents/ChatBubble.tsx": {
+      "name": "Chat bubble",
+      "description": "Draws one message in a tuning conversation, with room for quoted detail inside it."
+    },
+    "client/src/components/agents/Chip.tsx": {
+      "name": "Metadata tag",
+      "description": "Shows a small captured detail, such as a ticket number or customer name."
+    },
+    "client/src/components/agents/design-tokens.ts": {
+      "name": "Agent screen styling",
+      "description": "Holds the shared sizes and colours that keep the agent screens consistent."
+    },
+    "client/src/components/agents/DidNarrative.tsx": {
+      "name": "Plain-language run summary",
+      "description": "Turns what an agent did into readable prose without exposing internal names."
+    },
+    "client/src/components/agents/FlagConversation.tsx": {
+      "name": "Run tuning conversation",
+      "description": "Lets a reviewer discuss one flagged run with the assistant and agree on a fix."
+    },
+    "client/src/components/agents/FlaggedRunCard.tsx": {
+      "name": "Flagged run card",
+      "description": "Highlights one run a reviewer marked for attention, with its reason and outcome."
+    },
+    "client/src/components/agents/FleetStats.tsx": {
+      "name": "Agent fleet totals",
+      "description": "Shows the headline numbers across all agents: runs, cost, failures and reviews waiting."
+    },
+    "client/src/components/agents/JsonTree.tsx": {
+      "name": "Structured data viewer",
+      "description": "Shows recorded details as a foldable, readable outline."
+    },
+    "client/src/components/agents/KVList.tsx": {
+      "name": "Label-value list",
+      "description": "Lists labelled values that stack neatly in narrow panels without cutting them off."
+    },
+    "client/src/components/agents/MetaLine.tsx": {
+      "name": "Run facts line",
+      "description": "Shows a run's key facts on one muted line: when, how long, how many steps and what it cost."
+    },
+    "client/src/components/agents/NeedsReviewCard.tsx": {
+      "name": "Needs review card",
+      "description": "Surfaces one flagged run on an agent's overview so it gets a decision."
+    },
+    "client/src/components/agents/PillTabs.tsx": {
+      "name": "Agent tab bar",
+      "description": "Switches between an agent's sections with tabs that also work from the keyboard."
+    },
+    "client/src/components/agents/PromptDiffViewer.tsx": {
+      "name": "Instruction comparison",
+      "description": "Compares an agent's current instructions with a proposed change, side by side."
+    },
+    "client/src/components/agents/QueueBanner.tsx": {
+      "name": "Review queue banner",
+      "description": "Summarises how many flagged runs are waiting for review and links to them."
+    },
+    "client/src/components/agents/run-activity.ts": {
+      "name": "Run activity steps",
+      "description": "Turns a run's raw record into a readable list of actions with friendly names."
+    },
+    "client/src/components/agents/RunActionFeedback.tsx": {
+      "name": "Run action feedback",
+      "description": "Confirms a review action such as flagging or approving a run."
+    },
+    "client/src/components/agents/RunCard.tsx": {
+      "name": "Run card",
+      "description": "Shows one run as a compact card with its outcome, time and cost."
+    },
+    "client/src/components/agents/RunReviewPanel.tsx": {
+      "name": "Run review",
+      "description": "Shows a run's question, answer, steps, captured details and verdict so a reviewer can judge it."
+    },
+    "client/src/components/agents/RunReviewSheet.tsx": {
+      "name": "Review side sheet",
+      "description": "Opens a run's review and tuning in a slide-over without leaving the page."
+    },
+    "client/src/components/agents/RunSummaryContent.tsx": {
+      "name": "Run summary",
+      "description": "Shows what a run was asked and what it did, in plain language."
+    },
+    "client/src/components/agents/SettingsResourceNotice.tsx": {
+      "name": "Settings unavailable notice",
+      "description": "Explains that saved settings could not be loaded and what still works."
+    },
+    "client/src/components/agents/Sparkline.tsx": {
+      "name": "Trend sparkline",
+      "description": "Draws a small trend line for a number over time."
+    },
+    "client/src/components/agents/StatCard.tsx": {
+      "name": "Statistic card",
+      "description": "Shows one headline figure with an optional change, trend line or warning."
+    },
+    "client/src/components/agents/SummaryBackfillButton.tsx": {
+      "name": "Bulk run summaries",
+      "description": "Rewrites summaries for many past runs in the background, with a cost estimate first."
+    },
+    "client/src/components/agents/SummaryPlaceholder.tsx": {
+      "name": "Missing summary note",
+      "description": "Fills the gap when a run has no summary yet, saying it is still being written."
+    },
+    "client/src/components/agents/SummaryRegenerationControl.tsx": {
+      "name": "Regenerate summary",
+      "description": "Asks for a run's summary to be rewritten and shows progress or failure."
+    },
+    "client/src/components/agents/Timeline.tsx": {
+      "name": "Run timeline",
+      "description": "Plays a run's steps in order, showing what each one asked, did and returned."
+    },
+    "client/src/components/agents/TuneHeader.tsx": {
+      "name": "Tuning header",
+      "description": "Shows the run being tuned and the controls for saving a change to the agent."
+    },
+    "client/src/components/ai/FailoverProfileField.tsx": {
+      "name": "Backup model choice",
+      "description": "Chooses a model to fall back on when the preferred one is unavailable."
+    },
+    "client/src/components/ai/ModelAssignmentCard.tsx": {
+      "name": "Model assignment",
+      "description": "Shows which model a feature uses and lets it be changed."
+    },
+    "client/src/components/ai/ModelCatalogStatus.tsx": {
+      "name": "Model list status",
+      "description": "Says where the list of providers and models came from and offers a refresh."
+    }
+  }
+}

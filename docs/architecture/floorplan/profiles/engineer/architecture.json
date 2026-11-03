@@ -1,0 +1,1076 @@
+{
+  "$schema": "floorplan/architecture@1",
+  "project": {
+    "name": "Bifrost Integrations",
+    "summary": "FastAPI control plane, React SPA on Vite, and a separate execution plane for workflows and agents. PostgreSQL is the source of truth, Redis carries cache and pub/sub, S3-compatible storage holds repo files and app bundles, and Kubernetes runs isolated build jobs.",
+    "entrypoints": [
+      "api/src/main.py",
+      "api/src/worker/main.py",
+      "api/src/scheduler/main.py",
+      "api/bifrost/cli.py",
+      "client/src/main.tsx"
+    ]
+  },
+  "include": [
+    "code",
+    "config"
+  ],
+  "ignore": [
+    "api/alembic/versions/**",
+    "client/src/lib/v1.d.ts",
+    "api/tests/**",
+    "client/e2e/**",
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.spec.ts",
+    "**/*.spec.tsx",
+    "**/__snapshots__/**",
+    "client/src/test/**",
+    "client/src/test-utils.tsx",
+    "examples/**",
+    ".superpowers/**",
+    "docs/demo/**",
+    "apps/**",
+    "scripts/fixtures/**",
+    "scripts/testdata/**",
+    "docs/**",
+    ".agents/**"
+  ],
+  "tour": [
+    {
+      "node": "web",
+      "title": "Client build and routing",
+      "note": "React SPA: router, screens, TanStack Query for server state, Radix UI, Monaco editor."
+    },
+    {
+      "node": "api",
+      "title": "API process",
+      "note": "FastAPI app: routers enforce authz, services own the rules, repositories own SQL."
+    },
+    {
+      "node": "api.services",
+      "title": "Service layer",
+      "note": "The bulk of the domain logic and side effects, including transactional boundaries."
+    },
+    {
+      "node": "workers",
+      "title": "Execution plane",
+      "note": "Separate processes: claim work, import modules, run in a child process, stream logs."
+    },
+    {
+      "node": "data",
+      "title": "Persistence",
+      "note": "SQLAlchemy models, Pydantic contracts and the Alembic chain; Postgres is the source of truth."
+    },
+    {
+      "node": "shared",
+      "title": "Shared runtime",
+      "note": "Access checks and the workflow SDK used by API and workers alike."
+    },
+    {
+      "node": "appruntime",
+      "title": "Hosted app runtime",
+      "note": "SDK contract, compiler and host that serve apps built inside the platform."
+    }
+  ],
+  "nodes": [
+    {
+      "id": "web",
+      "label": "Web App",
+      "kind": "ui",
+      "summary": "React 18 SPA built by Vite (React Router, TanStack Query, Radix, Zustand, Monaco), served from nginx.",
+      "paths": [
+        "client/src",
+        "client/index.html",
+        "client/*.ts",
+        "client/*.js"
+      ],
+      "exclude": [
+        "client/src/lib/app-sdk/**",
+        "client/src/lib/app-code-platform/**",
+        "client/src/components/jsx-app/**"
+      ]
+    },
+    {
+      "id": "web.pages",
+      "parent": "web",
+      "label": "Screens",
+      "kind": "feature",
+      "summary": "Route components under src/pages, one module per screen, lazy-loaded through AppRouter.",
+      "paths": [
+        "client/src/pages"
+      ]
+    },
+    {
+      "id": "web.editor",
+      "parent": "web",
+      "label": "Editors",
+      "kind": "feature",
+      "summary": "Monaco-backed code and file editors, app builder, file tree and window manager.",
+      "paths": [
+        "client/src/components/app-builder",
+        "client/src/components/app-code-editor",
+        "client/src/components/editor",
+        "client/src/components/file-tree",
+        "client/src/components/window-management"
+      ]
+    },
+    {
+      "id": "web.chat",
+      "parent": "web",
+      "label": "Chat & agents",
+      "kind": "feature",
+      "summary": "Chat runtime and stream consumers for agent runs, tool calls and artifacts.",
+      "paths": [
+        "client/src/components/chat",
+        "client/src/components/ai",
+        "client/src/components/agents"
+      ]
+    },
+    {
+      "id": "web.admin",
+      "parent": "web",
+      "label": "Admin screens' parts",
+      "kind": "feature",
+      "summary": "Feature components for admin surfaces: integrations, services, workflows, forms, tables, Solutions, roles, users, audit.",
+      "paths": [
+        "client/src/components/integrations",
+        "client/src/components/services",
+        "client/src/components/workflows",
+        "client/src/components/forms",
+        "client/src/components/tables",
+        "client/src/components/solutions",
+        "client/src/components/roles",
+        "client/src/components/users",
+        "client/src/components/identities",
+        "client/src/components/audit",
+        "client/src/components/reports",
+        "client/src/components/schedules",
+        "client/src/components/events",
+        "client/src/components/config",
+        "client/src/components/catalog",
+        "client/src/components/dependencies",
+        "client/src/components/policy-rules",
+        "client/src/components/access",
+        "client/src/components/applications",
+        "client/src/components/mcp",
+        "client/src/components/oauth"
+      ]
+    },
+    {
+      "id": "web.kit",
+      "parent": "web",
+      "label": "Design kit",
+      "kind": "library",
+      "summary": "Shared UI primitives, layout shell and interaction patterns over Radix and Tailwind.",
+      "paths": [
+        "client/src/components/ui",
+        "client/src/components/common",
+        "client/src/components/shared",
+        "client/src/components/layout",
+        "client/src/components/icons",
+        "client/src/components/pagination",
+        "client/src/components/branding",
+        "client/src/components/search",
+        "client/src/components/quick-access",
+        "client/src/components/user"
+      ]
+    },
+    {
+      "id": "web.lib",
+      "parent": "web",
+      "label": "Browser helpers",
+      "kind": "library",
+      "summary": "Client utilities: api-client, auth-token, error shaping, codecs and terminology maps.",
+      "paths": [
+        "client/src/lib"
+      ]
+    },
+    {
+      "id": "web.data",
+      "parent": "web",
+      "label": "Data & state",
+      "kind": "library",
+      "summary": "TanStack Query hooks, Zustand stores and React contexts holding server state.",
+      "paths": [
+        "client/src/services",
+        "client/src/hooks",
+        "client/src/stores",
+        "client/src/contexts"
+      ]
+    },
+    {
+      "id": "api",
+      "label": "Platform API",
+      "kind": "service",
+      "summary": "FastAPI application (Python 3.11): routers over services, async SQLAlchemy, Redis, S3 and WebSockets.",
+      "paths": [
+        "api/src"
+      ]
+    },
+    {
+      "id": "api.routers",
+      "parent": "api",
+      "label": "Endpoints",
+      "kind": "feature",
+      "summary": "Thin HTTP handlers: parse the request, enforce authz, delegate to a service.",
+      "paths": [
+        "api/src/routers"
+      ]
+    },
+    {
+      "id": "api.services",
+      "parent": "api",
+      "label": "Business logic",
+      "kind": "feature",
+      "summary": "Domain services; most business rules, transactions and side effects live here.",
+      "paths": [
+        "api/src/services"
+      ],
+      "exclude": [
+        "api/src/services/mcp_server/**",
+        "api/src/services/mcp_client/**",
+        "api/src/services/execution/**",
+        "api/src/services/worker_pool/**"
+      ]
+    },
+    {
+      "id": "api.services.agents",
+      "parent": "api.services",
+      "label": "Agents & AI",
+      "kind": "feature",
+      "summary": "Pydantic AI agent runtime: model factory, toolset, budgets, retries, usage metering.",
+      "paths": [
+        "api/src/services/agent_*.py",
+        "api/src/services/chat_*.py",
+        "api/src/services/ai_*.py",
+        "api/src/services/agent_runtime",
+        "api/src/services/capabilities",
+        "api/src/services/llm",
+        "api/src/services/model_*.py",
+        "api/src/services/provider_catalog_service.py",
+        "api/src/services/anthropic_prompt_cache.py",
+        "api/src/services/memory.py",
+        "api/src/services/memory_requests.py",
+        "api/src/services/tool_registry.py",
+        "api/src/services/tool_schema.py",
+        "api/src/services/openai_transport_detection.py",
+        "api/src/services/opencode_go.py",
+        "api/src/services/opencode_go_detection.py"
+      ]
+    },
+    {
+      "id": "api.services.apps",
+      "parent": "api.services",
+      "label": "Apps & SDK",
+      "kind": "feature",
+      "summary": "App deploy pipeline, SDK packaging and retained source.",
+      "paths": [
+        "api/src/services/app_*.py",
+        "api/src/services/application_*.py",
+        "api/src/services/app_bundler",
+        "api/src/services/app_compiler",
+        "api/src/services/sdk_package",
+        "api/src/services/sdk_*.py",
+        "api/src/services/editor",
+        "api/src/services/templates",
+        "api/src/services/package_*.py",
+        "api/src/services/repo_*.py"
+      ]
+    },
+    {
+      "id": "api.services.integrations",
+      "parent": "api.services",
+      "label": "Integrations & sync",
+      "kind": "feature",
+      "summary": "OAuth token lifecycle, provider clients, Git sync/manifest and webhook delivery.",
+      "paths": [
+        "api/src/services/github*.py",
+        "api/src/services/git_*.py",
+        "api/src/services/manifest_*.py",
+        "api/src/services/oauth_*.py",
+        "api/src/services/sync_*.py",
+        "api/src/services/webhooks",
+        "api/src/services/events",
+        "api/src/services/service_lifecycle.py"
+      ]
+    },
+    {
+      "id": "api.services.solutions",
+      "parent": "api.services",
+      "label": "Solutions",
+      "kind": "feature",
+      "summary": "Solution capture, export, deploy and upgrade: bundling, rewriting and preflight.",
+      "paths": [
+        "api/src/services/solutions"
+      ]
+    },
+    {
+      "id": "api.services.access",
+      "parent": "api.services",
+      "label": "Access & identity",
+      "kind": "feature",
+      "summary": "Authz primitives: access checks, policy rules, roles, org scoping, MFA and passkeys.",
+      "paths": [
+        "api/src/services/access_*.py",
+        "api/src/services/authorization",
+        "api/src/services/policy_*.py",
+        "api/src/services/role_*.py",
+        "api/src/services/permission_*.py",
+        "api/src/services/user_*.py",
+        "api/src/services/mfa_service.py",
+        "api/src/services/passkey_service.py",
+        "api/src/services/identities.py",
+        "api/src/services/service_access.py",
+        "api/src/services/service_claim.py",
+        "api/src/services/required_instructions.py",
+        "api/src/services/decorator_property_service.py",
+        "api/src/services/recommended_access.py",
+        "api/src/services/cross_org_validation.py"
+      ]
+    },
+    {
+      "id": "api.services.knowledge",
+      "parent": "api.services",
+      "label": "Knowledge & search",
+      "kind": "feature",
+      "summary": "Embedding and indexing pipeline plus retrieval for knowledge sources.",
+      "paths": [
+        "api/src/services/knowledge",
+        "api/src/services/embeddings",
+        "api/src/services/source_search",
+        "api/src/services/docs_indexer.py",
+        "api/src/services/llms_txt.py"
+      ]
+    },
+    {
+      "id": "api.services.files",
+      "parent": "api.services",
+      "label": "Files & artifacts",
+      "kind": "feature",
+      "summary": "S3 file storage, file-index sync and artifact generation.",
+      "paths": [
+        "api/src/services/file_*.py",
+        "api/src/services/file_storage",
+        "api/src/services/artifact*.py",
+        "api/src/services/media_generation.py",
+        "api/src/services/repo_storage.py"
+      ]
+    },
+    {
+      "id": "api.services.platform",
+      "parent": "api.services",
+      "label": "Jobs, events & ops",
+      "kind": "feature",
+      "summary": "PlatformJob registry and runner, notifications, audit, metrics, retention, Kubernetes isolation.",
+      "paths": [
+        "api/src/services/platform_job*.py",
+        "api/src/services/notification_*.py",
+        "api/src/services/audit*.py",
+        "api/src/services/kubernetes_*.py",
+        "api/src/services/work_dispatch.py",
+        "api/src/services/workflow_*.py",
+        "api/src/services/operation_*.py",
+        "api/src/services/run_retention",
+        "api/src/services/audit_retention",
+        "api/src/services/legacy_broker_drain.py",
+        "api/src/services/product_updates.py",
+        "api/src/services/roi_*.py",
+        "api/src/services/scheduler_diagnostics.py",
+        "api/src/services/dependency_graph.py",
+        "api/src/services/service_memory.py",
+        "api/src/services/service_log_flush.py",
+        "api/src/services/cron_parser.py",
+        "api/src/services/conversation_messages.py"
+      ]
+    },
+    {
+      "id": "api.core",
+      "parent": "api",
+      "label": "Core plumbing",
+      "kind": "library",
+      "summary": "Cross-cutting infrastructure: DB sessions, Redis, cache invalidation, CSRF, rate limits, auth dependencies.",
+      "paths": [
+        "api/src/core"
+      ]
+    },
+    {
+      "id": "api.repositories",
+      "parent": "api",
+      "label": "Repositories",
+      "kind": "data",
+      "summary": "Data-access layer; SQLAlchemy queries scoped by organization.",
+      "paths": [
+        "api/src/repositories"
+      ]
+    },
+    {
+      "id": "workers",
+      "label": "Execution Workers",
+      "kind": "worker",
+      "summary": "Execution plane: worker launcher, process pool, sandboxed workflow and agent execution.",
+      "paths": [
+        "api/src/worker",
+        "api/src/services/execution",
+        "api/src/services/worker_pool"
+      ]
+    },
+    {
+      "id": "workers.launcher",
+      "parent": "workers",
+      "label": "Worker launcher",
+      "kind": "worker",
+      "summary": "Remote launcher, work claims and the control channel back to the API.",
+      "paths": [
+        "api/src/worker"
+      ]
+    },
+    {
+      "id": "workers.engine",
+      "parent": "workers",
+      "label": "Execution engine",
+      "kind": "worker",
+      "summary": "Module loading, sandboxed child process, log/CPU/memory capture.",
+      "paths": [
+        "api/src/services/execution"
+      ]
+    },
+    {
+      "id": "workers.pool",
+      "parent": "workers",
+      "label": "Worker pool",
+      "kind": "worker",
+      "summary": "Worker sizing, admission and capacity policy.",
+      "paths": [
+        "api/src/services/worker_pool"
+      ]
+    },
+    {
+      "id": "workers.scheduler",
+      "parent": "workers",
+      "label": "Scheduler process",
+      "kind": "worker",
+      "summary": "Scheduler process: heartbeat, readiness files, optional Kubernetes control.",
+      "paths": [
+        "api/src/scheduler"
+      ]
+    },
+    {
+      "id": "jobs",
+      "label": "Jobs & Scheduled Tasks",
+      "kind": "worker",
+      "summary": "Durable PlatformJob system plus the APScheduler loops.",
+      "paths": [
+        "api/src/jobs",
+        "api/src/services/platform_job*.py"
+      ]
+    },
+    {
+      "id": "jobs.platform",
+      "parent": "jobs",
+      "label": "Durable jobs",
+      "kind": "worker",
+      "summary": "Job definitions: registry, policy, leases, retries and the Kubernetes runner.",
+      "paths": [
+        "api/src/jobs/platform"
+      ]
+    },
+    {
+      "id": "jobs.schedulers",
+      "parent": "jobs",
+      "label": "Recurring loops",
+      "kind": "worker",
+      "summary": "Periodic loops: cron triggers, token refresh, webhook renewal, retention, metrics.",
+      "paths": [
+        "api/src/jobs/schedulers"
+      ]
+    },
+    {
+      "id": "jobs.consumers",
+      "parent": "jobs",
+      "label": "Consumers",
+      "kind": "worker",
+      "summary": "Queue consumers that execute dispatched work outside a request.",
+      "paths": [
+        "api/src/jobs/consumers"
+      ]
+    },
+    {
+      "id": "cli",
+      "label": "Bifrost CLI",
+      "kind": "script",
+      "summary": "`bifrost` CLI: Click commands over the REST API, with sync/watch and a Textual TUI.",
+      "paths": [
+        "api/bifrost",
+        "api/bifrost.py"
+      ]
+    },
+    {
+      "id": "cli.commands",
+      "parent": "cli",
+      "label": "Commands",
+      "kind": "script",
+      "summary": "Per-entity Click command modules generated against shared DTOs.",
+      "paths": [
+        "api/bifrost/commands"
+      ]
+    },
+    {
+      "id": "cli.contracts",
+      "parent": "cli",
+      "label": "CLI contracts",
+      "kind": "library",
+      "summary": "Shared CLI request/response models and contract version gates.",
+      "paths": [
+        "api/bifrost/contracts"
+      ]
+    },
+    {
+      "id": "cli.tui",
+      "parent": "cli",
+      "label": "Terminal UI",
+      "kind": "script",
+      "summary": "Textual screens for file selection, progress and sync.",
+      "paths": [
+        "api/bifrost/tui",
+        "api/bifrost/solution_dev"
+      ]
+    },
+    {
+      "id": "mcp",
+      "label": "MCP Gateway",
+      "kind": "service",
+      "summary": "MCP server (Streamable HTTP) plus a client for external MCP servers.",
+      "paths": [
+        "api/src/services/mcp_server",
+        "api/src/services/mcp_client"
+      ]
+    },
+    {
+      "id": "mcp.tools",
+      "parent": "mcp",
+      "label": "Gateway tools",
+      "kind": "feature",
+      "summary": "Thin, HTTP-bridged MCP tool wrappers over existing endpoints.",
+      "paths": [
+        "api/src/services/mcp_server/tools"
+      ]
+    },
+    {
+      "id": "mcp.server",
+      "parent": "mcp",
+      "label": "Server & auth",
+      "kind": "service",
+      "summary": "FastMCP app, auth middleware and tool exposure rules.",
+      "paths": [
+        "api/src/services/mcp_server"
+      ]
+    },
+    {
+      "id": "mcp.client",
+      "parent": "mcp",
+      "label": "Client",
+      "kind": "library",
+      "summary": "Outbound MCP client, OAuth and tool discovery.",
+      "paths": [
+        "api/src/services/mcp_client"
+      ]
+    },
+    {
+      "id": "appruntime",
+      "label": "App Runtime & SDK",
+      "kind": "library",
+      "summary": "Web SDK, host runtime and the compiler/bundler that produce hosted app deployments.",
+      "paths": [
+        "client/src/lib/app-sdk",
+        "client/src/lib/app-code-platform",
+        "client/src/components/jsx-app",
+        "api/src/services/app_compiler",
+        "api/src/services/app_bundler",
+        "api/src/services/sdk_package"
+      ]
+    },
+    {
+      "id": "appruntime.sdk",
+      "parent": "appruntime",
+      "label": "App SDK",
+      "kind": "library",
+      "summary": "SDK surface: data, files, AI, forms and UI, versioned by binding major.",
+      "paths": [
+        "client/src/lib/app-sdk"
+      ]
+    },
+    {
+      "id": "appruntime.platform",
+      "parent": "appruntime",
+      "label": "App platform",
+      "kind": "library",
+      "summary": "Hosted app runtime bridge: platform modules and RPC to the API.",
+      "paths": [
+        "client/src/lib/app-code-platform"
+      ]
+    },
+    {
+      "id": "appruntime.render",
+      "parent": "appruntime",
+      "label": "App host",
+      "kind": "feature",
+      "summary": "JSX app host: mounts a deployment with the SDK context.",
+      "paths": [
+        "client/src/components/jsx-app"
+      ]
+    },
+    {
+      "id": "appruntime.builder",
+      "parent": "appruntime",
+      "label": "Build service",
+      "kind": "service",
+      "summary": "esbuild/Vite build, type packaging and bundle fingerprinting.",
+      "paths": [
+        "api/src/services/app_compiler",
+        "api/src/services/app_bundler",
+        "api/src/services/sdk_package"
+      ]
+    },
+    {
+      "id": "data",
+      "label": "Database & Models",
+      "kind": "data",
+      "summary": "Persistence layer: SQLAlchemy ORM, Pydantic contracts and Alembic migrations.",
+      "paths": [
+        "api/src/models",
+        "api/alembic"
+      ]
+    },
+    {
+      "id": "data.orm",
+      "parent": "data",
+      "label": "Tables",
+      "kind": "data",
+      "summary": "SQLAlchemy models and relationships, one module per record family.",
+      "paths": [
+        "api/src/models/orm"
+      ]
+    },
+    {
+      "id": "data.contracts",
+      "parent": "data",
+      "label": "API shapes",
+      "kind": "data",
+      "summary": "Pydantic request/response DTOs; source of the generated TypeScript types.",
+      "paths": [
+        "api/src/models/contracts"
+      ]
+    },
+    {
+      "id": "data.migrations",
+      "parent": "data",
+      "label": "Migrations",
+      "kind": "data",
+      "summary": "Alembic environment and revision chain.",
+      "paths": [
+        "api/alembic"
+      ]
+    },
+    {
+      "id": "shared",
+      "label": "Shared Business Logic",
+      "kind": "library",
+      "summary": "Code imported by both the API and workers; no HTTP layer.",
+      "paths": [
+        "api/shared"
+      ]
+    },
+    {
+      "id": "shared.access",
+      "parent": "shared",
+      "label": "Access rules",
+      "kind": "library",
+      "summary": "Access-check helpers, policy evaluation, org scoping and role caches.",
+      "paths": [
+        "api/shared/access_*.py",
+        "api/shared/policies",
+        "api/shared/claims",
+        "api/shared/file_*.py",
+        "api/shared/resource_access.py",
+        "api/shared/scope_resolver.py",
+        "api/shared/role_cache.py",
+        "api/shared/workflow_access.py",
+        "api/shared/account_guards.py",
+        "api/shared/system_account_guard.py",
+        "api/shared/browser_impersonation.py",
+        "api/shared/human_sessions.py",
+        "api/shared/auth_cookies.py",
+        "api/shared/external_access.py"
+      ]
+    },
+    {
+      "id": "shared.sdk",
+      "parent": "shared",
+      "label": "Workflow SDK",
+      "kind": "library",
+      "summary": "Workflow runtime SDK: tables, files, forms, AI, integrations, users, executions.",
+      "paths": [
+        "api/shared/sdk_*.py"
+      ]
+    },
+    {
+      "id": "shared.events",
+      "parent": "shared",
+      "label": "Execution & events",
+      "kind": "library",
+      "summary": "Run context, cancellation, event delivery and usage reporting.",
+      "paths": [
+        "api/shared/event_*.py",
+        "api/shared/execution_*.py",
+        "api/shared/run_*.py",
+        "api/shared/unattended_execution.py",
+        "api/shared/runtime_io.py",
+        "api/shared/subprocess_env.py",
+        "api/shared/usage_reporting.py"
+      ]
+    },
+    {
+      "id": "infra",
+      "label": "Deploy & CI",
+      "kind": "infra",
+      "summary": "Deployment and CI: Compose for local/test, Kubernetes/Kustomize, GitHub Actions.",
+      "paths": [
+        "k8s",
+        "deploy",
+        ".github",
+        "docker-compose.yml",
+        "docker-compose.*.yml",
+        "api/Dockerfile*",
+        "client/Dockerfile*",
+        "client/nginx.conf",
+        "client/entrypoint.sh",
+        "api/entrypoint.sh",
+        ".devcontainer"
+      ]
+    },
+    {
+      "id": "infra.k8s",
+      "parent": "infra",
+      "label": "Kubernetes",
+      "kind": "infra",
+      "summary": "Kubernetes manifests for api, client, worker, scheduler, Postgres, Redis and SeaweedFS.",
+      "paths": [
+        "k8s",
+        "deploy"
+      ]
+    },
+    {
+      "id": "infra.ci",
+      "parent": "infra",
+      "label": "CI pipelines",
+      "kind": "infra",
+      "summary": "GitHub Actions: lint, tests, CodeQL, releases and image publishing.",
+      "paths": [
+        ".github"
+      ]
+    },
+    {
+      "id": "tooling",
+      "label": "Repo Tooling",
+      "kind": "script",
+      "summary": "Repository scripts: type and SDK generation, releases, benchmarks.",
+      "paths": [
+        "scripts",
+        "plugins",
+        "api/scripts",
+        ".claude"
+      ]
+    },
+    {
+      "id": "postgres",
+      "label": "PostgreSQL",
+      "kind": "external",
+      "summary": "Primary datastore, accessed through asyncpg and SQLAlchemy.",
+      "packages": [
+        "pypi:sqlalchemy",
+        "pypi:asyncpg",
+        "pypi:alembic",
+        "pypi:greenlet"
+      ]
+    },
+    {
+      "id": "redis",
+      "label": "Redis",
+      "kind": "external",
+      "summary": "Cache, pub/sub fan-out and the compiled module cache.",
+      "packages": [
+        "pypi:redis"
+      ]
+    },
+    {
+      "id": "objectstore",
+      "label": "S3 storage",
+      "kind": "external",
+      "summary": "S3-compatible blob store for repo files, bundles and artifacts.",
+      "packages": [
+        "pypi:awscrt"
+      ]
+    },
+    {
+      "id": "github",
+      "label": "GitHub",
+      "kind": "external",
+      "summary": "GitHub API/App integration and Git remotes.",
+      "packages": [
+        "pypi:github",
+        "pypi:git"
+      ],
+      "hosts": [
+        "github.com",
+        "api.github.com",
+        "raw.githubusercontent.com"
+      ]
+    },
+    {
+      "id": "microsoft",
+      "label": "Microsoft 365",
+      "kind": "external",
+      "summary": "Microsoft Entra ID and Graph endpoints.",
+      "hosts": [
+        "login.microsoftonline.com",
+        "graph.microsoft.com"
+      ]
+    },
+    {
+      "id": "llm",
+      "label": "AI model providers",
+      "kind": "external",
+      "summary": "Model provider APIs: OpenRouter, OpenAI, Anthropic, Google.",
+      "packages": [
+        "pypi:pydantic_ai",
+        "pypi:pydantic_ai_harness",
+        "pypi:openai"
+      ],
+      "hosts": [
+        "openrouter.ai",
+        "api.openai.com",
+        "api.anthropic.com",
+        "opencode.ai"
+      ]
+    },
+    {
+      "id": "kubernetes",
+      "label": "Kubernetes",
+      "kind": "external",
+      "summary": "Kubernetes API used for isolated build jobs."
+    }
+  ],
+  "edges": [
+    {
+      "from": "api",
+      "to": "workers",
+      "kind": "queue",
+      "label": "hands out runs",
+      "description": "The API records an execution and makes it claimable; a worker leases it and runs it. Nothing long runs inside a request."
+    },
+    {
+      "from": "workers",
+      "to": "api",
+      "kind": "http",
+      "label": "claims, logs, results",
+      "description": "Workers report progress and results through the API's worker control channel."
+    },
+    {
+      "from": "api",
+      "to": "redis",
+      "kind": "data",
+      "label": "cache & channels",
+      "description": "Cached modules, sessions and WebSocket fan-out."
+    },
+    {
+      "from": "api",
+      "to": "postgres",
+      "kind": "data",
+      "label": "reads/writes",
+      "description": "Every durable record."
+    },
+    {
+      "from": "api",
+      "to": "objectstore",
+      "kind": "data",
+      "label": "files, apps, artifacts",
+      "description": "Workspace files, built app bundles and generated artifacts."
+    },
+    {
+      "from": "jobs",
+      "to": "kubernetes",
+      "kind": "call",
+      "label": "isolated build pods",
+      "description": "Build-class jobs such as app deploys and Solution exports run in temporary pods."
+    },
+    {
+      "from": "jobs.platform",
+      "to": "appruntime.builder",
+      "kind": "call",
+      "label": "runs the build",
+      "description": "A deploy job calls the app compiler and bundler, then records the new deployment."
+    },
+    {
+      "from": "appruntime.builder",
+      "to": "objectstore",
+      "kind": "data",
+      "label": "stores built apps",
+      "description": "Each successful build writes its bundle to file storage for the live app to load."
+    },
+    {
+      "from": "objectstore",
+      "to": "appruntime.render",
+      "kind": "http",
+      "label": "serves the live bundle",
+      "description": "The app host loads the active bundle through the API rather than from a build on the client."
+    },
+    {
+      "from": "github",
+      "to": "api.services.integrations",
+      "kind": "http",
+      "label": "webhooks & pushes",
+      "description": "GitHub calls the API when a connected repository changes."
+    },
+    {
+      "from": "microsoft",
+      "to": "api.services.integrations",
+      "kind": "http",
+      "label": "OAuth & Graph",
+      "description": "Token exchange and Graph calls for connected Microsoft tenants."
+    },
+    {
+      "from": "api.services.agents",
+      "to": "llm",
+      "kind": "http",
+      "label": "model calls",
+      "description": "Every agent and chat turn is a model request through the configured provider."
+    },
+    {
+      "from": "appruntime",
+      "to": "api.routers",
+      "kind": "http",
+      "label": "SDK calls",
+      "description": "A hosted app reaches platform data only through the public API."
+    }
+  ],
+  "annotations": [
+    {
+      "path": "api/src/models/contracts/cli.py",
+      "note": "The shared CLI/SDK contract. A change here can break installed CLIs, so version gates live next to it.",
+      "tags": [
+        "hotspot"
+      ]
+    },
+    {
+      "path": "api/src/services/platform_jobs.py",
+      "note": "The canonical durable-job system. New long-running work should extend this rather than add its own job table.",
+      "tags": [
+        "hotspot"
+      ]
+    },
+    {
+      "path": "client/src/lib/api-client.ts",
+      "note": "Every screen's requests pass through here, including sign-in expiry and error shaping.",
+      "tags": [
+        "hotspot"
+      ]
+    }
+  ],
+  "flows": [
+    {
+      "id": "run-workflow",
+      "title": "Execute a workflow",
+      "description": "From HTTP request to sandboxed execution and persisted result.",
+      "steps": [
+        {
+          "node": "web.pages",
+          "note": "POST /api/executions from the run screen"
+        },
+        {
+          "node": "api.routers",
+          "note": "executions handler: authorize, validate input, resolve workflow version"
+        },
+        {
+          "node": "api.services",
+          "note": "Insert the execution row and make it claimable (work dispatch)"
+        },
+        {
+          "node": "workers.engine",
+          "note": "Worker leases the claim; process pool imports the module in a child process"
+        },
+        {
+          "node": "shared.sdk",
+          "note": "Workflow calls sdk.tables/files/integrations; each is an HTTP call back to the API"
+        },
+        {
+          "node": "data.orm",
+          "note": "Result, logs and usage persisted; WebSocket fan-out to the screen"
+        }
+      ]
+    },
+    {
+      "id": "build-app",
+      "title": "Build and deploy an app",
+      "description": "App source to an active hosted deployment.",
+      "steps": [
+        {
+          "node": "web.editor",
+          "note": "PUT /api/applications/{id}/code-files from the editor"
+        },
+        {
+          "node": "api.routers",
+          "note": "applications handler stores source and enqueues the deploy"
+        },
+        {
+          "node": "jobs.platform",
+          "note": "application.deploy PlatformJob with retries and progress"
+        },
+        {
+          "node": "appruntime.builder",
+          "note": "esbuild bundle against the served SDK, fingerprinted output"
+        },
+        {
+          "node": "objectstore",
+          "note": "Deployment bundle written; the deployment row is activated atomically"
+        },
+        {
+          "node": "appruntime.render",
+          "note": "Host fetches the active deployment and mounts it with the SDK"
+        }
+      ]
+    },
+    {
+      "id": "ask-agent",
+      "title": "Run an agent turn",
+      "description": "A chat message through the agent runtime and back.",
+      "steps": [
+        {
+          "node": "web.chat",
+          "note": "POST /api/chat; the client consumes the SSE stream"
+        },
+        {
+          "node": "api.routers",
+          "note": "chat handler creates the run and returns the stream"
+        },
+        {
+          "node": "api.services.agents",
+          "note": "Pydantic AI agent: instructions, toolset, budget, retry policy"
+        },
+        {
+          "node": "llm",
+          "note": "Provider request with tool schemas; the model chooses tool calls"
+        },
+        {
+          "node": "workers.engine",
+          "note": "Agent run executes in the worker, persisting steps and usage"
+        },
+        {
+          "node": "web.chat",
+          "note": "Messages, tool results and artifacts streamed to the conversation"
+        }
+      ]
+    }
+  ],
+  "audience": "developers"
+}

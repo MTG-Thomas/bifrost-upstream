@@ -1,0 +1,430 @@
+{
+  "files": {
+    "api/src/routers/embed.py": {
+      "name": "Embedded apps and forms",
+      "description": "Shows apps and forms inside another website's page, letting in only properly signed links."
+    },
+    "api/src/routers/endpoints.py": {
+      "name": "Keyed workflow calls",
+      "description": "Runs a workflow when an outside system calls it with the right key, with no person signing in."
+    },
+    "api/src/routers/events.py": {
+      "name": "Event sources",
+      "description": "Manages the outside services that send the platform news, what should happen when news arrives, and the delivery history."
+    },
+    "api/src/routers/executions.py": {
+      "name": "Workflow run history",
+      "description": "Shows workflow runs with their results, logs and values, and lets you cancel stuck or unwanted runs."
+    },
+    "api/src/routers/export_import.py": {
+      "name": "Workspace export and import",
+      "description": "Copies knowledge, settings, tables and connections out of one workspace and into another as files."
+    },
+    "api/src/routers/files.py": {
+      "name": "File storage",
+      "description": "Reads, writes, moves, searches and shares files in cloud storage, with folder permissions and a browser editor."
+    },
+    "api/src/routers/form_embed_secrets.py": {
+      "name": "Form embed keys",
+      "description": "Creates and rotates the keys that let a form be shown inside another website."
+    },
+    "api/src/routers/forms.py": {
+      "name": "Forms and submissions",
+      "description": "Builds the forms people fill in, controls whether they are public, and runs the workflow behind each submission."
+    }
+  },
+  "routes": {
+    "GET /embed/apps/{slug}": {
+      "name": "Show app on another site",
+      "description": "Checks the signed link and shows the app inside another website's page."
+    },
+    "GET /embed/forms/public/{public_key}": {
+      "name": "Open a public form",
+      "description": "Starts a short visit for a published form so an outside visitor can fill it in."
+    },
+    "GET /embed/forms/public/{public_key}/frame-policy": {
+      "name": "Public form display rules",
+      "description": "Tells the browser which websites may show this public form in a frame."
+    },
+    "GET /embed/forms/hmac/{form_id}/frame-policy": {
+      "name": "Signed form display rules",
+      "description": "Allows a form shared by signed link to be shown inside any website."
+    },
+    "GET /embed/forms/{form_id}": {
+      "name": "Show form on another site",
+      "description": "Checks the signed link and shows the form inside another website's page."
+    },
+    "GET /api/events/adapters": {
+      "name": "Event service types",
+      "description": "Lists the outside services the platform can receive news from."
+    },
+    "POST /api/events/adapters/{adapter_name}/dynamic-values": {
+      "name": "Event service choices",
+      "description": "Fetches the live choices for a setting when connecting an outside service."
+    },
+    "GET /api/events/sources": {
+      "name": "Event sources",
+      "description": "Lists the connections that bring news in from outside services, for platform administrators."
+    },
+    "POST /api/events/sources": {
+      "name": "Add an event source",
+      "description": "Connects a new outside service so its news can start arriving."
+    },
+    "GET /api/events/sources/{source_id}": {
+      "name": "Event source details",
+      "description": "Shows one connection's settings, for platform administrators."
+    },
+    "PATCH /api/events/sources/{source_id}": {
+      "name": "Edit an event source",
+      "description": "Changes a connection's settings, such as which events to accept."
+    },
+    "POST /api/events/sources/{source_id}/resubscribe": {
+      "name": "Reconnect an event source",
+      "description": "Replaces the outside service's subscription so news starts arriving again."
+    },
+    "POST /api/events/sources/{source_id}/rotate-secret": {
+      "name": "Change an event signing key",
+      "description": "Sets a new signing key so only genuinely signed messages are accepted."
+    },
+    "DELETE /api/events/sources/{source_id}": {
+      "name": "Delete an event source",
+      "description": "Permanently removes a connection and stops its news arriving."
+    },
+    "GET /api/events/sources/{source_id}/subscriptions": {
+      "name": "What happens on an event",
+      "description": "Lists the actions set up for a connection's events, for platform administrators."
+    },
+    "POST /api/events/sources/{source_id}/subscriptions": {
+      "name": "Add an event action",
+      "description": "Sets up what should happen when a particular event arrives."
+    },
+    "PATCH /api/events/sources/{source_id}/subscriptions/{subscription_id}": {
+      "name": "Edit an event action",
+      "description": "Changes which events an action responds to or what it runs."
+    },
+    "DELETE /api/events/sources/{source_id}/subscriptions/{subscription_id}": {
+      "name": "Remove an event action",
+      "description": "Deletes an action so that event no longer triggers anything."
+    },
+    "GET /api/events/sources/{source_id}/subscriptions/{subscription_id}": {
+      "name": "Event action details",
+      "description": "Shows one action set up for an event, for platform administrators."
+    },
+    "GET /api/events/sources/{source_id}/events": {
+      "name": "Events received",
+      "description": "Lists the news that has arrived from a connection, with filters."
+    },
+    "POST /api/events/emit": {
+      "name": "Announce a platform event",
+      "description": "Announces that something happened so anything listening can react, and reports how many listeners there are."
+    },
+    "GET /api/events/topics": {
+      "name": "Event name list",
+      "description": "Lists the event names the platform knows about plus any already in use."
+    },
+    "GET /api/events/{event_id}": {
+      "name": "Event details",
+      "description": "Shows one received event and its content, for platform administrators."
+    },
+    "GET /api/events/{event_id}/deliveries": {
+      "name": "Event deliveries",
+      "description": "Lists each attempt to hand an event to its actions, including failures."
+    },
+    "POST /api/events/{event_id}/deliveries": {
+      "name": "Deliver an event again",
+      "description": "Sends an existing event to one more action."
+    },
+    "POST /api/events/deliveries/{delivery_id}/retry": {
+      "name": "Retry a failed delivery",
+      "description": "Tries again to hand an event to an action that failed."
+    },
+    "GET /api/executions": {
+      "name": "Workflow runs",
+      "description": "Lists workflow runs with filters for workflow, status and date."
+    },
+    "GET /api/executions/logs": {
+      "name": "Diagnostic logs",
+      "description": "Lists detailed diagnostic messages for people allowed to see every log."
+    },
+    "GET /api/executions/{execution_id}": {
+      "name": "Run details",
+      "description": "Shows one workflow run's status, timing and outcome."
+    },
+    "GET /api/executions/{execution_id}/result": {
+      "name": "Run result",
+      "description": "Returns what a finished workflow run produced."
+    },
+    "GET /api/executions/{execution_id}/logs": {
+      "name": "Run logs",
+      "description": "Shows the step-by-step messages a workflow run wrote."
+    },
+    "GET /api/executions/{execution_id}/variables": {
+      "name": "Run values",
+      "description": "Shows the values a workflow run held while it worked."
+    },
+    "POST /api/executions/{execution_id}/cancel": {
+      "name": "Cancel a workflow run",
+      "description": "Stops a queued or running workflow run."
+    },
+    "GET /api/executions/cleanup/stuck": {
+      "name": "Runs that look stuck",
+      "description": "Lists workflow runs that may need clearing up because they never finished."
+    },
+    "POST /api/executions/cleanup/trigger": {
+      "name": "Clear stuck runs",
+      "description": "Cleans up workflow runs that are stuck so the system keeps moving."
+    },
+    "POST /api/executions/cleanup/redis-orphans": {
+      "name": "Clear orphaned runs",
+      "description": "Removes leftover queued runs that no longer have anything behind them."
+    },
+    "POST /api/export-import/export/knowledge": {
+      "name": "Export knowledge",
+      "description": "Packages stored documents into a file for moving to another workspace."
+    },
+    "POST /api/export-import/export/configs": {
+      "name": "Export settings",
+      "description": "Packages saved settings into a file for moving to another workspace."
+    },
+    "POST /api/export-import/export/tables": {
+      "name": "Export tables",
+      "description": "Packages tables and their records into a file for moving elsewhere."
+    },
+    "POST /api/export-import/export/integrations": {
+      "name": "Export connections",
+      "description": "Packages outside service connections into a file for moving elsewhere."
+    },
+    "POST /api/export-import/export/all": {
+      "name": "Export everything",
+      "description": "Packages your knowledge, settings, tables and connections into one file."
+    },
+    "POST /api/export-import/import/knowledge": {
+      "name": "Import knowledge",
+      "description": "Adds documents from an exported file into this workspace."
+    },
+    "POST /api/export-import/import/tables": {
+      "name": "Import tables",
+      "description": "Adds tables and their records from an exported file into this workspace."
+    },
+    "POST /api/export-import/import/configs": {
+      "name": "Import settings",
+      "description": "Adds settings from an exported file into this workspace."
+    },
+    "POST /api/export-import/import/integrations": {
+      "name": "Import connections",
+      "description": "Adds outside service connections from an exported file into this workspace."
+    },
+    "POST /api/export-import/import/all": {
+      "name": "Import everything",
+      "description": "Adds knowledge, settings, tables and connections from one exported file."
+    },
+    "GET /api/files/policies": {
+      "name": "Folder permissions",
+      "description": "Lists who may read or change files in each folder."
+    },
+    "POST /api/files/policies/test": {
+      "name": "Test folder access",
+      "description": "Checks whether a given person could open or change a particular file."
+    },
+    "POST /api/files/structure": {
+      "name": "Folder contents map",
+      "description": "Lists what physically exists in a folder, for administrators, so the file tree never hides anything."
+    },
+    "GET /api/files/policies/{policy_path:path}": {
+      "name": "Folder permission",
+      "description": "Shows the rule that decides who may use one folder."
+    },
+    "PUT /api/files/policies/{policy_path:path}": {
+      "name": "Set folder permission",
+      "description": "Creates or replaces the access rule for a folder."
+    },
+    "DELETE /api/files/policies/{policy_path:path}": {
+      "name": "Remove folder permission",
+      "description": "Deletes the access rule for a folder."
+    },
+    "POST /api/files/read": {
+      "name": "Read a file",
+      "description": "Returns a file's contents from cloud storage or the server."
+    },
+    "POST /api/files/write": {
+      "name": "Save a file",
+      "description": "Writes a file to cloud storage or the server."
+    },
+    "POST /api/files/delete": {
+      "name": "Delete a file",
+      "description": "Removes a file."
+    },
+    "POST /api/files/move": {
+      "name": "Move a file",
+      "description": "Moves one file to a new place in the background."
+    },
+    "POST /api/files/move-many": {
+      "name": "Move many files",
+      "description": "Moves up to 500 files to a new place in one background job."
+    },
+    "POST /api/files/list": {
+      "name": "List files",
+      "description": "Lists the files in a folder."
+    },
+    "POST /api/files/exists": {
+      "name": "Check a file exists",
+      "description": "Tells you whether a file is there."
+    },
+    "POST /api/files/stat": {
+      "name": "File details",
+      "description": "Returns a file's size and when it last changed."
+    },
+    "POST /api/files/signed-url": {
+      "name": "Get direct file link",
+      "description": "Creates a link that lets a browser send or fetch one file directly."
+    },
+    "POST /api/files/complete-upload": {
+      "name": "Finish a browser upload",
+      "description": "Records a file that a browser uploaded directly so the platform can use it."
+    },
+    "POST /api/files/signed-urls": {
+      "name": "Get links for many files",
+      "description": "Creates direct upload or download links for several files, saying which were refused."
+    },
+    "POST /api/files/pull": {
+      "name": "Fetch changed files",
+      "description": "Sends the files that differ from your local copy, for the command-line tool."
+    },
+    "GET /api/files/manifest": {
+      "name": "Rebuild file lists",
+      "description": "Returns freshly generated lists of the platform's files."
+    },
+    "POST /api/files/watch": {
+      "name": "Register a watching session",
+      "description": "Lets the command-line tool keep a folder in step, and keeps that link alive."
+    },
+    "GET /api/files/watchers": {
+      "name": "Active watchers",
+      "description": "Lists the command-line sessions currently keeping folders in step."
+    },
+    "GET /api/files/editor": {
+      "name": "File browser",
+      "description": "Lists the files and folders in a folder for the browser editor."
+    },
+    "GET /api/files/editor/content": {
+      "name": "Open file in editor",
+      "description": "Returns a file's text plus details such as when it last changed."
+    },
+    "PUT /api/files/editor/content": {
+      "name": "Save from the editor",
+      "description": "Saves a file from the browser editor and refuses if someone else changed it first."
+    },
+    "POST /api/files/editor/folder": {
+      "name": "New folder",
+      "description": "Creates an empty folder in cloud storage."
+    },
+    "DELETE /api/files/editor": {
+      "name": "Delete file or folder",
+      "description": "Removes a file, or a folder and everything inside it."
+    },
+    "POST /api/files/editor/rename": {
+      "name": "Rename or move",
+      "description": "Renames a file or folder, or moves it to another place."
+    },
+    "POST /api/files/search": {
+      "name": "Search file contents",
+      "description": "Searches the text of workspace and solution files and returns one page of matches."
+    },
+    "POST /api/forms/{form_id}/embed-secrets": {
+      "name": "Add form embed key",
+      "description": "Creates a key that lets another website show this form in its page."
+    },
+    "GET /api/forms/{form_id}/embed-secrets": {
+      "name": "Form embed keys",
+      "description": "Lists the keys used to embed this form elsewhere, without showing the key values."
+    },
+    "PATCH /api/forms/{form_id}/embed-secrets/{secret_id}": {
+      "name": "Update form embed key",
+      "description": "Changes an embed key's label or switches it off."
+    },
+    "DELETE /api/forms/{form_id}/embed-secrets/{secret_id}": {
+      "name": "Delete form embed key",
+      "description": "Revokes an embed key so pages using it stop working."
+    },
+    "GET /api/forms": {
+      "name": "Forms list",
+      "description": "Lists the forms you can see, with their status and connections."
+    },
+    "POST /api/forms": {
+      "name": "Create a form",
+      "description": "Sets up a new form and saves it ready for editing."
+    },
+    "GET /api/forms/{form_id}/publication-review": {
+      "name": "Public sharing check",
+      "description": "Checks whether a form is ready to be shared publicly and what would block it."
+    },
+    "GET /api/forms/{form_id}/publication": {
+      "name": "Public sharing settings",
+      "description": "Shows whether a form is published and the link people use to reach it."
+    },
+    "PUT /api/forms/{form_id}/publication": {
+      "name": "Publish a form",
+      "description": "Makes a form publicly available and gives you a link to share."
+    },
+    "DELETE /api/forms/{form_id}/publication": {
+      "name": "Unpublish a form",
+      "description": "Takes a form off the public web so its link stops working."
+    },
+    "POST /api/forms/{form_id}/publication/rotate-key": {
+      "name": "Change public form link",
+      "description": "Issues a new public link and retires the old one."
+    },
+    "GET /api/forms/{form_id}/runtime": {
+      "name": "Form for filling in",
+      "description": "Returns everything the form needs to show itself to someone filling it in."
+    },
+    "POST /api/forms/{form_id}/captcha/challenge": {
+      "name": "Bot check",
+      "description": "Sets a small human check for a form so automated submissions are blocked."
+    },
+    "GET /api/forms/{form_id}": {
+      "name": "Form details",
+      "description": "Shows one form's questions, layout and settings."
+    },
+    "PATCH /api/forms/{form_id}": {
+      "name": "Edit a form",
+      "description": "Saves changes to a form's questions, layout or settings."
+    },
+    "PUT /api/forms/{form_id}": {
+      "name": "Save form the old way",
+      "description": "Saves form changes through the older route so existing tooling keeps working."
+    },
+    "POST /api/forms/{form_id}/logo": {
+      "name": "Upload form logo",
+      "description": "Sets the small square picture shown on the form."
+    },
+    "GET /api/forms/{form_id}/logo": {
+      "name": "Form logo",
+      "description": "Shows the form's picture."
+    },
+    "DELETE /api/forms/{form_id}/logo": {
+      "name": "Remove form logo",
+      "description": "Clears the form's picture so no logo is shown."
+    },
+    "DELETE /api/forms/{form_id}": {
+      "name": "Delete a form",
+      "description": "Hides a form from use and, on request, removes it for good."
+    },
+    "POST /api/forms/{form_id}/submissions": {
+      "name": "Submit a form",
+      "description": "Runs the workflow behind a form with the answers someone gave."
+    },
+    "POST /api/forms/{form_id}/startup": {
+      "name": "Prepare a form",
+      "description": "Runs the form's launch workflow to fill in starting choices and context."
+    },
+    "POST /api/forms/{form_id}/fields/{field_name}/options": {
+      "name": "Refresh field choices",
+      "description": "Fetches the current choices for one question, such as a list of clients."
+    },
+    "POST /api/forms/{form_id}/upload": {
+      "name": "Upload a form file",
+      "description": "Gives the browser a link to send a file the form asked for."
+    }
+  }
+}

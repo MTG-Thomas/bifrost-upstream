@@ -1,0 +1,8 @@
+{
+  "files": {
+    "scripts/floorplan.mjs": {
+      "name": "Architecture map tool",
+      "description": "Rebuilds, refreshes and checks the map while keeping its written descriptions in the docs folder."
+    }
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "files": {
+    "api/bifrost/contracts/__init__.py": {
+      "name": "Command message shapes",
+      "description": "Collects the request and response shapes the terminal sends, so they match what the server expects."
+    },
+    "api/bifrost/contracts/agents.py": {
+      "name": "Agent request shapes",
+      "description": "Holds the fields needed to create or change an agent from the terminal."
+    },
+    "api/bifrost/contracts/applications.py": {
+      "name": "App request shapes",
+      "description": "Holds the fields needed to create an app or change its details from the terminal."
+    },
+    "api/bifrost/contracts/claims.py": {
+      "name": "Claim request shapes",
+      "description": "Holds the fields needed to create or change a custom claim from the terminal."
+    },
+    "api/bifrost/contracts/config.py": {
+      "name": "Setting request shapes",
+      "description": "Holds the fields needed to create or change a stored setting from the terminal."
+    },
+    "api/bifrost/contracts/enums.py": {
+      "name": "Allowed choice lists",
+      "description": "Lists the accepted choices for access levels, agent channels, setting types and event sources."
+    },
+    "api/bifrost/contracts/events.py": {
+      "name": "Event request shapes",
+      "description": "Holds the fields needed to set up the outside events workflows react to, their schedules and their listeners."
+    },
+    "api/bifrost/contracts/files.py": {
+      "name": "File policy shapes",
+      "description": "Holds the fields needed to create or replace who may reach a folder."
+    },
+    "api/bifrost/contracts/forms.py": {
+      "name": "Form request shapes",
+      "description": "Holds the fields needed to create or change a form from the terminal."
+    },
+    "api/bifrost/contracts/integrations.py": {
+      "name": "Integration request shapes",
+      "description": "Holds the fields needed to create an integration, its settings and the organizations it serves."
+    },
+    "api/bifrost/contracts/organizations.py": {
+      "name": "Organization request shapes",
+      "description": "Holds the fields needed to create or change an organization from the terminal."
+    },
+    "api/bifrost/contracts/policy_rules.py": {
+      "name": "Access rule shapes",
+      "description": "Holds the fields needed to create or change a reusable access rule."
+    },
+    "api/bifrost/contracts/services.py": {
+      "name": "Service policy shapes",
+      "description": "Holds the fields needed to change how an always-on service is kept running."
+    },
+    "api/bifrost/contracts/tables.py": {
+      "name": "Table request shapes",
+      "description": "Holds the fields needed to create or change a data table from the terminal."
+    },
+    "api/bifrost/contracts/users.py": {
+      "name": "Role request shapes",
+      "description": "Holds the fields needed to create or change a role from the terminal."
+    },
+    "api/bifrost/contracts/workflows.py": {
+      "name": "Workflow change shape",
+      "description": "Holds the fields someone may change on a workflow from the terminal."
+    }
+  }
+}

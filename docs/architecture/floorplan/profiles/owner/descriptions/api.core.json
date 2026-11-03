@@ -1,0 +1,171 @@
+{
+  "files": {
+    "api/src/core/__init__.py": {
+      "name": "Core foundations",
+      "description": "Provides the shared groundwork every other part of the server builds on, such as record access and saved copies."
+    },
+    "api/src/core/app_wiring.py": {
+      "name": "Startup wiring",
+      "description": "Hooks the shared checks and error handling into the main app so every request behaves the same way."
+    },
+    "api/src/core/auth.py": {
+      "name": "Sign-in checks",
+      "description": "Identifies who is making each request, refuses anyone not signed in, and respects who is being impersonated."
+    },
+    "api/src/core/cache/__init__.py": {
+      "name": "Saved copies",
+      "description": "Gives the rest of the server one shared way to keep and fetch saved copies so screens load faster."
+    },
+    "api/src/core/cache/data_provider_cache.py": {
+      "name": "Lookup result copies",
+      "description": "Keeps recent data-provider results per workflow so repeat lookups answer instantly instead of calling the outside service again."
+    },
+    "api/src/core/cache/invalidation.py": {
+      "name": "Clearing stale copies",
+      "description": "Clears or refreshes saved copies the moment a form, role, organization or setting changes, so nobody sees out-of-date information."
+    },
+    "api/src/core/cache/keys.py": {
+      "name": "Saved-copy labels",
+      "description": "Names each saved copy by organization and record so the right one is found, replaced or cleared.",
+      "review": "new exports: config_scope_version_key, config_cache_field"
+    },
+    "api/src/core/cache/redis_client.py": {
+      "name": "Shared saved-copy connection",
+      "description": "Opens and shares the connection to the fast in-memory store that holds saved copies and live updates."
+    },
+    "api/src/core/constants.py": {
+      "name": "Platform constants",
+      "description": "Holds the fixed internal identifiers every part of the platform agrees on, such as the built-in organization and user."
+    },
+    "api/src/core/csrf.py": {
+      "name": "Cross-site request guard",
+      "description": "Blocks other websites from quietly acting as a signed-in staff member by checking where each change came from."
+    },
+    "api/src/core/database_retry.py": {
+      "name": "Database outage retries",
+      "description": "Retries a short piece of work when the database is briefly unavailable, so a momentary hiccup does not fail a save or a run."
+    },
+    "api/src/core/database.py": {
+      "name": "Database connections",
+      "description": "Opens and reuses the connections to the database where all records live, including separate ones for handing out work."
+    },
+    "api/src/core/db_deps.py": {
+      "name": "Per-request database access",
+      "description": "Hands each incoming request its own connection to the records and closes it when the request finishes."
+    },
+    "api/src/core/embed_middleware.py": {
+      "name": "Embedded screen limits",
+      "description": "Limits what a screen embedded in another website can ask for, allowing only the specific actions it was granted."
+    },
+    "api/src/core/error_messages.py": {
+      "name": "Readable error text",
+      "description": "Turns an unexpected failure into a clear, steady message the screens can show instead of a blank error."
+    },
+    "api/src/core/exceptions.py": {
+      "name": "Refusal error",
+      "description": "Defines the standard refusal raised when someone asks for a record they are not allowed to see."
+    },
+    "api/src/core/locks.py": {
+      "name": "One-at-a-time locks",
+      "description": "Stops two parts of the platform doing the same sensitive job at once, such as an import or a deploy, by giving one the turn."
+    },
+    "api/src/core/log_safety.py": {
+      "name": "Safe log text",
+      "description": "Cleans names and values typed by people before they reach the logs, so nobody can slip fake entries in."
+    },
+    "api/src/core/malloc.py": {
+      "name": "Releasing spare memory",
+      "description": "Gives unused memory back to the operating system after large jobs finish, keeping the server lean."
+    },
+    "api/src/core/metrics.py": {
+      "name": "Daily usage totals",
+      "description": "Adds up runs, time saved and spend each day so the dashboard and savings report have current numbers."
+    },
+    "api/src/core/module_cache_contract.py": {
+      "name": "Saved-code naming",
+      "description": "Defines the labels and stored shape used to keep copies of workflow code, shared by every part that reads them."
+    },
+    "api/src/core/module_cache_sync.py": {
+      "name": "Saved-code loader",
+      "description": "Finds and loads the code a run needs from saved copies or file storage, without a round trip to the main server."
+    },
+    "api/src/core/module_cache.py": {
+      "name": "Workflow code copies",
+      "description": "Keeps recent copies of workflow code and its lookup details so runs start quickly and edits take effect at once."
+    },
+    "api/src/core/org_filter.py": {
+      "name": "Organization record filters",
+      "description": "Narrows a search to the organizations a person may see, so no list ever shows another customer's records."
+    },
+    "api/src/core/paths.py": {
+      "name": "Temporary folders",
+      "description": "Creates isolated scratch folders for uploads and one-off jobs so they cannot interfere with each other."
+    },
+    "api/src/core/principal.py": {
+      "name": "Signed-in caller",
+      "description": "Carries who is calling — a person, a service account or an embedded screen — so records and reports are attributed correctly."
+    },
+    "api/src/core/pubsub.py": {
+      "name": "Live updates",
+      "description": "Pushes run progress, log lines, chat messages and notifications to open screens the instant something changes."
+    },
+    "api/src/core/rate_limit.py": {
+      "name": "Sign-in attempt limits",
+      "description": "Caps how often someone can try to sign in, so password guessing is slowed down and spotted."
+    },
+    "api/src/core/redis_client.py": {
+      "name": "Run handover state",
+      "description": "Tracks runs that have been handed to another process and how each finished, so nothing is lost in between."
+    },
+    "api/src/core/redis_reconnect.py": {
+      "name": "Live update reconnects",
+      "description": "Reconnects the live-update feed automatically after a network blip so open screens keep receiving changes."
+    },
+    "api/src/core/repo_dirty.py": {
+      "name": "Unsaved workspace flag",
+      "description": "Remembers that the workspace has platform edits not yet copied to GitHub, so people can be warned before changes are lost."
+    },
+    "api/src/core/request_actor.py": {
+      "name": "Who did it",
+      "description": "Records which person, assistant or connected tool caused a change so the history shows a real name."
+    },
+    "api/src/core/request_body_limit.py": {
+      "name": "Upload size cap",
+      "description": "Rejects oversized uploads before they are read in full, protecting the server from being swamped."
+    },
+    "api/src/core/request_context.py": {
+      "name": "Per-request identity",
+      "description": "Remembers who is signed in and which watch session a request belongs to while it is being handled."
+    },
+    "api/src/core/requirements_cache.py": {
+      "name": "Installed package list",
+      "description": "Keeps the list of extra packages workflows rely on, plus a saved copy, so installs survive restarts."
+    },
+    "api/src/core/s3_transport.py": {
+      "name": "Cloud file storage link",
+      "description": "Talks to the cloud file storage that holds uploads, generated documents and exports, with retries and clear errors."
+    },
+    "api/src/core/secret_naming.py": {
+      "name": "Secret name rules",
+      "description": "Gives every stored service password a predictable, unique name and checks that typed names are valid."
+    },
+    "api/src/core/secret_string.py": {
+      "name": "Masked secrets",
+      "description": "Keeps passwords and keys out of logs and error messages by hiding them wherever they would be printed."
+    },
+    "api/src/core/security.py": {
+      "name": "Passwords and sign-in passes",
+      "description": "Hashes passwords, issues and checks sign-in passes, and encrypts stored secrets such as connection passwords."
+    }
+  },
+  "routes": {
+    "GET /items": {
+      "name": "Records connection check",
+      "description": "Answers a short sample request used to confirm the server can reach the records."
+    },
+    "POST /auth/login": {
+      "name": "Staff sign-in",
+      "description": "Signs a staff member in with their email and password, and slows repeated failed attempts."
+    }
+  }
+}

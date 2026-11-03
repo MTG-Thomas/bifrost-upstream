@@ -1,0 +1,108 @@
+{
+  "files": {
+    "client/src/components/ui/multi-combobox.tsx": {
+      "name": "Multiple choice picker",
+      "description": "Lets someone search a long list and pick several entries at once."
+    },
+    "client/src/components/ui/pagination.tsx": {
+      "name": "Page navigation",
+      "description": "Draws the page number controls under a list."
+    },
+    "client/src/components/ui/popover.tsx": {
+      "name": "Floating panel",
+      "description": "Shows a small panel of content anchored to a button or field."
+    },
+    "client/src/components/ui/progress.tsx": {
+      "name": "Progress bar",
+      "description": "Shows how far along an upload, run or setup step is."
+    },
+    "client/src/components/ui/QRCode.tsx": {
+      "name": "QR code",
+      "description": "Draws a scannable square code for setting up an authenticator app or link."
+    },
+    "client/src/components/ui/radio-group.tsx": {
+      "name": "Single choice",
+      "description": "Lets someone pick exactly one option from a short list."
+    },
+    "client/src/components/ui/select.tsx": {
+      "name": "Dropdown choice",
+      "description": "Lets someone choose one option from a dropdown list."
+    },
+    "client/src/components/ui/selection-chip.tsx": {
+      "name": "Selected value chip",
+      "description": "Shows one chosen value as a tag that can be removed."
+    },
+    "client/src/components/ui/separator.tsx": {
+      "name": "Divider line",
+      "description": "Draws a thin line between groups of content."
+    },
+    "client/src/components/ui/sheet.tsx": {
+      "name": "Side panel",
+      "description": "Slides a panel in from the edge of the screen for details and settings."
+    },
+    "client/src/components/ui/skeleton.tsx": {
+      "name": "Loading placeholder",
+      "description": "Shows a soft grey shape where content will appear so screens don't jump."
+    },
+    "client/src/components/ui/slider.tsx": {
+      "name": "Slider",
+      "description": "Lets someone pick a number by dragging a handle."
+    },
+    "client/src/components/ui/sonner.tsx": {
+      "name": "Toast messages",
+      "description": "Shows brief messages that appear and then fade after an action."
+    },
+    "client/src/components/ui/switch.tsx": {
+      "name": "On/off switch",
+      "description": "Turns a setting on or off with a single click."
+    },
+    "client/src/components/ui/table.tsx": {
+      "name": "Simple table",
+      "description": "Shows records in a plain table of rows and columns."
+    },
+    "client/src/components/ui/tabs.tsx": {
+      "name": "Tabs",
+      "description": "Splits related content into tabs someone can switch between."
+    },
+    "client/src/components/ui/tags-input.tsx": {
+      "name": "Tag entry",
+      "description": "Lets someone build a list of tags by typing and pressing enter."
+    },
+    "client/src/components/ui/textarea.tsx": {
+      "name": "Multi-line text box",
+      "description": "Gives every screen the same box for longer writing."
+    },
+    "client/src/components/ui/tiptap-editor.tsx": {
+      "name": "Rich text editor",
+      "description": "Writes formatted text with headings, lists, links and images."
+    },
+    "client/src/components/ui/tiptap-toolbar.tsx": {
+      "name": "Formatting toolbar",
+      "description": "Gives the rich text editor its buttons for formatting and inserting links."
+    },
+    "client/src/components/ui/toggle-group.tsx": {
+      "name": "Toggle group",
+      "description": "Lets someone flip between a few exclusive view options."
+    },
+    "client/src/components/ui/toggle.tsx": {
+      "name": "Toggle button",
+      "description": "Lets a button stay pressed to show an option is switched on."
+    },
+    "client/src/components/ui/tooltip.tsx": {
+      "name": "Tooltip",
+      "description": "Explains an icon or control when someone hovers over it."
+    },
+    "client/src/components/ui/variables-tree-view.tsx": {
+      "name": "Values inspector",
+      "description": "Shows the values a form or run received in an expandable tree."
+    },
+    "client/src/components/ui/verdict-toggle.tsx": {
+      "name": "Review verdict",
+      "description": "Lets a reviewer mark an AI answer as good or bad."
+    },
+    "client/src/components/user/UserMCPConnections.tsx": {
+      "name": "My AI connections",
+      "description": "Lets someone connect their own AI assistant to the platform and manage what it may reach."
+    }
+  }
+}

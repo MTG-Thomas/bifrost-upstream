@@ -1,0 +1,104 @@
+{
+  "files": {
+    "api/src/models/orm/platform_jobs.py": {
+      "name": "Background job records",
+      "description": "Holds each long background operation with its progress, result, errors and whether it can still be cancelled."
+    },
+    "api/src/models/orm/policy_rule.py": {
+      "name": "Named access rules",
+      "description": "Holds reusable named rules that record and file policies can point to."
+    },
+    "api/src/models/orm/product_updates.py": {
+      "name": "Release note receipts",
+      "description": "Remembers which release notes each admin has already seen, so they are not shown twice."
+    },
+    "api/src/models/orm/scheduler_diagnostics.py": {
+      "name": "Scheduled job health",
+      "description": "Holds the health of the servers that run scheduled work and the outcome of each scheduled task."
+    },
+    "api/src/models/orm/scheduler_leases.py": {
+      "name": "Scheduled job turns",
+      "description": "Decides which server currently holds the right to run scheduled work, so it never runs twice."
+    },
+    "api/src/models/orm/services.py": {
+      "name": "Always-on services",
+      "description": "Holds each always-on service's settings, its supervised attempts and its recent log lines."
+    },
+    "api/src/models/orm/solution_config_schema.py": {
+      "name": "Solution setting requests",
+      "description": "Records which settings a Solution needs so installing it can ask for them."
+    },
+    "api/src/models/orm/solution_connection_schema.py": {
+      "name": "Solution connection requests",
+      "description": "Records which outside service connections a Solution needs before it can install."
+    },
+    "api/src/models/orm/solution_deploy_jobs.py": {
+      "name": "Solution install progress",
+      "description": "Holds each in-progress Solution install with its steps and outcome so people can watch it."
+    },
+    "api/src/models/orm/solution_export_jobs.py": {
+      "name": "Solution backup jobs",
+      "description": "Holds each in-progress Solution backup with its progress and the file it produced."
+    },
+    "api/src/models/orm/solution_file_location.py": {
+      "name": "Solution file places",
+      "description": "Records where a Solution keeps its files so they can be found after installing."
+    },
+    "api/src/models/orm/solution_workflow_permission_requests.py": {
+      "name": "Solution permission requests",
+      "description": "Records which extra permissions a Solution's workflows ask for so an admin can approve them."
+    },
+    "api/src/models/orm/solutions.py": {
+      "name": "Installed Solutions",
+      "description": "Holds each installed Solution with its version, source and current state."
+    },
+    "api/src/models/orm/summary_backfill_job.py": {
+      "name": "Summary rebuild jobs",
+      "description": "Holds each bulk job that re-creates run summaries, with its progress and estimated cost."
+    },
+    "api/src/models/orm/tables.py": {
+      "name": "Custom tables and rows",
+      "description": "Holds custom tables built in the platform and the rows people and workflows store in them."
+    },
+    "api/src/models/orm/user_invites.py": {
+      "name": "Invitation links",
+      "description": "Holds each single-use invitation link, who it was for and when it expires."
+    },
+    "api/src/models/orm/users.py": {
+      "name": "People and roles",
+      "description": "Holds staff accounts, the roles they can be given and where each role applies."
+    },
+    "api/src/models/orm/vector_type.py": {
+      "name": "Knowledge search fingerprints",
+      "description": "Stores the numeric fingerprints documents are compared by when searching the knowledge library."
+    },
+    "api/src/models/orm/work_dispatches.py": {
+      "name": "Waiting work items",
+      "description": "Holds each unit of work waiting to be picked up, so nothing is lost if a server stops."
+    },
+    "api/src/models/orm/worker_metric.py": {
+      "name": "Server health snapshots",
+      "description": "Records regular memory and processor readings from the servers doing the work, for the health screen."
+    },
+    "api/src/models/orm/workflow_operation_usage.py": {
+      "name": "Daily action counts",
+      "description": "Counts how often each workflow used each built-in action, day by day."
+    },
+    "api/src/models/orm/workflow_permissions.py": {
+      "name": "Workflow permission grants",
+      "description": "Records the extra capabilities a restricted workflow has been allowed to use."
+    },
+    "api/src/models/orm/workflow_roles.py": {
+      "name": "Workflow role access",
+      "description": "Links each workflow to the roles allowed to run it."
+    },
+    "api/src/models/orm/workflow_run_daily.py": {
+      "name": "Run history totals",
+      "description": "Holds daily counts of finished runs kept after the detail is cleared out, so reports stay accurate."
+    },
+    "api/src/models/orm/workflows.py": {
+      "name": "Runnable code register",
+      "description": "Registers every runnable piece of code with its name, type, settings and owner."
+    }
+  }
+}

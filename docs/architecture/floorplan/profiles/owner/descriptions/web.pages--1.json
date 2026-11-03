@@ -1,0 +1,164 @@
+{
+  "files": {
+    "client/src/pages/agents/AgentActivityWorkspace.tsx": {
+      "name": "Agent activity timeline",
+      "description": "Walks through what an agent did step by step, with a simpler or more detailed view of each step."
+    },
+    "client/src/pages/agents/AgentDeleteDialog.tsx": {
+      "name": "Delete agent prompt",
+      "description": "Confirms removing an agent and warns what its conversations and settings will take with it."
+    },
+    "client/src/pages/agents/AgentDetailPage.tsx": {
+      "name": "Agent detail page",
+      "description": "Shows one agent's instructions, tools, activity and cost, with ways to edit and run it."
+    },
+    "client/src/pages/agents/AgentLogoEditor.tsx": {
+      "name": "Agent logo editor",
+      "description": "Lets someone choose or upload the picture that represents an agent."
+    },
+    "client/src/pages/agents/AgentMcpCopyButton.tsx": {
+      "name": "Agent connection copy",
+      "description": "Copies the details needed to connect an outside AI assistant to this agent."
+    },
+    "client/src/pages/agents/AgentReviewPage.tsx": {
+      "name": "Agent review queue",
+      "description": "Works through an agent's flagged runs one at a time, taking a verdict and moving to the next."
+    },
+    "client/src/pages/agents/AgentRunDetailPage.tsx": {
+      "name": "Agent run detail page",
+      "description": "Shows one agent run in full: what it was asked, what it did, what it cost and what it produced."
+    },
+    "client/src/pages/agents/AgentRunOverviewFooter.tsx": {
+      "name": "Agent run summary footer",
+      "description": "Summarises how an agent run ended and links to the work it produced."
+    },
+    "client/src/pages/agents/AgentTuneWorkbench.tsx": {
+      "name": "Agent tuning workbench",
+      "description": "Turns flagged runs into a proposed instruction change, tries it out, and only then saves it."
+    },
+    "client/src/pages/agents/FleetHeader.tsx": {
+      "name": "Agent fleet header",
+      "description": "Titles the agent fleet screen and sums up how the fleet is doing."
+    },
+    "client/src/pages/agents/FleetMetrics.tsx": {
+      "name": "Agent fleet metrics",
+      "description": "Shows overall figures for every agent: how many there are, how often they run and how often they fail."
+    },
+    "client/src/pages/agents/FleetPage.tsx": {
+      "name": "Agent fleet page",
+      "description": "Lists every agent with its health, spend and recent activity so weak spots are easy to find."
+    },
+    "client/src/pages/agents/FleetReadError.tsx": {
+      "name": "Fleet load error",
+      "description": "Says the agent fleet could not be loaded and offers to try again."
+    },
+    "client/src/pages/agents/FleetReviewDialog.tsx": {
+      "name": "Fleet review dialog",
+      "description": "Reviews every accessible agent, including paused ones, in a single pass."
+    },
+    "client/src/pages/agents/FleetToolbar.tsx": {
+      "name": "Fleet toolbar",
+      "description": "Holds the search, filters and ordering above the agent fleet list."
+    },
+    "client/src/pages/agents/RunActionFeedback.tsx": {
+      "name": "Review save feedback",
+      "description": "Says when saving a review is still in progress or failed, and keeps the note so it can be retried."
+    },
+    "client/src/pages/agents/RunActivityHeader.tsx": {
+      "name": "Run activity header",
+      "description": "Heads an agent run's activity with its title and current state."
+    },
+    "client/src/pages/agents/RunAIUsageCard.tsx": {
+      "name": "Run AI cost card",
+      "description": "Shows what one agent run cost in tokens and money, step by step."
+    },
+    "client/src/pages/agents/TuningActionError.tsx": {
+      "name": "Tuning error notice",
+      "description": "Explains why a tuning action failed and what to do about it."
+    },
+    "client/src/pages/agents/TuningDryRunResults.tsx": {
+      "name": "Tuning test results",
+      "description": "Shows what the proposed instruction change produced when tried against recent runs."
+    },
+    "client/src/pages/agents/TuningFlaggedRuns.tsx": {
+      "name": "Flagged runs list",
+      "description": "Lists the runs marked as needing attention so they can be reviewed and used to improve the agent."
+    },
+    "client/src/pages/agents/TuningProposalEditor.tsx": {
+      "name": "Tuning proposal editor",
+      "description": "Edits the suggested instruction change for an agent before it is applied."
+    },
+    "client/src/pages/AppCodeEditorPage.tsx": {
+      "name": "App code editor page",
+      "description": "Edits an app's source files with a live preview and a way to publish the result."
+    },
+    "client/src/pages/Applications.tsx": {
+      "name": "Apps list",
+      "description": "Lists every app with its build and publication state, who can use it, and the actions available."
+    },
+    "client/src/pages/AppRouter.tsx": {
+      "name": "App viewer",
+      "description": "Opens a built app in its published or draft form and explains clearly when it cannot be shown."
+    },
+    "client/src/pages/audit/AccessCheckAggregates.tsx": {
+      "name": "Access check summaries",
+      "description": "Groups access checks by time, workflow or resource so patterns in refused actions are easy to spot."
+    },
+    "client/src/pages/audit/AccessCheckRecords.tsx": {
+      "name": "Access check records",
+      "description": "Lists the individual access checks behind a summary group."
+    },
+    "client/src/pages/audit/AccessChecksPage.tsx": {
+      "name": "Access checks page",
+      "description": "Reports actions that would have been refused, grouped by workflow, resource type or organization."
+    },
+    "client/src/pages/audit/AuditEventCards.tsx": {
+      "name": "Audit event cards",
+      "description": "Shows audit events as cards on narrow screens, opening any one for its full detail."
+    },
+    "client/src/pages/audit/AuditExportDialog.tsx": {
+      "name": "Audit export dialog",
+      "description": "Exports audit events or archived history for a chosen period and set of filters."
+    },
+    "client/src/pages/audit/AuditFilters.tsx": {
+      "name": "Audit filters",
+      "description": "Narrows the audit log by who acted, what they touched, when, and whether it worked."
+    },
+    "client/src/pages/audit/AuditLogPage.tsx": {
+      "name": "Audit log page",
+      "description": "Shows everything people and automation did in the platform, most recent first."
+    },
+    "client/src/pages/audit/AuditOutcome.tsx": {
+      "name": "Audit outcome marker",
+      "description": "Marks whether an audited action succeeded, was refused or failed."
+    },
+    "client/src/pages/audit/AuditPageLayout.tsx": {
+      "name": "Audit page layout",
+      "description": "Gives the audit screens their shared heading, tabs and spacing."
+    },
+    "client/src/pages/audit/AuditPagination.tsx": {
+      "name": "Audit paging",
+      "description": "Moves backwards and forwards through audit results a page at a time."
+    },
+    "client/src/pages/audit/AuditRetentionBanner.tsx": {
+      "name": "Audit retention banner",
+      "description": "Says how far back the audit history reaches, what is archived, and how to export either."
+    },
+    "client/src/pages/audit/auditRetentionFormat.ts": {
+      "name": "Audit date formatting",
+      "description": "Formats audit times, days and event counts the same way across the audit screens."
+    },
+    "client/src/pages/AuthCallback.tsx": {
+      "name": "Sign-in return",
+      "description": "Finishes a single sign-on return by checking the answer and taking the person into the app."
+    },
+    "client/src/pages/Chat.tsx": {
+      "name": "Chat page",
+      "description": "The main conversation screen for talking with an agent and following what it does as it works."
+    },
+    "client/src/pages/ChatArtifacts.tsx": {
+      "name": "Chat outputs",
+      "description": "Shows the files and reports produced during a chat conversation."
+    }
+  }
+}

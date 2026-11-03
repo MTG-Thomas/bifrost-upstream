@@ -1,0 +1,160 @@
+{
+  "files": {
+    "api/src/services/access_check_entry.py": {
+      "name": "Recheck a decision",
+      "description": "Re-asks whether a person may still open a record, using their roles as they are now rather than as they were."
+    },
+    "api/src/services/access_check_policies.py": {
+      "name": "Data rule decisions",
+      "description": "Works out which table and file rules apply to the person behind a run, and records each decision that was applied."
+    },
+    "api/src/services/access_check_writer.py": {
+      "name": "Permission activity record",
+      "description": "Writes each permission check down after the answer has gone out, so recording never slows or changes a request."
+    },
+    "api/src/services/access_explain.py": {
+      "name": "Permission replays",
+      "description": "Re-judges a past permission decision and answers what-if questions about who could do something."
+    },
+    "api/src/services/access_list.py": {
+      "name": "Full access list",
+      "description": "Lists every action the platform offers and the permission each one needs, as the single reference for access."
+    },
+    "api/src/services/authorization/__init__.py": {
+      "name": "Access decisions",
+      "description": "Groups the shared logic that decides what a person may do and then enforces that decision."
+    },
+    "api/src/services/authorization/agent_runtime.py": {
+      "name": "Agent run permission",
+      "description": "Confirms, at the moment an agent starts, that the person asking may still run it and spend AI credit."
+    },
+    "api/src/services/authorization/authz.py": {
+      "name": "Permission freshness",
+      "description": "Tracks changes to roles and permissions so the platform knows when a saved decision is out of date."
+    },
+    "api/src/services/authorization/callers.py": {
+      "name": "Who is asking",
+      "description": "Reloads who is asking and what they may do at sensitive moments, instead of trusting details carried from earlier."
+    },
+    "api/src/services/authorization/context.py": {
+      "name": "Person's role context",
+      "description": "Gathers a person's home organization and every role they hold, with where each role applies."
+    },
+    "api/src/services/authorization/enforce.py": {
+      "name": "Blocking what's not allowed",
+      "description": "Stops an action unless the person's current roles allow it, and gives a clear refusal when they do not."
+    },
+    "api/src/services/authorization/evaluator.py": {
+      "name": "The access decision",
+      "description": "The single rule that answers whether a person may perform a given action on a given record."
+    },
+    "api/src/services/authorization/execution_access.py": {
+      "name": "Run history visibility",
+      "description": "Decides whose run history a person may see, how much detail they get and which runs they may cancel."
+    },
+    "api/src/services/authorization/explain.py": {
+      "name": "Why access was allowed",
+      "description": "Explains step by step why a person or workflow could reach something, and reaches the same answer when checking."
+    },
+    "api/src/services/authorization/impersonation.py": {
+      "name": "Acting as another person",
+      "description": "Checks whether a run may act as another person, without ever widening what the original person may do."
+    },
+    "api/src/services/authorization/legacy_status.py": {
+      "name": "Old sign-in usage",
+      "description": "Reports which running work still uses the older sign-in format, so it can be retired safely."
+    },
+    "api/src/services/authorization/privilege.py": {
+      "name": "Sensitive role changes",
+      "description": "Flags the roles that carry extra power, and requires the strongest permission to hand them out."
+    },
+    "api/src/services/authorization/reach.py": {
+      "name": "Organization reach",
+      "description": "Works out which organizations an action covers, so lists and their totals only include what the person may see."
+    },
+    "api/src/services/authorization/report_scope.py": {
+      "name": "Report visibility",
+      "description": "Narrows a report to the organizations the person asking is allowed to see."
+    },
+    "api/src/services/authorization/runtime_auth.py": {
+      "name": "Background work sign-in",
+      "description": "Turns a background task's sign-in pass into a checked identity, without trusting what that pass claims about itself."
+    },
+    "api/src/services/authorization/runtime.py": {
+      "name": "Background work authority",
+      "description": "Looks up from current records what a long-running task may do, rather than trusting what it was issued."
+    },
+    "api/src/services/authorization/tokens.py": {
+      "name": "Sign-in passes",
+      "description": "Creates and checks the signed passes that say who a person is, which roles they hold and what they may do."
+    },
+    "api/src/services/cross_org_validation.py": {
+      "name": "Cross-organization references",
+      "description": "Stops a record in one organization from pointing at another organization's workflow."
+    },
+    "api/src/services/decorator_property_service.py": {
+      "name": "Workflow setting editor",
+      "description": "Reads and updates the settings written above workflow code, and adds a stable identifier where one is missing."
+    },
+    "api/src/services/identities.py": {
+      "name": "Named accounts for runs",
+      "description": "Manages the named accounts a workflow can run as, so automated work carries its own limited permissions."
+    },
+    "api/src/services/mfa_service.py": {
+      "name": "Two-factor sign-in",
+      "description": "Sets up and checks the second sign-in step, an authenticator code, and manages backup recovery codes."
+    },
+    "api/src/services/passkey_service.py": {
+      "name": "Passkey sign-in",
+      "description": "Registers a device's fingerprint or face sign-in and uses it to sign people in without typing a password."
+    },
+    "api/src/services/permission_catalog.py": {
+      "name": "Permission list",
+      "description": "Lists every permission the platform uses, grouped by area, and says where each one is checked."
+    },
+    "api/src/services/policy_rule_service.py": {
+      "name": "Data access rules",
+      "description": "Manages the reusable rules that decide who may read or change particular tables and files."
+    },
+    "api/src/services/recommended_access.py": {
+      "name": "Suggested extra access",
+      "description": "Suggests access a workflow's account needed but lacked, based on what its recent runs were refused."
+    },
+    "api/src/services/required_instructions.py": {
+      "name": "Assistant house rules",
+      "description": "Stores the house instructions an AI assistant follows, mixing the platform's built-in guidance with a customer's own."
+    },
+    "api/src/services/role_permissions.py": {
+      "name": "Role permissions editor",
+      "description": "Reads and replaces what a role may do, keeping the permission names valid and in the approved list."
+    },
+    "api/src/services/service_access.py": {
+      "name": "Service visibility",
+      "description": "Hides long-running service definitions from people who are not allowed to see them."
+    },
+    "api/src/services/service_claim.py": {
+      "name": "Long-running services",
+      "description": "Picks up long-running services that should be running, watches each attempt and restarts it by its own rules."
+    },
+    "api/src/services/user_access_map.py": {
+      "name": "Person's access summary",
+      "description": "Shows everything one person may do and in which organizations, for their profile page."
+    },
+    "api/src/services/user_invite_service.py": {
+      "name": "User invitations",
+      "description": "Creates, reissues and cancels single-use invitations, so someone can join with a link that expires."
+    },
+    "api/src/services/user_mfa_reset.py": {
+      "name": "Reset someone's sign-in security",
+      "description": "Clears every second factor for a user and signs them out everywhere, for when they lose their phone."
+    },
+    "api/src/services/user_provisioning.py": {
+      "name": "New user setup",
+      "description": "Creates a person's account the first time they sign in and gives them the right organization and starting role."
+    },
+    "api/src/services/user_role_assignments.py": {
+      "name": "Assigning roles",
+      "description": "Gives a person their base role and any extra roles, and checks where each one is allowed to apply."
+    }
+  }
+}

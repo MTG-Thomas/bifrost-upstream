@@ -1,0 +1,164 @@
+{
+  "files": {
+    "client/src/components/roles/RolePeoplePanel.tsx": {
+      "name": "Role holders",
+      "description": "Lists who holds a built-in role and which organizations it applies to for each of them."
+    },
+    "client/src/components/roles/RolePermissionsPanel.tsx": {
+      "name": "Role permissions",
+      "description": "Shows every permission area, grouped and searchable, with what this role allows in each."
+    },
+    "client/src/components/schedules/CronTester.tsx": {
+      "name": "Schedule tester",
+      "description": "Lets an admin try a timetable expression and see the next times it would run."
+    },
+    "client/src/components/services/ServiceActionDialog.tsx": {
+      "name": "Confirm service action",
+      "description": "Asks for confirmation before restarting or stopping a running service."
+    },
+    "client/src/components/services/ServiceDetailView.tsx": {
+      "name": "Service detail",
+      "description": "Shows one running service's state, activity and live log together on a single timeline."
+    },
+    "client/src/components/services/ServiceListSurface.tsx": {
+      "name": "Services list",
+      "description": "Lists the running services with their state, uptime and memory use."
+    },
+    "client/src/components/services/serviceTestUtils.ts": {
+      "name": "Service test samples",
+      "description": "Provides sample services and run attempts so the service screens can be checked automatically."
+    },
+    "client/src/components/services/useServiceAction.ts": {
+      "name": "Service controls",
+      "description": "Starts, stops and restarts a service, asking for confirmation first when the action is disruptive."
+    },
+    "client/src/components/services/useServiceQueries.ts": {
+      "name": "Service data loading",
+      "description": "Fetches the service list, one service's details, its run attempts and pages of its log."
+    },
+    "client/src/components/services/useServiceStream.ts": {
+      "name": "Live service logs",
+      "description": "Streams a service's log lines to the screen as they are written."
+    },
+    "client/src/components/solutions/CreateEditSolution.tsx": {
+      "name": "Solution builder",
+      "description": "Creates or changes a packaged Solution, choosing where it installs and what it contains."
+    },
+    "client/src/components/solutions/ExportSolutionDialog.tsx": {
+      "name": "Export a Solution",
+      "description": "Chooses how much of a Solution to package: its settings only, or its content as well."
+    },
+    "client/src/components/solutions/GeneratedEndpointKeyDialog.tsx": {
+      "name": "New endpoint key",
+      "description": "Shows a freshly created key once so it can be copied before it is hidden."
+    },
+    "client/src/components/solutions/InstallSession.tsx": {
+      "name": "Install progress",
+      "description": "Keeps one install or upgrade running to completion and stops a second click starting it twice."
+    },
+    "client/src/components/solutions/SolutionActionsMenu.tsx": {
+      "name": "Solution actions",
+      "description": "Gathers the less common Solution actions, such as export, upgrade and removal."
+    },
+    "client/src/components/solutions/SolutionCaptureDialog.tsx": {
+      "name": "Capture a Solution",
+      "description": "Packages chosen workflows, forms, apps and settings into a Solution that can be installed elsewhere."
+    },
+    "client/src/components/solutions/SolutionConfigFields.tsx": {
+      "name": "Install settings",
+      "description": "Collects the values a Solution needs at install time and drops blanks."
+    },
+    "client/src/components/solutions/SolutionDeleteDialog.tsx": {
+      "name": "Remove a Solution",
+      "description": "Confirms removing a Solution and explains what happens to the things it installed."
+    },
+    "client/src/components/solutions/SolutionManagedBadge.tsx": {
+      "name": "Solution-managed marker",
+      "description": "Marks a record a deployed Solution owns, so people know to change it there instead."
+    },
+    "client/src/components/solutions/SolutionManagedBanner.tsx": {
+      "name": "Solution-managed notice",
+      "description": "Warns at the top of an editor that a deployed Solution manages this record."
+    },
+    "client/src/components/solutions/SolutionReadmeTab.tsx": {
+      "name": "Solution setup notes",
+      "description": "Shows the setup instructions written for a Solution, with full formatting."
+    },
+    "client/src/components/solutions/SolutionSetupChecklist.tsx": {
+      "name": "Solution setup checklist",
+      "description": "Lists what a Solution still needs, such as connections and settings, and lets each gap be filled."
+    },
+    "client/src/components/solutions/SolutionSetupWizard.tsx": {
+      "name": "Guided Solution setup",
+      "description": "Walks through a Solution's outstanding setup one step at a time."
+    },
+    "client/src/components/solutions/SolutionUninstallNotice.tsx": {
+      "name": "Uninstall notice",
+      "description": "Explains what was removed or kept after a Solution is uninstalled."
+    },
+    "client/src/components/solutions/SolutionUpdateDialog.tsx": {
+      "name": "Update a Solution",
+      "description": "Shows what a newer version changes before it is applied."
+    },
+    "client/src/components/solutions/WorkspaceImportBody.tsx": {
+      "name": "Workspace import",
+      "description": "Brings in a workspace from a repository or uploaded package, showing what will be added."
+    },
+    "client/src/components/solutions/WorkspaceImportReview.tsx": {
+      "name": "Import review",
+      "description": "Compares an incoming workspace with what already exists so an admin chooses what to keep."
+    },
+    "client/src/components/tables/ClaimReferenceContent.tsx": {
+      "name": "Custom claim help",
+      "description": "Explains how a table policy can look up extra facts about the signed-in person."
+    },
+    "client/src/components/tables/CodeEditor.tsx": {
+      "name": "Structured editor",
+      "description": "Gives settings written as structured text a proper editor with checks as you type."
+    },
+    "client/src/components/tables/CustomClaimEditor.tsx": {
+      "name": "Custom claim editor",
+      "description": "Defines an extra fact about a person, looked up from a table, for policies to use."
+    },
+    "client/src/components/tables/DocumentActionsMenu.tsx": {
+      "name": "Record actions",
+      "description": "Offers edit and delete for one record in a table."
+    },
+    "client/src/components/tables/DocumentDialog.tsx": {
+      "name": "Record editor",
+      "description": "Adds or changes one record in a table, keeping a draft until it is saved."
+    },
+    "client/src/components/tables/DocumentInspector.tsx": {
+      "name": "Record inspector",
+      "description": "Shows one record's fields in full alongside its history and related actions."
+    },
+    "client/src/components/tables/DocumentQueryPanel.tsx": {
+      "name": "Record search",
+      "description": "Builds a search over a table's records and shows the matches."
+    },
+    "client/src/components/tables/DocumentRecordList.tsx": {
+      "name": "Record list",
+      "description": "Lists records with their fields at wide widths and as compact summaries in narrow panes."
+    },
+    "client/src/components/tables/policy-templates.ts": {
+      "name": "Policy starting points",
+      "description": "Provides ready-made policy templates to insert and then adjust."
+    },
+    "client/src/components/tables/PolicyEditor.tsx": {
+      "name": "Table policy editor",
+      "description": "Edits who may read or change a table's records, in a form that can be checked as you write."
+    },
+    "client/src/components/tables/PolicyReferencePanel.tsx": {
+      "name": "Policy reference",
+      "description": "Explains the parts of a table policy with worked examples and common mistakes."
+    },
+    "client/src/components/tables/TableDialog.tsx": {
+      "name": "Table setup",
+      "description": "Creates or changes a table's name, description, fields and access."
+    },
+    "client/src/components/tables/TableFilterSidebar.tsx": {
+      "name": "Record filters",
+      "description": "Lets someone narrow a table's records by building conditions, one filter at a time."
+    }
+  }
+}

@@ -1,0 +1,100 @@
+{
+  "files": {
+    "api/bifrost/commands/__init__.py": {
+      "name": "Entity command routing",
+      "description": "Sends each entity command, such as workflows or apps, to the right handler with the arguments someone typed."
+    },
+    "api/bifrost/commands/admin.py": {
+      "name": "Platform admin commands",
+      "description": "Shows which runs and remote helpers are still using older sign-in credentials."
+    },
+    "api/bifrost/commands/agents.py": {
+      "name": "Agent commands",
+      "description": "Creates, lists, edits and deletes agents from the terminal."
+    },
+    "api/bifrost/commands/app.py": {
+      "name": "App project commands",
+      "description": "Creates, links, runs locally and deploys an app project that lives in its own repository."
+    },
+    "api/bifrost/commands/apps.py": {
+      "name": "App management commands",
+      "description": "Lists, creates, edits, publishes and deletes apps, and inspects or refreshes the shared app toolkit they use."
+    },
+    "api/bifrost/commands/audit.py": {
+      "name": "Audit log commands",
+      "description": "Reads the audit trail and explains how a past access decision was reached."
+    },
+    "api/bifrost/commands/base.py": {
+      "name": "Shared command plumbing",
+      "description": "Gives every entity command the same output format, sign-in handling and error reporting."
+    },
+    "api/bifrost/commands/claims.py": {
+      "name": "Custom claim commands",
+      "description": "Creates and manages custom claims that carry extra facts about a person into sign-in."
+    },
+    "api/bifrost/commands/configs.py": {
+      "name": "Setting value commands",
+      "description": "Lists, sets, updates and removes stored settings by name or key."
+    },
+    "api/bifrost/commands/events.py": {
+      "name": "Event source commands",
+      "description": "Manages the outside events workflows react to, including their listeners, signing secrets and renewals."
+    },
+    "api/bifrost/commands/files.py": {
+      "name": "Workspace file commands",
+      "description": "Reads, writes, moves, searches and deletes workspace files, and manages who may reach them."
+    },
+    "api/bifrost/commands/forms.py": {
+      "name": "Form commands",
+      "description": "Lists, creates, edits and retires forms from the terminal."
+    },
+    "api/bifrost/commands/integrations.py": {
+      "name": "Integration commands",
+      "description": "Manages connected outside services and which organization each connection serves."
+    },
+    "api/bifrost/commands/orgs.py": {
+      "name": "Organization commands",
+      "description": "Lists, creates, edits and removes organizations."
+    },
+    "api/bifrost/commands/permissions.py": {
+      "name": "Permission catalogue",
+      "description": "Shows every permission the platform checks and what each one allows."
+    },
+    "api/bifrost/commands/policy_rules.py": {
+      "name": "Access rule commands",
+      "description": "Manages reusable access rules and shows where each one is used."
+    },
+    "api/bifrost/commands/requirements.py": {
+      "name": "Extra package commands",
+      "description": "Adds or removes extra Python packages a workspace needs and restarts the runners that use them."
+    },
+    "api/bifrost/commands/retention.py": {
+      "name": "Data retention commands",
+      "description": "Shows, previews and changes how long finished runs and audit records are kept."
+    },
+    "api/bifrost/commands/roles.py": {
+      "name": "Role commands",
+      "description": "Lists, creates, edits and removes roles."
+    },
+    "api/bifrost/commands/services.py": {
+      "name": "Service commands",
+      "description": "Starts, stops, restarts and inspects always-on services, their history and their logs."
+    },
+    "api/bifrost/commands/solution.py": {
+      "name": "Solution commands",
+      "description": "Creates, links, deploys, shares and updates Solutions, the packaged bundles of apps, workflows and forms."
+    },
+    "api/bifrost/commands/tables.py": {
+      "name": "Table commands",
+      "description": "Creates and manages data tables and who may read or change their records."
+    },
+    "api/bifrost/commands/users.py": {
+      "name": "Person access commands",
+      "description": "Shows what a person is allowed to do and changes the roles they hold."
+    },
+    "api/bifrost/commands/workflows.py": {
+      "name": "Workflow commands",
+      "description": "Lists, registers, runs, edits and deletes workflows, and manages who may use them."
+    }
+  }
+}

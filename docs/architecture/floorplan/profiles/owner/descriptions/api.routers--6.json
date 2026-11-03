@@ -1,0 +1,466 @@
+{
+  "files": {
+    "api/src/routers/oauth_sso.py": {
+      "name": "Work-account sign-in",
+      "description": "Lets people sign in with Microsoft, Google or another company account, and shows which accounts they have linked."
+    },
+    "api/src/routers/organizations.py": {
+      "name": "Client organizations",
+      "description": "Keeps the list of client organizations that people, automations and records belong to."
+    },
+    "api/src/routers/packages.py": {
+      "name": "Extra code libraries",
+      "description": "Adds or removes the extra libraries workflows can call on, then restarts the parts that run them."
+    },
+    "api/src/routers/passkeys.py": {
+      "name": "Fingerprint sign-in",
+      "description": "Registers a device's fingerprint or face unlock so someone can sign in without typing a password."
+    },
+    "api/src/routers/permissions.py": {
+      "name": "Permission list",
+      "description": "Lists every action that can be allowed or blocked, so the role screens offer the same choices everywhere."
+    },
+    "api/src/routers/platform_jobs.py": {
+      "name": "Long-running jobs",
+      "description": "Shows the progress of long tasks the platform runs in the background and lets someone stop one."
+    },
+    "api/src/routers/platform/__init__.py": {
+      "name": "Platform admin section",
+      "description": "Groups together the administrator-only requests that monitor how the platform itself is running."
+    },
+    "api/src/routers/platform/workers.py": {
+      "name": "Processing capacity",
+      "description": "Shows the queues and running processes that carry out work, and lets an administrator restart stuck ones."
+    },
+    "api/src/routers/policy_rules.py": {
+      "name": "Reusable access rules",
+      "description": "Keeps named, reusable rules that decide who may open files and records, so one rule can be applied in many places."
+    },
+    "api/src/routers/product_updates.py": {
+      "name": "What's new",
+      "description": "Delivers the release notes for this version and remembers which ones each person has already seen."
+    },
+    "api/src/routers/profile.py": {
+      "name": "Personal profile",
+      "description": "Lets people update their own name, contact details, photo and password."
+    },
+    "api/src/routers/required_instructions.py": {
+      "name": "Standing AI instructions",
+      "description": "Sets wording every AI assistant must follow, for the whole platform and for individual clients."
+    },
+    "api/src/routers/roi_reports.py": {
+      "name": "Savings reports",
+      "description": "Estimates time and money saved by automation over a period, broken down by automation and by client."
+    },
+    "api/src/routers/roi_settings.py": {
+      "name": "Savings assumptions",
+      "description": "Holds the hourly rates and overheads used to work out the savings figures."
+    },
+    "api/src/routers/roles.py": {
+      "name": "Roles and access",
+      "description": "Defines who can do what by grouping people, forms, apps, assistants and automations into roles."
+    },
+    "api/src/routers/run_retention.py": {
+      "name": "Run history window",
+      "description": "States how long finished run histories are kept so screens can explain why an old one has gone."
+    },
+    "api/src/routers/scheduler_diagnostics.py": {
+      "name": "Scheduled work health",
+      "description": "Shows whether the timetable that starts scheduled work is running and what it has done lately."
+    },
+    "api/src/routers/schedules.py": {
+      "name": "Timetable checking",
+      "description": "Checks a schedule's timing rule and shows the next few times it would run."
+    },
+    "api/src/routers/sdk_modules.py": {
+      "name": "Shared code delivery",
+      "description": "Hands workspace code and its list of needed libraries to the parts that run workflows."
+    },
+    "api/src/routers/sdk_runtime.py": {
+      "name": "Run-time support",
+      "description": "Carries log lines, saved lookup results and service signals between running workflows and the main server."
+    }
+  },
+  "routes": {
+    "GET /auth/oauth/providers": {
+      "name": "Which sign-in options",
+      "description": "Lists the company sign-in options offered on the sign-in screen."
+    },
+    "GET /auth/oauth/init/{provider}": {
+      "name": "Start work-account sign-in",
+      "description": "Sends the person to their chosen provider to sign in."
+    },
+    "POST /auth/oauth/callback": {
+      "name": "Finish work-account sign-in",
+      "description": "Completes sign-in with the provider and either signs the person in or links the account."
+    },
+    "GET /auth/oauth/accounts": {
+      "name": "My linked accounts",
+      "description": "Lists the outside sign-in accounts linked to the signed-in person."
+    },
+    "DELETE /auth/oauth/accounts/{provider}": {
+      "name": "Unlink an account",
+      "description": "Removes the link to one outside sign-in account."
+    },
+    "GET /api/organizations": {
+      "name": "Client list",
+      "description": "Lists client organizations, with the provider's own organization first."
+    },
+    "POST /api/organizations": {
+      "name": "Add a client",
+      "description": "Creates a client organization to hold its people, records and automations."
+    },
+    "GET /api/organizations/{org_id}": {
+      "name": "Client details",
+      "description": "Shows one client organization's details."
+    },
+    "PATCH /api/organizations/{org_id}": {
+      "name": "Update a client",
+      "description": "Changes a client organization's name or settings."
+    },
+    "DELETE /api/organizations/{org_id}": {
+      "name": "Archive a client",
+      "description": "Marks a client organization as inactive without erasing its history."
+    },
+    "GET /api/packages": {
+      "name": "Installed extras",
+      "description": "Lists the extra libraries currently available to workflows."
+    },
+    "GET /api/packages/updates": {
+      "name": "Check for newer versions",
+      "description": "Checks whether newer versions of the installed libraries exist."
+    },
+    "POST /api/packages/install": {
+      "name": "Add a library",
+      "description": "Installs an extra library and restarts the parts that run workflows so it can be used."
+    },
+    "DELETE /api/packages/{package_name}": {
+      "name": "Remove a library",
+      "description": "Uninstalls an extra library and restarts the parts that run workflows."
+    },
+    "POST /auth/passkeys/register/options": {
+      "name": "Start adding a passkey",
+      "description": "Prepares what the device needs in order to create a fingerprint or face sign-in."
+    },
+    "POST /auth/passkeys/register/verify": {
+      "name": "Confirm a passkey",
+      "description": "Checks the device's answer and saves the passkey for next time."
+    },
+    "POST /auth/passkeys/authenticate/options": {
+      "name": "Start passkey sign-in",
+      "description": "Prepares the challenge a device answers when someone signs in with a passkey."
+    },
+    "POST /auth/passkeys/authenticate/verify": {
+      "name": "Finish passkey sign-in",
+      "description": "Confirms the device's answer and signs the person in."
+    },
+    "GET /auth/passkeys": {
+      "name": "My passkeys",
+      "description": "Lists the passkeys the signed-in person has added."
+    },
+    "DELETE /auth/passkeys/{passkey_id}": {
+      "name": "Remove a passkey",
+      "description": "Deletes one passkey so that device can no longer be used to sign in."
+    },
+    "GET /api/permissions/catalog": {
+      "name": "All permissions",
+      "description": "Lists every permission the platform recognises, so role screens offer consistent choices."
+    },
+    "GET /api/platform-jobs": {
+      "name": "Background job list",
+      "description": "Lists the long-running tasks the platform is working on."
+    },
+    "GET /api/platform-jobs/{job_id}": {
+      "name": "Job progress",
+      "description": "Shows how one long-running task is going and how far it has got."
+    },
+    "POST /api/platform-jobs/{job_id}/cancel": {
+      "name": "Stop a long task",
+      "description": "Asks a long-running task to stop."
+    },
+    "GET /api/platform/workers/metrics": {
+      "name": "Processing use over time",
+      "description": "Shows how much memory and processing power the running processes have used."
+    },
+    "GET /api/platform/workers/stats": {
+      "name": "Pool totals",
+      "description": "Summarises how many processes are running, busy or idle."
+    },
+    "GET /api/platform/workers": {
+      "name": "Worker pools",
+      "description": "Lists the groups of processes that carry out work."
+    },
+    "GET /api/platform/workers/{worker_id}": {
+      "name": "One worker pool",
+      "description": "Shows the processes inside one pool and what each is doing."
+    },
+    "POST /api/platform/workers/{worker_id}/processes/{pid}/recycle": {
+      "name": "Restart one process",
+      "description": "Restarts a single process so it starts again with a clean slate."
+    },
+    "POST /api/platform/workers/{worker_id}/recycle-all": {
+      "name": "Restart a whole pool",
+      "description": "Restarts every process in a pool, one after another."
+    },
+    "GET /api/platform/queue": {
+      "name": "Waiting work",
+      "description": "Lists the tasks waiting to be picked up."
+    },
+    "GET /api/platform/stuck-history": {
+      "name": "Stuck work history",
+      "description": "Summarises which automations have got stuck most often recently."
+    },
+    "POST /api/policy-rules": {
+      "name": "Add a rule",
+      "description": "Creates a named, reusable rule controlling who may open files and records."
+    },
+    "GET /api/policy-rules": {
+      "name": "Rules I can see",
+      "description": "Lists the rules available in the current organization's scope."
+    },
+    "GET /api/policy-rules/{domain}/{name}": {
+      "name": "Rule details",
+      "description": "Shows the conditions of one rule."
+    },
+    "PUT /api/policy-rules/{domain}/{name}": {
+      "name": "Change a rule",
+      "description": "Updates a rule's conditions everywhere it is used."
+    },
+    "DELETE /api/policy-rules/{domain}/{name}": {
+      "name": "Delete a rule",
+      "description": "Removes a rule so it can no longer be applied."
+    },
+    "GET /api/policy-rules/{domain}/{name}/usages": {
+      "name": "Where a rule is used",
+      "description": "Lists the files and tables that rely on a rule, so it is not deleted by accident."
+    },
+    "GET /api/product-updates": {
+      "name": "Release notes",
+      "description": "Returns this version's release notes and which ones the person has already seen."
+    },
+    "POST /api/product-updates/receipts": {
+      "name": "Mark notes as seen",
+      "description": "Records that a person has seen particular release notes."
+    },
+    "GET /api/profile": {
+      "name": "My profile",
+      "description": "Shows the signed-in person's name, contact details and photo."
+    },
+    "PATCH /api/profile": {
+      "name": "Update my profile",
+      "description": "Saves changes to the person's own name and contact details."
+    },
+    "GET /api/profile/avatar": {
+      "name": "My photo",
+      "description": "Returns the person's profile photo."
+    },
+    "POST /api/profile/avatar": {
+      "name": "Upload a photo",
+      "description": "Stores a new profile photo for the person."
+    },
+    "DELETE /api/profile/avatar": {
+      "name": "Remove my photo",
+      "description": "Deletes the person's profile photo."
+    },
+    "POST /api/profile/password": {
+      "name": "Set my password",
+      "description": "Changes or sets the password used to sign in."
+    },
+    "GET /api/required-instructions": {
+      "name": "Instructions in force",
+      "description": "Returns the standing wording that applies to the signed-in person's AI assistants."
+    },
+    "GET /api/admin/required-instructions": {
+      "name": "Platform-wide instructions",
+      "description": "Shows the wording every AI assistant on the platform must follow."
+    },
+    "PUT /api/admin/required-instructions": {
+      "name": "Change platform instructions",
+      "description": "Updates the wording every AI assistant on the platform must follow."
+    },
+    "GET /api/admin/required-instructions/organizations/{organization_id}": {
+      "name": "Client instructions",
+      "description": "Shows the extra wording AI assistants must follow for one client."
+    },
+    "PUT /api/admin/required-instructions/organizations/{organization_id}": {
+      "name": "Change client instructions",
+      "description": "Updates the extra wording AI assistants must follow for one client."
+    },
+    "GET /api/reports/roi/summary": {
+      "name": "Savings summary",
+      "description": "Estimates hours and money saved by automation over the chosen period."
+    },
+    "GET /api/reports/roi/by-workflow": {
+      "name": "Savings by automation",
+      "description": "Shows which automations save the most time and money."
+    },
+    "GET /api/reports/roi/by-organization": {
+      "name": "Savings by client",
+      "description": "Shows how much each client organization saves through automation."
+    },
+    "GET /api/reports/roi/trends": {
+      "name": "Savings over time",
+      "description": "Shows how savings have changed month by month."
+    },
+    "GET /api/admin/roi/settings": {
+      "name": "Savings assumptions",
+      "description": "Shows the hourly rates and overheads used in savings calculations."
+    },
+    "POST /api/admin/roi/settings": {
+      "name": "Change savings assumptions",
+      "description": "Updates the hourly rates and overheads behind the savings figures."
+    },
+    "GET /api/roles": {
+      "name": "Roles list",
+      "description": "Lists roles with a summary of what each one covers."
+    },
+    "POST /api/roles": {
+      "name": "Create a role",
+      "description": "Creates a role to group the people, forms, apps, assistants and automations it covers."
+    },
+    "GET /api/roles/{role_id}": {
+      "name": "Role details",
+      "description": "Shows one role and where it is used."
+    },
+    "PATCH /api/roles/{role_id}": {
+      "name": "Edit a role",
+      "description": "Changes a role's name or description."
+    },
+    "PUT /api/roles/{role_id}": {
+      "name": "Save a role",
+      "description": "Saves a role's details in one go, kept so older tools keep working."
+    },
+    "DELETE /api/roles/{role_id}": {
+      "name": "Delete a role",
+      "description": "Removes a role and takes it off everyone who had it."
+    },
+    "GET /api/roles/{role_id}/users": {
+      "name": "People in a role",
+      "description": "Lists the people holding a role, limited to clients the viewer may see."
+    },
+    "POST /api/roles/{role_id}/users": {
+      "name": "Add people to a role",
+      "description": "Gives a role to one or more people."
+    },
+    "DELETE /api/roles/{role_id}/users/{user_id}": {
+      "name": "Remove a person from a role",
+      "description": "Takes a role away from one person."
+    },
+    "GET /api/roles/{role_id}/forms": {
+      "name": "Forms in a role",
+      "description": "Lists the forms a role can open."
+    },
+    "POST /api/roles/{role_id}/forms": {
+      "name": "Add forms to a role",
+      "description": "Gives a role access to one or more forms."
+    },
+    "DELETE /api/roles/{role_id}/forms/{form_id}": {
+      "name": "Remove a form from a role",
+      "description": "Takes one form out of a role."
+    },
+    "GET /api/roles/{role_id}/agents": {
+      "name": "Assistants in a role",
+      "description": "Lists the AI assistants a role can use."
+    },
+    "POST /api/roles/{role_id}/agents": {
+      "name": "Add assistants to a role",
+      "description": "Gives a role access to one or more AI assistants."
+    },
+    "DELETE /api/roles/{role_id}/agents/{agent_id}": {
+      "name": "Remove an assistant from a role",
+      "description": "Takes one AI assistant out of a role."
+    },
+    "DELETE /api/roles/{role_id}/users": {
+      "name": "Remove several people",
+      "description": "Takes a role away from several people at once."
+    },
+    "DELETE /api/roles/{role_id}/forms": {
+      "name": "Remove several forms",
+      "description": "Takes several forms out of a role at once."
+    },
+    "DELETE /api/roles/{role_id}/agents": {
+      "name": "Remove several assistants",
+      "description": "Takes several AI assistants out of a role at once."
+    },
+    "GET /api/roles/{role_id}/apps": {
+      "name": "Apps in a role",
+      "description": "Lists the apps a role can open."
+    },
+    "POST /api/roles/{role_id}/apps": {
+      "name": "Add apps to a role",
+      "description": "Gives a role access to one or more apps."
+    },
+    "DELETE /api/roles/{role_id}/apps": {
+      "name": "Remove several apps",
+      "description": "Takes several apps out of a role at once."
+    },
+    "GET /api/roles/{role_id}/workflows": {
+      "name": "Automations in a role",
+      "description": "Lists the automations a role may run."
+    },
+    "POST /api/roles/{role_id}/workflows": {
+      "name": "Add automations to a role",
+      "description": "Gives a role permission to run one or more automations."
+    },
+    "DELETE /api/roles/{role_id}/workflows": {
+      "name": "Remove several automations",
+      "description": "Takes several automations out of a role at once."
+    },
+    "GET /api/roles/{role_id}/permissions": {
+      "name": "What a role may do",
+      "description": "Lists the actions a role is allowed to perform."
+    },
+    "PUT /api/roles/{role_id}/permissions": {
+      "name": "Set what a role may do",
+      "description": "Replaces the list of actions a role is allowed to perform."
+    },
+    "GET /api/run-retention": {
+      "name": "Run history window",
+      "description": "States how long finished runs are kept, so screens can explain why an old run has gone."
+    },
+    "GET /api/platform/scheduler": {
+      "name": "Timetable health",
+      "description": "Shows whether the part that starts scheduled work is running and when it last checked."
+    },
+    "GET /api/platform/scheduler/tasks/{task_id}/runs": {
+      "name": "Scheduled task history",
+      "description": "Shows recent runs of one scheduled task and how each one ended."
+    },
+    "POST /api/schedules/validate": {
+      "name": "Check a schedule",
+      "description": "Checks a timing rule and shows the next few times it would run."
+    },
+    "GET /api/sdk/modules/{path:path}": {
+      "name": "Fetch shared code",
+      "description": "Hands a piece of workspace code to the part that needs to run it."
+    },
+    "GET /api/sdk/modules-resolve": {
+      "name": "Find shared code",
+      "description": "Finds which workspace file a name refers to when code is loaded."
+    },
+    "GET /api/sdk/requirements": {
+      "name": "List needed libraries",
+      "description": "Returns the list of extra libraries the workspace depends on."
+    },
+    "POST /api/sdk/runtime/logs": {
+      "name": "Save a log line",
+      "description": "Records a line of run output so it appears in the run history."
+    },
+    "POST /api/sdk/runtime/service-control": {
+      "name": "Service instructions",
+      "description": "Reports whether a helper service that workflows rely on should be running."
+    },
+    "POST /api/sdk/runtime/data-provider-cache/read": {
+      "name": "Read saved lookup results",
+      "description": "Returns previously saved results from an outside data source instead of asking again."
+    },
+    "POST /api/sdk/runtime/data-provider-cache/write": {
+      "name": "Save lookup results",
+      "description": "Stores results from an outside data source so later runs can reuse them."
+    },
+    "GET /api/sdk/runtime/logs/{execution_id}": {
+      "name": "Run output",
+      "description": "Returns the captured output of one run."
+    }
+  }
+}

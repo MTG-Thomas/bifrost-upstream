@@ -1,0 +1,28 @@
+{
+  "files": {
+    "api/src/services/openai_transport_detection.py": {
+      "name": "Compatible service check",
+      "description": "Tests which way a compatible AI service accepts requests, once per saved connection, so calls choose the right one first time."
+    },
+    "api/src/services/opencode_go_detection.py": {
+      "name": "OpenCode Go check",
+      "description": "Tests which request style the OpenCode Go service accepts for a model, once per saved connection."
+    },
+    "api/src/services/opencode_go.py": {
+      "name": "OpenCode Go connection",
+      "description": "Holds the address, request style and identifying headers needed to reach the OpenCode Go service."
+    },
+    "api/src/services/provider_catalog_service.py": {
+      "name": "Provider connection test",
+      "description": "Checks that a saved AI service password works and lists the models that connection can offer."
+    },
+    "api/src/services/tool_registry.py": {
+      "name": "Workflow tools",
+      "description": "Makes the workflows marked as tools available to agents, and describes each one's inputs so the model can use it."
+    },
+    "api/src/services/tool_schema.py": {
+      "name": "Tool input rules",
+      "description": "Describes what a tool expects as input and checks an agent's arguments before that tool is allowed to run."
+    }
+  }
+}

@@ -1,0 +1,65 @@
+name: Floorplan
+
+# The floorplan map's authored metadata (docs/architecture/floorplan/) is tracked, so it
+# can fall behind the code the moment a route, export or folder changes. This job re-reads
+# the code with Floorplan's dependency-free scripts and fails when the map no longer
+# matches it.
+#
+# It is mechanical on purpose: no model calls, no repository secrets, and the plugin is
+# fetched at a pinned commit by scripts/floorplan.mjs. Descriptions that need a person's
+# judgement are reported as advisory until FLOORPLAN_STRICT_REVIEW=1 is set deliberately.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "api/**"
+      - "client/**"
+      - "scripts/floorplan.mjs"
+      - "docs/architecture/floorplan/**"
+      - ".github/workflows/floorplan.yml"
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: floorplan-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Floorplan map (${{ matrix.profile }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # One check per reader: the owner view and the engineer view share descriptions but
+        # differ in structure and wording.
+        profile: [owner, engineer]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Check the map still matches the code
+        run: node scripts/floorplan.mjs check --profile ${{ matrix.profile }}
+
+      # The rendered map is 5 MB; keep it only when the check fails, so a reviewer can
+      # open it and see exactly which cards drifted.
+      - name: Keep the rendered map for review
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: floorplan-map
+          path: floorplan/index.html
+          if-no-files-found: ignore
+          retention-days: 7

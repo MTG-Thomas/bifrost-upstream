@@ -1,0 +1,454 @@
+{
+  "files": {
+    "api/src/routers/__init__.py": {
+      "name": "Groups of requests",
+      "description": "Marks the folder that holds every group of incoming requests, one group per feature area of the platform."
+    },
+    "api/src/routers/agent_run_sdk.py": {
+      "name": "Agent run hand-off",
+      "description": "Lets the AI engine fetch one agent run with every step it took and start a new run without waiting for it to finish."
+    },
+    "api/src/routers/agent_runs.py": {
+      "name": "Agent run history",
+      "description": "Lists, reruns, cancels and reviews AI agent runs, and flags weak results so the agent's instructions can be improved."
+    },
+    "api/src/routers/agent_tuning.py": {
+      "name": "Agent instruction tuning",
+      "description": "Turns an agent's flagged runs into one proposed instruction change, tests it against those runs, then applies it."
+    },
+    "api/src/routers/agents.py": {
+      "name": "AI agents",
+      "description": "Creates and manages AI agents: their instructions, tools, helpers they may pass work to, pictures and run figures."
+    },
+    "api/src/routers/ai_models.py": {
+      "name": "AI provider setup",
+      "description": "Lets administrators connect AI providers, choose models, and decide which model handles each job such as chat or summaries."
+    },
+    "api/src/routers/ai_pricing.py": {
+      "name": "AI model prices",
+      "description": "Keeps the price per unit for each AI model so spend reports show real costs."
+    },
+    "api/src/routers/app_code_files.py": {
+      "name": "App source files",
+      "description": "Reads, saves and deletes an app's code files, and serves the built app and its assets so the app runs in the browser."
+    },
+    "api/src/routers/app_embed_secrets.py": {
+      "name": "App embed keys",
+      "description": "Creates and rotates the keys that let an app be shown on another website without exposing the rest of the platform."
+    },
+    "api/src/routers/app_sdk_runtime.py": {
+      "name": "App toolkit delivery",
+      "description": "Hands apps the current shared building blocks while serving older pinned copies unchanged so existing apps keep working."
+    },
+    "api/src/routers/applications.py": {
+      "name": "Apps and publishing",
+      "description": "Creates, edits, publishes, rolls back and deletes the apps people build here, keeping drafts apart from the live version."
+    },
+    "api/src/routers/audit.py": {
+      "name": "Audit trail",
+      "description": "Shows who did what and when across the platform, and exports the full history to a file for review."
+    }
+  },
+  "routes": {
+    "GET /api/agent-runs/{run_id}": {
+      "name": "Agent run detail",
+      "description": "Shows one agent run with each step it took, for the screens and for programs that report progress."
+    },
+    "POST /api/agent-runs/enqueue": {
+      "name": "Queue an agent run",
+      "description": "Accepts a request to start an agent run and hands back the run right away so the caller is not left waiting."
+    },
+    "GET /api/agent-runs": {
+      "name": "Agent run history",
+      "description": "Lists past and current agent runs with filters, so you can see what the agents did and what it cost."
+    },
+    "GET /api/agent-runs/metadata-keys": {
+      "name": "Run tag names",
+      "description": "Lists the custom tags found on this agent's runs so the history screen can offer them as filters."
+    },
+    "GET /api/agent-runs/metadata-values": {
+      "name": "Run tag values",
+      "description": "Lists the values recorded under one custom tag on this agent's runs, for narrowing the history."
+    },
+    "GET /api/agent-runs/backfill-jobs": {
+      "name": "Summary backfill jobs",
+      "description": "Shows past and running jobs that filled in missing run summaries, for platform administrators."
+    },
+    "GET /api/agent-runs/backfill-eligible": {
+      "name": "Backfill availability",
+      "description": "Checks quickly whether any runs still need summaries, which decides whether the Backfill button appears."
+    },
+    "POST /api/agent-runs/{run_id}/rerun": {
+      "name": "Rerun an agent run",
+      "description": "Starts a fresh run with the same input as an earlier one, in the background."
+    },
+    "POST /api/agent-runs/{run_id}/cancel": {
+      "name": "Cancel an agent run",
+      "description": "Stops a queued or running agent run and marks it cancelled."
+    },
+    "POST /api/agent-runs/{run_id}/verdict": {
+      "name": "Flag a run result",
+      "description": "Records whether a finished run was good or bad, so weak runs can be gathered for tuning."
+    },
+    "DELETE /api/agent-runs/{run_id}/verdict": {
+      "name": "Remove run flag",
+      "description": "Clears the good or bad mark on a run so it no longer counts toward tuning."
+    },
+    "GET /api/agent-runs/{run_id}/flag-conversation": {
+      "name": "Flag discussion",
+      "description": "Shows the conversation where the tuning assistant and you discuss a flagged run."
+    },
+    "POST /api/agent-runs/{run_id}/flag-conversation/message": {
+      "name": "Reply in flag discussion",
+      "description": "Adds your message to a flagged run's discussion and returns the assistant's reply straight away."
+    },
+    "POST /api/agent-runs/{run_id}/regenerate-summary": {
+      "name": "Rebuild run summary",
+      "description": "Throws away a run's summary and queues a fresh one."
+    },
+    "POST /api/agent-runs/{run_id}/dry-run": {
+      "name": "Test new instructions",
+      "description": "Replays a past run against proposed agent instructions to show how the answer would change."
+    },
+    "POST /api/agent-runs/execute": {
+      "name": "Run an agent now",
+      "description": "Runs an agent start to finish and returns its result, for programs that need the answer immediately."
+    },
+    "POST /api/agent-runs/backfill-summaries": {
+      "name": "Fill in missing summaries",
+      "description": "Queues summary writing for every run that lacks one, with an estimate of the AI spend involved."
+    },
+    "GET /api/agent-runs/backfill-jobs/{job_id}": {
+      "name": "Backfill progress",
+      "description": "Shows how far a summary backfill job has got, for platform administrators."
+    },
+    "POST /api/agent-runs/backfill-jobs/{job_id}/cancel": {
+      "name": "Stop a backfill job",
+      "description": "Marks a running summary backfill as cancelled so the screens stop waiting on it."
+    },
+    "POST /api/agents/{agent_id}/tuning-session": {
+      "name": "Propose instruction changes",
+      "description": "Reads this agent's flagged runs and drafts one combined change to its instructions."
+    },
+    "POST /api/agents/{agent_id}/tuning-session/dry-run": {
+      "name": "Test tuning proposal",
+      "description": "Replays every flagged run against a proposed instruction change so you can compare answers before applying."
+    },
+    "POST /api/agents/{agent_id}/tuning-session/apply": {
+      "name": "Apply tuning proposal",
+      "description": "Saves the proposed instructions, keeps a record of the old version, and clears the flags it addressed."
+    },
+    "GET /api/agents": {
+      "name": "Agent list",
+      "description": "Lists the AI agents you are allowed to see, with enough detail for the agent screens."
+    },
+    "POST /api/agents": {
+      "name": "Create an agent",
+      "description": "Sets up a new AI agent with its instructions and sharing scope; platform administrators can create any kind."
+    },
+    "GET /api/agents/accessible-tools": {
+      "name": "Assignable tools",
+      "description": "Lists the tools you may give your agents, based on what your role already allows."
+    },
+    "GET /api/agents/stats/fleet": {
+      "name": "All agents performance",
+      "description": "Summarises runs, success and cost across every agent for a chosen number of days."
+    },
+    "GET /api/agents/{agent_id}": {
+      "name": "Agent details",
+      "description": "Shows one agent's settings, instructions and sharing."
+    },
+    "PUT /api/agents/{agent_id}": {
+      "name": "Update an agent",
+      "description": "Changes an agent's name, instructions, model or sharing; administrators can change any agent."
+    },
+    "DELETE /api/agents/{agent_id}": {
+      "name": "Delete an agent",
+      "description": "Permanently removes an agent and its settings."
+    },
+    "POST /api/agents/{agent_id}/promote": {
+      "name": "Share an agent widely",
+      "description": "Moves a private agent into its organization so colleagues can use it."
+    },
+    "GET /api/agents/{agent_id}/stats": {
+      "name": "Agent performance",
+      "description": "Shows how often this agent ran, how often it succeeded and what it cost recently."
+    },
+    "GET /api/agents/{agent_id}/tools": {
+      "name": "Agent tools",
+      "description": "Lists the tools this agent may use when it works."
+    },
+    "GET /api/agents/{agent_id}/delegations": {
+      "name": "Agent hand-offs",
+      "description": "Lists the other agents this agent may pass work to."
+    },
+    "POST /api/agents/{agent_id}/logo": {
+      "name": "Upload agent logo",
+      "description": "Sets the small square picture shown next to the agent's name."
+    },
+    "GET /api/agents/{agent_id}/logo": {
+      "name": "Agent logo",
+      "description": "Shows the agent's picture."
+    },
+    "DELETE /api/agents/{agent_id}/logo": {
+      "name": "Remove agent logo",
+      "description": "Clears the agent's picture so the default one is shown."
+    },
+    "GET /api/admin/ai/behavior": {
+      "name": "AI behaviour settings",
+      "description": "Shows platform-wide AI behaviour settings that apply to every AI feature."
+    },
+    "PUT /api/admin/ai/behavior": {
+      "name": "Change AI behaviour",
+      "description": "Saves the platform-wide AI behaviour settings used by every AI feature."
+    },
+    "GET /api/admin/ai/connections": {
+      "name": "AI provider connections",
+      "description": "Lists the AI services the platform can use, with their access keys hidden."
+    },
+    "POST /api/admin/ai/connections": {
+      "name": "Connect an AI provider",
+      "description": "Adds a new AI service to the platform by storing its address and access key."
+    },
+    "POST /api/admin/ai/connections/verify": {
+      "name": "Check provider details",
+      "description": "Tests a provider's address and key before saving them, and lists what it can offer."
+    },
+    "PATCH /api/admin/ai/connections/{connection_id}": {
+      "name": "Edit provider connection",
+      "description": "Changes a connected AI service's details or access key."
+    },
+    "DELETE /api/admin/ai/connections/{connection_id}": {
+      "name": "Remove provider connection",
+      "description": "Disconnects an AI service so no agent can use it."
+    },
+    "POST /api/admin/ai/connections/{connection_id}/test": {
+      "name": "Test provider connection",
+      "description": "Sends a small request to a connected AI service to confirm it still answers."
+    },
+    "GET /api/admin/ai/connections/{connection_id}/models": {
+      "name": "Provider models",
+      "description": "Lists the models an AI service offers so administrators can choose one."
+    },
+    "GET /api/admin/ai/catalog": {
+      "name": "Model catalogue",
+      "description": "Lists the AI services and models the platform knows about, kept in step with the public model list."
+    },
+    "POST /api/admin/ai/catalog/refresh": {
+      "name": "Refresh model catalogue",
+      "description": "Updates the model list now instead of waiting for the scheduled refresh."
+    },
+    "GET /api/admin/ai/profiles": {
+      "name": "Model profiles",
+      "description": "Lists the ready-made model settings administrators can hand to agents and chat."
+    },
+    "POST /api/admin/ai/profiles": {
+      "name": "Add model profile",
+      "description": "Creates a reusable set of model settings with a name people can recognise."
+    },
+    "POST /api/admin/ai/profiles/merge": {
+      "name": "Merge model profiles",
+      "description": "Combines duplicate model settings into one so anything using either keeps working."
+    },
+    "PATCH /api/admin/ai/profiles/{profile_id}": {
+      "name": "Edit model profile",
+      "description": "Changes a reusable model set-up, such as its model, limits or name."
+    },
+    "POST /api/admin/ai/profiles/{profile_id}/verify": {
+      "name": "Check model profile",
+      "description": "Sends a test request using a model profile to confirm it works."
+    },
+    "DELETE /api/admin/ai/profiles/{profile_id}": {
+      "name": "Delete model profile",
+      "description": "Removes a reusable model set-up that is no longer needed."
+    },
+    "GET /api/admin/ai/assignments": {
+      "name": "Model assignments",
+      "description": "Shows which model setting is used for each job, such as chat, summaries or image making."
+    },
+    "PUT /api/admin/ai/assignments/{assignment_key}": {
+      "name": "Assign model to job",
+      "description": "Chooses which model setting handles a particular job."
+    },
+    "DELETE /api/admin/ai/assignments/{assignment_key}": {
+      "name": "Reset a model assignment",
+      "description": "Removes the chosen model for a job so the platform default applies again."
+    },
+    "GET /api/settings/ai/pricing": {
+      "name": "AI prices",
+      "description": "Lists what each AI model costs per unit, used for spend figures."
+    },
+    "POST /api/settings/ai/pricing": {
+      "name": "Add model price",
+      "description": "Records a price for an AI model so its usage can be costed."
+    },
+    "PUT /api/settings/ai/pricing/{pricing_id}": {
+      "name": "Update model price",
+      "description": "Corrects the price recorded for an AI model."
+    },
+    "DELETE /api/settings/ai/pricing/{pricing_id}": {
+      "name": "Remove model price",
+      "description": "Deletes a model's price so its usage is no longer costed."
+    },
+    "GET /api/applications/{app_id}/files": {
+      "name": "App file list",
+      "description": "Lists every code file in an app so the builder can show its file tree."
+    },
+    "GET /api/applications/{app_id}/files/{file_path:path}": {
+      "name": "Read an app file",
+      "description": "Returns the contents of one app file for the code editor."
+    },
+    "PUT /api/applications/{app_id}/files/{file_path:path}": {
+      "name": "Save an app file",
+      "description": "Creates or overwrites one app file as code is written or pasted."
+    },
+    "DELETE /api/applications/{app_id}/files/{file_path:path}": {
+      "name": "Delete an app file",
+      "description": "Removes one file from an app's source."
+    },
+    "GET /api/applications/{app_id}/render": {
+      "name": "Run app code",
+      "description": "Hands the browser all of an app's code already translated, so the app starts without a build step."
+    },
+    "GET /api/applications/{app_id}/bundle-manifest": {
+      "name": "Built app contents",
+      "description": "Lists the files and details of an app's most recent build."
+    },
+    "GET /api/applications/{app_id}/bundle-asset/{filename:path}": {
+      "name": "Built app file",
+      "description": "Delivers one file from an app's build, such as an image or stylesheet."
+    },
+    "GET /api/applications/{app_id}/dist/{path:path}": {
+      "name": "Finished app files",
+      "description": "Delivers the finished files of an app that was built outside the platform."
+    },
+    "GET /api/applications/{app_id}/dependencies": {
+      "name": "App add-on packages",
+      "description": "Lists the extra code packages an app depends on."
+    },
+    "PUT /api/applications/{app_id}/dependencies": {
+      "name": "Set app add-on packages",
+      "description": "Replaces the list of extra code packages an app depends on."
+    },
+    "POST /api/applications/{app_id}/embed-secrets": {
+      "name": "Add embed key",
+      "description": "Creates a key that lets another website show this app inside its own page."
+    },
+    "GET /api/applications/{app_id}/embed-secrets": {
+      "name": "App embed keys",
+      "description": "Lists the keys used to embed this app elsewhere, without showing the key values."
+    },
+    "PATCH /api/applications/{app_id}/embed-secrets/{secret_id}": {
+      "name": "Update embed key",
+      "description": "Changes an embed key's label or switches it off."
+    },
+    "DELETE /api/applications/{app_id}/embed-secrets/{secret_id}": {
+      "name": "Delete embed key",
+      "description": "Revokes an embed key so pages using it stop working."
+    },
+    "GET /api/app-sdk/v1/manifest": {
+      "name": "App toolkit pointer",
+      "description": "Tells an app which version of the shared building blocks to load."
+    },
+    "GET /api/app-sdk/assets/{fingerprint}.js": {
+      "name": "App toolkit file",
+      "description": "Serves one exact version of the shared building blocks so older apps keep working unchanged."
+    },
+    "POST /api/applications": {
+      "name": "Create an app",
+      "description": "Starts a new app with its name, web address and who may use it."
+    },
+    "GET /api/applications": {
+      "name": "App list",
+      "description": "Lists the apps you can open, with their names, web addresses and live status."
+    },
+    "POST /api/applications/sdk/update": {
+      "name": "Update app toolkits",
+      "description": "Moves many apps onto the current shared building blocks in one go."
+    },
+    "GET /api/applications/{slug}": {
+      "name": "App details",
+      "description": "Shows one app's name, web address, description and who may use it."
+    },
+    "PATCH /api/applications/{app_id}": {
+      "name": "Edit an app",
+      "description": "Changes an app's name, description, picture or who may use it."
+    },
+    "DELETE /api/applications/{app_id}": {
+      "name": "Delete an app",
+      "description": "Permanently removes an app and its saved code."
+    },
+    "GET /api/applications/{app_id}/draft": {
+      "name": "App draft",
+      "description": "Shows the working copy of an app that has not been published yet."
+    },
+    "PUT /api/applications/{app_id}/draft": {
+      "name": "Save app draft",
+      "description": "Stores the working copy of an app without publishing it."
+    },
+    "POST /api/applications/{app_id}/deploy": {
+      "name": "Publish an app build",
+      "description": "Builds the app's current code and switches the live app over to the new build."
+    },
+    "GET /api/applications/{app_id}/source": {
+      "name": "Download app code",
+      "description": "Packages an app's code so it can be kept, reviewed or moved elsewhere."
+    },
+    "POST /api/applications/{app_id}/sdk/update": {
+      "name": "Update app toolkit",
+      "description": "Rebuilds one app against the current shared building blocks."
+    },
+    "POST /api/applications/{app_id}/publish": {
+      "name": "Publish app changes",
+      "description": "Queues a reliable publish of the app's current code and makes it live when ready."
+    },
+    "POST /api/applications/{app_id}/replace": {
+      "name": "Relink app location",
+      "description": "Points an app at its new folder after its code files were moved or renamed."
+    },
+    "POST /api/applications/swap-slugs": {
+      "name": "Swap app addresses",
+      "description": "Swaps the web addresses of two apps so a replacement can take over the old link."
+    },
+    "POST /api/applications/{app_id}/validate": {
+      "name": "Check app code",
+      "description": "Reads an app's code and reports missing pieces or problems before publishing."
+    },
+    "GET /api/applications/{app_id}/export": {
+      "name": "Export app",
+      "description": "Downloads an app's full definition as a single file for backup or transfer."
+    },
+    "POST /api/applications/{app_id}/rollback": {
+      "name": "Revert to earlier build",
+      "description": "Puts a previous published build back live."
+    },
+    "POST /api/applications/{app_id}/logo": {
+      "name": "Upload app logo",
+      "description": "Sets the small square picture shown for the app."
+    },
+    "GET /api/applications/{app_id}/logo": {
+      "name": "App logo",
+      "description": "Shows the app's picture."
+    },
+    "DELETE /api/applications/{app_id}/logo": {
+      "name": "Remove app logo",
+      "description": "Clears the app's picture so the default is shown."
+    },
+    "GET /api/audit": {
+      "name": "Audit history",
+      "description": "Lists recorded actions across the platform, newest first, with who did what."
+    },
+    "POST /api/audit/exports": {
+      "name": "Export audit history",
+      "description": "Starts building a file of the full audit history, including archived events."
+    },
+    "GET /api/audit/exports/{job_id}/download": {
+      "name": "Download audit file",
+      "description": "Hands over the finished audit history file once it is ready."
+    },
+    "GET /api/audit/{event_id}/explain": {
+      "name": "Explain an access decision",
+      "description": "Walks through why a particular person was allowed or refused an action."
+    }
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "files": {
+    "api/bifrost/migrate_v2.py": {
+      "name": "New app format upgrade",
+      "description": "Rewrites an app's imports and dependency list so it builds under the newer app format."
+    },
+    "api/bifrost/models.py": {
+      "name": "Shared data shapes",
+      "description": "Defines the records the terminal tool and the platform exchange, so both sides agree on names and fields."
+    },
+    "api/bifrost/org_target.py": {
+      "name": "Organization targeting",
+      "description": "Decides which organization a command applies to, or whether it applies everywhere."
+    },
+    "api/bifrost/organizations.py": {
+      "name": "Organization access",
+      "description": "Lists and manages the organizations the platform serves, from workflow code."
+    },
+    "api/bifrost/platform_jobs.py": {
+      "name": "Long task waiting",
+      "description": "Waits on a long platform task and reports when it finishes, fails or is cancelled."
+    },
+    "api/bifrost/platform_names.py": {
+      "name": "Exposed platform names",
+      "description": "Keeps the official list of platform features that bundled apps are allowed to use."
+    },
+    "api/bifrost/pyproject.toml": {
+      "name": "Package manifest",
+      "description": "Describes the installable Bifrost command-line package and what it depends on."
+    },
+    "api/bifrost/refs.py": {
+      "name": "Name lookup",
+      "description": "Turns a name or short reference someone typed into the exact record it points to, and says when it is unclear."
+    },
+    "api/bifrost/roles.py": {
+      "name": "Role access",
+      "description": "Lists and manages roles, and who holds them, from workflow code."
+    },
+    "api/bifrost/skill.py": {
+      "name": "Assistant skill install",
+      "description": "Installs, updates and removes ready-made skill packs that teach an AI assistant how to use Bifrost."
+    },
+    "api/bifrost/solution_binding.py": {
+      "name": "Solution link",
+      "description": "Remembers which installed Solution a local folder belongs to."
+    },
+    "api/bifrost/solution_definition.py": {
+      "name": "Solution package reader",
+      "description": "Reads and checks everything in a Solution package, including its apps, forms, agents and shared connections."
+    },
+    "api/bifrost/solution_descriptor.py": {
+      "name": "Solution identity file",
+      "description": "Reads the small file that names a Solution and marks the top of its folder."
+    },
+    "api/bifrost/solution_jobs.py": {
+      "name": "Solution task limits",
+      "description": "Sets how long and how often long-running Solution actions may run."
+    },
+    "api/bifrost/solution_vendoring.py": {
+      "name": "Shared code bundling",
+      "description": "Copies shared helper code a Solution depends on into the package so it installs cleanly elsewhere."
+    },
+    "api/bifrost/tables.py": {
+      "name": "Table data access",
+      "description": "Reads, writes and queries table records from workflow code."
+    },
+    "api/bifrost/users.py": {
+      "name": "People lookup",
+      "description": "Looks up people and their details from workflow code."
+    },
+    "api/bifrost/webhooks.py": {
+      "name": "Incoming message adapters",
+      "description": "Provides the building blocks for handling messages that outside services send in."
+    },
+    "api/bifrost/workflows.py": {
+      "name": "Workflow control",
+      "description": "Lists workflows, checks a run's status and starts a run from workflow code."
+    }
+  }
+}

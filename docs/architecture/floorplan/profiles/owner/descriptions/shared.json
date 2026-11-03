@@ -1,0 +1,137 @@
+{
+  "files": {
+    "api/shared/app_build_errors.py": {
+      "name": "App build memory errors",
+      "description": "Explains clearly when an app build runs out of memory, so builders see what went wrong instead of a silent crash."
+    },
+    "api/shared/app_sdk_upgrade_settings.py": {
+      "name": "Automatic app upgrades",
+      "description": "Stores the platform-wide choice about whether apps are rebuilt onto the latest app toolkit automatically."
+    },
+    "api/shared/application_sdk_upgrades.py": {
+      "name": "App toolkit upgrades",
+      "description": "Queues app rebuilds onto the latest app toolkit, one at a time per app, and skips any app already mid-change."
+    },
+    "api/shared/artifact_generation.py": {
+      "name": "Document and file makers",
+      "description": "Turns a described document, spreadsheet or text file into a real downloadable file that chats and workflows can hand to people."
+    },
+    "api/shared/artifact_preview.py": {
+      "name": "Office file previews",
+      "description": "Shows a safe preview of a Word or Excel file in the browser without running anything hidden inside it."
+    },
+    "api/shared/audit_aggregation.py": {
+      "name": "Access log summaries",
+      "description": "Summarises who checked what access over fixed time windows, and lets an administrator drill into the records behind each count."
+    },
+    "api/shared/builtin_roles.py": {
+      "name": "Built-in roles",
+      "description": "Defines the standard roles every workspace starts with, so new customers have workable permissions from day one."
+    },
+    "api/shared/chat_context.py": {
+      "name": "Chat size tracking",
+      "description": "Records how large each chat request was, kept apart from the usage totals customers are billed against."
+    },
+    "api/shared/cli_artifact.py": {
+      "name": "Command-line tool package",
+      "description": "Builds the downloadable command-line tool that matches the running platform, so it installs and works first time."
+    },
+    "api/shared/contract_version.py": {
+      "name": "Compatibility marker",
+      "description": "Marks which older command-line tools this platform still accepts, so upgrades do not break existing setups."
+    },
+    "api/shared/device_auth.py": {
+      "name": "Device sign-in approval",
+      "description": "Records a person's yes or no to a sign-in request from another device once, without extending how long the request stays open."
+    },
+    "api/shared/export_import.py": {
+      "name": "Workspace export and import",
+      "description": "Copies knowledge, tables, settings and connected services out of one workspace and into another, respecting who may see what."
+    },
+    "api/shared/form_captcha.py": {
+      "name": "Public form bot protection",
+      "description": "Asks anonymous form visitors to solve a small computing puzzle so automated spam cannot flood public forms."
+    },
+    "api/shared/form_execution.py": {
+      "name": "Form run context",
+      "description": "Starts the work behind a submitted form as the form itself, never as the person who filled it in or embedded it."
+    },
+    "api/shared/form_provider.py": {
+      "name": "Form field choices",
+      "description": "Fills in a form's dropdown or lookup options by running only the data source the form author attached to that field."
+    },
+    "api/shared/form_publication.py": {
+      "name": "Public form review",
+      "description": "Shows exactly what becomes visible to the public before a form is published, so nothing is shared by accident."
+    },
+    "api/shared/form_runtime.py": {
+      "name": "Form submission rules",
+      "description": "Checks submitted form answers and uploads against the published form, and refuses duplicates and tampered values."
+    },
+    "api/shared/home.py": {
+      "name": "Home page and collections",
+      "description": "Builds each person's home page and pinned collections, showing only the apps, forms and tables they may see."
+    },
+    "api/shared/identities.py": {
+      "name": "Unattended identities",
+      "description": "Provides the named stand-ins that run scheduled work when no person is present, and blocks them from ever signing in."
+    },
+    "api/shared/logo_processing.py": {
+      "name": "Logo cleanup",
+      "description": "Checks an uploaded logo and makes a clean square thumbnail so workspace branding looks right everywhere."
+    },
+    "api/shared/models.py": {
+      "name": "Shared request and reply shapes",
+      "description": "Holds the shared definitions of what the platform sends and receives where no single area owns them.",
+      "review": "new exports: WorkerCapacityProfile, WorkerCapacityReservation, WorkerCapacityResource"
+    },
+    "api/shared/path_glob.py": {
+      "name": "File pattern matching",
+      "description": "Matches file paths the way developers expect from wildcard patterns, so source search finds the right files."
+    },
+    "api/shared/path_matching.py": {
+      "name": "Folder containment checks",
+      "description": "Answers whether a file sits inside a given folder, so folder-based permission rules agree everywhere."
+    },
+    "api/shared/policy_rules.py": {
+      "name": "Shared permission rules",
+      "description": "Finds where a named permission rule is used and resolves shared rules into the policies that rely on them."
+    },
+    "api/shared/schema_gate.py": {
+      "name": "Startup safety gate",
+      "description": "Holds background processes until the database has caught up with this release, so nothing runs against an outdated structure."
+    },
+    "api/shared/solution_deploy_status.py": {
+      "name": "Solution install progress",
+      "description": "Reports how far a Solution install or update has got, reading it from the platform's standard long-running job record."
+    },
+    "api/shared/solution_dev.py": {
+      "name": "Local Solution preview",
+      "description": "Lets a permitted builder preview a Solution app on their own machine using a short-lived pass tied to their account."
+    },
+    "api/shared/svg_sanitizer.py": {
+      "name": "Image safety check",
+      "description": "Strips anything dangerous out of uploaded vector images before they are stored or shown to anyone."
+    },
+    "api/shared/table_batch_writes.py": {
+      "name": "Bulk table writes",
+      "description": "Adds or changes many table entries at once, refusing the whole batch if a permission check or duplicate would break it."
+    },
+    "api/shared/table_document_writes.py": {
+      "name": "Table entry changes",
+      "description": "Creates, edits and deletes table entries, checking the person may change both the old and the new version."
+    },
+    "api/shared/table_documents.py": {
+      "name": "Table entry reads",
+      "description": "Finds and returns table entries, hiding any record the person is not allowed to read."
+    },
+    "api/shared/table_resolution.py": {
+      "name": "Finding the right table",
+      "description": "Works out which table a name or reference means for this person, and refuses anything outside their reach."
+    },
+    "api/shared/version.py": {
+      "name": "Version number",
+      "description": "Reports which version of the platform is running, so support and updates can tell builds apart."
+    }
+  }
+}

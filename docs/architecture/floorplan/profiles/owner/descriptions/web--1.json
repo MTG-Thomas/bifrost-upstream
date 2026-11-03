@@ -1,0 +1,164 @@
+{
+  "files": {
+    "client/eslint.config.js": {
+      "name": "Code style checks",
+      "description": "Flags risky or untidy browser code while it is being written so problems are caught before they reach the live app."
+    },
+    "client/index.html": {
+      "name": "App start page",
+      "description": "The single page the browser opens first, which then draws every screen of the platform."
+    },
+    "client/playwright.config.ts": {
+      "name": "Browser test settings",
+      "description": "Sets up the automatic browser tests that click through the app before a release."
+    },
+    "client/playwright.manual.config.ts": {
+      "name": "Manual check settings",
+      "description": "Sets up the by-hand walkthroughs used to confirm that Solutions install and run correctly."
+    },
+    "client/playwright.preview.config.ts": {
+      "name": "Preview test settings",
+      "description": "Sets up the browser tests that run against a preview copy of the app before it goes live."
+    },
+    "client/postcss.config.js": {
+      "name": "Style preparation",
+      "description": "Prepares the app's styling rules so screens look the same in every browser."
+    },
+    "client/src/App.tsx": {
+      "name": "App shell and routes",
+      "description": "Decides which screen to show for each address in the app and wraps it in the shared navigation frame."
+    },
+    "client/src/build-plugins/bifrost-module-stubs.ts": {
+      "name": "App build stand-ins",
+      "description": "Lets apps built inside the platform load its shared building blocks while they are still being assembled."
+    },
+    "client/src/components/ApplicationUpdateScreen.tsx": {
+      "name": "App update notice",
+      "description": "Tells people a new version of an app is being installed and reloads the screen once it is ready."
+    },
+    "client/src/components/auth/AuthSetupSteps.tsx": {
+      "name": "Sign-in setup steps",
+      "description": "Walks someone through setting up an authenticator app or passkey one step at a time."
+    },
+    "client/src/components/auth/AuthTransition.tsx": {
+      "name": "Sign-in transition",
+      "description": "Shows a short finishing-up card while the app completes a sign-in or sign-up step."
+    },
+    "client/src/components/dashboard/DashboardStatCards.tsx": {
+      "name": "Dashboard summary cards",
+      "description": "Shows the dashboard's headline numbers: how much is available to run and what the automation has returned."
+    },
+    "client/src/components/dashboard/ExecutionChartData.tsx": {
+      "name": "Chart text alternative",
+      "description": "Describes the activity chart in words so screen-reader and touch users get the same picture."
+    },
+    "client/src/components/dashboard/ExecutionsOverTimeCard.tsx": {
+      "name": "Runs over time chart",
+      "description": "Plots how many runs succeeded or failed over the last day, week or month, with the window switchable."
+    },
+    "client/src/components/entity-management/DeleteConfirmDialog.tsx": {
+      "name": "Delete confirmation dialog",
+      "description": "Asks for a final yes before removing workflows, forms, agents or apps, and warns what else is affected."
+    },
+    "client/src/components/entity-management/deleteEntities.ts": {
+      "name": "Bulk delete",
+      "description": "Removes several selected items at once and remembers what already went, so a retry never deletes twice."
+    },
+    "client/src/components/entity-management/EntityAssignmentPanel.tsx": {
+      "name": "Entity access panel",
+      "description": "Sets which organizations and roles may see and use a workflow, form, agent or app."
+    },
+    "client/src/components/entity-management/EntityCollectionStatus.tsx": {
+      "name": "List load status",
+      "description": "Shows a short warning when part of a list failed to load, without hiding the rows that did arrive."
+    },
+    "client/src/components/entity-management/EntityListToolbar.tsx": {
+      "name": "Management list toolbar",
+      "description": "Holds the search, filters, sorting and bulk actions above the lists of workflows, forms, agents and apps."
+    },
+    "client/src/components/entity-management/FilterPopover.tsx": {
+      "name": "List filter menu",
+      "description": "Opens a panel to narrow a list by resource type, organization or who it is shared with."
+    },
+    "client/src/components/entity-management/index.ts": {
+      "name": "Management list parts",
+      "description": "Bundles the shared pieces every management list uses, from the toolbar to the delete prompt."
+    },
+    "client/src/components/entity-management/ResourceTreeTable.tsx": {
+      "name": "Resource tree table",
+      "description": "Lists workflows, forms, agents and apps grouped by organization, with actions on each row."
+    },
+    "client/src/components/entity-management/types.ts": {
+      "name": "Management list records",
+      "description": "Defines the shared shape of a listed item and how each resource type is labelled and coloured."
+    },
+    "client/src/components/EntityLogo.tsx": {
+      "name": "Entity logo",
+      "description": "Shows an item's chosen logo picture, falling back to its type icon when none is set."
+    },
+    "client/src/components/entityLogoVersions.ts": {
+      "name": "Logo refresh",
+      "description": "Notifies every open view when a logo changes so the new picture appears without a page reload."
+    },
+    "client/src/components/ErrorBoundary.tsx": {
+      "name": "Screen crash catcher",
+      "description": "Catches a screen crash and shows a friendly message with a way back, instead of a blank page."
+    },
+    "client/src/components/execution/execution-details.css": {
+      "name": "Run detail styling",
+      "description": "Sets the spacing and layout shared by every screen that shows a single run."
+    },
+    "client/src/components/execution/ExecutionActivityFeed.tsx": {
+      "name": "Run activity feed",
+      "description": "Shows a readable stream of what a run actually did, leaving technical detail to the logs."
+    },
+    "client/src/components/execution/ExecutionActivityTrace.tsx": {
+      "name": "Run context strip",
+      "description": "Shows a compact line of facts about when, where and for whom a run happened."
+    },
+    "client/src/components/execution/ExecutionAiUsage.tsx": {
+      "name": "AI usage per run",
+      "description": "Shows how many tokens and how much money an AI-powered run used."
+    },
+    "client/src/components/execution/ExecutionContextHelp.tsx": {
+      "name": "Run context help",
+      "description": "Explains the extra facts attached to a run, such as which identity and organization it ran as."
+    },
+    "client/src/components/execution/ExecutionDialogs.tsx": {
+      "name": "Stop and rerun prompts",
+      "description": "Confirms stopping a run that is still working, or starting a fresh copy of it from the beginning."
+    },
+    "client/src/components/execution/ExecutionInspector.tsx": {
+      "name": "Run result tabs",
+      "description": "Switches a run's side panel between its result, the input it was given and its logs."
+    },
+    "client/src/components/execution/ExecutionLogsPanel.tsx": {
+      "name": "Run logs",
+      "description": "Shows every log line from a run with live updates, filtering and copy-to-clipboard."
+    },
+    "client/src/components/execution/ExecutionMetadata.tsx": {
+      "name": "Run details list",
+      "description": "Lists the facts about a run: which workflow ran, who started it, when, and how it ended."
+    },
+    "client/src/components/execution/ExecutionMetadataBar.tsx": {
+      "name": "Run detail bar",
+      "description": "Puts the key facts about a run in a single row above its results."
+    },
+    "client/src/components/execution/ExecutionPageHeader.tsx": {
+      "name": "Run page header",
+      "description": "Titles a run page with its status and the actions available for that run."
+    },
+    "client/src/components/execution/ExecutionReadError.tsx": {
+      "name": "Run read error",
+      "description": "Says a run's details could not be loaded and offers to try again."
+    },
+    "client/src/components/execution/ExecutionResultPanel.tsx": {
+      "name": "Run results",
+      "description": "Shows what a finished run returned, formatted for reading instead of as raw data."
+    },
+    "client/src/components/execution/ExecutionSectionHeading.tsx": {
+      "name": "Run section heading",
+      "description": "Gives each section of a run page the same heading, whether it opens in the page or a side panel."
+    }
+  }
+}

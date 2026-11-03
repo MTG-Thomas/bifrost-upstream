@@ -1,0 +1,16 @@
+{
+  "files": {
+    "api/src/models/__init__.py": {
+      "name": "Record definitions",
+      "description": "Brings together every definition of how a kind of record is stored, loading each only when it is first needed."
+    },
+    "api/src/models/_exports.py": {
+      "name": "Record name lists",
+      "description": "Lists the names of every stored record type so other parts can pick out the ones they need."
+    },
+    "api/src/models/enums.py": {
+      "name": "Fixed choice lists",
+      "description": "Defines the allowed values for things like run status, access level and message role, so every part uses the same words."
+    }
+  }
+}

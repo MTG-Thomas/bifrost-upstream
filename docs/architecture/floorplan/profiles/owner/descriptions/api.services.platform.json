@@ -1,0 +1,154 @@
+{
+  "files": {
+    "api/src/services/audit_context.py": {
+      "name": "Who made the change",
+      "description": "Remembers which person or process started each operation so the activity log can name them."
+    },
+    "api/src/services/audit_retention/__init__.py": {
+      "name": "Activity archive policy",
+      "description": "Groups the rules that move old activity records into long-term storage and eventually delete them."
+    },
+    "api/src/services/audit_retention/archiver.py": {
+      "name": "Archiving old activity",
+      "description": "Moves activity records past the retention limit into long-term storage, checking each stored copy before removing it."
+    },
+    "api/src/services/audit_retention/export.py": {
+      "name": "Download activity history",
+      "description": "Packs archived and current activity records into one downloadable file for an audit or a handover."
+    },
+    "api/src/services/audit_retention/format.py": {
+      "name": "Archive file format",
+      "description": "Defines the standard file layout for archived activity so a stored copy can be proved intact later."
+    },
+    "api/src/services/audit_retention/settings.py": {
+      "name": "Activity retention settings",
+      "description": "Stores the platform-wide choice of how long activity history is kept before it is archived."
+    },
+    "api/src/services/audit_retention/store.py": {
+      "name": "Archive file storage",
+      "description": "Keeps archived activity files in cloud file storage and says so clearly when no storage is available."
+    },
+    "api/src/services/audit.py": {
+      "name": "Activity logging",
+      "description": "Records each change in the activity log with who made it, including refused access to files and tables."
+    },
+    "api/src/services/conversation_messages.py": {
+      "name": "Chat message order",
+      "description": "Adds each new message to a conversation in the right order so chats read back correctly."
+    },
+    "api/src/services/cron_parser.py": {
+      "name": "Schedule expressions",
+      "description": "Checks a timetable expression, explains it in plain words and works out when a job will next run."
+    },
+    "api/src/services/dependency_graph.py": {
+      "name": "What depends on what",
+      "description": "Maps which workflows, tables, forms and apps rely on each other so you can see what a change will touch."
+    },
+    "api/src/services/kubernetes_control.py": {
+      "name": "Cluster upkeep loops",
+      "description": "Starts the automatic upkeep tasks only in the parts of the system allowed to run them.",
+      "review": "docstring or structure changed"
+    },
+    "api/src/services/kubernetes_execution.py": {
+      "name": "Task sizing settings",
+      "description": "Holds the settings that decide how much memory each background task gets and whether it runs on its own.",
+      "review": "new exports: effective_job_max_concurrency"
+    },
+    "api/src/services/legacy_broker_drain.py": {
+      "name": "Upgrade work recovery",
+      "description": "Recovers work an older release left waiting so no queued automation run is lost during an upgrade."
+    },
+    "api/src/services/notification_access.py": {
+      "name": "Notification privacy",
+      "description": "Decides who may read each notification, keeping personal notices private to the person they belong to."
+    },
+    "api/src/services/notification_service.py": {
+      "name": "Live notifications",
+      "description": "Delivers the alerts and progress messages that appear in the app while someone is using it."
+    },
+    "api/src/services/operation_catalog.py": {
+      "name": "Action catalogue",
+      "description": "Holds the master list of every action the platform offers, keeping the screens, assistant and automations in step."
+    },
+    "api/src/services/operation_inventory.py": {
+      "name": "Action coverage check",
+      "description": "Compares the actions the platform really offers against the master list and reports anything missing or extra."
+    },
+    "api/src/services/platform_job_access.py": {
+      "name": "Task visibility rules",
+      "description": "Controls which background tasks each person can see, hiding other people's work from their list."
+    },
+    "api/src/services/platform_job_lease.py": {
+      "name": "One owner per task",
+      "description": "Makes sure only one server works on a background task at a time so nothing is written twice."
+    },
+    "api/src/services/platform_job_memory_profiles.py": {
+      "name": "Task memory learning",
+      "description": "Learns from past runs how much memory each kind of task needs so the next one starts with enough."
+    },
+    "api/src/services/platform_jobs.py": {
+      "name": "Background tasks",
+      "description": "Runs long jobs such as deploys and exports in the background, showing progress and avoiding duplicates."
+    },
+    "api/src/services/product_updates.py": {
+      "name": "Product updates",
+      "description": "Shows the release notes built into this version and records which ones each admin has already seen."
+    },
+    "api/src/services/roi_settings_service.py": {
+      "name": "Savings units",
+      "description": "Stores the units used when showing the time and money automations save, such as minutes and dollars."
+    },
+    "api/src/services/run_retention/__init__.py": {
+      "name": "Run history policy",
+      "description": "Groups the rules that remove old automation runs and their events once they age out."
+    },
+    "api/src/services/run_retention/deleter.py": {
+      "name": "Run history cleanup",
+      "description": "Deletes finished automation runs and their events past the retention limit while keeping the summary totals."
+    },
+    "api/src/services/run_retention/settings.py": {
+      "name": "History retention settings",
+      "description": "Stores how long finished runs and their events are kept before they are deleted."
+    },
+    "api/src/services/run_retention/source.py": {
+      "name": "Run history totals",
+      "description": "Gives one reliable count of runs, combining runs still kept with rolled-up daily totals."
+    },
+    "api/src/services/scheduler_diagnostics.py": {
+      "name": "Scheduler health",
+      "description": "Records which scheduling servers are alive and keeps a short log so timetable problems can be traced."
+    },
+    "api/src/services/service_log_flush.py": {
+      "name": "Log storage",
+      "description": "Saves the trailing log lines from running automations and trims old ones so logs stay small."
+    },
+    "api/src/services/service_memory.py": {
+      "name": "Live memory usage",
+      "description": "Reports how much memory each running task is using right now across all the servers."
+    },
+    "api/src/services/work_dispatch.py": {
+      "name": "Work hand-off",
+      "description": "Hands queued work to available servers once the change is safely saved, and picks up anything abandoned."
+    },
+    "api/src/services/workflow_keys.py": {
+      "name": "Workflow access keys",
+      "description": "Creates the secure keys that let an outside system call a workflow without a person signing in."
+    },
+    "api/src/services/workflow_orphan.py": {
+      "name": "Missing workflow repair",
+      "description": "Finds workflows whose code has disappeared and helps replace, rebuild or switch them off."
+    },
+    "api/src/services/workflow_permissions.py": {
+      "name": "Workflow permissions",
+      "description": "Decides which powers each workflow runs with and records the approvals a Solution asks for."
+    },
+    "api/src/services/workflow_role_service.py": {
+      "name": "Workflow role sharing",
+      "description": "Copies a form, app or agent's audience onto the workflows it uses so access stays consistent."
+    },
+    "api/src/services/workflow_validation.py": {
+      "name": "Workflow checks",
+      "description": "Tests workflow code before it goes live so syntax and input mistakes are caught early."
+    }
+  }
+}

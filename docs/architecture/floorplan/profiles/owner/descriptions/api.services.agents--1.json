@@ -1,0 +1,164 @@
+{
+  "files": {
+    "api/src/services/agent_executor.py": {
+      "name": "Agent conversations",
+      "description": "Runs an AI chat from start to finish: sends the question to the model, carries out the tools it asks for and streams the answer back."
+    },
+    "api/src/services/agent_router.py": {
+      "name": "Picking the right agent",
+      "description": "Chooses which AI agent should answer a message, either because someone named it or because it suits the question best."
+    },
+    "api/src/services/agent_run_step_streams.py": {
+      "name": "Live run progress",
+      "description": "Keeps each step of a running agent available so screens can follow along live, and clears the trail once the run is deleted."
+    },
+    "api/src/services/agent_run_usage_summary.py": {
+      "name": "Run cost summary",
+      "description": "Totals what one agent run cost, how much room it used and how much of the repeated prompt it could reuse."
+    },
+    "api/src/services/agent_runtime/__init__.py": {
+      "name": "Agent runtime core",
+      "description": "Gathers the building blocks every AI feature shares for talking to models, running tools and staying within limits."
+    },
+    "api/src/services/agent_runtime/budgets.py": {
+      "name": "Run limits",
+      "description": "Caps what one agent run may spend on time and effort, and makes it finish with a handover note when the cap is reached."
+    },
+    "api/src/services/agent_runtime/code_mode.py": {
+      "name": "Scripted tool use",
+      "description": "Lets an agent run one short script that calls several tools at once, instead of a slow round trip for each tool."
+    },
+    "api/src/services/agent_runtime/composition.py": {
+      "name": "Agent assembly",
+      "description": "Works out exactly which tools an agent and its helpers may use for a run, and refuses anything the person asking cannot reach."
+    },
+    "api/src/services/agent_runtime/empty_output.py": {
+      "name": "Blank answer guard",
+      "description": "Catches a model that replies with nothing or repeats itself, tries once more, then hands the run off with a clear message."
+    },
+    "api/src/services/agent_runtime/errors.py": {
+      "name": "Stopping a run",
+      "description": "Signals that someone asked to stop an agent run, so the work halts where it is instead of carrying on."
+    },
+    "api/src/services/agent_runtime/model_factory.py": {
+      "name": "Model setup",
+      "description": "Connects a run to the chosen model with the right address, settings, thinking depth and prompt reuse."
+    },
+    "api/src/services/agent_runtime/model_failover.py": {
+      "name": "Backup models",
+      "description": "Switches to the next backup model when the chosen one fails, so a chat keeps working instead of showing an error."
+    },
+    "api/src/services/agent_runtime/observed_model.py": {
+      "name": "Model request record",
+      "description": "Records every request sent to a model service, so cost, speed and failures can be reviewed afterwards."
+    },
+    "api/src/services/agent_runtime/retry_transport.py": {
+      "name": "Network retries",
+      "description": "Retries model requests that fail for temporary network reasons, without exposing private details in the logs."
+    },
+    "api/src/services/agent_runtime/tool_policy.py": {
+      "name": "Automatic tool choice",
+      "description": "Decides how an agent finds the tools it needs on its own, including when to search for them rather than list them all."
+    },
+    "api/src/services/agent_runtime/toolset.py": {
+      "name": "Tools handed to agents",
+      "description": "Gives an agent the tools it was granted and keeps oversized tool answers short enough for the model to read."
+    },
+    "api/src/services/agent_runtime/usage.py": {
+      "name": "Usage figures",
+      "description": "Reads the cost and hidden thinking effort that each model service reports for a request."
+    },
+    "api/src/services/agent_stats.py": {
+      "name": "Agent performance figures",
+      "description": "Adds up how often each agent runs, what it costs and how it performs, for the agent list and the fleet overview."
+    },
+    "api/src/services/agent_write_policy.py": {
+      "name": "Agent edit permissions",
+      "description": "Checks who may create or change an agent, and that every tool and reference it names is one they can use."
+    },
+    "api/src/services/ai_behavior_service.py": {
+      "name": "AI behaviour settings",
+      "description": "Stores the shared AI settings that apply whatever model is chosen: the default instructions and how agents are run."
+    },
+    "api/src/services/ai_model_service.py": {
+      "name": "Provider and model setup",
+      "description": "Manages the saved AI service connections and model choices, and which model is used by default in each area."
+    },
+    "api/src/services/ai_usage_service.py": {
+      "name": "AI spend tracking",
+      "description": "Records every AI request with what it used and cost, and totals spending per run, chat and agent."
+    },
+    "api/src/services/anthropic_prompt_cache.py": {
+      "name": "Claude prompt reuse",
+      "description": "Reuses a saved copy of a repeated prompt so Claude requests cost less, and steps back cleanly when that is refused."
+    },
+    "api/src/services/capabilities/__init__.py": {
+      "name": "Agent capabilities",
+      "description": "Groups the shared way the platform names, finds and checks the actions an agent is allowed to take."
+    },
+    "api/src/services/capabilities/catalog.py": {
+      "name": "Allowed action lookup",
+      "description": "Matches an action an agent asks for to the permission it holds now, and checks the arguments before anything runs."
+    },
+    "api/src/services/capabilities/search.py": {
+      "name": "Action search",
+      "description": "Searches and ranks the actions an agent may use, so a long list can be narrowed down instead of shown all at once."
+    },
+    "api/src/services/chat_artifacts.py": {
+      "name": "Files made in chat",
+      "description": "Lets a chat create a document, spreadsheet, picture or video and attach it to the conversation for the user to open."
+    },
+    "api/src/services/chat_attachments.py": {
+      "name": "Chat file uploads",
+      "description": "Accepts files a user attaches to a chat, stores them safely and passes them to the model with the message."
+    },
+    "api/src/services/chat_errors.py": {
+      "name": "Chat failure messages",
+      "description": "Turns a failed chat into one plain, safe message the user can act on, without revealing anything internal."
+    },
+    "api/src/services/chat_runs.py": {
+      "name": "Chat replies in background",
+      "description": "Starts, resumes, reads and cancels chat replies that keep working in the background, so closing a tab loses nothing."
+    },
+    "api/src/services/llm/__init__.py": {
+      "name": "Model service connection",
+      "description": "Gives every part of the platform one shared way to talk to OpenAI, Anthropic, Google and similar model services."
+    },
+    "api/src/services/llm/base.py": {
+      "name": "Conversation building blocks",
+      "description": "Sets the common shape of a model conversation, including messages, tools, files and replies, so every service behaves alike."
+    },
+    "api/src/services/llm/factory.py": {
+      "name": "Model connection choice",
+      "description": "Picks the model and settings from the saved profile, including its backups, and hands back a ready connection."
+    },
+    "api/src/services/llm/provider_errors.py": {
+      "name": "Plain failure reasons",
+      "description": "Rewrites a model service failure as a short plain explanation an administrator can understand and act on."
+    },
+    "api/src/services/llm/pydantic_client.py": {
+      "name": "Model call adapter",
+      "description": "Lets older features keep making model calls their usual way while the newer agent engine does the work."
+    },
+    "api/src/services/memory_requests.py": {
+      "name": "Run memory sizing",
+      "description": "Works out how much memory a background run needs before it starts, learning from past runs and the machine's limit."
+    },
+    "api/src/services/memory.py": {
+      "name": "Personal AI memory",
+      "description": "Stores the notes an AI keeps about a person between conversations, and lets them see, edit or delete what is kept."
+    },
+    "api/src/services/model_capabilities.py": {
+      "name": "Model feature records",
+      "description": "Keeps an accurate note of what a chosen model can do, so chat only offers features that model actually supports."
+    },
+    "api/src/services/model_catalog.py": {
+      "name": "Model catalogue",
+      "description": "Holds the list of available models with their prices and abilities, kept fresh from the public catalogue."
+    },
+    "api/src/services/model_pricing.py": {
+      "name": "Price and name lookup",
+      "description": "Works out which company to bill and what a model is called and costs, so spending totals stay comparable over time."
+    }
+  }
+}

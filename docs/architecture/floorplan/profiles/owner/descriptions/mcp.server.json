@@ -1,0 +1,60 @@
+{
+  "files": {
+    "api/src/services/mcp_server/__init__.py": {
+      "name": "Assistant connection package",
+      "description": "Marks the part of the platform that lets AI assistants sign in and use Bifrost tools."
+    },
+    "api/src/services/mcp_server/agent_scope.py": {
+      "name": "Agent-specific connection",
+      "description": "Reads which agent an assistant connection belongs to, so only that agent's tools are offered."
+    },
+    "api/src/services/mcp_server/auth.py": {
+      "name": "Assistant sign-in",
+      "description": "Signs an AI assistant in through the platform's normal accounts and issues it a limited pass."
+    },
+    "api/src/services/mcp_server/authorization.py": {
+      "name": "Assistant permission check",
+      "description": "Rechecks the signed-in person's current rights on every tool call instead of trusting what was sent."
+    },
+    "api/src/services/mcp_server/config_service.py": {
+      "name": "Assistant connection settings",
+      "description": "Stores and caches the settings that control which assistant connections are switched on."
+    },
+    "api/src/services/mcp_server/gateway.py": {
+      "name": "Live agent and tool lookup",
+      "description": "Finds the agents and tools a signed-in assistant may use and runs the one it picks."
+    },
+    "api/src/services/mcp_server/generators/__init__.py": {
+      "name": "Tool registration helpers",
+      "description": "Holds the small helpers that attach the signed-in context to each registered tool."
+    },
+    "api/src/services/mcp_server/generators/fastmcp_generator.py": {
+      "name": "Tool registration",
+      "description": "Registers a tool and hands it the current signed-in context automatically."
+    },
+    "api/src/services/mcp_server/middleware.py": {
+      "name": "Tool visibility rules",
+      "description": "Decides which tools each assistant connection can see: a discovery set for general use, one agent's tools for scoped use."
+    },
+    "api/src/services/mcp_server/run_package.py": {
+      "name": "Assistant setup package",
+      "description": "Builds a ready-made plugin and setup instructions so someone can connect their AI assistant in one step."
+    },
+    "api/src/services/mcp_server/schema_utils.py": {
+      "name": "Schema to help text",
+      "description": "Turns record definitions into readable help pages an assistant can show."
+    },
+    "api/src/services/mcp_server/server.py": {
+      "name": "Assistant gateway",
+      "description": "Runs the connection AI assistants use and exposes platform workflows and tools under strict permissions."
+    },
+    "api/src/services/mcp_server/tool_access.py": {
+      "name": "Tool permission planning",
+      "description": "Works out which agents and workflows a person can reach, so the assistant offers only those."
+    },
+    "api/src/services/mcp_server/tool_result.py": {
+      "name": "Tool answer formatting",
+      "description": "Shapes each tool's answer into readable text plus structured data the assistant can act on."
+    }
+  }
+}

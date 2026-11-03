@@ -1,0 +1,20 @@
+{
+  "files": {
+    "api/src/jobs/consumers/__init__.py": {
+      "name": "Consumers package",
+      "description": "Groups the handlers that carry out work a worker has claimed."
+    },
+    "api/src/jobs/consumers/agent_run.py": {
+      "name": "Agent conversation runner",
+      "description": "Runs one claimed agent conversation, including its tools and follow-up turns."
+    },
+    "api/src/jobs/consumers/package_install.py": {
+      "name": "Package install handler",
+      "description": "Applies a recorded package change to a worker and restarts its processes so the change takes effect."
+    },
+    "api/src/jobs/consumers/workflow_execution.py": {
+      "name": "Workflow run handler",
+      "description": "Runs a claimed workflow in the worker's isolated process and records the outcome."
+    }
+  }
+}

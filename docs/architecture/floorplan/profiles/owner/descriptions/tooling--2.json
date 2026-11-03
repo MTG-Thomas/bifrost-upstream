@@ -1,0 +1,164 @@
+{
+  "files": {
+    "scripts/bench/run.py": {
+      "name": "Benchmark harness",
+      "description": "Sets up a local cluster, runs each workload class, samples memory and writes the results."
+    },
+    "scripts/bench/smaps.py": {
+      "name": "Memory region breakdown",
+      "description": "Sorts a running program's memory into allocator regions so leaks and growth are easier to read."
+    },
+    "scripts/bench/stats.py": {
+      "name": "Benchmark statistics",
+      "description": "Turns recorded timestamps into timings, database work per run and worker memory peaks."
+    },
+    "scripts/bench/tests/test_cluster.py": {
+      "name": "Cluster reader tests",
+      "description": "Checks the parsing of pod memory, database counters and worker process listings."
+    },
+    "scripts/bench/tests/test_fake_llm.py": {
+      "name": "Fake model tests",
+      "description": "Checks the stand-in model's replies and its streaming behaviour."
+    },
+    "scripts/bench/tests/test_report.py": {
+      "name": "Benchmark report tests",
+      "description": "Checks that benchmark results render into the expected report sections."
+    },
+    "scripts/bench/tests/test_smaps.py": {
+      "name": "Memory breakdown tests",
+      "description": "Checks that memory regions are classified and totalled correctly."
+    },
+    "scripts/bench/tests/test_stats.py": {
+      "name": "Benchmark statistics tests",
+      "description": "Checks percentiles, timing summaries, database deltas and worker sampling maths."
+    },
+    "scripts/benchmark_large_table_responses.py": {
+      "name": "Large table timing run",
+      "description": "Times the production-shaped big-table response path while watching server memory."
+    },
+    "scripts/benchmark_module_cache_invalidation.py": {
+      "name": "Cache refresh comparison",
+      "description": "Compares how two versions of the app-code writer behave against a throwaway cache."
+    },
+    "scripts/check_skill_mirrors.py": {
+      "name": "Assistant copy check",
+      "description": "Confirms the two copied sets of assistant instructions match their source."
+    },
+    "scripts/codeql_changed_lines.py": {
+      "name": "Changed-line lister",
+      "description": "Lists the lines added or edited since the main branch so security scanning can focus on them."
+    },
+    "scripts/codeql-local.sh": {
+      "name": "Local security scan",
+      "description": "Runs the same security and quality scan GitHub uses against the copy on this machine."
+    },
+    "scripts/compute-dev-version.sh": {
+      "name": "Dev version calculator",
+      "description": "Works out an always-increasing development version number for the current commit."
+    },
+    "scripts/coverage_check.sh": {
+      "name": "Test coverage report",
+      "description": "Runs the automatic checks with coverage tracking and writes readable reports."
+    },
+    "scripts/dependabot_alert_lookup.cjs": {
+      "name": "Security alert lookup",
+      "description": "Finds open security alerts that match a dependency update, so the right one can be linked."
+    },
+    "scripts/dependabot_product_updates.cjs": {
+      "name": "Dependency update notes",
+      "description": "Writes the release-note decision for dependency and automation-pin updates on trusted checkouts only."
+    },
+    "scripts/design-inventory.py": {
+      "name": "Screen inventory",
+      "description": "Lists every screen, layout family and image asset in the web app for a design review."
+    },
+    "scripts/docs/bootstrap-manifest.mjs": {
+      "name": "Docs screenshot manifest",
+      "description": "Creates the starting list of documentation screenshots, with the source areas each one covers."
+    },
+    "scripts/docs/decide-captures.mjs": {
+      "name": "Screenshot refresh chooser",
+      "description": "Picks which documentation screenshots to retake based on which source areas changed."
+    },
+    "scripts/docs/package.json": {
+      "name": "Docs pipeline dependencies",
+      "description": "Lists the packages the documentation screenshot tooling needs in order to run."
+    },
+    "scripts/docs/post-process.mjs": {
+      "name": "Screenshot clean-up",
+      "description": "Cleans up captured screenshots and copies them into the documentation project."
+    },
+    "scripts/docs/post-process.test.mjs": {
+      "name": "Screenshot clean-up tests",
+      "description": "Checks that the screenshot clean-up steps behave as expected."
+    },
+    "scripts/docs/run-pipeline.sh": {
+      "name": "Docs pipeline runner",
+      "description": "Runs the whole screenshot pipeline: decide what changed, capture, clean up and publish."
+    },
+    "scripts/e2e_shard.py": {
+      "name": "Test split planner",
+      "description": "Splits the end-to-end test files into even batches so parallel runs finish together."
+    },
+    "scripts/generate-sdk-types.sh": {
+      "name": "Code hint generator",
+      "description": "Writes type hints for the automation building blocks so editors can suggest and check them."
+    },
+    "scripts/generate-types.sh": {
+      "name": "Screen type generator",
+      "description": "Reads the running server's description of its requests and regenerates the web app's matching types."
+    },
+    "scripts/kubernetes/build_spike.py": {
+      "name": "Cluster build trial",
+      "description": "Runs real app builds in a local cluster, optionally standing in for a build host."
+    },
+    "scripts/kubernetes/control_spike.py": {
+      "name": "Cluster takeover trial",
+      "description": "Proves control hands over safely when one server copy dies or a new one takes over."
+    },
+    "scripts/kubernetes/local-kind.sh": {
+      "name": "Local cluster launcher",
+      "description": "Creates, fills and tears down the throwaway cluster used for local experiments."
+    },
+    "scripts/kubernetes/pool_drills.py": {
+      "name": "Task pool failure drills",
+      "description": "Deliberately kills nodes and restarts servers to prove on-demand task pools recover correctly."
+    },
+    "scripts/kubernetes/pool_spike.py": {
+      "name": "Task pool scaling trial",
+      "description": "Shows that on-demand background tasks scale up and back down with the setting in the app."
+    },
+    "scripts/kubernetes/pressure_driver.py": {
+      "name": "Load driver",
+      "description": "Submits sustained mixed work from inside a server pod for the pressure test."
+    },
+    "scripts/kubernetes/pressure_test.py": {
+      "name": "Sustained load test",
+      "description": "Puts background tasks under long mixed load and checks memory limits hold and all work finishes."
+    },
+    "scripts/kubernetes/spike.py": {
+      "name": "Cluster experiment helpers",
+      "description": "Small shared helpers for running local cluster experiments and waiting for rollouts."
+    },
+    "scripts/kubernetes/sync_latency_bench.py": {
+      "name": "Sync timing check",
+      "description": "Measures how long a full code sync takes from inside a server container."
+    },
+    "scripts/lib/test_helpers_test.sh": {
+      "name": "Test helper checks",
+      "description": "Confirms the shared test helpers produce stable names and clear errors."
+    },
+    "scripts/lib/test_helpers.sh": {
+      "name": "Test script helpers",
+      "description": "Shared routines that give each working folder its own isolated set of test containers."
+    },
+    "scripts/lib/test_stack_lock_test.sh": {
+      "name": "Stack lock checks",
+      "description": "Proves a second test command is refused before it touches any containers."
+    },
+    "scripts/memory_sampler_correlate.py": {
+      "name": "Memory-to-test matcher",
+      "description": "Lines up memory samples with test timings to show which checks use the most memory."
+    }
+  }
+}

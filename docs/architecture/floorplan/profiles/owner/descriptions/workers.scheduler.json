@@ -1,0 +1,36 @@
+{
+  "files": {
+    "api/src/scheduler/__init__.py": {
+      "name": "Scheduler package",
+      "description": "Marks the part of the platform that decides when scheduled work runs."
+    },
+    "api/src/scheduler/api_host.py": {
+      "name": "Control inside the server",
+      "description": "Runs the platform's background control loops inside each main server instance."
+    },
+    "api/src/scheduler/control.py": {
+      "name": "Control loops",
+      "description": "Runs the recurring platform control work, such as timetables and builds, with only one instance in charge."
+    },
+    "api/src/scheduler/health.py": {
+      "name": "Scheduler heartbeat",
+      "description": "Shows that the scheduler is alive and ready, so the platform can restart it if it stops."
+    },
+    "api/src/scheduler/kubernetes_host.py": {
+      "name": "Hosted control helper",
+      "description": "Runs the background control loops on older hosted setups that give the scheduler its own access."
+    },
+    "api/src/scheduler/leadership.py": {
+      "name": "One scheduler in charge",
+      "description": "Elects a single scheduler to own the timetable so no scheduled work runs twice."
+    },
+    "api/src/scheduler/main.py": {
+      "name": "Scheduler entry point",
+      "description": "Starts the scheduler that keeps time for the platform's recurring work."
+    },
+    "api/src/scheduler/registry.py": {
+      "name": "System schedule list",
+      "description": "Lists the platform's built-in recurring tasks and what each one does."
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "files": {
+    "client/src/components/chat/ToolExecutionCard.tsx": {
+      "name": "Tool execution card",
+      "description": "Shows a tool or automation the assistant started, with live progress, inputs and results."
+    },
+    "client/src/components/chat/ToolExecutionGroup.tsx": {
+      "name": "Tool step group",
+      "description": "Groups the tool steps of a run under one heading so the sequence reads clearly."
+    },
+    "client/src/components/chat/ToolOutputDisplay.tsx": {
+      "name": "Tool output",
+      "description": "Shows what a tool returned, formatted for reading."
+    }
+  }
+}

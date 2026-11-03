@@ -1,0 +1,164 @@
+{
+  "files": {
+    "client/src/components/access/AccessLevelSelect.tsx": {
+      "name": "Access level picker",
+      "description": "Lets an admin choose who a form, agent or app is open to: only them, their organization, or everyone."
+    },
+    "client/src/components/access/AccessMap.tsx": {
+      "name": "Access map",
+      "description": "Lays out on one grid every place a person's roles apply and every permission they hold there."
+    },
+    "client/src/components/access/AccessTraceStrip.tsx": {
+      "name": "Access check trace",
+      "description": "Walks through each access check in order, showing what passed, what stopped it, and why."
+    },
+    "client/src/components/access/GrantChip.tsx": {
+      "name": "Grant chip",
+      "description": "Shows one permission a role grants, highlighted when it is powerful or applies everywhere."
+    },
+    "client/src/components/access/PermissionChip.tsx": {
+      "name": "Permission chip",
+      "description": "Shows one permission a person holds, marked plainly when it reaches beyond a single organization."
+    },
+    "client/src/components/access/PlaceLabel.tsx": {
+      "name": "Place label",
+      "description": "Shows where access applies, with a small icon for the kind of place."
+    },
+    "client/src/components/access/ReachChip.tsx": {
+      "name": "Reach chip",
+      "description": "Shows one place a person's access reaches, on a single line."
+    },
+    "client/src/components/access/TestAccessPanel.tsx": {
+      "name": "Test access panel",
+      "description": "Lets an admin try a real action as a chosen person or identity to see whether access would be allowed."
+    },
+    "client/src/components/applications/ApplicationListSurface.tsx": {
+      "name": "Apps list",
+      "description": "Lists the apps in the workspace with their status and open actions, folding into short cards on phones."
+    },
+    "client/src/components/applications/ApplicationSdkStatusBadge.tsx": {
+      "name": "App update badge",
+      "description": "Flags an app built with an older toolkit so its owner knows a refresh is available."
+    },
+    "client/src/components/applications/AppReplacePathDialog.tsx": {
+      "name": "Repoint app source",
+      "description": "Points an app at a different source folder when its files have moved."
+    },
+    "client/src/components/audit/AuditEventDrawer.tsx": {
+      "name": "Audit event detail",
+      "description": "Opens one activity record to show what happened, who did it, where, and to what."
+    },
+    "client/src/components/audit/RunUserLabel.tsx": {
+      "name": "Acting user label",
+      "description": "Shows which person, identity or outside system an activity record ran as, including support sessions."
+    },
+    "client/src/components/catalog/ResourceCatalogCard.tsx": {
+      "name": "Catalog card",
+      "description": "Presents one catalogue entry as a card with its icon, title, short summary and the action to open it."
+    },
+    "client/src/components/config/ConfigDeleteDialog.tsx": {
+      "name": "Delete setting",
+      "description": "Confirms before removing a saved setting value for an organization."
+    },
+    "client/src/components/config/ConfigDialog.tsx": {
+      "name": "Setting editor",
+      "description": "Adds or changes a saved setting and the organization it applies to."
+    },
+    "client/src/components/dependencies/dependency-graph.css": {
+      "name": "Graph styling",
+      "description": "Keeps the dependency graph's colours and spacing in step with the rest of the admin screens."
+    },
+    "client/src/components/dependencies/DependencyGraph.tsx": {
+      "name": "Dependency graph",
+      "description": "Draws how workflows, forms, apps and agents depend on each other, laid out automatically."
+    },
+    "client/src/components/dependencies/DependencyGraphControls.tsx": {
+      "name": "Graph controls",
+      "description": "Gives the dependency graph its zoom, fit and display controls."
+    },
+    "client/src/components/dependencies/DependencyGraphSurface.tsx": {
+      "name": "Dependency graph panel",
+      "description": "Frames the dependency graph with its loading, empty and error states."
+    },
+    "client/src/components/dependencies/DependencyGraphViewport.tsx": {
+      "name": "Graph viewport",
+      "description": "Fits a new graph into view without making a busy one unreadable."
+    },
+    "client/src/components/dependencies/EntityNode.tsx": {
+      "name": "Dependency card",
+      "description": "Draws one workflow, form, app or agent in the graph, coloured by the kind of thing it is."
+    },
+    "client/src/components/events/CreateEventSourceDialog.tsx": {
+      "name": "Connect event source",
+      "description": "Walks an admin through connecting an outside system so its events can start automations."
+    },
+    "client/src/components/events/CreateSubscriptionDialog.tsx": {
+      "name": "New event subscription",
+      "description": "Sets up which automation runs when a chosen kind of event arrives, and what details it receives."
+    },
+    "client/src/components/events/DeliveriesTable.tsx": {
+      "name": "Event deliveries",
+      "description": "Lists each event handed to an automation, with whether it arrived and what came back."
+    },
+    "client/src/components/events/DynamicConfigForm.tsx": {
+      "name": "Connection settings form",
+      "description": "Builds the setup questions for a connection from that service's own list of fields."
+    },
+    "client/src/components/events/EditEventSourceDialog.tsx": {
+      "name": "Edit event source",
+      "description": "Changes a connected event source's settings, sign-in details and which events it sends."
+    },
+    "client/src/components/events/EditSubscriptionDialog.tsx": {
+      "name": "Edit event subscription",
+      "description": "Changes when an event subscription fires and what it passes on to the automation."
+    },
+    "client/src/components/events/EventDetailDialog.tsx": {
+      "name": "Event detail",
+      "description": "Opens one received event to show its details and what the automation did with it."
+    },
+    "client/src/components/events/EventSourceActions.tsx": {
+      "name": "Event source actions",
+      "description": "Offers the pause, test, edit and delete actions for a connected event source."
+    },
+    "client/src/components/events/EventSourceDetail.tsx": {
+      "name": "Event source page",
+      "description": "Shows one connected event source's health, recent events and delivery history."
+    },
+    "client/src/components/events/EventSourceOptionsStatus.tsx": {
+      "name": "Option loading status",
+      "description": "Reports when a choice list inside a connection form is loading, empty or failed."
+    },
+    "client/src/components/events/EventsTable.tsx": {
+      "name": "Events list",
+      "description": "Lists received events newest first, with status, source and a way into the details."
+    },
+    "client/src/components/events/EventStatusBadge.tsx": {
+      "name": "Event status badge",
+      "description": "Shows at a glance whether an event was received, handled or failed."
+    },
+    "client/src/components/events/EventTopicReferencePanel.tsx": {
+      "name": "Event topic reference",
+      "description": "Lists the event types each connection can send, with examples to copy."
+    },
+    "client/src/components/events/index.ts": {
+      "name": "Event screens",
+      "description": "Gathers the event screens so the rest of the admin app can reach them from one place."
+    },
+    "client/src/components/events/InputMappingForm.tsx": {
+      "name": "Event field mapping",
+      "description": "Maps details from an event into the values an automation expects."
+    },
+    "client/src/components/events/MicrosoftGraphIcon.tsx": {
+      "name": "Microsoft 365 icon",
+      "description": "Shows the Microsoft 365 mark next to connections and events that come from Microsoft."
+    },
+    "client/src/components/events/SubscriptionsTable.tsx": {
+      "name": "Event subscriptions",
+      "description": "Lists every automation hooked to an event, with its state, filters and recent results."
+    },
+    "client/src/components/forms/DataProviderInputsConfig.tsx": {
+      "name": "Data source inputs",
+      "description": "Sets the inputs passed to a data source: fixed values, answers from the form, or a calculated expression."
+    }
+  }
+}
