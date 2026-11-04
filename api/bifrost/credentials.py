@@ -336,8 +336,9 @@ class WindowsKeyringBackend(KeyringBackend):
     def __init__(self, _keyring=None, _lock=None):
         from ._windows_credentials import WindowsKeyringValues, windows_credential_lock
 
-        super().__init__(_keyring)
-        self._kr = WindowsKeyringValues(self._kr)
+        if _keyring is None:
+            import keyring as _keyring  # noqa: PLR0402
+        super().__init__(WindowsKeyringValues(_keyring))
         self._lock = _lock or windows_credential_lock
 
     def _load_index(self) -> set[str]:

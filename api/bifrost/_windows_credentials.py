@@ -6,7 +6,7 @@ All calls, including readers and index updates, hold the same Windows mutex.
 """
 
 import base64
-import ctypes
+import ctypes.wintypes
 import hashlib
 import json
 from contextlib import contextmanager
@@ -20,7 +20,7 @@ class CredentialStorageError(RuntimeError):
 
 @contextmanager
 def windows_credential_lock():
-    from ctypes import wintypes
+    wintypes = ctypes.wintypes
 
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
@@ -71,6 +71,7 @@ class WindowsKeyringValues:
             raise CredentialStorageError(f"Windows credential storage failed at {stage}") from None
 
     def _namespace(self, service, username):
+        # The username here is a public URL/index selector, not a password hash.
         digest = hashlib.sha256(username.encode("utf-8")).hexdigest()
         return f"{service}/wincred-v1/{digest}"
 
@@ -164,6 +165,8 @@ class WindowsKeyringValues:
         encoded, parts = self.prepare(value)
         self._recover(service, username)
         previous_raw = self._call("previous read", "get_password", service, username)
+        # This is an integrity checksum beside the OS-protected payload, never
+        # a password verifier or a replacement for WinCred encryption.
         pending = {self.MARKER: uuid4().hex, "parts": len(parts),
                    "sha256": hashlib.sha256(encoded.encode("ascii")).hexdigest()}
         journal = json.dumps({"pending": pending, "previous": self._manifest(previous_raw),
