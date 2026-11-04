@@ -99,6 +99,9 @@ jobs:
       - name: Install desktop deps
         run: npm ci
 
+      - name: Typecheck, unit test, and compile
+        run: npm test
+
       - name: Package
         # electron-builder reads CSC_*/APPLE_* env vars itself when present;
         # absent = unsigned build, which is the intended PR/dev behavior.
@@ -108,7 +111,7 @@ jobs:
           APPLE_ID: ${{ secrets.DESKTOP_APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.DESKTOP_APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.DESKTOP_APPLE_TEAM_ID }}
-        run: npx electron-builder -c extraMetadata.version=${{ steps.version.outputs.version }}
+        run: npx electron-builder -c.extraMetadata.version=${{ steps.version.outputs.version }}
 
       - name: List artifacts
         run: ls -la dist-packages/
