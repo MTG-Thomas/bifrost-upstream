@@ -1,0 +1,131 @@
+# Desktop wrapper packaging (hosted-only Electron shell; no backend bundled).
+#
+# - PRs touching desktop/**: lowest-cost gate — linux unpacked build only.
+# - Tags (v*) / workflow_dispatch: full per-OS matrix, artifacts uploaded;
+#   tag builds also attach installers + electron-updater metadata (latest.yml)
+#   to the GitHub Release so the update feed can be populated from it.
+# - Signing is env-gated: without secrets the build still succeeds unsigned
+#   (correct for PRs/dev); release signing needs CSC_LINK/CSC_KEY_PASSWORD
+#   (win), APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD/APPLE_TEAM_ID + CSC_LINK
+#   (mac). No certs or secrets are ever committed — see desktop/VERSIONING.md.
+# - Action pins must stay full-SHA + version comment (checked by
+#   api/scripts/check_github_action_pins.py in CI).
+
+name: Desktop Build
+
+on:
+  push:
+    tags: ["v*", "desktop-v*"]
+    paths: ["desktop/**"]
+  pull_request:
+    branches: [main]
+    paths: ["desktop/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Lowest-cost gate: install + unpacked linux build. No signing, no publish.
+  build-check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    name: Desktop Build Check
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install desktop deps
+        run: npm ci
+
+      - name: Build (unpack only, no publish)
+        run: npm run build -- --linux --dir
+
+      - name: List artifacts
+        run: ls -la dist-packages/
+
+  # Full per-OS packaging. Version injected at build time, never from git state.
+  package:
+    if: github.event_name != 'pull_request'
+    runs-on: ${{ matrix.os }}
+    name: Desktop Package (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    permissions:
+      contents: write # attach installers to the tag Release
+    defaults:
+      run:
+        working-directory: desktop
+        shell: bash
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Compute version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/desktop-v* ]]; then
+            echo "version=${GITHUB_REF#refs/tags/desktop-v}" >> "$GITHUB_OUTPUT"
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$(../scripts/compute-dev-version.sh)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install desktop deps
+        run: npm ci
+
+      - name: Package
+        # electron-builder reads CSC_*/APPLE_* env vars itself when present;
+        # absent = unsigned build, which is the intended PR/dev behavior.
+        env:
+          CSC_LINK: ${{ secrets.DESKTOP_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.DESKTOP_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.DESKTOP_APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.DESKTOP_APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.DESKTOP_APPLE_TEAM_ID }}
+        run: npx electron-builder -c extraMetadata.version=${{ steps.version.outputs.version }}
+
+      - name: List artifacts
+        run: ls -la dist-packages/
+
+      - name: Upload installers
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: desktop-${{ matrix.os }}-${{ steps.version.outputs.version }}
+          path: desktop/dist-packages/
+          if-no-files-found: error
+          retention-days: 14
+
+      # Tag builds feed auto-update: attach installers + latest*.yml to the
+      # Release; the update-feed host (OPEN: owner TBD, default
+      # https://updates.gobifrost.com/desktop) serves them per platform.
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          files: dist-packages/*
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
