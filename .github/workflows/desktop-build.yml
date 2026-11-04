@@ -48,8 +48,11 @@ jobs:
       - name: Install desktop deps
         run: npm ci
 
+      - name: Test (typecheck + unit)
+        run: npm test
+
       - name: Build (unpack only, no publish)
-        run: npm run build -- --linux --dir
+        run: npx electron-builder --linux --dir --publish never
 
       - name: List artifacts
         run: ls -la dist-packages/

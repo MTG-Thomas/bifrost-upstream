@@ -1,0 +1,1 @@
+{"classification":"omit","entry_ids":[],"key":"pr:7","reason":"Fork-side scaffolding for a hosted-only Electron shell (unsigned, no release, no customer announcement). Classify again if a signed release ships.","review":{"evidence":["https://github.com/MTG-Thomas/bifrost-upstream/pull/7"],"status":"approved"}}
