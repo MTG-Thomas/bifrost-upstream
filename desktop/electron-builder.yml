@@ -42,6 +42,9 @@ mac:
   # APPLE_TEAM_ID + CSC_LINK/CSC_KEY_PASSWORD). Unsigned local builds still run.
 
 linux:
+  # .deb control file requires a maintainer; no support mailbox exists, so
+  # point at the repo instead of inventing an address.
+  maintainer: "Bifrost <https://github.com/gobifrost/bifrost>"
   target:
     - target: AppImage
       arch: [x64]

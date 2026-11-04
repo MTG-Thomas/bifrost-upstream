@@ -2,6 +2,7 @@
   "name": "bifrost-desktop",
   "version": "0.0.0",
   "private": true,
+  "homepage": "https://github.com/gobifrost/bifrost",
   "description": "Thin hosted-only Electron shell for Bifrost. Loads a user-configured hosted Bifrost URL; bundles no backend, database, or client dist.",
   "author": "Bifrost",
   "main": "dist/main.js",
