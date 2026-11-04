@@ -1,0 +1,1 @@
+{"classification":"omit","entry_ids":[],"key":"pr:8","reason":"Fork-side CI fix for the desktop packaging matrix; no customer-facing change. Re-run workflow_dispatch after merge for the full-matrix proof.","review":{"evidence":["https://github.com/MTG-Thomas/bifrost-upstream/pull/8"],"status":"approved"}}
