@@ -1,0 +1,63 @@
+# electron-builder config for the hosted-only Bifrost desktop wrapper.
+# Built by the sibling workstream's shell (desktop/src/main -> desktop/dist).
+# This file owns PACKAGING only: identity, per-OS targets, update feed.
+# No backend is bundled: the app is a thin shell over a configured
+# hosted Bifrost server URL (see desktop/src/main; never commit URLs/secrets here).
+appId: com.gobifrost.desktop
+productName: Bifrost
+copyright: Copyright © Bifrost
+protocols:
+  - name: Bifrost Auth
+    schemes: [bifrost]
+
+directories:
+  app: .
+  output: dist-packages
+files:
+  - dist/**
+  - "!dist/**/*.test.js"
+  - package.json
+
+# Version is injected at build time, never stored here:
+#   electron-builder -c extraMetadata.version=$VERSION
+# Local builds default to package.json's 0.0.0 placeholder.
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+
+mac:
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+    - target: zip
+      arch: [x64, arm64]
+  category: public.app-category.productivity
+  # Notarization/signing are env-gated in CI (APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD /
+  # APPLE_TEAM_ID + CSC_LINK/CSC_KEY_PASSWORD). Unsigned local builds still run.
+
+linux:
+  target:
+    - target: AppImage
+      arch: [x64]
+    - target: deb
+      arch: [x64]
+  category: Office
+
+# Auto-update via electron-updater. Generic provider placeholder: CI deploys
+# electron-updater artifacts (latest.yml + installers) to the feed host and
+# the shell points `autoUpdater.setFeedURL` at
+#   ${DESKTOP_UPDATE_FEED}/<platform>
+# where DESKTOP_UPDATE_FEED defaults to https://updates.gobifrost.com/desktop.
+# OPEN DECISION: feed host owner + whether to use GitHub Releases provider
+# instead (provider: github, owner/repo). Generic keeps updater off the
+# source repo; GitHub removes feed-host ops. Shell code must read the
+# same DESKTOP_UPDATE_FEED env/secret — no URL with credentials in repo.
+publish:
+  provider: generic
+  url: https://updates.gobifrost.com/desktop

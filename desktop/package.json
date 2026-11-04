@@ -1,0 +1,23 @@
+{
+  "name": "bifrost-desktop",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Thin hosted-only Electron shell for Bifrost. Loads a user-configured hosted Bifrost URL; bundles no backend, database, or client dist.",
+  "author": "Bifrost",
+  "main": "dist/main.js",
+  "scripts": {
+    "dev": "tsc && electron .",
+    "build": "tsc",
+    "test": "tsc && node --test \"dist/**/*.test.js\"",
+    "dist": "tsc && electron-builder"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.11"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "electron": "45.2.2",
+    "electron-builder": "26.18.0",
+    "typescript": "5.9.3"
+  }
+}

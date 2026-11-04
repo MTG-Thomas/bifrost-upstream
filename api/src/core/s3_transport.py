@@ -474,6 +474,7 @@ class S3Transport:
             ("content-type", "ContentType"), ("content-disposition", "ContentDisposition"),
             ("content-encoding", "ContentEncoding"), ("content-language", "ContentLanguage"),
             ("cache-control", "CacheControl"), ("expires", "Expires"),
+            ("content-range", "ContentRange"),
         ):
             if source in response.headers:
                 result[target] = response.headers[source]
@@ -484,12 +485,20 @@ class S3Transport:
         await response.aclose()
         return self._response(response)
 
-    async def get_object(self, *, Bucket: str, Key: str, ChecksumMode: str | None = None) -> dict[str, Any]:
+    async def get_object(
+        self, *, Bucket: str, Key: str, ChecksumMode: str | None = None,
+        IfMatch: str | None = None, Range: str | None = None,
+    ) -> dict[str, Any]:
+        headers = {"x-amz-checksum-mode": ChecksumMode or "ENABLED"}
+        if IfMatch is not None:
+            headers["if-match"] = IfMatch
+        if Range is not None:
+            headers["range"] = Range
         response = await self._request(
             "GET",
             bucket=Bucket,
             key=Key,
-            headers={"x-amz-checksum-mode": ChecksumMode or "ENABLED"},
+            headers=headers,
             stream=True,
         )
         result = self._response(response)
@@ -678,7 +687,7 @@ def _object_headers(values: Mapping[str, Any]) -> dict[str, str]:
         "ContentType": "content-type", "ContentDisposition": "content-disposition", "ContentEncoding": "content-encoding",
         "ContentLanguage": "content-language", "CacheControl": "cache-control", "Expires": "expires",
         "CopySourceIfMatch": "x-amz-copy-source-if-match", "CopySourceRange": "x-amz-copy-source-range",
-        "IfNoneMatch": "if-none-match", "MetadataDirective": "x-amz-metadata-directive",
+        "IfNoneMatch": "if-none-match", "IfMatch": "if-match", "MetadataDirective": "x-amz-metadata-directive",
     }
     headers = {wire: str(values[name]) for name, wire in names.items() if values.get(name) is not None}
     for key, value in (values.get("Metadata") or {}).items():
