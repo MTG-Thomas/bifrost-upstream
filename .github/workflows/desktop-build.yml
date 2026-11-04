@@ -19,7 +19,7 @@ on:
     paths: ["desktop/**"]
   pull_request:
     branches: [main]
-    paths: ["desktop/**"]
+    paths: ["desktop/**", ".github/workflows/desktop-build.yml"]
   workflow_dispatch:
 
 permissions:
