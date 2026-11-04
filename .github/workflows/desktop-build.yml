@@ -109,7 +109,10 @@ jobs:
       - name: Package
         # electron-builder reads CSC_*/APPLE_* env vars itself when present;
         # absent = unsigned build, which is the intended PR/dev behavior.
+        # macOS otherwise attempts empty-password signing and fails obscurely,
+        # so discovery is off until real Apple certs land in DESKTOP_* secrets.
         env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
           CSC_LINK: ${{ secrets.DESKTOP_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.DESKTOP_CSC_KEY_PASSWORD }}
           APPLE_ID: ${{ secrets.DESKTOP_APPLE_ID }}
