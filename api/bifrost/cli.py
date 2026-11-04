@@ -355,9 +355,8 @@ async def login_flow(api_url: str | None = None, auto_open: bool = True) -> bool
     api_url = api_url.rstrip("/")
 
     # Surface keyring fallback here — login is the user's chance to fix it.
-    credentials.warn_if_keyring_fallback()
-
     try:
+        credentials.warn_if_keyring_fallback()
         async with httpx.AsyncClient(base_url=api_url, timeout=30.0) as client:
             # Step 1: Request device code
             response = await client.post("/auth/device/code")
@@ -428,8 +427,6 @@ async def login_flow(api_url: str | None = None, auto_open: bool = True) -> bool
 
                 # Success - we have tokens
                 if "access_token" in poll_data:
-                    print(" OK")
-
                     # Calculate expiry time
                     expires_at = datetime.now(timezone.utc) + timedelta(seconds=poll_data.get("expires_in", 1800))
 
@@ -440,6 +437,7 @@ async def login_flow(api_url: str | None = None, auto_open: bool = True) -> bool
                         refresh_token=poll_data["refresh_token"],
                         expires_at=expires_at.isoformat(),
                     )
+                    print(" OK")
 
                     # Get user info
                     try:
@@ -1074,12 +1072,18 @@ Examples:
             expires_at = datetime.now(timezone.utc) + timedelta(
                 seconds=data.get("expires_in") or 1800
             )
-            credentials.save_credentials(
-                api_url=api_url,
-                access_token=data["access_token"],
-                refresh_token=data["refresh_token"],
-                expires_at=expires_at.isoformat(),
-            )
+            from ._windows_credentials import CredentialStorageError
+
+            try:
+                credentials.save_credentials(
+                    api_url=api_url,
+                    access_token=data["access_token"],
+                    refresh_token=data["refresh_token"],
+                    expires_at=expires_at.isoformat(),
+                )
+            except CredentialStorageError as exc:
+                print(f"Login failed: {exc}", file=sys.stderr)
+                return 1
 
             # The exact-directory .env selects the URL only. Tokens stay in
             # the global credential store keyed by that URL.

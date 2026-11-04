@@ -543,9 +543,9 @@ async def login_flow(api_url: str | None = None, auto_open: bool = True) -> bool
 
     # Surface keyring fallback here — login is the user's chance to fix it.
     from bifrost.credentials import warn_if_keyring_fallback
-    warn_if_keyring_fallback()
 
     try:
+        warn_if_keyring_fallback()
         async with httpx.AsyncClient(base_url=api_url, timeout=30.0) as client:
             # Step 1: Request device code
             response = await client.post("/auth/device/code")
@@ -607,8 +607,6 @@ async def login_flow(api_url: str | None = None, auto_open: bool = True) -> bool
 
                 # Success - we have tokens
                 if "access_token" in poll_data:
-                    print(" OK")
-
                     # Calculate expiry time
                     expires_at = datetime.now(timezone.utc) + timedelta(seconds=poll_data.get("expires_in", 1800))
 
@@ -619,6 +617,7 @@ async def login_flow(api_url: str | None = None, auto_open: bool = True) -> bool
                         refresh_token=poll_data["refresh_token"],
                         expires_at=expires_at.isoformat(),
                     )
+                    print(" OK")
 
                     # Get user info
                     try:

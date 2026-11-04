@@ -559,6 +559,31 @@ def _install_simulated_device_client(
 
 
 class TestDeviceLoginPolling:
+    @pytest.mark.parametrize("entrypoint", ["cli", "sdk"])
+    def test_persistence_failure_cannot_report_login_success(self, monkeypatch, capsys, entrypoint):
+        from bifrost import client as sdk
+        from bifrost._windows_credentials import CredentialStorageError
+
+        clock = _SimulatedClock()
+        _install_simulated_device_client(monkeypatch, [
+            _SimulatedResponse(200, {"access_token": "access", "refresh_token": "refresh"}),
+        ])
+        module = cli if entrypoint == "cli" else sdk
+        monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=clock.monotonic))
+        monkeypatch.setattr(module.asyncio, "sleep", clock.sleep)
+        monkeypatch.setattr(creds_mod, "warn_if_keyring_fallback", lambda: None)
+
+        def failed_save(**kwargs):
+            raise CredentialStorageError("Windows credential storage failed at part verification")
+
+        monkeypatch.setattr(creds_mod, "save_credentials", failed_save)
+        monkeypatch.setattr(sdk, "save_credentials", failed_save)
+        assert asyncio.run(module.login_flow("https://example.test", auto_open=False)) is False
+        output = capsys.readouterr()
+        assert " OK" not in output.out
+        assert "Logged in" not in output.out
+        assert "part verification" in output.err
+
     @pytest.mark.parametrize("pending_status", [200, 400])
     def test_polls_pending_response_until_authorized(self, monkeypatch, pending_status):
         clock = _SimulatedClock()

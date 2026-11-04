@@ -329,6 +329,64 @@ class KeyringBackend:
 # Backend selection
 # --------------------------------------------------------------------------- #
 
+
+class WindowsKeyringBackend(KeyringBackend):
+    """Serialize complete Windows profile/index operations across CLI processes."""
+
+    def __init__(self, _keyring=None, _lock=None):
+        from ._windows_credentials import WindowsKeyringValues, windows_credential_lock
+
+        super().__init__(_keyring)
+        self._kr = WindowsKeyringValues(self._kr)
+        self._lock = _lock or windows_credential_lock
+
+    def _load_index(self) -> set[str]:
+        from ._windows_credentials import CredentialStorageError
+
+        raw = self._kr.get_password(KEYRING_SERVICE, self.INDEX_USERNAME)
+        if not raw:
+            return set()
+        try:
+            index = json.loads(raw)
+            if not isinstance(index, list) or any(not isinstance(url, str) for url in index):
+                raise ValueError
+            return set(index)
+        except (ValueError, TypeError):
+            raise CredentialStorageError("Windows credential storage failed at index validation") from None
+
+    def get(self, api_url: str) -> Credentials | None:
+        with self._lock():
+            return super().get(api_url)
+
+    def save(self, creds: Credentials) -> None:
+        from ._windows_credentials import CredentialStorageError
+
+        with self._lock():
+            api_url = creds.api_url.rstrip("/")
+            record = json.dumps(creds.to_dict())
+            self._kr.prepare(record)
+            # Publish discoverability first. Readers filter uncommitted entries;
+            # an interruption cannot hide a successfully committed new profile.
+            index = self._load_index()
+            index.add(api_url)
+            self._save_index(index)
+            self._kr.set_password(KEYRING_SERVICE, api_url, record)
+            if super().get(api_url) != creds or api_url not in self._load_index():
+                raise CredentialStorageError("Windows credential storage failed at session verification")
+
+    def clear(self, api_url: str) -> None:
+        with self._lock():
+            api_url = api_url.rstrip("/")
+            self._kr.delete_password(KEYRING_SERVICE, api_url)
+            index = self._load_index()
+            index.discard(api_url)
+            self._save_index(index)
+
+    def list_urls(self) -> list[str]:
+        with self._lock():
+            return sorted(url for url in self._load_index() if super(WindowsKeyringBackend, self).get(url))
+
+
 _keyring_fallback_reason: str | None = None
 
 
@@ -349,16 +407,31 @@ def _select_persistent_backend() -> Backend:
         import keyring
         import keyring.errors
     except ImportError:
+        if platform.system() == "Windows":
+            from ._windows_credentials import CredentialStorageError
+
+            raise CredentialStorageError("Windows credential storage requires the keyring package") from None
         _keyring_fallback_reason = "keyring package not installed"
         return JsonBackend()
 
     try:
-        keyring.get_keyring()
+        selected = keyring.get_keyring()
+        if platform.system() == "Windows":
+            from keyring.backends.Windows import WinVaultKeyring
+
+            if not isinstance(selected, WinVaultKeyring):
+                raise RuntimeError("Windows Credential Manager backend required")
+            selected.get_password(KEYRING_SERVICE, "__probe__")
+            return WindowsKeyringBackend(_keyring=selected)
         # Probe — surfaces NoKeyringError / SecretServiceError / DBusException
         # when the backend is nominally available but the OS service isn't.
         keyring.get_password(KEYRING_SERVICE, "__probe__")
         return KeyringBackend(_keyring=keyring)
     except Exception as e:  # noqa: BLE001 - any unusable OS backend falls back to JSON
+        if platform.system() == "Windows":
+            from ._windows_credentials import CredentialStorageError
+
+            raise CredentialStorageError("Windows credential storage is unavailable; no session was saved") from None
         _keyring_fallback_reason = type(e).__name__
         return JsonBackend()
 
