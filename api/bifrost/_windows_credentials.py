@@ -74,6 +74,9 @@ class WindowsKeyringValues:
         digest = hashlib.sha256(username.encode("utf-8")).hexdigest()
         return f"{service}/wincred-v1/{digest}"
 
+    def _fingerprint(self, raw):
+        return hashlib.sha256(json.dumps(raw).encode("utf-8")).hexdigest()
+
     def _manifest(self, raw):
         if not raw:
             return None
@@ -117,6 +120,10 @@ class WindowsKeyringValues:
             raise CredentialStorageError("Windows credential storage failed at journal validation") from None
         root = self._call("recovery read", "get_password", service, username)
         committed = self._manifest(root) == pending
+        if not committed and self._fingerprint(root) != journal.get("previous_fingerprint"):
+            # An unexpected/misread root is neither a commit nor a rollback.
+            # Keep both generations and the journal intact for safe diagnosis.
+            raise CredentialStorageError("Windows credential storage failed at recovery state validation")
         self._remove_parts(namespace, previous if committed else pending)
         self._call("journal cleanup", "delete_password", namespace, "journal")
 
@@ -159,7 +166,8 @@ class WindowsKeyringValues:
         previous_raw = self._call("previous read", "get_password", service, username)
         pending = {self.MARKER: uuid4().hex, "parts": len(parts),
                    "sha256": hashlib.sha256(encoded.encode("ascii")).hexdigest()}
-        journal = json.dumps({"pending": pending, "previous": self._manifest(previous_raw)})
+        journal = json.dumps({"pending": pending, "previous": self._manifest(previous_raw),
+                              "previous_fingerprint": self._fingerprint(previous_raw)})
         namespace = self._namespace(service, username)
         self._call("journal write", "set_password", namespace, "journal", journal)
         if self._call("journal verification", "get_password", namespace, "journal") != journal:

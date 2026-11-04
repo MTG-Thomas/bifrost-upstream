@@ -166,6 +166,33 @@ def test_native_error_values_are_suppressed():
     assert error.value.__suppress_context__
 
 
+def test_unexpected_root_readback_preserves_both_generations_for_recovery():
+    store = MemoryWinCred()
+    values = WindowsKeyringValues(store)
+    values.set_password(KEYRING_SERVICE, "root", "previous")
+    original_get = store.get_password
+
+    def incorrect_root(service, username):
+        raw = original_get(service, username)
+        # Readback fails only once the new root has been installed.
+        if service == KEYRING_SERVICE and username == "root" and store.mutations >= fail_after:
+            return "incorrect"
+        return raw
+
+    # Journal + one part + root commit are three writes for this value.
+    fail_after = store.mutations + 3
+    store.get_password = incorrect_root
+    with pytest.raises(CredentialStorageError, match="commit verification"):
+        values.set_password(KEYRING_SERVICE, "root", "replacement")
+    snapshot = dict(store.data)
+    with pytest.raises(CredentialStorageError, match="recovery state validation"):
+        values.get_password(KEYRING_SERVICE, "root")
+    assert store.data == snapshot
+    store.get_password = original_get
+    assert values.get_password(KEYRING_SERVICE, "root") == "replacement"
+    assert_no_orphans(store)
+
+
 def test_windows_selection_never_falls_back_to_plaintext(monkeypatch):
     import keyring
     from bifrost import credentials
