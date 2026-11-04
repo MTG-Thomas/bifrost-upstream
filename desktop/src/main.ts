@@ -3,24 +3,13 @@ import fs from "node:fs";
 import { app, BrowserWindow, ipcMain, shell, session } from "electron";
 import { autoUpdater } from "electron-updater";
 
+import { partitionFor, validateServerUrl } from "./server-url.js";
+
 const DEEP_LINK_SCHEME = "bifrost";
 const SETTINGS_FILE = "settings.json";
 
 let mainWindow: BrowserWindow | null = null;
 let pendingDeepLink: string | null = null;
-
-// https only, except http://localhost for local dev.
-function validateServerUrl(raw: string): string | null {
-  let parsed: URL;
-  try {
-    parsed = new URL(raw.trim());
-  } catch {
-    return null;
-  }
-  if (parsed.protocol === "https:") return parsed.origin;
-  if (parsed.protocol === "http:" && parsed.hostname === "localhost") return parsed.origin;
-  return null;
-}
 
 function settingsPath(): string {
   return path.join(app.getPath("userData"), SETTINGS_FILE);
@@ -48,19 +37,38 @@ function resolveServerUrl(): string | null {
   return loadServerUrl();
 }
 
-function partitionFor(origin: string): string {
-  return `persist:bifrost-${origin.replace(/[^a-zA-Z0-9]/g, "-")}`;
-}
-
 function pickerHtml(error = ""): string {
+  // Mirrors the hosted Login card (client/src/pages/Login.tsx) using the dark
+  // Bifrost tokens (client/src/styles/bifrost-tokens.css). Self-contained: the
+  // picker renders before any server is known, so no hosted assets are used.
   return `data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html>
-<html><head><meta charset="utf-8"><title>Bifrost — Server Setup</title>
-<style>body{font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#111827;color:#f9fafb}
-form{display:flex;flex-direction:column;gap:12px;width:min(420px,90vw)}input{padding:10px;border-radius:6px;border:1px solid #374151;background:#1f2937;color:#fff}
-button{padding:10px;border-radius:6px;border:0;background:#2563eb;color:#fff;cursor:pointer}.error{color:#f87171;min-height:1.2em;font-size:14px}</style>
-</head><body><form id="f"><h2>Connect to Bifrost</h2>
-<input id="url" type="url" placeholder="https://bifrost.example.com" required>
+<html><head><meta charset="utf-8"><title>Bifrost — Connect to Your Server</title>
+<style>
+:root{color-scheme:dark}
+body{font-family:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#08090b;color:#f7f9fb;padding:16px;box-sizing:border-box}
+.card{width:min(448px,100%);background:#0a0c0f;border:1px solid #252c34;border-radius:8px;overflow:hidden}
+.bridge{height:4px;background:linear-gradient(90deg,#ff5a5a,#ffb24d,#ffe24d,#3ad17a,#2fd4d4,#4d6bff,#7a6bff,#d96bff)}
+.body{padding:32px}
+.mark{width:64px;height:64px;border-radius:8px;margin:0 auto 16px;background:linear-gradient(135deg,#2fd4d4,#4d6bff);display:flex;align-items:center;justify-content:center;font-family:"Prompt","Inter",system-ui,sans-serif;font-size:32px;font-weight:600;color:#06222a}
+h1{font-family:"Prompt","Inter",system-ui,sans-serif;font-size:24px;font-weight:600;letter-spacing:-0.01em;text-align:center;margin:0 0 4px}
+p.desc{text-align:center;color:#9caab5;font-size:16px;margin:0 0 24px}
+label{display:block;font-size:14px;font-weight:500;margin-bottom:8px}
+input{width:100%;min-height:44px;box-sizing:border-box;padding:0 12px;border-radius:6px;border:1px solid #3d4853;background:#11151a;color:#f7f9fb;font-size:14px}
+input:focus{outline:2px solid #2fd4d4;outline-offset:1px;border-color:#2fd4d4}
+button{width:100%;min-height:44px;margin-top:16px;border-radius:6px;border:0;background:#2fd4d4;color:#06222a;font-size:14px;font-weight:600;cursor:pointer}
+button:hover{background:#63e1e1}
+.error{color:#ff727a;min-height:1.4em;font-size:14px;margin-top:8px}
+.hint{color:#9caab5;font-size:12px;margin-top:16px;text-align:center}
+</style>
+</head><body><div class="card"><div class="bridge"></div><div class="body">
+<div class="mark">B</div>
+<h1>Connect to Bifrost</h1>
+<p class="desc">Sign in through your hosted server</p>
+<form id="f"><label for="url">Server URL</label>
+<input id="url" type="url" placeholder="https://bifrost.example.com" autocomplete="url" autofocus required>
 <div class="error">${error}</div><button type="submit">Save &amp; Connect</button></form>
+<p class="hint">Use https:// — http://localhost works for local dev.</p>
+</div></div>
 <script>document.getElementById('f').onsubmit = async (e) => {
 e.preventDefault();
 const r = await window.bifrostSettings.setServerUrl(document.getElementById('url').value);

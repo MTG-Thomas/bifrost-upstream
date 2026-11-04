@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "tsc && electron .",
     "build": "tsc",
+    "test": "tsc && node --test \"dist/**/*.test.js\"",
     "dist": "tsc && electron-builder"
   },
   "dependencies": {

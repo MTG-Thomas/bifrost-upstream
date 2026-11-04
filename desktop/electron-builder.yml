@@ -15,6 +15,7 @@ directories:
   output: dist-packages
 files:
   - dist/**
+  - "!dist/**/*.test.js"
   - package.json
 
 # Version is injected at build time, never stored here:
