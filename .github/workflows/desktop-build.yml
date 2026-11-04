@@ -88,6 +88,10 @@ jobs:
           else
             echo "version=$(../scripts/compute-dev-version.sh)" >> "$GITHUB_OUTPUT"
           fi
+          # Fail loudly on an empty version (e.g. no v* tags in history):
+          # an empty -c.extraMetadata.version surfaces later as a confusing
+          # "Please specify 'version' in the package.json" pack error.
+          grep -q '^version=[^[:space:]].*' "$GITHUB_OUTPUT"
 
       - name: Set up Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -111,7 +115,9 @@ jobs:
           APPLE_ID: ${{ secrets.DESKTOP_APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.DESKTOP_APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.DESKTOP_APPLE_TEAM_ID }}
-        run: npx electron-builder -c.extraMetadata.version=${{ steps.version.outputs.version }}
+        # Artifacts reach the update feed via the Upload installers step and
+        # the tag Release attachment below — never via builder publishing.
+        run: npx electron-builder --publish never -c.extraMetadata.version=${{ steps.version.outputs.version }}
 
       - name: List artifacts
         run: ls -la dist-packages/
