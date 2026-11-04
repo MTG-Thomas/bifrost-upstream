@@ -258,12 +258,12 @@ def native_wincred(monkeypatch):
             self.winerror = code
             self.funcname = function
 
-    class WinCred:
+    class WinCred(MemoryWinCred):
         CRED_TYPE_GENERIC = 1
         CRED_PERSIST_ENTERPRISE = 3
 
         def __init__(self):
-            self.data = {}
+            super().__init__()
             self.sizes = []
 
         def CredRead(self, *, Type, TargetName):
@@ -276,12 +276,18 @@ def native_wincred(monkeypatch):
             self.sizes.append(len(blob))
             if len(blob) > 2560:
                 raise NativeError(1783, "CredWrite")
+            self.mutations += 1
+            self._interrupt(False)
             self.data[record["TargetName"]] = dict(record, CredentialBlob=blob)
+            self._interrupt(True)
 
         def CredDelete(self, *, Type, TargetName):
             if TargetName not in self.data:
                 raise NativeError(1168, "CredDelete")
+            self.mutations += 1
+            self._interrupt(False)
             del self.data[TargetName]
+            self._interrupt(True)
 
     native = WinCred()
     monkeypatch.setattr(Windows, "win32cred", native, raising=False)
@@ -309,6 +315,33 @@ def test_real_windows_adapter_over_synthetic_wincred(native_wincred):
     assert target.get(new.api_url) is None
     assert target.list_urls() == [old.api_url]
     assert max(native.sizes) <= 2560
+
+
+@pytest.mark.parametrize("after", [False, True])
+def test_real_adapter_interruption_including_keyring_preservation_writes(native_wincred, after):
+    vault, native = native_wincred
+    old = profile("https://legacy.example.test")
+    previous = profile()
+    vault.set_password(KEYRING_SERVICE, "__index__", json.dumps([old.api_url, previous.api_url]))
+    vault.set_password(KEYRING_SERVICE, old.api_url, json.dumps(old.to_dict()))
+    vault.set_password(KEYRING_SERVICE, previous.api_url, json.dumps(previous.to_dict()))
+    baseline = dict(native.data)
+    updated = replace(previous, access_token="x" * 2000, refresh_token="new-refresh")
+    native.mutations = 0
+    backend(vault).save(updated)
+    steps = native.mutations
+    for step in range(1, steps + 1):
+        native.data = dict(baseline)
+        native.mutations = 0
+        native.interrupt_at = step
+        native.after = after
+        with pytest.raises(SystemExit):
+            backend(vault).save(updated)
+        native.interrupt_at = None
+        target = backend(vault)
+        assert target.get(old.api_url) == old
+        assert target.get(previous.api_url) in (previous, updated)
+        assert target.list_urls() == sorted([old.api_url, previous.api_url])
 
 
 @pytest.mark.parametrize("wait_result", [0, 0x80, 0x102, 0xffffffff])

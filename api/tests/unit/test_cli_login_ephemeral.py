@@ -69,6 +69,26 @@ def _stub_post(json_payload: dict, status_code: int = 200):
 
 
 class TestPasswordLoginFlagParsing:
+    def test_storage_failure_returns_nonzero_without_selecting_session(self, monkeypatch, tmp_path, capsys):
+        from bifrost._windows_credentials import CredentialStorageError
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(cli.httpx, "AsyncClient", _stub_post({
+            "access_token": "synthetic-access", "refresh_token": "synthetic-refresh",
+        }))
+        monkeypatch.setattr(creds_mod, "resolve_environment_url", lambda: None)
+
+        def fail_save(**kwargs):
+            raise CredentialStorageError("Windows credential storage failed at commit verification")
+
+        monkeypatch.setattr(creds_mod, "save_credentials", fail_save)
+        result = cli.handle_login([
+            "--url", "https://example.test", "--email", "synthetic@example.test", "--password", "synthetic",
+        ])
+        assert result == 1
+        assert not (tmp_path / ".env").exists()
+        assert "commit verification" in capsys.readouterr().err
+
     def test_email_without_password_errors(self, capsys):
         rc = cli.handle_login(["--email", "x@y", "--url", "http://localhost:38421"])
         assert rc != 0
