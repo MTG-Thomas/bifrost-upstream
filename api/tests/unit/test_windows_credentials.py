@@ -89,7 +89,10 @@ def test_exact_reported_size_and_legacy_profiles():
     assert_no_orphans(store)
 
 
-@pytest.mark.parametrize("text", ["a" * 1280, "a" * 1281, "é" * 1280, "😀" * 1280, "汉字" * 1280])
+@pytest.mark.parametrize(
+    "text", ["a" * 1280, "a" * 1281, "é" * 1280, "😀" * 1280, "汉字" * 1280],
+    ids=["ascii-limit", "ascii-over-limit", "accented", "non-bmp", "cjk"],
+)
 def test_unicode_byte_bounds(text):
     store = MemoryWinCred()
     values = WindowsKeyringValues(store)
