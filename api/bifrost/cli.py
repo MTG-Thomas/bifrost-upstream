@@ -1072,7 +1072,7 @@ Examples:
             expires_at = datetime.now(timezone.utc) + timedelta(
                 seconds=data.get("expires_in") or 1800
             )
-            from ._windows_credentials import CredentialStorageError
+            from bifrost._windows_credentials import CredentialStorageError
 
             try:
                 credentials.save_credentials(

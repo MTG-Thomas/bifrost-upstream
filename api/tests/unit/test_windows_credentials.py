@@ -4,6 +4,7 @@ import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -244,3 +245,100 @@ def test_interrupted_logout_never_resurrects_a_deleted_profile(after):
         assert target.get(profile().api_url) is None
         assert target.list_urls() == []
         assert_no_orphans(store)
+
+
+@pytest.fixture
+def native_wincred(monkeypatch):
+    # Importing this module does not access the vault. Replace BOTH native
+    # dependencies before instantiating it, even on a Windows test runner.
+    from keyring.backends import Windows
+
+    class NativeError(Exception):
+        def __init__(self, code, function):
+            self.winerror = code
+            self.funcname = function
+
+    class WinCred:
+        CRED_TYPE_GENERIC = 1
+        CRED_PERSIST_ENTERPRISE = 3
+
+        def __init__(self):
+            self.data = {}
+            self.sizes = []
+
+        def CredRead(self, *, Type, TargetName):
+            if TargetName not in self.data:
+                raise NativeError(1168, "CredRead")
+            return dict(self.data[TargetName])
+
+        def CredWrite(self, record, flags):
+            blob = record["CredentialBlob"].encode("utf-16-le")
+            self.sizes.append(len(blob))
+            if len(blob) > 2560:
+                raise NativeError(1783, "CredWrite")
+            self.data[record["TargetName"]] = dict(record, CredentialBlob=blob)
+
+        def CredDelete(self, *, Type, TargetName):
+            if TargetName not in self.data:
+                raise NativeError(1168, "CredDelete")
+            del self.data[TargetName]
+
+    native = WinCred()
+    monkeypatch.setattr(Windows, "win32cred", native, raising=False)
+    monkeypatch.setattr(Windows, "pywintypes", SimpleNamespace(error=NativeError), raising=False)
+    return Windows.WinVaultKeyring(), native
+
+
+def test_real_windows_adapter_over_synthetic_wincred(native_wincred):
+    vault, native = native_wincred
+    old = profile("https://legacy.example.test")
+    vault.set_password(KEYRING_SERVICE, "__index__", json.dumps([old.api_url]))
+    vault.set_password(KEYRING_SERVICE, old.api_url, json.dumps(old.to_dict()))
+    new = profile(token="x" * 2000)
+    with pytest.raises(Exception) as error:
+        vault.set_password(KEYRING_SERVICE, new.api_url, json.dumps(new.to_dict()))
+    assert error.value.winerror == 1783
+    native.sizes.clear()
+    target = backend(vault)
+    target.save(new)
+    assert target.get(new.api_url) == new
+    assert target.get(old.api_url) == old
+    assert target.list_urls() == sorted([old.api_url, new.api_url])
+    target.save(replace(new, access_token="😀" * 2000))
+    target.clear(new.api_url)
+    assert target.get(new.api_url) is None
+    assert target.list_urls() == [old.api_url]
+    assert max(native.sizes) <= 2560
+
+
+@pytest.mark.parametrize("wait_result", [0, 0x80, 0x102, 0xffffffff])
+def test_native_mutex_ownership_and_release(monkeypatch, wait_result):
+    from bifrost import _windows_credentials as windows
+
+    calls = []
+
+    class Function:
+        def __init__(self, name, result):
+            self.name, self.result = name, result
+
+        def __call__(self, *args):
+            calls.append(self.name)
+            return self.result
+
+    kernel = SimpleNamespace(
+        CreateMutexW=Function("create", 123),
+        WaitForSingleObject=Function("wait", wait_result),
+        ReleaseMutex=Function("release", 1),
+        CloseHandle=Function("close", 1),
+    )
+    monkeypatch.setattr(windows.ctypes, "WinDLL", lambda *a, **kw: kernel, raising=False)
+    if wait_result in (0, 0x80):
+        with pytest.raises(ValueError):
+            with windows.windows_credential_lock():
+                raise ValueError("body failure")
+        assert calls == ["create", "wait", "release", "close"]
+    else:
+        with pytest.raises(CredentialStorageError, match="lock acquisition"):
+            with windows.windows_credential_lock():
+                pytest.fail("unowned lock entered")
+        assert calls == ["create", "wait", "close"]
