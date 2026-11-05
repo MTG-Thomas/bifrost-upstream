@@ -1,0 +1,1 @@
+{"classification":"omit","entry_ids":[],"key":"pr:12","reason":"Fork-side desktop packaging fix for empty-string signing secrets on macOS; no customer-facing change. Matrix proof via workflow_dispatch after merge.","review":{"evidence":["https://github.com/MTG-Thomas/bifrost-upstream/pull/12"],"status":"approved"}}
