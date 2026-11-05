@@ -1,0 +1,96 @@
+name: Sync Upstream
+
+# Keeps this fork's main current with gobifrost/bifrost:main.
+#
+# This runs inside the fork with the repository's own GITHUB_TOKEN, so the
+# server-side merge is performed by the Actions token. Events created with
+# GITHUB_TOKEN do not start other workflows, which keeps the inherited upstream
+# main-push workflows (image promotion, CodeQL, Scorecard, Nightly) from
+# running on sync merges. No personal credential, PAT, or repository secret is
+# used.
+#
+# The merge is the same operation as the "Sync fork" button: it fast-forwards
+# when this fork has no local commits, and otherwise merges upstream main in so
+# fork-only work is preserved. If git reports a conflict the run fails and
+# opens (or updates) an issue instead of forcing anything.
+#
+# See docs/runbooks/upstream-sync.md for the operating notes and recovery path.
+
+on:
+  schedule:
+    # Hourly. GitHub may delay scheduled runs during busy periods.
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  sync:
+    # Inherited forks must not sync into their parent's history.
+    if: github.repository == 'MTG-Thomas/bifrost-upstream'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Merge gobifrost/bifrost main
+        id: merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          response_file="$RUNNER_TEMP/merge-upstream.json"
+          status="$(
+            curl --silent --show-error --output "$response_file" --write-out '%{http_code}' \
+              --request POST \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header "Accept: application/vnd.github+json" \
+              --header "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/merge-upstream" \
+              --data '{"branch":"main"}'
+          )"
+          body="$(cat "$response_file")"
+          echo "$body"
+
+          if [ "$status" != "200" ]; then
+            {
+              echo "Upstream sync failed with HTTP $status."
+              echo
+              echo '```json'
+              echo "$body"
+              echo '```'
+            } > "$RUNNER_TEMP/conflict-body.md"
+
+            # 409 is the documented merge conflict; treat every non-200 the same
+            # so an unexpected status is also surfaced instead of silently skipped.
+            existing="$(
+              gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+                --search 'in:title "Upstream sync conflict"' \
+                --json number --jq '.[0].number // ""'
+            )"
+            if [ -n "$existing" ]; then
+              gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/conflict-body.md"
+            else
+              gh issue create --repo "$GITHUB_REPOSITORY" \
+                --title "Upstream sync conflict: resolve gobifrost/bifrost main manually" \
+                --body-file "$RUNNER_TEMP/conflict-body.md"
+            fi
+
+            echo "::error::Upstream sync failed with HTTP $status. See the issue for details."
+            exit 1
+          fi
+
+          merge_type="$(jq -r '.merge_type // "unknown"' "$response_file")"
+          message="$(jq -r '.message // ""' "$response_file")"
+          echo "merge_type=$merge_type" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Upstream sync"
+            echo
+            echo "- Result: \`$merge_type\`"
+            echo "- Detail: $message"
+          } >> "$GITHUB_STEP_SUMMARY"
