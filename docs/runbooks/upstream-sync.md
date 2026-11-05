@@ -69,3 +69,10 @@ gh workflow disable "Sync Upstream" --repo MTG-Thomas/bifrost-upstream
   schedule is disabled, re-enable the workflow.
 - The workflow syncs `main` only. Tags, releases, and other branches are not
   mirrored.
+- Manual pushes and PR merges to `main` still follow normal trigger rules and
+  start the inherited upstream main-push workflows. In this fork,
+  `Promote Dev Images` fails its merge-candidate gate with
+  `expected exactly one .github/workflows/ci.yml merge_group run ... found 0`
+  and stops before publishing, because the fork does not use a merge queue. That
+  is pre-existing fork behavior, not a sync failure; sync merges themselves do
+  not trigger these workflows.
