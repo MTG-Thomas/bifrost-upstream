@@ -106,18 +106,30 @@ jobs:
       - name: Typecheck, unit test, and compile
         run: npm test
 
+      - name: Export signing secrets (only those configured)
+        # An unset GitHub secret expands to an empty string, but electron-builder
+        # treats CSC_LINK="" as a path (resolving to the project dir and failing
+        # with "... not a file" on macOS) instead of "no signing". Export each
+        # variable only when its secret is non-empty so unsigned builds see a
+        # truly unset environment. Secret values are masked in logs.
+        env:
+          DESKTOP_CSC_LINK: ${{ secrets.DESKTOP_CSC_LINK }}
+          DESKTOP_CSC_KEY_PASSWORD: ${{ secrets.DESKTOP_CSC_KEY_PASSWORD }}
+          DESKTOP_APPLE_ID: ${{ secrets.DESKTOP_APPLE_ID }}
+          DESKTOP_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.DESKTOP_APPLE_APP_SPECIFIC_PASSWORD }}
+          DESKTOP_APPLE_TEAM_ID: ${{ secrets.DESKTOP_APPLE_TEAM_ID }}
+        run: |
+          [ -n "$DESKTOP_CSC_LINK" ] && echo "CSC_LINK=$DESKTOP_CSC_LINK" >> "$GITHUB_ENV" || true
+          [ -n "$DESKTOP_CSC_KEY_PASSWORD" ] && echo "CSC_KEY_PASSWORD=$DESKTOP_CSC_KEY_PASSWORD" >> "$GITHUB_ENV" || true
+          [ -n "$DESKTOP_APPLE_ID" ] && echo "APPLE_ID=$DESKTOP_APPLE_ID" >> "$GITHUB_ENV" || true
+          [ -n "$DESKTOP_APPLE_APP_SPECIFIC_PASSWORD" ] && echo "APPLE_APP_SPECIFIC_PASSWORD=$DESKTOP_APPLE_APP_SPECIFIC_PASSWORD" >> "$GITHUB_ENV" || true
+          [ -n "$DESKTOP_APPLE_TEAM_ID" ] && echo "APPLE_TEAM_ID=$DESKTOP_APPLE_TEAM_ID" >> "$GITHUB_ENV" || true
+
       - name: Package
-        # electron-builder reads CSC_*/APPLE_* env vars itself when present;
-        # absent = unsigned build, which is the intended PR/dev behavior.
         # macOS otherwise attempts empty-password signing and fails obscurely,
         # so discovery is off until real Apple certs land in DESKTOP_* secrets.
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-          CSC_LINK: ${{ secrets.DESKTOP_CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.DESKTOP_CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.DESKTOP_APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.DESKTOP_APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.DESKTOP_APPLE_TEAM_ID }}
         # Artifacts reach the update feed via the Upload installers step and
         # the tag Release attachment below — never via builder publishing.
         run: npx electron-builder --publish never -c.extraMetadata.version=${{ steps.version.outputs.version }}
