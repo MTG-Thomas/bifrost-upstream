@@ -365,6 +365,11 @@
 | POST | `/api/mcp/gateway/capabilities/search` |
 | GET | `/api/mcp/gateway/executions/{execution_id}` |
 | GET | `/api/mcp/run` |
+| GET | `/api/mcp/run/branding` |
+| PUT | `/api/mcp/run/branding` |
+| DELETE | `/api/mcp/run/branding/logo` |
+| GET | `/api/mcp/run/branding/logo` |
+| POST | `/api/mcp/run/branding/logo` |
 | GET | `/api/mcp/run/plugin` |
 | GET | `/api/mcp/status` |
 | GET | `/api/mcp/tools` |
@@ -491,6 +496,7 @@
 | GET | `/api/sdk/context` |
 | GET | `/api/sdk/download` |
 | POST | `/api/sdk/integrations/delete_mapping` |
+| POST | `/api/sdk/integrations/find_mapping` |
 | POST | `/api/sdk/integrations/get` |
 | POST | `/api/sdk/integrations/get_mapping` |
 | POST | `/api/sdk/integrations/list_mappings` |
@@ -552,6 +558,7 @@
 | DELETE | `/api/solutions/{solution_id}` |
 | GET | `/api/solutions/{solution_id}` |
 | PATCH | `/api/solutions/{solution_id}` |
+| POST | `/api/solutions/{solution_id}/app-builds/lookup` |
 | POST | `/api/solutions/{solution_id}/capture` |
 | GET | `/api/solutions/{solution_id}/capture/candidates` |
 | POST | `/api/solutions/{solution_id}/capture/preview` |
@@ -606,6 +613,10 @@
 | PUT | `/api/users/{user_id}/role-assignments` |
 | GET | `/api/users/{user_id}/roles` |
 | GET | `/api/version` |
+| POST | `/api/workflow-conversions` |
+| POST | `/api/workflow-conversions/{job_id}/apply` |
+| POST | `/api/workflow-conversions/{job_id}/cutover` |
+| GET | `/api/workflow-conversions/{job_id}/report` |
 | GET | `/api/workflow-keys` |
 | POST | `/api/workflow-keys` |
 | DELETE | `/api/workflow-keys/{workflow_id}` |

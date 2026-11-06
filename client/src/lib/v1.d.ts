@@ -2603,6 +2603,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workflow-conversions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Analyze Workflows */
+        post: operations["workflows.conversions.create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workflow-conversions/{job_id}/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Workflow Conversion Report */
+        get: operations["workflows.conversions.get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workflow-conversions/{job_id}/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply Workflow Conversion */
+        post: operations["workflows.conversions.update"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workflow-conversions/{job_id}/cutover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cutover Workflow Permissions */
+        post: operations["workflows.permission_default.update"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/forms": {
         parameters: {
             query?: never;
@@ -4774,6 +4842,32 @@ export interface paths {
          *     worker-local engine child calls for the same inputs.
          */
         post: operations["sdk_integrations_get_mapping_api_sdk_integrations_get_mapping_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sdk/integrations/find_mapping": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Find one mapping by exact entity ID within authorized reach
+         * @description Find one mapping by exact entity ID within authorized reach via SDK.
+         *
+         *     Searches the same permitted set ``list_mappings`` returns, with no
+         *     caller-supplied organization. Returns a discriminated
+         *     unique/ambiguous/not_found_in_authorized_scope result whose receipt
+         *     never claims global absence. Unresolved outcomes perform zero tenant
+         *     actions. ``get_mapping`` behavior is unchanged.
+         */
+        post: operations["sdk_integrations_find_mapping_api_sdk_integrations_find_mapping_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -8314,6 +8408,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/mcp/run/branding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Package Branding */
+        get: operations["get_package_branding_api_mcp_run_branding_get"];
+        /** Update Package Branding */
+        put: operations["update_package_branding_api_mcp_run_branding_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/mcp/run/branding/logo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Package Logo */
+        get: operations["get_package_logo_api_mcp_run_branding_logo_get"];
+        put?: never;
+        /** Upload Package Logo */
+        post: operations["upload_package_logo_api_mcp_run_branding_logo_post"];
+        /** Delete Package Logo */
+        delete: operations["delete_package_logo_api_mcp_run_branding_logo_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/mcp/status": {
         parameters: {
             query?: never;
@@ -9715,6 +9846,23 @@ export interface paths {
         get: operations["get_solution_deletion_summary_api_solutions__solution_id__deletion_summary_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/solutions/{solution_id}/app-builds/lookup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Lookup Solution App Builds */
+        post: operations["solutions.app_builds.lookup"];
         delete?: never;
         options?: never;
         head?: never;
@@ -14806,6 +14954,11 @@ export interface components {
              */
             file: string;
         };
+        /** Body_upload_package_logo_api_mcp_run_branding_logo_post */
+        Body_upload_package_logo_api_mcp_run_branding_logo_post: {
+            /** File */
+            file: string;
+        };
         /**
          * BrandingSettings
          * @description Global platform branding configuration
@@ -16694,6 +16847,20 @@ export interface components {
              * @default true
              */
             track_executions: boolean;
+            /**
+             * Execution Origin
+             * @default unknown
+             */
+            execution_origin: string;
+            /** Agent Id */
+            agent_id?: string | null;
+            /**
+             * Original User Is Platform Admin
+             * @default false
+             */
+            original_user_is_platform_admin: boolean;
+            /** Original User Id */
+            original_user_id?: string | null;
         };
         /**
          * DeviceAuthorizeRequest
@@ -22447,6 +22614,26 @@ export interface components {
             schema_included: boolean;
         };
         /**
+         * MCPPackageBranding
+         * @description Saved package display name, installation identifier, and optional logo.
+         */
+        MCPPackageBranding: {
+            /** Name */
+            name: string;
+            /** Slug */
+            slug: string;
+            /** Logo Url */
+            logo_url?: string | null;
+        };
+        /**
+         * MCPPackageBrandingUpdate
+         * @description Instance-wide identity for downloaded agent plugin packages.
+         */
+        MCPPackageBrandingUpdate: {
+            /** Name */
+            name: string;
+        };
+        /**
          * MCPRunInfoResponse
          * @description Connection information for installing the Bifrost Agent plugin.
          */
@@ -26371,6 +26558,64 @@ export interface components {
             scope: string;
         };
         /**
+         * SDKIntegrationsFindMappingReceipt
+         * @description Search receipt: authorized-reach scope only, never global absence.
+         */
+        SDKIntegrationsFindMappingReceipt: {
+            /**
+             * Operation
+             * @description Reach operation searched
+             */
+            operation: string;
+            /**
+             * Searched
+             * @description Always 'authorized_reach'
+             */
+            searched: string;
+            /**
+             * Candidates Considered
+             * @description Mappings in reach scanned
+             */
+            candidates_considered: number;
+            /**
+             * Entity Id
+             * @description Entity ID searched
+             */
+            entity_id: string;
+        };
+        /**
+         * SDKIntegrationsFindMappingRequest
+         * @description Request to find one mapping by exact entity ID within authorized reach.
+         */
+        SDKIntegrationsFindMappingRequest: {
+            /**
+             * Name
+             * @description Integration name
+             */
+            name: string;
+            /**
+             * Entity Id
+             * @description External entity ID (exact match)
+             */
+            entity_id: string;
+        };
+        /**
+         * SDKIntegrationsFindMappingResponse
+         * @description Discriminated exact-lookup result within authorized reach.
+         */
+        SDKIntegrationsFindMappingResponse: {
+            /**
+             * Status
+             * @description Lookup outcome within authorized reach
+             * @enum {string}
+             */
+            status: "unique" | "ambiguous" | "not_found_in_authorized_scope";
+            /** @description Matched mapping (unique only) */
+            mapping?: components["schemas"]["SDKIntegrationsMappingItem"] | null;
+            /** @description Search receipt (never claims global absence) */
+            receipt: components["schemas"]["SDKIntegrationsFindMappingReceipt"];
+        };
+        /**
          * SDKIntegrationsGetMappingRequest
          * @description Request to get a specific mapping via SDK.
          */
@@ -27925,6 +28170,31 @@ export interface components {
             name?: string | null;
             /** Email */
             email: string;
+        };
+        /**
+         * SolutionAppBuildCandidate
+         * @description Manifest app identity and a digest computed before local compilation.
+         */
+        SolutionAppBuildCandidate: {
+            /**
+             * App Id
+             * Format: uuid
+             */
+            app_id: string;
+            /** Fingerprint */
+            fingerprint: string;
+        };
+        /** SolutionAppBuildLookup */
+        SolutionAppBuildLookup: {
+            /** Apps */
+            apps: components["schemas"]["SolutionAppBuildCandidate"][];
+        };
+        /** SolutionAppBuildMatches */
+        SolutionAppBuildMatches: {
+            /** Matches */
+            matches: {
+                [key: string]: string;
+            };
         };
         /** SolutionAppSdkStatus */
         SolutionAppSdkStatus: {
@@ -30454,6 +30724,213 @@ export interface components {
             range: string;
             /** Points */
             points?: components["schemas"]["WorkerMetricPoint"][];
+        };
+        /** WorkflowConversionAnalyzeRequest */
+        WorkflowConversionAnalyzeRequest: {
+            /** Workflow Ids */
+            workflow_ids?: string[] | null;
+            /** Scope */
+            scope?: string | null;
+            /**
+             * Platform Cutover
+             * @default false
+             */
+            platform_cutover: boolean;
+        };
+        /** WorkflowConversionApplyRequest */
+        WorkflowConversionApplyRequest: {
+            /** Selections */
+            selections: components["schemas"]["WorkflowConversionSelection"][];
+            /**
+             * Acknowledged Solution Requests
+             * @default false
+             */
+            acknowledged_solution_requests: boolean;
+        };
+        /** WorkflowConversionCutoverRequest */
+        WorkflowConversionCutoverRequest: {
+            /**
+             * Acknowledged Remaining Exceptions
+             * @default false
+             */
+            acknowledged_remaining_exceptions: boolean;
+        };
+        /** WorkflowConversionEvidence */
+        WorkflowConversionEvidence: {
+            /** Path */
+            path: string;
+            /** Line */
+            line?: number | null;
+            /** Call */
+            call: string;
+            /** Via */
+            via?: string[];
+        };
+        /** WorkflowConversionIdentitySummary */
+        WorkflowConversionIdentitySummary: {
+            /** Id */
+            id?: string | null;
+            /** Name */
+            name?: string | null;
+            /** Identity Kind */
+            identity_kind?: string | null;
+            /** Organization Id */
+            organization_id?: string | null;
+            /**
+             * Shared
+             * @default false
+             */
+            shared: boolean;
+        };
+        /** WorkflowConversionReport */
+        WorkflowConversionReport: {
+            /**
+             * Job Id
+             * Format: uuid
+             */
+            job_id: string;
+            /** Total */
+            total: number;
+            /** Offset */
+            offset: number;
+            /** Limit */
+            limit: number;
+            /** Items */
+            items: components["schemas"]["WorkflowConversionReportItem"][];
+            summary: components["schemas"]["WorkflowConversionReportSummary"];
+        };
+        /** WorkflowConversionReportItem */
+        WorkflowConversionReportItem: {
+            /**
+             * Workflow Id
+             * Format: uuid
+             */
+            workflow_id: string;
+            /** Workflow Name */
+            workflow_name: string;
+            /** Organization Id */
+            organization_id?: string | null;
+            /** Solution Id */
+            solution_id?: string | null;
+            /** Source Fingerprint */
+            source_fingerprint: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ready" | "needs_review" | "blocked" | "already_declared" | "stale";
+            /**
+             * Current Permission Mode
+             * @enum {string}
+             */
+            current_permission_mode: "full" | "restricted";
+            /** Proposed Permissions */
+            proposed_permissions?: string[];
+            /** Source Permissions */
+            source_permissions?: string[];
+            /** Observed Permissions */
+            observed_permissions?: string[];
+            /** Observed Operations */
+            observed_operations?: string[];
+            /** Evidence */
+            evidence?: components["schemas"]["WorkflowConversionEvidence"][];
+            /** Unknowns */
+            unknowns?: string[];
+            /** Warnings */
+            warnings?: string[];
+            identity?: components["schemas"]["WorkflowConversionIdentitySummary"] | null;
+            solution_permission_request?: components["schemas"]["WorkflowConversionSolutionRequestSummary"] | null;
+            /** Error */
+            error?: string | null;
+            /** Review */
+            review?: {
+                [key: string]: unknown;
+            } | null;
+        };
+        /** WorkflowConversionReportSummary */
+        WorkflowConversionReportSummary: {
+            /**
+             * Platform Cutover
+             * @default false
+             */
+            platform_cutover: boolean;
+            /** Analyzer Version */
+            analyzer_version: string;
+            /** Total */
+            total: number;
+            /**
+             * Ready
+             * @default 0
+             */
+            ready: number;
+            /**
+             * Needs Review
+             * @default 0
+             */
+            needs_review: number;
+            /**
+             * Blocked
+             * @default 0
+             */
+            blocked: number;
+            /**
+             * Already Declared
+             * @default 0
+             */
+            already_declared: number;
+            /**
+             * Stale
+             * @default 0
+             */
+            stale: number;
+            /**
+             * Observation Window Days
+             * @default 30
+             */
+            observation_window_days: number;
+            /**
+             * Default Permission Mode
+             * @enum {string}
+             */
+            default_permission_mode: "full" | "restricted";
+            /**
+             * Cutover Ready
+             * @default false
+             */
+            cutover_ready: boolean;
+            /**
+             * Remaining Full
+             * @default 0
+             */
+            remaining_full: number;
+        };
+        /** WorkflowConversionSelection */
+        WorkflowConversionSelection: {
+            /**
+             * Workflow Id
+             * Format: uuid
+             */
+            workflow_id: string;
+            /** Source Fingerprint */
+            source_fingerprint: string;
+            /**
+             * Acknowledged Unknowns
+             * @default false
+             */
+            acknowledged_unknowns: boolean;
+        };
+        /** WorkflowConversionSolutionRequestSummary */
+        WorkflowConversionSolutionRequestSummary: {
+            /** Status */
+            status: string;
+            /** Request Digest */
+            request_digest: string;
+            /** Approved Digest */
+            approved_digest?: string | null;
+            /** Requested Mode */
+            requested_mode: string;
+            /** Requested Permissions */
+            requested_permissions?: string[];
         };
         /**
          * WorkflowExecution
@@ -35957,6 +36434,143 @@ export interface operations {
             };
         };
     };
+    "workflows.conversions.create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkflowConversionAnalyzeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformJobAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "workflows.conversions.get": {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowConversionReport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "workflows.conversions.update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkflowConversionApplyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformJobAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "workflows.permission_default.update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkflowConversionCutoverRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformJobAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     "forms.list": {
         parameters: {
             query?: {
@@ -39985,6 +40599,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SDKIntegrationsMappingItem"] | null;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sdk_integrations_find_mapping_api_sdk_integrations_find_mapping_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SDKIntegrationsFindMappingRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SDKIntegrationsFindMappingResponse"] | null;
                 };
             };
             /** @description Validation Error */
@@ -46516,6 +47163,132 @@ export interface operations {
             };
         };
     };
+    get_package_branding_api_mcp_run_branding_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPPackageBranding"];
+                };
+            };
+        };
+    };
+    update_package_branding_api_mcp_run_branding_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MCPPackageBrandingUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPPackageBranding"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_package_logo_api_mcp_run_branding_logo_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    upload_package_logo_api_mcp_run_branding_logo_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_package_logo_api_mcp_run_branding_logo_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPPackageBranding"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_package_logo_api_mcp_run_branding_logo_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPPackageBranding"];
+                };
+            };
+        };
+    };
     mcp_status_api_mcp_status_get: {
         parameters: {
             query?: never;
@@ -49264,6 +50037,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SolutionDeletionSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "solutions.app_builds.lookup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SolutionAppBuildLookup"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SolutionAppBuildMatches"];
                 };
             };
             /** @description Validation Error */

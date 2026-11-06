@@ -190,9 +190,11 @@ CLI_ROUTES: tuple[str, ...] = ("/api/version",)
 #: Committed fingerprint of the contract surface above. If a code change flips
 #: the live fingerprint, this test fails — update this value, and raise the
 #: server's MIN_CLI_VERSION IF the change requires a new CLI. See module docstring.
+# Additive Solution build-lookup DTOs; existing CLI/SDK contracts are unchanged.
 # Additive Global scope marker on the existing string org_id field; its
 # description now documents that value. Existing CLI shapes and minimum version
 # are unchanged.
+# Additive agent package branding settings models; existing CLI shapes are unchanged.
 EXPECTED_CONTRACT_FINGERPRINT = (
     # ApplicationCreate.app_model default flipped inline_v1 → standalone_v2
     # (2026-06-13). CONTRACT_VERSION bumped to 3: an old CLI would default a new
@@ -406,9 +408,15 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # clients can ignore the additive field; the CLI minimum remains unchanged.
     # External capacity models and daily UsageReport are both additive.
     # Preserve both merged surfaces; existing CLI/SDK shapes and minimum stay unchanged.
-    # App consent models and the Global org_id scope marker are additive.
-    # Existing CLI shapes and minimum version remain unchanged (2026-11-04).
-    "7dfcf4345ddc44ffc94aaf4445547640dd77ded3ab6a1fb57a50186c543d2b32"
+    # Workflow conversion commands and report DTOs are additive; CLI compatibility is unchanged.
+    # App consent models are additive; existing CLI minimum stays unchanged.
+    # The existing org_id string also accepts the additive Global scope marker.
+    # Only its description changes in the DTO; existing CLI shapes and minimum stay unchanged.
+    #
+    # SDK exact integration-mapping lookup (2026-11-03, #1016). ADDITIVE: new
+    # find_mapping request/response DTOs plus the worker-socket route; existing
+    # get/list/get_mapping shapes are unchanged, so the CLI minimum is unchanged.
+    "455f08e75558f49330b1a18f5179a27776d069b015d1e5941f4a52f09b256da6"
 )
 
 

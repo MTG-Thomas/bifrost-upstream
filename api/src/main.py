@@ -14,6 +14,7 @@ from fastapi import FastAPI
 
 from src.config import get_settings
 from src.core.cache.redis_client import close_shared_redis, initialize_shared_redis
+from src.core.s3_transport import close_shared_s3_client
 from src.core.csrf import CSRFMiddleware
 from src.core.embed_middleware import EmbedScopeMiddleware
 from src.core.request_body_limit import RouteBodyLimitMiddleware
@@ -107,6 +108,7 @@ from src.routers.users import router as users_router
 from src.routers.version import router as version_router
 from src.routers.websocket import router as websocket_router
 from src.routers.workflow_keys import router as workflow_keys_router
+from src.routers.workflow_conversions import router as workflow_conversions_router
 from src.routers.workflows import router as workflows_router
 from src.worker.remote.host import (
     router as remote_control_router,
@@ -246,6 +248,7 @@ async def app_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     await close_ai_retry_http_client()
     await pubsub_manager.close()
+    await close_shared_s3_client()
     await close_shared_redis()
     await close_health_check_clients()
     await close_db()
@@ -453,6 +456,7 @@ def create_app() -> FastAPI:
     app.include_router(permissions_router)
     app.include_router(executions_router)
     app.include_router(workflows_router)
+    app.include_router(workflow_conversions_router)
     app.include_router(forms_router)
     app.include_router(config_router)
     app.include_router(websocket_router)

@@ -1951,10 +1951,12 @@ _ELEVATED_SITES: dict[str, tuple[int, str | tuple[str, ...]]] = {
     "src.core.auth._get_current_user_optional": (3, "actor_facts"),
     "src.core.auth.get_original_human_user": (2, "actor_facts"),
     "src.core.auth.get_current_user_ws": (3, "actor_facts"),
+    "src.jobs.consumers.workflow_execution.WorkflowExecutionConsumer.process_message": (1, "actor_facts"),
     "src.jobs.consumers.agent_run._load_acting_user": (2, "actor_facts"),
     "src.jobs.consumers.agent_run._load_run_as": (3, "actor_facts"),
     "src.jobs.platform.application_publish.run_application_publish": (1, "internal_authorized_resource"),
     "src.jobs.schedulers.deferred_execution_promoter._pending_record": (2, "actor_facts"),
+    "src.repositories.oauth.OAuthTokenRepository.get_exact_org_level_for_provider": (1, "internal_authorized_resource"),
     "src.repositories.oauth.OAuthTokenRepository.get_org_level_for_provider": (1, "internal_authorized_resource"),
     "src.repositories.org_scoped.OrgScopedRepository._authenticated_tier_grants": (1, "internal_authorized_resource"),
     "src.repositories.users.UserRepository.has_any_users": (1, "internal_authorized_resource"),
@@ -1976,6 +1978,10 @@ _ELEVATED_SITES: dict[str, tuple[int, str | tuple[str, ...]]] = {
     "src.routers.tables.create_table": (1, "internal_authorized_resource"),
     "src.routers.tables.update_table": (1, "internal_authorized_resource"),
     "src.routers.tables.validate_policies": (1, "internal_authorized_resource"),
+    # Conversion deliberately adds a current Platform Admin restriction to
+    # its named operation gate, both at enqueue and in the durable runner.
+    "src.routers.workflow_conversions._admin_caller": (1, "route"),
+    "shared.workflow_conversions._require_current_conversion_admin": (1, "route"),
     "src.routers.users.create_user": (2, "actor_facts"),
     "src.routers.users.get_user_forms": (2, "internal_authorized_resource"),
     "src.routers.users.update_user": (2, "actor_facts"),
@@ -2104,9 +2110,10 @@ _REDIS_AUTHORITY_READS: dict[str, tuple[int, str]] = {
     "src.core.embed_middleware.embed_session_owns_execution": (1, "cutover"),
     "src.core.locks.DistributedLockService.extend_lock": (1, "cutover"),
     "src.core.locks.DistributedLockService.release_lock": (1, "cutover"),
-    "src.core.module_cache.get_module": (1, "cutover"),
+    "src.core.module_cache.get_module": (2, "cutover"),  # Source read and generation-fenced refill.
     "src.core.module_cache.get_module_resolution_cache": (1, "cutover"),
     "src.core.module_cache.get_module_resolution_generation": (1, "cutover"),
+    "src.core.module_cache.refresh_modules_from_directory": (1, "cutover"),  # Executable-source index reconciliation.
     "src.core.module_cache.set_module_resolution_cache": (1, "cutover"),
     "src.core.module_cache_sync._get_cached_module_resolution": (2, "cutover"),
     "src.core.module_cache_sync._get_exact_scoped_module": (1, "cutover"),
@@ -2148,6 +2155,10 @@ _REDIS_PLAIN_READS: dict[str, tuple[int, str]] = {
         1, "Reads the Redis source stream before staging durable log rows.",
     ),
     "shared.role_cache.invalidate_role": (1, "Scans role-cache entries to delete them."),
+    "shared.runtime_modules.read_runtime_modules": (
+        1,
+        "Worker-reported installed import roots for permission-scan diagnostics; never grants access or loads code.",
+    ),
     "src.core.cache.data_provider_cache.get_cached_result": (1, "Cached data-provider options for a form field."),
     "src.core.cache.keys._current_global_version": (1, "Cache version counter."),
     "src.core.cache.keys.config_hash_key_versioned": (
