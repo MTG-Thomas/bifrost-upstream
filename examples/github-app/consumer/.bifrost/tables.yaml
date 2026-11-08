@@ -1,0 +1,35 @@
+{
+  "tables": {
+    "9d40a37a-85de-592c-9d85-755a8f48b205": {
+      "id": "9d40a37a-85de-592c-9d85-755a8f48b205",
+      "name": "github_app_receipts",
+      "policies": [
+        {
+          "name": "admin_maintenance",
+          "actions": [
+            "read",
+            "create",
+            "update",
+            "delete"
+          ],
+          "when": {
+            "user": "is_platform_admin"
+          }
+        },
+        {
+          "name": "append_only_package_runtime",
+          "actions": [
+            "read",
+            "create"
+          ],
+          "when": {
+            "call": "has_role",
+            "args": [
+              "GitHub App Consumers"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

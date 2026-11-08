@@ -1,0 +1,66 @@
+{
+  "forms": {
+    "515da4d4-af10-576f-bdb4-2652c7462427": {
+      "id": "515da4d4-af10-576f-bdb4-2652c7462427",
+      "name": "GitHub App Setup And Health",
+      "workflow_id": "2132636f-1e52-5596-94c5-8b764eb1491e",
+      "access_level": "role_based",
+      "role_names": [
+        "GitHub App Operators"
+      ],
+      "form_schema": {
+        "fields": [
+          {
+            "name": "action",
+            "label": "Action",
+            "type": "select",
+            "required": true,
+            "default_value": "health",
+            "options": [
+              {
+                "label": "Health",
+                "value": "health"
+              },
+              {
+                "label": "Verify And Bind",
+                "value": "bind"
+              },
+              {
+                "label": "Reconcile Inventory",
+                "value": "reconcile"
+              },
+              {
+                "label": "Recent Deliveries",
+                "value": "deliveries"
+              },
+              {
+                "label": "Request Redelivery",
+                "value": "redeliver"
+              }
+            ]
+          },
+          {
+            "name": "installation_id",
+            "label": "Installation ID",
+            "type": "text"
+          },
+          {
+            "name": "organization_id",
+            "label": "Destination Organization ID",
+            "type": "text"
+          },
+          {
+            "name": "consumer_solution_id",
+            "label": "Consumer Solution ID",
+            "type": "text"
+          },
+          {
+            "name": "provider_delivery_id",
+            "label": "Provider Delivery ID",
+            "type": "text"
+          }
+        ]
+      }
+    }
+  }
+}

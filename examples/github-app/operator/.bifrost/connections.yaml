@@ -1,0 +1,21 @@
+{
+  "connections": {
+    "GitHub App Operator": {
+      "integration_name": "GitHub App Operator",
+      "template": {
+        "config_schema": [
+          {
+            "key": "app_id",
+            "type": "string",
+            "required": true
+          },
+          {
+            "key": "private_key",
+            "type": "secret",
+            "required": true
+          }
+        ]
+      }
+    }
+  }
+}

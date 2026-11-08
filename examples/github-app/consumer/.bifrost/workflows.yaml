@@ -1,0 +1,26 @@
+{
+  "workflows": {
+    "31e29fdd-a1be-5c4d-ae76-a4a5e6ff3492": {
+      "id": "31e29fdd-a1be-5c4d-ae76-a4a5e6ff3492",
+      "name": "GitHub App Event Receipt",
+      "path": "workflows/receipt.py",
+      "function_name": "record",
+      "type": "workflow",
+      "access_level": "role_based",
+      "role_names": [
+        "GitHub App Consumers"
+      ],
+      "timeout_seconds": 600,
+      "public_endpoint": false,
+      "endpoint_enabled": false,
+      "requested_permissions": {
+        "mode": "restricted",
+        "grants": [
+          {
+            "permission": "tables.readwrite"
+          }
+        ]
+      }
+    }
+  }
+}

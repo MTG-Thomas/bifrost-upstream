@@ -1,0 +1,133 @@
+{
+  "workflows": {
+    "2132636f-1e52-5596-94c5-8b764eb1491e": {
+      "id": "2132636f-1e52-5596-94c5-8b764eb1491e",
+      "name": "GitHub App Operator",
+      "path": "workflows/operator.py",
+      "function_name": "manage",
+      "type": "workflow",
+      "access_level": "role_based",
+      "role_names": [
+        "GitHub App Operators"
+      ],
+      "timeout_seconds": 600,
+      "public_endpoint": false,
+      "endpoint_enabled": false,
+      "requested_permissions": {
+        "mode": "restricted",
+        "grants": [
+          {
+            "permission": "tables.readwrite"
+          },
+          {
+            "permission": "events.read"
+          },
+          {
+            "permission": "events.readwrite"
+          },
+          {
+            "permission": "integrations.read"
+          },
+          {
+            "permission": "configs.readwrite"
+          },
+          {
+            "permission": "secrets.read"
+          },
+          {
+            "permission": "solutions.read"
+          },
+          {
+            "permission": "configs.read"
+          }
+        ]
+      }
+    },
+    "7530f41f-799a-5a13-bd30-3e90f66989dd": {
+      "id": "7530f41f-799a-5a13-bd30-3e90f66989dd",
+      "name": "GitHub App Signed Intake",
+      "path": "workflows/operator.py",
+      "function_name": "receive",
+      "type": "workflow",
+      "access_level": "role_based",
+      "role_names": [
+        "GitHub App Operators"
+      ],
+      "timeout_seconds": 600,
+      "public_endpoint": false,
+      "endpoint_enabled": false,
+      "requested_permissions": {
+        "mode": "restricted",
+        "grants": [
+          {
+            "permission": "tables.readwrite"
+          },
+          {
+            "permission": "events.read"
+          },
+          {
+            "permission": "events.readwrite"
+          },
+          {
+            "permission": "integrations.read"
+          },
+          {
+            "permission": "configs.readwrite"
+          },
+          {
+            "permission": "secrets.read"
+          },
+          {
+            "permission": "solutions.read"
+          },
+          {
+            "permission": "configs.read"
+          }
+        ]
+      }
+    },
+    "4984e82c-c67d-5282-91b9-2d9993e0d85f": {
+      "id": "4984e82c-c67d-5282-91b9-2d9993e0d85f",
+      "name": "GitHub App Reconciliation",
+      "path": "workflows/operator.py",
+      "function_name": "reconcile_all",
+      "type": "workflow",
+      "access_level": "role_based",
+      "role_names": [
+        "GitHub App Operators"
+      ],
+      "timeout_seconds": 600,
+      "public_endpoint": false,
+      "endpoint_enabled": false,
+      "requested_permissions": {
+        "mode": "restricted",
+        "grants": [
+          {
+            "permission": "tables.readwrite"
+          },
+          {
+            "permission": "events.read"
+          },
+          {
+            "permission": "events.readwrite"
+          },
+          {
+            "permission": "integrations.read"
+          },
+          {
+            "permission": "configs.readwrite"
+          },
+          {
+            "permission": "secrets.read"
+          },
+          {
+            "permission": "solutions.read"
+          },
+          {
+            "permission": "configs.read"
+          }
+        ]
+      }
+    }
+  }
+}

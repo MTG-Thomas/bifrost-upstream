@@ -1,0 +1,7 @@
+{
+  "slug": "github-app-operator",
+  "name": "GitHub App Operator",
+  "version": "0.1.0",
+  "allow_outbound_access": true,
+  "allow_inbound_access": false
+}

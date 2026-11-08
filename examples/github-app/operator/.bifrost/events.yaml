@@ -1,0 +1,43 @@
+{
+  "events": {
+    "c9802f4d-73ba-5fba-b425-17d3373cbffc": {
+      "id": "c9802f4d-73ba-5fba-b425-17d3373cbffc",
+      "name": "GitHub App Signed Ingress",
+      "source_type": "webhook",
+      "is_active": false,
+      "adapter_name": "generic",
+      "rate_limit_per_minute": 240,
+      "webhook_config": {
+        "signature_header": "X-Hub-Signature-256",
+        "signature_prefix": "sha256=",
+        "event_type_header": "X-GitHub-Event",
+        "delivery_id_header": "X-GitHub-Delivery"
+      },
+      "subscriptions": [
+        {
+          "id": "845bedb3-443c-5e5f-bc28-a427ccf0a553",
+          "workflow_id": "7530f41f-799a-5a13-bd30-3e90f66989dd",
+          "input_mapping": {
+            "headers": "{{ headers }}"
+          }
+        }
+      ]
+    },
+    "f814c82b-8fa5-5053-8a75-c162f8186887": {
+      "id": "f814c82b-8fa5-5053-8a75-c162f8186887",
+      "name": "GitHub App Periodic Reconciliation",
+      "source_type": "schedule",
+      "cron_expression": "*/1 * * * *",
+      "timezone": "UTC",
+      "is_active": false,
+      "schedule_enabled": false,
+      "overlap_policy": "skip",
+      "subscriptions": [
+        {
+          "id": "6be981ed-16fe-500b-9677-a65c5320360c",
+          "workflow_id": "4984e82c-c67d-5282-91b9-2d9993e0d85f"
+        }
+      ]
+    }
+  }
+}

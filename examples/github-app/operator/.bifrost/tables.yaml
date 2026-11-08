@@ -1,0 +1,35 @@
+{
+  "tables": {
+    "93e227a2-531d-558a-ba1b-ce5e16084a9a": {
+      "id": "93e227a2-531d-558a-ba1b-ce5e16084a9a",
+      "name": "github_app_state",
+      "policies": [
+        {
+          "name": "admin_maintenance",
+          "actions": [
+            "read",
+            "create",
+            "update",
+            "delete"
+          ],
+          "when": {
+            "user": "is_platform_admin"
+          }
+        },
+        {
+          "name": "append_only_package_runtime",
+          "actions": [
+            "read",
+            "create"
+          ],
+          "when": {
+            "call": "has_role",
+            "args": [
+              "GitHub App Operators"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "events": {
+    "b3a4af45-9cd9-5b57-b5ce-4356daae585b": {
+      "id": "b3a4af45-9cd9-5b57-b5ce-4356daae585b",
+      "name": "GitHub App Events",
+      "source_type": "topic",
+      "event_type": "github.app.event",
+      "subscriptions": [
+        {
+          "id": "f457deee-814c-5c16-b52a-0437f6ddc049",
+          "workflow_id": "31e29fdd-a1be-5c4d-ae76-a4a5e6ff3492"
+        }
+      ]
+    }
+  }
+}
