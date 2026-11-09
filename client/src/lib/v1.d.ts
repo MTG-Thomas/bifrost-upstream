@@ -19543,6 +19543,13 @@ export interface components {
              */
             upload_url: string;
             /**
+             * Headers
+             * @description Required upload request headers
+             */
+            headers?: {
+                [key: string]: string;
+            };
+            /**
              * Blob Uri
              * @description Final file URI
              */
@@ -24062,11 +24069,16 @@ export interface components {
              */
             private_key_alg?: string | null;
             /**
+             * Trust Email For Linking
+             * @description Whether the generic OIDC provider is trusted for email-based linking and provisioning
+             * @default false
+             */
+            trust_email_for_linking: boolean;
+            /**
              * Scopes
              * @description Requested OAuth scopes
-             * @default []
              */
-            scopes: string[];
+            scopes?: string[];
             /**
              * Tenant Id
              * @description Microsoft tenant ID
@@ -24145,6 +24157,12 @@ export interface components {
              * @description OAuth scopes to request. Omit for the provider default (openid email profile; Microsoft also requests User.Read). openid is required so an id_token is returned.
              */
             scopes?: string[] | null;
+            /**
+             * Trust Email For Linking
+             * @description Trust this configured provider as the authority for email-based account linking and organization provisioning even without email_verified=true. Enable only when the provider controls email addresses and prevents impersonation.
+             * @default false
+             */
+            trust_email_for_linking: boolean;
             /**
              * Discovery Url
              * @description OIDC discovery URL (must be HTTPS, e.g., https://provider.com/.well-known/openid-configuration)
@@ -26041,7 +26059,7 @@ export interface components {
             function_name: string;
             /**
              * Organization Id
-             * @description Organization ID to scope the workflow to, or null for global scope
+             * @description Organization ID to scope the workflow to. Omit to preserve the stored organization when reactivating; new registrations default to the caller's runtime or home organization. Pass null for global scope.
              */
             organization_id?: string | null;
             /**
@@ -28176,6 +28194,10 @@ export interface components {
             method: "PUT" | "GET";
             /** Url */
             url?: string | null;
+            /** Headers */
+            headers?: {
+                [key: string]: string;
+            };
             /**
              * Expires In
              * @default 600
@@ -28237,9 +28259,16 @@ export interface components {
         SignedUrlResponse: {
             /**
              * Url
-             * @description Presigned S3 URL
+             * @description Signed object storage URL
              */
             url: string;
+            /**
+             * Headers
+             * @description Required signed-request headers
+             */
+            headers?: {
+                [key: string]: string;
+            };
             /**
              * Path
              * @description Full S3 path
