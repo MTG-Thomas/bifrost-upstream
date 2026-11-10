@@ -31,7 +31,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -167,6 +167,7 @@ def convert_workflow_orm_to_schema(
         role_ids=[str(role_id) for role_id in (role_ids or [])],
         parameters=parameters,
         execution_mode=execution_mode,
+        execution_lane=workflow.execution_lane or "auto",
         timeout_seconds=workflow.timeout_seconds if workflow.timeout_seconds is not None else 1800,
         memory_request_mib=workflow.memory_request_mib,
         learned_memory_bytes=workflow.learned_memory_bytes,
@@ -497,6 +498,7 @@ def to_execution_summary(execution):
         executed_by_name=execution.executed_by_name or str(execution.executed_by),
         executed_by_email=execution.executed_by_user.email if hasattr(execution, "executed_by_user") and execution.executed_by_user else None,
         status=ExecutionStatus(execution.status),
+        execution_lane=execution.execution_lane or "normal",
         result_type=execution.result_type,
         error_message=execution.error_message,
         duration_ms=execution.duration_ms,
@@ -598,12 +600,19 @@ async def list_sdk_executions(
     if statuses is not None:
         query = query.where(ExecutionModel.status.in_(statuses))
 
+    timeline_at = func.coalesce(
+        ExecutionModel.started_at,
+        ExecutionModel.scheduled_at,
+        ExecutionModel.completed_at,
+        ExecutionModel.created_at,
+    )
+
     if start_date:
         try:
             start_dt = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
             if start_dt.tzinfo is not None:
-                start_dt = start_dt.replace(tzinfo=None)
-            query = query.where(ExecutionModel.started_at >= start_dt)
+                start_dt = start_dt.astimezone(timezone.utc)
+            query = query.where(timeline_at >= start_dt)
         except ValueError as e:
             logger.debug(f"invalid start_date {log_safe(start_date)!r}, ignoring filter: {log_safe(e)}")
 
@@ -611,17 +620,11 @@ async def list_sdk_executions(
         try:
             end_dt = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
             if end_dt.tzinfo is not None:
-                end_dt = end_dt.replace(tzinfo=None)
-            query = query.where(ExecutionModel.started_at <= end_dt)
+                end_dt = end_dt.astimezone(timezone.utc)
+            query = query.where(timeline_at <= end_dt)
         except ValueError as e:
             logger.debug(f"invalid end_date {log_safe(end_date)!r}, ignoring filter: {log_safe(e)}")
 
-    timeline_at = func.coalesce(
-        ExecutionModel.started_at,
-        ExecutionModel.scheduled_at,
-        ExecutionModel.completed_at,
-        ExecutionModel.created_at,
-    )
     query = query.order_by(
         desc(timeline_at),
         desc(ExecutionModel.id),
