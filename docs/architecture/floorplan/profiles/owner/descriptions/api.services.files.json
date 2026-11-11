@@ -88,10 +88,6 @@
       "name": "Moving one file",
       "description": "Moves a single file to a new place safely, without leaving duplicates or half-copied versions."
     },
-    "api/src/services/file_storage/s3_client.py": {
-      "name": "Cloud file storage",
-      "description": "Talks to the cloud storage that holds workspace files and makes sure copies and moves never clash."
-    },
     "api/src/services/file_storage/service.py": {
       "name": "File workspace",
       "description": "The one place every screen and workflow goes to read, save, move or remove workspace files."
