@@ -1,0 +1,18 @@
+{
+  "key": "pr:17",
+  "classification": "omit",
+  "entry_ids": [],
+  "reason": "Local Cowork packaging script rejects unsafe external skill names. No in-app product change and no customer security disclosure.",
+  "review": {
+    "status": "draft",
+    "evidence": [
+      "https://github.com/MTG-Thomas/bifrost-upstream/pull/17",
+      "https://github.com/Midtown-Technology-Group/bifrost/pull/1246",
+      "https://github.com/gobifrost/bifrost/issues/1197",
+      "Focused pytest tests/unit/test_copilot_cowork_packager.py: 8 passed. API ruff and pyright passed. Skill mirrors checked fresh."
+    ]
+  },
+  "security_review": {
+    "status": "not_required"
+  }
+}
