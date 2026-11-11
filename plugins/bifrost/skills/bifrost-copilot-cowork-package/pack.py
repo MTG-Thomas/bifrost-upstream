@@ -29,6 +29,7 @@ from pathlib import Path
 COWORK_NAMESPACE = uuid.UUID("6ba7b812-9dad-11d1-80b4-00c04fd430c8")
 
 JUNK_NAMES = {".DS_Store", "Thumbs.db", "desktop.ini", ".AppleDouble", ".Spotlight-V100", ".Trashes"}
+SKILL_NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 def is_junk(path: Path) -> bool:
@@ -41,6 +42,16 @@ def kebab(s: str) -> str:
     s = re.sub(r"[^a-zA-Z0-9]+", "-", s).strip("-").lower()
     s = re.sub(r"-+", "-", s)
     return s or "agent"
+
+
+def validate_skill_name(name: str) -> str:
+    """Reject external names that could escape package staging paths."""
+    if not SKILL_NAME_PATTERN.fullmatch(name):
+        raise RuntimeError(
+            "SKILL.md `name:` must be a lowercase kebab-case slug "
+            "containing only letters, digits, and single hyphens"
+        )
+    return name
 
 
 def reverse_dns(name: str) -> str:
@@ -160,7 +171,7 @@ def load_skill_source(path: Path) -> tuple[Path, str, str, Path | None]:
         desc = " ".join(l for l in desc_lines if l)
     if not name:
         raise RuntimeError("SKILL.md frontmatter missing `name:`")
-    return skill_dir, name, desc, cleanup
+    return skill_dir, validate_skill_name(name), desc, cleanup
 
 
 def build_skill_md(agent: dict, skill_name: str) -> str:
