@@ -5,7 +5,7 @@
   "version": "0.0.1",
   "description": "Tooling for the gobifrost screenshot pipeline.",
   "scripts": {
-    "test": "node --test post-process.test.mjs"
+    "test": "node --test post-process.test.mjs decide-captures.test.mjs"
   },
   "dependencies": {
     "js-yaml": "^5.5.0",

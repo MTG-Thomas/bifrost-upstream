@@ -12,7 +12,7 @@
  */
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import * as yaml from "js-yaml";
 
 // js-yaml v5 defaults to YAML 1.2 CORE_SCHEMA, which treats `<<` as a plain
@@ -42,19 +42,23 @@ function parseArgs(argv) {
   return out;
 }
 
+const FULL_COMMIT_SHA = /^[0-9a-f]{40}$/i;
+
 function pathChanged(repo, sinceSha, globs) {
   if (!sinceSha) return true; // never captured before
-  if (!globs || !globs.length) return true; // no globs = always recapture
+  if (!Array.isArray(globs) || globs.length === 0) return true; // no globs = always recapture
+  // Manifest fields are data. Only a full commit id reaches git, and each
+  // pathspec is one argv element, so neither value is parsed by a shell.
+  if (typeof sinceSha !== "string" || !FULL_COMMIT_SHA.test(sinceSha)) return true;
+  if (!globs.every((glob) => typeof glob === "string")) return true;
+  const gitOptions = { cwd: repo, stdio: "ignore", shell: false };
   try {
-    execSync("git rev-parse --verify " + sinceSha, { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["rev-parse", "--verify", `${sinceSha}^{commit}`], gitOptions);
   } catch {
     return true; // unknown sha — treat as changed
   }
   try {
-    execSync(`git diff --quiet ${sinceSha} HEAD -- ${globs.map((g) => `'${g}'`).join(" ")}`, {
-      cwd: repo,
-      stdio: "ignore",
-    });
+    execFileSync("git", ["diff", "--quiet", sinceSha, "HEAD", "--", ...globs], gitOptions);
     return false;
   } catch {
     return true;
