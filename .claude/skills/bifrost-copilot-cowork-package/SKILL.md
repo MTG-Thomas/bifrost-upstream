@@ -61,6 +61,7 @@ The script's stdout is JSON: `{zip, package_dir, app_id, mcp_url, skill_name, au
 ## Conventions
 
 - Skill folder name = `kebab(agent.name)` and must match the `name:` field in `SKILL.md` (M365 validation rule ASKILL-P006).
+- An external `--skill-source` must declare a lowercase kebab-case `name:` containing only letters, digits, and single hyphens. Reject unsafe or noncanonical names before creating or removing package paths.
 - `app_id` is `uuid5(cowork_namespace, agent.id)` — deterministic, so re-running on the same agent produces the same M365 app GUID.
 - `packageName` is `com.bifrost.<flattened-agent-name>`.
 - Description in `SKILL.md` frontmatter is forced to start with "Use when:" if the agent description doesn't already (M365 best practice).
