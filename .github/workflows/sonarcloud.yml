@@ -1,0 +1,36 @@
+# SonarQube Cloud — fork-only static analysis (MTG-Thomas/bifrost-upstream).
+# Upstream gobifrost/bifrost intentionally has no Sonar (Tier 3, explicitly
+# skipped), so this workflow lives on the fork only and is never ported back.
+# Requires the SONAR_TOKEN repo secret (set once after the SonarCloud import
+# tutorial). PR decoration uses the tutorial's project binding; no extra
+# permissions beyond checkout are needed for same-repo PRs.
+
+name: SonarCloud
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sonarcloud:
+    name: SonarCloud
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # full clone for blame / new-code detection
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@e805d875275f728fac1885b413934be6d7c63f65 # v8.4.1
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
