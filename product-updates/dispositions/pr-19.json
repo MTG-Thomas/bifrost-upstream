@@ -1,1 +1,1 @@
-{"classification":"omit","entry_ids":[],"key":"pr:19","reason":"Fork-only SonarCloud scan setup (workflow + properties); no customer-facing change.","review":{"evidence":["https://github.com/MTG-Thomas/bifrost-upstream/pull/19"],"status":"approved"}}
+{"classification":"omit","entry_ids":[],"key":"pr:19","reason":"Fork-only SonarCloud Automatic Analysis config (.sonarcloud.properties); no customer-facing change.","review":{"evidence":["https://github.com/MTG-Thomas/bifrost-upstream/pull/19"],"status":"approved"}}
