@@ -56,12 +56,16 @@ class TestEnvBackend:
         backend = EnvBackend()
         assert backend.get("http://localhost:38421") is None
 
-    def test_returns_none_when_refresh_token_missing(self, monkeypatch):
+    def test_access_token_without_refresh_is_a_workload_session(self, monkeypatch):
         monkeypatch.setenv("BIFROST_API_URL", "http://localhost:38421")
-        monkeypatch.setenv("BIFROST_ACCESS_TOKEN", "at")
+        payload = "eyJleHAiOjQxMDI0NDQ4MDB9"
+        monkeypatch.setenv("BIFROST_ACCESS_TOKEN", f"header.{payload}.sig")
         monkeypatch.delenv("BIFROST_REFRESH_TOKEN", raising=False)
         backend = EnvBackend()
-        assert backend.get("http://localhost:38421") is None
+        result = backend.get("http://localhost:38421")
+        assert result is not None
+        assert result.refresh_token == ""
+        assert result.expires_at.startswith("2100-01-01")
 
     def test_save_is_noop(self, monkeypatch):
         backend = EnvBackend()

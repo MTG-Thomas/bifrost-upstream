@@ -370,6 +370,9 @@ async def _refresh_locked(
             return stored_access_token
 
         refresh_token = coordinator.latest_refresh_token or stored_refresh_token
+        # Workload exchanges store an access token and no refresh token.
+        if not refresh_token:
+            return None
 
         async with httpx.AsyncClient(base_url=normalized_url, timeout=30.0) as client:
             response = await client.post(
