@@ -1,0 +1,22 @@
+{
+  "key": "pr:24",
+  "classification": "other",
+  "entry_ids": [],
+  "category": "hardening",
+  "summary": "Local CLI hardening blocks shell injection in docs capture, unsafe Cowork skill names, symlink overwrites of the version notice, and terminal escapes in watch output.",
+  "review": {
+    "status": "draft",
+    "evidence": [
+      "https://github.com/MTG-Thomas/bifrost-upstream/pull/24",
+      "https://github.com/Midtown-Technology-Group/bifrost/pull/1218",
+      "https://github.com/Midtown-Technology-Group/bifrost/pull/1246",
+      "https://github.com/Midtown-Technology-Group/bifrost/pull/1263",
+      "https://github.com/Midtown-Technology-Group/bifrost/pull/1313",
+      "https://github.com/gobifrost/bifrost/issues/1197"
+    ]
+  },
+  "security_review": {
+    "status": "required",
+    "review_ref": "https://github.com/MTG-Thomas/bifrost-upstream/pull/24"
+  }
+}
