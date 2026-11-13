@@ -150,6 +150,22 @@ class TestRedactSecrets:
         assert result["api_key"] == "[REDACTED]"
         assert result["message"] == "ok"
 
+    def test_longer_secret_is_replaced_before_its_prefix(self):
+        result = redact_secrets(
+            "prefix-secret-value",
+            {"secret", "secret-value"},
+        )
+        assert result == "prefix-[REDACTED]"
+
+    def test_dict_keys_stay_in_place_unless_requested(self):
+        secret = "my-secret-key"
+        obj = {secret: "visible", "ordinary": "ok"}
+        assert redact_secrets(obj, {secret}) == obj
+        redacted = redact_secrets(obj, {secret}, redact_keys=True)
+        assert secret not in redacted
+        assert redacted["ordinary"] == "ok"
+        assert redacted["[REDACTED_KEY_1]"] == "visible"
+
 
 class TestEngineOutputScrubbing:
     """Test that engine scrubs secrets from result, variables, error_message, and logs."""

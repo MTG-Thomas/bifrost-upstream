@@ -190,3 +190,15 @@ def register_secret(value: "str | None") -> None:
             _pending_secrets.add(value)
         return
     ctx._register_dynamic_secret(value)
+
+
+def collect_registered_secrets() -> set[str]:
+    """Return plaintext secrets registered for output scrubbing.
+
+    Includes the active execution context, when one exists, and secrets
+    recorded before a context was set. Does not create a context.
+    """
+    ctx = _execution_context.get()
+    registered = ctx._collect_secret_values() if ctx is not None else set()
+    pending = {value for value in _pending_secrets if isinstance(value, str)}
+    return registered | pending
