@@ -75,6 +75,7 @@ from src.routers.mfa import router as mfa_router
 from src.routers.model_catalog import router as model_catalog_router
 from src.routers.notifications import router as notifications_router
 from src.routers.oauth_config import router as oauth_config_router
+from src.routers.workload_trust import router as workload_trust_router
 from src.routers.oauth_connections import router as oauth_connections_router
 from src.routers.oauth_sso import router as oauth_router
 from src.routers.organizations import router as organizations_router
@@ -501,6 +502,7 @@ def create_app() -> FastAPI:
     app.include_router(usage_reports_router)
     app.include_router(ai_pricing_router)
     app.include_router(oauth_config_router)
+    app.include_router(workload_trust_router)
     app.include_router(tools_router)
     app.include_router(mcp_router)
     app.include_router(events_router)
