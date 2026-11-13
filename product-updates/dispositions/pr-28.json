@@ -1,0 +1,13 @@
+{
+  "key": "pr:28",
+  "classification": "other",
+  "entry_ids": [],
+  "summary": "CI and workloads can exchange a GitHub Actions or Azure managed-identity token for a short-lived BiFrost access token.",
+  "review": {
+    "status": "draft",
+    "evidence": [
+      "https://github.com/MTG-Thomas/bifrost-upstream/pull/28",
+      "Pending review of this announcement. The design note lists the open questions."
+    ]
+  }
+}
