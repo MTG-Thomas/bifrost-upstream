@@ -1,0 +1,15 @@
+{
+  "key": "pr:34",
+  "classification": "other",
+  "entry_ids": [],
+  "summary": "Importing an integration that carries an OAuth client secret works again.",
+  "category": "fix",
+  "review": {
+    "status": "draft",
+    "evidence": [
+      "https://github.com/MTG-Thomas/bifrost-upstream/pull/34",
+      "https://github.com/Midtown-Technology-Group/bifrost/pull/1281",
+      "https://github.com/gobifrost/bifrost/issues/1197"
+    ]
+  }
+}
