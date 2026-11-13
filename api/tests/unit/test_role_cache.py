@@ -10,18 +10,24 @@ queries that used to fire from `get_execution_context` and the WS
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 
+from sqlalchemy import text
+
+from shared import role_cache
 from shared.role_cache import (
     _ROLE_CACHE_KEY_PREFIX,
     _ROLE_CACHE_TTL,
     get_user_roles,
     invalidate_role,
+    invalidate_role_after_commit,
     invalidate_user,
+    invalidate_users_after_commit,
 )
 
 
@@ -265,3 +271,79 @@ class TestInvalidateRole:
         with patch("shared.role_cache.get_shared_redis", return_value=mock_redis):
             # Must not raise
             await invalidate_role(role_id)
+
+
+class _DictRedis:
+    """Just enough of the Redis client for the role cache."""
+
+    def __init__(self):
+        self.values: dict[str, str] = {}
+
+    async def get(self, key):
+        return self.values.get(key)
+
+    async def set(self, key, value, ex=None):
+        self.values[key] = value
+
+    async def delete(self, key):
+        self.values.pop(key, None)
+
+    async def scan_iter(self, match):
+        prefix = match.rstrip("*")
+        for key in [k for k in self.values if k.startswith(prefix)]:
+            yield key
+
+
+async def _settle_after_commit_invalidations():
+    await asyncio.gather(*role_cache._after_commit_invalidations)
+
+
+class TestInvalidateAfterCommit:
+    """A role removal is evicted only once the removal is committed.
+
+    Evicting before commit let a concurrent reader re-cache the still-committed
+    old roles for the full TTL, so the removed role kept authorizing requests.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("scope", ["user", "role"])
+    async def test_reader_before_commit_cannot_keep_a_removed_role(self, db_session, scope):
+        user_id = uuid4()
+        removed_role = uuid4()
+        redis = _DictRedis()
+        await db_session.execute(text("SELECT 1"))
+
+        with patch("shared.role_cache.get_shared_redis", return_value=redis):
+            if scope == "user":
+                invalidate_users_after_commit(db_session, [user_id])
+            else:
+                invalidate_role_after_commit(db_session, removed_role)
+
+            # Another request reads before the removal commits and caches the
+            # rows that are still committed.
+            await get_user_roles(user_id, _make_db_returning([(removed_role, "ops")]))
+            await _settle_after_commit_invalidations()
+            assert _ROLE_CACHE_KEY_PREFIX + str(user_id) in redis.values
+
+            await db_session.commit()
+            await _settle_after_commit_invalidations()
+
+            role_ids, _ = await get_user_roles(user_id, _make_db_returning([]))
+
+        assert role_ids == []
+
+    @pytest.mark.asyncio
+    async def test_rolled_back_change_leaves_the_cache_alone(self, db_session):
+        user_id = uuid4()
+        redis = _DictRedis()
+        redis.values[_ROLE_CACHE_KEY_PREFIX + str(user_id)] = json.dumps(
+            {"role_ids": [], "role_names": [], "v": 1}
+        )
+        await db_session.execute(text("SELECT 1"))
+
+        with patch("shared.role_cache.get_shared_redis", return_value=redis):
+            invalidate_users_after_commit(db_session, [user_id])
+            await db_session.rollback()
+            await _settle_after_commit_invalidations()
+
+        assert _ROLE_CACHE_KEY_PREFIX + str(user_id) in redis.values

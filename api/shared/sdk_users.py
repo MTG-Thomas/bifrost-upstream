@@ -105,7 +105,7 @@ async def set_platform_admin(
     in the requested state.
     """
     from shared.builtin_roles import PLATFORM_ADMIN_ROLE_ID
-    from shared.role_cache import invalidate_user as invalidate_user_role_cache
+    from shared.role_cache import invalidate_users_after_commit
     from src.models import UserRole as UserRoleORM
     from src.services.authorization.context import Boundary, BoundaryKind
     from src.services.user_role_assignments import insert_assignment
@@ -162,7 +162,7 @@ async def set_platform_admin(
         if preference.excluded_user_ids is not None and user.id not in preference.excluded_user_ids:
             preference.excluded_user_ids.append(user.id)
             await policy_service.set_login_preference(preference, updated_by=assigned_by)
-    await invalidate_user_role_cache(user.id)
+    invalidate_users_after_commit(session, [user.id])
 
 
 class UserServiceError(Exception):
@@ -846,7 +846,7 @@ async def bulk_update_users(
     (Platform for a Global user). Built-in roles are not added here, and the
     ones a user already holds (Platform Admin, for one) are left as they are.
     """
-    from shared.role_cache import invalidate_user as invalidate_user_role_cache
+    from shared.role_cache import invalidate_users_after_commit
     from shared.system_account_guard import SYSTEM_ACCOUNT_ROLE_MESSAGE, is_system_account
     from src.models import BulkUserFailure, BulkUserResponse
     from src.models import User as UserORM
@@ -1049,8 +1049,7 @@ async def bulk_update_users(
 
     await session.flush()
     if request.operation == "replace_roles":
-        for uid in succeeded:
-            await invalidate_user_role_cache(uid)
+        invalidate_users_after_commit(session, succeeded)
     await emit_audit(
         session,
         "user.bulk_update",

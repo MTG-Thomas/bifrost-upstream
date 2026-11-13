@@ -534,7 +534,7 @@ async def replace_role_assignments(
     set that still contains an assignment they could not have made, as long
     as they leave it as it is.
     """
-    from shared.role_cache import invalidate_user as invalidate_user_role_cache
+    from shared.role_cache import invalidate_users_after_commit
     from shared.sdk_users import UserServiceError, set_platform_admin, set_user_base_role
     from src.core.cache import invalidate_role_users
     from src.services.audit import emit_audit
@@ -679,7 +679,7 @@ async def replace_role_assignments(
 
     for role_id in added | removed | rebounded:
         await invalidate_role_users(None, str(role_id))
-    await invalidate_user_role_cache(user.id)
+    invalidate_users_after_commit(session, [user.id])
     await emit_audit(
         session,
         "user.role_assignments_updated",
@@ -708,7 +708,7 @@ async def set_base_role_assignment(
     session: AsyncSession, caller: Caller, *, user_id: UUID, base_role_id: UUID
 ) -> None:
     """Change only the base role using the single-account assignment guards."""
-    from shared.role_cache import invalidate_user
+    from shared.role_cache import invalidate_users_after_commit
     from shared.sdk_users import UserServiceError, set_user_base_role
     from src.services.audit import emit_audit
 
@@ -737,7 +737,7 @@ async def set_base_role_assignment(
         raise RoleAssignmentError(exc.status_code, exc.detail) from None
     user.updated_at = datetime.now(timezone.utc)
     await session.flush()
-    await invalidate_user(user.id)
+    invalidate_users_after_commit(session, [user.id])
     await emit_audit(
         session, "user.base_role_updated", resource_type="user", resource_id=user.id,
         details={"before": str(before), "after": str(base_role_id)},

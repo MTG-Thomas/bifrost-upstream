@@ -15,11 +15,14 @@ TTL:   1 hour (defense-in-depth; correctness comes from write-through
 
 Invalidation
 ------------
-- ``invalidate_user(user_id)``: drop one user's entry. Called after any
-  UserRole add/remove for that user.
+- ``invalidate_user(user_id)``: drop one user's entry.
 - ``invalidate_role(role_id)``: scan every cached user, drop entries that
-  contain this role_id. Called after Role rename/delete (or when a UserRole
-  mutation should propagate broadly). Acceptable at <10k cached users.
+  contain this role_id. Acceptable at <10k cached users.
+
+Mutation sites call ``invalidate_users_after_commit`` /
+``invalidate_role_after_commit`` instead. Evicting before the transaction
+commits lets a concurrent ``get_user_roles`` re-cache the still-committed old
+rows for the full TTL, so a removed role would keep authorizing requests.
 
 Empty role lists are a valid cached value, never treated as a miss.
 Redis failures fall back to DB (read) or are logged (invalidation), per
@@ -28,10 +31,14 @@ the broader cache pattern in ``src/core/cache/invalidation.py``.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from typing import TYPE_CHECKING
+from collections.abc import Awaitable, Callable, Iterable
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
+
+from sqlalchemy import event
 
 from src.core.cache.redis_client import get_shared_redis
 from src.core.log_safety import log_safe
@@ -120,7 +127,7 @@ async def get_user_roles(
 async def invalidate_user(user_id: UUID) -> None:
     """Drop the cache entry for one user.
 
-    Call after any UserRole add/remove that involves ``user_id``.
+    Mutation sites use ``invalidate_users_after_commit``.
     Redis failures are logged; the next read will see stale data until TTL.
     """
     try:
@@ -138,8 +145,7 @@ async def invalidate_user(user_id: UUID) -> None:
 async def invalidate_role(role_id: UUID) -> None:
     """Drop cache entries for every user who has this role.
 
-    Call after Role rename, Role delete, or any UserRole mutation that
-    should propagate to every user holding the role. Scans
+    Mutation sites use ``invalidate_role_after_commit``. Scans
     ``bifrost:role_cache:user:*`` and inspects each entry's ``role_ids``
     list. Acceptable at <10k cached users; if the cache grows substantially
     larger consider a reverse index.
@@ -163,3 +169,31 @@ async def invalidate_role(role_id: UUID) -> None:
         logger.debug(f"Invalidated role cache for role {role_id}")
     except Exception as e:
         logger.warning(f"Failed to invalidate role cache for role {role_id}: {e}")
+
+
+_after_commit_invalidations: set[asyncio.Task[None]] = set()
+
+
+def _after_commit(session: "AsyncSession", invalidate: Callable[[], Awaitable[None]]) -> None:
+    def run(_session: Any) -> None:
+        task = asyncio.get_running_loop().create_task(invalidate())
+        _after_commit_invalidations.add(task)
+        task.add_done_callback(_after_commit_invalidations.discard)
+
+    event.listen(session.sync_session, "after_commit", run, once=True)
+
+
+def invalidate_users_after_commit(session: "AsyncSession", user_ids: Iterable[UUID]) -> None:
+    """Drop these users' entries once ``session`` commits its role changes."""
+    pending = list(user_ids)
+
+    async def invalidate() -> None:
+        for user_id in pending:
+            await invalidate_user(user_id)
+
+    _after_commit(session, invalidate)
+
+
+def invalidate_role_after_commit(session: "AsyncSession", role_id: UUID) -> None:
+    """Drop every entry holding ``role_id`` once ``session`` commits."""
+    _after_commit(session, lambda: invalidate_role(role_id))
