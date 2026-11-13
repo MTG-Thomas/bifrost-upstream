@@ -26,6 +26,8 @@ from __future__ import annotations
 import io
 import json
 import os
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 
 import httpx
@@ -284,6 +286,147 @@ class TestUrlResolution:
         assert "BIFROST_API_URL" not in os.environ
         assert "BIFROST_ACCESS_TOKEN" not in os.environ
         assert "BIFROST_REFRESH_TOKEN" not in os.environ
+
+
+class TestRedirectIsNotAPassedCheck:
+    """A redirect from GET /api/version is an unknown check, not a pass.
+
+    The request sets ``follow_redirects=False``. A 3xx response is not parsed
+    as a version document, even when its body or its redirect target would
+    satisfy the gate. Network errors and HTTP 404 stay on the generic
+    unreachable path.
+    """
+
+    def test_live_redirect_is_not_followed_or_accepted(self, monkeypatch):
+        _patch_version(monkeypatch, "1.2.3")
+        from bifrost import cli
+
+        decoy_hits: list[str] = []
+        bound = {"host": "127.0.0.1", "port": 0}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path.startswith("/api/version"):
+                    self.send_response(302)
+                    self.send_header(
+                        "Location",
+                        f"http://{bound['host']}:{bound['port']}/decoy",
+                    )
+                    self.end_headers()
+                    return
+                decoy_hits.append(self.path)
+                body = b'{"version":"1.2.3","min_cli_version":"0.0.1"}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format, *args):
+                return
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        host, port = server.server_address[:2]
+        bound["host"] = host
+        bound["port"] = port
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        recorded: dict = {}
+        real_get = httpx.get
+
+        def spy(url, *args, **kwargs):
+            recorded["kwargs"] = dict(kwargs)
+            return real_get(url, *args, **kwargs)
+
+        stderr = io.StringIO()
+        try:
+            with patch(
+                "bifrost.credentials._resolve_url",
+                return_value=f"http://{host}:{port}",
+            ), patch("httpx.get", side_effect=spy), patch("sys.stderr", stderr):
+                cli._check_cli_version()  # must not raise SystemExit
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+            server.server_close()
+
+        text = stderr.getvalue()
+        assert decoy_hits == []
+        assert recorded["kwargs"].get("follow_redirects") is False
+        assert "Redirects are not followed" in text
+        assert "compatibility was not verified" in text
+        assert "reachable" not in text
+        assert f"http://{host}:{port}/decoy" in text
+
+    @pytest.mark.parametrize("status_code", [301, 303, 307, 308])
+    def test_redirect_statuses_are_unknown_checks(self, monkeypatch, status_code):
+        _patch_version(monkeypatch, "1.2.3")
+        from bifrost import cli
+
+        # A body that would pass the gate if the redirect were parsed or followed.
+        redirected = httpx.Response(
+            status_code=status_code,
+            headers={"location": "https://other.example/api/version"},
+            content=b'{"version":"1.2.3","min_cli_version":"0.0.1"}',
+            request=httpx.Request("GET", "http://server.example/api/version"),
+        )
+        stderr = io.StringIO()
+        with patch(
+            "bifrost.credentials._resolve_url",
+            return_value="http://server.example",
+        ), patch("httpx.get", return_value=redirected) as get, patch(
+            "sys.stderr", stderr
+        ):
+            cli._check_cli_version()
+
+        text = stderr.getvalue()
+        assert get.call_args.kwargs.get("follow_redirects") is False
+        assert "Redirects are not followed" in text
+        assert "compatibility was not verified" in text
+        assert "reachable" not in text
+        assert "https://other.example/api/version" in text
+
+    def test_redirect_without_location_is_still_unknown(self, monkeypatch):
+        _patch_version(monkeypatch, "1.2.3")
+        from bifrost import cli
+
+        redirected = httpx.Response(
+            status_code=302,
+            content=b'{"version":"1.2.3"}',
+            request=httpx.Request("GET", "http://server.example/api/version"),
+        )
+        stderr = io.StringIO()
+        with patch(
+            "bifrost.credentials._resolve_url",
+            return_value="http://server.example",
+        ), patch("httpx.get", return_value=redirected), patch("sys.stderr", stderr):
+            cli._check_cli_version()
+
+        text = stderr.getvalue()
+        assert "returned HTTP 302." in text
+        assert "Redirects are not followed" in text
+        assert "compatibility was not verified" in text
+
+    def test_404_stays_on_the_generic_unreachable_path(self, monkeypatch):
+        """A 404 is not a redirect and keeps the existing unreachable warning."""
+        _patch_version(monkeypatch, "1.2.3")
+        from bifrost import cli
+
+        missing = httpx.Response(
+            status_code=404,
+            content=b'{"detail":"not found"}',
+            request=httpx.Request("GET", "http://server.example/api/version"),
+        )
+        stderr = io.StringIO()
+        with patch(
+            "bifrost.credentials._resolve_url",
+            return_value="http://server.example",
+        ), patch("httpx.get", return_value=missing), patch("sys.stderr", stderr):
+            cli._check_cli_version()
+
+        text = stderr.getvalue()
+        assert "once the server is reachable" in text
+        assert "Redirects are not followed" not in text
 
 
 class TestTransport:

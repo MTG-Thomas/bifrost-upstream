@@ -242,6 +242,10 @@ def _check_cli_version() -> None:
     **Un-reachable verdict** (network/parse error, missing ``version``): emit a
     visible warning instead of silently skipping, so a stale CLI proceeding
     against an incompatible server is never invisible. Never blocks.
+
+    **Redirect verdict** (HTTP 3xx): do not follow the redirect. Warn that
+    compatibility was not verified, then continue. A redirect is not a passed
+    check and does not use the unreachable-server message.
     """
     import httpx
 
@@ -267,7 +271,25 @@ def _check_cli_version() -> None:
     # bifrost.gocovi.com) 403 the default `Python-urllib/X.Y` UA; httpx's UA
     # gets through and matches every other SDK request.
     try:
-        resp = httpx.get(f"{api_url}/api/version", timeout=3)
+        # Do not follow redirects. A 3xx is not the version document, and the
+        # target may be a login page or another host.
+        resp = httpx.get(
+            f"{api_url}/api/version",
+            timeout=3,
+            follow_redirects=False,
+        )
+        if 300 <= resp.status_code < 400:
+            location = resp.headers.get("location")
+            detail = f"HTTP {resp.status_code}"
+            if location:
+                detail = f"{detail} to {location}"
+            _warn(
+                f"Could not verify CLI compatibility with {api_url}: "
+                f"GET /api/version returned {detail}. "
+                "Redirects are not followed for the version check, so "
+                "compatibility was not verified. Continuing."
+            )
+            return
         resp.raise_for_status()
         data = resp.json()
         if not isinstance(data, dict):
