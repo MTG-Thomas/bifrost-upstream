@@ -26,9 +26,16 @@ concurrency:
   group: upstream-sync
   cancel-in-progress: false
 
+# The merge-upstream API call runs as this workflow's GITHUB_TOKEN. GitHub
+# refuses an App token that would create or update workflow files without the
+# workflows permission (HTTP 422, e.g. fork issues #15), so any upstream merge
+# touching .github/workflows/* fails the sync until a human merges manually.
+# Granting it here keeps the hourly sync self-sufficient; the token still
+# cannot do anything outside this single merge-upstream call.
 permissions:
   contents: write
   issues: write
+  workflows: write
 
 jobs:
   sync:
