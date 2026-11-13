@@ -375,6 +375,43 @@ class TestRegisterWorkflowAccess:
                 headers=platform_admin.headers,
             )
 
+    def test_register_duplicate_role_ids_rejected(self, e2e_client, platform_admin):
+        """Duplicate role IDs are rejected before insert, matching forms."""
+        path = "workflows/test_reg_dup_roles.py"
+        func = "test_reg_dup_roles"
+        self._write_wf(e2e_client, platform_admin, path, func)
+        role = self._make_role(e2e_client, platform_admin, "DupRole Register")
+        try:
+            # Different spellings of one UUID still share workflow_roles' primary key.
+            resp = e2e_client.post(
+                "/api/workflows/register",
+                headers=platform_admin.headers,
+                json={
+                    "path": path,
+                    "function_name": func,
+                    "access_level": "role_based",
+                    "role_ids": [role["id"], role["id"].upper()],
+                },
+            )
+            assert resp.status_code == 422, resp.text
+            assert resp.json()["detail"] == "role_ids contains duplicate references"
+
+            list_resp = e2e_client.get(
+                "/api/workflows",
+                headers=platform_admin.headers,
+            )
+            assert list_resp.status_code == 200, list_resp.text
+            assert all(item.get("function_name") != func for item in list_resp.json())
+        finally:
+            e2e_client.delete(
+                f"/api/files/editor?path={path}",
+                headers=platform_admin.headers,
+            )
+            e2e_client.delete(
+                f"/api/roles/{role['id']}",
+                headers=platform_admin.headers,
+            )
+
 
 @pytest.mark.e2e
 class TestWorkflowUpdateRoleIds:
@@ -472,5 +509,49 @@ class TestWorkflowUpdateRoleIds:
             for r in (role_a, role_b):
                 e2e_client.delete(
                     f"/api/roles/{r['id']}",
+                    headers=platform_admin.headers,
+                )
+
+    def test_update_duplicate_role_ids_rejected(self, e2e_client, platform_admin):
+        """A repeated role ID does not replace the workflow's assignments."""
+        path = "workflows/test_wf_dup_roles.py"
+        func = "test_wf_dup_roles"
+        wf_id = self._write_and_register(e2e_client, platform_admin, path, func)
+        role_a = self._make_role(e2e_client, platform_admin, "DupRole UpdateA")
+        role_b = self._make_role(e2e_client, platform_admin, "DupRole UpdateB")
+        try:
+            seed = e2e_client.post(
+                f"/api/workflows/{wf_id}/roles",
+                headers=platform_admin.headers,
+                json={"role_ids": [role_a["id"]]},
+            )
+            assert seed.status_code == 204, seed.text
+
+            patch_resp = e2e_client.patch(
+                f"/api/workflows/{wf_id}",
+                headers=platform_admin.headers,
+                json={"role_ids": [role_b["id"], role_b["id"].upper()]},
+            )
+            assert patch_resp.status_code == 422, patch_resp.text
+            assert patch_resp.json()["detail"] == "role_ids contains duplicate references"
+
+            roles_resp = e2e_client.get(
+                f"/api/workflows/{wf_id}/roles",
+                headers=platform_admin.headers,
+            )
+            assert roles_resp.status_code == 200, roles_resp.text
+            assert set(roles_resp.json().get("role_ids", [])) == {role_a["id"]}
+        finally:
+            e2e_client.delete(
+                f"/api/workflows/{wf_id}",
+                headers=platform_admin.headers,
+            )
+            e2e_client.delete(
+                f"/api/files/editor?path={path}",
+                headers=platform_admin.headers,
+            )
+            for role in (role_a, role_b):
+                e2e_client.delete(
+                    f"/api/roles/{role['id']}",
                     headers=platform_admin.headers,
                 )

@@ -766,6 +766,11 @@ async def register_workflow(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Invalid role ID: '{rid_str}' (expected a UUID)",
                 )
+        if len(role_uuids) != len(set(role_uuids)):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="role_ids contains duplicate references",
+            )
         role_check = await db.execute(
             select(Role.id).where(Role.id.in_(role_uuids))
         )
@@ -1015,6 +1020,11 @@ async def update_workflow(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail=f"Invalid role ID: '{rid_str}' (expected a UUID)",
                     )
+            if len(target_role_uuids) != len(set(target_role_uuids)):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="role_ids contains duplicate references",
+                )
 
             if target_role_uuids:
                 role_check = await db.execute(
