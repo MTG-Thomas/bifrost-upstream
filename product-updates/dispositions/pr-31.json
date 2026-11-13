@@ -1,0 +1,14 @@
+{
+  "key": "pr:31",
+  "classification": "other",
+  "entry_ids": [],
+  "summary": "Table read policies that compare with less-than or greater-than no longer match rows whose field holds a different type.",
+  "category": "fix",
+  "review": {
+    "status": "draft",
+    "evidence": [
+      "https://github.com/MTG-Thomas/bifrost-upstream/pull/31",
+      "https://github.com/Midtown-Technology-Group/bifrost/pull/1341"
+    ]
+  }
+}
