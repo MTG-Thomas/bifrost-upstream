@@ -48,6 +48,7 @@ class executions:
         limit: int = 50,
         *,
         workflow_id: str | None = None,
+        scope: str | None = None,
         continuation_token: str | None = None,
     ) -> ExecutionList:
         """
@@ -58,6 +59,8 @@ class executions:
 
         Args:
             workflow_id: Filter by workflow UUID (optional)
+            scope: Query scope when set: ``global`` or an organization UUID.
+                Sent only when provided. The server validates the value.
             workflow_name: Filter by workflow name (optional)
             status: Filter by status (optional)
             start_date: Filter by start date in ISO format (optional)
@@ -98,6 +101,8 @@ class executions:
 
         # Build query parameters
         params = {}
+        if scope is not None:
+            params["scope"] = scope
         if workflow_id:
             params["workflow_id"] = workflow_id
         elif workflow_name:
