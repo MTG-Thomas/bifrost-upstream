@@ -14,7 +14,7 @@ from shared.policies.probe import make_seed_admin_bypass
 from shared.claims.preresolve import preresolve_for_policies
 from shared.table_batch_writes import BatchWriteRow, write_table_batch
 from shared.table_documents import query_table_documents
-from src.core.security import decrypt_with_key, encrypt_secret, derive_fernet_key
+from src.core.security import decrypt_with_key, encrypt_secret
 from src.models.enums import ConfigType
 from src.models.orm.config import Config
 from src.models.orm.integrations import Integration, IntegrationConfigSchema, IntegrationMapping
@@ -1014,21 +1014,14 @@ async def _import_oauth_provider(
     if encrypted_secret_bytes and not source_secret_key:
         raise HTTPException(400, "Provide source_secret_key to re-encrypt the imported OAuth client secret")
     if source_secret_key and encrypted_secret_bytes:
+        # The stored column holds ``encrypt_secret(...).encode()`` (the same
+        # format oauth_connections and the OAuth repository write), so it is
+        # decrypted with the source key and re-encrypted in that format.
         try:
-            # The encrypted_client_secret in OAuthProvider is raw Fernet encrypted bytes (not base64-wrapped)
-            # We need to decrypt with source key and re-encrypt with destination key
-            from cryptography.fernet import Fernet
-
-            source_key = derive_fernet_key(source_secret_key)
-            f = Fernet(source_key)
-            plaintext = f.decrypt(encrypted_secret_bytes).decode()
-
-            # Re-encrypt with current instance key
-            dest_key = _get_current_fernet_key()
-            f2 = Fernet(dest_key)
-            encrypted_secret_bytes = f2.encrypt(plaintext.encode())
+            plaintext = decrypt_with_key(encrypted_secret_bytes.decode(), source_secret_key)
         except Exception as exc:
             raise ValueError("Could not re-encrypt the imported OAuth client secret") from exc
+        encrypted_secret_bytes = encrypt_secret(plaintext).encode()
 
     if integration.oauth_provider:
         # Update existing
@@ -1063,10 +1056,6 @@ async def _import_oauth_provider(
 
 
 
-def _get_current_fernet_key() -> bytes:
-    """Get current instance's Fernet key."""
-    from src.core.security import _get_fernet_key
-    return _get_fernet_key()
 
 
 
