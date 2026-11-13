@@ -1,0 +1,14 @@
+{
+  "key": "pr:30",
+  "classification": "other",
+  "entry_ids": [],
+  "category": "fix",
+  "summary": "The CLI warns when the version check is redirected instead of treating that response as a passed compatibility check.",
+  "review": {
+    "status": "draft",
+    "evidence": [
+      "https://github.com/MTG-Thomas/bifrost-upstream/pull/30",
+      "Pending maintainer review of this CLI version-check redirect warning."
+    ]
+  }
+}
