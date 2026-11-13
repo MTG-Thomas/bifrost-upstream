@@ -304,19 +304,17 @@ __all__ = [
 ]
 
 import os as _os  # noqa: E402  -- kept below __all__ so it isn't re-exported
-import subprocess as _subprocess  # noqa: E402
+from importlib import metadata as _importlib_metadata  # noqa: E402
 
 
 def _compute_version() -> str:
     if v := _os.environ.get("BIFROST_VERSION"):
         return v
     try:
-        return _subprocess.check_output(
-            ["git", "describe", "--tags", "--always", "--dirty"],
-            text=True,
-            stderr=_subprocess.DEVNULL,
-        ).strip()
-    except Exception:
+        # Distribution name from api/bifrost/pyproject.toml. Uninstalled
+        # source trees have no metadata and fall back to "unknown".
+        return _importlib_metadata.version("bifrost")
+    except _importlib_metadata.PackageNotFoundError:
         return "unknown"
 
 
