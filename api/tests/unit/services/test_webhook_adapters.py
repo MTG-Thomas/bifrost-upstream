@@ -237,15 +237,15 @@ async def test_graph_event_type_uses_configured_collection_not_object_id():
         headers={},
         query_params={},
         body=(
-            b'{"value":[{"changeType":"created","resource":'
-            b'"Users/user-1/Messages/01LONGMESSAGEID"}]}'
+            b'{"value":[{"changeType":"created","clientState":"registered-state",'
+            b'"resource":"Users/user-1/Messages/01LONGMESSAGEID"}]}'
         ),
     )
 
     result = await MicrosoftGraphAdapter().handle_request(
         request,
         config={"resource": "/users/user-1/messages"},
-        state={},
+        state={CLIENT_STATE_KEY: encrypt_secret("registered-state")},
     )
 
     assert isinstance(result, Deliver)
@@ -314,6 +314,42 @@ async def test_graph_rejects_a_batch_with_any_wrong_client_state():
 
     assert isinstance(result, Rejected)
     assert result.status_code == 401
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", [{}, {CLIENT_STATE_KEY: ""}])
+async def test_graph_rejects_notifications_without_a_registered_client_state(state):
+    """A source whose resubscribe failed keeps no clientState; forged
+    notifications to its public hook URL must not be delivered."""
+    result = await MicrosoftGraphAdapter().handle_request(
+        _graph_notification_request("attacker-chosen-state"),
+        config={"resource": "/users/user-1/messages"},
+        state=state,
+    )
+
+    assert isinstance(result, Rejected)
+    assert result.status_code == 401
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [[{"value": []}], {"value": {}}, {"value": [None]}])
+async def test_graph_rejects_malformed_notification_payloads(payload):
+    request = WebhookRequest(
+        method="POST",
+        path="/api/hooks/source-1",
+        headers={},
+        query_params={},
+        body=json.dumps(payload).encode(),
+    )
+
+    result = await MicrosoftGraphAdapter().handle_request(
+        request,
+        config={"resource": "/users/user-1/messages"},
+        state={CLIENT_STATE_KEY: encrypt_secret("registered-state")},
+    )
+
+    assert isinstance(result, Rejected)
+    assert result.status_code == 400
 
 
 @pytest.mark.asyncio

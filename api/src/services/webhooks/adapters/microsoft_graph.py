@@ -409,24 +409,30 @@ class MicrosoftGraphAdapter(WebhookAdapter):
 
         # Handle change notification
         payload = request.json_body
-        if not payload:
+        if not isinstance(payload, dict):
             return Rejected(message="Invalid notification payload", status_code=400)
 
         # Graph sends notifications in a 'value' array
-        notifications = payload.get("value", [])
-        if not notifications:
+        notifications = payload.get("value")
+        if not isinstance(notifications, list) or not notifications:
             return Rejected(message="No notifications in payload", status_code=400)
+        if not all(isinstance(notification, dict) for notification in notifications):
+            return Rejected(message="Invalid notification payload", status_code=400)
 
-        # Validate client state on each notification
+        # The clientState is the only proof a notification came from Graph.
+        # Without a registered one (no subscription yet, or a resubscribe
+        # that failed after the old state was cleared) nothing can be
+        # authenticated, so reject rather than deliver unchecked.
         encrypted_state = state.get(CLIENT_STATE_KEY)
-        if encrypted_state:
-            expected_state = decrypt_secret(encrypted_state)
-            for notification in notifications:
-                received = notification.get("clientState")
-                if not isinstance(received, str) or not hmac.compare_digest(
-                    received.encode(), expected_state.encode()
-                ):
-                    return Rejected(message="Invalid client state", status_code=401)
+        if not encrypted_state:
+            return Rejected(message="No registered client state", status_code=401)
+        expected_state = decrypt_secret(encrypted_state)
+        for notification in notifications:
+            received = notification.get("clientState")
+            if not isinstance(received, str) or not hmac.compare_digest(
+                received.encode(), expected_state.encode()
+            ):
+                return Rejected(message="Invalid client state", status_code=401)
 
         # The shared secret must not reach event history or workflow input.
         notifications = [
