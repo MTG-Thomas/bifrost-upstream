@@ -3508,9 +3508,11 @@ Usage: workflows execute [OPTIONS] REF
 
   1. Resolves ``REF`` and posts to ``/api/workflows/execute`` (async — does
   not block the platform). 2. Connects to ``/ws/execution/{id}`` and prints
-  log lines as they arrive. 3. Exits when the execution reaches a terminal
-  status, after a final GET    to backfill any logs that emitted before the
-  WebSocket connected and    to fetch the final result.
+  log lines as they arrive.    If that socket stays quiet, the command polls
+  execution status over    REST on a bounded idle timeout and exits when the
+  status is terminal. 3. Exits when the execution reaches a terminal status,
+  after a final GET    to backfill any logs that emitted before the WebSocket
+  connected and    to fetch the final result.
 
   Use ``bifrost run <file> --workflow <name>`` for local-file iteration —
   ``execute`` targets workflows already registered on the platform.
