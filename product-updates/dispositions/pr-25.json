@@ -1,0 +1,15 @@
+{
+  "key": "pr:25",
+  "classification": "other",
+  "entry_ids": [],
+  "category": "fix",
+  "summary": "Workflow execute finishes when a quiet log stream belongs to a completed run.",
+  "review": {
+    "status": "draft",
+    "evidence": [
+      "https://github.com/MTG-Thomas/bifrost-upstream/pull/25",
+      "https://github.com/Midtown-Technology-Group/bifrost/pull/1279",
+      "https://github.com/gobifrost/bifrost/issues/1197"
+    ]
+  }
+}
