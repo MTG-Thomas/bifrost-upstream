@@ -613,9 +613,15 @@ class FileOperationsService:
             new_path: New relative path within workspace
 
         Raises:
+            ValueError: If either path is not a normalized, non-excluded
+                workspace file path
             FileNotFoundError: If old_path doesn't exist
             FileExistsError: If new_path already exists
         """
+        from src.services.editor.file_filter import normalize_workspace_file_path
+
+        old_path = normalize_workspace_file_path(old_path)
+        new_path = normalize_workspace_file_path(new_path)
         now = datetime.now(timezone.utc)
 
         # Check old path exists in file_index

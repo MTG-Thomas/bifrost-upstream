@@ -204,6 +204,35 @@ class TestMoveFileModuleCache:
         return service, s3
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("old_path", "new_path"),
+        [
+            ("workflows/old.py", "../outside.py"),
+            ("workflows/old.py", "/workflows/new.py"),
+            ("workflows/old.py", "workflows\\new.py"),
+            ("workflows/old.py", "workflows/./new.py"),
+            ("workflows/old.py", ".venv/new.py"),
+            ("workflows/old.py", "node_modules/new.py"),
+            ("../outside.py", "workflows/new.py"),
+        ],
+    )
+    async def test_move_rejects_unnormalized_paths_before_any_effect(self, old_path, new_path):
+        """Rename uses the same workspace-path boundary as every other editor
+        write, so it cannot copy objects outside ``_repo/`` or retarget a
+        workflow row at an excluded path."""
+        service, s3 = self._service(SimpleNamespace(content=None, content_hash="source-hash"))
+
+        with (
+            patch("src.services.file_storage.file_ops.FileIndexService.move_index", new_callable=AsyncMock) as move_index,
+            pytest.raises(ValueError),
+        ):
+            await service.move_file(old_path, new_path)
+
+        service.db.execute.assert_not_awaited()
+        s3.copy.assert_not_awaited()
+        move_index.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_move_invalidates_python_destination_after_storage_move_without_index_content(self):
         """Path-only source rows cannot leave a cached destination miss alive."""
         old_record = SimpleNamespace(content=None, content_hash="source-hash")
