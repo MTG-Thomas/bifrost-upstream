@@ -15,6 +15,19 @@ _EXCLUDED_FILES = {
 _RUNTIME_DATA_FILES = {"lucide_icon_names.json"}
 
 
+def _normalize_release_tag(value: str) -> str | None:
+    """Return a supported release tag as PEP 440, or reject it."""
+    if re.fullmatch(r"\d+(\.\d+)*", value):
+        return value
+
+    prerelease = re.fullmatch(r"(\d+(?:\.\d+)*)-(dev|rc)\.(\d+)", value)
+    if prerelease is None:
+        return None
+    base, kind, number = prerelease.groups()
+    normalized = {"dev": f"{base}.dev{number}", "rc": f"{base}rc{number}"}
+    return normalized[kind]
+
+
 def to_pep440(version: str) -> str:
     """Coerce a Bifrost build version to a PEP 440 package version."""
     if not version or version == "unknown":
@@ -25,20 +38,17 @@ def to_pep440(version: str) -> str:
     if dirty:
         value = value[: -len("-dirty")]
 
-    dev_release = re.fullmatch(r"(\d+(?:\.\d+)*)-dev\.(\d+)", value)
-    if dev_release:
-        base, number = dev_release.groups()
-        normalized = f"{base}.dev{number}"
-        return f"{normalized}+dirty" if dirty else normalized
+    normalized_release = _normalize_release_tag(value)
+    if normalized_release:
+        return f"{normalized_release}+dirty" if dirty else normalized_release
 
     described = re.fullmatch(r"(.+)-(\d+)-(g[0-9a-f]+)", value)
     if described:
         tag, count, sha = described.groups()
-        local = f"{sha}.dirty" if dirty else sha
-        return f"{tag}.post{count}+{local}"
-
-    if re.fullmatch(r"\d+(\.\d+)*", value):
-        return f"{value}+dirty" if dirty else value
+        normalized_tag = _normalize_release_tag(tag)
+        if normalized_tag:
+            local = f"{sha}.dirty" if dirty else sha
+            return f"{normalized_tag}.post{count}+{local}"
 
     # ``git describe --always`` normally yields a hexadecimal SHA here. Keep
     # the fallback valid and filename-safe even when a development build
@@ -115,9 +125,16 @@ def build_cli_artifact(source_dir: Path, output_dir: Path, version: str) -> Path
 
                         data = file_path.read_bytes()
                         if file_path == source_dir / "__init__.py":
+                            # Stamp a Python literal. A callable replacement keeps
+                            # backslashes in that literal from becoming re escapes.
+                            version_assignment = (
+                                f"__version__ = {pep440_version!r}".encode()
+                            )
                             stamped = re.subn(
                                 rb"^__version__\s*=\s*_compute_version\(\)",
-                                f'__version__ = "{version}"'.encode(),
+                                lambda _match, replacement=version_assignment: (
+                                    replacement
+                                ),
                                 data,
                                 count=1,
                                 flags=re.MULTILINE,

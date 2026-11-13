@@ -143,6 +143,18 @@ def test_sdk_package_version_matches_tarball_package_json(monkeypatch):
     assert pkg["version"] == sdkpkg.sdk_package_version(version)
 
 
+def test_sdk_artifact_filename_normalizes_untrusted_version() -> None:
+    import src.services.sdk_package as sdkpkg
+
+    supplied = '1.2.3.tgz\r\nX-Injected: yes"'
+
+    filename = sdkpkg.sdk_artifact_filename(supplied)
+
+    assert filename == "bifrost-sdk-1.2.3.tgz"
+    assert "\r" not in filename
+    assert "\n" not in filename
+
+
 @pytest.mark.e2e
 def test_build_sdk_tarball_shape_and_exports():
     if not _ensure_sdk_src():
