@@ -1,0 +1,16 @@
+{
+  "key": "pr:18",
+  "classification": "omit",
+  "entry_ids": [],
+  "reason": "The CLI update notice still appears once per server build. This only stops the local dedupe marker from following a symlink, and no customer action is required.",
+  "review": {
+    "status": "draft",
+    "evidence": [
+      "https://github.com/MTG-Thomas/bifrost-upstream/pull/18",
+      "CI Unit Tests and Lint & Type Check passed on this pull request. The focused symlink regression failed before the fix and passed after it."
+    ]
+  },
+  "security_review": {
+    "status": "not_required"
+  }
+}
