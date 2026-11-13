@@ -425,6 +425,38 @@ class TestConfigPartialUpdate:
         # Cleanup
         _delete_config(e2e_client, platform_admin.headers, config_id)
 
+    def test_type_change_across_secret_requires_a_new_value(
+        self, e2e_client, platform_admin, secrets_reader_platform_admin
+    ):
+        """Retyping without a value is refused and leaves the stored value as it was."""
+        plain_key = f"e2e_to_secret_{uuid4().hex[:8]}"
+        secret_key = f"e2e_from_secret_{uuid4().hex[:8]}"
+        plain = _create_config(e2e_client, platform_admin.headers, plain_key, "visible", "string")
+        secret = _create_config(e2e_client, platform_admin.headers, secret_key, "hidden", "secret")
+        try:
+            for created, new_type in ((plain, "secret"), (secret, "string")):
+                response = e2e_client.put(
+                    f"/api/config/{created['id']}",
+                    headers=platform_admin.headers,
+                    json={"type": new_type},
+                )
+                assert response.status_code == 422, response.text
+
+            assert _sdk_config_value(e2e_client, platform_admin.headers, plain_key) == "visible"
+            assert _sdk_config_value(e2e_client, platform_admin.headers, secret_key) == "hidden"
+
+            response = e2e_client.put(
+                f"/api/config/{plain['id']}",
+                headers=platform_admin.headers,
+                json={"type": "secret", "value": "now-secret"},
+            )
+            assert response.status_code == 200, response.text
+            assert response.json()["value"] == "[SECRET]"
+            assert _sdk_config_value(e2e_client, platform_admin.headers, plain_key) == "now-secret"
+        finally:
+            _delete_config(e2e_client, platform_admin.headers, plain["id"])
+            _delete_config(e2e_client, platform_admin.headers, secret["id"])
+
     def test_update_config_not_found(self, e2e_client, platform_admin):
         """Updating a non-existent config returns 404."""
         response = e2e_client.put(

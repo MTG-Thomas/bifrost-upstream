@@ -43,6 +43,18 @@ class RequiredConfigUnset(RuntimeError):
         )
 
 
+class ConfigTypeChangeRequiresValue(ValueError):
+    """A type change to or from SECRET was sent without a replacement value.
+
+    The stored value cannot be reused across that boundary: plaintext would
+    stay unencrypted in a SECRET row, or ciphertext would become the value of
+    a plain config.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("Changing a config to or from secret requires a new value")
+
+
 @dataclass(frozen=True)
 class ConfigWrite:
     """A config write's masked response plus the value the cache must store."""
@@ -574,6 +586,16 @@ class ConfigRepository(OrgScopedRepository[ConfigModel]):  # type: ignore[type-v
                 else ConfigType.STRING
             )
         )
+
+        current_type = (
+            ConfigType(config.config_type.value)
+            if config.config_type
+            else ConfigType.STRING
+        )
+        if (current_type == ConfigType.SECRET) != (
+            effective_type == ConfigType.SECRET
+        ) and not request.value:
+            raise ConfigTypeChangeRequiresValue()
 
         if request.value is not None and request.value != "":
             stored_value = request.value

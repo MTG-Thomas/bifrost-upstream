@@ -20,7 +20,7 @@ from src.models import (
 
 from src.core.auth import Context, CurrentActiveUser
 from src.core.org_filter import OrgFilterType
-from src.repositories.config import ConfigRepository
+from src.repositories.config import ConfigRepository, ConfigTypeChangeRequiresValue
 
 from src.core.cache import invalidate_config, upsert_config
 from src.services.operation_catalog import operation_route
@@ -191,7 +191,10 @@ async def update_config(
     if "organization_id" in request.model_fields_set:
         require_operation(caller, "configs.update", org_target(request.organization_id))
 
-    update = await repo.update_config_by_id(config_id, request, updated_by=user.email)
+    try:
+        update = await repo.update_config_by_id(config_id, request, updated_by=user.email)
+    except ConfigTypeChangeRequiresValue as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     if update is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

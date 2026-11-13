@@ -108,6 +108,50 @@ async def test_update_returns_none_when_row_missing():
     assert update is None
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("current_type", "requested_type"),
+    [(ConfigType.STRING, ConfigType.SECRET), (ConfigType.SECRET, ConfigType.STRING)],
+)
+@pytest.mark.parametrize("value", [None, ""])
+async def test_secret_boundary_type_change_requires_a_new_value(
+    current_type, requested_type, value
+):
+    """The stored value is never reinterpreted across the SECRET boundary."""
+    from src.repositories.config import ConfigTypeChangeRequiresValue
+
+    row = _config_row(id=uuid4(), key="credential", org_id=None, value="stored")
+    row.config_type = current_type
+    repo = _mk_repo(row)
+
+    with pytest.raises(ConfigTypeChangeRequiresValue):
+        await repo.update_config_by_id(
+            row.id,
+            UpdateConfigRequest(type=requested_type, value=value),
+            updated_by="t@example.com",
+        )
+
+    assert row.value == {"value": "stored"}
+    assert row.config_type == current_type
+    repo.session.flush.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_secret_to_string_with_a_new_value_stores_it_in_plain_text():
+    row = _config_row(id=uuid4(), key="credential", org_id=None, value="ciphertext")
+    row.config_type = ConfigType.SECRET
+    repo = _mk_repo(row)
+
+    update = await repo.update_config_by_id(
+        row.id,
+        UpdateConfigRequest(type=ConfigType.STRING, value="replacement"),
+        updated_by="t@example.com",
+    )
+
+    assert update is not None
+    assert row.value == {"value": "replacement"}
+
+
 # ---------------------------------------------------------------------------
 # Router-level: verify invalidate_config is called with OLD (org, key).
 # ---------------------------------------------------------------------------
