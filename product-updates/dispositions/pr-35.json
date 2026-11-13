@@ -1,0 +1,15 @@
+{
+  "key": "pr:35",
+  "classification": "other",
+  "entry_ids": [],
+  "summary": "Renaming a workspace file checks the new path the same way every other editor write does.",
+  "category": "hardening",
+  "review": {
+    "status": "draft",
+    "evidence": [
+      "https://github.com/MTG-Thomas/bifrost-upstream/pull/35",
+      "https://github.com/Midtown-Technology-Group/bifrost/pull/1197",
+      "https://github.com/gobifrost/bifrost/issues/1197"
+    ]
+  }
+}
