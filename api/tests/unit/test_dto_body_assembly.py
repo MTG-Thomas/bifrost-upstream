@@ -20,6 +20,7 @@ from typing import Any
 # Standalone bifrost SDK package import.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
+import click
 import pytest
 
 from bifrost.dto_flags import (  # noqa: E402
@@ -390,8 +391,48 @@ async def test_dict_field_loaded_from_at_file(tmp_path: pathlib.Path) -> None:
             },
         ),
         resolver=resolver,  # type: ignore[arg-type]
+        allow_file_references=True,
     )
     assert body["form_schema"] == {"fields": []}
+
+
+@pytest.mark.asyncio
+async def test_dict_field_at_file_refused_without_opt_in(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MCP tools share this assembler inside the API process, where ``@path``
+    would read the server's disk. Only the local CLI opts in."""
+    schema_path = tmp_path / "server-secret.json"
+    schema_path.write_text(json.dumps({"secret": "x"}), encoding="utf-8")
+
+    def _fail_read(*_args: Any, **_kwargs: Any) -> str:
+        raise AssertionError("assemble_body read a file without opt-in")
+
+    monkeypatch.setattr(pathlib.Path, "read_text", _fail_read)
+    with pytest.raises(click.BadParameter, match="only supported by the local CLI"):
+        await assemble_body(
+            FormCreate,
+            _parsed(
+                FormCreate,
+                {
+                    "name": "F",
+                    "workflow_id": "MyWorkflow",
+                    "form_schema": f"@{schema_path}",
+                },
+            ),
+            resolver=_resolver(),  # type: ignore[arg-type]
+        )
+
+
+def test_server_code_never_enables_file_references() -> None:
+    """The API process (MCP tools, routers, services) must not opt in."""
+    src_root = pathlib.Path(__file__).resolve().parents[2] / "src"
+    offenders = [
+        str(path.relative_to(src_root))
+        for path in src_root.rglob("*.py")
+        if "allow_file_references" in path.read_text(encoding="utf-8")
+    ]
+    assert offenders == []
 
 
 # ---------------------------------------------------------------------------

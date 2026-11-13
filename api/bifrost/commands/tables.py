@@ -122,7 +122,7 @@ async def create_table(
     table to the caller's org, ``--global`` makes it global, ``--org
     <id|name>`` scopes it to that org.
     """
-    body = await assemble_body(TableCreate, fields, resolver=resolver)
+    body = await assemble_body(TableCreate, fields, resolver=resolver, allow_file_references=True)
     target = await resolve_org_target(org, is_global, resolver)
     if target.is_set:
         body["organization_id"] = target.organization_id
@@ -170,7 +170,7 @@ async def update_table(
     current_resp.raise_for_status()
     current_name = current_resp.json().get("name")
 
-    body = await assemble_body(TableUpdate, fields, resolver=resolver)
+    body = await assemble_body(TableUpdate, fields, resolver=resolver, allow_file_references=True)
     target = await resolve_org_target(org, is_global, resolver)
     if target.is_set:
         body["organization_id"] = target.organization_id

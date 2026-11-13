@@ -211,7 +211,7 @@ async def create_integration(
     ``schema`` / ``config_schema`` / ``items`` list.
     """
     schema_items = _extract_config_schema(fields)
-    body = await assemble_body(IntegrationCreate, fields, resolver=resolver)
+    body = await assemble_body(IntegrationCreate, fields, resolver=resolver, allow_file_references=True)
     if schema_items is not None:
         body["config_schema"] = schema_items
     response = await client.post("/api/integrations", json=body)
@@ -253,7 +253,7 @@ async def update_integration(
     """
     integration_uuid = await resolver.resolve("integration", ref)
     schema_items = _extract_config_schema(fields)
-    body = await assemble_body(IntegrationUpdate, fields, resolver=resolver)
+    body = await assemble_body(IntegrationUpdate, fields, resolver=resolver, allow_file_references=True)
     if schema_items is not None:
         body["config_schema"] = schema_items
 
@@ -314,7 +314,7 @@ async def add_mapping(
     UI-managed OAuth handshake data as a writable CLI field.
     """
     integration_uuid = await resolver.resolve("integration", integration_ref)
-    body = await assemble_body(IntegrationMappingCreate, fields, resolver=resolver)
+    body = await assemble_body(IntegrationMappingCreate, fields, resolver=resolver, allow_file_references=True)
     if oauth_token_id_opt is not None:
         body["oauth_token_id"] = oauth_token_id_opt
     response = await client.post(
@@ -371,7 +371,7 @@ async def update_mapping(
     lookup.raise_for_status()
     mapping_id = str(lookup.json()["id"])
 
-    body = await assemble_body(IntegrationMappingUpdate, fields, resolver=resolver)
+    body = await assemble_body(IntegrationMappingUpdate, fields, resolver=resolver, allow_file_references=True)
     if oauth_token_id_opt is not None:
         body["oauth_token_id"] = oauth_token_id_opt
     response = await client.put(

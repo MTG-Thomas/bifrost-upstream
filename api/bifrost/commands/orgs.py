@@ -102,7 +102,7 @@ async def create_org(
     **fields: Any,
 ) -> None:
     """Create a new organization."""
-    body = await assemble_body(OrganizationCreate, fields, resolver=resolver)
+    body = await assemble_body(OrganizationCreate, fields, resolver=resolver, allow_file_references=True)
     response = await client.post("/api/organizations", json=body)
     response.raise_for_status()
     output_result(response.json(), ctx=ctx)
@@ -128,7 +128,7 @@ async def update_org(
     :class:`RefResolver`; ambiguous names fail loudly with the candidate list.
     """
     org_uuid = await resolver.resolve("org", ref)
-    body = await assemble_body(OrganizationUpdate, fields, resolver=resolver)
+    body = await assemble_body(OrganizationUpdate, fields, resolver=resolver, allow_file_references=True)
     response = await client.patch(f"/api/organizations/{org_uuid}", json=body)
     response.raise_for_status()
     output_result(response.json(), ctx=ctx)

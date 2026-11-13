@@ -102,7 +102,7 @@ async def create_role(
     **fields: Any,
 ) -> None:
     """Create a new role."""
-    body = await assemble_body(RoleCreate, fields, resolver=resolver)
+    body = await assemble_body(RoleCreate, fields, resolver=resolver, allow_file_references=True)
     response = await client.post("/api/roles", json=body)
     response.raise_for_status()
     output_result(response.json(), ctx=ctx)
@@ -128,7 +128,7 @@ async def update_role(
     :class:`RefResolver`; ambiguous names fail loudly with the candidate list.
     """
     role_uuid = await resolver.resolve("role", ref)
-    body = await assemble_body(RoleUpdate, fields, resolver=resolver)
+    body = await assemble_body(RoleUpdate, fields, resolver=resolver, allow_file_references=True)
     response = await client.patch(f"/api/roles/{role_uuid}", json=body)
     response.raise_for_status()
     output_result(response.json(), ctx=ctx)

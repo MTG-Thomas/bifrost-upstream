@@ -116,7 +116,7 @@ async def create_form(
     form to the caller's org, ``--global`` makes it global, ``--org
     <id|name>`` scopes it to that org.
     """
-    body = await assemble_body(FormCreate, fields, resolver=resolver)
+    body = await assemble_body(FormCreate, fields, resolver=resolver, allow_file_references=True)
     target = await resolve_org_target(org, is_global, resolver)
     if target.is_set:
         body["organization_id"] = target.organization_id
@@ -153,7 +153,7 @@ async def update_form(
     unchanged, since omitting org sends no ``organization_id``).
     """
     form_uuid = await resolver.resolve("form", ref)
-    body = await assemble_body(FormUpdate, fields, resolver=resolver)
+    body = await assemble_body(FormUpdate, fields, resolver=resolver, allow_file_references=True)
     target = await resolve_org_target(org, is_global, resolver)
     if target.is_set:
         body["organization_id"] = target.organization_id

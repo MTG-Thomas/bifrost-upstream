@@ -253,7 +253,7 @@ async def create_app(
     the command prints both the created app and the deps error, exits
     non-zero, and leaves the app in place — there is no rollback.
     """
-    body = await assemble_body(ApplicationCreate, fields, resolver=resolver)
+    body = await assemble_body(ApplicationCreate, fields, resolver=resolver, allow_file_references=True)
     response = await client.post("/api/applications", json=body)
     response.raise_for_status()
     created = response.json()
@@ -335,7 +335,7 @@ async def update_app(
     no rollback.
     """
     app_uuid = await resolver.resolve("app", ref)
-    body = await assemble_body(ApplicationUpdate, fields, resolver=resolver)
+    body = await assemble_body(ApplicationUpdate, fields, resolver=resolver, allow_file_references=True)
     response = await client.patch(f"/api/applications/{app_uuid}", json=body)
     response.raise_for_status()
     updated = response.json()

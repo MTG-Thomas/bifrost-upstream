@@ -143,7 +143,7 @@ async def create_policy_rule(
 
     Org targeting follows the unified ``--org`` standard.
     """
-    body = await assemble_body(PolicyRuleCreate, fields, resolver=resolver)
+    body = await assemble_body(PolicyRuleCreate, fields, resolver=resolver, allow_file_references=True)
     target = await resolve_org_target(org, is_global, resolver)
     if target.is_set:
         body["organization_id"] = target.organization_id
@@ -179,7 +179,7 @@ async def update_policy_rule(
     ``DOMAIN`` is 'file' or 'table'. ``NAME`` is the rule's name.
     Unset flags are omitted; the server preserves existing values.
     """
-    body = await assemble_body(PolicyRuleUpdate, fields, resolver=resolver)
+    body = await assemble_body(PolicyRuleUpdate, fields, resolver=resolver, allow_file_references=True)
     params: dict[str, str] = {}
     if scope is not None:
         params["organization_id"] = scope

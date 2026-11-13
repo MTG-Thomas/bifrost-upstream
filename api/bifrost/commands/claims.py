@@ -114,7 +114,7 @@ async def create_claim(
 ) -> None:
     """Create a custom claim."""
     params = await _scope_params(org, is_global, resolver)
-    body = await assemble_body(CustomClaimCreate, fields, resolver=resolver)
+    body = await assemble_body(CustomClaimCreate, fields, resolver=resolver, allow_file_references=True)
     response = await client.post("/api/claims", json=body, params=params)
     response.raise_for_status()
     output_result(response.json(), ctx=ctx)
@@ -139,7 +139,7 @@ async def update_claim(
 ) -> None:
     """Update a custom claim by name."""
     params = await _scope_params(org, is_global, resolver)
-    body = await assemble_body(CustomClaimUpdate, fields, resolver=resolver)
+    body = await assemble_body(CustomClaimUpdate, fields, resolver=resolver, allow_file_references=True)
     response = await client.patch(f"/api/claims/{name}", json=body, params=params)
     response.raise_for_status()
     output_result(response.json(), ctx=ctx)

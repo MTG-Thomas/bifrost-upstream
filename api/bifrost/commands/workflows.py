@@ -438,7 +438,7 @@ async def update_workflow(
     if run_as is not None and run_as_default:
         raise click.UsageError("--run-as cannot be combined with --run-as-default.")
     workflow_uuid = await resolver.resolve("workflow", ref)
-    body = await assemble_body(WorkflowUpdateRequest, fields, resolver=resolver)
+    body = await assemble_body(WorkflowUpdateRequest, fields, resolver=resolver, allow_file_references=True)
     if run_as is not None:
         body["run_identity_id"] = await resolver.resolve("identity", run_as)
     elif run_as_default:

@@ -378,7 +378,7 @@ async def create_source(
     cron, tz, enabled = _pop_schedule_fields(fields)
     adapter, integration_ref, webhook_config_raw = _pop_webhook_fields(fields)
 
-    body = await assemble_body(EventSourceCreate, fields, resolver=resolver)
+    body = await assemble_body(EventSourceCreate, fields, resolver=resolver, allow_file_references=True)
     target = await resolve_org_target(org, is_global, resolver)
     if target.is_set:
         body["organization_id"] = target.organization_id
@@ -434,7 +434,7 @@ async def update_source(
     cron, tz, enabled = _pop_schedule_fields(fields)
     adapter, integration_ref, webhook_config_raw = _pop_webhook_fields(fields)
 
-    body = await assemble_body(EventSourceUpdate, fields, resolver=resolver)
+    body = await assemble_body(EventSourceUpdate, fields, resolver=resolver, allow_file_references=True)
     target = await resolve_org_target(org, is_global, resolver)
     if target.is_set:
         body["organization_id"] = target.organization_id
@@ -638,7 +638,7 @@ async def subscribe(
         fields["target_type"] = "workflow"
 
     source_uuid = await resolver.resolve("event_source", source_ref)
-    body = await assemble_body(EventSubscriptionCreate, fields, resolver=resolver)
+    body = await assemble_body(EventSubscriptionCreate, fields, resolver=resolver, allow_file_references=True)
 
     response = await client.post(
         f"/api/events/sources/{source_uuid}/subscriptions", json=body
@@ -710,7 +710,7 @@ async def update_subscription(
         )
 
     source_uuid = await resolver.resolve("event_source", source_ref)
-    body = await assemble_body(EventSubscriptionUpdate, fields, resolver=resolver)
+    body = await assemble_body(EventSubscriptionUpdate, fields, resolver=resolver, allow_file_references=True)
 
     response = await client.patch(
         f"/api/events/sources/{source_uuid}/subscriptions/{subscription_id}",

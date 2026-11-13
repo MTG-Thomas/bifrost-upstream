@@ -477,6 +477,7 @@ async def assemble_body(
     *,
     resolver: RefResolver,
     field_aliases: dict[str, str] | None = None,
+    allow_file_references: bool = False,
 ) -> dict[str, Any]:
     """Build the REST request payload from parsed CLI / MCP arguments.
 
@@ -484,7 +485,11 @@ async def assemble_body(
     - Resolves ref-lookup fields via ``resolver`` (UUIDs pass straight
       through; names/slugs/``path::func`` are looked up).
     - Loads ``dict`` fields via :func:`load_dict_value` when a string was
-      collected from CLI input.
+      collected from CLI input. ``@path`` values read the local filesystem,
+      so they are refused unless ``allow_file_references`` is set. Only the
+      local CLI sets it; MCP tools run inside the API and agent executors
+      forward model-generated arguments, so a ``@path`` there would read the
+      server's disk.
     - Splits comma-separated values for ``*_ids`` repeatable flags.
     - Applies ``field_aliases`` (and any registry entry for ``model_cls``)
       to rename payload keys.
@@ -534,6 +539,10 @@ async def assemble_body(
             continue
 
         if _is_dict(annotation) and isinstance(value, str):
+            if value.startswith("@") and not allow_file_references:
+                raise click.BadParameter(
+                    f"{name}: @file references are only supported by the local CLI"
+                )
             body[name] = load_dict_value(value)
             continue
 

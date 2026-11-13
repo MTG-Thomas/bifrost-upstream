@@ -139,7 +139,7 @@ async def update_service(
     from the payload so only the supplied fields are patched.
     """
     service_uuid = await resolver.resolve("service", ref)
-    body = await assemble_body(ServicePolicyUpdate, fields, resolver=resolver)
+    body = await assemble_body(ServicePolicyUpdate, fields, resolver=resolver, allow_file_references=True)
     response = await client.patch(f"/api/services/{service_uuid}", json=body)
     response.raise_for_status()
     output_result(response.json(), ctx=ctx)
