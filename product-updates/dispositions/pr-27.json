@@ -1,0 +1,14 @@
+{
+  "key": "pr:27",
+  "classification": "other",
+  "entry_ids": [],
+  "category": "fix",
+  "summary": "Duplicate workflow role IDs are rejected with a validation error.",
+  "review": {
+    "status": "approved",
+    "evidence": [
+      "https://github.com/MTG-Thomas/bifrost-upstream/pull/27",
+      "On current main, registering a workflow with a repeated role ID returned 409 Resource already exists from workflow_roles_pkey. Updating with a repeated role ID returned 500 Failed to update workflow because that IntegrityError is caught in update_workflow. Both paths now return 422 with detail role_ids contains duplicate references, matching forms, and do not write the duplicate grant. ./test.sh tests/e2e/api/test_register_workflow.py -v passed 12 tests after the change. ./test.sh quality api reported pyright 0 errors and ruff clean."
+    ]
+  }
+}
