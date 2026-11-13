@@ -10,11 +10,14 @@ import asyncio
 import json
 from typing import Any
 
+import click
 import httpx
 import pytest
+import websockets.asyncio.client as ws_client_module
 from click.testing import CliRunner
 
 from bifrost import client as bifrost_client_module
+from bifrost.commands import workflows as workflows_module
 from bifrost.commands.workflows import _stream_execution_logs, workflows_group
 
 
@@ -81,6 +84,59 @@ class _FakeWebSocket:
         return json.dumps(self._messages.pop(0))
 
 
+class _SilentWebSocket(_FakeWebSocket):
+    """Stay open and send nothing, so a dropped push cannot be observed."""
+
+    def __init__(self) -> None:
+        super().__init__([])
+
+    async def recv(self) -> str:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+class _IdleOnceWebSocket(_FakeWebSocket):
+    """Block the first recv until it is cancelled, then deliver messages."""
+
+    def __init__(self, messages: list[dict[str, Any]]) -> None:
+        super().__init__(messages)
+        self._idled = False
+
+    async def recv(self) -> str:
+        if not self._idled:
+            self._idled = True
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+        return await super().recv()
+
+
+def _connect_returning(websocket: _FakeWebSocket):
+    def _connect(uri: str, *, additional_headers=None, **_kwargs):
+        return websocket
+
+    return _connect
+
+
+def _speed_up_idle_poll(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Shrink the idle wait so a missing poll fails in about a second."""
+    monkeypatch.setattr(
+        workflows_module,
+        "_STATUS_POLL_INITIAL_IDLE_SECONDS",
+        0.01,
+        raising=False,
+    )
+
+
+def _capture_log_lines(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    printed: list[str] = []
+
+    def _echo(message: str = "", **_kwargs: Any) -> None:
+        printed.append(str(message))
+
+    monkeypatch.setattr(workflows_module.click, "echo", _echo)
+    return printed
+
+
 def _ws_connect_factory(messages: list[dict[str, Any]]):
     captured: dict[str, Any] = {}
     websocket = _FakeWebSocket(messages)
@@ -142,6 +198,273 @@ def _invoke(args: list[str]):
 
 
 class TestWorkflowsExecute:
+    @pytest.mark.parametrize("status", ["Success", "Failed"])
+    def test_quiet_socket_exits_when_rest_status_is_terminal(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_client: _FakeClient,
+        status: str,
+    ) -> None:
+        """A dropped completion push cannot leave the CLI waiting forever."""
+        fake_client.queue(
+            "GET",
+            "/api/executions/exec-quiet",
+            200,
+            {
+                "execution_id": "exec-quiet",
+                "status": status,
+                "logs": [{"level": "info", "message": "already stored"}],
+            },
+        )
+        _speed_up_idle_poll(monkeypatch)
+        printed = _capture_log_lines(monkeypatch)
+        monkeypatch.setattr(
+            ws_client_module, "connect", _connect_returning(_SilentWebSocket())
+        )
+
+        observed = asyncio.run(
+            asyncio.wait_for(
+                _stream_execution_logs(fake_client, "exec-quiet"),
+                timeout=1.0,
+            )
+        )
+
+        assert observed == status
+        assert printed == []
+        assert [call[:2] for call in fake_client.calls] == [
+            ("GET", "/api/executions/exec-quiet")
+        ]
+
+    def test_quiet_socket_waits_through_pending_then_exits(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_client: _FakeClient,
+    ) -> None:
+        """A non-terminal poll keeps the socket open until a later one finishes."""
+        fake_client.queue(
+            "GET",
+            "/api/executions/exec-quiet",
+            200,
+            {
+                "execution_id": "exec-quiet",
+                "status": "Pending",
+                "logs": [{"level": "info", "message": "already stored"}],
+            },
+        )
+        fake_client.queue(
+            "GET",
+            "/api/executions/exec-quiet",
+            200,
+            {
+                "execution_id": "exec-quiet",
+                "status": "Success",
+                "logs": [{"level": "info", "message": "already stored"}],
+            },
+        )
+        _speed_up_idle_poll(monkeypatch)
+        printed = _capture_log_lines(monkeypatch)
+        monkeypatch.setattr(
+            ws_client_module, "connect", _connect_returning(_SilentWebSocket())
+        )
+
+        observed = asyncio.run(
+            asyncio.wait_for(
+                _stream_execution_logs(fake_client, "exec-quiet"),
+                timeout=1.0,
+            )
+        )
+
+        assert observed == "Success"
+        assert printed == []
+        assert [call[:2] for call in fake_client.calls] == [
+            ("GET", "/api/executions/exec-quiet"),
+            ("GET", "/api/executions/exec-quiet"),
+        ]
+
+    def test_idle_gap_then_stream_prints_each_log_once(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_client: _FakeClient,
+    ) -> None:
+        """A quiet gap polls status, then live logs still print once."""
+        fake_client.queue(
+            "GET",
+            "/api/executions/exec-gap",
+            200,
+            {
+                "execution_id": "exec-gap",
+                "status": "Pending",
+                "logs": [{"level": "info", "message": "Starting work"}],
+            },
+        )
+        _speed_up_idle_poll(monkeypatch)
+        printed = _capture_log_lines(monkeypatch)
+        socket = _IdleOnceWebSocket(
+            [
+                {"type": "connected", "executionId": "exec-gap"},
+                {
+                    "type": "execution_log",
+                    "executionId": "exec-gap",
+                    "level": "info",
+                    "message": "Starting work",
+                },
+                {
+                    "type": "execution_update",
+                    "executionId": "exec-gap",
+                    "status": "Success",
+                },
+            ]
+        )
+        monkeypatch.setattr(ws_client_module, "connect", _connect_returning(socket))
+
+        observed = asyncio.run(
+            asyncio.wait_for(
+                _stream_execution_logs(fake_client, "exec-gap"),
+                timeout=1.0,
+            )
+        )
+
+        assert observed == "Success"
+        assert printed == ["[INFO] Starting work"]
+        # Idle poll, then the existing connected snapshot. No third read.
+        assert [call[:2] for call in fake_client.calls] == [
+            ("GET", "/api/executions/exec-gap"),
+            ("GET", "/api/executions/exec-gap"),
+        ]
+
+    def test_active_stream_prints_each_log_once_without_extra_polls(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_client: _FakeClient,
+    ) -> None:
+        """Ready websocket messages keep the single connected snapshot."""
+        fake_client.queue(
+            "GET",
+            "/api/executions/exec-live",
+            200,
+            {"execution_id": "exec-live", "status": "Pending"},
+        )
+        _speed_up_idle_poll(monkeypatch)
+        printed = _capture_log_lines(monkeypatch)
+        connect, _captured = _ws_connect_factory(
+            [
+                {"type": "connected", "executionId": "exec-live"},
+                {
+                    "type": "execution_log",
+                    "executionId": "exec-live",
+                    "level": "info",
+                    "message": "Starting work",
+                },
+                {
+                    "type": "execution_log",
+                    "executionId": "exec-live",
+                    "level": "warning",
+                    "message": "Done",
+                },
+                {
+                    "type": "execution_update",
+                    "executionId": "exec-live",
+                    "status": "Success",
+                },
+            ]
+        )
+        monkeypatch.setattr(ws_client_module, "connect", connect)
+
+        observed = asyncio.run(
+            asyncio.wait_for(
+                _stream_execution_logs(fake_client, "exec-live"),
+                timeout=1.0,
+            )
+        )
+
+        assert observed == "Success"
+        assert printed == ["[INFO] Starting work", "[WARNING] Done"]
+        assert [call[:2] for call in fake_client.calls] == [
+            ("GET", "/api/executions/exec-live")
+        ]
+
+    @pytest.mark.parametrize(
+        ("status_code", "body"),
+        [
+            (500, {"detail": "temporary"}),
+            (404, {"detail": "not yet visible"}),
+            (200, "not-json"),
+        ],
+    )
+    def test_transient_idle_poll_failure_keeps_the_stream(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_client: _FakeClient,
+        status_code: int,
+        body: Any,
+    ) -> None:
+        """A bad status read must not drop a websocket that is still healthy."""
+        fake_client.queue(
+            "GET",
+            "/api/executions/exec-transient",
+            status_code,
+            body,
+        )
+        fake_client.queue(
+            "GET",
+            "/api/executions/exec-transient",
+            200,
+            {"execution_id": "exec-transient", "status": "Pending"},
+        )
+        _speed_up_idle_poll(monkeypatch)
+        printed = _capture_log_lines(monkeypatch)
+        socket = _IdleOnceWebSocket(
+            [
+                {"type": "connected", "executionId": "exec-transient"},
+                {
+                    "type": "execution_log",
+                    "executionId": "exec-transient",
+                    "level": "info",
+                    "message": "Still going",
+                },
+                {
+                    "type": "execution_update",
+                    "executionId": "exec-transient",
+                    "status": "Success",
+                },
+            ]
+        )
+        monkeypatch.setattr(ws_client_module, "connect", _connect_returning(socket))
+
+        observed = asyncio.run(
+            asyncio.wait_for(
+                _stream_execution_logs(fake_client, "exec-transient"),
+                timeout=1.0,
+            )
+        )
+
+        assert observed == "Success"
+        assert printed == ["[INFO] Still going"]
+
+    def test_idle_poll_access_denial_fails_closed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_client: _FakeClient,
+    ) -> None:
+        fake_client.queue(
+            "GET",
+            "/api/executions/exec-denied",
+            403,
+            {"detail": "forbidden"},
+        )
+        _speed_up_idle_poll(monkeypatch)
+        monkeypatch.setattr(
+            ws_client_module, "connect", _connect_returning(_SilentWebSocket())
+        )
+
+        with pytest.raises(click.ClickException, match="polling was denied"):
+            asyncio.run(
+                asyncio.wait_for(
+                    _stream_execution_logs(fake_client, "exec-denied"),
+                    timeout=1.0,
+                )
+            )
+
     def test_streams_logs_then_exits_on_terminal_status(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -224,8 +547,8 @@ class TestWorkflowsExecute:
         assert payload["status"] == "Success"
         assert payload["result"] == {"answer": 42}
         # Logs surfaced on stdout (between execution_id stderr and JSON body).
-        assert "[INFO] Starting work" in result.output
-        assert "[INFO] Done" in result.output
+        assert result.output.count("[INFO] Starting work") == 1
+        assert result.output.count("[INFO] Done") == 1
         assert [call[:2] for call in fake_client.calls] == [
             ("POST", "/api/workflows/execute"),
             ("GET", "/api/executions/exec-1"),

@@ -49,6 +49,7 @@ import sys
 from typing import Any
 
 import click
+import httpx
 
 from bifrost.client import BifrostClient
 from bifrost.dto_flags import (
@@ -69,6 +70,9 @@ from .workflow_conversion import conversion_group
 _TERMINAL_STATUSES = frozenset(
     {"Success", "Failed", "CompletedWithErrors", "Timeout", "Cancelled"}
 )
+_STATUS_POLL_INITIAL_IDLE_SECONDS = 2.0
+_STATUS_POLL_MAX_IDLE_SECONDS = 16.0
+_RECOVERABLE_STATUS_POLL_CODES = frozenset({404, 408, 409, 425, 429})
 
 workflows_group = entity_group("workflows", "Manage workflows.")
 workflows_group.add_command(conversion_group)
@@ -253,6 +257,8 @@ async def execute_workflow(
     1. Resolves ``REF`` and posts to ``/api/workflows/execute`` (async — does
        not block the platform).
     2. Connects to ``/ws/execution/{id}`` and prints log lines as they arrive.
+       If that socket stays quiet, the command polls execution status over
+       REST on a bounded idle timeout and exits when the status is terminal.
     3. Exits when the execution reaches a terminal status, after a final GET
        to backfill any logs that emitted before the WebSocket connected and
        to fetch the final result.
@@ -316,6 +322,11 @@ async def _stream_execution_logs(
     Returns the terminal status string. The websockets dependency is imported
     lazily so the rest of the CLI stays usable when websockets is missing
     from a partial install.
+
+    A quiet socket is not treated as a still-running execution. After a
+    bounded idle wait the command reads ``GET /api/executions/{id}`` and
+    returns when that status is terminal. The poll does not print log lines;
+    only ``execution_log`` messages do, so a stored log is not echoed twice.
     """
     try:
         from websockets.asyncio.client import connect as ws_connect
@@ -332,11 +343,32 @@ async def _stream_execution_logs(
     headers = {"Authorization": f"Bearer {client._access_token}"}
 
     final_status: str = "Failed"
+    consecutive_poll_failures = 0
     try:
         async with ws_connect(ws_url, additional_headers=headers) as websocket:
             try:
                 while True:
-                    raw = await websocket.recv()
+                    try:
+                        raw = await asyncio.wait_for(
+                            websocket.recv(),
+                            timeout=_idle_poll_timeout(consecutive_poll_failures),
+                        )
+                    except TimeoutError:
+                        # The completion push can be missed while the socket
+                        # stays open. Read status over REST and keep waiting
+                        # when the run is still in progress.
+                        polled_status, poll_succeeded = await _poll_execution_status(
+                            client, execution_id
+                        )
+                        if poll_succeeded:
+                            consecutive_poll_failures = 0
+                        else:
+                            consecutive_poll_failures += 1
+                        if polled_status in _TERMINAL_STATUSES:
+                            final_status = polled_status
+                            break
+                        continue
+                    consecutive_poll_failures = 0
                     msg = json.loads(raw)
                     msg_type = msg.get("type")
 
@@ -373,6 +405,64 @@ async def _stream_execution_logs(
         ) from exc
 
     return final_status
+
+
+def _idle_poll_timeout(consecutive_poll_failures: int) -> float:
+    """Seconds to wait for the next websocket message before a status read.
+
+    The first quiet gap waits ``_STATUS_POLL_INITIAL_IDLE_SECONDS``. Failed
+    polls back off up to ``_STATUS_POLL_MAX_IDLE_SECONDS`` so a sick API is
+    not polled in a tight loop. A successful poll resets that backoff.
+    """
+    return min(
+        _STATUS_POLL_INITIAL_IDLE_SECONDS
+        * (2 ** min(consecutive_poll_failures, 4)),
+        _STATUS_POLL_MAX_IDLE_SECONDS,
+    )
+
+
+async def _poll_execution_status(
+    client: BifrostClient,
+    execution_id: str,
+) -> tuple[str | None, bool]:
+    """Read execution status while the log socket is quiet.
+
+    Authentication failures are definitive. Visibility races, throttling,
+    server errors, transport errors, and malformed bodies leave the socket
+    open so a later message can still finish the stream. The returned bool
+    is whether this poll produced a usable response.
+    """
+    try:
+        response = await client.get(f"/api/executions/{execution_id}")
+    except httpx.HTTPError:
+        return None, False
+
+    if response.status_code in {401, 403}:
+        raise click.ClickException(
+            "Execution status polling was denied. Authenticate again or "
+            "request access to this execution."
+        )
+    if (
+        response.status_code in _RECOVERABLE_STATUS_POLL_CODES
+        or response.status_code >= 500
+    ):
+        return None, False
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise click.ClickException(
+            f"Execution status polling failed with HTTP {response.status_code}."
+        ) from exc
+    try:
+        payload = response.json()
+    except ValueError:
+        return None, False
+    if not isinstance(payload, dict):
+        return None, False
+    status = payload.get("status")
+    if not isinstance(status, str):
+        return None, True
+    return status, True
 
 
 async def _fetch_final_execution(
