@@ -1,0 +1,19 @@
+{
+  "key": "pr:21",
+  "classification": "other",
+  "entry_ids": [],
+  "category": "hardening",
+  "summary": "Watch mode prints filenames and delete errors with control characters escaped, so a crafted name cannot rewrite the terminal.",
+  "review": {
+    "status": "draft",
+    "evidence": [
+      "https://github.com/MTG-Thomas/bifrost-upstream/pull/21",
+      "https://github.com/Midtown-Technology-Group/bifrost/pull/1263",
+      "https://github.com/gobifrost/bifrost/issues/1197"
+    ]
+  },
+  "security_review": {
+    "status": "required",
+    "review_ref": "https://github.com/MTG-Thomas/bifrost-upstream/pull/21"
+  }
+}
