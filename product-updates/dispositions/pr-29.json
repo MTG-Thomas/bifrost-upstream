@@ -1,0 +1,15 @@
+{
+  "key": "pr:29",
+  "classification": "other",
+  "entry_ids": [],
+  "summary": "Integration OAuth callbacks only accept a sign-in flow the same user started.",
+  "category": "hardening",
+  "review": {
+    "status": "draft",
+    "evidence": [
+      "https://github.com/MTG-Thomas/bifrost-upstream/pull/29",
+      "https://github.com/Midtown-Technology-Group/bifrost/pull/1195",
+      "https://github.com/gobifrost/bifrost/issues/1195"
+    ]
+  }
+}
