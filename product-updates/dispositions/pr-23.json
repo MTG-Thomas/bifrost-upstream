@@ -1,0 +1,13 @@
+{
+  "key": "pr:23",
+  "classification": "omit",
+  "entry_ids": [],
+  "reason": "SDK import resolves its version from installed package metadata instead of git. Published CLI artifacts already stamp the version, and the API version still comes from BIFROST_VERSION, so there is no customer-facing announcement.",
+  "review": {
+    "status": "draft",
+    "evidence": [
+      "https://github.com/MTG-Thomas/bifrost-upstream/pull/23",
+      "Published CLI artifacts replace __version__ = _compute_version() with a literal before packaging. api/shared/version.py is unchanged."
+    ]
+  }
+}
