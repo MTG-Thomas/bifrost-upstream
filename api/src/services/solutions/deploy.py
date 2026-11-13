@@ -830,15 +830,16 @@ class SolutionDeployer:
         # authoritative). Only a truly ABSENT role_names defers to `roles`.
         role_names = entry.get("role_names")
         if role_names is not None:
-            return [
-                UUID(r)
-                for r in await _resolve_role_names(
+            try:
+                resolved = await _resolve_role_names(
                     self.db,
                     list(role_names),
                     create_missing=True,
                     created_out=self._created_roles,
                 )
-            ]
+            except ValueError as exc:
+                raise SolutionDeployConflict(str(exc)) from exc
+            return [UUID(r) for r in resolved]
         return [UUID(str(r)) for r in (entry.get("roles") or [])]
 
     async def _sync_entity_roles(

@@ -482,6 +482,10 @@ async def _resolve_agent_content(
 # =============================================================================
 
 
+def _ambiguous_role_message(name: str) -> str:
+    return f"ambiguous role name: more than one role is named {name!r}; rename all but one first."
+
+
 async def _resolve_role_names(
     db: AsyncSession,
     names: list[str],
@@ -504,13 +508,20 @@ async def _resolve_role_names(
       hand first" papercut. Created names are added to ``created_out`` (when
       provided) so the caller can surface "created N new roles" — which also
       makes a typo'd manifest role name visible rather than silently absorbed.
+
+    Role names are not unique. A name held by more than one role is refused
+    rather than bound to whichever row the database returned last.
     """
     from src.models.orm.users import Role
 
     if not names:
         return []
     result = await db.execute(select(Role.id, Role.name).where(Role.name.in_(list(set(names)))))
-    by_name: dict[str, str] = {row[1]: str(row[0]) for row in result.all()}
+    by_name: dict[str, str] = {}
+    for role_id, role_name in result.all():
+        if role_name in by_name:
+            raise ValueError(_ambiguous_role_message(role_name))
+        by_name[role_name] = str(role_id)
     resolved: list[str] = []
     for name in names:
         role_id = by_name.get(name)
@@ -610,12 +621,16 @@ class ManifestResolver:
             cache["org_by_name"][row[1]] = row[0]
             cache["org_name_by_id"][row[0]] = row[1]
 
-        # Roles: {id} set + {name: id} dict
+        # Roles: {id} set + {name: id} dict; names held by several roles are
+        # kept apart so a name match never picks one of them arbitrarily.
         role_result = await self.db.execute(select(Role.id, Role.name))
         cache["role_ids"] = set()
         cache["role_by_name"] = {}
+        cache["ambiguous_role_names"] = set()
         for row in role_result.all():
             cache["role_ids"].add(row[0])
+            if row[1] in cache["role_by_name"]:
+                cache["ambiguous_role_names"].add(row[1])
             cache["role_by_name"][row[1]] = row[0]
 
         # Workflows: {(path, function_name): id} + {id} set
@@ -1392,6 +1407,8 @@ class ManifestResolver:
             )]
 
         # 2. Try by name (cross-env ID sync)
+        if mrole.name in cache["ambiguous_role_names"]:
+            raise ValueError(_ambiguous_role_message(mrole.name))
         existing_by_name = cache["role_by_name"].get(mrole.name)
         if existing_by_name is not None:
             return [Upsert(
