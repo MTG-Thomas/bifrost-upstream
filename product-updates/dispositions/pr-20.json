@@ -1,0 +1,14 @@
+{
+  "key": "pr:20",
+  "classification": "other",
+  "entry_ids": [],
+  "category": "fix",
+  "summary": "Workflows can filter execution history by global or organization scope.",
+  "review": {
+    "status": "draft",
+    "evidence": [
+      "https://github.com/MTG-Thomas/bifrost-upstream/pull/20",
+      "SDK list forwards scope only when provided. Pagination tests, ruff, pyright, and skill appendix freshness passed."
+    ]
+  }
+}
