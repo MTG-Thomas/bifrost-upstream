@@ -1,0 +1,14 @@
+{
+  "key": "pr:33",
+  "classification": "other",
+  "entry_ids": [],
+  "summary": "Microsoft Graph event sources reject notifications when no client state is registered.",
+  "category": "hardening",
+  "review": {
+    "status": "draft",
+    "evidence": [
+      "https://github.com/MTG-Thomas/bifrost-upstream/pull/33",
+      "https://github.com/Midtown-Technology-Group/bifrost/pull/1311"
+    ]
+  }
+}
