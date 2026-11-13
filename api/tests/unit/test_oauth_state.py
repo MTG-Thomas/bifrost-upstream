@@ -17,27 +17,48 @@ from src.services.oauth_state import (
 )
 
 
-def test_round_trip_carries_provider_and_mapping():
+def test_round_trip_carries_provider_user_and_mapping():
     provider_id = uuid4()
+    user_id = uuid4()
     mapping_id = uuid4()
-    token, nonce = encode_state(provider_id=provider_id, mapping_id=mapping_id)
+    token, nonce = encode_state(provider_id=provider_id, user_id=user_id, mapping_id=mapping_id)
 
     payload = decode_state(token)
     assert payload["provider_id"] == str(provider_id)
+    assert payload["user_id"] == str(user_id)
     assert payload["mapping_id"] == str(mapping_id)
     assert payload["nonce"] == nonce
 
 
+def test_integration_level_state_has_no_mapping():
+    token, _ = encode_state(provider_id=uuid4(), user_id=uuid4())
+
+    assert "mapping_id" not in decode_state(token)
+
+
+def test_state_without_user_binding_is_rejected():
+    """Per-mapping tokens issued before user binding fail once instead of
+    being accepted without knowing who started the flow."""
+    from src.services.oauth_state_core import encode_state_jwt
+
+    token, _ = encode_state_jwt(
+        audience="bifrost-integration-oauth-state",
+        claims={"provider_id": str(uuid4()), "mapping_id": str(uuid4())},
+    )
+    with pytest.raises(OAuthStateError, match="user_id"):
+        decode_state(token)
+
+
 def test_nonce_is_unique_per_call():
     """Each encode call generates a fresh nonce so replay detection has something to bite on."""
-    p, m = uuid4(), uuid4()
-    _, n1 = encode_state(provider_id=p, mapping_id=m)
-    _, n2 = encode_state(provider_id=p, mapping_id=m)
+    p, u = uuid4(), uuid4()
+    _, n1 = encode_state(provider_id=p, user_id=u)
+    _, n2 = encode_state(provider_id=p, user_id=u)
     assert n1 != n2
 
 
 def test_tampered_token_rejected():
-    token, _ = encode_state(provider_id=uuid4(), mapping_id=uuid4())
+    token, _ = encode_state(provider_id=uuid4(), user_id=uuid4())
     # Flip a char inside the JWT body (not the signature segment)
     parts = token.split(".")
     parts[1] = parts[1][:-1] + ("A" if parts[1][-1] != "A" else "B")
@@ -71,7 +92,7 @@ def test_expired_token_rejected():
     # arg captures the module constant at definition time, so monkeypatching it doesn't help.
     token, _ = encode_state_jwt(
         audience="bifrost-integration-oauth-state",
-        claims={"provider_id": "p", "mapping_id": "m"},
+        claims={"provider_id": "p", "user_id": "u"},
         ttl=timedelta(seconds=-60),
     )
     with pytest.raises(OAuthStateError):

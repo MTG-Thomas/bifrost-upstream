@@ -7,7 +7,6 @@ Integrations combine OAuth providers, data providers, and configuration schemas.
 
 import asyncio
 import logging
-import secrets
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -1755,7 +1754,9 @@ async def authorize_mapping(
 
     defaults = await get_url_resolution_defaults(ctx.db, provider)
     resolved_url = resolve_url_template(url=provider.authorization_url, defaults=defaults)
-    state, nonce = encode_state(provider_id=provider.id, mapping_id=mapping_id)
+    state, nonce = encode_state(
+        provider_id=provider.id, user_id=user.user_id, mapping_id=mapping_id
+    )
     await remember_nonce(nonce)
     params = {
         "client_id": provider.client_id,
@@ -2039,8 +2040,9 @@ async def get_oauth_authorization_url(
             detail="This integration uses client_credentials flow and does not require user authorization",
         )
 
-    # Generate state for CSRF protection
-    state = secrets.token_urlsafe(32)
+    # Signed, single-use state binds the callback to this user and provider.
+    state, nonce = encode_state(provider_id=oauth_provider.id, user_id=user.user_id)
+    await remember_nonce(nonce)
 
     # Build authorization URL
     # Convert scopes list to space-separated string (OAuth 2.0 standard format)

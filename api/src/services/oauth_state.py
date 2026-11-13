@@ -1,12 +1,14 @@
-"""Tamper-proof ``state`` parameter for per-mapping integration OAuth.
+"""Tamper-proof ``state`` parameter for integration OAuth.
 
 Thin wrapper over :mod:`src.services.oauth_state_core` that pins the audience
 to integration OAuth and validates the payload shape (``provider_id``,
-``mapping_id``).
+``user_id``, and ``mapping_id`` for per-mapping flows).
 
-The per-mapping authorize endpoint encodes; the callback decodes and
-verifies the nonce hasn't been seen before. Replay protection is critical
-because the same state can otherwise be replayed for the full TTL window.
+Every integration authorize endpoint encodes; the callback decodes, checks the
+state was issued to the same user for the same provider, and consumes the
+nonce. Without this, a callback URL carrying an attacker's authorization code
+could be forwarded to an admin, whose session would store the attacker's
+account token as the integration's token.
 """
 
 from __future__ import annotations
@@ -34,30 +36,34 @@ OAuthStateError = StateDecodeError
 def encode_state(
     *,
     provider_id: UUID,
-    mapping_id: UUID,
+    user_id: UUID,
+    mapping_id: UUID | None = None,
 ) -> tuple[str, str]:
-    """Encode a per-mapping OAuth ``state`` token and return ``(token, nonce)``.
+    """Encode an integration OAuth ``state`` token and return ``(token, nonce)``.
 
-    The caller is expected to record the nonce via :func:`remember_nonce`
-    so the callback can reject replays.
+    ``mapping_id`` is set only by the per-mapping flow. The caller is expected
+    to record the nonce via :func:`remember_nonce` so the callback can reject
+    replays.
     """
     claims: dict[str, Any] = {
         "provider_id": str(provider_id),
-        "mapping_id": str(mapping_id),
+        "user_id": str(user_id),
     }
+    if mapping_id is not None:
+        claims["mapping_id"] = str(mapping_id)
     return encode_state_jwt(audience=_STATE_AUDIENCE, claims=claims)
 
 
 def decode_state(token: str) -> dict[str, Any]:
-    """Verify the per-mapping ``state`` JWT and return its payload.
+    """Verify an integration OAuth ``state`` JWT and return its payload.
 
     Raises:
         OAuthStateError: any signature/expiry/format issue, or missing
-        per-mapping fields.
+        required fields.
     """
     payload = decode_state_jwt(token, audience=_STATE_AUDIENCE)
 
-    for required in ("provider_id", "mapping_id"):
+    for required in ("provider_id", "user_id"):
         if required not in payload:
             raise OAuthStateError(f"state missing required field: {required}")
 
@@ -65,12 +71,12 @@ def decode_state(token: str) -> dict[str, Any]:
 
 
 async def remember_nonce(nonce: str) -> None:
-    """Persist a per-mapping state nonce in Redis. Best-effort."""
+    """Persist an integration OAuth state nonce in Redis. Best-effort."""
     await _remember_nonce(nonce, audience=_STATE_AUDIENCE)
 
 
 async def consume_nonce(nonce: str) -> bool:
-    """Atomically check-and-delete a per-mapping state nonce. See core docstring."""
+    """Atomically check-and-delete an integration OAuth state nonce. See core docstring."""
     return await _consume_nonce(nonce, audience=_STATE_AUDIENCE)
 
 

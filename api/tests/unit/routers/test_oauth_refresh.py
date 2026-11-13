@@ -3,6 +3,8 @@
 import pytest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, AsyncMock, patch
+from types import SimpleNamespace
+from uuid import uuid4
 
 
 class TestOAuthRefreshClientCredentials:
@@ -190,14 +192,20 @@ class TestOAuthRefreshClientCredentials:
         ctx.db = AsyncMock()
         ctx.org_id = None
 
+        from src.services.oauth_state import encode_state
+
+        provider.id = uuid4()
+        user = SimpleNamespace(user_id=uuid4())
+        state, _ = encode_state(provider_id=provider.id, user_id=user.user_id)
         request = OAuthCallbackRequest(
             code="authorization_code_123",
-            state="state-123",
+            state=state,
             redirect_uri="https://app.example.com/oauth/callback/test",
             organization_id=None,
         )
 
         with (
+            patch("src.routers.oauth_connections.consume_nonce", new=AsyncMock(return_value=True)),
             patch("src.routers.oauth_connections.load_caller", new=AsyncMock(return_value=MagicMock())),
             patch("src.routers.oauth_connections.resolve_effective_scope", return_value=None),
             patch("src.routers.oauth_connections.user_reach") as mock_reach,
@@ -223,7 +231,7 @@ class TestOAuthRefreshClientCredentials:
                 connection_name="Microsoft CSP",
                 request=request,
                 ctx=ctx,
-                user=MagicMock(),
+                user=user,
             )
 
         assert result.success is True

@@ -6,7 +6,6 @@ This is separate from oauth_sso.py which handles user authentication.
 """
 
 import logging
-import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
@@ -46,7 +45,13 @@ from src.services.oauth_provider import (
     resolve_url_template,
 )
 from src.repositories.oauth import OAuthProviderRepository
-from src.services.oauth_state import consume_nonce, decode_state, OAuthStateError
+from src.services.oauth_state import (
+    OAuthStateError,
+    consume_nonce,
+    decode_state,
+    encode_state,
+    remember_nonce,
+)
 from src.services.authorization.enforce import Caller, load_caller, require_permission, user_reach
 from shared.scope_resolver import UNSET, resolve_effective_scope
 
@@ -371,8 +376,9 @@ async def authorize_connection(
         defaults=defaults,
     )
 
-    # Generate state for CSRF protection
-    state = secrets.token_urlsafe(32)
+    # Signed, single-use state binds the callback to this user and provider.
+    state, nonce = encode_state(provider_id=provider.id, user_id=user.user_id)
+    await remember_nonce(nonce)
 
     # Build authorization URL
     # Convert scopes list to space-separated string (OAuth standard format)
@@ -641,28 +647,37 @@ async def oauth_callback(
     from src.core.security import decrypt_secret
     from src.services.oauth_provider import OAuthProviderClient
 
-    # Per-mapping flows carry mapping_id in a signed state token. If present,
-    # the resulting OAuthToken must be scoped to the MAPPING'S org — otherwise
-    # store_token would upsert into the integration-level (organization_id IS NULL)
-    # slot and stomp the global fallback, leaving every "per-mapping" connection
-    # pointing at the same shared token row.
+    # Every integration authorize endpoint issues a signed, single-use state
+    # bound to the initiating user and provider. Without it, a callback URL
+    # carrying an attacker's authorization code could be forwarded to an
+    # admin, whose session would store the attacker's account token.
+    if not request.state:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "OAuth state is missing")
+    try:
+        state_payload = decode_state(request.state)
+    except OAuthStateError as e:
+        logger.warning(f"Rejected OAuth callback state: {e}")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "OAuth state is invalid or expired") from e
+    if state_payload["user_id"] != str(user.user_id):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "OAuth state was issued to a different user")
+    if not await consume_nonce(state_payload["nonce"]):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "OAuth state has already been used")
+
+    # Per-mapping flows carry mapping_id in the state. The resulting OAuthToken
+    # must be scoped to the MAPPING'S org — otherwise store_token would upsert
+    # into the integration-level (organization_id IS NULL) slot and stomp the
+    # global fallback, leaving every "per-mapping" connection pointing at the
+    # same shared token row.
     mapping_id_from_state: UUID | None = None
-    nonce_from_state: str | None = None
     mapping_row: IntegrationMapping | None = None
-    if request.state:
+    if state_payload.get("mapping_id"):
         try:
-            payload = decode_state(request.state)
-            nonce_from_state = payload.get("nonce")
-            mid = payload.get("mapping_id")
-            if mid:
-                mapping_id_from_state = UUID(mid)
-                mapping_row = await ctx.db.get(IntegrationMapping, mapping_id_from_state)
-                if mapping_row is None:
-                    raise _not_found(connection_name)
-        except (OAuthStateError, ValueError) as e:
-            # Legacy integration-level flows use secrets.token_urlsafe() as state —
-            # decoding is expected to fail. Fall through to global-token storage.
-            logger.warning(f"OAuth state decode failed (treating as legacy flow): {e}")
+            mapping_id_from_state = UUID(state_payload["mapping_id"])
+        except ValueError as e:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "OAuth state is invalid or expired") from e
+        mapping_row = await ctx.db.get(IntegrationMapping, mapping_id_from_state)
+        if mapping_row is None:
+            raise _not_found(connection_name)
 
     caller = await load_caller(ctx.db, user)
     if mapping_row is not None:
@@ -681,16 +696,20 @@ async def oauth_callback(
     repo = OAuthProviderRepository(ctx.db, org_id=lookup_org_id, is_superuser=False)
     provider = await repo.get_by_connection_name(connection_name)
 
-    if provider is None or not user_reach(caller).covers(provider.organization_id):
+    if (
+        provider is None
+        or str(provider.id) != state_payload["provider_id"]
+        or not user_reach(caller).covers(provider.organization_id)
+    ):
         raise _not_found(connection_name)
     require_permission(caller, "integrations.readwrite", provider.organization_id)
     require_permission(caller, "secrets.read", provider.organization_id)
     if mapping_row is not None and mapping_row.integration_id != provider.integration_id:
         raise _not_found(connection_name)
     if token_org_id is None:
-        # Legacy state has no mapping binding.  Persist only at the provider's
-        # stored target; request.organization_id is not an authority or token
-        # scope selector.
+        # Integration-level state has no mapping binding.  Persist only at the
+        # provider's stored target; request.organization_id is not an
+        # authority or token scope selector.
         token_org_id = provider.organization_id
     if not user_reach(caller).covers(token_org_id):
         raise _not_found(connection_name)
@@ -807,22 +826,16 @@ async def oauth_callback(
     # were already decoded at the top of this handler — see mapping_id_from_state.
     captured_value: str | None = None
     if mapping_id_from_state is not None:
-        # Single-use enforcement: reject replays of valid-signature state.
-        if nonce_from_state and not await consume_nonce(nonce_from_state):
-            logger.warning(
-                "OAuth state nonce already consumed — possible replay, skipping mapping link"
+        stored = await token_repo.get_token(connection_name)
+        if stored:
+            captured_value = await _apply_callback_to_mapping(
+                db=ctx.db,
+                mapping_id=mapping_id_from_state,
+                token=stored,
+                provider=provider,
+                callback_url_params=request.callback_url_params or {},
+                token_response=result,
             )
-        else:
-            stored = await token_repo.get_token(connection_name)
-            if stored:
-                captured_value = await _apply_callback_to_mapping(
-                    db=ctx.db,
-                    mapping_id=mapping_id_from_state,
-                    token=stored,
-                    provider=provider,
-                    callback_url_params=request.callback_url_params or {},
-                    token_response=result,
-                )
 
     # Invalidate cache (token was stored)
     if CACHE_INVALIDATION_AVAILABLE and invalidate_oauth_token:
