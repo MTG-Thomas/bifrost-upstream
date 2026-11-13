@@ -180,6 +180,11 @@ def _eval_op(
         b = _eval_node(value[1], row, user, resolvers)
         if a is None or b is None:
             return False
+        # JSON booleans and numbers are distinct types; Python would order
+        # ``True < 5`` because bool subclasses int. The SQL compiler guards on
+        # ``jsonb_typeof`` and treats that pair as a mismatch, so do the same.
+        if isinstance(a, bool) != isinstance(b, bool):
+            return False
         try:
             if op == "lt":
                 return a < b

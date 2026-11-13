@@ -125,36 +125,58 @@ async def test_exec_eq_int_matches_only_matching_number(db_session: AsyncSession
 
 
 @pytest.mark.asyncio
-async def test_exec_lt_int_executes_and_orders_numerics(db_session: AsyncSession):
-    """`{lt: [{row: count}, 10]}` must execute (no error) and order numerics.
+async def test_exec_lt_int_matches_only_numeric_rows(db_session: AsyncSession):
+    """`{lt: [{row: count}, 10]}` matches only numeric row values.
 
-    The critical property — and the whole point of this fix — is that the
-    query EXECUTES against Postgres. The original `data->>'count' < 10`
-    (text-vs-int) raised. The JSONB-compare form `data->'count' < '10'::jsonb`
-    runs cleanly.
-
-    For type mismatches in row data (e.g. `count = "five"`), JSONB's cross-
-    type ordering kicks in — Postgres orders by type tag, not the underlying
-    value. This isn't "silent false" the way `eq` is, but it never raises,
-    which is what matters for security policy enforcement. The pure-Python
-    evaluator does return silent-false on `lt` type mismatches (see
-    evaluate.py:_eval_op), but the compiler matches Postgres semantics here
-    rather than introducing per-row `jsonb_typeof` guards on the hot path.
+    PostgreSQL orders JSONB across types (null < string < number < boolean <
+    array < object), so without a `jsonb_typeof` guard a JSON null or a string
+    satisfies `count < 10`. The evaluator treats those as mismatches, and a
+    read policy must not expose rows its own semantics reject.
     """
     rows = [
         {"count": 5, "label": "below"},
         {"count": 15, "label": "above"},
+        {"count": "five", "label": "string"},
+        {"count": None, "label": "null"},
+        {"count": True, "label": "boolean"},
+        {"count": [1], "label": "array"},
+        {"label": "missing"},
     ]
     table = await _seed_table_with_rows(db_session, rows)
 
-    matched_ids = await _run(db_session, table, {"lt": [{"row": "count"}, 10]})
+    assert await _matched_labels(
+        db_session, table, {"lt": [{"row": "count"}, 10]}
+    ) == {"below"}
+    assert await _matched_labels(
+        db_session, table, {"gt": [10, {"row": "count"}]}
+    ) == {"below"}
 
+
+@pytest.mark.asyncio
+async def test_exec_lt_string_matches_only_string_rows(db_session: AsyncSession):
+    """The text-extract path must not compare numbers or booleans as text."""
+    rows = [
+        {"status": "alpha", "label": "before"},
+        {"status": "zeta", "label": "after"},
+        {"status": 1, "label": "number"},
+        {"status": False, "label": "boolean"},
+    ]
+    table = await _seed_table_with_rows(db_session, rows)
+
+    assert await _matched_labels(
+        db_session, table, {"lt": [{"row": "status"}, "review"]}
+    ) == {"before"}
+
+
+async def _matched_labels(
+    db_session: AsyncSession, table: Table, expr_dict: dict
+) -> set[str]:
+    matched_ids = await _run(db_session, table, expr_dict)
     fetched = await db_session.execute(
         select(Document.id, Document.data).where(Document.table_id == table.id)
     )
     by_id = {doc_id: data for doc_id, data in fetched.all()}
-    matched_labels = {by_id[doc_id]["label"] for doc_id in matched_ids}
-    assert matched_labels == {"below"}
+    return {by_id[doc_id]["label"] for doc_id in matched_ids}
 
 
 # --- Real-world shape: shared_read_in_org ---------------------------------

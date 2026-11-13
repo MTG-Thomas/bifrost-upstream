@@ -16,7 +16,7 @@ import json
 from sqlalchemy import and_ as sa_and
 from sqlalchemy import cast as sa_cast
 from sqlalchemy import false as sa_false
-from sqlalchemy import literal
+from sqlalchemy import func, literal
 from sqlalchemy import not_ as sa_not
 from sqlalchemy import or_ as sa_or
 from sqlalchemy import true as sa_true
@@ -225,6 +225,44 @@ def _compile_comparison_operands(
     return _compile_node(left_node, user), _compile_node(right_node, user)
 
 
+def _jsonb_scalar_type(value: Any) -> str | None:
+    """Return the ``jsonb_typeof`` name for a Python scalar, if it has one."""
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    return None
+
+
+def _ordering_type_guard(
+    left_node: Any, right_node: Any, user: Any
+) -> ColumnElement | None:
+    """Restrict a JSONB row ordering comparison to the literal's JSON type.
+
+    PostgreSQL orders JSONB values across types (null < string < number <
+    boolean < array < object), so ``data->'x' < '5'::jsonb`` is true for a
+    JSON null or a string, and ``data->>'x' < 'm'`` compares numbers as text.
+    The evaluator treats mismatched types as false; this guard makes the
+    compiled read filter agree with it.
+    """
+    for row_node, scalar_node in ((left_node, right_node), (right_node, left_node)):
+        if not (isinstance(row_node, dict) and set(row_node.keys()) == {"row"}):
+            continue
+        if isinstance(scalar_node, dict) and set(scalar_node.keys()) == {"row"}:
+            return None
+        jsonb_col = _resolve_row_to_jsonb(row_node["row"])
+        if jsonb_col is None:
+            return None
+        scalar = _resolve_to_scalar(scalar_node, user)
+        scalar_type = None if scalar is _NOT_SCALAR else _jsonb_scalar_type(scalar)
+        if scalar_type is None:
+            return None
+        return func.jsonb_typeof(jsonb_col) == scalar_type
+    return None
+
+
 def _compile_op(op: str, value: Any, user: Any) -> ColumnElement:
     if op == "and":
         return sa_and(*(_compile_node(item, user) for item in value))
@@ -242,13 +280,15 @@ def _compile_op(op: str, value: Any, user: Any) -> ColumnElement:
         if op == "neq":
             return left != right
         if op == "lt":
-            return left < right
-        if op == "lte":
-            return left <= right
-        if op == "gt":
-            return left > right
-        if op == "gte":
-            return left >= right
+            ordered = left < right
+        elif op == "lte":
+            ordered = left <= right
+        elif op == "gt":
+            ordered = left > right
+        else:
+            ordered = left >= right
+        type_guard = _ordering_type_guard(value[0], value[1], user)
+        return ordered if type_guard is None else sa_and(type_guard, ordered)
     if op == "in":
         left_node, right_node = value[0], value[1]
         # Claims-RHS short-circuit: `{in: [{row: x}, {claims: name}]}` expands
