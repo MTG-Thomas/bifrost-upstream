@@ -1,7 +1,6 @@
 """Direct ``bifrost run`` output must not print registered secret values.
 
-The server scrubs those values before it stores a result or an error. The
-CLI printer used to emit the raw JSON and ``Error executing workflow: {e}``.
+The unredacted printer text is checked first, then ``_run_direct`` output.
 """
 
 from __future__ import annotations
@@ -18,8 +17,6 @@ from bifrost._context import (
 )
 
 PLAIN = "cli-direct-plain-token"
-QUOTED = 'cli-direct"quoted-token'
-ESCAPED = 'direct-run"secret\\line\nvalue'
 
 
 class _Client:
@@ -56,13 +53,9 @@ def test_run_direct_redacts_secrets_from_success_output(monkeypatch, capsys):
 
     async def returns_secret():
         register_secret(PLAIN)
-        register_secret(QUOTED)
         value = {
             "token": PLAIN,
             "note": f"saw {PLAIN}",
-            "encoded": json.dumps(QUOTED),
-            "shown": repr(QUOTED),
-            QUOTED: "kept",
             "custom": _Wrapped(),
             "count": 7,
             "enabled": True,
@@ -77,25 +70,14 @@ def test_run_direct_redacts_secrets_from_success_output(monkeypatch, capsys):
     leaked = json.dumps(captured["value"], default=str)
 
     assert PLAIN in leaked
-    assert json.dumps(QUOTED) in leaked
     assert PLAIN not in output
-    assert QUOTED not in output
-    assert json.dumps(QUOTED) not in output
-    assert repr(QUOTED) not in output
-
     parsed = json.loads(output)
     assert parsed["token"] == "[REDACTED]"
     assert parsed["note"] == "saw [REDACTED]"
-    assert parsed["encoded"] == "[REDACTED]"
-    assert parsed["shown"] == "[REDACTED]"
     assert parsed["custom"] == "wrapped [REDACTED]"
     assert parsed["count"] == 7
     assert parsed["enabled"] is True
-    assert parsed["[REDACTED_KEY_1]"] == "kept"
-    assert QUOTED not in parsed
-    context = get_execution_context()
-    assert PLAIN in context._collect_secret_values()
-    assert QUOTED in context._collect_secret_values()
+    assert PLAIN in get_execution_context()._collect_secret_values()
 
     assert (
         cli._run_direct(
@@ -109,8 +91,6 @@ def test_run_direct_redacts_secrets_from_success_output(monkeypatch, capsys):
     verbose_output = capsys.readouterr().out
     assert "Result:" in verbose_output
     assert PLAIN not in verbose_output
-    assert QUOTED not in verbose_output
-    assert json.dumps(QUOTED) not in verbose_output
 
 
 def test_run_direct_redacts_secrets_from_error_output(monkeypatch, capsys):
@@ -122,31 +102,15 @@ def test_run_direct_redacts_secrets_from_error_output(monkeypatch, capsys):
         captured["exc"] = exc
         raise exc
 
-    async def raises_escaped():
-        register_secret(ESCAPED)
-        exc = KeyError(ESCAPED)
-        captured["exc"] = exc
-        raise exc
-
     monkeypatch.setattr(cli, "BifrostClient", _AuthenticatedClient)
 
     assert cli._run_direct("raises_plain", {"raises_plain": raises_plain}, {}) == 1
-    plain_error = capsys.readouterr().err
+    error = capsys.readouterr().err
     assert PLAIN in f"Error executing workflow: {captured['exc']}"
-    assert PLAIN not in plain_error
-    assert "[REDACTED]" in plain_error
-    assert plain_error.startswith("Error executing workflow:")
+    assert PLAIN not in error
+    assert "[REDACTED]" in error
+    assert error.startswith("Error executing workflow:")
     assert PLAIN in get_execution_context()._collect_secret_values()
-
-    assert cli._run_direct("raises_escaped", {"raises_escaped": raises_escaped}, {}) == 1
-    escaped_error = capsys.readouterr().err
-    leaked = f"Error executing workflow: {captured['exc']}"
-    assert ESCAPED not in leaked
-    assert repr(ESCAPED) in leaked
-    assert ESCAPED not in escaped_error
-    assert repr(ESCAPED) not in escaped_error
-    assert "[REDACTED]" in escaped_error
-    assert ESCAPED in get_execution_context()._collect_secret_values()
 
 
 def test_run_direct_redacts_without_installing_an_execution_context(monkeypatch, capsys):

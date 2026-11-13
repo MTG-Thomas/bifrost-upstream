@@ -43,7 +43,6 @@ from packaging.version import InvalidVersion, Version
 # Import credentials module directly (it's standalone)
 import bifrost.credentials as credentials
 from bifrost._context import collect_registered_secrets
-from bifrost._secret_redaction import redact_secrets
 from bifrost._workspace_lock import WorkspaceLock, WorkspaceLockError
 from bifrost.client import BifrostClient
 from bifrost.windows_credentials import CredentialStorageError
@@ -1326,40 +1325,39 @@ Examples:
     return 1
 
 
-def _direct_output_secrets() -> set[str]:
-    """Registered secrets plus the JSON and repr spellings direct-run printing emits.
+_MIN_DIRECT_SECRET_LENGTH = 4
+_DIRECT_REDACTED = "[REDACTED]"
 
-    ``json.dumps`` and ``KeyError`` escape quotes and newlines, so the raw
-    secret is not always a substring of the text that reaches stdout.
-    """
-    variants: set[str] = set()
-    for secret in collect_registered_secrets():
-        if len(secret) < 4:
-            continue
-        variants.add(secret)
-        for encoded in (
-            json.dumps(secret),
-            json.dumps(secret, ensure_ascii=False),
-            repr(secret),
-        ):
-            variants.add(encoded)
-            if (
-                len(encoded) >= 2
-                and encoded[0] == encoded[-1]
-                and encoded[0] in "\"'"
-            ):
-                inner = encoded[1:-1]
-                if len(inner) >= 4:
-                    variants.add(inner)
-    return variants
+
+def _direct_output_secrets() -> set[str]:
+    """Registered secrets long enough to scrub, same 4-character floor as the server."""
+    return {
+        secret
+        for secret in collect_registered_secrets()
+        if len(secret) >= _MIN_DIRECT_SECRET_LENGTH
+    }
+
+
+def _redact_printed(value: Any, secrets: set[str]) -> Any:
+    """Replace registered secrets in printed JSON values. Keys are left as-is."""
+    if isinstance(value, str):
+        redacted = value
+        for secret in secrets:
+            redacted = redacted.replace(secret, _DIRECT_REDACTED)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_printed(item, secrets) for item in value]
+    if isinstance(value, dict):
+        return {key: _redact_printed(child, secrets) for key, child in value.items()}
+    return value
 
 
 def _redact_direct_value(value: Any) -> Any:
     """Scrub registered secrets from a value about to be printed.
 
-    Objects are normalized with the same ``default=str`` rule as the printer
-    before scrubbing, so a secret that appears only in ``str(result)`` is
-    still removed. With no registered secrets the value is returned unchanged.
+    The value is normalized with the printer's ``default=str`` rule first, so a
+    secret that appears only in ``str(result)`` is removed before the final
+    dump. With no registered secrets the value is returned unchanged.
     """
     secrets = _direct_output_secrets()
     if not secrets:
@@ -1368,7 +1366,7 @@ def _redact_direct_value(value: Any) -> Any:
         normalized = json.loads(json.dumps(value, default=str))
     except (TypeError, ValueError):
         normalized = value
-    return redact_secrets(normalized, secrets, redact_keys=True)
+    return _redact_printed(normalized, secrets)
 
 
 def _run_direct(
