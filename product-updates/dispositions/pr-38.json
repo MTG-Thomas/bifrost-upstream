@@ -1,0 +1,14 @@
+{
+  "key": "pr:38",
+  "classification": "other",
+  "entry_ids": [],
+  "summary": "Solution deploys and Git sync refuse a role name that more than one role uses, instead of picking one.",
+  "category": "hardening",
+  "review": {
+    "status": "draft",
+    "evidence": [
+      "https://github.com/MTG-Thomas/bifrost-upstream/pull/38",
+      "https://github.com/Midtown-Technology-Group/bifrost/pull/1271"
+    ]
+  }
+}
