@@ -7,7 +7,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from bifrost.cli import _WatchChangeHandler, _WatchState, _process_watch_batch
+from bifrost.cli import (
+    _WatchChangeHandler,
+    _WatchState,
+    _process_incoming,
+    _process_watch_batch,
+    _process_watch_deletes,
+    _terminal_safe_text,
+)
 
 
 def test_read_only_events_are_ignored():
@@ -204,6 +211,125 @@ def test_deletion_computes_repo_path_without_prefix():
     repo_path = f"{repo_prefix}/{rel}" if repo_prefix else str(rel)
 
     assert repo_path == "apps/my-app/old-file.tsx"
+
+
+def test_terminal_safe_text_escapes_control_sequences():
+    crafted = "apps/forged\n\x1b]8;;https://example.invalid\x07name.py"
+
+    assert _terminal_safe_text(crafted) == (
+        "apps/forged\\n\\x1b]8;;https://example.invalid\\x07name.py"
+    )
+    assert _terminal_safe_text("apps/ok.py") == "apps/ok.py"
+
+
+@pytest.mark.asyncio
+async def test_deleted_filename_cannot_inject_terminal_output(tmp_path, capsys):
+    crafted_name = "deleted\n\x1b[31mforged.py"
+    deleted_path = tmp_path / crafted_name
+    client = AsyncMock()
+    client.post.return_value = SimpleNamespace(status_code=204)
+
+    await _process_watch_batch(
+        client,
+        set(),
+        {str(deleted_path)},
+        tmp_path,
+        "",
+        _WatchState(tmp_path),
+    )
+
+    output = capsys.readouterr().out
+    assert "File deleted: deleted\\n\\x1b[31mforged.py" in output
+    assert "\x1b" not in output
+    assert crafted_name not in output
+
+
+@pytest.mark.asyncio
+async def test_changed_filename_cannot_inject_terminal_output(tmp_path, capsys):
+    crafted_name = "edited\n\x1b[31mforged.txt"
+    changed = tmp_path / crafted_name
+    changed.write_text("hello\n")
+    client = AsyncMock()
+    client.post.return_value = SimpleNamespace(status_code=204, json=lambda: {})
+
+    await _process_watch_batch(
+        client,
+        {str(changed)},
+        set(),
+        tmp_path,
+        "",
+        _WatchState(tmp_path),
+    )
+
+    output = capsys.readouterr().out
+    assert "File changed: edited\\n\\x1b[31mforged.txt" in output
+    assert "\x1b" not in output
+    assert crafted_name not in output
+
+
+@pytest.mark.asyncio
+async def test_delete_error_cannot_inject_terminal_output(tmp_path, capsys):
+    crafted_name = "gone\n\x1b[2Jcleared.txt"
+    client = AsyncMock()
+    client.post.side_effect = RuntimeError("server\n\x1b[31msaid no")
+
+    await _process_watch_deletes(
+        client,
+        {str(tmp_path / crafted_name)},
+        tmp_path,
+        "",
+        _WatchState(tmp_path),
+    )
+
+    output = capsys.readouterr().out
+    assert "Delete error for gone\\n\\x1b[2Jcleared.txt:" in output
+    assert "server\\n\\x1b[31msaid no" in output
+    assert "\x1b" not in output
+    assert output.count("\n") == 1
+
+
+@pytest.mark.asyncio
+async def test_watch_delete_log_receives_terminal_safe_path(tmp_path):
+    crafted_name = "deleted\n\x1b[31mforged.py"
+    client = AsyncMock()
+    client.post.return_value = SimpleNamespace(status_code=204)
+    watch_app = MagicMock()
+
+    await _process_watch_batch(
+        client,
+        set(),
+        {str(tmp_path / crafted_name)},
+        tmp_path,
+        "",
+        _WatchState(tmp_path),
+        watch_app=watch_app,
+    )
+
+    watch_app.log_delete.assert_called_once_with("deleted\\n\\x1b[31mforged.py")
+
+
+@pytest.mark.asyncio
+async def test_incoming_delete_log_receives_terminal_safe_path(tmp_path):
+    crafted_name = "remote\n\x1b[31mforged.txt"
+    local_file = tmp_path / crafted_name
+    local_file.write_text("stale\n")
+    watch_app = MagicMock()
+
+    await _process_incoming(
+        AsyncMock(),
+        [],
+        [([crafted_name], "ada")],
+        tmp_path,
+        "",
+        _WatchState(tmp_path),
+        watch_app=watch_app,
+    )
+
+    watch_app.log_delete.assert_called_once_with(
+        "remote\\n\\x1b[31mforged.txt",
+        user="ada",
+    )
+    assert not local_file.exists()
 
 
 @pytest.mark.asyncio
