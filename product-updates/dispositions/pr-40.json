@@ -1,0 +1,12 @@
+{
+  "key": "pr:40",
+  "classification": "omit",
+  "entry_ids": [],
+  "reason": "Test-only fix for a racy route wait in the AuditPageLayout focus test; no application behavior change.",
+  "review": {
+    "status": "draft",
+    "evidence": [
+      "https://github.com/MTG-Thomas/bifrost-upstream/pull/40"
+    ]
+  }
+}
