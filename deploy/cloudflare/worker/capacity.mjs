@@ -20,9 +20,55 @@ const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0
 const json = (status, body) =>
     new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
+// Database and Redis endpoints the worker dials, with the port each driver
+// assumes when the URL names none.
+const TUNNELED_DEPENDENCIES = [
+    ["BIFROST_DATABASE_URL", 5432],
+    ["BIFROST_DATABASE_URL_SYNC", 5432],
+    ["BIFROST_REDIS_URL", 6379],
+];
+
+// When the container env configures the private TCP transport
+// (BIFROST_WORKER_NETWORK), the worker reaches PostgreSQL and Redis only
+// through its tunnel listeners. A dependency hostname or port that no tunnel
+// covers would resolve through ordinary DNS — or, if the URL is absent, fall
+// back to the worker's localhost default — and dial something other than the
+// intended origin. Refuse to launch instead. Without the transport, the
+// container uses its own network and there is nothing to cross-check.
+function assertDependenciesTunneled(env) {
+    const raw = env.BIFROST_WORKER_NETWORK;
+    if (raw === undefined) return;
+    let tunnels;
+    try {
+        tunnels = JSON.parse(raw);
+    } catch {
+        throw new Error("BIFROST_WORKER_NETWORK must be a JSON array of tunnels");
+    }
+    if (!Array.isArray(tunnels)) {
+        throw new Error("BIFROST_WORKER_NETWORK must be a JSON array of tunnels");
+    }
+    for (const [name, defaultPort] of TUNNELED_DEPENDENCIES) {
+        let endpoint;
+        try {
+            endpoint = new URL(env[name]);
+        } catch {
+            throw new Error(`${name} must be set to a valid URL when BIFROST_WORKER_NETWORK is configured`);
+        }
+        const port = Number(endpoint.port || defaultPort);
+        const covered = tunnels.some((tunnel) =>
+            typeof tunnel?.hostname === "string" &&
+            tunnel.hostname.toLowerCase() === endpoint.hostname.toLowerCase() &&
+            tunnel.port === port);
+        if (!covered) {
+            throw new Error(`${name} host and port must be covered by a BIFROST_WORKER_NETWORK tunnel`);
+        }
+    }
+}
+
 // The environment a launched incarnation runs with. Pure, so the identity
 // contract is testable without deploying a container.
 export function containerStartEnv(base, row, workerId) {
+    assertDependenciesTunneled(base);
     return {
         ...base,
         BIFROST_WORKER_FORM: "external",

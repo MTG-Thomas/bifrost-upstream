@@ -37,6 +37,18 @@ Edit `deploy/cloudflare/worker/wrangler.toml`:
 | `WORKER_CONTAINER_ENV` | JSON object of the worker container's environment. Do not set `BIFROST_VERSION`: the pinned image carries its own build, and the reported build is what admission fences on. This is plaintext configuration, so put real values in a secret or an uncommitted `.dev.vars`. |
 | `CAPACITY_TOKEN` | **Secret**, not a var: `npx wrangler secret put CAPACITY_TOKEN`, 32–512 non-space characters. The provider answers `503` rather than serving unauthenticated when it is missing. |
 
+When `WORKER_CONTAINER_ENV` configures the private TCP transport
+(`BIFROST_WORKER_NETWORK`), the provider refuses to launch a container unless
+the host and port of `BIFROST_DATABASE_URL`, `BIFROST_DATABASE_URL_SYNC`, and
+`BIFROST_REDIS_URL` are each covered by a tunnel entry. An uncovered or missing
+URL would otherwise resolve through ordinary DNS, or fall back to the worker's
+localhost default, and dial an origin other than the intended one. The refused
+start returns `502` and the incarnation is never launched. Tunnel hostnames
+resolve only when the container boots through the transport wrapper, so set
+`WORKER_ENTRYPOINT_JSON` to
+`["python", "-m", "src.worker.network", "--exec", "/entrypoint.sh", "python", "-m", "src.worker.main"]`
+(see `worker-private-transport.md`).
+
 `WORKER_VERSION` disagreeing with the image is the most common misconfiguration;
 it produces enrollments that are accepted and then fenced out. A container that
 reaches the API and is closed with `1008 policy violation` during `hello` is this

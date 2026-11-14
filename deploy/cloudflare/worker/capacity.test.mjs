@@ -243,6 +243,67 @@ test("launched container env carries the launcher identity and a hostname", () =
     assert.equal(env.HOSTNAME, `cf-${WORKER}`);
 });
 
+const TUNNELED_ENV = {
+    BIFROST_WORKER_NETWORK: JSON.stringify([
+        { hostname: "db.internal", address: "127.0.0.2", port: 5432, url: "wss://gw.example.invalid/db" },
+        { hostname: "cache.internal", address: "127.0.0.3", port: 6379, url: "wss://gw.example.invalid/cache" },
+    ]),
+    BIFROST_DATABASE_URL: "postgresql+asyncpg://bifrost@db.internal/bifrost",
+    BIFROST_DATABASE_URL_SYNC: "postgresql://bifrost@DB.internal:5432/bifrost",
+    BIFROST_REDIS_URL: "redis://cache.internal:6379/0",
+};
+
+test("a tunneled container launches only when every DB/Redis host is tunnel-mapped", () => {
+    const row = { worker_id: WORKER, resource_uid: "uid-1" };
+    assert.doesNotThrow(() => containerStartEnv(TUNNELED_ENV, row, WORKER));
+    // An unmapped hostname would resolve through ordinary DNS instead.
+    assert.throws(
+        () => containerStartEnv(
+            { ...TUNNELED_ENV, BIFROST_REDIS_URL: "redis://other.internal:6379/0" }, row, WORKER),
+        /BIFROST_REDIS_URL host and port must be covered/,
+    );
+    // A mapped hostname on an unmapped port reaches no listener.
+    assert.throws(
+        () => containerStartEnv(
+            { ...TUNNELED_ENV, BIFROST_DATABASE_URL: "postgresql+asyncpg://db.internal:6543/b" }, row, WORKER),
+        /BIFROST_DATABASE_URL host and port must be covered/,
+    );
+    // An absent URL would fall back to the worker's localhost default.
+    const { BIFROST_DATABASE_URL_SYNC: _omitted, ...missingSync } = TUNNELED_ENV;
+    assert.throws(
+        () => containerStartEnv(missingSync, row, WORKER),
+        /BIFROST_DATABASE_URL_SYNC must be set/,
+    );
+    // Without the private transport the container uses its own network.
+    assert.doesNotThrow(() => containerStartEnv(
+        { BIFROST_DATABASE_URL: "postgresql+asyncpg://127.0.0.1:5432/b" }, row, WORKER));
+});
+
+test("the ledger launches nothing when a dependency host is not tunnel-mapped", async () => {
+    let launched = false;
+    const env = {
+        ...ENV,
+        WORKER_CONTAINER_ENV: JSON.stringify({
+            ...TUNNELED_ENV,
+            BIFROST_DATABASE_URL: "postgresql+asyncpg://public.example.invalid:5432/b",
+        }),
+        WORKER_CONTAINER: {
+            getByName: () => ({
+                fetch: async () => {
+                    launched = true;
+                    return new Response("{}", { status: 200 });
+                },
+            }),
+        },
+    };
+    const ledger = new WorkerLedger({}, env);
+    await assert.rejects(
+        () => ledger.runtime(WORKER).start({ worker_id: WORKER, resource_uid: "uid-1" }),
+        /BIFROST_DATABASE_URL host and port must be covered/,
+    );
+    assert.equal(launched, false);
+});
+
 test("inactivity timeout covers the worker lifetime within the platform cap", () => {
     // A container is stopped when its Durable Object goes idle unless this
     // timeout holds it open, so it must exceed the worker's own lifetime.
