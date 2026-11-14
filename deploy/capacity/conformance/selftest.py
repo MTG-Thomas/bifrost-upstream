@@ -8,7 +8,8 @@ harness deliberately serves two providers:
   broken  — re-launches on replay (the sequential duplicate launch failure)
 
 Expected: the suite exits 0 against `good` and exits non-zero against `broken`,
-with the duplicate-launch case among the failures.
+with the duplicate-launch case among the failures. It also checks that the
+shared core's TLS server context refuses protocol versions below TLS 1.2.
 
 Run: python selftest.py
 """
@@ -18,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -40,6 +42,7 @@ from capacity_core import (  # noqa: E402
     ProtocolError,
     ProviderConfig,
     resource_doc,
+    server_tls_context,
 )
 
 SCOPE = "conformance-selftest"
@@ -211,6 +214,8 @@ def run_suite(base_url: str, control_url: str, label: str) -> int:
 
 def main() -> int:
     failures: list[str] = []
+    if server_tls_context().minimum_version < ssl.TLSVersion.TLSv1_2:
+        failures.append("provider TLS context accepts protocol versions below TLS 1.2")
     with tempfile.TemporaryDirectory() as tmp:
         # -- good provider ------------------------------------------------
         good = FakeAdapter()

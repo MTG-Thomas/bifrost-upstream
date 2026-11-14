@@ -592,13 +592,17 @@ def build_server(cfg: ProviderConfig, engine: CapacityEngine) -> ThreadingHTTPSe
     server = ThreadingHTTPServer(("0.0.0.0", cfg.port), CapacityHandler)
     server.engine = engine  # type: ignore[attr-defined]
     server.cfg = cfg  # type: ignore[attr-defined]
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    # The API dials HTTPS providers only; do not offer deprecated protocol
-    # versions such as TLS 1.0/1.1 to that client.
-    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx = server_tls_context()
     ctx.load_cert_chain(cfg.tls_cert_file, cfg.tls_key_file)
     server.socket = ctx.wrap_socket(server.socket, server_side=True)
     return server
+
+
+def server_tls_context() -> ssl.SSLContext:
+    """Server-side TLS context that refuses the deprecated TLS 1.0 and 1.1."""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    return ctx
 
 
 def serve(cfg: ProviderConfig, adapter: CapacityAdapter, store_path: str | None = None) -> int:
