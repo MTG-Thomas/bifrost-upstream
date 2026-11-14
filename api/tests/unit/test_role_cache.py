@@ -25,9 +25,9 @@ from shared.role_cache import (
     _ROLE_CACHE_TTL,
     get_user_roles,
     invalidate_role,
-    invalidate_role_after_commit,
+    invalidate_role_for_transaction,
     invalidate_user,
-    invalidate_users_after_commit,
+    invalidate_users_for_transaction,
 )
 
 
@@ -294,15 +294,22 @@ class _DictRedis:
             yield key
 
 
-async def _settle_after_commit_invalidations():
-    await asyncio.gather(*role_cache._after_commit_invalidations)
+async def _settle_transaction_end_invalidations():
+    await asyncio.gather(*role_cache._transaction_end_invalidations)
 
 
-class TestInvalidateAfterCommit:
-    """A role removal is evicted only once the removal is committed.
+def _cached(redis, user_id, role_ids):
+    redis.values[_ROLE_CACHE_KEY_PREFIX + str(user_id)] = json.dumps(
+        {"role_ids": [str(r) for r in role_ids], "role_names": [], "v": 1}
+    )
 
-    Evicting before commit let a concurrent reader re-cache the still-committed
-    old roles for the full TTL, so the removed role kept authorizing requests.
+
+class TestInvalidateForTransaction:
+    """Role changes are evicted immediately and again when the transaction ends.
+
+    Evicting only before commit let a concurrent reader re-cache the
+    still-committed old roles for the full TTL, so a removed role kept
+    authorizing requests.
     """
 
     @pytest.mark.asyncio
@@ -315,35 +322,57 @@ class TestInvalidateAfterCommit:
 
         with patch("shared.role_cache.get_shared_redis", return_value=redis):
             if scope == "user":
-                invalidate_users_after_commit(db_session, [user_id])
+                await invalidate_users_for_transaction(db_session, [user_id])
             else:
-                invalidate_role_after_commit(db_session, removed_role)
+                await invalidate_role_for_transaction(db_session, removed_role)
 
             # Another request reads before the removal commits and caches the
             # rows that are still committed.
             await get_user_roles(user_id, _make_db_returning([(removed_role, "ops")]))
-            await _settle_after_commit_invalidations()
+            await _settle_transaction_end_invalidations()
             assert _ROLE_CACHE_KEY_PREFIX + str(user_id) in redis.values
 
             await db_session.commit()
-            await _settle_after_commit_invalidations()
+            await _settle_transaction_end_invalidations()
 
             role_ids, _ = await get_user_roles(user_id, _make_db_returning([]))
 
         assert role_ids == []
 
     @pytest.mark.asyncio
-    async def test_rolled_back_change_leaves_the_cache_alone(self, db_session):
+    @pytest.mark.parametrize("scope", ["user", "role"])
+    async def test_the_changing_transaction_reads_its_own_change(self, db_session, scope):
         user_id = uuid4()
+        removed_role = uuid4()
         redis = _DictRedis()
-        redis.values[_ROLE_CACHE_KEY_PREFIX + str(user_id)] = json.dumps(
-            {"role_ids": [], "role_names": [], "v": 1}
-        )
+        _cached(redis, user_id, [removed_role])
         await db_session.execute(text("SELECT 1"))
 
         with patch("shared.role_cache.get_shared_redis", return_value=redis):
-            invalidate_users_after_commit(db_session, [user_id])
-            await db_session.rollback()
-            await _settle_after_commit_invalidations()
+            if scope == "user":
+                await invalidate_users_for_transaction(db_session, [user_id])
+            else:
+                await invalidate_role_for_transaction(db_session, removed_role)
 
-        assert _ROLE_CACHE_KEY_PREFIX + str(user_id) in redis.values
+            role_ids, _ = await get_user_roles(user_id, _make_db_returning([]))
+
+        assert role_ids == []
+
+    @pytest.mark.asyncio
+    async def test_rolled_back_change_does_not_stay_cached(self, db_session):
+        user_id = uuid4()
+        granted_role = uuid4()
+        redis = _DictRedis()
+        _cached(redis, user_id, [])
+        await db_session.execute(text("SELECT 1"))
+
+        with patch("shared.role_cache.get_shared_redis", return_value=redis):
+            await invalidate_users_for_transaction(db_session, [user_id])
+            # The changing transaction reads back its uncommitted grant.
+            await get_user_roles(user_id, _make_db_returning([(granted_role, "ops")]))
+            assert _ROLE_CACHE_KEY_PREFIX + str(user_id) in redis.values
+
+            await db_session.rollback()
+            await _settle_transaction_end_invalidations()
+
+        assert _ROLE_CACHE_KEY_PREFIX + str(user_id) not in redis.values

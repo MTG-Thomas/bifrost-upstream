@@ -458,14 +458,14 @@ async def update_role(
     logger.info(f"Updated role {log_safe(role_id)}")
 
     from src.core.cache import invalidate_role
-    from shared.role_cache import invalidate_role_after_commit
+    from shared.role_cache import invalidate_role_for_transaction
 
     # Invalidate cache (roles are global, no org_id needed)
     await invalidate_role(None, str(role_id))
 
     # Per-user role cache: a rename changes role_names for every user holding
     # this role, so sweep all entries containing role_id.
-    invalidate_role_after_commit(session, role_id)
+    await invalidate_role_for_transaction(session, role_id)
 
     changed_fields = [
         k
@@ -536,14 +536,14 @@ async def delete_role(
     logger.info(f"Deleted role {log_safe(role_id)}")
 
     from src.core.cache import invalidate_role
-    from shared.role_cache import invalidate_role_after_commit
+    from shared.role_cache import invalidate_role_for_transaction
 
     # Invalidate cache (roles are global, no org_id needed)
     await invalidate_role(None, str(role_id))
 
     # Per-user role cache: deleting a role means every user holding it loses
     # the membership; clear all entries containing role_id.
-    invalidate_role_after_commit(session, role_id)
+    await invalidate_role_for_transaction(session, role_id)
 
     await emit_audit(
         session,
@@ -794,14 +794,14 @@ async def assign_users_to_role(
     logger.info(f"Assigned users to role {log_safe(role_id)}")
 
     from src.core.cache import invalidate_role_users
-    from shared.role_cache import invalidate_users_after_commit
+    from shared.role_cache import invalidate_users_for_transaction
 
     # Invalidate cache (roles are global, no org_id needed)
     await invalidate_role_users(None, str(role_id))
 
     # Per-user role cache: drop entries for each newly-assigned user so the
     # next read sees the new role membership.
-    invalidate_users_after_commit(session, affected_user_ids)
+    await invalidate_users_for_transaction(session, affected_user_ids)
 
     await emit_audit(
         session,
@@ -828,7 +828,7 @@ async def remove_users_from_role(
     boundary rows go with it (database cascade).
     """
     from src.core.cache import invalidate_role_users
-    from shared.role_cache import invalidate_users_after_commit
+    from shared.role_cache import invalidate_users_for_transaction
     from shared.builtin_roles import PLATFORM_ADMIN_ROLE_ID
     from src.models import UserRole as UserRoleORM
     from src.services.authorization.enforce import operation_reach
@@ -867,7 +867,7 @@ async def remove_users_from_role(
     )
     await session.flush()
     await invalidate_role_users(None, str(role_id))
-    invalidate_users_after_commit(session, holders)
+    await invalidate_users_for_transaction(session, holders)
     return holders
 
 

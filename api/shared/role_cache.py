@@ -19,10 +19,12 @@ Invalidation
 - ``invalidate_role(role_id)``: scan every cached user, drop entries that
   contain this role_id. Acceptable at <10k cached users.
 
-Mutation sites call ``invalidate_users_after_commit`` /
-``invalidate_role_after_commit`` instead. Evicting before the transaction
-commits lets a concurrent ``get_user_roles`` re-cache the still-committed old
-rows for the full TTL, so a removed role would keep authorizing requests.
+Mutation sites call ``invalidate_users_for_transaction`` /
+``invalidate_role_for_transaction`` instead. They evict immediately, so later
+reads in the same transaction see its changes, and again when the transaction
+commits or rolls back. Evicting only before the commit let a concurrent
+``get_user_roles`` re-cache the still-committed old rows for the full TTL, so a
+removed role kept authorizing requests.
 
 Empty role lists are a valid cached value, never treated as a miss.
 Redis failures fall back to DB (read) or are logged (invalidation), per
@@ -127,7 +129,7 @@ async def get_user_roles(
 async def invalidate_user(user_id: UUID) -> None:
     """Drop the cache entry for one user.
 
-    Mutation sites use ``invalidate_users_after_commit``.
+    Mutation sites use ``invalidate_users_for_transaction``.
     Redis failures are logged; the next read will see stale data until TTL.
     """
     try:
@@ -145,7 +147,7 @@ async def invalidate_user(user_id: UUID) -> None:
 async def invalidate_role(role_id: UUID) -> None:
     """Drop cache entries for every user who has this role.
 
-    Mutation sites use ``invalidate_role_after_commit``. Scans
+    Mutation sites use ``invalidate_role_for_transaction``. Scans
     ``bifrost:role_cache:user:*`` and inspects each entry's ``role_ids``
     list. Acceptable at <10k cached users; if the cache grows substantially
     larger consider a reverse index.
@@ -171,29 +173,44 @@ async def invalidate_role(role_id: UUID) -> None:
         logger.warning(f"Failed to invalidate role cache for role {role_id}: {e}")
 
 
-_after_commit_invalidations: set[asyncio.Task[None]] = set()
+_transaction_end_invalidations: set[asyncio.Task[None]] = set()
 
 
-def _after_commit(session: "AsyncSession", invalidate: Callable[[], Awaitable[None]]) -> None:
-    def run(_session: Any) -> None:
+def _invalidate_again_when_transaction_ends(
+    session: "AsyncSession", invalidate: Callable[[], Awaitable[None]]
+) -> None:
+    done = False
+
+    def run(_session: Any, transaction: Any) -> None:
+        nonlocal done
+        if done or transaction.parent is not None:
+            return
+        done = True
         task = asyncio.get_running_loop().create_task(invalidate())
-        _after_commit_invalidations.add(task)
-        task.add_done_callback(_after_commit_invalidations.discard)
+        _transaction_end_invalidations.add(task)
+        task.add_done_callback(_transaction_end_invalidations.discard)
 
-    event.listen(session.sync_session, "after_commit", run, once=True)
+    event.listen(session.sync_session, "after_transaction_end", run)
 
 
-def invalidate_users_after_commit(session: "AsyncSession", user_ids: Iterable[UUID]) -> None:
-    """Drop these users' entries once ``session`` commits its role changes."""
+async def invalidate_users_for_transaction(session: "AsyncSession", user_ids: Iterable[UUID]) -> None:
+    """Drop these users' entries now and again when ``session``'s transaction ends.
+
+    The second eviction drops whatever was cached in between: old roles re-read
+    by a concurrent request before the commit, or uncommitted roles read back by
+    this transaction before a rollback.
+    """
     pending = list(user_ids)
 
     async def invalidate() -> None:
         for user_id in pending:
             await invalidate_user(user_id)
 
-    _after_commit(session, invalidate)
+    await invalidate()
+    _invalidate_again_when_transaction_ends(session, invalidate)
 
 
-def invalidate_role_after_commit(session: "AsyncSession", role_id: UUID) -> None:
-    """Drop every entry holding ``role_id`` once ``session`` commits."""
-    _after_commit(session, lambda: invalidate_role(role_id))
+async def invalidate_role_for_transaction(session: "AsyncSession", role_id: UUID) -> None:
+    """Drop every entry holding ``role_id`` now and again when the transaction ends."""
+    await invalidate_role(role_id)
+    _invalidate_again_when_transaction_ends(session, lambda: invalidate_role(role_id))
