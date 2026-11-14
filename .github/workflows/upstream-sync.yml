@@ -26,16 +26,15 @@ concurrency:
   group: upstream-sync
   cancel-in-progress: false
 
-# The merge-upstream API call runs as this workflow's GITHUB_TOKEN. GitHub
-# refuses an App token that would create or update workflow files without the
-# workflows permission (HTTP 422, e.g. fork issues #15), so any upstream merge
-# touching .github/workflows/* fails the sync until a human merges manually.
-# Granting it here keeps the hourly sync self-sufficient; the token still
-# cannot do anything outside this single merge-upstream call.
+# The merge-upstream API call runs as this workflow's GITHUB_TOKEN.
+# `workflows` is not a GITHUB_TOKEN permission: declaring it makes the whole
+# file invalid, so every run fails with zero jobs. GITHUB_TOKEN cannot write
+# .github/workflows/* at all, so an upstream merge that touches workflow files
+# fails here (HTTP 422) and opens the conflict issue. Sync that merge once with
+# a token that has the `workflow` scope (see docs/runbooks/upstream-sync.md).
 permissions:
   contents: write
   issues: write
-  workflows: write
 
 jobs:
   sync:
