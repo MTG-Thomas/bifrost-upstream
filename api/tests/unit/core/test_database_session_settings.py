@@ -1,3 +1,5 @@
+import pytest
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from src.config import Settings
@@ -129,9 +131,23 @@ def test_unset_timeouts_install_no_listener(monkeypatch):
     assert calls == []
 
 
-def test_one_override_leaves_the_other_database_policy_intact():
+@pytest.mark.parametrize(
+    ("idle", "statement", "expected"),
+    [
+        (None, 1234, "SET LOCAL statement_timeout = 1234"),
+        (1234, None, "SET LOCAL idle_in_transaction_session_timeout = 1234"),
+    ],
+)
+def test_one_override_leaves_the_other_database_policy_intact(idle, statement, expected):
     engine = create_async_engine("postgresql+asyncpg://user:pass@db.example.com/app")
     install_session_timeouts(
-        engine, idle_in_transaction_session_timeout_ms=None, statement_timeout_ms=1234,
+        engine, idle_in_transaction_session_timeout_ms=idle, statement_timeout_ms=statement,
     )
-    assert _begin(engine) == ["SET LOCAL statement_timeout = 1234"]
+    assert _begin(engine) == [expected]
+
+
+@pytest.mark.parametrize("field", ["database_statement_timeout_ms", "database_idle_in_transaction_timeout_ms"])
+@pytest.mark.parametrize("value", [-1, 2147483648])
+def test_timeout_settings_reject_values_outside_postgresql_range(field, value):
+    with pytest.raises(ValidationError):
+        Settings(**{field: value})
