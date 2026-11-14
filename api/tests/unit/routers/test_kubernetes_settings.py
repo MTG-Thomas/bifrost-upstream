@@ -302,7 +302,6 @@ async def test_capacity_reports_last_pass_and_recent_losses(
 
     from src.models.orm.config import SystemConfig
     from src.models.orm.execution_workers import ExecutionWorker
-    from src.services.kubernetes_execution import KubernetesExecutionService
 
     _stub_capacity(
         monkeypatch,
@@ -312,7 +311,7 @@ async def test_capacity_reports_last_pass_and_recent_losses(
         ),
         _capacity_profile(),
     )
-    await KubernetesExecutionService(uncommitted).update_policy(
+    await kubernetes_execution.KubernetesExecutionService(uncommitted).update_policy(
         {"worker_memory_mib": 4096, "largest_worker_mib": 4096}, updated_by="test"
     )
     # Another test module may have committed this global row already; the
