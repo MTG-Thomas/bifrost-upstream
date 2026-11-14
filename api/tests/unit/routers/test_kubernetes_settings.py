@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.principal import UserPrincipal
 from src.models.contracts.kubernetes import KubernetesPolicyUpdate
 from src.routers import kubernetes as router
+from src.services import kubernetes_execution
 from src.services.worker_pool.external_client import CapacityProviderUnavailable
 
 
@@ -139,11 +140,9 @@ class _FakeCapacityClient:
 def _stub_capacity(
     monkeypatch: pytest.MonkeyPatch, settings: object, behaviour: object
 ) -> None:
-    import src.services.kubernetes_execution as service
-
     monkeypatch.setattr("src.config.get_settings", lambda: settings)
     _FakeCapacityClient.behaviour = behaviour
-    monkeypatch.setattr(service, "ExternalCapacityClient", _FakeCapacityClient)
+    monkeypatch.setattr(kubernetes_execution, "ExternalCapacityClient", _FakeCapacityClient)
 
 
 async def test_capacity_unconfigured_reports_no_provider(
@@ -152,10 +151,8 @@ async def test_capacity_unconfigured_reports_no_provider(
     def _fail(*args: object, **kwargs: object) -> object:
         raise AssertionError("no provider call without configuration")
 
-    import src.services.kubernetes_execution as service
-
-    monkeypatch.setattr("src.config.get_settings", lambda: _capacity_settings())
-    monkeypatch.setattr(service, "ExternalCapacityClient", _fail)
+    monkeypatch.setattr("src.config.get_settings", _capacity_settings)
+    monkeypatch.setattr(kubernetes_execution, "ExternalCapacityClient", _fail)
 
     page = await router.get_worker_capacity_status(
         db_session, admin,  # type: ignore[arg-type]
@@ -173,7 +170,6 @@ async def test_capacity_reports_bounds_and_worker_states_when_policy_fits(
     admin: UserPrincipal, uncommitted: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from src.models.orm.execution_workers import ExecutionWorker
-    from src.services.kubernetes_execution import KubernetesExecutionService
 
     _stub_capacity(
         monkeypatch,
@@ -183,7 +179,7 @@ async def test_capacity_reports_bounds_and_worker_states_when_policy_fits(
         ),
         _capacity_profile(),
     )
-    await KubernetesExecutionService(uncommitted).update_policy(
+    await kubernetes_execution.KubernetesExecutionService(uncommitted).update_policy(
         {"worker_memory_mib": 4096, "largest_worker_mib": 4096}, updated_by="test"
     )
     uncommitted.add_all(
