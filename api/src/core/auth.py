@@ -29,7 +29,12 @@ from src.services.authorization.runtime_auth import (
     log_legacy_runtime_token_accepted,
 )
 from src.services.authorization.tokens import (
-    authenticate_runtime_token, parse_runtime_claims, authenticate_human_token, parse_human_claims,
+    authenticate_human_token,
+    authenticate_runtime_token,
+    authenticate_workload_token,
+    parse_human_claims,
+    parse_runtime_claims,
+    parse_workload_claims,
 )
 from shared.role_cache import get_user_roles
 
@@ -85,7 +90,11 @@ def select_http_auth_token(
     marker = request.cookies.get(IMPERSONATION_COOKIE_NAME)
     if allow_impersonation_cookie and marker:
         payload = decode_token(token, expected_type="access") if token else None
-        if payload and (is_runtime_credential_payload(payload) or payload.get("embed")):
+        if payload and (
+            is_runtime_credential_payload(payload)
+            or payload.get("credential_kind") == "workload"
+            or payload.get("embed")
+        ):
             return token
         return marker
     return token
@@ -209,6 +218,12 @@ async def _get_current_user_optional(
 
     if payload is None:
         return None
+
+    if payload.get("credential_kind") == "workload":
+        workload_claims = parse_workload_claims(payload)
+        if workload_claims is None:
+            return None
+        return await authenticate_workload_token(db, workload_claims)
 
     # A runtime credential, valid or not, never falls through to human-token
     # auth.
@@ -692,7 +707,11 @@ def select_websocket_auth_token(websocket) -> str | None:
         selected_payload = decode_token(token, expected_type="access") if token else None
         if not (
             selected_payload
-            and (is_runtime_credential_payload(selected_payload) or selected_payload.get("embed"))
+            and (
+                is_runtime_credential_payload(selected_payload)
+                or selected_payload.get("credential_kind") == "workload"
+                or selected_payload.get("embed")
+            )
         ):
             token = marker
 
@@ -722,6 +741,15 @@ async def get_current_user_ws(websocket) -> UserPrincipal | None:
     payload = decode_token(token, expected_type="access")
     if payload is None:
         return None
+
+    if payload.get("credential_kind") == "workload":
+        workload_claims = parse_workload_claims(payload)
+        if workload_claims is None:
+            return None
+        from src.core.database import get_db_context
+
+        async with get_db_context() as db:
+            return await authenticate_workload_token(db, workload_claims)
 
     # WebSockets have no database dependency to resolve typed runtime
     # credentials. They must not accept them through the ordinary token path.

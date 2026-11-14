@@ -45,6 +45,15 @@ import bifrost.credentials as credentials
 from bifrost._workspace_lock import WorkspaceLock, WorkspaceLockError
 from bifrost.client import BifrostClient
 from bifrost.windows_credentials import CredentialStorageError
+from bifrost.workload_login import (
+    SUBJECT_TOKEN_ID,
+    SUBJECT_TOKEN_JWT,
+    WorkloadLoginError,
+    exchange_subject_token,
+    export_github_env,
+    fetch_azure_managed_identity_token,
+    fetch_github_actions_token,
+)
 from bifrost.ignore_patterns import (
     DEFAULT_IGNORE_PATTERNS as _CANONICAL_IGNORE_PATTERNS,
 )
@@ -981,12 +990,67 @@ Examples:
     return 0
 
 
+def _workload_login(provider: str, audience: str, api_url: str | None) -> int:
+    """Exchange a GitHub Actions or Azure managed-identity token."""
+    if provider not in {"github", "azure"}:
+        print("Error: --workload must be github or azure", file=sys.stderr)
+        return 1
+    environment_url = credentials.resolve_environment_url()
+    if not api_url:
+        api_url = environment_url
+    if not api_url:
+        print("Error: workload login requires --url or BIFROST_API_URL", file=sys.stderr)
+        return 1
+
+    async def _exchange() -> dict[str, Any]:
+        if provider == "github":
+            subject = await fetch_github_actions_token(audience)
+            token_type = SUBJECT_TOKEN_ID
+        else:
+            subject = await fetch_azure_managed_identity_token(audience)
+            token_type = SUBJECT_TOKEN_JWT
+        return await exchange_subject_token(api_url or "", subject, token_type)
+
+    try:
+        data = asyncio.run(_exchange())
+    except WorkloadLoginError as exc:
+        print(f"Login failed: {exc}", file=sys.stderr)
+        return 1
+    expires_in = data.get("expires_in")
+    expires_at = datetime.now(timezone.utc) + timedelta(
+        seconds=int(expires_in) if isinstance(expires_in, int) else 900
+    )
+    try:
+        credentials.save_credentials(
+            api_url=api_url,
+            access_token=data["access_token"],
+            refresh_token="",
+            expires_at=expires_at.isoformat(),
+        )
+    except CredentialStorageError as exc:
+        print(f"Login failed: {exc}", file=sys.stderr)
+        return 1
+    try:
+        _write_env_url(api_url)
+    except OSError as exc:
+        print(f"Warning: could not update .env in current directory: {exc}", file=sys.stderr)
+    try:
+        if export_github_env(api_url, data["access_token"]):
+            print("Later GitHub Actions steps inherit the BiFrost access token.")
+    except OSError as exc:
+        print(f"Warning: could not update GITHUB_ENV: {exc}", file=sys.stderr)
+    print("Logged in with a workload access token. It expires without a refresh token.")
+    return 0
+
+
 def handle_login(args: list[str]) -> int:
     """Handle 'bifrost login' command."""
     api_url = None
     auto_open = True
     email: str | None = None
     password: str | None = None
+    workload: str | None = None
+    audience: str | None = None
 
     i = 0
     while i < len(args):
@@ -1013,11 +1077,23 @@ def handle_login(args: list[str]) -> int:
                 return 1
             password = args[i + 1]
             i += 2
+        elif arg == "--workload":
+            if i + 1 >= len(args):
+                print("Error: --workload requires github or azure", file=sys.stderr)
+                return 1
+            workload = args[i + 1]
+            i += 2
+        elif arg == "--audience":
+            if i + 1 >= len(args):
+                print("Error: --audience requires a value", file=sys.stderr)
+                return 1
+            audience = args[i + 1]
+            i += 2
         elif arg in ("--help", "-h"):
             print("""
 Usage: bifrost login [options]
 
-Authenticate with Bifrost. Two modes:
+Authenticate with Bifrost. Three modes:
 
 Browser (default): Device-code flow; tokens stored in OS keychain (with JSON
                    fallback on headless Linux). Multiple URLs can coexist.
@@ -1028,12 +1104,18 @@ Password: When --email and --password are passed, performs a password-grant
           login. Credentials are stored globally by URL; .env receives only
           BIFROST_API_URL so this directory selects that connection. For
           isolated dev stacks only — refuses if MFA is enabled.
+Workload: When --workload github or azure is passed, fetches that provider's
+          own token for --audience and exchanges it for a short-lived BiFrost
+          access token. No refresh token is stored. On GitHub Actions, later
+          steps inherit BIFROST_API_URL and BIFROST_ACCESS_TOKEN.
 
 Options:
   --url, -u URL         API URL (default: BIFROST_API_URL or http://localhost:8000)
   --no-browser, -n      Don't automatically open browser (browser mode only)
   --email EMAIL         Email for ephemeral password-grant login
   --password PASSWORD   Password for ephemeral password-grant login
+  --workload PROVIDER   github or azure. Exchanges that provider's token.
+  --audience AUDIENCE   Audience (GitHub) or resource (Azure) for --workload.
   --help, -h            Show this help message
 
 Examples:
@@ -1041,6 +1123,8 @@ Examples:
   bifrost login --url https://app.gobifrost.com
   bifrost login --url http://localhost:38421 \\
                 --email dev@gobifrost.com --password password
+  bifrost login --workload github --audience https://bifrost.example
+  bifrost login --workload azure --audience api://bifrost-workload
 """.strip())
             return 0
         else:
@@ -1051,8 +1135,16 @@ Examples:
     if (email is None) != (password is None):
         print("Error: --email and --password must be used together", file=sys.stderr)
         return 1
+    if (workload is None) != (audience is None):
+        print("Error: --workload and --audience must be used together", file=sys.stderr)
+        return 1
+    if workload is not None and email is not None:
+        print("Error: --workload cannot be combined with --email/--password", file=sys.stderr)
+        return 1
 
     is_password_grant = email is not None and password is not None
+    if workload is not None:
+        return _workload_login(workload, audience or "", api_url)
     environment_url = credentials.resolve_environment_url()
 
     if is_password_grant:

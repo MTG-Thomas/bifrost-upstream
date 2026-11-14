@@ -214,6 +214,17 @@ class HumanAccessTokenClaims(_AccessClaims):
     sid: UUID | None = None
 
 
+# Identities cannot receive human tokens. A workload exchange mints this
+# credential instead: the same authorization snapshot, no session, no refresh.
+WORKLOAD_CREDENTIAL_KIND = "workload"
+
+
+class WorkloadAccessTokenClaims(_AccessClaims):
+    """Access facts for an identity credentialed by token exchange."""
+
+    credential_kind: Literal["workload"] = "workload"
+
+
 class RunRefreshClaims(_Claims):
     """A run refresh token: identity only, no expiry; valid while the run is
     live, and accepted only by ``/auth/refresh``."""
@@ -232,14 +243,22 @@ class RunRefreshClaims(_Claims):
         return self.model_dump(mode="json", exclude_none=True)
 
 
-def _encode_claims(claims: AccessTokenClaims | HumanAccessTokenClaims | RunRefreshClaims) -> str:
+def _encode_claims(
+    claims: AccessTokenClaims | HumanAccessTokenClaims | WorkloadAccessTokenClaims | RunRefreshClaims,
+) -> str:
     """Sign a run token, warning (never refusing) when an access token is large."""
     settings = get_settings()
     token = jwt.encode(claims.to_payload(), settings.secret_key, algorithm=settings.algorithm)
     if isinstance(claims, _AccessClaims) and len(token) > TOKEN_SIZE_WARNING_BYTES:
+        if isinstance(claims, AccessTokenClaims):
+            kind = claims.credential_kind
+        elif isinstance(claims, WorkloadAccessTokenClaims):
+            kind = claims.credential_kind
+        else:
+            kind = "human"
         logger.warning(
             "authz.token_size_warning: %s access token for %s is %d bytes (warning above %d)",
-            claims.credential_kind if isinstance(claims, AccessTokenClaims) else "human",
+            kind,
             claims.sub,
             len(token),
             TOKEN_SIZE_WARNING_BYTES,
@@ -288,6 +307,19 @@ def parse_human_claims(payload: dict[str, Any]) -> HumanAccessTokenClaims | None
     if claims.sub != claims.usr.id or claims.usr.kind is not None or not claims.usr.active:
         return None
     if claims.usr.org is None and not _context_from_user(claims.usr).is_platform_admin:
+        return None
+    return claims
+
+
+def parse_workload_claims(payload: dict[str, Any]) -> WorkloadAccessTokenClaims | None:
+    """Parse only an exact workload access payload. Identities only; no session."""
+    if payload.get("ver") != CLAIMS_VERSION or payload.get("credential_kind") != WORKLOAD_CREDENTIAL_KIND:
+        return None
+    try:
+        claims = WorkloadAccessTokenClaims.model_validate(payload)
+    except ValidationError:
+        return None
+    if claims.sub != claims.usr.id or claims.usr.kind is None or not claims.usr.active:
         return None
     return claims
 
@@ -484,6 +516,40 @@ async def authenticate_human_token(db: AsyncSession, claims: HumanAccessTokenCla
     return RuntimeAuthResult(_human_principal(claims))
 
 
+def _workload_principal(claims: WorkloadAccessTokenClaims) -> UserPrincipal:
+    user = claims.usr
+    context = _context_from_user(user)
+    names = [role.name for role in user.roles]
+    return UserPrincipal(
+        user_id=user.id,
+        email=user.email,
+        name=user.name or "",
+        organization_id=user.org,
+        is_active=user.active,
+        is_verified=True,
+        is_superuser=context.is_platform_admin,
+        is_external=user.ext,
+        is_provider_org=user.prov,
+        roles=["authenticated", *names],
+        role_ids=[role.id for role in user.roles],
+        role_names=names,
+        authorization_context=context,
+        token_exp=claims.exp,
+    )
+
+
+async def authenticate_workload_token(db: AsyncSession, claims: WorkloadAccessTokenClaims) -> UserPrincipal | None:
+    """Authenticate a workload token from its epoch. There is no refresh path."""
+    try:
+        epoch = await read_epoch(db)
+    except AuthorityStateMissing:
+        logger.error("authz.epoch_missing: refusing a workload access token")
+        return None
+    if int(claims.av) != epoch:
+        return None
+    return _workload_principal(claims)
+
+
 # --- The minter ----------------------------------------------------------------
 
 
@@ -516,6 +582,13 @@ class IssuedHumanAccessToken:
     token: str
     expires_at: datetime
     claims: HumanAccessTokenClaims
+
+
+@dataclass(frozen=True)
+class IssuedWorkloadAccessToken:
+    token: str
+    expires_at: datetime
+    claims: WorkloadAccessTokenClaims
 
 
 class TokenSubjectUnavailable(Exception):
@@ -562,6 +635,23 @@ async def issue_access_token(subject: RuntimeSubject | HumanSubject) -> IssuedAc
     if isinstance(claims, HumanAccessTokenClaims):
         return IssuedHumanAccessToken(token, expires_at, claims)
     return IssuedAccessToken(token, expires_at, claims)
+
+
+async def issue_workload_access_token(identity_id: UUID, lifetime_seconds: int) -> IssuedWorkloadAccessToken:
+    """Mint a short-lived access token for an active identity.
+
+    This is the only minter that may credential an identity. Human and runtime
+    minting are unchanged and still refuse this subject. Lifetime is clamped
+    to 60–3600 seconds even if a stored rule is outside that range.
+    """
+    lifetime = min(3600, max(60, int(lifetime_seconds)))
+    async with get_session_factory()() as db:
+        await db.connection(
+            execution_options={"isolation_level": "REPEATABLE READ", "postgresql_readonly": True}
+        )
+        claims = await _snapshot_workload_claims(db, identity_id, lifetime)
+    token = _encode_claims(claims)
+    return IssuedWorkloadAccessToken(token, datetime.fromtimestamp(claims.exp, timezone.utc), claims)
 
 
 async def _snapshot_human_claims(db: AsyncSession, subject: HumanSubject) -> HumanAccessTokenClaims:
@@ -613,6 +703,74 @@ async def _snapshot_human_claims(db: AsyncSession, subject: HumanSubject) -> Hum
                 id=role.id, name=role.name, perm=sorted(permissions[role.id]),
                 bnd=[(b.kind, b.organization_id) for b in boundaries.get(role.id, ())],
             ) for role in held_roles],
+        ),
+    )
+
+
+async def _snapshot_workload_claims(
+    db: AsyncSession, identity_id: UUID, lifetime_seconds: int
+) -> WorkloadAccessTokenClaims:
+    row = (
+        await db.execute(
+            select(
+                User.id, User.email, User.name, User.organization_id,
+                User.is_external, User.identity_kind, User.is_active, User.is_system, Organization.is_provider,
+            )
+            .outerjoin(Organization, Organization.id == User.organization_id)
+            .where(User.id == identity_id)
+        )
+    ).one_or_none()
+    if row is None or not row.is_active or row.is_system or row.identity_kind is None:
+        raise TokenSubjectUnavailable("The identity is not available.")
+    context = await build_authorization_context(db, identity_id)
+    held_roles = (
+        await db.execute(
+            select(Role.id, Role.name)
+            .join(UserRole, UserRole.role_id == Role.id)
+            .where(UserRole.user_id == identity_id)
+            .order_by(Role.name, Role.id)
+        )
+    ).all()
+    permissions: dict[UUID, list[str]] = {role.id: [] for role in held_roles}
+    if permissions:
+        for role_id, permission in (
+            await db.execute(
+                select(RolePermission.role_id, RolePermission.permission)
+                .where(RolePermission.role_id.in_(permissions))
+            )
+        ).all():
+            permissions[role_id].append(permission)
+    boundaries = {grant.role_id: grant.boundaries for grant in context.role_grants}
+    settings = get_settings()
+    now = _now()
+    return WorkloadAccessTokenClaims(
+        iss=settings.jwt_issuer,
+        aud=settings.jwt_audience,
+        iat=now,
+        exp=now + lifetime_seconds,
+        jti=str(uuid4()),
+        av=str(await read_epoch(db)),
+        sub=row.id,
+        credential_kind=WORKLOAD_CREDENTIAL_KIND,
+        usr=UserClaims(
+            id=row.id,
+            email=row.email,
+            name=row.name,
+            kind=row.identity_kind,
+            org=row.organization_id,
+            ext=bool(row.is_external),
+            prov=bool(row.is_provider),
+            active=row.is_active,
+            base=BaseRoleClaim(id=context.base_role_id, perm=sorted(context.base_permissions)),
+            roles=[
+                RoleClaim(
+                    id=role.id,
+                    name=role.name,
+                    perm=sorted(permissions[role.id]),
+                    bnd=[(boundary.kind, boundary.organization_id) for boundary in boundaries.get(role.id, ())],
+                )
+                for role in held_roles
+            ],
         ),
     )
 

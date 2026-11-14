@@ -2015,6 +2015,7 @@ _ELEVATED_SITES: dict[str, tuple[int, str | tuple[str, ...]]] = {
     # grants nothing: live DB authority determines the resulting principal.
     "src.services.authorization.runtime_auth._previous_stable_engine_execution_id": (1, "credential_schema"),
     "src.services.authorization.tokens._human_principal": (2, "actor_facts"),
+    "src.services.authorization.tokens._workload_principal": (2, "actor_facts"),
     "src.services.authorization.tokens._snapshot_human_claims": (1, "current_role_derivation"),
     "src.services.authorization.tokens.parse_human_claims": (1, "current_role_derivation"),
     "src.services.authorization.tokens.principal_from_claims": (1, "actor_facts"),
