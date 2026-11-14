@@ -91,8 +91,8 @@ def _prepare_asyncpg_url(
 def install_session_timeouts(
     engine: AsyncEngine,
     *,
-    idle_in_transaction_session_timeout_ms: int,
-    statement_timeout_ms: int,
+    idle_in_transaction_session_timeout_ms: int | None,
+    statement_timeout_ms: int | None,
 ) -> None:
     """Apply the session timeouts to every transaction this engine starts.
 
@@ -100,17 +100,23 @@ def install_session_timeouts(
     parameters, so this cannot ride in ``connect_args``. ``SET LOCAL`` is
     transaction scoped: it resets at COMMIT or ROLLBACK, so the setting never
     leaks onto the server connection a later client is handed. ``0`` disables
-    either timeout, as the server settings themselves do.
+    either timeout, as the server settings themselves do. An unset value leaves
+    the database policy intact; with neither override, no listener is installed.
     """
 
+    if idle_in_transaction_session_timeout_ms is None and statement_timeout_ms is None:
+        return
+
     def begin(conn: Connection) -> None:
-        conn.exec_driver_sql(
-            "SET LOCAL idle_in_transaction_session_timeout = "
-            f"{int(idle_in_transaction_session_timeout_ms)}"
-        )
-        conn.exec_driver_sql(
-            f"SET LOCAL statement_timeout = {int(statement_timeout_ms)}"
-        )
+        if idle_in_transaction_session_timeout_ms is not None:
+            conn.exec_driver_sql(
+                "SET LOCAL idle_in_transaction_session_timeout = "
+                f"{int(idle_in_transaction_session_timeout_ms)}"
+            )
+        if statement_timeout_ms is not None:
+            conn.exec_driver_sql(
+                f"SET LOCAL statement_timeout = {int(statement_timeout_ms)}"
+            )
 
     event.listen(engine.sync_engine, "begin", begin)
 
@@ -123,8 +129,8 @@ def create_pool_engine(
     pool_timeout: int,
     echo: bool = False,
     application_name: str = "bifrost",
-    idle_in_transaction_session_timeout_ms: int = 60000,
-    statement_timeout_ms: int = 60000,
+    idle_in_transaction_session_timeout_ms: int | None = None,
+    statement_timeout_ms: int | None = None,
 ) -> AsyncEngine:
     """An engine for one of the process's connection pools.
 

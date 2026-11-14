@@ -77,20 +77,25 @@ class Settings(BaseSettings):
         ),
     )
 
-    database_idle_in_transaction_timeout_ms: int = Field(
-        default=60000,
+    database_idle_in_transaction_timeout_ms: int | None = Field(
+        default=None,
+        ge=0,
+        le=2147483647,
         description=(
             "idle_in_transaction_session_timeout applied to every "
             "transaction on every connection, in milliseconds. 0 disables "
-            "the timeout."
+            "the timeout. Unset preserves the database policy."
         ),
     )
 
-    database_statement_timeout_ms: int = Field(
-        default=60000,
+    database_statement_timeout_ms: int | None = Field(
+        default=None,
+        ge=0,
+        le=2147483647,
         description=(
             "statement_timeout applied to every transaction on every "
-            "connection, in milliseconds. 0 disables the timeout."
+            "connection, in milliseconds. Unset preserves the database policy; "
+            "0 explicitly disables the timeout."
         ),
     )
 

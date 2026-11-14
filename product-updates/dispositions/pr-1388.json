@@ -1,14 +1,12 @@
 {
   "key": "pr:1388",
-  "classification": "other",
+  "classification": "omit",
   "entry_ids": [],
-  "category": "fix",
-  "summary": "Database connections now report an application name and start with an idle-in-transaction timeout.",
+  "reason": "Internal connection configuration and regression coverage; database timeout policy is preserved by default.",
   "review": {
     "status": "approved",
     "evidence": [
-      "https://github.com/gobifrost/bifrost/pull/1388",
-      "Agent-recorded notice reviewed against the exact diff: no contract, schema or client-visible surface changes; both values are configurable and 0 restores the previous behavior. Maintainer-directed contribution; principal authorization and provenance are recorded in the PR body."
+      "Native maintainer direction in the existing PR #1389 owner: implement recommended compatibility repairs and proceed through protected merge. Routine internal maintenance uses an omit disposition."
     ]
   }
 }

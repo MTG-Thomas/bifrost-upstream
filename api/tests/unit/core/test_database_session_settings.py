@@ -98,3 +98,40 @@ def test_engine_wires_the_configured_timeouts(monkeypatch):
     assert database.get_engine(settings) is engine
     assert calls[0]["connect_args"] == {"server_settings": {"application_name": "bifrost-worker"}}
     assert installs == [(5000, 7000)]
+
+
+def test_statement_timeout_is_opt_in(monkeypatch):
+    monkeypatch.delenv("BIFROST_DATABASE_STATEMENT_TIMEOUT_MS", raising=False)
+    monkeypatch.delenv("BIFROST_DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS", raising=False)
+    settings = Settings(_env_file=None)
+    assert settings.database_statement_timeout_ms is None
+    assert settings.database_idle_in_transaction_timeout_ms is None
+    calls = []
+    monkeypatch.setattr(database, "create_async_engine", lambda *args, **kwargs: object())
+    monkeypatch.setattr(database, "install_session_timeouts", lambda engine, **kwargs: calls.append(kwargs))
+
+    database.create_pool_engine(
+        "postgresql+asyncpg://user:pass@db.example.com/app",
+        pool_size=1, max_overflow=0, pool_timeout=10,
+    )
+
+    assert calls[0]["statement_timeout_ms"] is None
+    assert calls[0]["idle_in_transaction_session_timeout_ms"] is None
+
+
+def test_unset_timeouts_install_no_listener(monkeypatch):
+    engine = create_async_engine("postgresql+asyncpg://user:pass@db.example.com/app")
+    calls = []
+    monkeypatch.setattr(database.event, "listen", lambda *args: calls.append(args))
+    install_session_timeouts(
+        engine, idle_in_transaction_session_timeout_ms=None, statement_timeout_ms=None,
+    )
+    assert calls == []
+
+
+def test_one_override_leaves_the_other_database_policy_intact():
+    engine = create_async_engine("postgresql+asyncpg://user:pass@db.example.com/app")
+    install_session_timeouts(
+        engine, idle_in_transaction_session_timeout_ms=None, statement_timeout_ms=1234,
+    )
+    assert _begin(engine) == ["SET LOCAL statement_timeout = 1234"]
