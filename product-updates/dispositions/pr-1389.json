@@ -1,0 +1,12 @@
+{
+  "key": "pr:1389",
+  "classification": "omit",
+  "entry_ids": [],
+  "reason": "Internal connection configuration and regression coverage; database timeout policy is preserved by default.",
+  "review": {
+    "status": "approved",
+    "evidence": [
+      "Native maintainer direction in the existing PR #1389 owner: implement recommended compatibility repairs and proceed through protected merge. Routine internal maintenance uses an omit disposition."
+    ]
+  }
+}
