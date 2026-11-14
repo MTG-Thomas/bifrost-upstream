@@ -27,6 +27,18 @@ FAMILY_PREFIX = "bw-"
 CONTAINER_NAME = "worker"
 TARGET = "AmazonEC2ContainerServiceV20141113"
 
+# ECS reports an already-gone task or task definition as a client error rather
+# than a 404. Release treats exactly these as confirmed absence; every other
+# failure propagates so the core keeps the delete intent and the caller retries.
+STOP_TASK_GONE = {"InvalidParameterException"}
+DEREGISTER_GONE = {"ClientException"}
+
+
+class EcsError(RuntimeError):
+    def __init__(self, action: str, status: int, error_type: str) -> None:
+        super().__init__(f"ECS {action} failed: HTTP {status} {error_type}".rstrip())
+        self.error_type = error_type
+
 
 class Ecs:
     def __init__(self) -> None:
@@ -43,7 +55,7 @@ class Ecs:
             with urllib.request.urlopen(req, timeout=20) as resp:
                 return json.loads(resp.read().decode() or "{}")
         except urllib.error.HTTPError as exc:
-            raise RuntimeError(f"ECS {action} failed: HTTP {exc.code}") from None
+            raise EcsError(action, exc.code, _error_type(exc)) from None
 
     def ensure_cluster(self, name: str) -> None:
         self.call("CreateCluster", {"clusterName": name})
@@ -78,16 +90,16 @@ class Ecs:
     def stop_task(self, cluster: str, arn: str) -> None:
         try:
             self.call("StopTask", {"cluster": cluster, "task": arn, "reason": "capacity release"})
-        except RuntimeError:
-            # The task may already be gone; release is a best-effort stop.
-            pass
+        except EcsError as exc:
+            if exc.error_type not in STOP_TASK_GONE:
+                raise
 
     def deregister(self, arn: str) -> None:
         try:
             self.call("DeregisterTaskDefinition", {"taskDefinition": arn})
-        except RuntimeError:
-            # Already deregistered: the desired end state holds.
-            pass
+        except EcsError as exc:
+            if exc.error_type not in DEREGISTER_GONE:
+                raise
 
 
 class Adapter(CapacityAdapter):
@@ -159,6 +171,16 @@ class Adapter(CapacityAdapter):
         if handle.get("task_definition_arn"):
             self.ecs.deregister(handle["task_definition_arn"])
         return Observation("deleted", handle)
+
+
+def _error_type(exc: urllib.error.HTTPError) -> str:
+    """The AWS JSON-protocol error code, e.g. "InvalidParameterException"."""
+    try:
+        body = json.loads(exc.read().decode() or "{}")
+    except ValueError:
+        return ""
+    # "__type" may be namespaced: "com.amazonaws.ecs#ClientException".
+    return str(body.get("__type", "")).rpartition("#")[2]
 
 
 def family_for(worker_id: str) -> str:
