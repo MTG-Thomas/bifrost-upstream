@@ -132,11 +132,11 @@ export function WorkerCapacityCard({
 					capacity.error && (
 						<div
 							role="alert"
-							className="flex min-w-0 gap-3 rounded-[var(--bf-radius-surface)] border bg-[var(--bf-warning-soft)] p-4 text-sm"
+							className="flex min-w-0 gap-3 rounded-md border border-warning/30 bg-warning-soft p-4 text-sm"
 						>
 							<AlertTriangle
 								aria-hidden="true"
-								className="mt-0.5 size-4 shrink-0 text-[var(--bf-warning)]"
+								className="mt-0.5 size-4 shrink-0 text-warning"
 							/>
 							<div className="min-w-0 space-y-2">
 								<p>{capacity.error}</p>
