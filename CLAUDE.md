@@ -424,3 +424,27 @@ The selected tests must cover the changed behavior, known consumers, and contrac
 Before opening or queueing a PR, the worktree must be clean and based on current `origin/main`, and the focused verification above must be green for the changed surface. The merge queue is the authoritative complete-suite gate: it runs the full backend E2E and browser-smoke suites on the exact synthetic `main + queued PRs` candidate, plus the boundaries a workstation cannot reproduce (registry publication, signing, attestation). `./test.sh pre-pr` remains available as an optional full local reproduction of that gate — useful when diagnosing a queue failure or ahead of an unusually risky change — but it is not a PR prerequisite and does not need rerunning after every commit, amend, rebase, or merge.
 
 In the final handoff, list the exact checks and tests run, state which broader suites were not run, and disclose any known failure. A known out-of-scope failure must be permanently fixed in the current change or split into a dedicated blocking repair change; it cannot be waived as flaky or left as an unowned follow-up.
+
+## Contribution Fork (MTG-Thomas/bifrost-upstream only)
+
+This section exists only on Thomas's contribution fork. It sits on top of upstream's Contribution Eligibility rules and doesn't replace them. The maintainer agreed (2026-11-14) that exploratory work stays here until it's ready for an RFC grounded in a real use case.
+
+- **Where work goes.** Spikes, experiments, research, audit findings and RFC preparation are PRs against this fork's `main`, and they stay here. Agents never create, edit, comment on, review, push to, label, close or merge anything on `gobifrost/bifrost`. That covers issues, PRs, discussions and security advisories. Thomas reviews and publishes upstream himself. When something is ready, prepare the exact upstream text as a draft for him.
+- **Basis first.** Every fork PR body has a `## Contribution Basis And Tracking` section stating one basis:
+  - **actual use:** the concrete deployment or task, the version, the practical consequence, and the existing workaround;
+  - **maintainer request:** a link to it;
+  - **verified security finding:** per SECURITY.md, with an ASVS `v5.0.0-x.y.z` L1/L2 requirement or a credible impact, attacker permissions, and existing safeguards;
+  - **fork-only:** spike, research or fork maintenance. Say so plainly. A fork-only PR never goes upstream as-is.
+
+  Separate what you observed from what you hypothesise. An audit finding, a reproduction or a finished patch is not a basis.
+- **Security findings.** This fork is public. Don't describe an exploitable weakness in current upstream `main` in a PR, issue or commit message here. Write a private-advisory draft for Thomas instead (see SECURITY.md).
+- **Ready for upstream** means:
+  - an eligible basis;
+  - one concrete outcome;
+  - a focused regression test;
+  - a `product-updates/dispositions/pr-N.json`;
+  - rebased on current upstream `main`;
+  - for a substantial feature or architecture change, a grounded RFC or discussion first.
+- **Tracking.** Link upstream with full `https://github.com/gobifrost/bifrost/...` URLs, because a bare `#N` here links to this fork. Use `Fixes` only for an issue's full scope and `Part of` for partial work. Only link an issue that actually lists the item. Cross-fork PRs are never a native stack, so write "Depends on" rather than "Stacked on".
+- **Tone.** Post one reviewed summary per decision point. No progress logs, model peer-review narration, copy-pasted defect lists, agent authorization records, or "worth its own issue" seeds.
+- **This fork.** Never merge PRs; Thomas does. Failing "Floorplan map" checks are a known fork artifact. Ignore them, and don't fix the map inside a fix PR. Keep this section identical in `AGENTS.md` and `CLAUDE.md`.
