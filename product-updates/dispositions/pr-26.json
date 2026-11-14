@@ -1,0 +1,15 @@
+{
+  "key": "pr:26",
+  "classification": "other",
+  "entry_ids": [],
+  "summary": "Direct workflow runs hide registered secrets in results and errors.",
+  "category": "hardening",
+  "review": {
+    "status": "draft",
+    "evidence": [
+      "https://github.com/MTG-Thomas/bifrost-upstream/pull/26",
+      "https://github.com/Midtown-Technology-Group/bifrost/pull/1202",
+      "https://github.com/gobifrost/bifrost/issues/1197"
+    ]
+  }
+}

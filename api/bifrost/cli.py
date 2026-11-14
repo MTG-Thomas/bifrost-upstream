@@ -42,6 +42,7 @@ from packaging.version import InvalidVersion, Version
 
 # Import credentials module directly (it's standalone)
 import bifrost.credentials as credentials
+from bifrost._context import collect_registered_secrets
 from bifrost._workspace_lock import WorkspaceLock, WorkspaceLockError
 from bifrost.client import BifrostClient
 from bifrost.windows_credentials import CredentialStorageError
@@ -1324,6 +1325,50 @@ Examples:
     return 1
 
 
+_MIN_DIRECT_SECRET_LENGTH = 4
+_DIRECT_REDACTED = "[REDACTED]"
+
+
+def _direct_output_secrets() -> set[str]:
+    """Registered secrets long enough to scrub, same 4-character floor as the server."""
+    return {
+        secret
+        for secret in collect_registered_secrets()
+        if len(secret) >= _MIN_DIRECT_SECRET_LENGTH
+    }
+
+
+def _redact_printed(value: Any, secrets: set[str]) -> Any:
+    """Replace registered secrets in printed JSON values. Keys are left as-is."""
+    if isinstance(value, str):
+        redacted = value
+        for secret in secrets:
+            redacted = redacted.replace(secret, _DIRECT_REDACTED)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_printed(item, secrets) for item in value]
+    if isinstance(value, dict):
+        return {key: _redact_printed(child, secrets) for key, child in value.items()}
+    return value
+
+
+def _redact_direct_value(value: Any) -> Any:
+    """Scrub registered secrets from a value about to be printed.
+
+    The value is normalized with the printer's ``default=str`` rule first, so a
+    secret that appears only in ``str(result)`` is removed before the final
+    dump. With no registered secrets the value is returned unchanged.
+    """
+    secrets = _direct_output_secrets()
+    if not secrets:
+        return value
+    try:
+        normalized = json.loads(json.dumps(value, default=str))
+    except (TypeError, ValueError):
+        normalized = value
+    return _redact_printed(normalized, secrets)
+
+
 def _run_direct(
     selected_workflow: str,
     workflows: dict[str, Any],
@@ -1435,13 +1480,18 @@ def _run_direct(
 
     try:
         result = asyncio.run(workflow_fn(**params))
+        redacted = _redact_direct_value(result)
+        rendered = json.dumps(redacted, indent=2 if verbose else None, default=str)
         if verbose:
-            print(f"Result: {json.dumps(result, indent=2, default=str)}")
+            print(f"Result: {rendered}")
         else:
-            print(json.dumps(result, default=str))
+            print(rendered)
         return 0
     except Exception as e:
-        print(f"Error executing workflow: {e}", file=sys.stderr)
+        print(
+            f"Error executing workflow: {_redact_direct_value(str(e))}",
+            file=sys.stderr,
+        )
         return 1
 
 
