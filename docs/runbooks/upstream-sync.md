@@ -27,6 +27,21 @@ The merge waits for the current queue state; it does not force-push and does not
 discard concurrent commits. If `main` moves between the merge attempt and the
 next schedule, the next run reconciles it normally.
 
+## Upstream Changes To Workflow Files
+
+`GITHUB_TOKEN` cannot create or update `.github/workflows/*`, and `workflows`
+is not a permission the workflow can request (declaring it invalidates the file,
+and every run then fails with zero jobs). When upstream `main` touches a
+workflow file, the hourly sync returns HTTP 422 and opens the conflict issue.
+Sync that merge once with a credential that has the `workflow` scope:
+
+```bash
+gh api -X POST repos/MTG-Thomas/bifrost-upstream/merge-upstream -f branch=main
+```
+
+A user-token sync is a normal push to `main`, so the inherited main-push
+workflows run for it. The next hourly run resumes normally.
+
 ## Conflicts
 
 A non-200 response fails the run and opens (or comments on) an issue titled
