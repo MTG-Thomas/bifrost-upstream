@@ -192,6 +192,17 @@ from runtime_runner import run_authorized_attempt
 # and import cost cannot be timed in here: Workers clocks only advance across
 # I/O, so it shows up as the host's child_ms minus engine_ms.
 _SERVED = 0
+# Modules the engine imports inside run_authorized_attempt on its first
+# attempt (measured by diffing sys.modules across a fresh child's first run).
+_PRIME_MODULES = (
+    "src.services.execution.engine",
+    "src.sdk.context",
+    "src.sdk.error_handling",
+    "src.models.enums",
+    "src.core.error_messages",
+    "src.core.secret_string",
+    "bifrost._runtime_io",
+)
 
 class Default(WorkerEntrypoint):
     async def fetch(self, request):
@@ -201,8 +212,17 @@ class Default(WorkerEntrypoint):
         body = json.loads(await request.text())
         if body.get("action") == "ping":
             # Keep-warm from the tenant host: proves the isolate is resident
-            # (or pays its boot off the request path). Touches no tenant data.
+            # (or pays its boot off the request path), and pre-imports what the
+            # engine otherwise imports lazily on its first attempt (measured:
+            # ~160 ms of a fresh child's first run). Touches no tenant data.
+            import importlib
+            for name in _PRIME_MODULES:
+                importlib.import_module(name)
             return Response.json({"pong": True, "first_request": first_request})
+        if body.get("action") == "inventory":
+            # Diagnostic: which modules are loaded (names only, no data).
+            import sys
+            return Response.json({"modules": sorted(sys.modules)})
         # One persistent child serves EVERY attempt for this tenant, so the
         # process-scoped SDK state a one-shot child gets for free must be
         # re-established at the attempt boundary. The SDK caches its client per
@@ -221,14 +241,55 @@ class Default(WorkerEntrypoint):
             body["execution_id"], context, body["api_url"],
             public_url=body.get("public_url", "https://staging.invalid"))
         done = time.perf_counter()
-        return Response.json({"upstream_result": result, "child": {
+        # default=str matches the Linux persistence contract
+        # (src/repositories/executions.py::_make_json_safe): datetimes, UUIDs
+        # and Decimals in a workflow result become strings instead of failing.
+        return Response(json.dumps({"upstream_result": result, "child": {
             "first_request": first_request, "served": _SERVED,
-            "engine_ms": int((done - engine_started) * 1000)}})
+            "engine_ms": int((done - engine_started) * 1000)}}, default=str),
+            headers={"content-type": "application/json"})
 `;
 
-export function tenantEngineCode(api) {
+// Cold-boot diagnosis: a child whose only work is importing `imports` at top
+// level. With `bare`, the packaged runtime is left out entirely, isolating
+// Pyodide's own start from shipping/decoding the 15 MB runtime. No network.
+const IMPORT_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/;
+export function bootProbeCode({imports = [], bare = false} = {}) {
+  if (!Array.isArray(imports) || imports.length > 16 ||
+      !imports.every((name) => typeof name === 'string' && IMPORT_NAME_RE.test(name))) {
+    throw new TypeError('imports must be up to 16 dotted module names');
+  }
+  // `workers` first: the engine's import hook (installed by runtime_runner)
+  // would otherwise try to resolve it remotely, as the real engine child avoids.
+  const main = `import sys
+import importlib.util
+from workers import WorkerEntrypoint, Response
+${imports.map((name) => `import ${name}`).join('\n')}
+
+class Default(WorkerEntrypoint):
+    async def fetch(self, request):
+        return Response.json({"ok": True, "version": sys.version,
+            "magic": importlib.util.MAGIC_NUMBER.hex(),
+            "cache_tag": sys.implementation.cache_tag,
+            "dont_write_bytecode": sys.dont_write_bytecode})
+`;
+  if (bare) {
+    return {compatibilityDate: '2026-10-30', compatibilityFlags: ['python_workers'],
+      mainModule: 'main.py', modules: {'main.py': {py: main}}, env: {}, globalOutbound: null};
+  }
+  return runtimeCode(null, main);
+}
+
+// cpuMs: per-request CPU budget for the child. The packaged default (1000) is a
+// policy choice; the capability lab raises it to probe the platform ceiling.
+// subRequests: every SDK call and every workspace-module resolution is one.
+// The old fixture value (12) is below what ordinary workflows need (a missing
+// optional import alone costs one; per-org loops cost hundreds), so the
+// default is 1000.
+export const DEFAULT_ENGINE_SUBREQUESTS = 1000;
+export function tenantEngineCode(api, {cpuMs, subRequests = DEFAULT_ENGINE_SUBREQUESTS} = {}) {
   const code = runtimeCode(api, ENGINE_PYTHON);
-  return {...code, limits: {...code.limits, subRequests: 12}};
+  return {...code, limits: {...code.limits, subRequests, ...(cpuMs ? {cpuMs} : {})}};
 }
 
 // Identity of the engine child: its entry script plus the packaged runtime.

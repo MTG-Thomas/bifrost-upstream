@@ -25,7 +25,7 @@
 // - output-budget.mjs: oversized child output dropped as infra failure.
 // - import-audit.mjs: recorded workspace paths reconciled post-hoc; undeclared
 //   imports map to a terminal (effects may already exist, same as executor).
-import {genericWorkerCode, genericCodeDigest, engineDigest} from './generic-worker-code.mjs';
+import {bootProbeCode, genericWorkerCode, genericCodeDigest, engineDigest} from './generic-worker-code.mjs';
 import {tenantWorkerId} from './tenant-registry.mjs';
 import {createTenantGateway, createRemoteTenantGateway, isStoragePath} from './tenant-gateway.mjs';
 import {capabilityRejection} from '../executor/capability-requirements.mjs';
@@ -199,6 +199,37 @@ export default {
       return json(400, {phase: 'bad-request', error: 'Invalid entry path', api_calls: []});
     }
 
+    if (body.action === 'boot_probe') {
+      // Diagnostic: always a brand-new child (unique loader id), so child_ms
+      // is a cold boot of exactly the requested import set.
+      let code;
+      try {
+        code = bootProbeCode({imports: body.imports, bare: body.bare === true});
+      } catch {
+        return json(400, {phase: 'bad-request', error: 'Invalid imports'});
+      }
+      const mark = Date.now();
+      try {
+        const worker = env.LOADER.get(`boot-probe-${crypto.randomUUID()}`, () => code);
+        const response = await worker.getEntrypoint().fetch(new Request('https://probe.invalid/'));
+        const report = await response.json();
+        return Response.json({child_ms: Date.now() - mark, status: response.status, report});
+      } catch (error) {
+        // Safe to echo here only: a boot probe runs no tenant code, data or
+        // credential, just imports of the packaged runtime.
+        return json(502, {phase: 'dynamic-runtime', error_type: error?.name ?? 'Error',
+          ...runtimeErrorClass(error), child_ms: Date.now() - mark,
+          probe_error: String(error?.message ?? error).slice(-600)});
+      }
+    }
+
+    if (body.action === 'inventory') {
+      if (typeof TenantHost !== 'function') {
+        return json(502, {phase: 'engine-unavailable', tenant_worker_id: workerId});
+      }
+      return Response.json(await ctx.exports.TenantHost.getByName(workerId).inventory({tenantId: workerId}));
+    }
+
     if (body.action === 'warm') {
       // Boot the tenant's engine child ahead of an attempt. Carries no
       // attempt, token or workflow data.
@@ -227,16 +258,25 @@ export default {
       try {
         hosted = await hostAttempt(() => ctx.exports.TenantHost.getByName(workerId), {
           tenantId: workerId, executionId: body.execution_id, context: body.context,
-          publicUrl: body.public_url});
+          publicUrl: body.public_url,
+          // Already validated by the egress gate above.
+          egressHosts: body.egress?.hosts ?? []});
       } catch (error) {
-        // Never echo exception strings (may contain workflow data or credentials).
+        // Never echo exception strings (may contain workflow data or
+        // credentials) -- except on a capability-lab deploy that opts in.
         return json(502, {phase: 'dynamic-runtime', error_type: error?.name ?? 'Error',
-          ...runtimeErrorClass(error), tenant_worker_id: workerId, api_calls: []});
+          ...runtimeErrorClass(error), tenant_worker_id: workerId, api_calls: [],
+          ...(env.LAB_ECHO_ERRORS === 'true'
+            ? {lab_error: String(error?.message ?? error).slice(-600)} : {})});
       }
       if (hosted.notReady) {
         // Warmed, yet the host still has not confirmed its child; the
         // attempt was never started.
         return json(502, {phase: 'engine-not-ready', tenant_worker_id: workerId, api_calls: []});
+      }
+      if (hosted.terminal) {
+        // e.g. output-budget: the attempt ran; its effects may already exist.
+        return json(502, {...hosted.terminal, tenant_worker_id: workerId});
       }
       // Reuse is the child's own view: the supervisor's memory is lost
       // whenever the supervisor isolate is recycled.

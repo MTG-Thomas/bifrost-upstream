@@ -74,13 +74,30 @@ warm for 20 min after the last attempt.
 
 Not yet at parity:
 
-- **Cold boot is 4.5–5 s and stays that way.** Dynamic Python Workers get no
-  deploy-time memory snapshot; the 15 MB runtime boots on every new child. Only
-  the warm window keeps it off the request path. Shrinking the runtime is the
-  remaining lever.
-- **First attempt after idle: ~260 ms engine vs ~50 ms hot.** The keep-warm
-  ping keeps the isolate resident but does not touch the outbound path to the
-  API, so the first SDK call after a quiet period pays connection setup.
+- **Cold boot is ~3.5 s and only a snapshot removes it** (2026-11-15
+  measurements, fresh children, no network):
+
+  | Boot of | Cold |
+  |---|---|
+  | bare Pyodide | ~1.1 s |
+  | + shipping the runtime | ~1.6–1.8 s |
+  | + engine imports (current) | ~3.6 s (median of 8) |
+  | + third-party bytecode (`precompile-runtime.mjs`) | ~3.2 s (−11 %) |
+  | same runtime as a **deployed** Python Worker (memory snapshot) | **0.7–1.7 s** end to end |
+
+  Dynamic Workers never get the deploy-time snapshot. Per-tenant snapshots
+  need one deployed script per tenant, i.e. Workers for Platforms dispatch
+  namespaces, which this account does not have (`10121`, a purchase).
+- **The "idle" penalty was really a first-run penalty.** API calls stay
+  33–69 ms through 240 s of idle; what cost ~300 ms was the first attempt in a
+  freshly (re)booted child: 9 engine modules imported lazily (~160 ms) and a
+  cold connection to the API (~150 ms). The warm-up ping now pre-imports those
+  modules and touches the API origin: first-run engine time 487 → ~280 ms
+  (staging). **It did not move the production cadence number**: after the
+  change the 15-minute canary still shows 248–260 ms engine time, against
+  ~90–110 ms for back-to-back runs of the same workflow (which lists 297 orgs)
+  and 32–38 ms on Linux. Something besides lazy imports still pays after a
+  quiet period; not yet identified.
 - `worker_code_sha256` identifies the engine child (entry + runtime), not the
   supervisor/host code; a supervisor-only change is not attributed.
 

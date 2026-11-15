@@ -1,0 +1,33 @@
+{
+  "started_at": "2026-11-15T07:05:37.785Z",
+  "run_id": "mwhhq12x",
+  "api": "https://bifrost-stage.midtowntg.com",
+  "worker_label": "lab-cpu-cap-cloud",
+  "cases": [
+    {
+      "name": "cpu-over-platform-cap",
+      "cause": "platform",
+      "compare": "result",
+      "verdict": "cloud-only",
+      "linux": {
+        "status": "Skipped"
+      },
+      "cloud": {
+        "http": 502,
+        "phase": "dynamic-runtime",
+        "error_class": "cpu_limit",
+        "lab_error": "   ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/session/metadata/src/services/execution/engine.py\", line 1678, in _run_workflow_async\n    return await func(**accepted_params)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"workflows/capmatrix/cpu-over-platform-cap_mwhhq12x.py\", line 21, in capmatrix_cpu_over_platform_cap_mwhhq12x\n  File \"/lib/python3.14/site-packages/_cloudflare/introspection_13a62894.py\", line 101, in raise_cpu_limit_exceeded\n    raise CpuLimitExceeded(\"Python Worker exceeded CPU time limit\")\n_cloudflare.introspection_13a62894.CpuLimitExceeded: Python Worker exceeded CPU time limit\n",
+        "status": "dynamic-runtime",
+        "result": null,
+        "error": null,
+        "engine_ms": null,
+        "wall_ms": 324835,
+        "api_calls": null
+      }
+    }
+  ],
+  "finished_at": "2026-11-15T07:11:03.149Z",
+  "summary": {
+    "cloud-only": 1
+  }
+}

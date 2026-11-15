@@ -22,9 +22,15 @@ function isChildApiPath(pathname) {
       pathname === prefix || pathname.startsWith(prefix.endsWith('/') ? prefix : `${prefix}/`));
 }
 
-export function apiTarget(url, origin) {
+// `scope: 'all'` admits every /api/ path (and /auth/refresh). It exists for the
+// capability lab only, to separate "the platform cannot" from "this gateway's
+// policy does not"; the default stays the narrow SDK surface above.
+export function apiTarget(url, origin, {scope = 'sdk'} = {}) {
   const incoming = new URL(url);
-  if (incoming.origin !== 'https://test-api.invalid' || !isChildApiPath(incoming.pathname)) {
+  const allowed = scope === 'all'
+    ? incoming.pathname === '/auth/refresh' || incoming.pathname.startsWith('/api/')
+    : isChildApiPath(incoming.pathname);
+  if (incoming.origin !== 'https://test-api.invalid' || !allowed) {
     throw new TypeError('API capability denied');
   }
   const target = new URL(origin);

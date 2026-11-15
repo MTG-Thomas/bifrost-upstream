@@ -127,6 +127,16 @@ Measured from the production host against production (2026-11-15):
 | After 120 s idle | — | warm (0.4–0.8 s) |
 | First attempt for a new tenant | 5–11 s | 4.6–5.4 s |
 
+The warm-up ping also pre-imports the modules the engine otherwise imports
+lazily on its first attempt (`_PRIME_MODULES`, found by diffing `sys.modules`
+across a fresh child's first run) and touches the API origin's health check,
+so the first attempt after a (re)boot does not pay ~300 ms of setup.
+
+Every attempt has a deadline (`ATTEMPT_DEADLINE_MS`, default 1800 s like the
+Linux pool). A child that misses it is retired under a new loader generation
+and never reused: exceeding the subrequest limit inside a synchronous import
+was observed to deadlock the isolate instead of raising.
+
 ### Cold boot resets a fresh host — warm, then dispatch once
 
 Booting the child inside a **brand-new** host often resets the host with
@@ -216,6 +226,28 @@ cf deploy --secrets-file "$env:TEMP\bifrost-pyodide-tenant-staging-secrets.json"
 cd ../staging
 node differential.mjs --worker https://bifrost-pyodide-tenant-ddf316c1.midtown-technology-group.workers.dev
 ```
+
+## Building the packaged runtime
+
+`dev/runtime/generated-runtime.mjs` is a build artifact (gitignored). It is
+produced in three steps; the last two are new and must not be skipped:
+
+```powershell
+# 1. Seam-only rebuild from the pinned companion runtime + upstream modules
+node dev/staging/build-runtime.mjs spikes/cloudflare-pyodide api dev/runtime/generated-runtime.mjs
+# 2. Vendor patches (verified, idempotent) + packages the runtime must add
+py -m pip download tzdata --no-deps --only-binary :all: -d $env:TEMP\wheels
+node dev/staging/vendor-patches.mjs dev/runtime/generated-runtime.mjs --add-wheel $env:TEMP\wheels\tzdata-*.whl
+# 3. (optional, measured ~11% faster cold boot) third-party bytecode
+node dev/staging/precompile-runtime.mjs dev/runtime/generated-runtime.mjs out.mjs --mode sourceless-vendor
+```
+
+`vendor-patches.mjs` currently carries one patch: httpx's Pyodide fetch
+transport called `.getReader()` on a null body, so **every SDK call answered
+with 204** (`config.set`, deletes, file writes) failed client-side after the
+server had applied it. `tzdata` makes `zoneinfo` work (Pyodide ships no tz
+database). The deploy hashes the result into `RUNTIME_SHA256`, so a runtime
+change always gets new loader ids and a `worker_runtime_changed` canary event.
 
 ## Security and cleanup
 

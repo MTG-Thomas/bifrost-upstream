@@ -45,3 +45,14 @@ test('external fetch, control endpoints and origin ambiguity are rejected before
     assert.throws(() => apiTarget('https://test-api.invalid/api/tables', origin));
   }
 });
+
+test('lab scope admits every /api/ path but still only the virtual host', () => {
+  assert.throws(() => apiTarget('https://test-api.invalid/api/workflows', 'https://dev.invalid'),
+    /API capability denied/, 'default scope keeps dispatch routes out');
+  assert.equal(apiTarget('https://test-api.invalid/api/workflows?x=1', 'https://dev.invalid',
+    {scope: 'all'}).href, 'https://dev.invalid/api/workflows?x=1');
+  assert.throws(() => apiTarget('https://test-api.invalid/admin', 'https://dev.invalid', {scope: 'all'}),
+    /API capability denied/);
+  assert.throws(() => apiTarget('https://evil.invalid/api/workflows', 'https://dev.invalid', {scope: 'all'}),
+    /API capability denied/);
+});

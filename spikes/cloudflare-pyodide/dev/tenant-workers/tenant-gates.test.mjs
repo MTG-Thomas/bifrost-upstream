@@ -7,7 +7,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import entry, {enqueueTenant, hostAttempt, resetTenantState, runtimeErrorClass, warmHost,
   WARM_ATTEMPTS} from './tenant-entry.mjs';
-import {engineDigest, genericCodeDigest} from './generic-worker-code.mjs';
+import {bootProbeCode, engineDigest, genericCodeDigest} from './generic-worker-code.mjs';
 
 const WF = 'workflows/wf.py';
 const GHOST = 'workflows/ghost.py';
@@ -241,6 +241,14 @@ test('a cold host is warmed with retries, then the attempt is dispatched once', 
   assert.equal(seen.stubs, 5, 'every call uses a fresh stub (2 runs + 3 warms)');
 });
 
+test('a terminal host outcome is passed through, never retried', async () => {
+  let runs = 0;
+  const host = {run: async () => { runs++; return {terminal: {phase: 'output-budget'}}; }};
+  const result = await hostAttempt(() => host, {tenantId: 't'});
+  assert.deepEqual(result.terminal, {phase: 'output-budget'});
+  assert.equal(runs, 1);
+});
+
 test('a warm host costs one round trip', async () => {
   const {seen, getHost} = fakeHost();
   await getHost().warm();
@@ -267,6 +275,18 @@ test('a host that stays cold after warm-up reports not-ready instead of looping'
   const result = await hostAttempt(getHost, {tenantId: 't'});
   assert.equal(result.notReady, true);
   assert.equal(seen.dispatched, 0);
+});
+
+test('boot probe accepts only dotted module names and never reaches the network', () => {
+  const code = bootProbeCode({imports: ['pydantic', 'src.core.module_cache_sync'], bare: true});
+  assert.match(code.modules['main.py'].py,
+    /from workers import WorkerEntrypoint, Response\nimport pydantic\nimport src\.core\.module_cache_sync\n/,
+    'workers is imported before the requested set');
+  assert.equal(code.globalOutbound, null);
+  assert.deepEqual(Object.keys(code.modules), ['main.py'], 'bare leaves the runtime out');
+  for (const bad of [['os; import subprocess'], ['x\nimport y'], ['a..b'], 'pydantic']) {
+    assert.throws(() => bootProbeCode({imports: bad}), TypeError);
+  }
 });
 
 test('engine identity refuses an unconfigured runtime digest', async () => {

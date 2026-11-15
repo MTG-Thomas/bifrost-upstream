@@ -1,7 +1,7 @@
 // Pure unit: the generic worker script is CONSTANT per tenant.
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {GENERIC_PYTHON, ENGINE_PYTHON, genericWorkerCode, genericCodeDigest} from './generic-worker-code.mjs';
+import {DEFAULT_ENGINE_SUBREQUESTS, GENERIC_PYTHON, ENGINE_PYTHON, genericWorkerCode, genericCodeDigest} from './generic-worker-code.mjs';
 
 test('generic code is identical across calls (no per-tenant bake)', async () => {
   const a = genericWorkerCode();
@@ -32,6 +32,17 @@ test('importer is path-keyed: records storage paths, maps names like production'
 
 test('child env is empty: the child holds NO credentials', () => {
   assert.deepEqual(genericWorkerCode().env, {});
+});
+
+test('engine child limits: generous subrequest default, explicit overrides', () => {
+  assert.equal(DEFAULT_ENGINE_SUBREQUESTS, 1000);
+  assert.ok(DEFAULT_ENGINE_SUBREQUESTS >= 50, 'below the measured real-workspace need');
+});
+
+test('engine child serializes results with the Linux persistence contract (default=str)', () => {
+  assert.ok(ENGINE_PYTHON.includes('"engine_ms": int((done - engine_started) * 1000)}}, default=str)'),
+    'datetimes/UUIDs/Decimals in a result must not fail the attempt');
+  assert.ok(!ENGINE_PYTHON.includes('Response.json({"upstream_result"'));
 });
 
 test('engine child re-establishes attempt-scoped SDK state at every attempt', () => {

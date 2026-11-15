@@ -1,0 +1,1760 @@
+{
+  "started_at": "2026-11-15T06:52:16.556Z",
+  "run_id": "mwhh8uuk",
+  "api": "https://bifrost-stage.midtowntg.com",
+  "worker_label": "default",
+  "cases": [
+    {
+      "name": "sdk-two-calls",
+      "cause": "none",
+      "compare": "ok",
+      "verdict": "parity",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "orgs": {
+            "ok": true
+          },
+          "tables": {
+            "ok": true
+          }
+        },
+        "error": null,
+        "engine_ms": 24,
+        "wall_ms": 1739
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "orgs": {
+            "ok": true
+          },
+          "tables": {
+            "ok": true
+          }
+        },
+        "error": null,
+        "engine_ms": 343,
+        "wall_ms": 4753,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/sdk-two-calls_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 55,
+            "ms": 52
+          },
+          {
+            "method": "GET",
+            "path": "/api/organizations",
+            "status": 200,
+            "token_ms": 6,
+            "ms": 46
+          },
+          {
+            "method": "POST",
+            "path": "/api/sdk/tables/list",
+            "status": 200,
+            "token_ms": 5,
+            "ms": 51
+          }
+        ]
+      }
+    },
+    {
+      "name": "parameters",
+      "cause": "none",
+      "compare": "result",
+      "verdict": "parity",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "types": [
+            "str",
+            "int"
+          ],
+          "greeting": "ababab"
+        },
+        "error": null,
+        "engine_ms": 0,
+        "wall_ms": 1728
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "greeting": "ababab",
+          "types": [
+            "str",
+            "int"
+          ]
+        },
+        "error": null,
+        "engine_ms": 276,
+        "wall_ms": 4463,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/parameters_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 34,
+            "ms": 51
+          }
+        ]
+      }
+    },
+    {
+      "name": "sync-def-workflow",
+      "cause": "none",
+      "compare": "status",
+      "verdict": "parity",
+      "linux": {
+        "status": "Failed",
+        "result": null,
+        "error": "'dict' object can't be awaited",
+        "engine_ms": 0,
+        "wall_ms": 1712
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Failed",
+        "result": null,
+        "error": "TypeError: 'dict' object can't be awaited",
+        "engine_ms": 319,
+        "wall_ms": 8036,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/sync-def-workflow_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 28,
+            "ms": 22
+          }
+        ]
+      }
+    },
+    {
+      "name": "raises",
+      "cause": "none",
+      "compare": "status",
+      "verdict": "parity",
+      "linux": {
+        "status": "Failed",
+        "result": null,
+        "error": "expected diagnostic",
+        "engine_ms": 95,
+        "wall_ms": 1727
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Failed",
+        "result": null,
+        "error": "ValueError: expected diagnostic",
+        "engine_ms": 819,
+        "wall_ms": 4839,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/raises_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 51,
+            "ms": 50
+          },
+          {
+            "method": "POST",
+            "path": "/api/sdk/runtime/logs",
+            "status": 403,
+            "token_ms": 4,
+            "ms": 54
+          },
+          {
+            "method": "POST",
+            "path": "/api/sdk/runtime/logs",
+            "status": 403,
+            "token_ms": 5,
+            "ms": 46
+          },
+          {
+            "method": "POST",
+            "path": "/api/sdk/runtime/logs",
+            "status": 403,
+            "token_ms": 4,
+            "ms": 61
+          },
+          {
+            "method": "POST",
+            "path": "/api/sdk/runtime/logs",
+            "status": 403,
+            "token_ms": 4,
+            "ms": 47
+          },
+          {
+            "method": "POST",
+            "path": "/api/sdk/runtime/logs",
+            "status": 403,
+            "token_ms": 4,
+            "ms": 48
+          },
+          {
+            "method": "POST",
+            "path": "/api/sdk/runtime/logs",
+            "status": 403,
+            "token_ms": 5,
+            "ms": 112
+          },
+          {
+            "method": "POST",
+            "path": "/api/sdk/runtime/logs",
+            "status": 403,
+            "token_ms": 4,
+            "ms": 48
+          },
+          {
+            "method": "POST",
+            "path": "/api/sdk/runtime/logs",
+            "status": 403,
+            "token_ms": 4,
+            "ms": 50
+          },
+          {
+            "method": "POST",
+            "path": "/api/sdk/runtime/logs",
+            "status": 403,
+            "token_ms": 4,
+            "ms": 50
+          }
+        ]
+      }
+    },
+    {
+      "name": "asyncio-gather-sdk",
+      "cause": "none",
+      "compare": "result",
+      "verdict": "parity",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "all_lists": true,
+          "concurrent_calls": 3
+        },
+        "error": null,
+        "engine_ms": 35,
+        "wall_ms": 1841
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "concurrent_calls": 3,
+          "all_lists": true
+        },
+        "error": null,
+        "engine_ms": 390,
+        "wall_ms": 6457,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/asyncio-gather-sdk_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 61,
+            "ms": 49
+          },
+          {
+            "method": "POST",
+            "path": "/api/sdk/tables/list",
+            "status": 200,
+            "token_ms": 7,
+            "ms": 63
+          },
+          {
+            "method": "POST",
+            "path": "/api/sdk/tables/list",
+            "status": 200,
+            "token_ms": 7,
+            "ms": 64
+          },
+          {
+            "method": "POST",
+            "path": "/api/sdk/tables/list",
+            "status": 200,
+            "token_ms": 7,
+            "ms": 66
+          }
+        ]
+      }
+    },
+    {
+      "name": "config-roundtrip",
+      "cause": "none",
+      "compare": "result",
+      "verdict": "parity",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "value": "v-123"
+        },
+        "error": null,
+        "engine_ms": 51,
+        "wall_ms": 1764
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "value": "v-123"
+        },
+        "error": null,
+        "engine_ms": 3858,
+        "wall_ms": 7670,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/config-roundtrip_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 50,
+            "ms": 51
+          },
+          {
+            "method": "POST",
+            "path": "/api/sdk/config/set",
+            "status": 204,
+            "token_ms": 7,
+            "ms": 3272
+          },
+          {
+            "method": "POST",
+            "path": "/api/sdk/config/get",
+            "status": 200,
+            "token_ms": 6,
+            "ms": 83
+          },
+          {
+            "method": "POST",
+            "path": "/api/sdk/config/delete",
+            "status": 200,
+            "token_ms": 6,
+            "ms": 252
+          }
+        ]
+      }
+    },
+    {
+      "name": "tables-roundtrip",
+      "cause": "none",
+      "compare": "result",
+      "verdict": "parity",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "k": "v",
+          "n": 7
+        },
+        "error": null,
+        "engine_ms": 64,
+        "wall_ms": 1706
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "n": 7,
+          "k": "v"
+        },
+        "error": null,
+        "engine_ms": 576,
+        "wall_ms": 9460,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/tables-roundtrip_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 44,
+            "ms": 21
+          },
+          {
+            "method": "POST",
+            "path": "/api/sdk/tables/create",
+            "status": 200,
+            "token_ms": 26,
+            "ms": 29
+          },
+          {
+            "method": "POST",
+            "path": "/api/tables/capmatrix_a6039d0c04/documents",
+            "status": 201,
+            "token_ms": 30,
+            "ms": 34
+          },
+          {
+            "method": "POST",
+            "path": "/api/tables/capmatrix_a6039d0c04/documents/query",
+            "status": 200,
+            "token_ms": 32,
+            "ms": 28
+          },
+          {
+            "method": "DELETE",
+            "path": "/api/tables/7f39fff7-a4e5-4f66-893a-3f48eff89c79",
+            "status": 204,
+            "token_ms": 21,
+            "ms": 46
+          }
+        ]
+      }
+    },
+    {
+      "name": "files-roundtrip",
+      "cause": "none",
+      "compare": "result",
+      "verdict": "parity",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "text": "hello-matrix"
+        },
+        "error": null,
+        "engine_ms": 50,
+        "wall_ms": 1718
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "text": "hello-matrix"
+        },
+        "error": null,
+        "engine_ms": 1305,
+        "wall_ms": 5214,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/files-roundtrip_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 53,
+            "ms": 44
+          },
+          {
+            "method": "POST",
+            "path": "/api/files/write",
+            "status": 204,
+            "token_ms": 5,
+            "ms": 493
+          },
+          {
+            "method": "POST",
+            "path": "/api/files/read",
+            "status": 200,
+            "token_ms": 4,
+            "ms": 45
+          },
+          {
+            "method": "POST",
+            "path": "/api/files/delete",
+            "status": 204,
+            "token_ms": 5,
+            "ms": 513
+          }
+        ]
+      }
+    },
+    {
+      "name": "workflows-list-sdk",
+      "cause": "policy",
+      "compare": "ok",
+      "verdict": "differs",
+      "linux": {
+        "status": "Success",
+        "result": "{\"list\":{\"ok\":true,\"value\":[{\"allowed_methods\":[\"POST\"],\"category\":\"General\",\"description\":null,\"disable_global_key\":false,\"endpoint_enabled\":false,\"execution_mode\":\"sync\",\"id\":\"d02451e2-1f55-48d2-a55e-e8f903e50653\",\"is_tool\":false,\"name\":\"case_print_marker_mwfv4j1b\",\"parameters\":[],\"public_endpoint\":false,\"relative_file_path\":\"workflows/case_print_mwfv4j1b.py\",\"retry_policy\":null,\"source_file_pat…",
+        "error": null,
+        "engine_ms": 113,
+        "wall_ms": 1979
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "list": {
+            "ok": false,
+            "error": "BifrostAuthorizationError",
+            "detail": "403 Forbidden"
+          }
+        },
+        "error": null,
+        "engine_ms": 295,
+        "wall_ms": 4438,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/workflows-list-sdk_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 47,
+            "ms": 61
+          },
+          {
+            "method": "GET",
+            "path": "/api/workflows",
+            "status": 403,
+            "denied": "API capability denied"
+          }
+        ]
+      }
+    },
+    {
+      "name": "executions-list-sdk",
+      "cause": "policy",
+      "compare": "ok",
+      "verdict": "differs",
+      "linux": {
+        "status": "Success",
+        "result": "{\"list\":{\"ok\":true,\"value\":[{\"completed_at\":null,\"cpu_total_seconds\":null,\"duration_ms\":null,\"error_message\":null,\"executed_by\":\"dbb5617a-a262-421b-96ba-6c324d6006de\",\"executed_by_name\":\"Dev Admin\",\"execution_id\":\"56f79283-244d-4cde-84d2-fb69d7ad661d\",\"form_id\":null,\"input_data\":null,\"logs\":null,\"org_id\":\"00000000-0000-0000-0000-000000000002\",\"peak_memory_bytes\":null,\"process_rss_bytes\":null,\"resu…",
+        "error": null,
+        "engine_ms": 27,
+        "wall_ms": 1732
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "list": {
+            "ok": false,
+            "error": "BifrostAuthorizationError",
+            "detail": "403 Forbidden"
+          }
+        },
+        "error": null,
+        "engine_ms": 355,
+        "wall_ms": 7698,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/executions-list-sdk_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 61,
+            "ms": 23
+          },
+          {
+            "method": "GET",
+            "path": "/api/executions",
+            "status": 403,
+            "denied": "API capability denied"
+          }
+        ]
+      }
+    },
+    {
+      "name": "python-version",
+      "cause": "version",
+      "compare": "result",
+      "verdict": "differs",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "major_minor": [
+            3,
+            15
+          ]
+        },
+        "error": null,
+        "engine_ms": 0,
+        "wall_ms": 1720
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "major_minor": [
+            3,
+            14
+          ]
+        },
+        "error": null,
+        "engine_ms": 184,
+        "wall_ms": 5815,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/python-version_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 31,
+            "ms": 22
+          }
+        ]
+      }
+    },
+    {
+      "name": "py315-lazy-import-syntax",
+      "cause": "version",
+      "compare": "ok",
+      "verdict": "differs",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "compile": {
+            "ok": true,
+            "value": true
+          }
+        },
+        "error": null,
+        "engine_ms": 0,
+        "wall_ms": 1706
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "compile": {
+            "ok": false,
+            "error": "SyntaxError",
+            "detail": "invalid syntax (<probe>, line 1)"
+          }
+        },
+        "error": null,
+        "engine_ms": 238,
+        "wall_ms": 3987,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/py315-lazy-import-syntax_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 40,
+            "ms": 51
+          }
+        ]
+      }
+    },
+    {
+      "name": "process-time",
+      "cause": "platform",
+      "compare": "ok",
+      "verdict": "differs",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "process_time": {
+            "ok": true,
+            "value": true
+          }
+        },
+        "error": null,
+        "engine_ms": 1,
+        "wall_ms": 1725
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "process_time": {
+            "ok": false,
+            "error": "RuntimeError",
+            "detail": "the processor time used is not available or its value cannot be represented"
+          }
+        },
+        "error": null,
+        "engine_ms": 214,
+        "wall_ms": 3773,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/process-time_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 31,
+            "ms": 46
+          }
+        ]
+      }
+    },
+    {
+      "name": "zoneinfo",
+      "cause": "none",
+      "compare": "result",
+      "verdict": "parity",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "chicago": {
+            "ok": true,
+            "value": "-1 day, 18:00:00"
+          }
+        },
+        "error": null,
+        "engine_ms": 1,
+        "wall_ms": 1733
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "chicago": {
+            "ok": true,
+            "value": "-1 day, 18:00:00"
+          }
+        },
+        "error": null,
+        "engine_ms": 420,
+        "wall_ms": 8116,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/zoneinfo_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 29,
+            "ms": 21
+          }
+        ]
+      }
+    },
+    {
+      "name": "ssl-default-context",
+      "cause": "none",
+      "compare": "ok",
+      "verdict": "parity",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "ctx": {
+            "ok": true,
+            "value": true
+          }
+        },
+        "error": null,
+        "engine_ms": 13,
+        "wall_ms": 1709
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "ctx": {
+            "ok": true,
+            "value": true
+          }
+        },
+        "error": null,
+        "engine_ms": 264,
+        "wall_ms": 7572,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/ssl-default-context_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 28,
+            "ms": 21
+          }
+        ]
+      }
+    },
+    {
+      "name": "sqlite-memory",
+      "cause": "none",
+      "compare": "result",
+      "verdict": "parity",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "sum": {
+            "ok": true,
+            "value": 6
+          }
+        },
+        "error": null,
+        "engine_ms": 3,
+        "wall_ms": 1711
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "sum": {
+            "ok": true,
+            "value": 6
+          }
+        },
+        "error": null,
+        "engine_ms": 223,
+        "wall_ms": 4287,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/sqlite-memory_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 9,
+            "ms": 55
+          }
+        ]
+      }
+    },
+    {
+      "name": "stdlib-compute",
+      "cause": "none",
+      "compare": "result",
+      "verdict": "parity",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "re": [
+            "1",
+            "22",
+            "333"
+          ],
+          "csv": "a,1,\"b,c\"",
+          "dec": "3.30",
+          "sha": "85ea461e4676ace7"
+        },
+        "error": null,
+        "engine_ms": 7,
+        "wall_ms": 1742
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "sha": "85ea461e4676ace7",
+          "re": [
+            "1",
+            "22",
+            "333"
+          ],
+          "dec": "3.30",
+          "csv": "a,1,\"b,c\""
+        },
+        "error": null,
+        "engine_ms": 254,
+        "wall_ms": 4546,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/stdlib-compute_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 67,
+            "ms": 22
+          }
+        ]
+      }
+    },
+    {
+      "name": "result-rich-types",
+      "cause": "none",
+      "compare": "result",
+      "verdict": "parity",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "id": "12345678-1234-5678-1234-567812345678",
+          "when": "2026-01-02 03:04:05+00:00",
+          "amount": "1.50"
+        },
+        "error": null,
+        "engine_ms": 0,
+        "wall_ms": 1728
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "when": "2026-01-02 03:04:05+00:00",
+          "id": "12345678-1234-5678-1234-567812345678",
+          "amount": "1.50"
+        },
+        "error": null,
+        "engine_ms": 321,
+        "wall_ms": 8177,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/result-rich-types_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 42,
+            "ms": 48
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing-module-import",
+      "cause": "none",
+      "compare": "result",
+      "verdict": "parity",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "outcome": "ModuleNotFoundError"
+        },
+        "error": null,
+        "engine_ms": 10,
+        "wall_ms": 1705
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "outcome": "ModuleNotFoundError"
+        },
+        "error": null,
+        "engine_ms": 333,
+        "wall_ms": 3850,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/missing-module-import_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 56,
+            "ms": 54
+          },
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules-resolve",
+            "status": 200,
+            "token_ms": 4,
+            "ms": 57
+          }
+        ]
+      }
+    },
+    {
+      "name": "tmp-file",
+      "cause": "none",
+      "compare": "result",
+      "verdict": "parity",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "tmp": {
+            "ok": true,
+            "value": "tmp-ok"
+          }
+        },
+        "error": null,
+        "engine_ms": 1,
+        "wall_ms": 1738
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "tmp": {
+            "ok": true,
+            "value": "tmp-ok"
+          }
+        },
+        "error": null,
+        "engine_ms": 361,
+        "wall_ms": 8473,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/tmp-file_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 58,
+            "ms": 37
+          }
+        ]
+      }
+    },
+    {
+      "name": "subprocess",
+      "cause": "platform",
+      "compare": "ok",
+      "verdict": "differs",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "echo": {
+            "ok": true,
+            "value": "hi"
+          }
+        },
+        "error": null,
+        "engine_ms": 1,
+        "wall_ms": 1715
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "echo": {
+            "ok": false,
+            "error": "OSError",
+            "detail": "[Errno 138] emscripten does not support processes."
+          }
+        },
+        "error": null,
+        "engine_ms": 387,
+        "wall_ms": 7885,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/subprocess_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 53,
+            "ms": 30
+          }
+        ]
+      }
+    },
+    {
+      "name": "threading-thread",
+      "cause": "platform",
+      "compare": "ok",
+      "verdict": "differs",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "thread": {
+            "ok": true,
+            "value": [
+              42
+            ]
+          }
+        },
+        "error": null,
+        "engine_ms": 1,
+        "wall_ms": 1705
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "thread": {
+            "ok": false,
+            "error": "RuntimeError",
+            "detail": "can't start new thread"
+          }
+        },
+        "error": null,
+        "engine_ms": 236,
+        "wall_ms": 4321,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/threading-thread_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 33,
+            "ms": 48
+          }
+        ]
+      }
+    },
+    {
+      "name": "asyncio-to-thread",
+      "cause": "platform",
+      "compare": "ok",
+      "verdict": "parity",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "to_thread": {
+            "ok": true,
+            "value": 6
+          }
+        },
+        "error": null,
+        "engine_ms": 4,
+        "wall_ms": 1700
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "to_thread": {
+            "ok": true,
+            "value": 6
+          }
+        },
+        "error": null,
+        "engine_ms": 460,
+        "wall_ms": 8320,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/asyncio-to-thread_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 61,
+            "ms": 31
+          }
+        ]
+      }
+    },
+    {
+      "name": "thread-pool-executor",
+      "cause": "platform",
+      "compare": "ok",
+      "verdict": "differs",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "pool": {
+            "ok": true,
+            "value": [
+              2,
+              4,
+              6
+            ]
+          }
+        },
+        "error": null,
+        "engine_ms": 5,
+        "wall_ms": 1770
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "pool": {
+            "ok": false,
+            "error": "RuntimeError",
+            "detail": "can't start new thread"
+          }
+        },
+        "error": null,
+        "engine_ms": 182,
+        "wall_ms": 4026,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/thread-pool-executor_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 33,
+            "ms": 26
+          }
+        ]
+      }
+    },
+    {
+      "name": "egress-httpx",
+      "cause": "none",
+      "compare": "result",
+      "verdict": "parity",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "get": {
+            "ok": true,
+            "value": 200
+          }
+        },
+        "error": null,
+        "engine_ms": 487,
+        "wall_ms": 1717
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "get": {
+            "ok": true,
+            "value": 200
+          }
+        },
+        "error": null,
+        "engine_ms": 240,
+        "wall_ms": 4588,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/egress-httpx_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 39,
+            "ms": 18
+          },
+          {
+            "method": "GET",
+            "host": "example.com",
+            "path": "/",
+            "status": 200,
+            "ms": 6
+          }
+        ]
+      }
+    },
+    {
+      "name": "egress-undeclared-host",
+      "cause": "policy",
+      "compare": "result",
+      "verdict": "differs",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "get": {
+            "ok": true,
+            "value": 200
+          }
+        },
+        "error": null,
+        "engine_ms": 365,
+        "wall_ms": 1704
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "get": {
+            "ok": true,
+            "value": 403
+          }
+        },
+        "error": null,
+        "engine_ms": 190,
+        "wall_ms": 3769,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/egress-undeclared-host_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 5,
+            "ms": 53
+          },
+          {
+            "method": "GET",
+            "host": "example.org",
+            "path": "/",
+            "status": 403,
+            "denied": "egress not declared"
+          }
+        ]
+      }
+    },
+    {
+      "name": "raw-tcp-socket",
+      "cause": "platform",
+      "compare": "ok",
+      "verdict": "differs",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "connect": {
+            "ok": true,
+            "value": true
+          }
+        },
+        "error": null,
+        "engine_ms": 18,
+        "wall_ms": 1703
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "connect": {
+            "ok": false,
+            "error": "ConnectionRefusedError",
+            "detail": "[Errno 14] Connection refused"
+          }
+        },
+        "error": null,
+        "engine_ms": 281,
+        "wall_ms": 4175,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/raw-tcp-socket_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 70,
+            "ms": 51
+          }
+        ]
+      }
+    },
+    {
+      "name": "dns-getaddrinfo",
+      "cause": "platform",
+      "compare": "ok",
+      "verdict": "parity",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "resolve": {
+            "ok": true,
+            "value": true
+          }
+        },
+        "error": null,
+        "engine_ms": 3,
+        "wall_ms": 1711
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "resolve": {
+            "ok": true,
+            "value": true
+          }
+        },
+        "error": null,
+        "engine_ms": 295,
+        "wall_ms": 4983,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/dns-getaddrinfo_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 54,
+            "ms": 22
+          }
+        ]
+      }
+    },
+    {
+      "name": "package-imports",
+      "cause": "bundle",
+      "compare": "result",
+      "verdict": "differs",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "PIL": "ok",
+          "jwt": "ok",
+          "docx": "ok",
+          "lxml": "ok",
+          "msal": "ok",
+          "nacl": "ok",
+          "yaml": "ok",
+          "httpx": "ok",
+          "redis": "ok",
+          "bcrypt": "ok",
+          "jinja2": "ok",
+          "openai": "ok",
+          "uvloop": "ok",
+          "aiohttp": "ok",
+          "asyncpg": "ok",
+          "croniter": "ok",
+          "openpyxl": "ok",
+          "pydantic": "ok",
+          "requests": "ok",
+          "tiktoken": "ok",
+          "anthropic": "ok",
+          "reportlab": "ok",
+          "websockets": "ok",
+          "cryptography": "ok",
+          "dns.resolver": "ok",
+          "azure.identity": "ok"
+        },
+        "error": null,
+        "engine_ms": 3599,
+        "wall_ms": 4939
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": "{\"PIL\":\"missing\",\"aiohttp\":\"missing\",\"anthropic\":\"missing\",\"asyncpg\":\"missing\",\"azure.identity\":\"missing\",\"bcrypt\":\"missing\",\"croniter\":\"missing\",\"cryptography\":\"missing\",\"dns.resolver\":\"missing\",\"docx\":\"missing\",\"httpx\":\"ok\",\"jinja2\":\"missing\",\"jwt\":\"missing\",\"lxml\":\"missing\",\"msal\":\"missing\",\"nacl\":\"missing\",\"openai\":\"missing\",\"openpyxl\":\"missing\",\"pydantic\":\"ok\",\"redis\":\"ok\",\"reportlab\":\"missin…",
+        "error": null,
+        "engine_ms": 955,
+        "wall_ms": 5742,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/package-imports_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 8,
+            "ms": 24
+          },
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules-resolve",
+            "status": 200,
+            "token_ms": 10,
+            "ms": 27
+          },
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules-resolve",
+            "status": 200,
+            "token_ms": 6,
+            "ms": 47
+          },
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules-resolve",
+            "status": 200,
+            "token_ms": 6,
+            "ms": 28
+          },
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules-resolve",
+            "status": 200,
+            "token_ms": 6,
+            "ms": 26
+          },
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules-resolve",
+            "status": 200,
+            "token_ms": 6,
+            "ms": 26
+          },
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules-resolve",
+            "status": 200,
+            "token_ms": 6,
+            "ms": 28
+          },
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules-resolve",
+            "status": 200,
+            "token_ms": 6,
+            "ms": 24
+          },
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules-resolve",
+            "status": 200,
+            "token_ms": 6,
+            "ms": 27
+          },
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules-resolve",
+            "status": 200,
+            "token_ms": 6,
+            "ms": 27
+          },
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules-resolve",
+            "status": 200,
+            "token_ms": 6,
+            "ms": 26
+          },
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules-resolve",
+            "status": 200,
+            "token_ms": 5,
+            "ms": 27
+          },
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules-resolve",
+            "status": 200,
+            "token_ms": 6,
+            "ms": 32
+          },
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules-resolve",
+            "status": 200,
+            "token_ms": 7,
+            "ms": 29
+          },
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules-resolve",
+            "status": 200,
+            "token_ms": 5,
+            "ms": 27
+          },
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules-resolve",
+            "status": 200,
+            "token_ms": 6,
+            "ms": 28
+          },
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules-resolve",
+            "status": 200,
+            "token_ms": 5,
+            "ms": 26
+          },
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules-resolve",
+            "status": 200,
+            "token_ms": 6,
+            "ms": 32
+          },
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules-resolve",
+            "status": 200,
+            "token_ms": 5,
+            "ms": 27
+          },
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules-resolve",
+            "status": 200,
+            "token_ms": 4,
+            "ms": 27
+          },
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules-resolve",
+            "status": 200,
+            "token_ms": 5,
+            "ms": 32
+          },
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules-resolve",
+            "status": 200,
+            "token_ms": 6,
+            "ms": 28
+          }
+        ]
+      }
+    },
+    {
+      "name": "memory-200mib",
+      "cause": "platform",
+      "compare": "status",
+      "verdict": "cloud-gap",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "mib": 200,
+          "touched": 51200
+        },
+        "error": null,
+        "engine_ms": 117,
+        "wall_ms": 1727
+      },
+      "cloud": {
+        "http": 502,
+        "phase": "dynamic-runtime",
+        "error_class": "memory_limit",
+        "lab_error": null,
+        "status": "dynamic-runtime",
+        "result": null,
+        "error": null,
+        "engine_ms": null,
+        "wall_ms": 9024,
+        "api_calls": null
+      }
+    },
+    {
+      "name": "memory-64mib",
+      "cause": "none",
+      "compare": "result",
+      "verdict": "parity",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "mib": 64
+        },
+        "error": null,
+        "engine_ms": 35,
+        "wall_ms": 1756
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "mib": 64
+        },
+        "error": null,
+        "engine_ms": 240,
+        "wall_ms": 4837,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/memory-64mib_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 40,
+            "ms": 52
+          }
+        ]
+      }
+    },
+    {
+      "name": "cpu-fixed-work",
+      "cause": "policy",
+      "compare": "result",
+      "verdict": "parity",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "total": 59999997
+        },
+        "error": null,
+        "engine_ms": 1516,
+        "wall_ms": 2950
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "total": 59999997
+        },
+        "error": null,
+        "engine_ms": 232,
+        "wall_ms": 6441,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/cpu-fixed-work_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 39,
+            "ms": 24
+          }
+        ]
+      }
+    },
+    {
+      "name": "sleep-90s",
+      "cause": "none",
+      "compare": "result",
+      "verdict": "parity",
+      "linux": {
+        "status": "Success",
+        "result": {
+          "slept": 90
+        },
+        "error": null,
+        "engine_ms": 90090,
+        "wall_ms": 91303
+      },
+      "cloud": {
+        "http": 200,
+        "phase": null,
+        "error_class": null,
+        "lab_error": null,
+        "status": "Success",
+        "result": {
+          "slept": 90
+        },
+        "error": null,
+        "engine_ms": 90243,
+        "wall_ms": 94821,
+        "api_calls": [
+          {
+            "method": "GET",
+            "path": "/api/sdk/modules/workflows/capmatrix/sleep-90s_mwhh8uuk.py",
+            "status": 200,
+            "token_ms": 42,
+            "ms": 64
+          }
+        ]
+      }
+    },
+    {
+      "name": "result-6mb",
+      "cause": "policy",
+      "compare": "status",
+      "verdict": "cloud-gap",
+      "linux": {
+        "status": "Success",
+        "result": "{\"blob\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…",
+        "error": null,
+        "engine_ms": 2,
+        "wall_ms": 1923
+      },
+      "cloud": {
+        "http": 502,
+        "phase": "output-budget",
+        "error_class": null,
+        "lab_error": null,
+        "status": "output-budget",
+        "result": null,
+        "error": null,
+        "engine_ms": null,
+        "wall_ms": 4950,
+        "api_calls": null
+      }
+    }
+  ],
+  "finished_at": "2026-11-15T06:57:12.881Z",
+  "summary": {
+    "parity": 21,
+    "differs": 11,
+    "cloud-gap": 2
+  }
+}

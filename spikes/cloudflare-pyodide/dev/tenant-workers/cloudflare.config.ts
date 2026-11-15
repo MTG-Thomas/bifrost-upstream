@@ -47,6 +47,17 @@ export default defineConfig({
       // Staging only: when set, the supervisor fetches modules from this real
       // Bifrost API instead of an attempt-supplied store.
       API_ORIGIN: {type: 'text', value: process.env.STAGING_API_ORIGIN ?? ''},
+      // Child SDK surface: 'sdk' (default, the narrow allowlist in
+      // executor/policy.mjs) or 'all' (capability lab only).
+      SDK_SCOPE: {type: 'text', value: process.env.SDK_SCOPE === 'all' ? 'all' : 'sdk'},
+      // Engine child CPU budget per request; empty keeps the packaged default.
+      ENGINE_CPU_MS: {type: 'text', value: process.env.ENGINE_CPU_MS ?? ''},
+      // Engine child subrequests per attempt; empty keeps the packaged default.
+      ENGINE_SUBREQUESTS: {type: 'text', value: process.env.ENGINE_SUBREQUESTS ?? ''},
+      // Per-attempt deadline; empty keeps the Linux-matching 1800 s default.
+      ATTEMPT_DEADLINE_MS: {type: 'text', value: process.env.ATTEMPT_DEADLINE_MS ?? ''},
+      // Capability lab only: echo runtime error text in dynamic-runtime replies.
+      LAB_ECHO_ERRORS: {type: 'text', value: process.env.LAB_ECHO_ERRORS === 'true' ? 'true' : 'false'},
     },
     limits: {cpuMs: 1000},
     observability: {enabled: false},
