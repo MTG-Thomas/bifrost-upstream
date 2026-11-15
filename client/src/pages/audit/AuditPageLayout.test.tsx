@@ -116,9 +116,11 @@ describe("AuditPageLayout", () => {
 
 		await user.keyboard("{ArrowLeft}");
 
+		// Match the whole path: "/audit" is a substring of the previous route,
+		// so a substring match would not wait for the navigation to commit.
 		await waitFor(() =>
 			expect(screen.getByLabelText("Current route")).toHaveTextContent(
-				"/audit",
+				/^\/audit$/,
 			),
 		);
 		expect(screen.getByRole("tab", { name: "Activity" })).toHaveAttribute(
