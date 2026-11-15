@@ -7,10 +7,15 @@
   "compatibility_date": "2026-10-30",
   "compatibility_flags": ["python_workers"],
   "worker_loaders": [{"binding": "LOADER"}],
+  // TenantHost is reached through ctx.exports; the binding keeps the class
+  // registered for local workerd.
   "durable_objects": {
-    "bindings": [{"name": "TOKENS", "class_name": "RunTokenBroker"}]
+    "bindings": [{"name": "TENANT_HOST", "class_name": "TenantHost"}]
   },
-  "migrations": [{"tag": "v1", "new_sqlite_classes": ["RunTokenBroker"]}],
+  "migrations": [
+    {"tag": "v1", "new_sqlite_classes": ["RunTokenBroker"]},
+    {"tag": "v2", "new_sqlite_classes": ["TenantHost"], "deleted_classes": ["RunTokenBroker"]}
+  ],
   "vars": {
     "LOCAL_PROBE": "true",
     "API_ORIGIN": "https://bifrost-stage.midtowntg.com"

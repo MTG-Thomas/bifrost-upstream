@@ -50,6 +50,40 @@ First results on production:
 297 organizations on both backends, identical `caller_mode: "picker"` and
 canonical result hash.
 
+## Latency: what the numbers mean
+
+`linux_ms` is **not** the Linux engine time: the runner polls the execution
+every 2 s, so it is pinned at ~2 050 ms. Since 2026-11-15 each record also
+carries `linux_engine_ms` (the execution's own `duration_ms`) and the cloud
+breakdown `cloud_timings` (`host_ms`, `child_ms`, `engine_ms`,
+`first_request`), plus `cloud_cold`.
+
+| Path | Engine | End to end |
+|---|---|---|
+| Production Linux worker (warm pool) | 32–54 ms | poll-bound |
+| Cloudflare, back-to-back attempts | 40–62 ms | 97–137 ms at the host |
+| Cloudflare, canary cadence (15 min idle, child kept warm) | 256–274 ms | 0.38–0.63 s |
+| Cloudflare, before the tenant host | ~150 ms | 5.0–5.6 s (cold almost every cycle) |
+| Cloudflare, first attempt for a new tenant | 0.3–0.5 s | 4.6–5.4 s, or 8.4–9.7 s when the host resets during boot |
+
+What moved the canary from ~5 s to ~0.4 s, and the remaining gaps, are in
+`dev/staging/README.md` ("Warm child per tenant", "Cold boot resets a fresh
+host"). In short: a per-tenant `TenantHost` DO owns the child (the loader cache
+is per machine), replaces the per-attempt token-broker DO, and keeps the child
+warm for 20 min after the last attempt.
+
+Not yet at parity:
+
+- **Cold boot is 4.5–5 s and stays that way.** Dynamic Python Workers get no
+  deploy-time memory snapshot; the 15 MB runtime boots on every new child. Only
+  the warm window keeps it off the request path. Shrinking the runtime is the
+  remaining lever.
+- **First attempt after idle: ~260 ms engine vs ~50 ms hot.** The keep-warm
+  ping keeps the isolate resident but does not touch the outbound path to the
+  API, so the first SDK call after a quiet period pays connection setup.
+- `worker_code_sha256` identifies the engine child (entry + runtime), not the
+  supervisor/host code; a supervisor-only change is not attributed.
+
 ## Two production-only defects found
 
 Both are invisible in staging and neither is a Bifrost defect:
@@ -79,7 +113,10 @@ Phases are greppable: `ok`, `session_expired`, `api_unreachable`,
 `worker_unreachable`, `cloud_execution_failed`, `mismatch`.
 
 **2. Upgrade attribution.** Each record carries `api_version` (prod build) and
-`worker_code_sha256` (canary runtime), and the solution `module_sha256`. A
+`worker_code_sha256` (the engine child: entry script + packaged runtime; it
+previously hashed the unused minimal child), and the solution `module_sha256`
+(kept in `status.json` so a pin transition is actually detectable — it was not
+before 2026-11-15). A
 transition writes one line to `events.jsonl`
 (`prod_build_changed` / `worker_runtime_changed` / `module_pin_changed`). So a
 mismatch after a deploy is attributable to *prod changed*, *canary runtime

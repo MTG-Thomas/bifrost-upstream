@@ -184,12 +184,25 @@ export async function genericCodeDigest() {
 // dev/staging/README.md for the posture note.
 export const ENGINE_PYTHON = `
 import json
+import time
 from workers import WorkerEntrypoint, Response
 from runtime_runner import run_authorized_attempt
+# _SERVED distinguishes a fresh child from a reused one from the child's own
+# point of view (the supervisor's view is lost whenever IT is recycled). Boot
+# and import cost cannot be timed in here: Workers clocks only advance across
+# I/O, so it shows up as the host's child_ms minus engine_ms.
+_SERVED = 0
 
 class Default(WorkerEntrypoint):
     async def fetch(self, request):
+        global _SERVED
+        first_request = _SERVED == 0
+        _SERVED += 1
         body = json.loads(await request.text())
+        if body.get("action") == "ping":
+            # Keep-warm from the tenant host: proves the isolate is resident
+            # (or pays its boot off the request path). Touches no tenant data.
+            return Response.json({"pong": True, "first_request": first_request})
         # One persistent child serves EVERY attempt for this tenant, so the
         # process-scoped SDK state a one-shot child gets for free must be
         # re-established at the attempt boundary. The SDK caches its client per
@@ -203,13 +216,38 @@ class Default(WorkerEntrypoint):
         token = context.get("engine_token")
         if token:
             _install_cached_access_token(body["api_url"], token)
+        engine_started = time.perf_counter()
         result = await run_authorized_attempt(
             body["execution_id"], context, body["api_url"],
             public_url=body.get("public_url", "https://staging.invalid"))
-        return Response.json({"upstream_result": result})
+        done = time.perf_counter()
+        return Response.json({"upstream_result": result, "child": {
+            "first_request": first_request, "served": _SERVED,
+            "engine_ms": int((done - engine_started) * 1000)}})
 `;
 
 export function tenantEngineCode(api) {
   const code = runtimeCode(api, ENGINE_PYTHON);
   return {...code, limits: {...code.limits, subRequests: 12}};
+}
+
+// Identity of the engine child: its entry script plus the packaged runtime.
+// runtimeSha256 is computed from generated-runtime.mjs at deploy time
+// (cloudflare.config.ts -> env.RUNTIME_SHA256), so hashing 15 MB never
+// happens in a request. Loader ids are keyed by this: LOADER.get may hand back
+// a cached isolate for a known id without calling the factory.
+const engineDigests = new Map();
+export function engineDigest(runtimeSha256) {
+  // Without the runtime identity a runtime change would silently keep the old
+  // loader id (and the old cached engine), so refuse instead.
+  if (typeof runtimeSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(runtimeSha256)) {
+    return Promise.reject(new Error('RUNTIME_SHA256 is not configured'));
+  }
+  const key = runtimeSha256;
+  if (!engineDigests.has(key)) {
+    engineDigests.set(key, crypto.subtle.digest('SHA-256',
+      new TextEncoder().encode(`${ENGINE_PYTHON}\n${key}`)).then((digest) =>
+      [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')));
+  }
+  return engineDigests.get(key);
 }

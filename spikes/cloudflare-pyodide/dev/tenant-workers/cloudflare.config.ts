@@ -1,4 +1,6 @@
-import {bindings, defineConfig, exports} from 'cf/config';
+import {createHash} from 'node:crypto';
+import {readFileSync} from 'node:fs';
+import {defineConfig, exports} from 'cf/config';
 
 // Cloud acceptance config for the per-tenant persistent-worker prototype.
 // Deploy with:
@@ -15,6 +17,13 @@ import {bindings, defineConfig, exports} from 'cf/config';
 // Kill switch: redeploy with SPIKE_EXPIRES_AT=0, or rotate SPIKE_AUTH.
 const workerName = process.env.WORKER_NAME ?? 'bifrost-pyodide-tenant-ddf316c1';
 
+// Identity of the packaged Python runtime the engine child loads. Hashed here,
+// once per deploy, so the supervisor can key child isolates by engine version
+// without hashing 15 MB per request.
+const runtimeSha256 = createHash('sha256')
+  .update(readFileSync(new URL('../runtime/generated-runtime.mjs', import.meta.url)))
+  .digest('hex');
+
 export default defineConfig({
   worker: {
     name: workerName,
@@ -23,20 +32,21 @@ export default defineConfig({
     workersDev: true,
     previewUrls: false,
     exports: {
-      // Attempt-scoped token broker: the child holds an opaque handle, the DO
-      // holds the real run token for the duration of the attempt.
-      RunTokenBroker: exports.durableObject({storage: 'sqlite'}),
+      // One host per tenant: owns the warm engine child, serializes the
+      // tenant's attempts, and holds each run token in memory under an opaque
+      // handle for the attempt only (tenant-api.mjs).
+      TenantHost: exports.durableObject({storage: 'sqlite'}),
+      // Retired per-attempt token broker (one DO created per attempt cost
+      // 0.2-0.5 s on every run); tombstoned so its namespace is deleted.
+      RunTokenBroker: {type: 'durable-object', state: 'deleted'},
     },
     env: {
       LOADER: {type: 'worker-loader'},
       SPIKE_EXPIRES_AT: {type: 'text', value: process.env.SPIKE_EXPIRES_AT ?? '0'},
+      RUNTIME_SHA256: {type: 'text', value: runtimeSha256},
       // Staging only: when set, the supervisor fetches modules from this real
       // Bifrost API instead of an attempt-supplied store.
       API_ORIGIN: {type: 'text', value: process.env.STAGING_API_ORIGIN ?? ''},
-      TOKENS: bindings.durableObject({
-        worker: workerName,
-        exportName: 'RunTokenBroker',
-      }),
     },
     limits: {cpuMs: 1000},
     observability: {enabled: false},

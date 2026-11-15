@@ -80,19 +80,74 @@ Verified against the staging stack on 2026-11-13:
 That is `await tables.list()` executing through the real SDK, against the real
 API, from a cached per-tenant child.
 
-### Credential posture (DO broker)
+### Credential posture (tenant host)
 
-Engine mode is now **credential-free inside the child**:
+Engine mode is **credential-free inside the child**. Engine attempts go to the
+tenant's `TenantHost` Durable Object (one per tenant, `tenant-api.mjs`):
 
-1. The supervisor mints an opaque handle (`run_<uuid>`) and stores the
-   attempt-scoped token in a Durable Object (`RunTokenBroker`) keyed by handle,
-   with a 10-minute expiry.
+1. The host mints an opaque handle (`run_<uuid>`) and keeps the attempt-scoped
+   token **in memory** under it, with a 10-minute expiry. It is never written
+   to storage.
 2. The child's `context.engine_token` is the handle, not the token.
-3. `TenantApi` resolves the handle through the DO and swaps in the real token on
-   the way out. The handle is deleted in a `finally` after the attempt.
+3. The child's outbound `TenantApi` is created with `props.tenantId`, so it
+   resolves the handle against **its own tenant's host only**, swaps in the real
+   token on the way out, and the handle is deleted in a `finally` after the
+   attempt.
 
 Verified: `GET /auth/me` with `Bearer run_1111…` → **401**, with the real token →
 **200**. The child's credential is not usable anywhere else.
+
+This replaced a per-attempt `RunTokenBroker` DO (one new object per attempt,
+0.2–0.5 s on every run; tombstoned in `cloudflare.config.ts`).
+
+### Warm child per tenant
+
+`LOADER.get` caches isolates **per machine**: "two requests are never guaranteed
+to reach the same isolate". Calling it from the stateless supervisor meant a
+request that landed elsewhere paid a full 5–10 s Pyodide boot even right after
+a successful run on the same tenant (observed: back-to-back attempts on one
+tenant both cold). Dynamic Python workers get no deploy-time memory snapshot,
+so that boot cannot be made cheap; it can only be kept off the request path.
+
+The `TenantHost` owns the child instead. A DO is a single instance, so its
+`LOADER.get` cache is shared by every attempt for that tenant. The host also
+serializes the tenant's attempts and keeps the child warm with an alarm ping
+every 45 s for 20 minutes after the last attempt (`WARM_WINDOW_MS`, the
+idle-cost knob — the counterpart of the Linux pool's always-warm processes).
+The loader id carries the engine digest (`ENGINE_PYTHON` + `RUNTIME_SHA256`,
+hashed at deploy time), as the loader requires a new id whenever code changes.
+
+Measured from the production host against production (2026-11-15):
+
+| Path | Before | Tenant host |
+|---|---|---|
+| Warm attempt, end to end | 0.5–0.7 s | 0.22–0.30 s |
+| Engine inside the child | 0.10–0.15 s | 0.08–0.10 s |
+| Repeat attempt reuses the child | 2 of 6 | 7 of 7 |
+| After 120 s idle | — | warm (0.4–0.8 s) |
+| First attempt for a new tenant | 5–11 s | 4.6–5.4 s |
+
+### Cold boot resets a fresh host — warm, then dispatch once
+
+Booting the child inside a **brand-new** host often resets the host with
+`Durable Object reset because its code was updated` (`retryable: true`), well
+clear of any deploy: 4/5 fresh tenants ten minutes after a deploy, and 3/4
+with a data-free `warm` ping alone (no attempt, token or `TenantApi` call-back),
+so the trigger is child creation in a fresh DO, not the attempt path. The boot
+itself completes: the next request always finds the child up.
+
+An engine attempt can never be retried (it may already have had effects), so
+the host refuses attempts with `needsWarm` until it has confirmed its child in
+memory. The supervisor then warms it (idempotent, retried up to
+`WARM_ATTEMPTS` on retryable failures, a fresh stub each time) and dispatches
+the attempt exactly once (`hostAttempt`, unit-tested). A warm host costs one
+round trip. Supervisor failures carry a fixed `error_class` slug
+(`runtimeErrorClass`), never exception text.
+
+Residual risk: if the platform evicts the child while the host stays alive, the
+next attempt boots it inline and could hit the same reset. The 45 s keep-warm
+ping is what keeps that rare; the canary would record it as
+`cloud_execution_failed`.
 
 Remaining difference from the data-only mode: engine mode does not re-verify
 module pins (the engine fetches modules through the stub); the stub constrains

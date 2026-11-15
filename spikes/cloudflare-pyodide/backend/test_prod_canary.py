@@ -162,5 +162,77 @@ class SessionTest(unittest.TestCase):
                          "a rotated refresh token must survive the process")
 
 
+class AttributionTest(unittest.TestCase):
+    """Upgrade attribution must name the code that actually ran."""
+
+    def setUp(self):
+        self.m = load_runner()
+
+    def test_worker_identity_is_the_engine_not_the_minimal_child(self):
+        def fake_call(method, url, **kwargs):
+            if url.endswith("/__code_digest"):
+                return 200, {"generic_code_sha256": "minimal", "engine_code_sha256": "engine"}
+            return 200, {"version": "2.0.1"}
+
+        with patch.object(self.m, "call", fake_call), \
+                patch.object(self.m, "worker_secret", lambda: "s"):
+            info = self.m.build_info()
+        self.assertEqual(info["worker_code_sha256"], "engine")
+
+    def test_module_pin_transition_is_recorded(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            paths = {"BASE": str(base), "OUT": str(base / "runs.jsonl"),
+                     "EVENTS": str(base / "events.jsonl"), "STATUS": str(base / "status.json"),
+                     "ENABLED": str(base / "ENABLED"), "LOCK": str(base / ".lock")}
+            (base / "ENABLED").write_text("1")
+            fake_fcntl = type(sys)("fcntl")
+            fake_fcntl.LOCK_EX, fake_fcntl.LOCK_NB = 2, 4
+            fake_fcntl.flock = lambda *_a: None
+            pins = iter(["pin-a", "pin-b"])
+
+            def cycle():
+                return {"ts": "t", "match": True, "phase": "ok", "module_sha256": next(pins)}
+
+            with patch.dict(sys.modules, {"fcntl": fake_fcntl}), \
+                    patch.multiple(self.m, one_cycle=cycle, **paths), \
+                    patch("builtins.print"):
+                self.m.main()
+                self.m.main()
+            events = [json.loads(line) for line in (base / "events.jsonl").read_text().splitlines()]
+        self.assertEqual([(e["kind"], e["from"], e["to"]) for e in events],
+                         [("module_pin_changed", "pin-a", "pin-b")])
+
+
+class SupervisorFailureTest(unittest.TestCase):
+    def setUp(self):
+        self.m = load_runner()
+
+    def test_supervisor_failure_is_an_execution_failure_not_a_mismatch(self):
+        payload = {"phase": "dynamic-runtime", "error_type": "Error", "api_calls": []}
+        with patch.object(self.m, "call", lambda *a, **k: (502, payload)), \
+                patch.object(self.m, "worker_secret", lambda: "s"):
+            cloud = self.m.run_cloud("tok", {"id": "u", "email": "e"}, "pin")
+        self.assertEqual(cloud["error"], "Error")
+        record = {"match": False, "cloud_http": 502, "cloud_error": cloud["error"]}
+        self.assertEqual(self.m.classify(record), "cloud_execution_failed")
+
+
+class TimingTest(unittest.TestCase):
+    def setUp(self):
+        self.m = load_runner()
+
+    def test_cloud_cold_start_breakdown_is_kept(self):
+        payload = {"output": {"status": "Success", "result": {}}, "worker_reused": False,
+                   "timings": {"host_ms": 6180, "child_ms": 6100,
+                               "child": {"first_request": True, "engine_ms": 900, "served": 1}}}
+        with patch.object(self.m, "call", lambda *a, **k: (200, payload)), \
+                patch.object(self.m, "worker_secret", lambda: "s"):
+            cloud = self.m.run_cloud("tok", {"id": "u", "email": "e"}, "pin")
+        self.assertEqual(cloud["timings"], {"host_ms": 6180, "child_ms": 6100,
+                                            "first_request": True, "engine_ms": 900})
+
+
 if __name__ == "__main__":
     unittest.main()

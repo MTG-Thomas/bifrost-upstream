@@ -25,7 +25,7 @@
 // - output-budget.mjs: oversized child output dropped as infra failure.
 // - import-audit.mjs: recorded workspace paths reconciled post-hoc; undeclared
 //   imports map to a terminal (effects may already exist, same as executor).
-import {genericWorkerCode, genericCodeDigest, tenantEngineCode} from './generic-worker-code.mjs';
+import {genericWorkerCode, genericCodeDigest, engineDigest} from './generic-worker-code.mjs';
 import {tenantWorkerId} from './tenant-registry.mjs';
 import {createTenantGateway, createRemoteTenantGateway, isStoragePath} from './tenant-gateway.mjs';
 import {capabilityRejection} from '../executor/capability-requirements.mjs';
@@ -34,17 +34,17 @@ import {reconcileImports, deniedTerminal} from '../executor/import-audit.mjs';
 import {readBudgetedJson} from '../executor/output-budget.mjs';
 import {DUMMY_CREDENTIAL} from '../executor/gateway-injection.mjs';
 
-// Node unit tests cannot resolve cloudflare:workers, so the export is loaded
-// only where the runtime provides it; ctx.exports cannot see it otherwise.
+// Node unit tests cannot resolve cloudflare:workers, so the exports are loaded
+// only where the runtime provides them; ctx.exports cannot see them otherwise.
 let TenantApi;
-let RunTokenBroker;
+let TenantHost;
 try {
-  ({TenantApi, RunTokenBroker} = await import('./tenant-api.mjs'));
+  ({TenantApi, TenantHost} = await import('./tenant-api.mjs'));
 } catch {
   TenantApi = undefined;
-  RunTokenBroker = undefined;
+  TenantHost = undefined;
 }
-export {TenantApi, RunTokenBroker};
+export {TenantApi, TenantHost};
 
 // Per-tenant serialization chains + first-use tracking. Module-level: one
 // supervisor isolate holds one chain per tenant id.
@@ -70,6 +70,50 @@ export async function enqueueTenant(tenantId, fn) {
   return cur;
 }
 
+// Platform failure classes, matched against the runtime's own messages and
+// reported as a fixed slug: diagnosable without ever echoing exception text.
+const RUNTIME_ERROR_CLASSES = [
+  ['cpu_limit', /exceeded CPU time limit/i],
+  ['memory_limit', /exceeded (its )?memory limit/i],
+  ['code_updated', /code (was|has been) updated/i],
+  ['overloaded', /overloaded/i],
+  ['connection_lost', /network connection lost|disconnected/i],
+  ['internal', /internal error/i],
+];
+
+export function runtimeErrorClass(error) {
+  const message = String(error?.message ?? '');
+  const match = RUNTIME_ERROR_CLASSES.find(([, pattern]) => pattern.test(message));
+  return {error_class: match ? match[0] : 'other',
+    retryable: error?.retryable === true, overloaded: error?.overloaded === true};
+}
+
+// Warm-up is idempotent and carries no attempt data, so a retryable platform
+// failure (observed: `code_updated` while a fresh host boots its child) is
+// retried with a fresh stub, as broken DO stubs must not be reused.
+export const WARM_ATTEMPTS = 3;
+export async function warmHost(getHost, tenantId) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return {...await getHost().warm({tenantId}), warm_attempts: attempt};
+    } catch (error) {
+      if (error?.retryable !== true || attempt >= WARM_ATTEMPTS) throw error;
+    }
+  }
+}
+
+// An engine attempt is dispatched at most once. A host that has not confirmed
+// its child refuses with needsWarm before doing any attempt work; only the
+// warm-up is retried.
+export async function hostAttempt(getHost, attempt) {
+  const first = await getHost().run(attempt);
+  if (!first.needsWarm) return first;
+  const warm = await warmHost(getHost, attempt.tenantId);
+  const result = await getHost().run(attempt);
+  if (result.needsWarm) return {notReady: true, warm};
+  return {...result, warm};
+}
+
 function json(status, value) {
   return Response.json(value, {status});
 }
@@ -92,7 +136,8 @@ export default {
     }
     const url = new URL(request.url);
     if (request.method === 'GET' && url.pathname === '/__code_digest') {
-      return Response.json({generic_code_sha256: await genericCodeDigest()});
+      return Response.json({generic_code_sha256: await genericCodeDigest(),
+        engine_code_sha256: await engineDigest(env.RUNTIME_SHA256)});
     }
     if (request.method === 'GET' && url.pathname === '/__gateway_probe') {
       // Diagnostic: can this Worker reach the configured API origin at all?
@@ -154,6 +199,54 @@ export default {
       return json(400, {phase: 'bad-request', error: 'Invalid entry path', api_calls: []});
     }
 
+    if (body.action === 'warm') {
+      // Boot the tenant's engine child ahead of an attempt. Carries no
+      // attempt, token or workflow data.
+      if (typeof TenantHost !== 'function') {
+        return json(502, {phase: 'engine-unavailable', tenant_worker_id: workerId});
+      }
+      try {
+        const warmed = await warmHost(() => ctx.exports.TenantHost.getByName(workerId), workerId);
+        return Response.json({tenant_worker_id: workerId, timings: warmed});
+      } catch (error) {
+        return json(502, {phase: 'dynamic-runtime', error_type: error?.name ?? 'Error',
+          ...runtimeErrorClass(error), tenant_worker_id: workerId});
+      }
+    }
+
+    if (body.action === 'engine') {
+      // Real-engine mode: the tenant's host Durable Object owns the child,
+      // the per-tenant serialization and the attempt token (tenant-api.mjs).
+      // The engine authenticates SDK calls with an opaque handle that only
+      // this tenant's outbound gateway can resolve (dev/staging/README).
+      if (typeof TenantHost !== 'function') {
+        return json(502, {phase: 'engine-unavailable', tenant_worker_id: workerId, api_calls: []});
+      }
+      const mark = Date.now();
+      let hosted;
+      try {
+        hosted = await hostAttempt(() => ctx.exports.TenantHost.getByName(workerId), {
+          tenantId: workerId, executionId: body.execution_id, context: body.context,
+          publicUrl: body.public_url});
+      } catch (error) {
+        // Never echo exception strings (may contain workflow data or credentials).
+        return json(502, {phase: 'dynamic-runtime', error_type: error?.name ?? 'Error',
+          ...runtimeErrorClass(error), tenant_worker_id: workerId, api_calls: []});
+      }
+      if (hosted.notReady) {
+        // Warmed, yet the host still has not confirmed its child; the
+        // attempt was never started.
+        return json(502, {phase: 'engine-not-ready', tenant_worker_id: workerId, api_calls: []});
+      }
+      // Reuse is the child's own view: the supervisor's memory is lost
+      // whenever the supervisor isolate is recycled.
+      return Response.json({tenant_worker_id: workerId,
+        worker_reused: hosted.timings.child?.first_request === false,
+        queue_wait_ms: hosted.queueWaitMs, output: hosted.output, api_calls: [],
+        timings: {host_ms: Date.now() - mark, ...hosted.timings,
+          ...(hosted.warm ? {warm: hosted.warm} : {})}});
+    }
+
     const workerReused = seenTenants.has(workerId);
     let outcome;
     try {
@@ -165,47 +258,6 @@ export default {
       // manifest-pin verification (never the raw attempt store).
       const apiCalls = [];
       let childBody;
-      if (body.action === 'engine') {
-        // Real-engine mode: constant child per tenant, outbound through the
-        // stateless TenantApi stub. The engine authenticates SDK calls with the
-        // attempt-scoped token in context (posture note in dev/staging/README).
-        if (typeof TenantApi !== 'function') {
-          return {terminal: {phase: 'engine-unavailable', api_calls: []}};
-        }
-        const api = ctx.exports.TenantApi({});
-        const code = tenantEngineCode(api);
-        const engineId = `tenant-eng-${workerId}`;
-        const worker = env.LOADER.get(engineId, () => code);
-        // The child carries only an opaque handle; the attempt token lives in
-        // the Durable Object and is deleted after the attempt.
-        const handle = `run_${crypto.randomUUID()}`;
-        const broker = env.TOKENS.get(env.TOKENS.idFromName(handle));
-        let response;
-        try {
-          const stored = await broker.fetch(new Request('https://token.invalid/', {
-            method: 'PUT',
-            body: JSON.stringify({token: body.context.engine_token,
-              expires: Date.now() + 10 * 60 * 1000}),
-          }));
-          if (stored.status !== 200) {
-            return {terminal: {phase: 'token-broker-unavailable', api_calls: [],
-              broker_status: stored.status}};
-          }
-          response = await worker.getEntrypoint().fetch(new Request('https://attempt.invalid/', {
-            method: 'POST',
-            body: JSON.stringify({execution_id: body.execution_id,
-              context: {...body.context, engine_token: handle},
-              api_url: 'https://test-api.invalid',
-              public_url: body.public_url ?? 'https://staging.invalid'}),
-          }));
-        } catch (error) {
-          throw error;
-        } finally {
-          await broker.fetch(new Request('https://token.invalid/', {method: 'DELETE'})).catch(() => {});
-        }
-        const output = await readBudgetedJson(response);
-        return {output: output.upstream_result, apiCalls};
-      }
       if (body.action === 'run') {
         // Staging mode: fetch through the real API with the run token held in
         // the parent. The attempt declares the module closure; anything outside

@@ -5,8 +5,9 @@
 // manifest-pin verification (never the raw store).
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import entry, {enqueueTenant, resetTenantState} from './tenant-entry.mjs';
-import {genericCodeDigest} from './generic-worker-code.mjs';
+import entry, {enqueueTenant, hostAttempt, resetTenantState, runtimeErrorClass, warmHost,
+  WARM_ATTEMPTS} from './tenant-entry.mjs';
+import {engineDigest, genericCodeDigest} from './generic-worker-code.mjs';
 
 const WF = 'workflows/wf.py';
 const GHOST = 'workflows/ghost.py';
@@ -183,10 +184,103 @@ test('child request carries only the dummy placeholder, never a secret', async (
   assert.ok(!JSON.stringify(seen).match(/eyJ[A-Za-z0-9_-]{10,}/), 'no JWT may ride the child request');
 });
 
-test('/__code_digest exposes the constant script hash', async () => {
-  const res = await entry.fetch(new Request('https://sup.invalid/__code_digest'),
-    {LOCAL_PROBE: 'true'}, {});
-  assert.equal((await res.json()).generic_code_sha256, await genericCodeDigest());
+test('/__code_digest exposes the constant script hash and the engine identity', async () => {
+  const runtimeA = 'a'.repeat(64);
+  const digest = async (runtime) => (await (await entry.fetch(
+    new Request('https://sup.invalid/__code_digest'),
+    {LOCAL_PROBE: 'true', RUNTIME_SHA256: runtime}, {})).json());
+  const a = await digest(runtimeA);
+  assert.equal(a.generic_code_sha256, await genericCodeDigest());
+  assert.equal(a.engine_code_sha256, await engineDigest(runtimeA));
+  assert.notEqual((await digest('b'.repeat(64))).engine_code_sha256, a.engine_code_sha256,
+    'a runtime change must change the engine identity (and so the loader id)');
+});
+
+test('runtime failures are classified without echoing their text', () => {
+  const secret = 'eyJhbGciOiJIUzI1NiJ9.payloadpayload.signaturesig';
+  const cpu = Object.assign(new Error(`Worker exceeded CPU time limit ${secret}`), {retryable: false});
+  assert.deepEqual(runtimeErrorClass(cpu),
+    {error_class: 'cpu_limit', retryable: false, overloaded: false});
+  const reset = Object.assign(new Error('Durable Object reset because its code was updated.'),
+    {retryable: true});
+  assert.deepEqual(runtimeErrorClass(reset),
+    {error_class: 'code_updated', retryable: true, overloaded: false});
+  assert.equal(runtimeErrorClass(new Error(secret)).error_class, 'other');
+  assert.ok(!JSON.stringify(runtimeErrorClass(cpu)).includes('eyJ'));
+});
+
+// Fake host: refuses attempts until warmed; warm() fails `failWarms` times.
+function fakeHost({failWarms = 0, retryable = true, staysCold = false} = {}) {
+  const seen = {stubs: 0, warms: 0, runs: 0, dispatched: 0};
+  let ready = false;
+  const host = {
+    async warm() {
+      seen.warms++;
+      if (seen.warms <= failWarms) {
+        throw Object.assign(new Error('Durable Object reset because its code was updated.'), {retryable});
+      }
+      if (!staysCold) ready = true;
+      return {child_ms: 4500, first_request: true};
+    },
+    async run() {
+      seen.runs++;
+      if (!ready) return {needsWarm: true};
+      seen.dispatched++;
+      return {output: {status: 'Success'}, queueWaitMs: 0, timings: {child_ms: 90}};
+    },
+  };
+  return {seen, getHost: () => { seen.stubs++; return host; }};
+}
+
+test('a cold host is warmed with retries, then the attempt is dispatched once', async () => {
+  const {seen, getHost} = fakeHost({failWarms: 2});
+  const result = await hostAttempt(getHost, {tenantId: 't'});
+  assert.equal(result.output.status, 'Success');
+  assert.equal(result.warm.warm_attempts, 3);
+  assert.equal(seen.dispatched, 1, 'an engine attempt is never dispatched twice');
+  assert.equal(seen.stubs, 5, 'every call uses a fresh stub (2 runs + 3 warms)');
+});
+
+test('a warm host costs one round trip', async () => {
+  const {seen, getHost} = fakeHost();
+  await getHost().warm();
+  const result = await hostAttempt(getHost, {tenantId: 't'});
+  assert.equal(result.warm, undefined);
+  assert.equal(seen.runs, 1);
+});
+
+test('warm-up gives up after its budget and never dispatches', async () => {
+  const {seen, getHost} = fakeHost({failWarms: WARM_ATTEMPTS});
+  await assert.rejects(hostAttempt(getHost, {tenantId: 't'}), /code was updated/);
+  assert.equal(seen.warms, WARM_ATTEMPTS);
+  assert.equal(seen.dispatched, 0);
+});
+
+test('a non-retryable warm-up failure is not retried', async () => {
+  const {seen, getHost} = fakeHost({failWarms: 1, retryable: false});
+  await assert.rejects(warmHost(getHost, 't'));
+  assert.equal(seen.warms, 1);
+});
+
+test('a host that stays cold after warm-up reports not-ready instead of looping', async () => {
+  const {seen, getHost} = fakeHost({staysCold: true});
+  const result = await hostAttempt(getHost, {tenantId: 't'});
+  assert.equal(result.notReady, true);
+  assert.equal(seen.dispatched, 0);
+});
+
+test('engine identity refuses an unconfigured runtime digest', async () => {
+  await assert.rejects(engineDigest(undefined), /RUNTIME_SHA256 is not configured/);
+  await assert.rejects(engineDigest('not-a-digest'), /RUNTIME_SHA256 is not configured/);
+});
+
+test('engine attempts pass the gates, then fail closed without a tenant host', async () => {
+  resetTenantState();
+  const env = {LOCAL_PROBE: 'true', LOADER: {get: () => assert.fail('supervisor must not load the engine')}};
+  const res = await entry.fetch(post({tenant_id: 'org-x', action: 'engine',
+    context: {engine_token: 'x'.repeat(20)}}), env, {});
+  assert.equal(res.status, 502);
+  assert.equal((await res.json()).phase, 'engine-unavailable');
 });
 
 test('legacy_load uses LOADER.load with no id (per-attempt meter control)', async () => {

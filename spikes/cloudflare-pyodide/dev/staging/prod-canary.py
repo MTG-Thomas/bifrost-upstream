@@ -161,9 +161,12 @@ def build_info():
     _, version = call("GET", f"{API}/api/version", timeout=20, retries=1)
     _, code = call("GET", f"{WORKER}/__code_digest",
                    headers={"X-Spike-Auth": worker_secret()}, timeout=20, retries=1)
+    # The engine digest covers the child entry and the packaged runtime: the
+    # code the comparison actually runs (the generic digest is the unused
+    # minimal child).
     return {
         "api_version": (version or {}).get("version") if isinstance(version, dict) else None,
-        "worker_code_sha256": (code or {}).get("generic_code_sha256") if isinstance(code, dict) else None,
+        "worker_code_sha256": (code or {}).get("engine_code_sha256") if isinstance(code, dict) else None,
     }
 
 
@@ -186,13 +189,16 @@ def run_linux(token, workflow_id):
         st, ex = call("GET", f"{API}/api/executions/{exec_id}", token=token,
                       timeout=30, retries=1)
         if st == 200 and ex and ex.get("status") not in ("Pending", "Running", None):
+            # `ms` is quantized by the 2 s poll; `engine_ms` is the worker's
+            # own execution duration, the like-for-like number for the child.
             return {"status": ex.get("status"), "result": ex.get("result"),
                     "error": ex.get("error") or ex.get("error_message"),
+                    "engine_ms": ex.get("duration_ms"),
                     "ms": int((time.time() - started) * 1000)}
     return {"status": "Timeout", "result": None, "ms": int((time.time() - started) * 1000)}
 
 
-def run_cloud(token, me, pin):
+def run_cloud(token, me, pin, tenant_id="prod-canary"):
     started = time.time()
     org_id = me.get("organization_id")
     context = {
@@ -211,7 +217,7 @@ def run_cloud(token, me, pin):
         "parameters": {},
     }
     body = {
-        "tenant_id": "prod-canary",
+        "tenant_id": tenant_id,
         "action": "engine",
         "execution_id": str(uuid.uuid4()),
         "requirements": {"modules": [MODULE]},
@@ -223,12 +229,19 @@ def run_cloud(token, me, pin):
     status, payload = call("POST", WORKER, body=body,
                            headers={"X-Spike-Auth": worker_secret()}, timeout=300)
     out = (payload or {}).get("output") or {}
+    timings = (payload or {}).get("timings") or {}
+    child = timings.get("child") or {}
     return {
+        "timings": {k: timings.get(k) for k in ("host_ms", "child_ms")} | {
+            k: child.get(k) for k in ("first_request", "engine_ms")},
         "http": status,
         "phase": (payload or {}).get("phase"),
         "status": out.get("status") or (payload or {}).get("phase"),
         "result": out.get("result"),
-        "error": out.get("error_type") or out.get("error_message"),
+        # A supervisor-level failure (e.g. phase dynamic-runtime) has no
+        # output; its error_type lives on the envelope.
+        "error": (out.get("error_type") or out.get("error_message")
+                  or (payload or {}).get("error_type")),
         "reused": (payload or {}).get("worker_reused"),
         "queue_ms": (payload or {}).get("queue_wait_ms"),
         "ms": int((time.time() - started) * 1000),
@@ -293,9 +306,12 @@ def write_status(record):
         "consecutive_failures": consecutive,
         "api_version": record.get("api_version"),
         "worker_code_sha256": record.get("worker_code_sha256"),
+        # Kept so the next cycle can detect a pin transition.
+        "module_sha256": record.get("module_sha256"),
         "last": {k: record.get(k) for k in (
-            "linux_status", "cloud_status", "org_count", "linux_ms", "cloud_ms",
-            "worker_reused", "cloud_http", "cloud_error", "linux_error")},
+            "linux_status", "cloud_status", "org_count", "linux_ms", "linux_engine_ms",
+            "cloud_ms", "cloud_cold", "cloud_timings", "worker_reused", "cloud_http",
+            "cloud_error", "linux_error")},
     }
     tmp = STATUS + ".tmp"
     with open(tmp, "w") as f:
@@ -374,7 +390,10 @@ def one_cycle():
                                 if cloud["result"] is not None else None),
         "org_count": len(orgs) if isinstance(orgs, list) else None,
         "linux_ms": linux["ms"],
+        "linux_engine_ms": linux.get("engine_ms"),
         "cloud_ms": cloud["ms"],
+        "cloud_timings": cloud.get("timings"),
+        "cloud_cold": (cloud.get("timings") or {}).get("first_request"),
         "worker_reused": cloud.get("reused"),
         "cloud_http": cloud.get("http"),
         "cloud_phase": cloud.get("phase"),
