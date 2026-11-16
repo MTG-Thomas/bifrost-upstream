@@ -3,10 +3,10 @@
 # Multi-stage build for efficient image size
 
 # Use the same supported Node runtime for every App build surface.
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS node-toolchain
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS node-toolchain
 
-# Native Python dependencies require Rust >=1.96; keep it build-only and pinned.
-FROM rust:1.96.0-slim-bookworm@sha256:4732ca96fd086cb9be682050c3f0176288eebaac2b80aa2bcefccfaf198e1950 AS rust-toolchain
+# Native Python dependencies require Rust >=1.98; keep it build-only and pinned.
+FROM rust:1.100.0-slim-bookworm@sha256:7c7d4eb4d05b7781187a327809466cfddf29753f6defdc3d19a0e291951b7a37 AS rust-toolchain
 
 # =============================================================================
 # Stage 1: Builder
@@ -58,6 +58,10 @@ RUN rustc --version && cargo --version
 # supports --require-hashes (>= 8.0).
 COPY pyproject.toml requirements.lock ./
 RUN pip install --no-cache-dir --require-hashes -r requirements.lock
+
+# aiormq 7.2.5 still assigns an asyncio marker removed in Python 3.16.
+COPY api/scripts/patch_aiormq.py /tmp/patch_aiormq.py
+RUN python /tmp/patch_aiormq.py && rm /tmp/patch_aiormq.py
 
 # =============================================================================
 # Stage 2: Runtime
@@ -132,7 +136,7 @@ COPY api/alembic.ini /app/
 COPY api/bifrost/ /app/bifrost/
 COPY api/bifrost.py /app/
 COPY api/scripts/ /app/scripts/
-COPY LICENSE /app/LICENSE
+COPY --chmod=644 LICENSE /app/LICENSE
 COPY assets/ /app/assets/
 RUN chmod -R a+rX /app/assets
 
