@@ -1,6 +1,6 @@
 # Foldkit Upstream Drafts
 
-These are draft issues for [foldkit/foldkit](https://github.com/foldkit/foldkit), prepared from the Bifrost Foldkit spike. **None has been filed.** Each one is for Thomas to review, edit, and post if he chooses.
+These are draft issues for [foldkit/foldkit](https://github.com/foldkit/foldkit), prepared from the Bifrost Foldkit spike. **None has been filed with Foldkit.** Each one is tracked as an issue in this fork, linked under its heading. Thomas decides whether to post any of them upstream.
 
 Versions: `foldkit@0.171.0`, `@foldkit/ui@0.171.0`, `@foldkit/vite-plugin@0.29.1`, `effect@4.1.4`, React 19.3, Vite 8.3, Chromium (Playwright 1.65).
 
@@ -9,6 +9,8 @@ Foldkit has no issue templates. Its contribution guide asks for Conventional Com
 ---
 
 ## 1. vite-plugin: scope the plugin to part of an application
+
+Tracked in [MTG-Thomas/bifrost-upstream#58](https://github.com/MTG-Thomas/bifrost-upstream/issues/58).
 
 **Title:** `vite-plugin: support include/exclude so Foldkit can be adopted inside an existing app`
 
@@ -43,6 +45,8 @@ Wrapping internals by plugin name is fragile across releases.
 
 ## 2. Menu: Tab with the menu open drops focus to `<body>`
 
+Tracked in [MTG-Thomas/bifrost-upstream#59](https://github.com/MTG-Thomas/bifrost-upstream/issues/59).
+
 **Title:** `ui/Menu: pressing Tab while open loses focus (portaled items)`
 
 **Steps:**
@@ -66,6 +70,8 @@ For comparison, Radix's DropdownMenu keeps focus in the open menu on Tab. Found 
 
 ## 3. Button: `isDisabled` is `aria-disabled` only
 
+Tracked in [MTG-Thomas/bifrost-upstream#60](https://github.com/MTG-Thomas/bifrost-upstream/issues/60).
+
 **Title:** `ui/Button: isDisabled keeps the button focusable and unmatched by :disabled`
 
 `Button.view({ isDisabled: true })` emits `aria-disabled="true"` and `data-disabled`, but not the native `disabled` attribute. As a result:
@@ -80,6 +86,8 @@ We add `disabled` ourselves when porting a design system that is contractually n
 ---
 
 ## 4. Scene: consumer tests must resolve library-internal Commands by name
+
+Tracked in [MTG-Thomas/bifrost-upstream#61](https://github.com/MTG-Thomas/bifrost-upstream/issues/61).
 
 **Title:** `test/scene: resolving @foldkit/ui internals in consumer scene tests`
 
@@ -98,6 +106,8 @@ The strictness is valuable for code the application owns. For library components
 ---
 
 ## 5. test/vitest: `setup()` overrides jest-dom matchers
+
+Tracked in [MTG-Thomas/bifrost-upstream#62](https://github.com/MTG-Thomas/bifrost-upstream/issues/62).
 
 **Title:** `test/vitest: setup() registers matchers that collide with @testing-library/jest-dom`
 
@@ -122,6 +132,8 @@ We avoided `setup()` and use Scene's own `expect`, which works.
 
 ## 6. Runtime.embed: a container without `id` fails asynchronously
 
+Tracked in [MTG-Thomas/bifrost-upstream#63](https://github.com/MTG-Thomas/bifrost-upstream/issues/63).
+
 **Title:** `Runtime.embed: missing container id logs an error and renders nothing instead of throwing`
 
 `Runtime.embed(makeElement({ container }))` with a container that has no `id` does not throw. It logs `Runtime container must have an id for Model preservation across reloads` from the runtime fiber and renders nothing.
@@ -131,6 +143,8 @@ We avoided `setup()` and use Scene's own `expect`, which works.
 ---
 
 ## 7. Docs: React embedding pattern and unmounting
+
+Tracked in [MTG-Thomas/bifrost-upstream#64](https://github.com/MTG-Thomas/bifrost-upstream/issues/64).
 
 **Title:** `docs(embedding): ref'd container pattern breaks when the React component unmounts on its own`
 

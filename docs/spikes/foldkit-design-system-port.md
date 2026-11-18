@@ -226,7 +226,7 @@ Steps 1, 2, and 4 are done; step 3 (a whole-route pilot) is not started.
 - **Bundle effect.** The production entry chunk and `ExecutionDetails` are byte-identical with and without the plugin. The Foldkit chunk grows about 0.7 kB gzip for view identity.
 - **Tests.** The plugin is in the Vitest config too; the full client suite passes (666 files, 4,473 tests).
 - **Dependencies.** The plugin brings `@effect/platform-node`, which pulls a Redis client and `ws` into dev dependencies, and bumps `ws` 8.21.0 → 8.23.0.
-- **Upstream.** Seven upstream asks are drafted in [Foldkit Upstream Drafts](foldkit-upstream-drafts.md). Nothing has been filed.
+- **Upstream.** Seven upstream asks are drafted in [Foldkit Upstream Drafts](foldkit-upstream-drafts.md) and tracked as fork issues #58–#64. Nothing has been filed with Foldkit.
 
 **4. Gates.** [Foldkit Adoption Gates](foldkit-adoption-gates.md) defines four automated gates (lint, tests, bundle, parity) and the review thresholds a pilot must meet:
 
