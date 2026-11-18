@@ -28,11 +28,18 @@ from src.worker.remote.launcher import Launcher, proc_stat
 
 pytestmark = pytest.mark.slow
 
+# The stub must not import application modules while ``site`` runs: under
+# Python 3.15.2 a pyo3 extension (pydantic-core) imported during interpreter
+# startup panics ("The Python interpreter is not initialized"), and the
+# template never starts. It patches ``agent_run_child`` once the template
+# itself imports it, after startup.
 _STUB = textwrap.dedent(
     """
     import asyncio
+    import importlib.util
+    import sys
 
-    import src.jobs.agent_run_child as agent_run_child
+    TARGET = "src.jobs.agent_run_child"
 
 
     async def run_agent_message(message, *, handler="agent.run", worker_id=None):
@@ -43,7 +50,23 @@ _STUB = textwrap.dedent(
         await asyncio.sleep(message.get("sleep", 0))
 
 
-    agent_run_child.run_agent_message = run_agent_message
+    class _PatchOnImport:
+        def find_spec(self, name, path=None, target=None):
+            if name != TARGET:
+                return None
+            sys.meta_path.remove(self)
+            spec = importlib.util.find_spec(name)
+            load = spec.loader.exec_module
+
+            def exec_module(module):
+                load(module)
+                module.run_agent_message = run_agent_message
+
+            spec.loader.exec_module = exec_module
+            return spec
+
+
+    sys.meta_path.insert(0, _PatchOnImport())
     """
 )
 
