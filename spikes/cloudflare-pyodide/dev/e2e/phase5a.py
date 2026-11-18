@@ -54,7 +54,8 @@ def prepare(hosted=False, phase6=False):
     api = api.replace(
         b"    volumes:\n",
         b'    ports:\n      - "127.0.0.1::8000"\n'
-        b"    volumes:\n      - ./.phase5-api.env:/app/.env:ro\n",
+        b"    volumes:\n      - ./api/scripts:/app/scripts:ro\n"
+        b"      - ./.phase5-api.env:/app/.env:ro\n",
         1,
     )
     original = before + b"\n  api:\n" + api
@@ -149,10 +150,16 @@ def seed_workflows(project, admin, send, hosted, *, tenant_fixtures=()):
             raise SystemExit("Fixture workflow was registered in the wrong tenant")
         workflow_id = workflows[kind] = workflow["id"]
         send(f"/api/workflows/{workflow_id}", {"timeout_seconds": 60}, admin, method="PATCH")
-        operator = [
-            "docker", "exec", f"{project}-api-1", "python", "-m",
-            "scripts.cloudflare_workflow_approval",
-        ]
+        # Keep database diagnostics on stderr and the proposal JSON on stdout.
+        operator = ["docker", "exec", f"{project}-api-1", "python", "-c", """
+import contextlib
+import sys
+output = sys.stdout
+with contextlib.redirect_stdout(sys.stderr):
+    from scripts import cloudflare_workflow_approval as operator
+    operator.print = lambda *args, **kwargs: print(*args, file=output, **kwargs)
+    operator.main()
+"""]
         arguments = [
             workflow_id, "--subrequest-allowance", str(allowance), "--cpu-budget-ms", str(cpu),
         ]
