@@ -1,0 +1,13 @@
+{
+  "key": "pr:53",
+  "classification": "omit",
+  "entry_ids": [],
+  "reason": "Internal execution log-buffer correctness fix found by property testing; no end-to-end reproduction or deployment observation was captured.",
+  "review": {
+    "status": "draft",
+    "evidence": [
+      "https://github.com/MTG-Thomas/bifrost-upstream/pull/53",
+      "Fork-only work stacked on #52: CONTRIBUTING.md does not accept a test suite as a contribution basis, and the missing-first-log symptom is derived from source rather than observed in a deployment."
+    ]
+  }
+}
