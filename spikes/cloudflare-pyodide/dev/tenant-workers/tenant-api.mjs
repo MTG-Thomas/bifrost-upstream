@@ -23,7 +23,7 @@ import {readBudgetedJson} from '../executor/output-budget.mjs';
 import {DUMMY_CREDENTIAL} from '../executor/gateway-injection.mjs';
 import {AttemptCredentials, isRefreshChallenge, refreshReply, refreshRequestHandle} from './attempt-credentials.mjs';
 import {createTenantGateway} from './tenant-gateway.mjs';
-import {runtimeErrorClass} from './tenant-dispatch.mjs';
+import {ENGINE_BOOT_TIMEOUT_MS, runtimeErrorClass} from './tenant-dispatch.mjs';
 
 const HANDLE_RE = /^run_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const VIRTUAL_API_ORIGIN = 'https://test-api.invalid';
@@ -476,7 +476,8 @@ export class TenantHost extends DurableObject {
     const modules = await this.#primeList();
     const mark = Date.now();
     const response = await worker.getEntrypoint().fetch(new Request('https://attempt.invalid/', {
-      method: 'POST', body: JSON.stringify({action: 'ping', modules,
+      method: 'POST', signal: AbortSignal.timeout(ENGINE_BOOT_TIMEOUT_MS),
+      body: JSON.stringify({action: 'ping', modules,
         ...(exercise ? {exercise: {handle: `run_${crypto.randomUUID()}`}} : {})}),
     }));
     const {first_request: firstRequest, primed, prime_skipped: primeSkipped,
@@ -484,21 +485,24 @@ export class TenantHost extends DurableObject {
     // Only the generation that answered is ready; if it was retired while
     // this ping was in flight, its answer vouches for nothing.
     if (generation === this.#generation) this.#readyGeneration = generation;
-    // Keep the connection to the API origin warm too: a fresh child's first
-    // SDK calls measured ~2x slower (104-126 ms vs ~50 ms). Unauthenticated
-    // health check, no tenant data; bounded by the warm window.
-    const originMark = Date.now();
-    const origin = await fetch(new URL('/health/ready', this.env.API_ORIGIN), {redirect: 'manual'})
-      .then((r) => { r.body?.cancel(); return r.status; }, () => 0);
-    return {child_ms: originMark - mark, first_request: firstRequest,
+    return {child_ms: Date.now() - mark, first_request: firstRequest,
       prime_listed: modules.length, primed, prime_skipped: primeSkipped,
-      ...(exercise ? {exercise: exercised ?? null} : {}),
-      origin_status: origin, origin_ms: Date.now() - originMark};
+      ...(exercise ? {exercise: exercised ?? null} : {})};
+  }
+
+  async #warmOrigin() {
+    // An unauthenticated health check warms the SDK's connection to the origin.
+    const mark = Date.now();
+    const status = await fetch(new URL('/health/ready', this.env.API_ORIGIN), {
+      redirect: 'manual', signal: AbortSignal.timeout(2000),
+    }).then((response) => { response.body?.cancel(); return response.status; }, () => 0);
+    return {origin_status: status, origin_ms: Date.now() - mark};
   }
 
   // Diagnostic: one exercising ping on demand, serialized like the alarm's.
   async exercise({tenantId}) {
-    return this.#exclusive(() => this.#ping(tenantId, {exercise: true}));
+    const boot = await this.#exclusive(() => this.#ping(tenantId, {exercise: true}));
+    return {...boot, ...await this.#warmOrigin()};
   }
 
   // Diagnostic: module names loaded in this tenant's child (no tenant data).
@@ -512,14 +516,25 @@ export class TenantHost extends DurableObject {
 
   // Pre-warm: a dispatcher that knows an attempt is coming can pay the boot
   // ahead of it. Opens the same warm window an attempt does.
-  async warm({tenantId}) {
+  async warm({tenantId, engineOnly = false}) {
     try {
-      return await this.#ping(tenantId);
-    } finally {
-      await this.ctx.storage.put({tenantId, lastAttempt: Date.now()}, UNGATED);
-      if (await this.ctx.storage.getAlarm() === null) {
-        await this.ctx.storage.setAlarm(Date.now() + WARM_PING_MS, UNGATED);
+      const boot = await this.#ping(tenantId);
+      if (engineOnly) {
+        this.ctx.waitUntil(this.#warmOrigin());
+        return boot;
       }
+      return {...boot, ...await this.#warmOrigin()};
+    } finally {
+      const remember = this.#rememberWarm(tenantId);
+      if (engineOnly) this.ctx.waitUntil(remember);
+      else await remember;
+    }
+  }
+
+  async #rememberWarm(tenantId) {
+    await this.ctx.storage.put({tenantId, lastAttempt: Date.now()}, UNGATED);
+    if (await this.ctx.storage.getAlarm() === null) {
+      await this.ctx.storage.setAlarm(Date.now() + WARM_PING_MS, UNGATED);
     }
   }
 
@@ -533,7 +548,7 @@ export class TenantHost extends DurableObject {
       // Keep-warm pings run off the request path, so they also exercise the
       // engine. Warm-ups on the request path (warm()) do not: an attempt is
       // waiting on them.
-      await this.#exclusive(() => this.#ping(tenantId, {exercise: true}));
+      await this.exercise({tenantId});
     } finally {
       await this.ctx.storage.setAlarm(Date.now() + WARM_PING_MS, UNGATED);
     }

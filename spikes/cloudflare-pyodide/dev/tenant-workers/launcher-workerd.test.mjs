@@ -18,6 +18,7 @@ const path = (name) => fileURLToPath(new URL(name, import.meta.url));
 const cases = new Map(['queued-block', 'active-block', 'first-tenant', 'second-tenant'].map((name) =>
   [`/${name}`, {entered: Promise.withResolvers(), release: Promise.withResolvers()}]));
 const origins = [];
+let nextOrigin;
 let mf;
 let worker;
 
@@ -82,7 +83,7 @@ const main = `
       const {tenantId, action, input} = await request.json();
       const host = ctx.exports.TenantHost.getByName(tenantId);
       if (action === 'run') return Response.json(await host.run(input));
-      if (action === 'warm') return Response.json(await host.warm({tenantId}));
+      if (action === 'warm') return Response.json(await host.warm({tenantId, ...input}));
       if (action === 'wait') await host.waitForRun(input);
       if (action === 'stop') await host.stopWorkflow(input);
       if (action === 'stop-egress') return Response.json(await host.stopAndTryEgress(input));
@@ -186,6 +187,12 @@ before(async () => {
     dev: {outboundService: {type: 'fetcher', handler: async (request) => {
       const url = new URL(request.url);
       origins.push(url.href);
+      if (url.pathname === '/health/ready' && nextOrigin) {
+        const origin = nextOrigin;
+        nextOrigin = undefined;
+        origin.entered.resolve();
+        await origin.release.promise;
+      }
       if (url.pathname === '/redirect') return Response.redirect('https://undeclared.invalid/target', 302);
       const gate = cases.get(url.pathname);
       if (gate) {
@@ -261,6 +268,23 @@ test('workerd runs distinct tenants on their own children at the same time', {ti
     for (const tenant of tenants) cases.get('/' + tenant).release.resolve();
   }
   assert.deepEqual((await Promise.all(runs)).map(({attempt_state}) => attempt_state), ['completed', 'completed']);
+});
+
+test('launcher warm-up finishes while the origin health request is still held', {timeout: 10_000}, async (t) => {
+  const origin = {entered: Promise.withResolvers(), release: Promise.withResolvers()};
+  nextOrigin = origin;
+  const abort = new Promise((_, reject) =>
+    t.signal.addEventListener('abort', () => reject(t.signal.reason), {once: true}));
+  const warm = host('slow-origin', 'warm', {engineOnly: true}, t.signal);
+  try {
+    await Promise.race([origin.entered.promise, abort]);
+    const result = await warm;
+    assert.ok(Number.isFinite(result.child_ms));
+    assert.equal(result.origin_status, undefined);
+  } finally {
+    origin.release.resolve();
+    nextOrigin = undefined;
+  }
 });
 
 test('TenantHost serves the pinned module and keeps missing modules inside the snapshot', async () => {

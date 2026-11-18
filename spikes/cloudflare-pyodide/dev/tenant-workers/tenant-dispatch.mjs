@@ -75,11 +75,12 @@ export function runtimeErrorClass(error) {
 // failure (observed: `code_updated` while a fresh host boots its child) is
 // retried with a fresh stub, as broken DO stubs must not be reused.
 export const WARM_ATTEMPTS = 3;
-export async function warmHost(getHost, tenantId, {check = () => {}} = {}) {
+export const ENGINE_BOOT_TIMEOUT_MS = 15_000;
+export async function warmHost(getHost, tenantId, {check = () => {}, engineOnly = false} = {}) {
   for (let attempt = 1; ; attempt++) {
     check();
     try {
-      return {...await getHost().warm({tenantId}), warm_attempts: attempt};
+      return {...await getHost().warm({tenantId, ...(engineOnly ? {engineOnly} : {})}), warm_attempts: attempt};
     } catch (error) {
       if (error?.retryable !== true || attempt >= WARM_ATTEMPTS) throw error;
     }

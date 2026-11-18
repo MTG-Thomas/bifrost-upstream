@@ -140,6 +140,27 @@ test('a cancelled queued warm-up never calls the tenant host again', async () =>
   assert.equal(secondCalls, 1);
 });
 
+test('a hung warm RPC releases the queue even without a workflow deadline', {timeout: 1000}, async () => {
+  const started = Promise.withResolvers();
+  const a = {...route, workflow_deadline: null, active_execution: {org_id: 'a'}};
+  const b = {...a, active_execution: {org_id: 'b'}};
+  const firstId = await launcherTenantId(a);
+  let ready = false;
+  const run = createLauncherWorkflowRunner((id) => id === firstId ? {
+    run: async () => ({needsWarm: true}),
+    warm: async () => { started.resolve(); await new Promise(() => {}); },
+  } : {
+    run: async () => ready ? {output: {status: 'Success'}} : {needsWarm: true},
+    warm: async (input) => { assert.equal(input.engineOnly, true); ready = true; },
+  }, {warmRpcMs: 20});
+  const execute = (route) => run({route, context: {}, signal: new AbortController().signal});
+  const first = execute(a);
+  await started.promise;
+  const second = execute(b);
+  assert.equal((await first).result.error_type, 'TenantHostNotReady');
+  assert.equal((await second).attempt_state, 'completed');
+});
+
 test('host transport failure stays uncertain and is never retried', async () => {
   let calls = 0;
   const result = await createLauncherWorkflowRunner(() => ({

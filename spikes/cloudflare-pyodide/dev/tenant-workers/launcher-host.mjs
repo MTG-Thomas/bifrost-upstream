@@ -1,4 +1,4 @@
-import {hostAttempt, warmHost} from './tenant-dispatch.mjs';
+import {ENGINE_BOOT_TIMEOUT_MS, hostAttempt, warmHost} from './tenant-dispatch.mjs';
 import {tenantWorkerId} from './tenant-registry.mjs';
 
 function terminal(attempt_state, error_type, error) {
@@ -18,7 +18,9 @@ async function boundedWarm(getHost, tenantId, {deadline, signal, beforeRun, now,
     if (deadline !== Infinity) timer = setTimeout(cancel, Math.max(0, deadline - now()));
   });
   try {
-    return await Promise.race([queueWarm(() => warmHost(getHost, tenantId, {check})), abort]);
+    return await Promise.race([queueWarm((rpcCheck) => warmHost(getHost, tenantId, {
+      check: () => { check(); rpcCheck(); }, engineOnly: true,
+    })), abort]);
   } finally {
     clearTimeout(timer);
     signal.removeEventListener('abort', cancel);
@@ -30,13 +32,30 @@ export async function launcherTenantId(route) {
   return tenantWorkerId(org == null ? 'launcher:platform' : `launcher:org:${org}`);
 }
 
-export function createLauncherWorkflowRunner(getHost) {
+export function createLauncherWorkflowRunner(getHost, {warmRpcMs = ENGINE_BOOT_TIMEOUT_MS + 5000} = {}) {
   // The local workerd Python loader can fail when two children cold-start
-  // together. Serialize only the confirmed warm RPCs. Cancellation can end
-  // the caller's wait without freeing the queue while a boot is in flight.
+  // together. While a boot is in flight, retain the queue until it confirms
+  // or reaches the RPC limit, independently of the waiting route's deadline.
   let warmTail = Promise.resolve();
   const queueWarm = (task) => {
-    const next = warmTail.then(task);
+    const next = warmTail.then(async () => {
+      let timer;
+      let expired = false;
+      const check = () => {
+        if (expired) throw new Error('TenantHost warm-up RPC timed out');
+      };
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          expired = true;
+          reject(new Error('TenantHost warm-up RPC timed out'));
+        }, warmRpcMs);
+      });
+      try {
+        return await Promise.race([task(check), timeout]);
+      } finally {
+        clearTimeout(timer);
+      }
+    });
     warmTail = next.catch(() => {});
     return next;
   };
