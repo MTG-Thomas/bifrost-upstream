@@ -373,10 +373,13 @@ run. Findings, checked against the cited code:
   The command carries the claim-time tenant in `active_execution.org_id`.
   A changed execution scope clears Cloudflare eligibility before dispatch.
   A live route or an uncertain retained terminal for the same tenant causes
-  a definitive `MemoryError` refusal. Other retained terminals occupy their
+  a definitive `MemoryError` refusal on that launcher. The uncertain terminal
+  keeps this local fence until its ACK. Other retained terminals occupy their
   slots until ACK while allowing another route for the same tenant to start.
-  A claim whose execution row is missing counts toward occupancy only.
-  TenantHost retains its dispatch deadline and per-tenant serialization.
+  The API checks execution status when claiming. Across launchers, the shared
+  TenantHost run queue serializes attempts for the tenant under their original
+  dispatch deadlines. A claim whose execution row is missing counts toward
+  occupancy only.
   Launchers serialize cold Python boots with a 20-second RPC limit and a
   15-second child ping limit. The bounded origin health check runs separately.
   Workflows on ready children overlap, and the original dispatch deadline
