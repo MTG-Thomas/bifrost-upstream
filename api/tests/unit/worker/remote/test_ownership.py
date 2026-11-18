@@ -70,12 +70,20 @@ async def test_owner_acquisition_persists_runtime_profile_across_reconnect(
     monkeypatch.setattr(ownership, "get_liveness_db_context", context)
     worker_id, owner_id, launcher_id = uuid4(), uuid4(), uuid4()
     async with context() as session:
-        session.add(ExecutionWorker(id=worker_id, form="external", state="ready"))
+        session.add(ExecutionWorker(
+            id=worker_id, form="external", state="ready", runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+            capacity_resource_uid="resource", version="build", remote_launcher_id=launcher_id,
+        ))
     identity = {"worker_id": worker_id, "owner_id": owner_id, "launcher_id": launcher_id}
+    cloudflare = {
+        "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+        "credential_protocol": 2,
+        "cloudflare_enrollment": ownership.CloudflareEnrollment("resource", "build", "launcher"),
+    }
     try:
         first = await ownership.acquire_remote_owner(
             **identity, nonce_digest="a" * 64, hello_sequence=1,
-            runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+            **cloudflare,
         )
         assert first is not None
         refused = await ownership.acquire_remote_owner(
@@ -84,7 +92,7 @@ async def test_owner_acquisition_persists_runtime_profile_across_reconnect(
         assert refused is None
         current = await ownership.acquire_remote_owner(
             **identity, nonce_digest="c" * 64, hello_sequence=2,
-            runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+            **cloudflare,
         )
         assert current is not None
         assert current.session_generation == first.session_generation + 1
@@ -109,20 +117,25 @@ async def test_cloudflare_cannot_acquire_non_external_worker(
             await session.commit()
 
     monkeypatch.setattr(ownership, "get_liveness_db_context", context)
-    worker_id = uuid4()
+    worker_id, launcher_id = uuid4(), uuid4()
     async with context() as session:
-        session.add(ExecutionWorker(id=worker_id, form=form, state="ready"))
+        session.add(ExecutionWorker(
+            id=worker_id, form=form, state="ready", runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+            capacity_resource_uid="resource", version="build", remote_launcher_id=launcher_id,
+        ))
     try:
         lease = await ownership.acquire_remote_owner(
-            worker_id=worker_id, owner_id=uuid4(), launcher_id=uuid4(),
+            worker_id=worker_id, owner_id=uuid4(), launcher_id=launcher_id,
             nonce_digest="a" * 64, hello_sequence=1,
             runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+            credential_protocol=2,
+            cloudflare_enrollment=ownership.CloudflareEnrollment("resource", "build", "launcher"),
         )
         assert lease is None
         async with context() as session:
             row = await session.get(ExecutionWorker, worker_id)
             assert row is not None and row.remote_owner_id is None
-            assert row.runtime_profile == LINUX_RUNTIME_PROFILE
+            assert row.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
     finally:
         async with context() as session:
             await session.execute(delete(ExecutionWorker).where(ExecutionWorker.id == worker_id))

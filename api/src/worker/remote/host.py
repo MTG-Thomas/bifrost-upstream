@@ -19,6 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import DBAPIError, TimeoutError as SQLAlchemyTimeoutError
 from starlette.websockets import WebSocketState
 
+from shared.worker_control_auth import external_worker_control_key
 from src.config import get_settings
 from src.core.database import get_db_context, get_liveness_db_context
 from src.jobs.consumers.package_install import PackageInstallConsumer
@@ -39,6 +40,7 @@ from src.worker.remote.agent_route import AgentRoute, RemoteAgentConsumer
 from src.worker.remote.fencing import LeaseRef, current_remote_lease_ref, fence_remote_owner, remote_owner_context
 from src.worker.remote.ownership import (
     DEFAULT_OWNER_LEASE_SECONDS,
+    CloudflareEnrollment,
     RemoteOwnerLease,
     acquire_remote_owner,
     owns_remote_session,
@@ -46,8 +48,10 @@ from src.worker.remote.ownership import (
     renew_remote_owner,
 )
 from src.worker.remote.protocol import (
+    CLOUDFLARE_CREDENTIAL_PROTOCOL,
     CLOUDFLARE_DEV_BUDGET_BYTES,
     CLOUDFLARE_DEV_SLOTS,
+    CLOUDFLARE_WORKFLOW_HANDLER,
     AuthenticationError,
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
     ControlEnvelope,
@@ -943,6 +947,10 @@ class ApiExecutor(PoolWorker):
         if not owns:
             return
         await super()._retire()
+        if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
+            # Retirement revoked the Cloudflare lease. Session cleanup closes
+            # the socket without sending a command under the retired fence.
+            return
         if not self.bridge.connected:
             return
         try:
@@ -1187,33 +1195,62 @@ class RemoteControlHost:
             if not isinstance(initial, dict) or initial.get("event") != "hello":
                 raise AuthenticationError("expected signed hello")
             signed = SignedHello.from_dict(initial.get("hello", {}))
-            hello = verify_hello(get_settings().secret_key, signed)
+            settings = get_settings()
+            cloudflare = signed.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+            enrollment = None
+            if cloudflare:
+                if not settings.cloudflare_worker_hello_enabled:
+                    raise ProtocolError("Cloudflare worker hello is disabled")
+                if signed.form != "external" or signed.resource_uid is None:
+                    raise AuthenticationError("Cloudflare workers require an external capacity resource")
+                token = settings.worker_capacity_token
+                if not token:
+                    raise AuthenticationError("Cloudflare worker control is not configured")
+                control_key = external_worker_control_key(
+                    token.get_secret_value(), signed.incarnation_id, signed.resource_uid,
+                )
+            else:
+                control_key = settings.secret_key
+            hello = verify_hello(control_key, signed)
             if "runtime_profile" in initial:
                 raise ProtocolError("physical runtime profile must be inside signed hello")
-            if hello.runtime_profile not in (None, LINUX_RUNTIME_PROFILE):
+            if not cloudflare and hello.runtime_profile not in (None, LINUX_RUNTIME_PROFILE):
                 raise ProtocolError("unsupported physical runtime profile")
             if hello.form == "external" and hello.execution_lane != "normal":
                 raise AuthenticationError("External capacity workers only support the Normal lane")
-            sample = initial.get("sample")
-            if not isinstance(sample, dict):
-                raise ProtocolError("hello sample is required")
-            current, limit = int(sample["current"]), int(sample["limit"])
-            pressure_ratio = sample.get("pressure_ratio")
-            if pressure_ratio is None:
-                pressure_ratio = current / limit if limit > 0 else 1.0
-            bootstrap = {
-                "current": current,
-                "limit": limit,
-                "pressure_ratio": float(pressure_ratio),
-                "requirements": initial.get("requirements", {}),
-                "hostname": hello.hostname,
-                "handlers": hello_execution_handlers(initial),
-                "execution_lane": hello.execution_lane,
-                "runtime_profile": hello.runtime_profile or LINUX_RUNTIME_PROFILE,
-            }
+            bootstrap: dict[str, Any] = {}
+            if not cloudflare:
+                sample = initial.get("sample")
+                if not isinstance(sample, dict):
+                    raise ProtocolError("hello sample is required")
+                current, limit = int(sample["current"]), int(sample["limit"])
+                pressure_ratio = sample.get("pressure_ratio")
+                if pressure_ratio is None:
+                    pressure_ratio = current / limit if limit > 0 else 1.0
+                bootstrap.update(
+                    current=current, limit=limit, pressure_ratio=float(pressure_ratio),
+                    requirements=initial.get("requirements", {}),
+                )
+            bootstrap.update(
+                hostname=hello.hostname,
+                handlers=hello_execution_handlers(initial),
+                execution_lane=hello.execution_lane,
+                runtime_profile=hello.runtime_profile or LINUX_RUNTIME_PROFILE,
+            )
             if hello.execution_lane == "fast_path" and ("workflow.execute", 2) not in bootstrap["handlers"]:
                 raise AuthenticationError("Fast Path workers must support workflow.execute version 2")
             credential_protocol = hello_credential_protocol(initial)
+            if cloudflare:
+                # Negotiation filters unsupported handlers. Check the full advertisement.
+                if initial.get("handlers") != [list(CLOUDFLARE_WORKFLOW_HANDLER)]:
+                    raise ProtocolError("Cloudflare workers must advertise only workflow.execute version 1")
+                if credential_protocol != CLOUDFLARE_CREDENTIAL_PROTOCOL:
+                    raise ProtocolError("Cloudflare workers require credential protocol 2")
+                version = initial.get("version")
+                if not isinstance(version, str) or not version:
+                    raise AuthenticationError("Cloudflare workers require a prepared build version")
+                assert hello.resource_uid is not None
+                enrollment = CloudflareEnrollment(hello.resource_uid, version, hello.hostname)
         except (AuthenticationError, ProtocolError, KeyError, TypeError, ValueError, json.JSONDecodeError):
             await socket.close(code=1008)
             raise
@@ -1244,7 +1281,7 @@ class RemoteControlHost:
                     )
                 if bound_pod is None:
                     raise AuthenticationError("launcher pod is not the admitted Job pod")
-        elif hello.form == "external":
+        elif hello.form == "external" and enrollment is None:
             assert hello.resource_uid is not None
             version = initial.get("version")
             admitted = await admit_external_worker(
@@ -1258,6 +1295,7 @@ class RemoteControlHost:
                         select(ExecutionWorker.id).where(
                             ExecutionWorker.id == hello.incarnation_id,
                             ExecutionWorker.form == "external",
+                            ExecutionWorker.runtime_profile != CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
                             ExecutionWorker.state.in_(("ready", "draining")),
                             ExecutionWorker.capacity_resource_uid == hello.resource_uid,
                             ExecutionWorker.remote_launcher_id == hello.launcher_id,
@@ -1267,7 +1305,7 @@ class RemoteControlHost:
                     )
                 if bound_resource is None:
                     raise AuthenticationError("launcher is not bound to the prepared capacity resource")
-        else:
+        elif hello.form == "static":
             async with get_liveness_db_context() as db:
                 existing_worker = (await db.execute(
                     select(ExecutionWorker.form, ExecutionWorker.execution_lane).where(
@@ -1296,6 +1334,7 @@ class RemoteControlHost:
             hello_sequence=hello.hello_sequence,
             credential_protocol=credential_protocol,
             runtime_profile=bootstrap["runtime_profile"],
+            cloudflare_enrollment=enrollment,
         )
         if lease is None:
             await socket.close(code=1008)
@@ -1337,6 +1376,12 @@ class RemoteControlHost:
                 reconciliation.cancel()
             await asyncio.gather(*session.reconciliation_tasks, return_exceptions=True)
             await session.release_lease()
+            if session.bridge.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
+                socket = session.bridge.socket
+                session.bridge.disconnect(socket)
+                if socket.application_state is not WebSocketState.DISCONNECTED:
+                    with contextlib.suppress(WebSocketDisconnect, OSError, RuntimeError):
+                        await socket.close()
 
         session.cleanup_task = asyncio.create_task(cleanup())
 

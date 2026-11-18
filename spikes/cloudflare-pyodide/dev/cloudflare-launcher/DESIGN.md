@@ -70,21 +70,21 @@ the Python `protocol.py`, so the two implementations cannot drift silently.
 
 ### 2. Authentication: derived worker keys, never the platform secret
 
-On `main`, `verify_hello` checks every hello against the platform
-`secret_key`. A Cloudflare launcher must never hold that key. #1424 adds
+Legacy Linux control hellos still use the platform `secret_key` until
+#1424's coordinated cutover. #1424 adds
 `shared/worker_control_auth.py::external_worker_control_key(provider_key,
 worker_id, resource_uid)`: an HMAC of the incarnation and resource under the
 provider's capacity credential. The Cloudflare launcher holds only that
 derived key (a Worker secret, per incarnation), and the API derives the same
-key to verify an `external` hello. We adopt #1424's function byte-for-byte
+key to verify a Cloudflare `external` hello. We adopt #1424's function byte-for-byte
 (same domain string, same JSON binding), so it merges cleanly when #1424
 lands.
 
 ### 3. API side (fork, minimal, behind a setting)
 
-- Admit `runtime_profile == "cloudflare-python-v1"` only for `form ==
-  "external"` and only when a setting enables it. Today the host rejects
-  every non-Linux profile.
+- Admit `runtime_profile == "cloudflare-python-v1"` only for the external
+  Normal lane when `BIFROST_CLOUDFLARE_WORKER_HELLO_ENABLED=true`.
+  This operator environment or `.env` setting defaults to false.
 - For that profile, require the advertised handlers to be exactly
   `workflow.execute@1`, and treat the route acknowledgement without a PID as
   valid. No fake PIDs.
@@ -309,6 +309,28 @@ until the ordinary queue deadline.
 
 ### Phase 3 opaque workflow wire contract
 
+- Before starting a dev launcher, the operator or future provider prepares an
+  `execution_workers` row in `starting` state with the incarnation UUID,
+  `form=external`, `execution_lane=normal`,
+  `runtime_profile=cloudflare-python-v1`, the exact DO resource UID in
+  `capacity_resource_uid`, the intended launcher UUID in `remote_launcher_id`,
+  and the exact reported build in `version`. The launcher receives these
+  identities and build as configuration and sends the build in the hello
+  frame's top-level `version`.
+- Keep `BIFROST_WORKER_CAPACITY_TOKEN` on the API and with the operator or
+  provider responsible for enrollment. Derive
+  `external_worker_control_key(capacity_token, incarnation_id, resource_uid)`
+  there and provision only that derived value as the launcher's per-incarnation
+  `BIFROST_WORKER_CONTROL_SECRET` (a Worker secret). Never provision the
+  platform `BIFROST_SECRET_KEY` or `BIFROST_WORKER_CAPACITY_TOKEN` on the
+  launcher. Use the derived value to sign the hello with `protocol.mjs`.
+- First admission promotes the prepared row to `ready` in the same database
+  update that acquires ownership. Reconnect and takeover recheck the same
+  bindings on `ready` or `draining` rows. Retiring the row immediately revokes
+  enrollment and makes the current database fence fail for control and
+  transaction checks. The host closes the socket during session cleanup.
+  Reconnect requires a newly prepared incarnation and derived key after
+  retirement. The dedicated Cloudflare capacity provider is future work.
 - The Cloudflare hello advertises the signed runtime profile and capabilities
   above and omits `sample`. The API owns the slot count and request byte
   budget. This dev build fixes them at one slot and 134217728 bytes per

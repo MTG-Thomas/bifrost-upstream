@@ -102,6 +102,7 @@ async def admit_external_worker(
             .where(
                 ExecutionWorker.id == incarnation_id,
                 ExecutionWorker.form == "external",
+                ExecutionWorker.runtime_profile != CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
                 ExecutionWorker.state == "starting",
                 ExecutionWorker.capacity_resource_uid == resource_uid,
                 ExecutionWorker.remote_launcher_id.is_(None),

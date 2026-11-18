@@ -63,6 +63,11 @@ class Settings(BaseSettings):
 
     worker_capacity_url: str | None = Field(default=None, description="External physical-capacity provider HTTPS endpoint")
     worker_capacity_token: SecretStr | None = Field(default=None, repr=False, exclude=True)
+    cloudflare_worker_hello_enabled: bool = Field(
+        default=False,
+        exclude=True,
+        description="Operator opt-in for dev Cloudflare external worker control sessions",
+    )
     cloudflare_workflow_approvals: list[CloudflareWorkflowApproval] = Field(
         default_factory=list,
         description="Operator-reviewed revisions for the dev Cloudflare workflow launcher",

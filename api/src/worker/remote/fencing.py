@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.orm.execution_workers import ExecutionWorker
-from src.worker.remote.ownership import RemoteOwnerLease
+from src.worker.remote.ownership import RemoteOwnerLease, remote_enrollment_is_live
 
 
 @dataclass
@@ -74,6 +74,7 @@ async def fence_remote_owner(db: AsyncSession, *, for_update: bool = False) -> b
             ExecutionWorker.remote_launcher_id == lease.launcher_id,
             ExecutionWorker.remote_session_generation == lease.session_generation,
             ExecutionWorker.remote_owner_lease_expires_at > func.now(),
+            remote_enrollment_is_live(),
         )
         .with_for_update(read=not for_update)
     )

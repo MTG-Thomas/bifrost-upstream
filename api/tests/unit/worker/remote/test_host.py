@@ -497,11 +497,12 @@ async def test_host_shutdown_does_not_stop_a_disconnected_launcher_before_handof
 
 
 @pytest.mark.asyncio
-async def test_finished_session_releases_its_owner_and_is_removed_from_host() -> None:
+@pytest.mark.parametrize("profile", [LINUX_RUNTIME_PROFILE, CLOUDFLARE_PYTHON_RUNTIME_PROFILE])
+async def test_finished_session_releases_its_owner_and_is_removed_from_host(profile) -> None:
     host = RemoteControlHost()
-    bridge = Bridge(
-        Mock(), {"current": 1, "limit": 100, "requirements": {}, "hostname": "runner"}, LEASE
-    )
+    socket = Mock(close=AsyncMock())
+    bootstrap = {"current": 1, "limit": 100, "requirements": {}, "hostname": "runner", "runtime_profile": profile}
+    bridge = Bridge(socket, bootstrap, LEASE)
     worker = Mock(request_stop=Mock(), run=AsyncMock(return_value=0))
 
     with patch("src.worker.remote.host.release_remote_owner", new_callable=AsyncMock) as release:
@@ -520,6 +521,10 @@ async def test_finished_session_releases_its_owner_and_is_removed_from_host() ->
         assert LEASE.worker_id not in host.sessions
         release.assert_awaited_once_with(LEASE)
         assert reconciliation.cancelled()
+        if profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
+            socket.close.assert_awaited_once_with()
+        else:
+            socket.close.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,4 @@
-"""Experimental opaque physical adapter; not public runtime admission."""
+"""Experimental opaque physical adapter and its control-host boundary."""
 import json
 import time
 from datetime import UTC, datetime, timedelta
@@ -13,7 +13,7 @@ from src.services.execution.process_pool import ProcessState
 from src.worker.admission import Admission
 from src.worker.remote.host import Bridge, RemoteControlHost
 from src.worker.remote.ownership import RemoteOwnerLease
-from src.worker.remote.protocol import Hello, ProtocolError, sign_hello
+from src.worker.remote.protocol import AuthenticationError, Hello, sign_hello
 from src.worker.remote.remote_pool import ThinRemoteProcessPool
 from tests.unit.dev.test_thin_remote_pool import _active, _Transport
 from tests.unit.services.execution.test_cloudflare_eligibility import _prepare
@@ -174,7 +174,7 @@ def test_opaque_inventory_adoption_binds_handle_and_refuses_replacement():
 
 
 @pytest.mark.asyncio
-async def test_experimental_pool_profile_is_still_rejected_by_public_control_host():
+async def test_cloudflare_profile_still_rejects_static_launchers_when_enabled():
     declared = Hello(launcher_id=uuid4(), incarnation_id=uuid4(), job_uid=None, pod_uid=None,
                      hostname='opaque-test', form='static', issued_at=int(time.time()),
                      nonce='n' * 32, hello_sequence=1, runtime_profile=PROFILE)
@@ -182,10 +182,10 @@ async def test_experimental_pool_profile_is_still_rejected_by_public_control_hos
              'sample': {'current': 1, 'limit': 100}, 'requirements': {}}
     socket = Mock(accept=AsyncMock(), receive_text=AsyncMock(return_value=json.dumps(frame)), close=AsyncMock())
     with (
-        patch('src.worker.remote.host.get_settings', return_value=Mock(secret_key='test-secret')),
+        patch('src.worker.remote.host.get_settings', return_value=Mock(cloudflare_worker_hello_enabled=True)),
         patch('src.worker.remote.host.acquire_remote_owner', new_callable=AsyncMock) as acquire,
         patch('src.worker.remote.host.get_liveness_db_context') as db,
-        pytest.raises(ProtocolError, match='unsupported physical runtime'),
+        pytest.raises(AuthenticationError, match='external capacity resource'),
     ):
         await RemoteControlHost().connect(socket)
     acquire.assert_not_awaited()

@@ -5,11 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID
 
-from sqlalchemy import func, or_, select, text, update
+from sqlalchemy import case, func, or_, select, text, update
+from sqlalchemy.sql.elements import ColumnElement
 
 from src.core.database import get_liveness_db_context
 from src.models.orm.execution_workers import ExecutionWorker
 from src.worker.remote.protocol import (
+    CLOUDFLARE_CREDENTIAL_PROTOCOL,
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
     LINUX_RUNTIME_PROFILE,
 )
@@ -29,6 +31,21 @@ class RemoteOwnerLease:
     credential_protocol: int = 1
 
 
+@dataclass(frozen=True)
+class CloudflareEnrollment:
+    resource_uid: str
+    version: str
+    hostname: str
+
+
+def remote_enrollment_is_live() -> ColumnElement[bool]:
+    """A terminal Cloudflare row revokes the lease even before clock expiry."""
+    return or_(
+        ExecutionWorker.runtime_profile != CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+        ExecutionWorker.state.in_(("ready", "draining")),
+    )
+
+
 async def acquire_remote_owner(
     *,
     worker_id: UUID,
@@ -38,6 +55,7 @@ async def acquire_remote_owner(
     hello_sequence: int,
     credential_protocol: int = 1,
     runtime_profile: str = LINUX_RUNTIME_PROFILE,
+    cloudflare_enrollment: CloudflareEnrollment | None = None,
     lease_seconds: int = DEFAULT_OWNER_LEASE_SECONDS,
 ) -> RemoteOwnerLease | None:
     """Acquire one fenced API owner session for an admitted launcher.
@@ -49,7 +67,8 @@ async def acquire_remote_owner(
 
     Credential protocol and physical runtime are recorded with the session
     generation. Reconnects keep the physical runtime of the first session.
-    Cloudflare ownership is limited to external worker rows.
+    Cloudflare admission and ownership use one conditional update on the
+    prepared external row, including on reconnect and takeover.
     """
     if lease_seconds <= 0:
         raise ValueError("remote owner lease must be positive")
@@ -57,17 +76,39 @@ async def acquire_remote_owner(
         raise ValueError("remote hello sequence must be positive")
     interval = f"{lease_seconds} seconds"
     worker_scope = [ExecutionWorker.id == worker_id]
+    enrollment_values = {}
     if runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
-        worker_scope.append(ExecutionWorker.form == "external")
+        if cloudflare_enrollment is None or credential_protocol != CLOUDFLARE_CREDENTIAL_PROTOCOL:
+            return None
+        starting = ExecutionWorker.state == "starting"
+        worker_scope.extend((
+            ExecutionWorker.form == "external",
+            ExecutionWorker.execution_lane == "normal",
+            ExecutionWorker.runtime_profile == runtime_profile,
+            ExecutionWorker.capacity_resource_uid == cloudflare_enrollment.resource_uid,
+            ExecutionWorker.capacity_resource_deleted_at.is_(None),
+            ExecutionWorker.version == cloudflare_enrollment.version,
+            ExecutionWorker.remote_launcher_id == launcher_id,
+        ))
+        enrollment_values = {
+            "state": case((starting, "ready"), else_=ExecutionWorker.state),
+            "hostname": case((starting, cloudflare_enrollment.hostname), else_=ExecutionWorker.hostname),
+            "ready_at": case((starting, func.now()), else_=ExecutionWorker.ready_at),
+            "heartbeat_at": case((starting, func.now()), else_=ExecutionWorker.heartbeat_at),
+            "last_claim_at": case((starting, func.now()), else_=ExecutionWorker.last_claim_at),
+            "memory_budget_bytes": None,
+        }
+    else:
+        # A legacy hello cannot take over even a never-connected Cloudflare row.
+        worker_scope.append(ExecutionWorker.runtime_profile != CLOUDFLARE_PYTHON_RUNTIME_PROFILE)
     async with get_liveness_db_context() as db:
         row = await db.execute(
             update(ExecutionWorker)
             .where(
                 *worker_scope,
                 # Static launchers register a fresh canonical row before the
-                # API-side executor has measured its admission budget. Jobs
-                # are already ready after admit_worker; allowing ``starting``
-                # here is therefore limited to the authenticated static path.
+                # API-side executor has measured its admission budget.
+                # Cloudflare moves starting to ready in this same update.
                 ExecutionWorker.state.in_(("starting", "ready", "draining")),
                 or_(
                     ExecutionWorker.remote_launcher_id.is_(None),
@@ -93,10 +134,7 @@ async def acquire_remote_owner(
                 remote_hello_sequence=hello_sequence,
                 remote_credential_protocol=credential_protocol,
                 runtime_profile=runtime_profile,
-                **(
-                    {"memory_budget_bytes": None}
-                    if runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE else {}
-                ),
+                **enrollment_values,
             )
             .returning(ExecutionWorker.remote_session_generation, ExecutionWorker.remote_credential_protocol)
         )
@@ -123,6 +161,7 @@ async def renew_remote_owner(
                 ExecutionWorker.remote_launcher_id == lease.launcher_id,
                 ExecutionWorker.remote_session_generation == lease.session_generation,
                 ExecutionWorker.remote_owner_lease_expires_at > func.now(),
+                remote_enrollment_is_live(),
             )
             .values(remote_owner_lease_expires_at=func.now() + text(f"INTERVAL '{interval}'"))
             .returning(ExecutionWorker.id)
@@ -140,6 +179,7 @@ async def owns_remote_session(lease: RemoteOwnerLease) -> bool:
                 ExecutionWorker.remote_launcher_id == lease.launcher_id,
                 ExecutionWorker.remote_session_generation == lease.session_generation,
                 ExecutionWorker.remote_owner_lease_expires_at > func.now(),
+                remote_enrollment_is_live(),
             )
         )
     return worker_id is not None

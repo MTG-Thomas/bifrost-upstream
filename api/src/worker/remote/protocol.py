@@ -42,10 +42,9 @@ CREDENTIAL_PROTOCOL = 2
 # An omitted profile is the existing Linux protocol, with unchanged signed
 # bytes. Other physical runtimes require explicit authenticated negotiation.
 LINUX_RUNTIME_PROFILE = "linux-process-v1"
-# Experimental physical adapter identity. The control host does not admit it;
-# workload eligibility and deployed resource/cancellation qualification remain
-# separate from this pool-level representation.
+# Experimental physical adapter identity with operator-gated control admission.
 CLOUDFLARE_PYTHON_RUNTIME_PROFILE = "cloudflare-python-v1"
+CLOUDFLARE_CREDENTIAL_PROTOCOL = 2
 CLOUDFLARE_DEV_SLOTS = 1
 CLOUDFLARE_DEV_BUDGET_BYTES = 128 * 2**20
 CLOUDFLARE_WORKFLOW_HANDLER = ("workflow.execute", 1)
