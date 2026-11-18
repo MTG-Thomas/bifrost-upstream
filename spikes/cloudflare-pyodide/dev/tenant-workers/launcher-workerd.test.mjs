@@ -25,10 +25,16 @@ let worker;
 // Keep the real Durable Object, gateway, and WorkerLoader. Use a small JS
 // child in place of the packaged Python engine to exercise transport policy.
 function engine() {
+  let firstPing = true;
   return {
     async fetch(request) {
       const body = await request.json();
-      if (body.action === 'ping') return Response.json({first_request: false, primed: 0});
+      if (body.action === 'ping') {
+        if (body.exercise) return new Response('fixture ping failure', {status: 503});
+        const first_request = firstPing;
+        firstPing = false;
+        return Response.json({first_request, primed: 0});
+      }
       const {scenario, engine_token} = body.context;
       if (scenario === 'cpu-limit') throw new Error('Worker exceeded CPU time limit: private detail');
       if (scenario === 'memory-limit') throw new Error('Worker exceeded its memory limit: private detail');
@@ -84,6 +90,7 @@ const main = `
       const host = ctx.exports.TenantHost.getByName(tenantId);
       if (action === 'run') return Response.json(await host.run(input));
       if (action === 'warm') return Response.json(await host.warm({tenantId, ...input}));
+      if (action === 'exercise') return Response.json(await host.exercise({tenantId}));
       if (action === 'wait') await host.waitForRun(input);
       if (action === 'stop') await host.stopWorkflow(input);
       if (action === 'stop-egress') return Response.json(await host.stopAndTryEgress(input));
@@ -285,6 +292,16 @@ test('launcher warm-up finishes while the origin health request is still held', 
     origin.release.resolve();
     nextOrigin = undefined;
   }
+});
+
+test('a failed exercise retires the child before the next workflow can enter', async () => {
+  const tenant = 'failed-exercise';
+  assert.equal((await host(tenant, 'warm')).first_request, true);
+  await assert.rejects(host(tenant, 'exercise'), /Tenant engine ping failed/);
+  assert.deepEqual(await host(tenant, 'run', route(tenant)),
+    {needsWarm: true, attempt_state: 'not_started'});
+  assert.equal((await host(tenant, 'warm')).first_request, true);
+  assert.equal((await host(tenant, 'run', route(tenant))).attempt_state, 'completed');
 });
 
 test('TenantHost serves the pinned module and keeps missing modules inside the snapshot', async () => {

@@ -475,19 +475,28 @@ export class TenantHost extends DurableObject {
     const {worker, generation} = await this.#engine(tenantId);
     const modules = await this.#primeList();
     const mark = Date.now();
-    const response = await worker.getEntrypoint().fetch(new Request('https://attempt.invalid/', {
-      method: 'POST', signal: AbortSignal.timeout(ENGINE_BOOT_TIMEOUT_MS),
-      body: JSON.stringify({action: 'ping', modules,
-        ...(exercise ? {exercise: {handle: `run_${crypto.randomUUID()}`}} : {})}),
-    }));
-    const {first_request: firstRequest, primed, prime_skipped: primeSkipped,
-      exercise: exercised} = await response.json();
-    // Only the generation that answered is ready; if it was retired while
-    // this ping was in flight, its answer vouches for nothing.
-    if (generation === this.#generation) this.#readyGeneration = generation;
-    return {child_ms: Date.now() - mark, first_request: firstRequest,
-      prime_listed: modules.length, primed, prime_skipped: primeSkipped,
-      ...(exercise ? {exercise: exercised ?? null} : {})};
+    try {
+      const response = await worker.getEntrypoint().fetch(new Request('https://attempt.invalid/', {
+        method: 'POST', signal: AbortSignal.timeout(ENGINE_BOOT_TIMEOUT_MS),
+        body: JSON.stringify({action: 'ping', modules,
+          ...(exercise ? {exercise: {handle: `run_${crypto.randomUUID()}`}} : {})}),
+      }));
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw new Error('Tenant engine ping failed');
+      }
+      const {first_request: firstRequest, primed, prime_skipped: primeSkipped,
+        exercise: exercised} = await response.json();
+      // Only the generation that answered is ready; if it was retired while
+      // this ping was in flight, its answer vouches for nothing.
+      if (generation === this.#generation) this.#readyGeneration = generation;
+      return {child_ms: Date.now() - mark, first_request: firstRequest,
+        prime_listed: modules.length, primed, prime_skipped: primeSkipped,
+        ...(exercise ? {exercise: exercised ?? null} : {})};
+    } catch (error) {
+      if (generation === this.#generation) await this.#retireChild();
+      throw error;
+    }
   }
 
   async #warmOrigin() {
