@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import exists, func, select, text, tuple_, update
+from sqlalchemy import case, exists, func, select, text, tuple_, update
 
 from src.config import get_settings
 from src.core.database import get_db_context, get_liveness_db_context
@@ -330,7 +330,15 @@ async def claim_next(
             await db.execute(
                 update(ExecutionWorker)
                 .where(ExecutionWorker.id == incarnation_id)
-                .values(last_claim_at=_now(), reserved_for_dispatch_id=None)
+                .values(
+                    last_claim_at=_now(), reserved_for_dispatch_id=None,
+                    # Opaque settlement can beat the next heartbeat. Publish
+                    # the busy slot atomically with its durable claim.
+                    active_runs=case(
+                        (ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE, 1),
+                        else_=ExecutionWorker.active_runs,
+                    ),
+                )
             )
             claim = PoolClaim(
                 dispatch_id=row.dispatch_id,
@@ -361,7 +369,7 @@ async def claim_next(
 async def heartbeat_worker(
     incarnation_id: UUID,
     *,
-    active_runs: int,
+    active_runs: int | Callable[[], int],
     runs_handled: int,
     package_generation: int | None,
     memory_pressured: bool,
@@ -388,7 +396,8 @@ async def heartbeat_worker(
             .values(
                 # The database's clock: liveness is judged against it.
                 heartbeat_at=func.now(),
-                active_runs=active_runs,
+                # Sample opaque occupancy under the same row lock as claims.
+                active_runs=active_runs() if callable(active_runs) else active_runs,
                 active_handler_counts=active_handler_counts,
                 runs_handled=runs_handled,
                 package_generation=package_generation,

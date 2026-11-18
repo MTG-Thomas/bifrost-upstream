@@ -242,7 +242,9 @@ export class LauncherCore {
   tick(session) {
     return this.#serialize(() => {
       if (this.#session !== session || !session.generation || this.clock() < session.nextHeartbeat) return;
-      this.#emit(session, {event: 'heartbeat'});
+      this.#emit(session, {
+        event: 'heartbeat', slot_occupied: Boolean(this.#slot), received_sequence: session.received,
+      });
       session.nextHeartbeat += 1000;
       if (session.nextHeartbeat <= this.clock()) session.nextHeartbeat = this.clock() + 1000;
     });

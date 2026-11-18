@@ -468,6 +468,8 @@ async def test_cloudflare_claim_ignores_ineligible_work_at_the_head(db) -> None:
 
     claim = await _claim(worker_id, fits=32 * MIB, budget=CLOUDFLARE_DEV_BUDGET_BYTES)
     assert claim is not None and claim.subject_id == UUID(younger)
+    async with db.context() as session:
+        assert (await session.get(ExecutionWorker, worker_id)).active_runs == 1
     assert await _claim(worker_id) is None
 
     linux = await _static_executor("linux")
@@ -778,19 +780,22 @@ async def test_cloudflare_packing_consumes_a_slot_even_when_bytes_remain(db) -> 
     assert len(await pool.launch_for_demand(POLICY)) == 1
 
 
-@pytest.mark.parametrize("capacity", ["idle", "useful", "durable-claim", "settled-claim"])
+@pytest.mark.parametrize("capacity", ["idle", "useful", "durable-claim", "settled-claim", "retained-terminal"])
 async def test_idle_cloudflare_worker_yields_a_capped_slot_for_linux_demand(db, capacity) -> None:
     worker_id = await _declared_worker(db)
     if capacity == "useful":
         approved = await _accept_pool_run()
         await _set_request(db.sessions, approved, 64 * MIB, approved=True)
-    elif capacity in ("durable-claim", "settled-claim"):
+    elif capacity in ("durable-claim", "settled-claim", "retained-terminal"):
         # A claim can exist before the heartbeat reflects the new reservation.
-        execution_id = UUID(await _accept_pool_run()) if capacity == "settled-claim" else uuid4()
+        execution_id = uuid4() if capacity == "durable-claim" else UUID(await _accept_pool_run())
         async with db.context() as session:
-            if capacity == "settled-claim":
+            if capacity != "durable-claim":
                 execution = await session.get(Execution, execution_id)
                 execution.status = ExecutionStatus.SUCCESS
+            if capacity == "retained-terminal":
+                worker = await session.get(ExecutionWorker, worker_id)
+                worker.active_runs = 1
             session.add(ExecutionWorkerClaim(
                 worker_id=worker_id, family=workflow_dispatch.FAMILY, subject_id=execution_id,
             ))

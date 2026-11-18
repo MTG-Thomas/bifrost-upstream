@@ -153,8 +153,19 @@ class Bridge:
     def _reset_freshness(self) -> None:
         if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
             self.heartbeat_at = time.monotonic()
+            self._opaque_empty_after: int | None = None
+            self._opaque_work_sequence = 0
         else:
             self.sample_at = time.monotonic()
+
+    def opaque_slot_idle(self) -> bool:
+        """A current launcher heartbeat saw an empty slot after the last send."""
+        return (
+            self.connected and self.reconciliation_ready.is_set()
+            and self.freshness_age() <= ADMISSION_FRESHNESS_SECONDS
+            and self._opaque_empty_after is not None
+            and self._opaque_empty_after >= self._opaque_work_sequence
+        )
 
     def freshness_age(self) -> float:
         observed_at = (
@@ -219,6 +230,10 @@ class Bridge:
                     sent = 0
                     send_deadline = loop.time() + _reply_timeout(action)
                     for frame in fragment(message):
+                        if opaque and action == "workflow":
+                            self._opaque_work_sequence = message.sequence + (
+                                frame.payload["total"] - 1 if frame.kind == "fragment" else 0
+                            )
                         if socket is None:
                             await self.socket.send_text(frame.to_json())
                         else:
@@ -384,6 +399,11 @@ class Bridge:
                     future.set_result(event["result"])
         elif event.get("event") == "heartbeat" and self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
             self.heartbeat_at = time.monotonic()
+            received = event.get("received_sequence")
+            self._opaque_empty_after = (
+                received if event.get("slot_occupied") is False
+                and type(received) is int and received >= 0 else None
+            )
         elif event.get("event") == "sample":
             if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
                 raise ProtocolError("Cloudflare launcher must send liveness heartbeats")
@@ -670,6 +690,12 @@ class ApiExecutor(PoolWorker):
         self._reconcile_lock = asyncio.Lock()
         self._reconciled_generation = 0
         self._admission_prepared = False
+
+    def _workflow_runs(self) -> int:
+        active = super()._workflow_runs()
+        if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and not self.bridge.opaque_slot_idle():
+            return max(1, active)
+        return active
 
     async def _initialize_runtime(self) -> bool:
         return await report_worker_handlers(

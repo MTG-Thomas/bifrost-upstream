@@ -62,7 +62,7 @@ One `CloudflareLauncher` DO per launcher incarnation (`launcher_id`,
    reconnect, exactly like `launcher.py`'s `pending_terminal_inventory`.
 5. Answers `inventory` with its live routes (route id, execution id, started
    at, timeout, memory request) and retained terminals.
-6. Emits a liveness-only `heartbeat` once per second while connected.
+6. Emits a `heartbeat` once per second with liveness and slot occupancy.
 
 The protocol core (canonical hello bytes, HMAC proof, envelope
 encode/parse, fragmentation and reassembly, sequence and generation fencing,
@@ -479,8 +479,14 @@ until the ordinary queue deadline.
   provider profile. Capacity does not come from launcher-supplied fields.
   The API does not send Linux memory-pressure configuration or
   `memory_kill_growth_bytes` for this profile.
-- Send `{"event":"heartbeat"}` once per second inside a normal sequenced
-  event envelope for the current session generation. Hello and reconnect
+- Send a `heartbeat` once per second inside a normal sequenced event
+  envelope for the current session generation. Include `slot_occupied`
+  and `received_sequence`, the last API frame received in that generation
+  (zero before any frames). A retained terminal occupies the slot until
+  its ACK has been processed. The API writes a busy slot in the claim
+  transaction and only reports it free after the admission hold clears
+  and the launcher reports an empty slot at or beyond the final workflow
+  frame. Hello and reconnect
   start the freshness window, while inventory reconciliation independently
   gates claims. A heartbeat older than three seconds pauses admission and
   blocks new workflow sends. An expired heartbeat prevents owner renewal

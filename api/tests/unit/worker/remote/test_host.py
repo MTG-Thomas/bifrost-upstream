@@ -107,6 +107,32 @@ async def test_cloudflare_admission_requires_fresh_liveness_without_usage_sample
 
 
 @pytest.mark.asyncio
+async def test_opaque_worker_stays_busy_until_launcher_reports_its_slot_empty() -> None:
+    socket = Mock(send_text=AsyncMock())
+    bridge = Bridge(socket, {"hostname": "opaque", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE}, LEASE)
+    worker = ApiExecutor(bridge, LEASE.worker_id)
+    bridge.reconciliation_ready.set()
+
+    async def heartbeat(occupied, received):
+        await bridge.receive({"event": "heartbeat", "slot_occupied": occupied, "received_sequence": received})
+
+    assert worker.active_runs() == 1
+    await heartbeat(False, 0)
+    assert worker.active_runs() == 0
+    request = asyncio.create_task(bridge.request("workflow", {}))
+    await asyncio.sleep(0)
+    reply_id = next(iter(bridge.pending))
+    await bridge.receive({"reply": reply_id, "result": {}})
+    await request
+    await heartbeat(False, 0)  # Sample predates the workflow send.
+    assert worker.active_runs() == 1
+    await heartbeat(True, 1)  # The launcher still retains its terminal.
+    assert worker.active_runs() == 1
+    await heartbeat(False, 2)  # The launcher subsequently processed the ACK.
+    assert worker.active_runs() == 0
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("age", [4, 20], ids=["claims-paused", "lease-expired"])
 async def test_cloudflare_owner_renewal_uses_heartbeat_age(age) -> None:
     bridge = Bridge(Mock(), {"hostname": "opaque", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE}, LEASE)

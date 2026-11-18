@@ -77,6 +77,7 @@ from src.services.worker_pool.recovery import UNSTARTED_CLAIM_WINDOW, release_un
 from src.worker.remote.protocol import (
     CloudflareRevisionRejected,
     HANDLER_CONCURRENCY_LIMITS,
+    CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
     LINUX_RUNTIME_PROFILE,
     OpaqueWorkflowNotStarted,
     WORKER_DRAIN_GRACE_SECONDS as DRAIN_GRACE_SECONDS,
@@ -811,7 +812,10 @@ class PoolWorker:
                 # the next heartbeat from trying a fresh one.
                 state = await asyncio.wait_for(heartbeat_worker(
                     self.incarnation_id,
-                    active_runs=self.active_runs(),
+                    active_runs=(
+                        self.active_runs if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+                        else self.active_runs()
+                    ),
                     active_handler_counts=self.active_handler_counts(),
                     runs_handled=self.runs_handled,
                     package_generation=(

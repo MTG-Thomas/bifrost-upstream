@@ -425,10 +425,26 @@ test('heartbeats are sequenced at one-second cadence after welcome', async () =>
     await api.tick();
     await api.tick();
   }
-  assert.deepEqual(api.frames().slice(1), [{event: 'heartbeat'}, {event: 'heartbeat'}]);
+  const idle = {event: 'heartbeat', slot_occupied: false, received_sequence: 0};
+  assert.deepEqual(api.frames().slice(1), [idle, idle]);
   assert.deepEqual(api.events.map(({sequence}) => sequence), [1, 2, 3]);
   await api.close();
   api.setClock(START + 3000);
   await api.tick();
   assert.equal(api.frames().length, 3);
+});
+
+test('heartbeat reports the slot occupied through terminal retention and empty after ACK', async () => {
+  const api = peer();
+  await connect(api);
+  await api.command('workflow', workflow());
+  await api.finish();
+  const terminal = api.frames().at(-1);
+  api.setClock(START + 1000);
+  await api.tick();
+  assert.deepEqual(api.frames().at(-1), {event: 'heartbeat', slot_occupied: true, received_sequence: 1});
+  await api.ack(terminal._event_id);
+  api.setClock(START + 2000);
+  await api.tick();
+  assert.deepEqual(api.frames().at(-1), {event: 'heartbeat', slot_occupied: false, received_sequence: 2});
 });
