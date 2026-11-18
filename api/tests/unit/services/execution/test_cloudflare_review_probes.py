@@ -877,6 +877,33 @@ from src.services.execution.cloudflare_analysis import analyze
         """},
         [], 0, 0, id="mapping_key_that_looks_like_a_url",
     ),
+    pytest.param(
+        {
+            "workflows/w.py": """
+                from .lib import client
+                async def main():
+                    return await client.get("/items")
+            """,
+            "workflows/lib.py": """
+                import httpx
+                client = httpx.AsyncClient(base_url="https://api.x.com")
+            """,
+        },
+        ["api.x.com"], 1, 0, id="relative_workspace_client_import",
+    ),
+    pytest.param(
+        {"workflows/w.py": """
+            import httpx
+            class Api:
+                async def get(self):
+                    return await self.client.get("/items")
+                def __init__(self):
+                    self.client = httpx.AsyncClient(base_url="https://api.x.com")
+            async def main():
+                return await Api().get()
+        """},
+        ["api.x.com"], 1, 0, id="client_initialized_below_other_methods",
+    ),
 ])
 async def test_review_probe(sources, hosts, calls, unresolved):
     async def read(path, max_bytes):

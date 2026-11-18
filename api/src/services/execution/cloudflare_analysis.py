@@ -268,6 +268,16 @@ class _CallHint:
     url: _URL | None
 
 
+def _import_module(path: str, node: ast.ImportFrom) -> str:
+    module = node.module or ""
+    if not node.level:
+        return module
+    parents = path.split("/")[:-1]
+    if node.level > len(parents):
+        raise AnalysisRejected("Relative import leaves the workspace package")
+    return ".".join([*parents[:len(parents) + 1 - node.level], *([module] if module else [])])
+
+
 @dataclass
 class _Analysis:
     read: SourceReader
@@ -336,12 +346,7 @@ class _Analysis:
         return package or module
 
     async def import_from(self, path: str, node: ast.ImportFrom) -> None:
-        module = node.module or ""
-        if node.level:
-            parents = path.split("/")[:-1]
-            if node.level > len(parents):
-                raise AnalysisRejected("Relative import leaves the workspace package")
-            module = ".".join([*parents[:len(parents) + 1 - node.level], *([module] if module else [])])
+        module = _import_module(path, node)
         if module.split(".")[0] in _RESERVED | _PACKAGES.keys():
             await self.resolve(module)
             if any(
@@ -365,7 +370,7 @@ class _Analysis:
             if self.nodes > _MAX_NODES:
                 raise AnalysisRejected("Workspace sources exceed the analysis complexity budget")
         imports: list[ast.Import | ast.ImportFrom] = []
-        clients = self.inspect_scope(syntax.body, {}, {}, {}, {}, imports)
+        clients = self.inspect_scope(syntax.body, {}, {}, {}, {}, imports, path)
         module = path.removesuffix("/__init__.py").removesuffix(".py").replace("/", ".")
         self.exports.update({f"{module}.{name}": value for name, value in clients.items()})
         return imports
@@ -373,7 +378,7 @@ class _Analysis:
     def inspect_scope(
         self, body: list[ast.stmt] | ast.expr, inherited_aliases: dict[str, str],
         inherited_constants: dict[str, str], inherited_clients: dict[str, _Client],
-        inherited_factories: dict[str, _Client], imports: list[ast.Import | ast.ImportFrom],
+        inherited_factories: dict[str, _Client], imports: list[ast.Import | ast.ImportFrom], path: str,
         arguments: ast.arguments | None = None, class_clients: dict[str, _Client] | None = None,
     ) -> dict[str, _Client]:
         roots = body if isinstance(body, list) else [body]
@@ -408,9 +413,10 @@ class _Analysis:
                     aliases[item.asname or root] = item.name if item.asname else root
             elif isinstance(node, ast.ImportFrom):
                 imports.append(node)
+                module = _import_module(path, node)
                 for item in node.names:
                     name = item.asname or item.name
-                    aliases[name] = f"{node.module}.{item.name}" if not node.level else f"local.{name}"
+                    aliases[name] = f"{module}.{item.name}"
 
         for node in nodes:
             if isinstance(node, (ast.Assign, ast.AnnAssign)):
@@ -432,15 +438,17 @@ class _Analysis:
 
         direct_calls = {id(node.func) for node in nodes if isinstance(node, ast.Call)}
         callback_args = {id(arg) for node in nodes if isinstance(node, ast.Call) for arg in node.args}
+        if class_clients is not None:
+            nodes.sort(key=lambda node: not isinstance(node, ast.FunctionDef) or node.name != "__init__")
         for node in nodes:
             self.inspect(node, aliases, constants, clients, factories, requests, direct_calls, callback_args, mappings)
             if isinstance(node, _SCOPES):
                 shared = {} if isinstance(node, ast.ClassDef) else class_clients
                 if isinstance(node, ast.ClassDef):
-                    self.inspect_scope(node.body, aliases, constants, clients, factories, imports, class_clients=shared)
+                    self.inspect_scope(node.body, aliases, constants, clients, factories, imports, path, class_clients=shared)
                 else:
                     child_clients = {**clients, **(shared or {})}
-                    result = self.inspect_scope(node.body, aliases, constants, child_clients, factories, imports, node.args)
+                    result = self.inspect_scope(node.body, aliases, constants, child_clients, factories, imports, path, node.args)
                     if shared is not None and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "__init__":
                         shared.update({name: value for name, value in result.items() if name.startswith("self.")})
                 continue
