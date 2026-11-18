@@ -10,6 +10,10 @@ from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
+# Imported before any patch: a module first imported while
+# src.core.database.get_db_context is patched binds the fake for good and
+# leaks it into later tests (observed in test_pyodide_attempt_journal).
+from src.jobs.consumers import workflow_execution  # noqa: F401
 from src.services.work_dispatch import WAKE_WORKFLOW
 from src.worker import pool_main
 from src.worker.remote import host
