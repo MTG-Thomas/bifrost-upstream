@@ -395,7 +395,9 @@ async function hostedChecks() {
   evidence('takeover', {before: beforeTakeover, after: afterTakeover});
   takeover.gate.release.resolve();
   await settle('takeover', takeover, 'Success');
+}
 
+async function hostedResetCheck() {
   const reset = await startRun('reset');
   const beforeReset = workerRow();
   evidence('redeploy-requested', {id: reset.id, route: reset.route, before: beforeReset});
@@ -528,7 +530,10 @@ try {
     await linuxSamplesStale;
     if (config.hosted) {
       if (interrupted) await verifyHostedReset(interrupted, prepared, 0);
-      else await hostedChecks();
+      else {
+        if (!config.fromReset) await hostedChecks();
+        await hostedResetCheck();
+      }
       await hostedCpuCheck();
     } else {
       await localChecks();

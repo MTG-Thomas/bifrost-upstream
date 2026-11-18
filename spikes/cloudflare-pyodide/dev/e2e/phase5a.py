@@ -184,7 +184,7 @@ def resume_enrollment(project, reset_route):
     return workflows, approval, incarnation, launcher, enrollment["port"]
 
 
-def run(runtime, hosted, resume, reset_route):
+def run(runtime, hosted, resume, reset_route, from_reset):
     sys.path.insert(0, str(ROOT / "api"))
     from shared.worker_control_auth import external_worker_control_key
 
@@ -226,6 +226,7 @@ def run(runtime, hosted, resume, reset_route):
         input=json.dumps({"origin": origin, "project": project, "admin": admin,
                           "workflows": workflows, "runtime": str(runtime), "hosted": hosted, "port": port,
                           "resetRoute": reset_route,
+                          "fromReset": from_reset,
                           "incarnation": str(incarnation), "launcher": str(launcher),
                           "resource": resource, "build": build, "controlKey": key}),
     )
@@ -239,16 +240,21 @@ if __name__ == "__main__":
     run_parser.add_argument("runtime", type=Path, help="Prepared generated-runtime.mjs")
     run_parser.add_argument("--hosted", action="store_true")
     run_parser.add_argument("--resume-enrollment", action="store_true")
-    run_parser.add_argument("--resume-reset", metavar="WORKFLOW_ROUTE")
+    reset = run_parser.add_mutually_exclusive_group()
+    reset.add_argument("--resume-reset", metavar="WORKFLOW_ROUTE")
+    reset.add_argument("--from-reset", action="store_true")
     args = parser.parse_args()
     if args.action == "prepare":
         prepare(args.hosted)
     else:
         if args.resume_enrollment and not args.hosted:
             parser.error("--resume-enrollment requires --hosted")
+        if args.from_reset and not args.resume_enrollment:
+            parser.error("--from-reset requires --resume-enrollment")
         if args.resume_reset and (
             not args.resume_enrollment or
             not re.fullmatch(r"workflow:[0-9a-f-]{36}:[0-9a-f-]{36}", args.resume_reset)
         ):
             parser.error("--resume-reset requires --resume-enrollment and an interrupted workflow route")
-        run(args.runtime.resolve(strict=True), args.hosted, args.resume_enrollment, args.resume_reset)
+        run(args.runtime.resolve(strict=True), args.hosted, args.resume_enrollment,
+            args.resume_reset, args.from_reset)
