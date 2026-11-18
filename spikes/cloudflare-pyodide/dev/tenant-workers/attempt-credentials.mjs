@@ -74,9 +74,12 @@ export class AttemptCredentials {
     record.refreshing = (async () => {
       try {
         const next = await this.#refresh(record.refreshToken);
-        if (next === 'unavailable') return 'unavailable';
-        if (next === 'refused' || typeof next?.access_token !== 'string' ||
-            typeof next?.refresh_token !== 'string') {
+        // A 200 without both tokens is the API misbehaving, not a refusal.
+        if (next === 'unavailable' || (next !== 'refused' && (typeof next?.access_token !== 'string' ||
+            typeof next?.refresh_token !== 'string'))) {
+          return 'unavailable';
+        }
+        if (next === 'refused') {
           // A refused refresh is terminal for this generation: never resend it.
           record.refreshToken = null;
           return 'refused';

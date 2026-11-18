@@ -65,7 +65,7 @@ test('concurrent refreshes are single-flight and rotate both tokens', async () =
 
 test('a refused refresh is never resent; no refresh token means refused', async () => {
   let calls = 0;
-  const creds = new AttemptCredentials({refresh: async () => { calls++; return null; }});
+  const creds = new AttemptCredentials({refresh: async () => { calls++; return 'refused'; }});
   creds.open('h', {token: 'a1', refreshToken: 'r1', expiresAt: later()});
   creds.noteChallenge('h', 'a1');
   assert.equal(await creds.refresh('h'), 'refused');
@@ -133,4 +133,13 @@ test('an explicit refusal ends refresh for the attempt', async () => {
   assert.equal(await creds.refresh('h'), 'refused');
   assert.equal(await creds.refresh('h'), 'refused');
   assert.equal(calls, 1);
+});
+
+test('a malformed refresh reply is a temporary failure, not a refusal', async () => {
+  const answers = [{access_token: 'a2'}, {access_token: 'a2', refresh_token: 'r2'}];
+  const creds = new AttemptCredentials({refresh: async () => answers.shift()});
+  creds.open('h', {token: 'a1', refreshToken: 'r1', expiresAt: later()});
+  creds.noteChallenge('h', 'a1');
+  assert.equal(await creds.refresh('h'), 'unavailable');
+  assert.equal(await creds.refresh('h'), 'refreshed', 'the refresh token was kept');
 });

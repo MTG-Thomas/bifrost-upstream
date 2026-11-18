@@ -34,6 +34,12 @@ export const WARM_PING_MS = 45 * 1000;
 // ATTEMPT_DEADLINE_MS overrides it per deploy.
 const DEFAULT_ATTEMPT_DEADLINE_MS = 1800 * 1000;
 const DEADLINE = Symbol('attempt-deadline');
+// Bookkeeping writes (warm window, alarms, warm-up list, retirement, marker
+// cleanup) never hold outgoing messages at the output gate. A held send would
+// leave after its liveness check had passed, possibly after the deadline.
+// Losing one of them in a crash is safe: the in-flight marker, the one gated
+// write, makes the next instance retire the generation anyway.
+const UNGATED = Object.freeze({allowUnconfirmed: true});
 
 export class TenantHost extends DurableObject {
   // Run credentials stay here; the child holds an opaque handle. Refresh is
@@ -78,7 +84,7 @@ export class TenantHost extends DurableObject {
       if (inflight) {
         this.#generation = Math.max(stored, inflight.generation) + 1;
         await this.ctx.storage.put('generation', this.#generation);
-        await this.ctx.storage.delete('inflight');
+        await this.ctx.storage.delete('inflight', UNGATED);
       } else {
         this.#generation = stored;
       }
@@ -91,7 +97,7 @@ export class TenantHost extends DurableObject {
   // deadlocks the isolate). Never reuse it: next attempt warms a new one.
   async #retireChild() {
     this.#generation = (await this.#currentGeneration()) + 1;
-    await this.ctx.storage.put('generation', this.#generation);
+    await this.ctx.storage.put('generation', this.#generation, UNGATED);
     this.#readyGeneration = null;
   }
 
@@ -107,7 +113,7 @@ export class TenantHost extends DurableObject {
     const stored = await this.ctx.storage.get('prime');
     const merged = mergePrimeList(stored, engine, imported);
     if (stored?.engine !== engine || merged.modules.length !== stored.modules.length) {
-      await this.ctx.storage.put('prime', merged);
+      await this.ctx.storage.put('prime', merged, UNGATED);
     }
   }
 
@@ -249,8 +255,11 @@ export class TenantHost extends DurableObject {
       if (Date.now() >= deadlineAt) return expiredInQueue(Date.now() - queuedAt);
       this.#current = {handle, generation, deadlineAt,
         egress: new Set(egressHosts.map((h) => h.toLowerCase()))};
-      // Survives a host reset: the next instance retires this generation.
+      // Survives a host reset: the next instance retires this generation. The
+      // only gated write: it is made durable before the final deadline check,
+      // so nothing is left to hold the child dispatch at the output gate.
       await this.ctx.storage.put('inflight', {generation});
+      await this.ctx.storage.sync();
       if (Date.now() >= deadlineAt) {
         // The marker write crossed the deadline; the child has seen nothing.
         this.#current = null;
@@ -303,11 +312,11 @@ export class TenantHost extends DurableObject {
       this.#current = null;
       this.#credentials.close(handle);
       this.#calls.delete(handle);
-      await this.ctx.storage.delete('inflight');
+      await this.ctx.storage.delete('inflight', UNGATED);
       release();
-      await this.ctx.storage.put({tenantId, lastAttempt: Date.now()});
+      await this.ctx.storage.put({tenantId, lastAttempt: Date.now()}, UNGATED);
       if (await this.ctx.storage.getAlarm() === null) {
-        await this.ctx.storage.setAlarm(Date.now() + WARM_PING_MS);
+        await this.ctx.storage.setAlarm(Date.now() + WARM_PING_MS, UNGATED);
       }
     }
   }
@@ -379,9 +388,9 @@ export class TenantHost extends DurableObject {
     try {
       return await this.#ping(tenantId);
     } finally {
-      await this.ctx.storage.put({tenantId, lastAttempt: Date.now()});
+      await this.ctx.storage.put({tenantId, lastAttempt: Date.now()}, UNGATED);
       if (await this.ctx.storage.getAlarm() === null) {
-        await this.ctx.storage.setAlarm(Date.now() + WARM_PING_MS);
+        await this.ctx.storage.setAlarm(Date.now() + WARM_PING_MS, UNGATED);
       }
     }
   }
@@ -398,7 +407,7 @@ export class TenantHost extends DurableObject {
       // waiting on them.
       await this.#exclusive(() => this.#ping(tenantId, {exercise: true}));
     } finally {
-      await this.ctx.storage.setAlarm(Date.now() + WARM_PING_MS);
+      await this.ctx.storage.setAlarm(Date.now() + WARM_PING_MS, UNGATED);
     }
   }
 }

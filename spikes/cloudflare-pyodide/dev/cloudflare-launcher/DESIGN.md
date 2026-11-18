@@ -193,11 +193,41 @@ run. Findings, checked against the cited code:
 
 1. ~~Protocol core in JS + Python-generated conformance vectors.~~ Done
    (`protocol.mjs`, `vectors.py`, `conformance.test.mjs`).
-2. **Execution-side safety the launcher depends on**, in the spike's own code:
-   - both protocol-2 run tokens behind the gateway;
-   - an attempt deadline that covers queue time;
-   - attempt-bound egress revocation;
-   - explicit uncertain-execution outcomes.
+2. ~~**Execution-side safety the launcher depends on**, in the spike's own code.~~
+   Done after three review rounds (commits `536d59ace`, `bfbaec816`,
+   `aa8d5e849` and the follow-up):
+   - **Both protocol-2 run tokens stay behind the gateway.** The gateway
+     never replays a request. It forwards once and records the API's
+     `refresh_required` challenge. It answers the SDK's own `/auth/refresh`
+     with the handle, after refreshing the real tokens single-flight and
+     only once a challenge was seen. A temporary refresh failure answers 503
+     and keeps the refresh token.
+   - **The deadline runs from the supervisor's dispatch.** That covers queue
+     time and the warm-up retry. Queue waits stop at the deadline. The
+     deadline is rechecked after the durable in-flight marker, immediately
+     before the child dispatch.
+   - **Sends start inside the host.** SDK calls and egress begin in the same
+     synchronous turn as the liveness and permission check. Bookkeeping
+     writes are `allowUnconfirmed`, so nothing holds a send at the output
+     gate past its check.
+   - **Generations are fenced.** A host reset mid-attempt retires that
+     generation via the marker. Readiness follows the generation that
+     answered.
+   - **Every engine outcome names its `attempt_state`.**
+
+   Cloud lab (self-origin, 1.5 s deadline): each call sent exactly once;
+   queued attempts past the deadline came back `not_started` with zero
+   calls; one mid-run expiry came back `uncertain`; the next attempt
+   recovered on a fresh child.
+
+   **Accepted residuals**, all within one tenant's trust boundary:
+   - A request already started may finish after its attempt ends.
+   - Third-party egress carries no attempt identity. A background request
+     left over from attempt A that reaches the host during attempt B, in the
+     same child, is judged by B's allowlist and logged against B.
+   - A one-shot streamed upload cannot be replayed after a refresh challenge.
+   - Large uploads are now bounded by the Durable Object's outbound body
+     limit (100 MiB).
 3. **API contract on the fork, behind a setting:**
    - profile admission, with key derivation and enrollment as in #1424;
    - capability gates (no `package_tool`, service or platform loops for
