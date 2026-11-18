@@ -484,9 +484,11 @@ until the ordinary queue deadline.
   if the engine was never entered, `completed` for an observed engine
   outcome (including a workflow error), or `uncertain` if side effects may
   have occurred without a confirmed engine outcome. Only `completed` may
-  carry a success. The API records `uncertain` as a failed execution with
-  `WorkflowAttemptUncertain` and acknowledges terminal delivery under its
-  owner fence. A stop reply alone never releases a reservation.
+  carry a success. The API settles a user stop as `Cancelled` and a deadline
+  stop as `Timeout`, with a warning if the attempt was `uncertain`.
+  Other `uncertain` terminals fail with `WorkflowAttemptUncertain`. The API
+  acknowledges terminal delivery under its owner fence. A stop reply alone
+  never releases a reservation.
   When recovering an engine-entry marker after a launcher reset, the
   launcher also requests a best-effort TenantHost stop for that route.
   TenantHost wakes cancelled queued attempts and returns `not_started`

@@ -24,8 +24,10 @@ Execution Model:
 import asyncio
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import partial
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -42,6 +44,8 @@ from src.repositories.executions import create_execution, update_execution
 from src.worker.remote.protocol import OpaqueWorkflowNotStarted
 
 if TYPE_CHECKING:
+    from bifrost._logging import LogFlushReceipt
+    from src.models.orm.events import EventDelivery
     from src.services.execution.process_pool import ProcessPoolManager
 
 logger = logging.getLogger(__name__)
@@ -99,49 +103,15 @@ async def _legacy_unattended_pending_actor(
     )
 
 
-class WorkflowExecutionConsumer:
-    """
-    Runs claimed workflow dispatches in the executor's process pool.
-
-    Message format (the dispatch's message; the context is the claimed run):
-    {
-        "execution_id": "uuid",
-        "workflow_id": "uuid" (optional, for workflow execution),
-        "code": "base64-encoded-script" (optional, for inline scripts),
-        "script_name": "name" (optional, for inline scripts),
-        "sync": false (optional, if true pushes result to Redis for API)
-    }
-    """
+class WorkflowResultHandler:
+    """Commits workflow results and publishes their terminal updates."""
 
     # The executor incarnation this consumer writes results for: a result is
     # written only while that executor still holds the run.
     owner_worker_id: UUID | None = None
 
-    def __init__(self, pool: ProcessPoolManager | None = None):
+    def __init__(self) -> None:
         self._redis_client = get_redis_client()
-
-        # Default to the process-wide manager so package installation keeps
-        # updating the same pool; API hosts may supply their canonical pool.
-        if pool is None:
-            from src.services.execution.process_pool import get_process_pool
-
-            pool = get_process_pool()
-        self._pool = pool
-        # Set the result callback on the selected pool.
-        self._pool.on_result = self._handle_result
-        self._pool_started = False
-
-    async def start_pool(self) -> None:
-        """Start the process pool (and its template process)."""
-        await self._pool.start()
-        self._pool_started = True
-        logger.info("Process pool started")
-
-    async def stop_pool(self) -> None:
-        if self._pool_started:
-            await self._pool.stop()
-            self._pool_started = False
-            logger.info("Process pool stopped")
 
     async def _handle_result(self, result: dict[str, Any]) -> None:
         """
@@ -167,6 +137,8 @@ class WorkflowExecutionConsumer:
         self,
         execution_id: str,
         session: AsyncSession | None = None,
+        *,
+        settled_status: ExecutionStatus | None = None,
     ) -> tuple[ActiveExecution | None, bool]:
         """Load compact metadata, rebuilding it from PostgreSQL if Redis lost it.
 
@@ -193,29 +165,33 @@ class WorkflowExecutionConsumer:
             session_factory = get_session_factory()
             async with session_factory() as recovery_session:
                 return await self._load_completion_metadata_from_database(
-                    execution_id, recovery_session
+                    execution_id, recovery_session, settled_status=settled_status,
                 )
 
         return await self._load_completion_metadata_from_database(
-            execution_id, session
+            execution_id, session, settled_status=settled_status,
         )
 
     async def _load_completion_metadata_from_database(
         self,
         execution_id: str,
         session: AsyncSession,
+        *,
+        settled_status: ExecutionStatus | None = None,
     ) -> tuple[ActiveExecution | None, bool]:
         """Reconstruct terminal bookkeeping metadata from its durable row."""
 
+        statuses = (
+            (settled_status,) if settled_status is not None
+            else (ExecutionStatus.RUNNING, ExecutionStatus.CANCELLING)
+        )
         row = (
             await session.execute(
                 select(Execution, User.email)
                 .outerjoin(User, Execution.executed_by == User.id)
                 .where(
                     Execution.id == UUID(execution_id),
-                    Execution.status.in_(
-                        [ExecutionStatus.RUNNING, ExecutionStatus.CANCELLING]
-                    ),
+                    Execution.status.in_(statuses),
                 )
             )
         ).one_or_none()
@@ -599,12 +575,6 @@ class WorkflowExecutionConsumer:
             )
             return
 
-        workflow_id = metadata.get("workflow_id")
-        workflow_name = metadata.get("workflow_name", "unknown")
-        org_id = metadata.get("org_id")
-        user_id = metadata.get("user_id")
-        user_email = metadata.get("user_email")
-        user_name = metadata.get("user_name")
         is_sync = result["sync"]
 
         if error_type == "TimeoutError":
@@ -613,9 +583,6 @@ class WorkflowExecutionConsumer:
             status = ExecutionStatus.CANCELLED
         else:
             status = ExecutionStatus.FAILED
-        log_receipt = None
-        event_delivery = None
-
         # DB operations and log flush — single short-lived session
         session_factory = get_session_factory()
         async with session_factory() as session:
@@ -639,32 +606,93 @@ class WorkflowExecutionConsumer:
                 self._drop_fenced_result(execution_id)
                 return
 
-            if metadata.get("event") is not None or recovered_from_database:
-                try:
-                    from src.services.events.processor import update_delivery_from_execution
-                    event_delivery = await update_delivery_from_execution(
-                        execution_id,
-                        status.value,
-                        error_message=error,
-                        session=session,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to update event delivery for {execution_id[:8]}...: {e}"
-                    )
-
-            try:
-                from bifrost._logging import stage_logs_to_postgres
-
-                log_receipt = await stage_logs_to_postgres(execution_id, session)
-                if log_receipt.count:
-                    logger.debug(
-                        "Staged %d logs for failed %s", log_receipt.count, execution_id[:8]
-                    )
-            except Exception as e:
-                logger.warning(f"Failed to stage logs for {execution_id[:8]}...: {e}")
-
+            announce = await self._stage_failure_followups(
+                session, execution_id, status, metadata, recovered_from_database, result, is_sync=is_sync,
+            )
             await session.commit()
+        await announce()
+
+    async def stage_lost_cancellation(
+        self, session: AsyncSession, execution_id: UUID, error: str,
+    ) -> Callable[[], Awaitable[None]]:
+        """Stage cancellation follow-ups after recovery writes its locked claim."""
+        execution_id_str = str(execution_id)
+        metadata, recovered = await self._load_completion_metadata(
+            execution_id_str, session, settled_status=ExecutionStatus.CANCELLED,
+        )
+        assert metadata is not None  # The recovery transaction just cancelled this row.
+        return await self._stage_failure_followups(
+            session, execution_id_str, ExecutionStatus.CANCELLED, metadata, recovered,
+            {"error": error, "error_type": "CancelledError", "duration_ms": 0},
+            # A lost lease cannot tell us whether a sync caller is waiting.
+            is_sync=recovered or metadata["sync"],
+        )
+
+    async def _stage_failure_followups(
+        self,
+        session: AsyncSession,
+        execution_id: str,
+        status: ExecutionStatus,
+        metadata: ActiveExecution,
+        recovered_from_database: bool,
+        result: dict[str, Any],
+        *,
+        is_sync: bool,
+    ) -> Callable[[], Awaitable[None]]:
+        error = result.get("error", "Unknown error")
+        log_receipt = None
+        event_delivery = None
+
+        if metadata.get("event") is not None or recovered_from_database:
+            try:
+                from src.services.events.processor import update_delivery_from_execution
+                event_delivery = await update_delivery_from_execution(
+                    execution_id,
+                    status.value,
+                    error_message=error,
+                    session=session,
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to update event delivery for {execution_id[:8]}...: {e}"
+                )
+
+        try:
+            from bifrost._logging import stage_logs_to_postgres
+
+            log_receipt = await stage_logs_to_postgres(execution_id, session)
+            if log_receipt.count:
+                logger.debug(
+                    "Staged %d logs for failed %s", log_receipt.count, execution_id[:8]
+                )
+        except Exception as e:
+            logger.warning(f"Failed to stage logs for {execution_id[:8]}...: {e}")
+
+        return partial(
+            self._announce_failure, execution_id, status, metadata, result, log_receipt, event_delivery,
+            is_sync=is_sync,
+        )
+
+    async def _announce_failure(
+        self,
+        execution_id: str,
+        status: ExecutionStatus,
+        metadata: ActiveExecution,
+        result: dict[str, Any],
+        log_receipt: "LogFlushReceipt | None",
+        event_delivery: "EventDelivery | None",
+        *,
+        is_sync: bool,
+    ) -> None:
+        error = result.get("error", "Unknown error")
+        error_type = result.get("error_type", "ExecutionError")
+        duration_ms = result.get("duration_ms", 0)
+        workflow_id = metadata.get("workflow_id")
+        workflow_name = metadata.get("workflow_name", "unknown")
+        org_id = metadata.get("org_id")
+        user_id = metadata.get("user_id")
+        user_email = metadata.get("user_email")
+        user_name = metadata.get("user_name")
 
         # A sync failure is just as latency-sensitive as a success. Wake the
         # caller once the authoritative failure is durable.
@@ -692,6 +720,9 @@ class WorkflowExecutionConsumer:
                     broadcast_delivery_update_after_commit,
                 )
 
+                from src.core.database import get_session_factory
+
+                session_factory = get_session_factory()
                 async with session_factory() as broadcast_session:
                     await broadcast_delivery_update_after_commit(
                         broadcast_session, event_delivery
@@ -773,6 +804,47 @@ class WorkflowExecutionConsumer:
             status=status.value,
             trigger_event=metadata.get("event"),
         )
+
+
+class WorkflowExecutionConsumer(WorkflowResultHandler):
+    """
+    Runs claimed workflow dispatches in the executor's process pool.
+
+    Message format (the dispatch's message; the context is the claimed run):
+    {
+        "execution_id": "uuid",
+        "workflow_id": "uuid" (optional, for workflow execution),
+        "code": "base64-encoded-script" (optional, for inline scripts),
+        "script_name": "name" (optional, for inline scripts),
+        "sync": false (optional, if true pushes result to Redis for API)
+    }
+    """
+
+    def __init__(self, pool: ProcessPoolManager | None = None):
+        super().__init__()
+
+        # Default to the process-wide manager so package installation keeps
+        # updating the same pool; API hosts may supply their canonical pool.
+        if pool is None:
+            from src.services.execution.process_pool import get_process_pool
+
+            pool = get_process_pool()
+        self._pool = pool
+        # Set the result callback on the selected pool.
+        self._pool.on_result = self._handle_result
+        self._pool_started = False
+
+    async def start_pool(self) -> None:
+        """Start the process pool (and its template process)."""
+        await self._pool.start()
+        self._pool_started = True
+        logger.info("Process pool started")
+
+    async def stop_pool(self) -> None:
+        if self._pool_started:
+            await self._pool.stop()
+            self._pool_started = False
+            logger.info("Process pool stopped")
 
     async def process_message(
         self,

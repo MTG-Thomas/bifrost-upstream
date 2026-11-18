@@ -16,7 +16,7 @@ import re
 import time
 from collections.abc import Awaitable
 from datetime import UTC, datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, TypeGuard, cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select, update
@@ -1350,15 +1350,33 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         self._bind_workflow_handle(handle, event)
         handle.process.terminal_receipt = receipt
         if state == "uncertain":
+            error_type = result.get("error_type")
+            # The launcher journals the stop reason, so this also works when
+            # a new API owner replays a terminal without an in-memory stop.
+            if error_type == "CancelledError":
+                from src.core.database import get_db_context
+                from src.models.enums import ExecutionStatus
+                from src.models.orm.executions import Execution
+
+                execution = handle.current_execution
+                assert execution is not None
+                async with get_db_context() as db:
+                    status = await db.scalar(select(Execution.status).where(
+                        Execution.id == UUID(execution.execution_id),
+                    ))
+                if status != ExecutionStatus.CANCELLING:
+                    error_type = "WorkflowAttemptUncertain"
+            elif error_type != "TimeoutError":
+                error_type = "WorkflowAttemptUncertain"
             result = {
                 **result,
-                "error_type": "WorkflowAttemptUncertain",
+                "error_type": error_type,
                 "error": f"Workflow may already have taken effect. {result.get('error') or ''}".strip(),
             }
         await self._handle_result(handle, result)
 
     @staticmethod
-    def _valid_opaque_terminal_result(result: Any, state: str) -> bool:
+    def _valid_opaque_terminal_result(result: Any, state: str) -> TypeGuard[dict[str, Any]]:
         return (
             isinstance(result, dict) and type(result.get("success")) is bool
             and (not result["success"] or state == "completed")

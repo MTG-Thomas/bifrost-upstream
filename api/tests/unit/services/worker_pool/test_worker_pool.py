@@ -1796,6 +1796,74 @@ async def test_cloudflare_worker_loss_does_not_learn_oom_peak(db, monkeypatch) -
     peak.assert_not_awaited()
 
 
+@pytest.mark.parametrize("profile", [CLOUDFLARE_PYTHON_RUNTIME_PROFILE, LINUX_RUNTIME_PROFILE])
+async def test_lost_cancelling_run_announces_its_terminal_status(db, monkeypatch, profile) -> None:
+    from src.jobs.consumers import workflow_execution
+
+    worker_id, execution_id = uuid4(), uuid4()
+    opaque = profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+    redis, execution_update, history_update, failure_events, delivery_update = (AsyncMock() for _ in range(5))
+    redis.get_active_execution.return_value = None
+    delivery_update.return_value = None
+    monkeypatch.setattr("src.core.redis_client.get_redis_client", lambda: redis)
+    monkeypatch.setattr(workflow_execution, "get_redis_client", lambda: redis)
+    monkeypatch.setattr(workflow_execution, "publish_execution_update", execution_update)
+    monkeypatch.setattr(workflow_execution, "publish_history_update", history_update)
+    monkeypatch.setattr("src.services.events.builtins.emit_workflow_failure_events", failure_events)
+    monkeypatch.setattr("src.services.events.processor.update_delivery_from_execution", delivery_update)
+    monkeypatch.setattr("src.core.database.get_session_factory", lambda: db.sessions)
+
+    async with db.sessions() as session:
+        session.add(ExecutionWorker(id=worker_id, form="external", state="lost", runtime_profile=profile))
+        session.add(Execution(
+            id=execution_id, workflow_name="lost workflow", executed_by_name="user",
+            status=ExecutionStatus.CANCELLING,
+        ))
+        session.add(ExecutionWorkerClaim(
+            worker_id=worker_id, subject_id=execution_id, family=work_dispatch.WAKE_WORKFLOW,
+        ))
+        await session.commit()
+
+    try:
+        async with db.sessions() as session:
+            lost = await recovery.end_runs_of_lost_worker(
+                session, worker_id, uncertain_workflows=frozenset({execution_id}) if opaque else frozenset(),
+            )
+            redis.push_result.assert_not_awaited()
+            await session.commit()
+        await recovery.announce_lost_runs(lost)
+
+        status, error, error_type = (
+            (ExecutionStatus.CANCELLED, recovery.WORKFLOW_ATTEMPT_UNCERTAIN, "CancelledError") if opaque
+            else (ExecutionStatus.FAILED, recovery.EXECUTOR_LOST, "ExecutorLost")
+        )
+        async with db.sessions() as session:
+            execution = await session.get(Execution, execution_id)
+            assert execution.status == status
+            assert execution.error_message == error
+            assert not await session.scalar(select(WorkDispatch.id).where(WorkDispatch.subject_id == execution_id))
+
+        redis.push_result.assert_awaited_once_with(
+            execution_id=str(execution_id), status=status.value, error=error, error_type=error_type, duration_ms=0,
+        )
+        if opaque:
+            execution_update.assert_awaited_once_with(
+                str(execution_id), status.value, {"error": error, "errorType": error_type},
+            )
+            assert history_update.await_args.kwargs["status"] == status.value
+            assert failure_events.await_args.kwargs["error_type"] == error_type
+            assert delivery_update.await_args.args == (str(execution_id), status.value)
+        else:
+            db.live_updates.assert_awaited_once_with(execution_id, status.value, {"error": error})
+            history_update.assert_not_awaited()
+            failure_events.assert_not_awaited()
+    finally:
+        async with db.sessions() as session:
+            await session.execute(delete(ExecutionWorker).where(ExecutionWorker.id == worker_id))
+            await session.execute(delete(Execution).where(Execution.id == execution_id))
+            await session.commit()
+
+
 async def test_a_run_lost_for_any_other_reason_teaches_nothing(db) -> None:
     """A crash, a forced stop or a lost node says nothing about memory."""
     workflow_id, worker_id = await _lose_running_job_worker(db, oom=False)

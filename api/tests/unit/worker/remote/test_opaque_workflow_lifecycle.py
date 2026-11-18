@@ -933,11 +933,79 @@ async def test_cooperative_stop_waits_for_terminal(
     pool.on_result.assert_not_awaited()
 
     entry.update(event_id="settled-stop", attempt_state="uncertain")
-    await bridge.receive(terminal_event(entry, success=False))
+    event = terminal_event(entry, success=False)
+    event["result"].update(error_type=error_type, error=stop.args[1]["error"])
+    await bridge.receive(event)
     await asyncio.gather(*bridge.results)
     assert worker.admission.held_bytes() == RESERVATION
-    assert pool.on_result.await_args.args[0]["error_type"] == "WorkflowAttemptUncertain"
+    assert pool.on_result.await_args.args[0]["error_type"] == error_type
     bridge.acknowledge.assert_awaited_once_with(entry["event_id"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("state", "error_type", "cancelling", "expected"), [
+    ("not_started", "CancelledError", True, ExecutionStatus.CANCELLED),
+    ("uncertain", "CancelledError", True, ExecutionStatus.CANCELLED),
+    ("uncertain", "CancelledError", False, ExecutionStatus.FAILED),
+    ("not_started", "TimeoutError", False, ExecutionStatus.TIMEOUT),
+    ("uncertain", "TimeoutError", False, ExecutionStatus.TIMEOUT),
+    ("uncertain", "TimeoutError", True, ExecutionStatus.TIMEOUT),
+    ("not_started", "LauncherReset", False, ExecutionStatus.FAILED),
+    ("uncertain", "LauncherReset", True, ExecutionStatus.FAILED),
+    ("completed", None, True, ExecutionStatus.SUCCESS),
+    ("completed", "ValueError", True, ExecutionStatus.FAILED),
+])
+async def test_replayed_opaque_terminal_commits_its_outcome(
+    opaque_executor, async_session_factory, monkeypatch, state, error_type, cancelling, expected,
+):
+    worker, pool, (subject, sibling) = opaque_executor
+    if cancelling:
+        async with async_session_factory() as db:
+            await db.execute(update(Execution).where(Execution.id == subject).values(
+                status=ExecutionStatus.CANCELLING,
+            ))
+            await db.commit()
+
+    consumer = worker._workflow_consumer
+    consumer.owner_worker_id = worker.incarnation_id
+    pool.on_result = consumer._handle_result
+    terminal = workflow_entry(subject)
+    terminal.update(event_id="retained-outcome", attempt_state=state)
+    consumer._redis_client = AsyncMock()
+    consumer._redis_client.get_active_execution.return_value = terminal["active_execution"]
+    monkeypatch.setattr("src.core.database.get_session_factory", lambda: async_session_factory)
+    publish = AsyncMock()
+    monkeypatch.setattr(workflow_execution, "publish_execution_update", publish)
+    monkeypatch.setattr(workflow_execution, "publish_history_update", AsyncMock())
+    monkeypatch.setattr("src.services.events.builtins.emit_workflow_failure_events", AsyncMock())
+    monkeypatch.setattr("src.services.events.builtins.emit_workflow_completed_event", AsyncMock())
+
+    event = terminal_event(terminal, success=error_type is None)
+    if error_type is not None:
+        event["result"].update(error_type=error_type, error="Terminal reason")
+    await worker.bridge.receive(event)
+    await worker.bridge.receive(inventory([workflow_entry(sibling)], [terminal]))
+    await worker._prepare_admission()
+    await asyncio.gather(*worker.bridge.results)
+
+    async with async_session_factory() as db:
+        execution = await db.get(Execution, subject)
+        assert execution.status == expected
+        assert execution.completed_at is not None
+        if error_type is None:
+            assert execution.result == "output"
+        if state == "uncertain":
+            assert execution.error_message.startswith("Workflow may already have taken effect.")
+        assert not await db.scalar(select(WorkDispatch.id).where(WorkDispatch.subject_id == subject))
+
+    assert publish.await_args.args[1] == expected.value
+    if error_type is not None:
+        if state == "uncertain" and expected == ExecutionStatus.FAILED:
+            error_type = "WorkflowAttemptUncertain"
+        assert publish.await_args.args[2]["errorType"] == error_type
+        assert consumer._redis_client.push_result.await_args.kwargs["error_type"] == error_type
+    worker.bridge.acknowledge.assert_awaited_once_with(terminal["event_id"])
+    worker.bridge.request.assert_not_awaited()
 
 
 @pytest.mark.asyncio
