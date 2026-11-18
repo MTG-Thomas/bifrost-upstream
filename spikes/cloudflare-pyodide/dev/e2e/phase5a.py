@@ -31,8 +31,8 @@ def sha256(value):
     return hashlib.sha256(value).hexdigest()
 
 
-def prepare(hosted=False):
-    prefix = "phase5b-" if hosted else "phase5-"
+def prepare(hosted=False, phase6=False):
+    prefix = "phase6-" if phase6 else "phase5b-" if hosted else "phase5-"
     if not ROOT.name.startswith(prefix) or command("git", "remote") or command(
         "git", "status", "--porcelain"
     ):
@@ -45,7 +45,8 @@ def prepare(hosted=False):
     with os.fdopen(fd, "w") as env:
         os.fchmod(env.fileno(), 0o644)
         env.write("BIFROST_CLOUDFLARE_WORKER_HELLO_ENABLED=true\n")
-        env.write(f"BIFROST_WORKER_CAPACITY_TOKEN={secrets.token_hex(32)}\n")
+        if not phase6:
+            env.write(f"BIFROST_WORKER_CAPACITY_TOKEN={secrets.token_hex(32)}\n")
     for directory in ("node_modules", "sdk_src"):
         (ROOT / "api/src/services/sdk_package" / directory).mkdir(parents=True, exist_ok=True)
     compose = ROOT / "docker-compose.debug.yml"
@@ -74,6 +75,23 @@ def prepare(hosted=False):
             b"BIFROST_DEFAULT_USER_PASSWORD=password",
             f"BIFROST_DEFAULT_USER_PASSWORD={secrets.token_hex(32)}".encode(),
         ) + f"\nBIFROST_SECRET_KEY={secrets.token_hex(32)}\n".encode())
+    if phase6:
+        host = command("docker", "network", "inspect", "bridge", "--format", "{{(index .IPAM.Config 0).Gateway}}")
+        if not re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", host):
+            raise SystemExit("Expected a local IPv4 Docker bridge gateway")
+        key = ROOT / ".phase6-key.pem"
+        cert = ROOT / ".phase6-ca.pem"
+        subprocess.run([
+            "openssl", "req", "-x509", "-newkey", "rsa:2048", "-noenc", "-days", "1",
+            "-subj", "/CN=phase6 local fixture", "-addext", f"subjectAltName=IP:{host}",
+            "-keyout", str(key), "-out", str(cert),
+        ], cwd=ROOT, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        cert.chmod(0o644)
+        (ROOT / ".phase6-host").write_text(host)
+        before, api = compose.read_bytes().split(b"\n  api:\n", 1)
+        api = api.replace(b"    environment:\n", b"    environment:\n      SSL_CERT_FILE: /app/.phase6-ca.pem\n", 1)
+        api = api.replace(b"    volumes:\n", b"    volumes:\n      - ./.phase6-ca.pem:/app/.phase6-ca.pem:ro\n", 1)
+        compose.write_bytes(before + b"\n  api:\n" + api)
 
 
 def local_api(hosted):

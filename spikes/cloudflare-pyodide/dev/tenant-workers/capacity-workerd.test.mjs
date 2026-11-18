@@ -106,7 +106,7 @@ async function start() {
     if (new URL(request.url).origin !== 'https://test-api.invalid') return new Response(null, {status: 403});
     return fetch(new Request(${JSON.stringify(base)} + new URL(request.url).pathname, request));
   }};`;
-  mf = new Miniflare({resourcePersistencePath: storage, workers: [
+  mf = new Miniflare({cf: false, resourcePersistencePath: storage, workers: [
     capacityWorker(settings),
     {
       dev: {outboundService: {type: 'worker', worker: 'relay'}},

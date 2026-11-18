@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {readFileSync, utimesSync, writeFileSync} from 'node:fs';
+import {appendFileSync, readFileSync, utimesSync, writeFileSync} from 'node:fs';
 import {mkdir} from 'node:fs/promises';
 import {createServer} from 'node:http';
+import {createServer as createTlsServer} from 'node:https';
 import {createRequire} from 'node:module';
 import {posix} from 'node:path';
 import {buffer} from 'node:stream/consumers';
@@ -12,6 +13,7 @@ import {fileURLToPath} from 'node:url';
 import {supervisorModules} from '../tenant-workers/supervisor-digest.mjs';
 import {stageRuntimeLoader} from '../stage-runtime-loader.mjs';
 import {hostedRelayPath, relayHeaders, relayHttp} from './relay-http.mjs';
+import {capacityWorker} from './capacity-miniflare.mjs';
 
 const root = new URL('../', import.meta.url);
 const require = createRequire(new URL('tenant-workers/package.json', root));
@@ -28,6 +30,8 @@ let fault = null;
 let worker;
 let mf;
 let nextHostedGate;
+let provider;
+let providerServer;
 
 function evidence(label, data) {
   console.log(JSON.stringify({label, ...data}));
@@ -56,6 +60,13 @@ function workerRow() {
     'generation',remote_session_generation,'owner',remote_owner_id,
     'profile',runtime_profile,'runs',runs_handled) FROM execution_workers
     WHERE id = '${config.incarnation}'`);
+}
+
+function managedRows() {
+  return sql(`SELECT coalesce(json_agg(json_build_object('id',id,'state',state,'uid',capacity_resource_uid,
+    'launcher',remote_launcher_id,'profile',runtime_profile,'hello',remote_hello_sequence,
+    'deleted',capacity_resource_deleted_at IS NOT NULL,'end',end_reason)), '[]'::json)
+    FROM execution_workers WHERE capacity_scope = 'phase6-local'`);
 }
 
 function runRow(id) {
@@ -238,8 +249,9 @@ const harnessEntry = `
   }
   export default {
     async fetch(request, env, ctx) {
-      const stub = ctx.exports.CloudflareLauncher.getByName(env.BIFROST_WORKER_INCARNATION_ID);
-      switch (new URL(request.url).pathname) {
+      const url = new URL(request.url);
+      const stub = ctx.exports.CloudflareLauncher.getByName(url.searchParams.get('id') ?? env.BIFROST_WORKER_INCARNATION_ID);
+      switch (url.pathname) {
         case '/start':
           await production.scheduled({}, env, ctx);
           return new Response(null, {status: 204});
@@ -274,12 +286,14 @@ async function launch(port) {
   const exports = {CloudflareLauncher: {type: 'durable-object', storage: 'sqlite'},
     TenantHost: {type: 'durable-object', storage: 'sqlite'}};
   const env = Object.fromEntries(Object.entries({
-    API_ORIGIN: origin, BIFROST_CLOUDFLARE_LAUNCHER_ENABLED: 'true',
-    BIFROST_WORKER_CONTROL_SECRET: config.controlKey, BIFROST_WORKER_INCARNATION_ID: config.incarnation,
-    BIFROST_WORKER_LAUNCHER_ID: config.launcher, BIFROST_WORKER_RESOURCE_UID: config.resource,
-    BIFROST_WORKER_VERSION: config.build, RUNTIME_SHA256: createHash('sha256').update(artifact).digest('hex'),
+    API_ORIGIN: origin, RUNTIME_SHA256: createHash('sha256').update(artifact).digest('hex'),
+    ...(config.phase6 ? {BIFROST_CLOUDFLARE_MANAGED: 'true'} : {
+      BIFROST_CLOUDFLARE_LAUNCHER_ENABLED: 'true', BIFROST_WORKER_CONTROL_SECRET: config.controlKey,
+      BIFROST_WORKER_INCARNATION_ID: config.incarnation, BIFROST_WORKER_LAUNCHER_ID: config.launcher,
+      BIFROST_WORKER_RESOURCE_UID: config.resource, BIFROST_WORKER_VERSION: config.build,
+    }),
   }).map(([key, value]) => [key, {type: 'text', value}]));
-  mf = new Miniflare({workers: [{
+  mf = new Miniflare({cf: false, workers: [{
     dev: {outboundService: {type: 'worker', worker: 'relay'}},
     config: {name: 'launcher', compatibilityDate: '2026-10-30', exports,
       env: {...env, LOADER: {type: 'worker-loader'}},
@@ -296,12 +310,14 @@ async function launch(port) {
           return fetch(new Request('http://127.0.0.1:${port}' + path + url.search, request));
         }};
       `)}}},
-  }]});
+  }, ...(config.phase6 ? [capacityWorker({...config.phase6, version: config.build, maxWorkers: 1})] : [])]});
   worker = await mf.getWorker('launcher');
+  if (config.phase6) provider = await mf.getWorker('capacity');
 }
 
 async function control(path, status = 204) {
-  const response = await worker.fetch('https://harness.invalid/' + path);
+  const response = await worker.fetch('https://harness.invalid/' + path +
+    (config.phase6 ? '?id=' + config.incarnation : ''));
   assert.equal(response.status, status, await response.clone().text());
   return status === 200 ? response.json() : null;
 }
@@ -366,6 +382,88 @@ async function settle(scenario, run, status, ackCount = 1, dispatchCount = 1) {
   assert.equal(wire.filter((event) => event.kind === 'workflow' && event.id === run.id).length, dispatchCount);
   evidence('settled', {scenario, id: run.id, row, ...(config.hosted ? {} : {ledger: await control('ledger', 200)})});
   return row;
+}
+
+async function startCapacityEndpoint() {
+  providerServer = createTlsServer({
+    key: readFileSync('.phase6-key.pem'), cert: readFileSync('.phase6-ca.pem'),
+  }, async (req, res) => {
+    try {
+      const body = req.method === 'GET' ? undefined : await buffer(req);
+      const start = /^\/v1\/workers\/([0-9a-f-]{36})\/start$/.exec(req.url);
+      if (start && req.method === 'POST' && req.headers.authorization === 'Bearer ' + config.phase6.token) {
+        const row = managedRows().find(({id}) => id === start[1]);
+        assert.equal(row?.state, 'starting');
+        assert.equal(row.uid, JSON.parse(body).resource_uid);
+        assert.equal(row.launcher, row.id);
+        assert.equal(row.profile, 'cloudflare-python-v1');
+        assert.equal(row.hello, 0);
+        config.incarnation = row.id;
+        evidence('provider-start-bound', {row});
+      }
+      const reply = await provider.fetch('https://provider.invalid' + req.url,
+        {method: req.method, headers: req.headers, body});
+      if (req.method === 'GET' && req.url === '/v1/capabilities' && reply.ok) config.phase6.discovered = true;
+      if (req.method === 'DELETE' && reply.ok) {
+        const {worker_id, state} = await reply.clone().json();
+        evidence('provider-delete', {worker: worker_id, state});
+      }
+      res.writeHead(reply.status, Object.fromEntries(reply.headers));
+      res.end(Buffer.from(await reply.arrayBuffer()));
+    } catch (error) {
+      evidence('provider-relay-error', {type: error.name});
+      res.writeHead(502).end();
+    }
+  });
+  await new Promise((resolve, reject) => {
+    providerServer.once('error', reject);
+    providerServer.listen(0, config.phase6.providerHost, resolve);
+  });
+  const endpoint = `https://${config.phase6.providerHost}:${providerServer.address().port}`;
+  appendFileSync('.phase5-api.env',
+    `\nBIFROST_WORKER_CAPACITY_URL=${endpoint}\nBIFROST_WORKER_CAPACITY_TOKEN=${config.phase6.token}\n`);
+  reloadApi();
+}
+
+async function phase6Checks() {
+  const linuxLaunchers = ['worker', 'scheduler'].map((service) => config.project + '-' + service + '-1');
+  execFileSync('docker', ['pause', ...linuxLaunchers]);
+  try {
+    await delay(3100); // Wait for the existing Linux samples to go stale.
+    await launch(proxy.address().port);
+    await startCapacityEndpoint();
+    await until('API selected the capacity provider', () => config.phase6.discovered);
+    const submitted = await api('/api/workflows/execute', {
+      workflow_id: config.workflows.linux, input_data: {}, sync: false,
+    });
+    assert.equal(submitted.status, 200);
+    const linux = submitted.data.execution_id;
+    await until('Linux-only dispatch queued', () => runRow(linux)?.queued === 1);
+    await delay(6500);
+    assert.deepEqual(managedRows(), []);
+    assert.equal(runRow(linux).claim, null);
+    evidence('linux-only-zero-launches', {id: linux, row: runRow(linux)});
+    const run = await startRun('phase6');
+    const credential = tokens.get(run.id);
+    assert.equal((await api(sdkPath, {}, credential)).status, 200);
+    run.gate.release.resolve();
+    await settle('phase6', run, 'Success');
+    assert.equal((await api(sdkPath, {}, credential)).status, 401);
+    const released = await until('idle worker retired and provider deletion confirmed', () => {
+      const [row] = managedRows();
+      return row?.state === 'retired' && row.deleted && row;
+    });
+    assert.equal(released.end, 'idle');
+    assert.deepEqual(await control('ledger', 200), {});
+    const hellos = wire.filter((event) => event.kind === 'hello').length;
+    await delay(16_000);
+    assert.equal(wire.filter((event) => event.kind === 'hello').length, hellos);
+    assert.equal(managedRows().length, 1);
+    assert.equal(runRow(linux).claim, null);
+    evidence('phase6-idle-release', {row: released, hellos, linuxOnly: linux, completed: run.id});
+  } finally {
+    execFileSync('docker', ['unpause', ...linuxLaunchers]);
+  }
 }
 
 async function hostedChecks() {
@@ -488,11 +586,7 @@ async function localChecks() {
   cancel.gate.release.resolve();
 }
 
-await new Promise((resolve, reject) => {
-  proxy.once('error', reject);
-  proxy.listen(config.port, '127.0.0.1', resolve);
-});
-try {
+async function phase5Checks() {
   const prepared = workerRow();
   assert.ok((config.port ? ['starting', 'ready'] : ['starting']).includes(prepared.state));
   let interrupted;
@@ -555,6 +649,15 @@ try {
   await delay(config.hosted ? 65_000 : 16_000); // Observe through the DO's 15 s watchdog window.
   assert.equal(wire.filter((event) => event.kind === 'hello').length, helloCount);
   evidence('retired', {row: workerRow(), ledger: retired, helloCount});
+}
+
+await new Promise((resolve, reject) => {
+  proxy.once('error', reject);
+  proxy.listen(config.port, '127.0.0.1', resolve);
+});
+try {
+  if (config.phase6) await phase6Checks();
+  else await phase5Checks();
 } finally {
   for (const gate of gates.values()) gate.release.resolve();
   await mf?.dispose();
@@ -562,4 +665,6 @@ try {
   sockets.close();
   proxy.closeAllConnections();
   proxy.close();
+  providerServer?.closeAllConnections();
+  providerServer?.close();
 }

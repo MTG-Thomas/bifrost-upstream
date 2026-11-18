@@ -62,6 +62,54 @@ The verified run used archive `7e1f7c846` on CT128, project
 `/opt/bifrost-tests/phase5-7e1f7c846/.phase5-run.log`. The runtime digest was
 `fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5`.
 
+## Phase 6 managed Workers capacity
+
+Use a fresh, private `/opt/bifrost-tests/phase6-<sha>` archive with an
+initial Git commit and no remotes. Use Node 26 and the same packaged Python
+runtime as Phase 5a. The harness generates a throwaway TLS certificate and
+limits the provider HTTPS listener to the Docker bridge. It runs the
+provider and launcher as separate Workers in local workerd.
+
+```sh
+umask 077
+(cd spikes/cloudflare-pyodide/dev/tenant-workers && npm install --no-audit --no-fund --package-lock=false)
+python3 spikes/cloudflare-pyodide/dev/e2e/phase6.py prepare
+BIFROST_FORCE_PORT=1 nohup setsid ./debug.sh up >.phase6-debug.log 2>&1 </dev/null &
+# Wait for "Stack is up." in the private boot log.
+nohup setsid python3 spikes/cloudflare-pyodide/dev/e2e/phase6.py run /absolute/path/generated-runtime.mjs \
+  >.phase6-run.log 2>&1 </dev/null &
+# After phase6-idle-release, or on failure:
+BIFROST_FORCE_PORT=1 ./debug.sh down
+```
+
+The harness pauses both Linux launchers. It checks that the Linux-only
+dispatch queues with zero managed incarnations, then submits an approved
+revision and checks that the real API commits the profile and enrollment
+binding before provider start. The Python child claims and completes that
+dispatch, writes one log, and loses its run credential after settlement.
+The harness waits for idle retirement and confirmed provider deletion,
+then checks that the launcher does not reconnect across one alarm watchdog
+window. It unpauses the Linux launchers when it exits.
+
+Dual-provider planning is covered by the API unit test in
+`test_external_capacity.py`. Configure `BIFROST_WORKER_CAPACITY_URL` and
+`BIFROST_WORKER_CAPACITY_TOKEN` for the primary provider, and
+`BIFROST_CLOUDFLARE_CAPACITY_URL` and `BIFROST_CLOUDFLARE_CAPACITY_TOKEN`
+for the optional burst scope. In a single Cloudflare scope, use the primary
+settings. Both Cloudflare modes require
+`BIFROST_CLOUDFLARE_WORKER_HELLO_ENABLED=true` and reviewed workflow
+approvals. Keep the TLS keys and logs inside the private archive.
+
+Run the local provider and shared HTTP conformance suite with
+`node --test spikes/cloudflare-pyodide/dev/tenant-workers/capacity-workerd.test.mjs`.
+The restart hook recreates Miniflare with the same SQLite storage.
+
+The CT128 run from archive `d9d7c1333` used project
+`bifrost-debug-ebc1b3ce`. Execution `bc11af91-a0f2-41a6-bbac-3b898ca1a23d`
+committed on incarnation `5a0aab8d-5d6c-4175-b935-d6b5485586ad`.
+The provider confirmed deletion after idle retirement. Linux-only execution
+`5ba006cc-71b4-4203-b4ee-337f7e333736` remained queued throughout.
+
 ## Phase 5b hosted launcher
 
 Use a new mode-0700 `/opt/bifrost-tests/phase5b-<sha>` archive with a local Git
