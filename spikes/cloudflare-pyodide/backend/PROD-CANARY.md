@@ -124,6 +124,18 @@ Not yet at parity:
   ping keeps the isolate alive (the ping exercises almost none of them). The
   child's own CPU time is not observable: Dynamic Worker children emit no
   telemetry events.
+- **Cause found and removed (2026-11-18).** The ~250 ms is the cost of the
+  *first engine run in a child*: on a lab tenant, a dry engine attempt took
+  256 ms the first time in a child and 16 ms on each of the next two. The
+  canary's host instance is recreated between cycles, and its keep-warm ping
+  boots a new child, so every 15-minute attempt was that child's first engine
+  run despite `first_request: false`. Keep-warm (alarm) pings now run one dry
+  engine attempt under an unregistered handle. The outbound gateway refuses its
+  one SDK call with 401 before anything reaches the API (verified in
+  telemetry), and the dry run is serialized with attempts. First cycle after
+  (03:42): engine 188 ms with 163 ms of API, so **~25 ms in-child, down from
+  ~250 ms**. Linux took 119 ms that cycle (the API was slow for both). One
+  sample so far; following cycles confirm or refute it.
 - Both cycles also went through the warm-up path (`cloud_warm` present): the
   TenantHost instance had been recreated since the last attempt, losing its
   in-memory `childReady`, even with alarms every 45 s. The child itself

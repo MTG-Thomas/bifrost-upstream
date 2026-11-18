@@ -137,6 +137,15 @@ qualify). The host keeps the union in storage per engine digest (at most 400
 names), and the next ping imports it. A runtime change starts a new list. A
 name that no longer imports is reported as `prime_skipped`, not fatal.
 
+Keep-warm (alarm) pings also run one **dry engine attempt** under a handle the
+host never registered. The outbound gateway answers its first SDK call 401
+(`unknown handle`) before anything reaches the API, and the engine reports
+`WorkflowLoadError`. This moves the first engine run in a child (measured
+256 ms, against 16 ms afterwards) off the request path. The dry run holds the
+host's attempt chain, because the child is single-threaded and the SDK
+credential is process-wide. Request-path warm-ups do not exercise, so an
+attempt never waits on one. `action: "exercise"` runs one on demand.
+
 Every attempt has a deadline (`ATTEMPT_DEADLINE_MS`, default 1800 s like the
 Linux pool). A child that misses it is retired under a new loader generation
 and never reused: exceeding the subrequest limit inside a synchronous import
