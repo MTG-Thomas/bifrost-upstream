@@ -39,6 +39,10 @@ class WorkDispatch(Base):
     execution_lane: Mapped[str] = mapped_column(
         String(20), nullable=False, default="normal", server_default=text("'normal'")
     )
+    # Set only by the API when it approved this exact work for the Cloudflare
+    # runtime: a digest of the workflow revision, module manifest and
+    # eligibility policy. NULL (every ordinary dispatch) means Linux only.
+    cloudflare_revision: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("NOW()")
     )

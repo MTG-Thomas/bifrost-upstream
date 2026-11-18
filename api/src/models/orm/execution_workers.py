@@ -33,6 +33,13 @@ class ExecutionWorker(Base):
     state: Mapped[str] = mapped_column(String(20), nullable=False, default="reserved")
     resource_class: Mapped[str] = mapped_column(String(50), nullable=False, default="standard")
     # Fast Path workers never claim Normal dispatches, including background work.
+    # The physical runtime this executor negotiated (remote.protocol runtime
+    # profiles). Existing executors are Linux processes; only an executor whose
+    # profile is the Cloudflare one may take a Cloudflare-eligible dispatch.
+    runtime_profile: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="linux-process-v1",
+        server_default=text("'linux-process-v1'"),
+    )
     execution_lane: Mapped[str] = mapped_column(
         String(20), nullable=False, default="normal", server_default=text("'normal'")
     )

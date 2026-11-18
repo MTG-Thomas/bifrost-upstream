@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -31,6 +32,7 @@ from src.models.orm.work_dispatches import WorkDispatch
 logger = logging.getLogger(__name__)
 
 RECONCILE_BATCH = 100
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 # Dispatches are re-examined once they are this old (cancelled runs,
 # dispatches held by a lost worker), and fail visibly if no worker capacity
 # claimed them by the claim deadline.
@@ -89,15 +91,21 @@ def stage_dispatch(
     memory_request_bytes: int,
     execution_lane: str = "normal",
     queued_at: datetime | None = None,
+    cloudflare_revision: str | None = None,
 ) -> WorkDispatch:
     """Add a dispatch to the caller's transaction; hand off after commit.
 
     ``memory_request_bytes`` is what the work is expected to add
     (src.services.memory_requests); executors claim it only when it fits.
     ``queued_at`` keeps the place in line of work handed back.
+    ``cloudflare_revision`` is the API's own eligibility approval (a sha256
+    hex digest), passed explicitly by the caller that computed it; it is never
+    derived from message or payload fields.
 
     Executors claim it from PostgreSQL.
     """
+    if cloudflare_revision is not None and _SHA256_HEX.fullmatch(cloudflare_revision) is None:
+        raise ValueError("cloudflare_revision must be a sha256 hex digest")
     dispatch_id = uuid4()
     dispatch = WorkDispatch(
         id=dispatch_id,
@@ -114,6 +122,7 @@ def stage_dispatch(
         payload=payload,
         memory_request_bytes=memory_request_bytes,
         execution_lane=execution_lane,
+        cloudflare_revision=cloudflare_revision,
     )
     if queued_at is not None:
         dispatch.created_at = queued_at
