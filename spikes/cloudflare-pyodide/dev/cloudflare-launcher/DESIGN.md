@@ -404,8 +404,8 @@ run. Findings, checked against the cited code:
 A server operator runs these commands inside the API container, from `/app`:
 
 ```sh
-python -m scripts.cloudflare_workflow_approval propose WORKFLOW_UUID --subrequest-allowance 10 --cpu-budget-ms 1000
-python -m scripts.cloudflare_workflow_approval accept WORKFLOW_UUID --subrequest-allowance 10 --cpu-budget-ms 1000 --review-sha256 REVIEW_SHA256 --operator OPERATOR_LABEL
+python -m scripts.cloudflare_workflow_approval propose WORKFLOW_UUID --subrequest-allowance 10 --cpu-budget-ms 1000 --https-host tenant.example.com
+python -m scripts.cloudflare_workflow_approval accept WORKFLOW_UUID --subrequest-allowance 10 --cpu-budget-ms 1000 --https-host tenant.example.com --review-sha256 REVIEW_SHA256 --operator OPERATOR_LABEL
 python -m scripts.cloudflare_workflow_approval revoke WORKFLOW_UUID
 ```
 
@@ -430,9 +430,16 @@ top-level modules in the Workerd runtime's `python314.zip` and
 `sys.builtin_module_names`. A loopback probe of the pinned bundle successfully
 imported `ssl`, `sqlite3` and `lzma` without loading extra packages. It resolves
 transitive workspace imports, rejects known Pyodide traps, and discovers literal
-HTTPS origins. The analyzer follows imported HTTP namespaces, known client
-constructors, and the supported fetch functions. These calls require a literal
-HTTPS URL or a relative literal path against a known HTTPS base URL. Before parsing, analysis limits raw source buffers
+HTTPS origins. The analyzer follows imported HTTP namespaces, known clients, and supported
+fetch functions. It proposes exact hosts from HTTP call URLs and client base
+URLs, and reports `unresolved_url_calls` when static analysis cannot establish
+a destination. Returned links, documentation strings, and schema identifiers
+do not become egress permissions. For per-tenant hosts or server-provided URLs,
+repeat `--https-host` with the exact destinations during proposal and acceptance.
+Those additions are covered by the review digest. Carry-forward preserves the
+parent's allowlist and TenantHost enforces it on each request. Each new tenant
+host therefore requires explicit review.
+Before parsing, analysis limits raw source buffers
 to 128 KiB per file and 512 KiB per bundle, with a single module AST processed
 at a time and at most 100,000 visited nodes across the bundle. Python object
 overhead is additional and the worker admission and memory limits apply.
@@ -455,7 +462,9 @@ path, including a dependency discovered by this analysis, changes in the file
 index or an operator accepts a new proposal. Storage failures and unresolved
 dependencies can retry through PlatformJob and be staged again after cooldown
 when they are present in the index. Missing unindexed imports require review.
-Staging happens after workflow commit in a separate short transaction. The shared queue releases its dedupe
+After workflow commit a best-effort background task stages the job in a short
+transaction. A process exit before staging leaves the triggering run Linux-only,
+and a later dispatch can try again. The shared queue releases its dedupe
 lock at the end of that transaction, and the triggering Linux run can proceed
 if staging fails.
 
