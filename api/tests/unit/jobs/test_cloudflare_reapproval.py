@@ -132,7 +132,7 @@ async def test_shared_dedupe_cooldown_and_deterministic_refusal(scenario, db_ses
 
 async def test_retryable_storage_failure_requeues_shared_job(scenario, worker, async_session_factory, monkeypatch):
     _, _, payload, context = scenario
-    reapproval.propose_approval.side_effect = StorageError("backend_error")
+    reapproval.propose_approval.side_effect = StorageError("backend_error", provider_code="FixtureUnavailable")
     with pytest.raises(PlatformJobFailure) as failed:
         await reapproval._run_reapproval(context, payload)
     monkeypatch.setattr(platform_jobs, "publish_platform_job_update", AsyncMock())

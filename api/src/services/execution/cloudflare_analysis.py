@@ -42,6 +42,8 @@ _DYNAMIC = {"__import__", "eval", "exec", "compile", "vars", "globals"}
 _HTTP_NAMESPACES = {"httpx", "urllib.request", "js", "js.globalThis", "workers", "pyodide.http"}
 _HTTP_ROOTS = {name.split(".")[0] for name in _HTTP_NAMESPACES}
 _HTTP_CLIENTS = {"httpx.Client", "httpx.AsyncClient"}
+_HTTP_FUNCTIONS = {"fetch", "pyfetch", "request", "urlopen"}
+_HTTP_RECEIVERS = {"client", "http", "http_client", "http_session", "session"}
 _HTTP_METHODS = {"fetch", "pyfetch", "request", "get", "head", "post", "put", "patch", "delete", "options", "stream", "urlopen"}
 
 SourceReader = Callable[[str, int], Awaitable[bytes | None]]
@@ -263,7 +265,7 @@ class _Analysis:
             attr = node.args[1] if len(node.args) > 1 else None
             if (
                 not isinstance(attr, ast.Constant) or not isinstance(attr.value, str)
-                or attr.value in _DYNAMIC | _TRAPS | {"getattr", "modules", "__dict__", *_HTTP_METHODS}
+                or attr.value in _DYNAMIC | _TRAPS | {"getattr", "modules", "__dict__"} | _HTTP_FUNCTIONS
             ):
                 raise AnalysisRejected("Unsupported dynamic attribute lookup")
         namespace, _, method = qualified.rpartition(".")
@@ -284,7 +286,9 @@ class _Analysis:
         literal = _url_literal(url) if url is not None else None
         if namespace not in _HTTP_NAMESPACES and namespace not in clients:
             if (
-                method != "get" or literal is None or has_http_import
+                method in _HTTP_FUNCTIONS or has_http_import
+                or namespace.rsplit(".", 1)[-1] in _HTTP_RECEIVERS
+                or any(keyword.arg in {"url", "fullurl"} for keyword in node.keywords)
                 or (literal is not None and literal.startswith(("http://", "https://")))
             ):
                 raise AnalysisRejected("Outbound call has no statically identifiable HTTP receiver")

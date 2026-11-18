@@ -178,6 +178,13 @@ async def test_http_context_manager_and_unknown_receiver():
     assert (await _analyze({ENTRY: source}))["required_https_hosts"] == ["example.com"]
     with pytest.raises(AnalysisRejected, match="identifiable HTTP receiver"):
         await _analyze({ENTRY: b"def run(c): return c.get('https://example.com')\n"})
+    with pytest.raises(AnalysisRejected, match="identifiable HTTP receiver"):
+        await _analyze({ENTRY: b"def run(client, url): return client.get(url)\n"})
+
+
+async def test_mapping_get_without_http_intent_is_allowed():
+    result = await _analyze({ENTRY: b"def run(values, key): return values.get(key)\n"})
+    assert result["required_https_hosts"] == []
 
 
 @pytest.mark.parametrize("statement", [
