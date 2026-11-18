@@ -125,6 +125,17 @@ test('terminal release stops the active route and fences late results after the 
   assert.equal(api.frames().some(({event}) => event === 'result'), false);
 });
 
+test('terminal release fences a concurrent retirement frame before it writes the ledger', async () => {
+  const api = peer();
+  await connect(api);
+  const before = api.data.get('control');
+  const releasing = api.core.release();
+  const closing = api.close(CLOUDFLARE_INCARNATION_ENDED);
+  await Promise.all([releasing, closing]);
+  assert.deepEqual(api.data.get('control'), before);
+  assert.equal(await api.dial(), null);
+});
+
 test('hello sequence is confirmed before every dial, including after a lost welcome', async () => {
   const first = peer();
   const initial = await first.dial();

@@ -169,6 +169,7 @@ export class LauncherCore {
     if (this.#session !== session) return Promise.resolve();
     this.#session = null;
     return this.#serialize(async () => {
+      if (this.#released) return;
       if (code === CLOUDFLARE_INCARNATION_ENDED) {
         await this.#saveControl({...this.#control, state: 'retired'});
         const slot = this.#slot;
