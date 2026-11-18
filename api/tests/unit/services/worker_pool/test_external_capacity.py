@@ -49,6 +49,8 @@ class Provider:
         self.before_start: Callable[[UUID], Awaitable[None]] | None = None
         self.lose_start_response = False
         self.fail_deletions = False
+        self.refuse_prepare = False
+        self.lose_prepare_response = False
 
     async def handle(self, request):
         assert request.headers["Authorization"] == f"Bearer {TOKEN}"
@@ -64,6 +66,8 @@ class Provider:
         if request.method == "PUT":
             reservation = WorkerCapacityReservation.model_validate(body)
             assert str(reservation.worker_id) == worker_id
+            if self.refuse_prepare:
+                return httpx.Response(409)
             if resource is None:
                 resource = {
                     "scope": self.profile.scope, "worker_id": worker_id,
@@ -71,6 +75,8 @@ class Provider:
                     "resource_uid": f"resource-{UUID(worker_id).hex}", "state": "prepared",
                 }
                 self.resources[worker_id] = resource
+            if self.lose_prepare_response:
+                raise httpx.ReadTimeout("synthetic lost prepare response", request=request)
         else:
             assert resource is not None
             if body["resource_uid"] != resource["resource_uid"]:
@@ -182,7 +188,7 @@ async def test_timed_out_cloudflare_reservation_stops_retrying_prepare(db, capac
         assert (await session.get(ExecutionWorker, worker_id)).end_reason == "prepare_timeout"
 
 
-@pytest.mark.parametrize("failure", ["unreachable", "invalid-profile"])
+@pytest.mark.parametrize("failure", ["unreachable", "invalid-profile", "primary-at-boot"])
 async def test_dual_loop_runs_primary_before_burst_discovery_and_assigns_peers(monkeypatch, failure):
     primary = Provider().profile
     burst = primary.model_copy(update={"scope": "burst", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE})
@@ -195,13 +201,17 @@ async def test_dual_loop_runs_primary_before_burst_discovery_and_assigns_peers(m
     stop = asyncio.Event()
     passes = []
     burst_reads = 0
+    primary_reads = 0
 
     async def profile(client):
-        nonlocal burst_reads
+        nonlocal burst_reads, primary_reads
         if client.endpoint == primary_url:
+            primary_reads += 1
+            if failure == "primary-at-boot" and primary_reads == 1:
+                raise httpx.ConnectError("synthetic primary boot outage")
             return primary
         burst_reads += 1
-        if burst_reads == 1:
+        if burst_reads == 1 and failure != "primary-at-boot":
             if failure == "unreachable":
                 raise httpx.ConnectError("synthetic outage")
             return primary
@@ -209,11 +219,11 @@ async def test_dual_loop_runs_primary_before_burst_discovery_and_assigns_peers(m
 
     async def reconcile(pool):
         passes.append((pool.profile.scope, pool.peer_profile, pool.burst_launch_allowed))
-        if len(passes) == 4 and pool.profile.scope == primary.scope:
+        if failure != "primary-at-boot" and len(passes) == 4 and pool.profile.scope == primary.scope:
             raise httpx.ConnectError("synthetic primary outage")
 
     async def next_pass(*args, **kwargs):
-        if len(passes) == 5:
+        if len(passes) >= (3 if failure == "primary-at-boot" else 5):
             stop.set()
 
     monkeypatch.setattr(ExternalCapacityClient, "profile", profile)
@@ -223,13 +233,55 @@ async def test_dual_loop_runs_primary_before_burst_discovery_and_assigns_peers(m
     monkeypatch.setattr(external_controller, "_withdraw_live", AsyncMock())
     monkeypatch.setattr(external_controller, "wait_for_next_pass", next_pass)
     await asyncio.wait_for(external_controller.external_worker_pool_loop(stop, settings), timeout=2)
-    assert passes == [
+    expected = [
         (primary.scope, None, True),
         (primary.scope, None, True),
         (burst.scope, primary, True),
         (primary.scope, burst, True),
         (burst.scope, primary, False),
     ]
+    if failure == "primary-at-boot":
+        expected = [(burst.scope, None, False), (primary.scope, None, True), (burst.scope, primary, True)]
+    assert passes == expected
+
+
+@pytest.mark.parametrize("lost_reply", [False, True])
+async def test_unbound_cloudflare_prepare_holds_room_until_cleanup(db, capacity, lost_reply):
+    provider = capacity.provider
+    provider.profile = provider.profile.model_copy(update={
+        "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+        "memory_limit_bytes": CLOUDFLARE_DEV_BUDGET_BYTES,
+        "max_workers": 1,
+    })
+    provider.lose_prepare_response = lost_reply
+    provider.refuse_prepare = not lost_reply
+    pool = ExternalWorkerPoolController(capacity.client, SETTINGS, provider.profile)
+    policy = replace(capacity.policy, max_workers=1)
+    await _set_request(db.sessions, await _accept_pool_run(), 1, approved=True)
+    [worker_id] = await pool.launch_for_demand(policy)
+    with pytest.raises(httpx.ReadTimeout if lost_reply else httpx.HTTPStatusError):
+        await pool.reconcile_worker(worker_id, policy)
+    async with db.context() as session:
+        worker = await session.get(ExecutionWorker, worker_id)
+        worker.created_at -= timedelta(seconds=SETTINGS.pool_start_timeout_seconds + 1)
+    await pool.reconcile_worker(worker_id, policy)
+    assert await pool.launch_for_demand(policy) == []
+    await pool.reconcile_worker(worker_id, policy)
+    async with db.context() as session:
+        worker = await session.get(ExecutionWorker, worker_id)
+        assert worker.capacity_resource_uid is None
+        assert (worker.capacity_resource_deleted_at is not None) == lost_reply
+        if not lost_reply:
+            worker.ended_at -= external_controller.UNBOUND_PREPARE_GRACE
+    if lost_reply:
+        assert provider.resources[str(worker_id)]["state"] == "deleted"
+    else:
+        await pool.reconcile_worker(worker_id, policy)
+    async with db.context() as session:
+        assert await session.scalar(select(ExecutionWorker.id).where(
+            ExecutionWorker.id == worker_id, pool._cleanup_scope(),
+        )) is None
+    assert len(await pool.launch_for_demand(policy)) == 1
 
 
 async def test_terminal_scope_slot_holds_physical_room_but_does_not_trigger_burst(db, capacity):
@@ -286,6 +338,62 @@ async def test_linux_can_reclaim_an_idle_cloudflare_slot(db, capacity, warm):
         worker = await session.get(ExecutionWorker, worker_id)
         assert worker.end_reason == "capacity_replacement"
         assert worker.state == "draining"
+
+
+async def test_linux_warm_fill_does_not_replace_linux_without_a_launch_plan(db, capacity, monkeypatch):
+    pool = capacity.pool
+    pool.peer_profile = pool.profile.model_copy(update={
+        "scope": "burst", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+    })
+    linux_id = uuid4()
+    async with db.context() as session:
+        session.add_all([
+            ExecutionWorker(
+                id=linux_id, form="external", state="ready", resource_class="standard",
+                version=pool.version, capacity_scope=pool.profile.scope, memory_budget_bytes=GIB,
+                active_handler_counts={}, supported_handlers=["workflow.execute"],
+            ),
+            ExecutionWorker(
+                id=uuid4(), form="external", state="ready", resource_class="standard",
+                capacity_scope=pool.peer_profile.scope, runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+                active_runs=1,
+            ),
+        ])
+    await _set_request(db.sessions, await _accept_pool_run(), 2 * GIB)
+    # The oversized request has no launchable worker after Linux calibration.
+    monkeypatch.setattr(controller, "_plan_launches", lambda *args, **kwargs: controller.LaunchPlan(0, []))
+    assert await pool.launch_for_demand(replace(capacity.policy, warm_workers=2)) == []
+    async with db.context() as session:
+        assert (await session.get(ExecutionWorker, linux_id)).state == "ready"
+
+
+async def test_dual_limits_apply_after_discovery_without_blocking_burst_delete(db, capacity):
+    primary = capacity.pool
+    primary.settings = SimpleNamespace(**vars(SETTINGS), cloudflare_capacity_url="https://burst.invalid")
+    capacity.provider.profile = primary.profile.model_copy(update={
+        "scope": "burst", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+        "memory_limit_bytes": CLOUDFLARE_DEV_BUDGET_BYTES,
+    })
+    burst = ExternalWorkerPoolController(capacity.client, primary.settings, capacity.provider.profile)
+    policy = replace(capacity.policy, max_workers=primary.profile.max_workers + burst.profile.max_workers + 1)
+    primary._sizing(policy, [])
+    primary.peer_profile = burst.profile
+    with pytest.raises(CapacityProtocolError, match="max_workers"):
+        primary._sizing(policy, [])
+
+    worker_id = uuid4()
+    prepared = await capacity.client.prepare(WorkerCapacityReservation(
+        worker_id=worker_id, worker_version=burst.version, memory_limit_bytes=CLOUDFLARE_DEV_BUDGET_BYTES,
+        max_lifetime_seconds=60, drain_grace_seconds=0,
+    ), burst.profile.scope)
+    async with db.context() as session:
+        session.add(ExecutionWorker(
+            id=worker_id, form="external", state="retired", capacity_scope=burst.profile.scope,
+            runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE, capacity_resource_uid=prepared.resource_uid,
+        ))
+    burst.burst_launch_allowed = False
+    await burst.reconcile_worker(worker_id, policy)
+    assert capacity.provider.resources[str(worker_id)]["state"] == "deleted"
 
 
 async def test_outdated_uses_the_worker_scope_version_even_if_other_scope_runs_that_build(capacity):

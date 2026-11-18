@@ -7,6 +7,8 @@ from pydantic import ValidationError
 
 from shared.models import WorkerCapacityProfile, WorkerCapacityReservation, WorkerCapacityResource
 
+CAPACITY_REQUEST_SECONDS = 10
+
 
 class CapacityProtocolError(RuntimeError):
     """Provider response cannot be bound to the requested worker resource."""
@@ -51,7 +53,7 @@ class ExternalCapacityClient:
             headers["X-Bifrost-Capacity-Scope"] = scope
         return await self.http.request(
             method, f"{self.endpoint}/v1/{path}", headers=headers, json=body,
-            timeout=10, follow_redirects=False,
+            timeout=CAPACITY_REQUEST_SECONDS, follow_redirects=False,
         )
 
     async def profile(self) -> WorkerCapacityProfile:

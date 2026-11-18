@@ -682,6 +682,8 @@ class WorkerCapacityController(ABC):
                         ).values(state="draining", end_reason="capacity_replacement"))
                         await db.commit()
                         return []
+                if not (plan.sized or plan.standard):
+                    return []
                 for worker in ready:
                     assert worker.memory_budget_bytes is not None
                     budget = FreeBudget(worker.memory_budget_bytes, frozenset(worker.supported_handlers))
@@ -755,7 +757,8 @@ class WorkerCapacityController(ABC):
     async def _external_scope_counts(
         self, db: Any, profile: WorkerCapacityProfile, peer: WorkerCapacityProfile | None,
     ) -> dict[str, int]:
-        # A bound terminal row holds its provider slot until confirmed deletion.
+        # An unbound Cloudflare reservation may have prepared with a lost
+        # reply. Keep its slot through the bounded absence check as well.
         scopes = ExecutionWorker.capacity_scope.in_([profile.scope, peer.scope] if peer else [profile.scope])
         if self.dual_capacity and peer is None:
             # Discovery can be down while a previous burst incarnation still
@@ -772,7 +775,10 @@ class WorkerCapacityController(ABC):
                 ExecutionWorker.state.in_(LIVE_STATES)
                 | (
                     ExecutionWorker.state.in_(("lost", "retired"))
-                    & ExecutionWorker.capacity_resource_uid.is_not(None)
+                    & (
+                        ExecutionWorker.capacity_resource_uid.is_not(None)
+                        | (ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE)
+                    )
                     & ExecutionWorker.capacity_resource_deleted_at.is_(None)
                 ),
             )

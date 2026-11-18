@@ -18,7 +18,7 @@ from src.services.kubernetes_execution import KubernetesPolicy
 from src.services.worker_pool.controller import (
     RECONCILE_SECONDS, SWEEP_SECONDS, LiveControllers, WorkerCapacityController, _now, _withdraw_live,
 )
-from src.services.worker_pool.external_client import CapacityProtocolError, ExternalCapacityClient
+from src.services.worker_pool.external_client import CAPACITY_REQUEST_SECONDS, CapacityProtocolError, ExternalCapacityClient
 from src.services.worker_pool.external_policy import validate_burst_profiles, validate_external_policy
 from src.services.worker_pool.liveness import silent_executor
 from src.services.worker_pool.recovery import announce_lost_runs, end_runs_of_lost_worker
@@ -34,6 +34,9 @@ from src.services.work_dispatch import (
 
 logger = logging.getLogger(__name__)
 
+# Allow bounded in-flight PUTs and provider work to finish before accepting
+# absence for a terminal incarnation whose UID was never bound.
+UNBOUND_PREPARE_GRACE = timedelta(minutes=1)
 
 class ExternalWorkerPoolController(WorkerCapacityController):
     def __init__(self, client: ExternalCapacityClient, settings: Settings, profile: WorkerCapacityProfile) -> None:
@@ -49,7 +52,13 @@ class ExternalWorkerPoolController(WorkerCapacityController):
     async def launch_for_demand(self, policy: KubernetesPolicy) -> list[UUID]:
         if not self.burst_launch_allowed:
             return []
-        return await super().launch_for_demand(policy)
+        try:
+            return await super().launch_for_demand(policy)
+        except CapacityProtocolError:
+            if not self.dual_capacity:
+                raise
+            logger.warning("Capacity policy blocks new reservations in scope %s", self.profile.scope, exc_info=True)
+            return []
 
     @property
     def profile(self) -> WorkerCapacityProfile:
@@ -64,7 +73,10 @@ class ExternalWorkerPoolController(WorkerCapacityController):
         return {**super()._memory_environment(generation), "scope": self.profile.scope}
 
     def _managed_scope(self) -> Any:
-        return and_(ExecutionWorker.form == "external", ExecutionWorker.capacity_scope == self.profile.scope)
+        scope = and_(ExecutionWorker.form == "external", ExecutionWorker.capacity_scope == self.profile.scope)
+        if self.dual_capacity and self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
+            scope = scope & (ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE)
+        return scope
 
     def _cleanup_scope(self) -> Any:
         # An outage must not turn an unconfirmed physical deletion into an orphan.
@@ -81,7 +93,10 @@ class ExternalWorkerPoolController(WorkerCapacityController):
             validate_external_policy(
                 policy, self.profile, max_lifetime_seconds=self.settings.pool_max_lifetime_seconds,
                 peer=self.peer_profile,
-                primary_only=self.dual_capacity and self.runtime_profile == LINUX_RUNTIME_PROFILE,
+                primary_only=(
+                    self.dual_capacity and self.runtime_profile == LINUX_RUNTIME_PROFILE
+                    and self.peer_profile is None
+                ),
             )
         except ValueError as exc:
             raise CapacityProtocolError(f"Worker policy differs from provider capabilities: {exc}") from exc
@@ -98,7 +113,8 @@ class ExternalWorkerPoolController(WorkerCapacityController):
         await super().reconcile()
 
     async def reconcile_worker(self, worker_id: UUID, policy: KubernetesPolicy) -> None:
-        self._sizing(policy, [])
+        if not self.dual_capacity:
+            self._sizing(policy, [])
         # Provider I/O never holds a DB connection or worker row lock. UUID
         # addressing and conditional commits make concurrent reconcilers safe.
         async with get_db_context() as db:
@@ -112,6 +128,7 @@ class ExternalWorkerPoolController(WorkerCapacityController):
             runtime_profile = worker.runtime_profile
             created_at = worker.created_at
             deleted_at = worker.capacity_resource_deleted_at
+            ended_at = worker.ended_at
         if runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and state in ("reserved", "starting"):
             if _now() - created_at >= timedelta(seconds=self.settings.pool_start_timeout_seconds):
                 reason = "prepare_timeout" if state == "reserved" else "start_timeout"
@@ -128,7 +145,10 @@ class ExternalWorkerPoolController(WorkerCapacityController):
         if uid is not None and resource is not None and resource.resource_uid != uid:
             raise CapacityProtocolError("Provider resource UID changed for an existing incarnation")
         if state in self.cleanup_states:
-            if resource is None and uid is None:
+            if resource is None and uid is None and (
+                runtime_profile != CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+                or ended_at is None or _now() - ended_at < UNBOUND_PREPARE_GRACE
+            ):
                 # Another controller may still prepare this unbound incarnation.
                 # Absence does not fence that delayed mutation; retain cleanup.
                 return
@@ -148,16 +168,37 @@ class ExternalWorkerPoolController(WorkerCapacityController):
         if resource is not None and resource.worker_version != version:
             raise CapacityProtocolError("Provider resource build changed for an existing incarnation")
         if state == "reserved":
+            if not self.burst_launch_allowed:
+                return
+            if self.dual_capacity:
+                self._sizing(policy, [])
             created = resource is None
             if resource is None:
                 if limit is None:
                     raise CapacityProtocolError("Reserved worker has no immutable memory limit")
-                resource = await self.client.prepare(WorkerCapacityReservation(
+                reservation = WorkerCapacityReservation(
                     worker_id=worker_id, worker_version=version,
                     memory_limit_bytes=limit,
                     max_lifetime_seconds=self.settings.pool_max_lifetime_seconds,
                     drain_grace_seconds=WORKER_DRAIN_GRACE_SECONDS,
-                ), self.profile.scope)
+                )
+                if runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
+                    # GET may have raced a loss while it was in flight. Refuse
+                    # to send a new PUT once the reservation has ended.
+                    async with get_db_context() as db:
+                        still_reserved = await db.scalar(select(ExecutionWorker.id).where(
+                            ExecutionWorker.id == worker_id, self._managed_scope(),
+                            ExecutionWorker.state == "reserved",
+                            ExecutionWorker.created_at > _now() - timedelta(
+                                seconds=self.settings.pool_start_timeout_seconds,
+                            ),
+                        ))
+                    if still_reserved is None:
+                        return
+                    async with asyncio.timeout(CAPACITY_REQUEST_SECONDS):
+                        resource = await self.client.prepare(reservation, self.profile.scope)
+                else:
+                    resource = await self.client.prepare(reservation, self.profile.scope)
             if resource.state != "prepared":
                 async with get_db_context() as db:
                     fresh = await db.scalar(select(ExecutionWorker.state).where(ExecutionWorker.id == worker_id))
@@ -187,6 +228,10 @@ class ExternalWorkerPoolController(WorkerCapacityController):
             if _now() - created_at >= timedelta(seconds=self.settings.pool_start_timeout_seconds):
                 reason = "start_timeout"
             elif resource.state == "prepared":
+                if not self.burst_launch_allowed:
+                    return
+                if self.dual_capacity:
+                    self._sizing(policy, [])
                 assert uid is not None
                 await self.client.start(worker_id, self.profile.scope, uid)
                 return
@@ -260,18 +305,24 @@ async def external_worker_pool_loop(stop_event: asyncio.Event, settings: Setting
                         primary_available = True
                 except Exception:
                     logger.exception("Primary worker capacity reconciliation failed")
-                if burst_client is not None and primary is not None:
+                if burst_client is not None:
                     try:
                         if burst is None:
                             profile = await burst_client.profile()
-                            validate_burst_profiles(primary.profile, profile)
+                            if profile.runtime_profile != CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
+                                raise CapacityProtocolError("Burst mode requires a Cloudflare provider")
+                            if primary is not None:
+                                validate_burst_profiles(primary.profile, profile)
                             burst = ExternalWorkerPoolController(burst_client, settings, profile)
-                        primary.peer_profile = burst.profile
-                        burst.peer_profile = primary.profile
+                        if primary is not None:
+                            validate_burst_profiles(primary.profile, burst.profile)
+                            primary.peer_profile = burst.profile
+                            burst.peer_profile = primary.profile
                         burst.burst_launch_allowed = primary_available
                         if await burst.reachability.check():
                             await burst.reconcile()
-                        primary.peer_profile = burst.profile
+                        if primary is not None:
+                            primary.peer_profile = burst.profile
                     except Exception:
                         logger.exception("Burst worker capacity reconciliation failed")
                 await wait_for_next_pass(
