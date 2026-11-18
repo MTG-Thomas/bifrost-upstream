@@ -158,14 +158,17 @@ def postgres(project, sql):
 def resume_enrollment(project):
     enrollment = json.loads((ROOT / ".phase5b-deploy.json").read_text())
     incarnation, launcher = UUID(enrollment["incarnation"]), UUID(enrollment["launcher"])
-    fresh = postgres(project, f"""
+    idle = postgres(project, f"""
         SELECT count(*) FROM execution_workers
-        WHERE id='{incarnation}' AND remote_launcher_id='{launcher}' AND state='starting'
-          AND remote_hello_sequence=0 AND remote_session_generation=0
-          AND NOT EXISTS (SELECT FROM execution_worker_claims WHERE worker_id='{incarnation}');
+        WHERE id='{incarnation}' AND remote_launcher_id='{launcher}' AND state IN ('starting', 'ready')
+          AND runtime_profile='cloudflare-python-v1' AND active_runs=0
+          AND NOT EXISTS (
+              SELECT FROM execution_worker_claims c JOIN executions e ON e.id=c.subject_id
+              WHERE c.worker_id='{incarnation}' AND e.completed_at IS NULL
+          );
     """)
-    if fresh != "1":
-        raise SystemExit("Only an enrollment that has never connected or claimed can resume")
+    if idle != "1":
+        raise SystemExit("Only an idle hosted enrollment can resume")
     if not 1024 <= enrollment["port"] <= 65535:
         raise SystemExit("Invalid hosted relay port")
     value = next(line.partition("=")[2] for line in API_ENV.read_text().splitlines()

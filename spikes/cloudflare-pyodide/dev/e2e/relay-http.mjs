@@ -5,6 +5,11 @@ const hopByHop = [
   'te', 'trailer', 'transfer-encoding', 'upgrade',
 ];
 
+export function hostedRelayPath(method, path) {
+  return method === 'POST' &&
+    ['/api/sdk/tables/list', '/api/sdk/runtime/logs', '/auth/refresh'].includes(path);
+}
+
 export function relayHeaders(headers) {
   const outgoing = {...headers};
   const nominated = (headers.connection ?? '').toLowerCase().split(',').map((name) => name.trim());

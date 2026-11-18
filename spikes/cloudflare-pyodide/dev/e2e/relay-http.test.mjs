@@ -3,7 +3,7 @@ import {once} from 'node:events';
 import {createServer, request as httpRequest} from 'node:http';
 import {text} from 'node:stream/consumers';
 import {test} from 'node:test';
-import {relayHttp} from './relay-http.mjs';
+import {hostedRelayPath, relayHttp} from './relay-http.mjs';
 
 async function listen(t, handle) {
   const server = createServer(handle).listen(0, '127.0.0.1');
@@ -11,6 +11,15 @@ async function listen(t, handle) {
   await once(server, 'listening');
   return 'http://127.0.0.1:' + server.address().port;
 }
+
+test('allows the runtime log write and refuses log reads and peer routes', () => {
+  assert.ok(hostedRelayPath('POST', '/api/sdk/runtime/logs'));
+  for (const path of ['/api/sdk/runtime/logs/other', '/api/sdk/runtime/service-control',
+    '/api/workflows/execute', '/auth/login']) {
+    assert.equal(hostedRelayPath('POST', path), false);
+  }
+  assert.equal(hostedRelayPath('GET', '/api/sdk/runtime/logs'), false);
+});
 
 test('relays a content-length SDK POST and preserves the API response', async (t) => {
   const api = await listen(t, async (request, response) => {

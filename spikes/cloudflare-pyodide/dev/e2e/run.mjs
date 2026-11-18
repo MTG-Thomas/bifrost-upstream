@@ -11,7 +11,7 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {fileURLToPath} from 'node:url';
 import {supervisorModules} from '../tenant-workers/supervisor-digest.mjs';
 import {stageRuntimeLoader} from '../stage-runtime-loader.mjs';
-import {relayHeaders, relayHttp} from './relay-http.mjs';
+import {hostedRelayPath, relayHeaders, relayHttp} from './relay-http.mjs';
 
 const root = new URL('../', import.meta.url);
 const require = createRequire(new URL('tenant-workers/package.json', root));
@@ -123,7 +123,7 @@ function observe(direction, raw) {
 const proxy = createServer(async (request, response) => {
   const path = request.url;
   try {
-    if (config.hosted && (request.method !== 'POST' || ![sdkPath, '/auth/refresh'].includes(path))) {
+    if (config.hosted && !hostedRelayPath(request.method, path)) {
       response.writeHead(404).end();
       return;
     }
@@ -483,7 +483,7 @@ await new Promise((resolve, reject) => {
   proxy.listen(config.port, '127.0.0.1', resolve);
 });
 try {
-  assert.equal(workerRow().state, 'starting');
+  assert.ok((config.port ? ['starting', 'ready'] : ['starting']).includes(workerRow().state));
   // Both debug launchers advertise workflow.execute on the Normal lane.
   const linuxLaunchers = ['worker', 'scheduler'].map((service) => config.project + '-' + service + '-1');
   execFileSync('docker', ['pause', ...linuxLaunchers]);
