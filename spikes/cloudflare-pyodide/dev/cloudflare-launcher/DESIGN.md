@@ -299,6 +299,50 @@ run. Findings, checked against the cited code:
    cannot claim Linux-only demand. Production only with explicit
    authorization.
 
+### Phase 6 managed capacity
+
+- The authenticated capabilities response declares the scope's
+  `runtime_profile`. Existing v1 providers that omit it launch
+  `linux-process-v1`. Changing a scope's profile requires draining it and
+  enrolling a new scope. Reserve Cloudflare rows with `cloudflare-python-v1`,
+  `workflow.execute`, and the incarnation UUID as the pre-bound launcher ID.
+  Commit the provider UID and `starting` state before calling start. Hello
+  verifies this binding and opens admission after inventory reconciliation.
+- One external scope still works on its own. Dual mode explicitly configures
+  a primary Linux scope and a distinct Cloudflare burst scope with separate
+  tokens. Pack existing capacity as in phase 3, including declared slots for
+  pending Cloudflare starts. Give Linux the first chance to launch. When its
+  scope reaches its advertised worker ceiling, Cloudflare can start for
+  remaining approved Normal workflows that fit one 128 MiB declared slot.
+  An unavailable provider does not authorize failover. Static Linux workers
+  still participate in packing when Cloudflare is the sole managed scope.
+- Both scopes use the existing reservation lock and shared managed-worker cap.
+  Linux owns the warm floor in dual mode and counts Cloudflare capacity toward
+  it. A sole Cloudflare scope can maintain the Normal warm floor. Cloudflare
+  never supplies Fast Path or Linux memory probes. Idle drain and rotation
+  use the existing lane floors and profile-specific fit. Only a Linux
+  controller with room in its own scope and unmet Linux demand may make an
+  idle Cloudflare worker yield a shared slot. The worker's owning scope
+  reconciles physical deletion.
+- The Workers provider holds the dedicated capacity token in its own Worker
+  environment. Its `WorkerLedger` derives the key using the incarnation and
+  resource UID, and sends only the identity and derived key to the launcher
+  DO over a private binding. Prepare persists that enrollment without dialing.
+  Start records durable intent and schedules the first dial. Observe reports
+  accepted start and socket state. Only authenticated API hello grants work.
+- Release durably closes admission, drains the route and retained terminal
+  while the control socket remains usable, then stops the socket and alarm
+  and removes the key. Release can complete immediately after canonical idle
+  retirement. A bounded drain after loss cannot prove that external requests
+  already sent by a workflow have ended. The provider confirms launcher stop
+  and writes the deletion tombstone before freeing the scope slot.
+- As in #1425, `ScopeRegistry` serializes the scope ceiling and `WorkerLedger`
+  serializes operations for one incarnation. An uncertain start is observed
+  before retry and can be retried only on durable proof it never reached the
+  launcher. An accepted start can reconnect on its own alarm. Failed reads
+  and unconfirmed stops retain the record and its slot. A tombstone prevents
+  resurrection after retry or reset.
+
 ### Phase 3 workspace approval and placement
 
 `BIFROST_CLOUDFLARE_WORKFLOW_APPROVALS` is an operator environment or
