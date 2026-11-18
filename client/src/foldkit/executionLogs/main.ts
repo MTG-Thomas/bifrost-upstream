@@ -22,6 +22,7 @@ import { modifyFields } from "foldkit/struct";
 import { Select } from "@foldkit/ui";
 import { ArrowDown, Check, Copy, Download, Search, X } from "lucide";
 
+import { skeletonClassName } from "@/components/ui/skeleton-variants";
 import * as BifrostBadge from "@/foldkit/ui/badge";
 import * as BifrostButton from "@/foldkit/ui/button";
 import * as BifrostInput from "@/foldkit/ui/input";
@@ -349,8 +350,7 @@ const ROW_CLASS =
 const SELECT_CLASS =
 	"h-10 w-full rounded-[var(--bf-radius-control)] border border-border/70 bg-background px-3 py-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/25";
 
-const SKELETON_CLASS =
-	"animate-pulse rounded-[var(--bf-radius-surface)] bg-muted motion-reduce:animate-none h-3";
+const SKELETON_CLASS = clsx(skeletonClassName, "h-3");
 
 const LIVE_DOT_CLASS =
 	"h-2 w-2 rounded-full bg-[image:var(--bf-activity-gradient)] motion-safe:animate-pulse motion-reduce:animate-none";

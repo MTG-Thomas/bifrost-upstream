@@ -3,24 +3,27 @@ import { Dialog } from "@foldkit/ui";
 import { X } from "lucide";
 
 import { buttonVariants } from "@/components/ui/button-variants";
+import {
+	dialogCloseButtonClassName,
+	dialogContentClassName,
+	dialogContentWithCloseButtonClassName,
+	dialogDescriptionClassName,
+	dialogFooterClassName,
+	dialogHeaderClassName,
+	dialogOverlayClassName,
+	dialogTitleClassName,
+} from "@/components/ui/dialog-variants";
 import { cn } from "@/lib/utils";
 
 import { icon } from "./icons";
 
-/** Overlay of `@/components/ui/dialog`, with Foldkit's `data-closed`
- *  transition hook in place of Radix's `data-open`/`data-closed` keyframes. */
-const OVERLAY_CLASS =
-	"fixed inset-0 isolate z-50 bg-black/30 supports-backdrop-filter:backdrop-blur-sm transition-opacity duration-[var(--bf-motion-disclosure)] motion-reduce:transition-none data-[closed]:opacity-0";
+/** Foldkit's enter/exit motion: `@foldkit/ui` Dialog marks the backdrop and
+ *  panel `data-closed` while transitioning, where Radix uses keyframes. */
+const OVERLAY_MOTION_CLASS =
+	"transition-opacity duration-[var(--bf-motion-disclosure)] motion-reduce:transition-none data-[closed]:opacity-0";
 
-const PANEL_CLASS =
-	"fixed top-1/2 left-1/2 z-50 grid max-h-[90dvh] w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 gap-6 overflow-y-auto rounded-[var(--bf-radius-feature)] border border-border/70 bg-popover p-6 text-sm text-popover-foreground shadow-xl ring-1 ring-foreground/5 outline-none dark:ring-foreground/10 transition-[opacity,scale] duration-[var(--bf-motion-disclosure)] motion-reduce:transition-none data-[closed]:opacity-0 data-[closed]:scale-95";
-
-const HEADER_CLASS = "flex min-w-0 flex-col gap-1.5 [overflow-wrap:anywhere]";
-const FOOTER_CLASS = "flex flex-col-reverse gap-2 sm:flex-row sm:justify-end";
-const TITLE_CLASS =
-	"text-base leading-snug font-medium [overflow-wrap:anywhere]";
-const DESCRIPTION_CLASS =
-	"text-sm [overflow-wrap:anywhere] text-muted-foreground *:[a]:underline *:[a]:underline-offset-3 *:[a]:hover:text-foreground";
+const PANEL_MOTION_CLASS =
+	"transition-[opacity,scale] duration-[var(--bf-motion-disclosure)] motion-reduce:transition-none data-[closed]:opacity-0 data-[closed]:scale-95";
 
 export type RenderInfo = Dialog.RenderInfo;
 
@@ -69,7 +72,12 @@ export const view = <ParentMessage>(
 								h.div([
 									...render.backdrop,
 									h.DataAttribute("slot", "dialog-overlay"),
-									h.Class(OVERLAY_CLASS),
+									h.Class(
+										cn(
+											dialogOverlayClassName,
+											OVERLAY_MOTION_CLASS,
+										),
+									),
 								]),
 								h.div(
 									[
@@ -79,7 +87,13 @@ export const view = <ParentMessage>(
 											"dialog-content",
 										),
 										h.Class(
-											cn(PANEL_CLASS, panelClassName),
+											cn(
+												dialogContentClassName,
+												PANEL_MOTION_CLASS,
+												isCloseButtonShown &&
+													dialogContentWithCloseButtonClassName,
+												panelClassName,
+											),
 										),
 									],
 									[
@@ -89,7 +103,7 @@ export const view = <ParentMessage>(
 													"slot",
 													"dialog-header",
 												),
-												h.Class(HEADER_CLASS),
+												h.Class(dialogHeaderClassName),
 											],
 											[
 												h.h2(
@@ -99,7 +113,9 @@ export const view = <ParentMessage>(
 															"slot",
 															"dialog-title",
 														),
-														h.Class(TITLE_CLASS),
+														h.Class(
+															dialogTitleClassName,
+														),
 													],
 													[title],
 												),
@@ -113,7 +129,7 @@ export const view = <ParentMessage>(
 																	"dialog-description",
 																),
 																h.Class(
-																	DESCRIPTION_CLASS,
+																	dialogDescriptionClassName,
 																),
 															],
 															[description],
@@ -128,7 +144,9 @@ export const view = <ParentMessage>(
 															"slot",
 															"dialog-footer",
 														),
-														h.Class(FOOTER_CLASS),
+														h.Class(
+															dialogFooterClassName,
+														),
 													],
 													footer(render),
 												)
@@ -148,7 +166,7 @@ export const view = <ParentMessage>(
 																		"outline",
 																	size: "icon-sm",
 																}),
-																"absolute top-3 right-3 h-11 w-11 lg:h-8 lg:w-8",
+																dialogCloseButtonClassName,
 															),
 														),
 													],
