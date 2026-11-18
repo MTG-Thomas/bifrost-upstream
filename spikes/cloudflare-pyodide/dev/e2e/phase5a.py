@@ -14,7 +14,7 @@ import time
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[3]
@@ -76,7 +76,7 @@ def prepare(hosted=False):
         ) + f"\nBIFROST_SECRET_KEY={secrets.token_hex(32)}\n".encode())
 
 
-def seeded_api(hosted):
+def local_api(hosted):
     status = command("env", "BIFROST_FORCE_PORT=1", "./debug.sh", "status")
     project = re.search(r"^Project:\s+(bifrost-debug-[0-9a-f]+)$", status, re.MULTILINE)[1]
     address = command("docker", "port", f"{project}-api-1", "8000/tcp")
@@ -101,6 +101,10 @@ def seeded_api(hosted):
             raise SystemExit(f"{method} {path} returned HTTP {error.code}") from None
 
     admin = send("/auth/login", urlencode({"username": login[1], "password": login[2]}).encode())["access_token"]
+    return origin, project, admin, send
+
+
+def seed_workflows(project, admin, send, hosted):
     fixtures = (
         ("hosted", "phase5b_fixture", "fixture-hosted.py", 10, 1000),
         ("allowance", "phase5b_allowance", "fixture-hosted.py", 4, 1000),
@@ -143,18 +147,49 @@ def seeded_api(hosted):
         time.sleep(0.25)
     else:
         raise SystemExit("The debug API did not finish reloading the workflow approval")
-    return origin, project, admin, workflows, approval
+    return workflows, approval
 
 
-def run(runtime, hosted):
+def postgres(project, sql):
+    return command("docker", "exec", "-i", f"{project}-postgres-1", "psql", "-XqAt",
+                   "-v", "ON_ERROR_STOP=1", "-U", "bifrost", "-d", "bifrost", input=sql)
+
+
+def resume_enrollment(project):
+    enrollment = json.loads((ROOT / ".phase5b-deploy.json").read_text())
+    incarnation, launcher = UUID(enrollment["incarnation"]), UUID(enrollment["launcher"])
+    fresh = postgres(project, f"""
+        SELECT count(*) FROM execution_workers
+        WHERE id='{incarnation}' AND remote_launcher_id='{launcher}' AND state='starting'
+          AND remote_hello_sequence=0 AND remote_session_generation=0
+          AND NOT EXISTS (SELECT FROM execution_worker_claims WHERE worker_id='{incarnation}');
+    """)
+    if fresh != "1":
+        raise SystemExit("Only an enrollment that has never connected or claimed can resume")
+    if not 1024 <= enrollment["port"] <= 65535:
+        raise SystemExit("Invalid hosted relay port")
+    value = next(line.partition("=")[2] for line in API_ENV.read_text().splitlines()
+                 if line.startswith("BIFROST_CLOUDFLARE_WORKFLOW_APPROVALS="))
+    approval = json.loads(value[1:-1])
+    workflows = {kind: str(UUID(item["workflow_id"])) for kind, item in zip(
+        ("hosted", "allowance"), approval, strict=True)}
+    return workflows, approval, incarnation, launcher, enrollment["port"]
+
+
+def run(runtime, hosted, resume):
     sys.path.insert(0, str(ROOT / "api"))
     from shared.worker_control_auth import external_worker_control_key
 
     prefix = "phase5b-" if hosted else "phase5-"
     if not API_ENV.is_file() or not ROOT.name.startswith(prefix):
         raise SystemExit("Run prepare and start this disposable archive's debug stack first")
-    origin, project, admin, workflows, approval = seeded_api(hosted)
-    incarnation, launcher = uuid4(), uuid4()
+    origin, project, admin, send = local_api(hosted)
+    port = 0
+    if resume:
+        workflows, approval, incarnation, launcher, port = resume_enrollment(project)
+    else:
+        workflows, approval = seed_workflows(project, admin, send, hosted)
+        incarnation, launcher = uuid4(), uuid4()
     resource = f"{'phase5b' if hosted else 'phase5a'}:do:{incarnation}"
     build = "phase5b-hosted" if hosted else "phase5a-local"
     sql = f"""
@@ -170,8 +205,8 @@ def run(runtime, hosted):
             0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL
         );
     """
-    command("docker", "exec", "-i", f"{project}-postgres-1", "psql", "-X",
-            "-v", "ON_ERROR_STOP=1", "-U", "bifrost", "-d", "bifrost", input=sql)
+    if not resume:
+        postgres(project, sql)
     capacity = next(line.partition("=")[2] for line in API_ENV.read_text().splitlines()
                     if line.startswith("BIFROST_WORKER_CAPACITY_TOKEN="))
     key = external_worker_control_key(capacity, incarnation, resource)
@@ -181,7 +216,7 @@ def run(runtime, hosted):
     subprocess.run(
         ["node", str(HERE / "run.mjs")], cwd=ROOT, check=True, text=True,
         input=json.dumps({"origin": origin, "project": project, "admin": admin,
-                          "workflows": workflows, "runtime": str(runtime), "hosted": hosted,
+                          "workflows": workflows, "runtime": str(runtime), "hosted": hosted, "port": port,
                           "incarnation": str(incarnation), "launcher": str(launcher),
                           "resource": resource, "build": build, "controlKey": key}),
     )
@@ -194,8 +229,11 @@ if __name__ == "__main__":
     run_parser = sub.add_parser("run")
     run_parser.add_argument("runtime", type=Path, help="Prepared generated-runtime.mjs")
     run_parser.add_argument("--hosted", action="store_true")
+    run_parser.add_argument("--resume-enrollment", action="store_true")
     args = parser.parse_args()
     if args.action == "prepare":
         prepare(args.hosted)
     else:
-        run(args.runtime.resolve(strict=True), args.hosted)
+        if args.resume_enrollment and not args.hosted:
+            parser.error("--resume-enrollment requires --hosted")
+        run(args.runtime.resolve(strict=True), args.hosted, args.resume_enrollment)

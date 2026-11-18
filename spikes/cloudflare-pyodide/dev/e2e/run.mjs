@@ -478,7 +478,10 @@ async function localChecks() {
   cancel.gate.release.resolve();
 }
 
-await new Promise((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+await new Promise((resolve, reject) => {
+  proxy.once('error', reject);
+  proxy.listen(config.port, '127.0.0.1', resolve);
+});
 try {
   assert.equal(workerRow().state, 'starting');
   // Both debug launchers advertise workflow.execute on the Normal lane.
@@ -490,9 +493,11 @@ try {
     const linuxSamplesStale = delay(3100);
     if (config.hosted) {
       const {incarnation, launcher, resource, build, controlKey} = config;
-      writeFileSync('.phase5b-deploy.json', JSON.stringify({
-        port: proxy.address().port, incarnation, launcher, resource, build, controlKey,
-      }), {flag: 'wx', mode: 0o600});
+      if (!config.port) {
+        writeFileSync('.phase5b-deploy.json', JSON.stringify({
+          port: proxy.address().port, incarnation, launcher, resource, build, controlKey,
+        }), {flag: 'wx', mode: 0o600});
+      }
       evidence('hosted-relay-ready', {port: proxy.address().port});
     } else {
       await launch(proxy.address().port);
