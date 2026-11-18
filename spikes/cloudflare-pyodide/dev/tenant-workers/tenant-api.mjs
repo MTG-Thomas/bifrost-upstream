@@ -469,8 +469,8 @@ export class TenantHost extends DurableObject {
   // With exercise, the child also runs one dry engine attempt under a handle
   // this host never registered: TenantApi refuses its first SDK call (401,
   // "unknown handle") before anything reaches the API. That keeps the engine's
-  // pre-first-call path hot between real attempts. Callers must hold
-  // #exclusive when exercising.
+  // pre-first-call path hot between real attempts. Both ping variants
+  // hold #exclusive through priming and any required retirement.
   async #ping(tenantId, {exercise = false} = {}) {
     const {worker, generation} = await this.#engine(tenantId);
     const modules = await this.#primeList();
@@ -527,7 +527,7 @@ export class TenantHost extends DurableObject {
   // ahead of it. Opens the same warm window an attempt does.
   async warm({tenantId, engineOnly = false}) {
     try {
-      const boot = await this.#ping(tenantId);
+      const boot = await this.#exclusive(() => this.#ping(tenantId));
       if (engineOnly) {
         this.ctx.waitUntil(this.#warmOrigin());
         return boot;

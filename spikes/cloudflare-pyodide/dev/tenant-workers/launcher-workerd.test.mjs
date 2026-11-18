@@ -15,7 +15,7 @@ const secret = 'a'.repeat(64);
 const incarnation = '0e9d8c7b-6a59-4847-b6a5-948372615041';
 const launcher = '6f1c2d3e-4a5b-4c6d-8e7f-0a1b2c3d4e5f';
 const path = (name) => fileURLToPath(new URL(name, import.meta.url));
-const cases = new Map(['queued-block', 'active-block', 'first-tenant', 'second-tenant'].map((name) =>
+const cases = new Map(['queued-block', 'active-block', 'first-tenant', 'second-tenant', 'held-ping'].map((name) =>
   [`/${name}`, {entered: Promise.withResolvers(), release: Promise.withResolvers()}]));
 const origins = [];
 let nextOrigin;
@@ -31,6 +31,10 @@ function engine() {
       const body = await request.json();
       if (body.action === 'ping') {
         if (body.exercise) return new Response('fixture ping failure', {status: 503});
+        if (body.modules.includes('hold_ping')) {
+          const gate = await fetch('https://approved.invalid/held-ping');
+          await gate.body?.cancel();
+        }
         const first_request = firstPing;
         firstPing = false;
         return Response.json({first_request, primed: 0});
@@ -63,8 +67,13 @@ function engine() {
 }
 
 const main = `
-  import {TenantHost as Host, TenantApi} from './dev/tenant-workers/tenant-api.mjs';
-  export {TenantApi};
+  import {TenantHost as Host, TenantApi as Gateway} from './dev/tenant-workers/tenant-api.mjs';
+  export class TenantApi extends Gateway {
+    fetch(request) {
+      if (request.url === 'https://approved.invalid/held-ping') return fetch(request);
+      return super.fetch(request);
+    }
+  }
   export class TenantHost extends Host {
     #started = new Map();
     #signal(id) {
@@ -77,6 +86,9 @@ const main = `
       return attempt;
     }
     async waitForRun(id) { await this.#signal(id).promise; }
+    async primeHeldPing() {
+      await this.ctx.storage.put('prime', {engine: 'test-engine', modules: ['hold_ping']});
+    }
     async stopAndTryEgress(id) {
       const stopped = super.stopWorkflow(id);
       const result = await super.egress(new Request('https://approved.invalid/after-stop'), 0);
@@ -91,6 +103,7 @@ const main = `
       if (action === 'run') return Response.json(await host.run(input));
       if (action === 'warm') return Response.json(await host.warm({tenantId, ...input}));
       if (action === 'exercise') return Response.json(await host.exercise({tenantId}));
+      if (action === 'prime-held-ping') await host.primeHeldPing();
       if (action === 'wait') await host.waitForRun(input);
       if (action === 'stop') await host.stopWorkflow(input);
       if (action === 'stop-egress') return Response.json(await host.stopAndTryEgress(input));
@@ -302,6 +315,28 @@ test('a failed exercise retires the child before the next workflow can enter', a
     {needsWarm: true, attempt_state: 'not_started'});
   assert.equal((await host(tenant, 'warm')).first_request, true);
   assert.equal((await host(tenant, 'run', route(tenant))).attempt_state, 'completed');
+});
+
+test('a ready workflow cannot enter while a non-exercise ping primes its child', {timeout: 10_000}, async (t) => {
+  const tenant = 'held-ping';
+  const gate = cases.get('/held-ping');
+  await host(tenant, 'warm');
+  await host(tenant, 'prime-held-ping');
+  const warm = host(tenant, 'warm', {engineOnly: true}, t.signal);
+  const abort = new Promise((_, reject) =>
+    t.signal.addEventListener('abort', () => reject(t.signal.reason), {once: true}));
+  try {
+    await Promise.race([gate.entered.promise, abort]);
+    const attempt = route(tenant, {scenario: 'blocked-by-priming',
+      workflowDeadline: new Date(Date.now() + 1000).toISOString()});
+    const result = await host(tenant, 'run', attempt, t.signal);
+    assert.equal(result.terminal?.phase, 'attempt-deadline');
+    assert.equal(result.terminal?.attempt_state, 'not_started');
+    assert.ok(!origins.includes('https://approved.invalid/blocked-by-priming'));
+  } finally {
+    gate.release.resolve();
+    await warm;
+  }
 });
 
 test('TenantHost serves the pinned module and keeps missing modules inside the snapshot', async () => {
