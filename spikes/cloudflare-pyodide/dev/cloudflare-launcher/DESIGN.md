@@ -116,21 +116,104 @@ lands.
   `TenantHost` each); one tenant's attempts serialize unless overflow slots
   exist (fork issue #54).
 
-## Phases
+## Review (GPT-6.2 Sol, 2026-11-18): request changes before enabling claims
 
-1. **Protocol core in JS** + cross-language conformance vectors from Python
-   `protocol.py` (hello canonical bytes and proof, derived key, envelopes,
-   fragments). Offline, no deploy.
-2. **Launcher DO** using the core, driven in tests by a fake API host that
-   speaks the real protocol (Python `host.py` where practical).
-3. **API admission** on the fork: profile, handlers, PID-less ack, derived
-   key verification for `external`, eligibility filter. Unit tests in the
-   upstream style.
-4. **End to end on the dev stack** (`./debug.sh`): one real queued
-   execution claimed by the Cloudflare launcher, result committed, logs
-   flushed, credential revoked; then duplicate/lost-ack/stale-owner cases
-   from the spike's canonical fixtures.
-5. Only after that, any production exposure, and only with explicit
+Verdict: the shape is right, but three blockers must be designed before
+Cloudflare may claim work: cancellation after a child starts, recovery after
+launcher eviction, and planning that could reserve work the launcher cannot
+run. Findings, checked against the cited code:
+
+1. **Launcher protocol details the summary missed.**
+   - Send `inventory` right after `welcome`, before reading commands, then
+     replay retained terminals.
+   - Replies are `event` envelopes, `{reply, result}` or
+     `{reply, error_type, error}`.
+   - Persist the next `hello_sequence` before dialing, including when the
+     welcome is lost.
+   - Reject stale generations and sequences in both directions.
+   - Agree a logical size bound for reassembly (Python spills to disk).
+   - Persist `event_id`, terminal and adoption metadata together; delete on
+     the fenced `ack`; keep receiving acks while draining.
+   - The external build version must match the prepared row.
+2. **PID-less routes.**
+   - Adoption already tolerates a missing PID. Workflow and service *spawn
+     replies* require a positive one, and a missing PID takes the
+     hard-error path even if execution started. PID-less routes also drop
+     out of heartbeat counts.
+   - Inventory must be v1 with `baseline_bytes` and live *and* terminal
+     route metadata.
+3. **Samples and admission.**
+   - The hello sample is mandatory.
+   - Missing periodic samples close admission after 3 s and eventually
+     expire ownership.
+   - Admission holds `max(request, growth)` against
+     `limit × threshold − baseline`. So "slots × request" as the limit loses
+     capacity to the threshold and cannot enforce a slot count.
+   - Needed instead: explicit slot and byte reservations, independent
+     liveness, telemetry labelled as declared, and declared usage kept out of
+     Linux calibration and learned peaks.
+4. **Termination.**
+   - The API terminates by route; the Linux launcher enforces timeouts,
+     pressure shedding and TERM/KILL.
+   - `TenantHost` races its deadline only *after* queueing, and can leave
+     the old child running.
+   - Third-party egress is checked against whichever attempt is current.
+   - Required: attempt-bound egress revocation, a deadline covering queue
+     time, and explicit handling of uncertain execution. API fencing
+     protects commits, but already-issued external requests can complete.
+5. **Credentials.**
+   - Use #1424's key derivation together with its enrollment: the capacity
+     token goes to the API and the provider, only the derived key goes to
+     the incarnation, revocation retires the row and closes the session, and
+     token rotation is coordinated.
+   - Credential protocol 2 issues **two** run tokens (access and refresh).
+     The gateway hides only `engine_token`; both must stay behind it.
+6. **Eligibility in the fenced SQL claim, not after it.**
+   - Persist an API-computed, revision-bound eligibility marker at enqueue.
+   - Apply the same predicate to candidate selection and head-of-line
+     blocking, including reserved dispatches.
+   - Carry it into planner packing, reservations and idle decisions.
+   - Main selects a single managed provider, so VM-then-Cloudflare burst
+     placement needs an explicit policy.
+7. **The Durable Object is viable with bounded recovery.**
+   - Outbound sockets cannot hibernate; they protect against eviction for
+     up to 15 minutes per connection, billed at 128 MB resident.
+   - Needed: alarm-driven reconnect, durable route state, and uncertain
+     routes fenced against redispatch.
+   - A Container relay is the fallback that keeps the outbound protocol.
+8. **Capability gates first.**
+   - #1424 sends `bootstrap` after every welcome and plans from
+     build-matched capabilities.
+   - Main calls `package_tool` during startup and starts service and
+     platform-job loops regardless of advertised handlers.
+   - Those gates and the PID-less contract must be defined before any
+     launcher talks to a real host.
+
+## Phases (revised after review)
+
+1. ~~Protocol core in JS + Python-generated conformance vectors.~~ Done
+   (`protocol.mjs`, `vectors.py`, `conformance.test.mjs`).
+2. **Execution-side safety the launcher depends on**, in the spike's own code:
+   - both protocol-2 run tokens behind the gateway;
+   - an attempt deadline that covers queue time;
+   - attempt-bound egress revocation;
+   - explicit uncertain-execution outcomes.
+3. **API contract on the fork, behind a setting:**
+   - profile admission, with key derivation and enrollment as in #1424;
+   - capability gates (no `package_tool`, service or platform loops for
+     this profile);
+   - PID-less spawn replies and heartbeat accounting;
+   - slot and byte reservations with labelled declared telemetry;
+   - the eligibility marker in the fenced claim and the planner.
+4. **Launcher DO** speaking the full protocol, including inventory-first,
+   replay, sequence persistence, alarm reconnect and the uncertain-route
+   fence. Reuse #1425's ledger semantics (uncertain start, confirmed
+   deletion).
+5. **End to end against a real API host:**
+   - one real claim, committed, logs flushed, credential revoked;
+   - then lost welcome and lost ack, API takeover, DO reset, cancellation
+     and late egress.
+6. Scale-out through a provider last. Production only with explicit
    authorization.
 
 ## Open questions
