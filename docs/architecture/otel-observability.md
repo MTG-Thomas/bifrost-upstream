@@ -179,11 +179,14 @@ logs (unchanged path) → Loki, now carrying trace_id/span_id
   `api/tests/unit/test_otel_messaging.py`.
 - Each template process resolves its children's telemetry set-up once,
   before it forks (`prepare_child_telemetry`): it loads the SDK and HTTPX
-  instrumentor modules, builds the run resource and runs the instrumentor's
-  dependency check. Children inherit that copy-on-write. Left to each
-  child, the imports and package-metadata reads cost roughly 45-100 ms per
-  run; prepared, child set-up measured about 6 ms. Without preparation a
-  child stays untraced.
+  instrumentor modules, builds the run resource, runs the instrumentor's
+  dependency check and traces one throwaway run on a private provider, so
+  first-use costs are paid once. Children inherit that copy-on-write. Left
+  to each child, the imports and package-metadata reads cost roughly
+  45-100 ms per run. Prepared, a child's whole telemetry cost (set-up, its
+  spans and their wire form) measured about 4 ms of CPU, a quarter less
+  than without the rehearsed run. Without preparation a child stays
+  untraced.
 - Execution children re-initialize tracing after `os.fork` and export
   nothing themselves. `init_telemetry_in_child` discards the inherited
   providers (fork carries memory but no threads, so an inherited batch
