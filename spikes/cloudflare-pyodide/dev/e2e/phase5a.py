@@ -5,11 +5,11 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import secrets
 import subprocess
 import sys
+from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -195,7 +195,7 @@ def resume_enrollment(project, reset_route):
         raise SystemExit("Invalid hosted relay port")
     approval = json.loads(postgres(project, """
         SELECT json_agg(a.declaration || jsonb_build_object('workflow_id', w.id)
-                        ORDER BY w.function_name)
+                        ORDER BY w.function_name DESC)
         FROM cloudflare_workflow_approvals a JOIN workflows w ON a.workflow_id=w.id
         WHERE a.is_current AND w.organization_id IS NULL AND w.solution_id IS NULL
           AND w.function_name IN ('phase5b_fixture', 'phase5b_allowance')
@@ -204,7 +204,7 @@ def resume_enrollment(project, reset_route):
     if approval is None or len(approval) != 2:
         raise SystemExit("Expected the two durable hosted fixture approvals")
     workflows = {kind: str(UUID(item["workflow_id"])) for kind, item in zip(
-        ("allowance", "hosted"), approval, strict=True)}
+        ("hosted", "allowance"), approval, strict=True)}
     return workflows, approval, incarnation, launcher, enrollment["port"]
 
 

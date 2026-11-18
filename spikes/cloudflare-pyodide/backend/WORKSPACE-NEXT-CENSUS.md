@@ -1,5 +1,8 @@
 # Workspace census: `bifrost-workspace-next`
 
+> Historical census using the earlier JavaScript eligibility model. See the
+> [current census](../dev/routing/README.md) for the server analyzer.
+
 Measured 2026-11-13 against **`MTG-Thomas/bifrost-workspace-next` @ `37581f6`**
 (private): 35 deployable Solution workspaces, 317 workflow entries. Static
 analysis with `dev/routing/census.mjs`, which drives the dispatcher's own

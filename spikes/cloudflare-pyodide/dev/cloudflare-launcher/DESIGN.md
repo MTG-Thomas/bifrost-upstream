@@ -389,6 +389,7 @@ A server operator runs these commands inside the API container, from `/app`:
 ```sh
 python -m scripts.cloudflare_workflow_approval propose WORKFLOW_UUID --subrequest-allowance 10 --cpu-budget-ms 1000
 python -m scripts.cloudflare_workflow_approval accept WORKFLOW_UUID --subrequest-allowance 10 --cpu-budget-ms 1000 --review-sha256 REVIEW_SHA256 --operator OPERATOR_LABEL
+python -m scripts.cloudflare_workflow_approval revoke WORKFLOW_UUID
 ```
 
 Review the complete proposal and the pinned source against the expected inputs,
@@ -398,10 +399,22 @@ SHA-256 pins, canonical manifest digest, packages, exact HTTPS hosts, and both
 estimates and limits. Accept regenerates the proposal and checks the reviewed
 digest. PostgreSQL stores the accepted revision and operator label. The command
 requires trusted server access and has no HTTP or tenant-facing surface.
+Revocation clears the current approval and makes later runs Linux-only.
+Earlier approvals and derived children remain inactive in history with their
+lineage intact. A queued reanalysis becomes superseded and a queued dispatch
+fails send-time approval verification. A new human acceptance is required
+after revocation.
 
-The offline census uses the same AST analyzer as the server. It resolves
+The analyzer is a review aid. It is not a sandbox. TenantHost and the runtime
+enforce the security boundary. The offline census uses the same AST analyzer
+and pinned Pyodide 314.0.6 stdlib list as the server. It resolves
 transitive workspace imports, rejects known Pyodide traps, and discovers literal
-HTTPS origins. The estimates are static sizing signals. A call site may execute
+HTTPS origins. Calls with identifiable HTTP intent require a recognized client
+and a literal HTTPS origin. Before parsing, analysis limits raw source buffers
+to 128 KiB per file and 512 KiB per bundle, with a single module AST processed
+at a time and at most 100,000 visited nodes across the bundle. Python object
+overhead is additional and the worker admission and memory limits apply.
+The estimates are static sizing signals. A call site may execute
 many times and CPU varies with inputs. TenantHost and the platform apply the
 actual limits. Inline code, Fast Path, Solution and artifact-workspace dispatches
 are outside this policy. Enqueue compares indexed digests and workflow identity
@@ -411,14 +424,16 @@ The first Normal dispatch to observe changed entry or module pins stays
 Linux-only and queues a deduplicated `workflow.cloudflare_reapproval` PlatformJob.
 The job loads the transitive sources outside the enqueue transaction. It may
 replace the current approval when packages match exactly, hosts are a subset,
-and both estimates fit the current limits. It retains those limits and records
+and both estimates fit the current limits. It retains the parent HTTPS allowlist
+and limits and records
 the parent approval and each added, changed, or removed pin. The job fences
 publication on its lease, the current approval, the workflow owner, and indexed
-source digests. Later dispatches may use the derived approval. A rejected
-revision stays Linux-only unless it passes a later analysis or an operator
-reviews and accepts a new proposal. Same-input analyses are throttled for ten
-minutes so missing dependencies and storage failures can recover without
-repeated analysis on every run.
+source digests. Later dispatches may use the derived approval. A deterministic refusal keeps that observation Linux-only until its pins change
+or an operator accepts a new proposal. Storage failures and unresolved
+dependencies can retry through PlatformJob and be staged again after cooldown.
+Staging uses a separate short transaction. The shared queue releases its dedupe
+lock at the end of that transaction, and the triggering Linux run can proceed
+if staging fails.
 
 Before sending `workflow`, the API repeats verification against the current
 approval and source. The command context carries `cloudflare_workspace`

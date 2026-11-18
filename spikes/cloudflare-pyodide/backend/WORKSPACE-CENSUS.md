@@ -1,5 +1,8 @@
 # Workspace census: what share of normal workloads is eligible?
 
+> Historical census using the earlier JavaScript eligibility model. See the
+> [current census](../dev/routing/README.md) for the server analyzer.
+
 > **Superseded as the headline measurement** by
 > [`WORKSPACE-NEXT-CENSUS.md`](WORKSPACE-NEXT-CENSUS.md): the real workspace
 > (`MTG-Thomas/bifrost-workspace-next`) measures **295/317 workflows (93.1 %)
