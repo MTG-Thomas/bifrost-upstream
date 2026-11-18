@@ -232,7 +232,7 @@ async def _cloudflare_revision(
     if observed != manifest:
         from src.jobs.platform.cloudflare_reapproval import stage_reapproval
 
-        await stage_reapproval(db, approval, observed)
+        await stage_reapproval(approval, observed)
         return None
     return approval.revision
 

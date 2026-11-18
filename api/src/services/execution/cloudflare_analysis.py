@@ -7,7 +7,6 @@ import asyncio
 import hashlib
 import json
 import re
-import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
@@ -16,13 +15,18 @@ POLICY_VERSION = "cloudflare-workflow-approval-v2"
 MAX_SOURCE_BYTES = 2 * 1024**2
 MAX_BUNDLE_BYTES = 4 * 1024**2
 MAX_MODULES = 32
+_MAX_PARSE_FILE_BYTES = 128 * 1024
+_MAX_PARSE_BUNDLE_BYTES = 512 * 1024
 MAX_SUBREQUESTS = 50
 MAX_CPU_MS = 2**53 - 1  # Integer range of the launcher wire.
 _MAX_NODES = 100_000
 _WORKSPACE_PATH = re.compile(r"(?:[a-zA-Z_][a-zA-Z0-9_]*/)*[a-zA-Z_][a-zA-Z0-9_]*\.py")
 _HOST_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 _PROVIDED = {"bifrost", "js", "pyodide", "_pyodide"}
-_RESERVED = sys.stdlib_module_names | _PROVIDED | {
+# Pyodide 314.0.6, CPython 3.14 WebAssembly. Captured from the packaged
+# python314.zip top-level Python files plus sys.builtin_module_names.
+_PYODIDE_STDLIB = frozenset(["__future__", "__hello__", "__phello__", "_abc", "_ast", "_ast_unparse", "_asyncio", "_bisect", "_blake2", "_bz2", "_codecs", "_codecs_cn", "_codecs_hk", "_codecs_iso2022", "_codecs_jp", "_codecs_kr", "_codecs_tw", "_collections", "_collections_abc", "_colorize", "_compat_pickle", "_contextvars", "_csv", "_ctypes", "_datetime", "_decimal", "_elementtree", "_functools", "_heapq", "_hmac", "_imp", "_io", "_json", "_locale", "_lsprof", "_lzma", "_markupbase", "_md5", "_multibytecodec", "_opcode", "_opcode_metadata", "_operator", "_pickle", "_posixsubprocess", "_py_abc", "_py_warnings", "_pydatetime", "_pyio", "_pylong", "_pyodide", "_pyodide_core", "_pyrepl", "_queue", "_random", "_remote_debugging", "_sha1", "_sha2", "_sha3", "_signal", "_sitebuiltins", "_socket", "_sqlite3", "_sre", "_ssl", "_stat", "_statistics", "_string", "_strptime", "_struct", "_suggestions", "_symtable", "_sysconfig", "_sysconfigdata__emscripten_wasm32-emscripten", "_testbuffer", "_testcapi", "_testclinic", "_testclinic_limited", "_testinternalcapi", "_testlimitedcapi", "_thread", "_threading_local", "_tokenize", "_tracemalloc", "_types", "_typing", "_warnings", "_weakref", "_weakrefset", "_xxtestfuzz", "_zoneinfo", "_zstd", "abc", "annotationlib", "antigravity", "argparse", "array", "ast", "asyncio", "atexit", "base64", "bdb", "binascii", "bisect", "builtins", "bz2", "cProfile", "calendar", "cmath", "cmd", "code", "codecs", "codeop", "collections", "colorsys", "compileall", "compression", "concurrent", "configparser", "contextlib", "contextvars", "copy", "copyreg", "csv", "ctypes", "dataclasses", "datetime", "decimal", "difflib", "dis", "doctest", "email", "encodings", "enum", "errno", "faulthandler", "fcntl", "filecmp", "fileinput", "fnmatch", "fractions", "ftplib", "functools", "gc", "genericpath", "getopt", "getpass", "gettext", "glob", "graphlib", "gzip", "hashlib", "heapq", "hmac", "html", "http", "imaplib", "importlib", "inspect", "io", "ipaddress", "itertools", "json", "keyword", "linecache", "locale", "logging", "lzma", "mailbox", "marshal", "math", "mimetypes", "mmap", "modulefinder", "multiprocessing", "netrc", "ntpath", "nturl2path", "numbers", "opcode", "operator", "optparse", "os", "pathlib", "pdb", "pickle", "pickletools", "pkgutil", "platform", "plistlib", "poplib", "posix", "posixpath", "pprint", "profile", "pstats", "pty", "py_compile", "pyclbr", "pydoc", "pyexpat", "pyodide", "queue", "quopri", "random", "re", "reprlib", "rlcompleter", "runpy", "sched", "secrets", "select", "selectors", "shelve", "shlex", "shutil", "signal", "site", "smtplib", "socket", "socketserver", "sqlite3", "sre_compile", "sre_constants", "sre_parse", "ssl", "stat", "statistics", "string", "stringprep", "struct", "subprocess", "symtable", "sys", "sysconfig", "tabnanny", "tarfile", "tempfile", "termios", "textwrap", "this", "threading", "time", "timeit", "token", "tokenize", "tomllib", "trace", "traceback", "tracemalloc", "tty", "types", "typing", "unicodedata", "unittest", "urllib", "uuid", "warnings", "wave", "weakref", "webbrowser", "wsgiref", "xml", "xmlrpc", "xxsubtype", "zipapp", "zipfile", "zipimport", "zlib", "zoneinfo"])
+_RESERVED = _PYODIDE_STDLIB | _PROVIDED | {
     "main", "runtime_runner", "runtime_guard", "pyodide_refresh", "sdk_cleanup",
 }
 # Only distributions in the launcher build can be proposed. Earlier census
@@ -32,15 +36,23 @@ _PACKAGES = {
     "dotenv": "python-dotenv", "yaml": "pyyaml", "redis": "redis",
     "workers": "workers-runtime-sdk",
 }
-_UNSUPPORTED = {"ctypes", "fcntl", "multiprocessing", "resource", "signal", "socket", "subprocess"}
-_TRAPS = {"process_time", "process_time_ns", "fork", "forkpty", "import_module", "__import__", "eval", "exec", "compile"}
-_HTTP_METHODS = {"fetch", "request", "get", "head", "post", "put", "patch", "delete", "options", "stream", "urlopen"}
+_UNSUPPORTED = {"ctypes", "fcntl", "importlib", "multiprocessing", "resource", "signal", "socket", "subprocess"}
+_TRAPS = {"process_time", "process_time_ns", "fork", "forkpty", "import_module"}
+_DYNAMIC = {"__import__", "eval", "exec", "compile", "vars", "globals"}
+_HTTP_NAMESPACES = {"httpx", "urllib.request", "js", "js.globalThis", "workers", "pyodide.http"}
+_HTTP_ROOTS = {name.split(".")[0] for name in _HTTP_NAMESPACES}
+_HTTP_CLIENTS = {"httpx.Client", "httpx.AsyncClient"}
+_HTTP_METHODS = {"fetch", "pyfetch", "request", "get", "head", "post", "put", "patch", "delete", "options", "stream", "urlopen"}
 
 SourceReader = Callable[[str, int], Awaitable[bytes | None]]
 
 
 class AnalysisRejected(ValueError):
     """Sources or requested bounds cannot be approved by this analyzer."""
+
+
+class SourceUnresolved(AnalysisRejected):
+    """The current observation may be missing an unindexed dependency."""
 
 
 def digest(value: object) -> str:
@@ -86,8 +98,14 @@ def _dotted(node: ast.expr) -> str:
     if isinstance(node, ast.Name):
         return node.id
     if isinstance(node, ast.Attribute):
-        return f"{_dotted(node.value)}.{node.attr}"
+        parent = _dotted(node.value)
+        return f"{parent}.{node.attr}" if parent else f".{node.attr}"
     return ""
+
+
+def _qualified(node: ast.expr, aliases: dict[str, str]) -> str:
+    root, _, tail = _dotted(node).partition(".")
+    return ".".join(filter(None, (aliases.get(root, root), tail))) if root else f".{tail}"
 
 
 @dataclass
@@ -97,7 +115,7 @@ class _Analysis:
     packages: set[str] = field(default_factory=set)
     hosts: set[str] = field(default_factory=set)
     found: dict[str, bool] = field(default_factory=dict)
-    remaining: int = MAX_BUNDLE_BYTES
+    remaining: int = _MAX_PARSE_BUNDLE_BYTES
     nodes: int = 0
     calls: int = 0
 
@@ -106,11 +124,12 @@ class _Analysis:
             return self.found[path]
         if not _valid_path(path) or len(self.found) >= 128:
             raise AnalysisRejected("Workspace import paths exceed the analysis policy")
-        content = await self.read(path, min(self.remaining, MAX_SOURCE_BYTES))
+        read_limit = min(self.remaining, _MAX_PARSE_FILE_BYTES)
+        content = await self.read(path, read_limit)
         self.found[path] = content is not None
         if content is None:
             return False
-        if len(self.pins) >= MAX_MODULES or len(content) > min(self.remaining, MAX_SOURCE_BYTES):
+        if len(self.pins) >= MAX_MODULES or len(content) > read_limit:
             raise AnalysisRejected("Workspace sources exceed the bundle budget")
         self.remaining -= len(content)
         self.pins[path] = hashlib.sha256(content).hexdigest()
@@ -121,25 +140,14 @@ class _Analysis:
         ):
             raise AnalysisRejected("Workflow entry function was not found")
 
-        aliases: dict[str, str] = {}
-        for node in ast.walk(syntax):
+        imports = self.inspect_module(syntax)
+        del syntax, content
+        for node in imports:
             if isinstance(node, ast.Import):
                 for item in node.names:
                     await self.resolve(item.name)
-                    aliases[item.asname or item.name.split(".")[0]] = (
-                        item.name if item.asname else item.name.split(".")[0]
-                    )
-            elif isinstance(node, ast.ImportFrom):
+            else:
                 await self.import_from(path, node)
-                aliases.update({
-                    item.asname or item.name: f"{node.module}.{item.name}" for item in node.names
-                })
-
-        for node in ast.walk(syntax):
-            self.nodes += 1
-            if self.nodes > _MAX_NODES:
-                raise AnalysisRejected("Workspace sources exceed the analysis complexity budget")
-            self.inspect(node, aliases)
         return True
 
     async def resolve(self, dotted: str, *, optional: bool = False) -> bool:
@@ -161,7 +169,7 @@ class _Analysis:
         if package and module:
             raise AnalysisRejected(f"Ambiguous workspace import: {dotted}")
         if not (package or module or optional):
-            raise AnalysisRejected(f"Unresolved import: {dotted}")
+            raise SourceUnresolved(f"Unresolved import: {dotted}")
         return package or module
 
     async def import_from(self, path: str, node: ast.ImportFrom) -> None:
@@ -173,7 +181,11 @@ class _Analysis:
             module = ".".join([*parents[:len(parents) + 1 - node.level], *([module] if module else [])])
         if module.split(".")[0] in _RESERVED | _PACKAGES.keys():
             await self.resolve(module)
-            if any(alias.name in _TRAPS or alias.name == "*" for alias in node.names):
+            if any(
+                alias.name in _TRAPS or alias.name == "*"
+                or (module == "builtins" and alias.name in _DYNAMIC)
+                for alias in node.names
+            ):
                 raise AnalysisRejected("Unsupported dynamic import or Pyodide runtime operation")
             return
         found = await self.resolve(module, optional=True)
@@ -182,9 +194,50 @@ class _Analysis:
                 raise AnalysisRejected("Wildcard workspace imports require manual refactoring")
             child = await self.resolve(f"{module}.{alias.name}", optional=True)
             if not (found or child):
-                raise AnalysisRejected(f"Unresolved import: {module}.{alias.name}")
+                raise SourceUnresolved(f"Unresolved import: {module}.{alias.name}")
 
-    def inspect(self, node: ast.AST, aliases: dict[str, str]) -> None:
+    def inspect_module(self, syntax: ast.Module) -> list[ast.Import | ast.ImportFrom]:
+        aliases: dict[str, str] = {}
+        imports: list[ast.Import | ast.ImportFrom] = []
+        for node in ast.walk(syntax):
+            self.nodes += 1
+            if self.nodes > _MAX_NODES:
+                raise AnalysisRejected("Workspace sources exceed the analysis complexity budget")
+            if isinstance(node, ast.Import):
+                imports.append(node)
+                for item in node.names:
+                    root = item.name.split(".")[0]
+                    aliases[item.asname or root] = item.name if item.asname else root
+            elif isinstance(node, ast.ImportFrom):
+                imports.append(node)
+                if not node.level:
+                    aliases.update({item.asname or item.name: f"{node.module}.{item.name}" for item in node.names})
+
+        clients: set[str] = set()
+        dynamic_getattr_calls: set[int] = set()
+        for node in ast.walk(syntax):
+            if isinstance(node, ast.Call) and _qualified(node.func, aliases) in {"getattr", "builtins.getattr"}:
+                dynamic_getattr_calls.add(id(node.func))
+            if isinstance(node, ast.withitem):
+                value, targets = node.context_expr, [node.optional_vars]
+            elif isinstance(node, ast.Assign):
+                value, targets = node.value, node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value, targets = node.value, [node.target]
+            else:
+                continue
+            if isinstance(value, ast.Call) and _qualified(value.func, aliases) in _HTTP_CLIENTS:
+                clients.update(target.id for target in targets if isinstance(target, ast.Name))
+
+        has_http_import = any(name.split(".")[0] in _HTTP_ROOTS for name in aliases.values())
+        for node in ast.walk(syntax):
+            self.inspect(node, aliases, clients, has_http_import, dynamic_getattr_calls)
+        return imports
+
+    def inspect(
+        self, node: ast.AST, aliases: dict[str, str], clients: set[str],
+        has_http_import: bool, dynamic_getattr_calls: set[int],
+    ) -> None:
         if isinstance(node, ast.JoinedStr) and node.values:
             first = node.values[0]
             if isinstance(first, ast.Constant) and isinstance(first.value, str) and first.value.startswith(
@@ -195,28 +248,52 @@ class _Analysis:
             ("http://", "https://")
         ):
             self.hosts.add(_https_host(node.value))
-        if isinstance(node, ast.Attribute) and node.attr in _TRAPS:
-            raise AnalysisRejected(f"Unsupported dynamic or Pyodide runtime operation: {node.attr}")
+        if isinstance(node, (ast.Name, ast.Attribute)) and isinstance(node.ctx, ast.Load):
+            qualified = _qualified(node, aliases)
+            if (
+                qualified in _DYNAMIC or qualified.removeprefix("builtins.") in _DYNAMIC
+                or qualified == "sys.modules" or qualified.rsplit(".", 1)[-1] in _TRAPS
+                or (qualified in {"getattr", "builtins.getattr"} and id(node) not in dynamic_getattr_calls)
+            ):
+                raise AnalysisRejected("Unsupported dynamic or Pyodide runtime operation")
         if not isinstance(node, ast.Call):
             return
-        name = _dotted(node.func)
-        root, _, tail = name.partition(".")
-        qualified = ".".join(filter(None, (aliases.get(root, root), tail)))
-        if qualified.rsplit(".", 1)[-1] in _TRAPS:
-            raise AnalysisRejected("Unsupported dynamic or Pyodide runtime operation")
+        qualified = _qualified(node.func, aliases)
+        if qualified in {"getattr", "builtins.getattr"}:
+            attr = node.args[1] if len(node.args) > 1 else None
+            if (
+                not isinstance(attr, ast.Constant) or not isinstance(attr.value, str)
+                or attr.value in _DYNAMIC | _TRAPS | {"getattr", "modules", "__dict__", *_HTTP_METHODS}
+            ):
+                raise AnalysisRejected("Unsupported dynamic attribute lookup")
         namespace, _, method = qualified.rpartition(".")
-        if method in _HTTP_METHODS and (namespace.startswith(("httpx", "urllib")) or namespace == "js"):
+        if (
+            isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Call)
+            and _qualified(node.func.value.func, aliases) in _HTTP_CLIENTS
+        ):
+            namespace = "httpx"
+        if namespace.startswith("bifrost."):
             self.calls += 1
-            index = 1 if method == "request" else 0
-            url = node.args[index] if len(node.args) > index else next(
-                (keyword.value for keyword in node.keywords if keyword.arg == "url"), None
-            )
-            literal = _url_literal(url) if url is not None else None
-            if literal is None:
-                raise AnalysisRejected("Outbound call has no statically identifiable HTTPS URL")
-            self.hosts.add(_https_host(literal))
-        elif namespace.startswith("bifrost."):
-            self.calls += 1
+            return
+        if method not in _HTTP_METHODS:
+            return
+        index = 1 if method in {"request", "stream"} else 0
+        url = node.args[index] if len(node.args) > index else next(
+            (keyword.value for keyword in node.keywords if keyword.arg in {"url", "fullurl"}), None
+        )
+        literal = _url_literal(url) if url is not None else None
+        if namespace not in _HTTP_NAMESPACES and namespace not in clients:
+            if (
+                method != "get" or literal is None or has_http_import
+                or (literal is not None and literal.startswith(("http://", "https://")))
+            ):
+                raise AnalysisRejected("Outbound call has no statically identifiable HTTP receiver")
+            return
+        if literal is None:
+            raise AnalysisRejected("Outbound call has no statically identifiable HTTPS URL")
+        self.calls += 1
+        self.hosts.add(_https_host(literal))
+
 
 
 async def analyze(
@@ -230,7 +307,7 @@ async def analyze(
     try:
         async with asyncio.timeout(20):
             if not await analysis.load(entry_path, function_name):
-                raise AnalysisRejected("Workflow source is missing")
+                raise SourceUnresolved("Workflow source is missing")
     except (SyntaxError, UnicodeError, RecursionError) as exc:
         raise AnalysisRejected("Workspace source could not be analyzed as Python") from exc
     # Static sizing signals. Repeated calls, input-dependent work and library

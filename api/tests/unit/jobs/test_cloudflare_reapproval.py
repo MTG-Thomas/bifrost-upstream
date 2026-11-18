@@ -1,0 +1,158 @@
+"""Reapproval outcomes and shared queue semantics."""
+
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
+from uuid import uuid4
+
+import pytest
+from sqlalchemy import delete, select
+from src.core.storage.contracts import StorageError
+from src.jobs.platform import cloudflare_reapproval as reapproval
+from src.jobs.platform.base import (
+    PlatformJobCancelled,
+    PlatformJobContext,
+    PlatformJobFailure,
+)
+from src.models.orm import CloudflareApproval, PlatformJob
+from src.services import platform_jobs
+from src.services.execution.cloudflare_analysis import POLICY_VERSION
+from src.services.execution.cloudflare_eligibility import (
+    ApprovalDeclaration,
+    ApprovalProposal,
+)
+from src.services.platform_job_lease import LeaseLost
+
+
+@pytest.fixture
+def scenario():
+    path = "fixture.py"
+    parent = ApprovalDeclaration(
+        entry_path=path, function_name="run", entry_sha256="a" * 64, module_sha256={},
+        manifest_sha256="a" * 64, packages=["httpx"], https_hosts=["example.com"],
+        required_https_hosts=["example.com"], estimated_subrequests=2, subrequest_allowance=5,
+        estimated_cpu_ms=10, cpu_budget_ms=100,
+    )
+    approval = CloudflareApproval(
+        workflow_id=uuid4(), revision="b" * 64, policy_version=POLICY_VERSION, declaration=parent.model_dump(),
+    )
+    payload = reapproval.ReapprovalPayload(
+        workflow_id=approval.workflow_id, parent_revision=approval.revision, observed_pins={path: "c" * 64},
+    )
+    context = PlatformJobContext(uuid4(), uuid4(), None, "system", "system@gobifrost.local", "System")
+    return approval, parent, payload, context
+
+
+@pytest.fixture
+def worker(monkeypatch, scenario):
+    approval, parent, payload, _ = scenario
+    candidate = ApprovalProposal(approval.workflow_id, None, approval.revision, parent.model_copy(update={
+        "entry_sha256": "c" * 64,
+    }))
+
+    @asynccontextmanager
+    async def db_context():
+        yield object()
+
+    monkeypatch.setattr(reapproval, "get_db_context", db_context)
+    monkeypatch.setattr(reapproval, "current_approval", AsyncMock(return_value=approval))
+    monkeypatch.setattr(reapproval, "indexed_pins", AsyncMock(return_value=payload.observed_pins))
+    monkeypatch.setattr(reapproval, "propose_approval", AsyncMock(return_value=candidate))
+    monkeypatch.setattr(reapproval, "hold_lease", AsyncMock())
+    monkeypatch.setattr(reapproval, "accept_proposal", AsyncMock(return_value=CloudflareApproval()))
+    monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
+    return candidate
+
+
+@pytest.mark.parametrize("changed", [
+    {"https_hosts": ["new.example.com"]},
+    {"packages": ["httpx", "pydantic"]},
+])
+async def test_new_egress_or_package_needs_review(scenario, worker, changed):
+    _, _, payload, context = scenario
+    reapproval.propose_approval.return_value = ApprovalProposal(
+        worker.workflow_id, None, worker.previous_revision, worker.declaration.model_copy(update=changed),
+    )
+    assert await reapproval._run_reapproval(context, payload) == {
+        "outcome": "review_required", "reason": "approval_envelope_changed",
+    }
+    reapproval.accept_proposal.assert_not_awaited()
+
+
+@pytest.mark.parametrize("change", ["edit", "owner"])
+async def test_competing_edit_or_owner_change_supersedes_job(scenario, worker, change):
+    _, _, payload, context = scenario
+    if change == "edit":
+        reapproval.indexed_pins.side_effect = [payload.observed_pins, {}]
+    else:
+        reapproval.propose_approval.return_value = ApprovalProposal(
+            worker.workflow_id, uuid4(), worker.previous_revision, worker.declaration,
+        )
+    assert await reapproval._run_reapproval(context, payload) == {"outcome": "superseded"}
+    reapproval.accept_proposal.assert_not_awaited()
+
+
+async def test_lease_loss_prevents_acceptance(scenario, worker):
+    _, _, payload, context = scenario
+    reapproval.hold_lease.side_effect = LeaseLost()
+    with pytest.raises(PlatformJobCancelled):
+        await reapproval._run_reapproval(context, payload)
+    reapproval.accept_proposal.assert_not_awaited()
+
+
+async def test_stage_failure_is_advisory(scenario, worker, monkeypatch, caplog):
+    approval, _, payload, _ = scenario
+    monkeypatch.setattr(reapproval, "_stage_reapproval", AsyncMock(side_effect=RuntimeError("unavailable")))
+    await reapproval.stage_reapproval(approval, payload.observed_pins)
+    assert "Could not stage Cloudflare reapproval" in caplog.text
+
+
+async def test_shared_dedupe_cooldown_and_deterministic_refusal(scenario, db_session):
+    approval, _, payload, _ = scenario
+
+    async def stage():
+        await reapproval._stage_reapproval(db_session, approval, payload.observed_pins)
+        return (await db_session.scalars(select(PlatformJob).where(
+            PlatformJob.resource_id == str(approval.workflow_id),
+        ).order_by(PlatformJob.created_at))).all()
+
+    (job,) = await stage()
+    job.created_at = datetime.now(UTC) - timedelta(minutes=11)
+    assert len(await stage()) == 1  # Shared active-job deduplication.
+    job.status = "succeeded"
+    job.result = {"outcome": "review_required"}
+    assert len(await stage()) == 1  # Deterministic beyond the cooldown.
+    job.status = "failed"
+    job.created_at = datetime.now(UTC)
+    job.result = None
+    assert len(await stage()) == 1  # Transient within the cooldown.
+    job.created_at -= timedelta(minutes=11)
+    assert len(await stage()) == 2
+
+
+async def test_retryable_storage_failure_requeues_shared_job(scenario, worker, async_session_factory, monkeypatch):
+    _, _, payload, context = scenario
+    reapproval.propose_approval.side_effect = StorageError("backend_error")
+    with pytest.raises(PlatformJobFailure) as failed:
+        await reapproval._run_reapproval(context, payload)
+    monkeypatch.setattr(platform_jobs, "publish_platform_job_update", AsyncMock())
+    definition = reapproval.CLOUDFLARE_REAPPROVAL_DEFINITION
+    async with async_session_factory() as db:
+        db.add(PlatformJob(
+            id=context.job_id, job_type=definition.job_type, payload=payload.model_dump(mode="json"),
+            requested_by_user_id="system", requested_by_email="system@gobifrost.local",
+            requested_by_name="System", title="Reapproval retry", status="running", attempt=1,
+            max_attempts=definition.policy.max_attempts, lease_token=context.lease_token,
+        ))
+        await db.commit()
+    try:
+        assert await platform_jobs.retry_platform_job_failure(
+            context.job_id, context.lease_token, failed.value, enabled=definition.policy.retry_on_failure,
+        )
+        async with async_session_factory() as db:
+            job = await db.get(PlatformJob, context.job_id)
+            assert job is not None and job.status == "queued" and job.lease_token is None
+    finally:
+        async with async_session_factory() as db:
+            await db.execute(delete(PlatformJob).where(PlatformJob.id == context.job_id))
+            await db.commit()

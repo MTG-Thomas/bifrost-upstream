@@ -102,27 +102,9 @@ async def test_enqueue_uses_only_the_durable_approval_and_index(review, monkeypa
     if state == "unapproved":
         lookup.assert_not_awaited()
     if state == "changed-helper":
-        enqueue.assert_awaited_once_with(db, approval, pins)
+        enqueue.assert_awaited_once_with(approval, pins)
     else:
         enqueue.assert_not_awaited()
-
-
-@pytest.mark.parametrize("changed, allowed", [
-    ({"https_hosts": []}, True),
-    ({"https_hosts": ["example.com", "new.example.com"]}, False),
-    ({"packages": ["pydantic"]}, False),
-    ({"packages": ["httpx", "pydantic"]}, False),
-    ({"estimated_subrequests": 11}, False),
-    ({"estimated_cpu_ms": 501}, False),
-    ({"cpu_budget_ms": 501}, False),
-    ({"subrequest_allowance": 11}, False),
-])
-def test_carry_forward_never_widens_the_latest_envelope(review, changed, allowed):
-    approval, _, _ = review
-    declaration = cloudflare_eligibility.ApprovalDeclaration.model_validate({
-        **approval.declaration, "packages": ["httpx"], "https_hosts": ["example.com"],
-    })
-    assert cloudflare_reapproval._carry_forward(declaration, declaration.model_copy(update=changed)) is allowed
 
 
 async def _analyze(sources, **limits):
@@ -166,6 +148,63 @@ async def test_analyzer_pins_transitive_modules_and_infers_packages_and_hosts():
 async def test_analyzer_rejects_unverifiable_or_over_budget_workflow(source, limits, reason):
     with pytest.raises(AnalysisRejected, match=reason):
         await _analyze({ENTRY: source, HELPER: b"VALUE = 1\n"}, **limits)
+
+
+@pytest.mark.parametrize("statement", [
+    "import re\ndef run(): return re.compile('abc')\n",
+    "from re import compile\ndef run(): return compile('abc')\n",
+])
+async def test_regex_compile_is_allowed(statement):
+    assert (await _analyze({ENTRY: statement.encode()}))["packages"] == []
+
+
+@pytest.mark.parametrize("prefix, call", [
+    ("from pyodide.http import pyfetch", "pyfetch({url})"),
+    ("import js", "js.globalThis.fetch({url})"),
+    ("import workers", "workers.fetch({url})"),
+    ("import httpx", "httpx.AsyncClient().get({url})"),
+    ("from httpx import AsyncClient\nclient = AsyncClient()", "client.get({url})"),
+])
+async def test_http_calls_require_identifiable_urls(prefix, call):
+    source = prefix + "\nasync def run(url): return await " + call + "\n"
+    with pytest.raises(AnalysisRejected, match="identifiable HTTPS URL"):
+        await _analyze({ENTRY: source.format(url="url").encode()})
+    result = await _analyze({ENTRY: source.format(url="'https://example.com/path'").encode()})
+    assert result["required_https_hosts"] == ["example.com"]
+
+
+async def test_http_context_manager_and_unknown_receiver():
+    source = b"import httpx\nasync def run():\n    async with httpx.AsyncClient() as c:\n        return await c.get('https://example.com/path')\n"
+    assert (await _analyze({ENTRY: source}))["required_https_hosts"] == ["example.com"]
+    with pytest.raises(AnalysisRejected, match="identifiable HTTP receiver"):
+        await _analyze({ENTRY: b"def run(c): return c.get('https://example.com')\n"})
+
+
+@pytest.mark.parametrize("statement", [
+    "e = exec; e('pass')",
+    "import builtins; getattr(builtins, 'ex' + 'ec')('pass')",
+    "import builtins; getattr(builtins, 'exec')('pass')",
+    "import builtins as b; fn = b.compile",
+    "from builtins import eval as e",
+    "vars()",
+    "globals()",
+    "import sys as s; s.modules",
+    "import importlib",
+    "e = __import__",
+])
+async def test_dynamic_python_is_rejected(statement):
+    with pytest.raises(AnalysisRejected, match="dynamic|Unsupported Pyodide import"):
+        await _analyze({ENTRY: f"def run(): {statement}\n".encode()})
+
+
+async def test_parse_rejects_oversized_source_before_parsing(monkeypatch):
+    from src.services.execution import cloudflare_analysis
+
+    parse = Mock(side_effect=AssertionError("oversized source reached parser"))
+    monkeypatch.setattr(cloudflare_analysis.ast, "parse", parse)
+    with pytest.raises(AnalysisRejected, match="bundle budget"):
+        await _analyze({ENTRY: b" " * (128 * 1024 + 1)})
+    parse.assert_not_called()
 
 
 @pytest.mark.parametrize("problem", ["missing-marker", "removed-approval", "changed-entry", "changed-module"])

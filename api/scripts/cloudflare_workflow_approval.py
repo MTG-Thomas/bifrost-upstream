@@ -1,4 +1,4 @@
-"""Generate and accept Cloudflare workspace workflow proposals as a server operator."""
+"""Generate, accept, and revoke Cloudflare workspace workflow proposals as a server operator."""
 
 from __future__ import annotations
 
@@ -13,10 +13,16 @@ from src.services.execution.cloudflare_eligibility import (
     AnalysisRejected,
     accept_proposal,
     propose_approval,
+    revoke_approval,
 )
 
 
 async def run(args: argparse.Namespace) -> None:
+    if args.command == "revoke":
+        async with get_db_context() as db:
+            revision = await revoke_approval(db, args.workflow_id)
+        print(json.dumps({"workflow_id": str(args.workflow_id), "revoked_revision": revision}))
+        return
     proposal = await propose_approval(
         args.workflow_id, subrequest_allowance=args.subrequest_allowance, cpu_budget_ms=args.cpu_budget_ms,
     )
@@ -34,6 +40,7 @@ async def run(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("revoke").add_argument("workflow_id", type=UUID)
     for name in ("propose", "accept"):
         command = commands.add_parser(name)
         command.add_argument("workflow_id", type=UUID)

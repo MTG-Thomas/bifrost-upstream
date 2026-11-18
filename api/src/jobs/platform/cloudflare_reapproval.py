@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 from uuid import UUID
 
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import get_db_context
@@ -23,10 +26,12 @@ from src.services.execution.cloudflare_analysis import (
     MAX_MODULES,
     POLICY_VERSION,
     AnalysisRejected,
+    SourceUnresolved,
     digest,
 )
 from src.services.execution.cloudflare_eligibility import (
     ApprovalDeclaration,
+    ObservationChanged,
     accept_proposal,
     current_approval,
     indexed_pins,
@@ -34,6 +39,8 @@ from src.services.execution.cloudflare_eligibility import (
 )
 from src.services.platform_job_lease import LeaseLost, hold_lease
 from src.services.platform_jobs import enqueue_platform_job
+
+logger = logging.getLogger(__name__)
 
 _JOB_TYPE = "workflow.cloudflare_reapproval"
 _ACTOR = "Cloudflare approval policy"
@@ -54,10 +61,6 @@ def _carry_forward(
         (parent.entry_path, parent.function_name) == (candidate.entry_path, candidate.function_name)
         and set(candidate.packages) == set(parent.packages)
         and set(candidate.https_hosts) <= set(parent.https_hosts)
-        and candidate.subrequest_allowance == parent.subrequest_allowance
-        and candidate.cpu_budget_ms == parent.cpu_budget_ms
-        and candidate.estimated_subrequests <= parent.subrequest_allowance
-        and candidate.estimated_cpu_ms <= parent.cpu_budget_ms
     )
 
 
@@ -93,13 +96,18 @@ async def _run_reapproval(context: PlatformJobContext, payload: ReapprovalPayloa
     try:
         candidate = await propose_approval(
             payload.workflow_id, subrequest_allowance=parent.subrequest_allowance, cpu_budget_ms=parent.cpu_budget_ms,
+            expected_pins=payload.observed_pins,
         )
+    except ObservationChanged:
+        return {"outcome": "superseded"}
+    except (StorageError, TimeoutError, SourceUnresolved) as exc:
+        raise PlatformJobFailure(
+            "cloudflare_source_unavailable", "Could not resolve workspace sources", retryable=True,
+        ) from exc
     except AnalysisRejected as exc:
         return {"outcome": "review_required", "reason": str(exc)}
     except ValueError:
         return {"outcome": "review_required", "reason": "analysis_rejected"}
-    except (StorageError, TimeoutError) as exc:
-        raise PlatformJobFailure("cloudflare_source_unavailable", "Could not read workspace sources") from exc
 
     if candidate.previous_revision != payload.parent_revision or candidate.organization_id != context.organization_id:
         return {"outcome": "superseded"}
@@ -112,6 +120,9 @@ async def _run_reapproval(context: PlatformJobContext, payload: ReapprovalPayloa
     if not diff:
         return {"outcome": "unchanged"}
 
+    candidate = replace(candidate, declaration=candidate.declaration.model_copy(
+        update={"https_hosts": parent.https_hosts},
+    ))
     try:
         async with get_db_context() as db:
             await hold_lease(db, context.job_id, context.lease_token)
@@ -131,26 +142,30 @@ CLOUDFLARE_REAPPROVAL_DEFINITION = define_platform_job(_JOB_TYPE, ReapprovalPayl
 
 
 async def stage_reapproval(
+    approval: CloudflareApproval, observed_pins: dict[str, str | None],
+) -> None:
+    """Stage optional work independently so its lock and failures stay off the run transaction."""
+    try:
+        async with asyncio.timeout(2), get_db_context() as db:
+            await _stage_reapproval(db, approval, observed_pins)
+    except Exception:
+        logger.warning("Could not stage Cloudflare reapproval for workflow %s", approval.workflow_id, exc_info=True)
+
+
+async def _stage_reapproval(
     db: AsyncSession, approval: CloudflareApproval, observed_pins: dict[str, str | None],
 ) -> None:
-    """Queue once per observed candidate while keeping the triggering run Linux-only."""
     workflow_key = f"{_JOB_TYPE}:{approval.workflow_id}"
-    dedupe_key = digest([approval.revision, observed_pins])
-    # A terminal outcome suppresses duplicate work briefly. A dependency that
-    # was absent during analysis can arrive without changing the original pins.
-    prior = await db.scalar(select(PlatformJob.id).where(
-        PlatformJob.resource_lock_key == workflow_key,
-        PlatformJob.dedupe_key == dedupe_key,
-        PlatformJob.created_at >= datetime.now(UTC) - _OBSERVATION_COOLDOWN,
-    ).limit(1))
-    if prior is not None:
-        return
-
+    dedupe_key = digest(["reapproval-v2", approval.revision, observed_pins])
     await enqueue_platform_job(
         db, CLOUDFLARE_REAPPROVAL_DEFINITION, ReapprovalPayload(
             workflow_id=approval.workflow_id, parent_revision=approval.revision, observed_pins=observed_pins,
         ),
         dedupe_key=dedupe_key, resource_lock_key=workflow_key,
+        reuse_when=or_(
+            PlatformJob.created_at >= datetime.now(UTC) - _OBSERVATION_COOLDOWN,
+            (PlatformJob.status == "succeeded") & (PlatformJob.result["outcome"].as_string() == "review_required"),
+        ),
         organization_id=approval.organization_id, requested_by_user_id="system",
         requested_by_email="system@gobifrost.local", requested_by_name=_ACTOR,
         resource_type="workflow", resource_id=str(approval.workflow_id),

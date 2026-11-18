@@ -16,13 +16,14 @@ from src.services.execution.cloudflare_eligibility import (
     current_approval,
     prepare_approved_workspace,
     propose_approval,
+    revoke_approval,
 )
 from src.services.file_index_service import FileIndexService
 from src.services.repo_storage import RepoStorage
 
 
 @pytest.mark.e2e
-async def test_review_is_bound_to_indexed_sources_and_workflow_owner(db_session):
+async def test_review_is_bound_to_indexed_sources_and_workflow_owner(db_session, async_session_factory):
     workflow_id = uuid4()
     path = f"workflows/review_{workflow_id.hex}.py"
     workflow = Workflow(id=workflow_id, name="Review fixture", path=path, function_name="run")
@@ -49,8 +50,17 @@ async def test_review_is_bound_to_indexed_sources_and_workflow_owner(db_session)
         await db_session.rollback()
 
         reviewed = await propose()
-        await accept_proposal(db_session, reviewed, accepted_by="test operator")
-        await db_session.commit()
+        async def accept():
+            async with async_session_factory() as session:
+                try:
+                    await accept_proposal(session, reviewed, accepted_by="test operator")
+                    await session.commit()
+                except AnalysisRejected as exc:
+                    return str(exc)
+                return "accepted"
+
+        results = await asyncio.gather(accept(), accept())
+        assert sorted(results) == ["Workflow scope, source pins or current approval changed during review", "accepted"]
         workspace = await prepare(reviewed)
         assert workspace is not None
         assert workspace.bundle["sources"] == {path: "def run(): return 2\n"}
@@ -118,7 +128,7 @@ async def test_changed_module_carries_forward_through_live_platform_job(
         assert await marker() == proposal.revision
 
         new_sha = await index.write(module_path, b"VALUE = 'updated'\n")
-        assert await marker() is None
+        await db_session.commit()
         assert await marker() is None
         job_id = (await db_session.execute(select(PlatformJob.id).where(*job_filter))).scalar_one()
         await db_session.commit()
@@ -139,7 +149,8 @@ async def test_changed_module_carries_forward_through_live_platform_job(
         assert result == {"outcome": "approved", "revision": derived.revision}
         assert derived.derived_from == proposal.revision
         assert derived.pin_diff == {module_path: {"before": old_sha, "after": new_sha}}
-        assert derived.declaration["https_hosts"] == []
+        assert derived.declaration["https_hosts"] == ["example.com"]
+        assert derived.declaration["required_https_hosts"] == []
         assert await marker() == derived.revision
         assert await prepare(proposal.revision, entry_sha) is None
         workspace = await prepare(derived.revision, entry_sha)
@@ -149,6 +160,17 @@ async def test_changed_module_carries_forward_through_live_platform_job(
         assert verified_sources[module_path] == "VALUE = 'updated'\n"
         await RepoStorage().write(module_path, b"VALUE = 'changed after enqueue'\n")
         assert await prepare(derived.revision, entry_sha) is None
+        await RepoStorage().write(module_path, b"VALUE = 'updated'\n")
+        assert await revoke_approval(db_session, workflow_id) == derived.revision
+        await db_session.commit()
+        assert await marker() is None
+        assert await prepare(derived.revision, entry_sha) is None
+        revised = await propose_approval(workflow_id, subrequest_allowance=5, cpu_budget_ms=100)
+        assert revised.previous_revision is None
+        assert revised.inactive_history_count == 2
+        await accept_proposal(db_session, revised, accepted_by="test operator")
+        await db_session.commit()
+        assert await marker() == revised.revision
     finally:
         await db_session.rollback()
         await db_session.execute(delete(PlatformJob).where(*job_filter))

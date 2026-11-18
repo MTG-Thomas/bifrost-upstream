@@ -8,8 +8,9 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from src.core.database import get_db_context
 from src.core.pubsub import manager as pubsub_manager
@@ -30,11 +31,11 @@ from src.models.contracts.platform_jobs import (
 from src.models.orm.platform_jobs import PlatformJob
 from src.models.orm.solution_export_jobs import SolutionExportJob
 from src.services.durable_impersonation import current_durable_impersonation
-from src.services.platform_job_memory_profiles import (
-    resolve_platform_job_memory_required_bytes,
-    record_platform_job_memory_profile,
-)
 from src.services.notification_service import get_notification_service
+from src.services.platform_job_memory_profiles import (
+    record_platform_job_memory_profile,
+    resolve_platform_job_memory_required_bytes,
+)
 from src.services.work_dispatch import WAKE_PLATFORM_JOB, wake_pool_workers_after_commit
 
 logger = logging.getLogger(__name__)
@@ -197,16 +198,20 @@ async def publish_platform_job_update(job: PlatformJob) -> None:
 
 
 async def find_active_platform_job(
-    db: AsyncSession, job_type: str, dedupe_key: str
+    db: AsyncSession, job_type: str, dedupe_key: str, *,
+    reuse_when: ColumnElement[bool] | None = None,
 ) -> PlatformJob | None:
-    """The oldest active job for a deduplication key, if any."""
+    """The oldest active or explicitly reusable job for a deduplication key."""
+    reusable = PlatformJob.status.in_(ACTIVE_PLATFORM_JOB_STATUSES)
+    if reuse_when is not None:
+        reusable = or_(reusable, reuse_when)
     return (
         await db.execute(
             select(PlatformJob)
             .where(
                 PlatformJob.job_type == job_type,
                 PlatformJob.dedupe_key == dedupe_key,
-                PlatformJob.status.in_(ACTIVE_PLATFORM_JOB_STATUSES),
+                reusable,
             )
             .order_by(PlatformJob.created_at.asc())
             .limit(1)
@@ -242,6 +247,7 @@ async def enqueue_platform_job(
     payload: BaseModel | dict[str, Any],
     *,
     dedupe_key: str | None,
+    reuse_when: ColumnElement[bool] | None = None,
     resource_lock_key: str | None = None,
     priority: int = 100,
     organization_id: UUID | None,
@@ -255,7 +261,7 @@ async def enqueue_platform_job(
     job_id: UUID | None = None,
     memory_profile_key: str | None = None,
 ) -> tuple[PlatformJob, bool]:
-    """Create or reuse one active job under a durable deduplication key."""
+    """Create or reuse one job under a durable deduplication key."""
     parsed_payload = definition.payload_model.model_validate(payload)
     if dedupe_key is not None:
         await db.execute(
@@ -265,7 +271,7 @@ async def enqueue_platform_job(
             ),
             {"lock_key": f"{definition.job_type}:{dedupe_key}"},
         )
-        existing = await find_active_platform_job(db, definition.job_type, dedupe_key)
+        existing = await find_active_platform_job(db, definition.job_type, dedupe_key, reuse_when=reuse_when)
         if existing is not None:
             return existing, True
 

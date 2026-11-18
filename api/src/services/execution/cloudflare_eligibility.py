@@ -8,7 +8,8 @@ from typing import Annotated
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import get_db_context
@@ -57,6 +58,7 @@ class ApprovalProposal:
     organization_id: UUID | None
     previous_revision: str | None
     declaration: ApprovalDeclaration
+    inactive_history_count: int = 0
 
     def review_document(self) -> dict[str, object]:
         return {
@@ -64,6 +66,7 @@ class ApprovalProposal:
             "workflow_id": str(self.workflow_id),
             "organization_id": str(self.organization_id) if self.organization_id else None,
             "previous_revision": self.previous_revision,
+            "inactive_history_count": self.inactive_history_count,
             **self.declaration.model_dump(mode="json"),
         }
 
@@ -83,6 +86,28 @@ async def current_approval(db: AsyncSession, workflow_id: UUID) -> CloudflareApp
     ))
 
 
+async def _history_count(db: AsyncSession, workflow_id: UUID) -> int:
+    return await db.scalar(
+        select(func.count()).select_from(CloudflareApproval).where(CloudflareApproval.workflow_id == workflow_id)
+    ) or 0
+
+
+async def _lock_workflow(db: AsyncSession, workflow_id: UUID) -> Workflow | None:
+    # PostgreSQL FOR NO KEY UPDATE serializes review writers without
+    # conflicting with foreign-key checks on the workflow row.
+    return await db.get(Workflow, workflow_id, with_for_update={"key_share": True}, populate_existing=True)
+
+
+async def revoke_approval(db: AsyncSession, workflow_id: UUID) -> str | None:
+    if await _lock_workflow(db, workflow_id) is None:
+        raise AnalysisRejected("Workflow does not exist")
+    current = await current_approval(db, workflow_id)
+    if current is None:
+        return None
+    current.is_current = False
+    return current.revision
+
+
 async def indexed_pins(db: AsyncSession, paths: set[str]) -> dict[str, str | None]:
     rows = await db.execute(select(FileIndex.path, FileIndex.content_hash).where(FileIndex.path.in_(paths)))
     return {row.path: row.content_hash for row in rows}
@@ -95,8 +120,13 @@ def _loose_workflow(workflow: Workflow | None) -> bool:
     )
 
 
+class ObservationChanged(AnalysisRejected):
+    """Storage has moved beyond the source digests used to schedule the job."""
+
+
 async def propose_approval(
     workflow_id: UUID, *, subrequest_allowance: int, cpu_budget_ms: int,
+    expected_pins: dict[str, str | None] | None = None,
 ) -> ApprovalProposal:
     async with get_db_context() as db:
         workflow = await db.get(Workflow, workflow_id)
@@ -104,29 +134,35 @@ async def propose_approval(
             raise AnalysisRejected("Expected an active loose-workspace workflow")
         current = await current_approval(db, workflow_id)
         previous_revision = current.revision if current else None
+        history_count = 0 if current else await _history_count(db, workflow_id)
         entry_path, function_name, organization_id = workflow.path, workflow.function_name, workflow.organization_id
 
     storage = RepoStorage()
 
     async def read(path: str, max_bytes: int) -> bytes | None:
         try:
-            return await storage.read(path, max_bytes=max_bytes)
+            content = await storage.read(path, max_bytes=max_bytes)
         except StorageError as error:
-            if error.kind == "not_found":
-                return None
-            raise
+            if error.kind != "not_found":
+                raise
+            content = None
+        if expected_pins is not None and path in expected_pins:
+            pin = storage.compute_hash(content) if content is not None else None
+            if pin != expected_pins[path]:
+                raise ObservationChanged("Observed workspace sources changed before analysis")
+        return content
 
     declaration = ApprovalDeclaration.model_validate(await analyze(
         read, entry_path, function_name, subrequest_allowance=subrequest_allowance, cpu_budget_ms=cpu_budget_ms,
     ))
-    return ApprovalProposal(workflow_id, organization_id, previous_revision, declaration)
+    return ApprovalProposal(workflow_id, organization_id, previous_revision, declaration, history_count)
 
 
 async def accept_proposal(
     db: AsyncSession, proposal: ApprovalProposal, *, accepted_by: str,
 ) -> CloudflareApproval:
-    """Publish under the workflow lock, after rechecking scope, pins and review lineage."""
-    workflow = await db.get(Workflow, proposal.workflow_id, with_for_update={"key_share": True})
+    """Serialize acceptance and revocation with a PostgreSQL FOR NO KEY UPDATE lock."""
+    workflow = await _lock_workflow(db, proposal.workflow_id)
     declaration = proposal.declaration
     current = await current_approval(db, proposal.workflow_id)
     if (
@@ -135,18 +171,24 @@ async def accept_proposal(
             proposal.organization_id, declaration.entry_path, declaration.function_name,
         )
         or (current.revision if current else None) != proposal.previous_revision
+        or (current is None and await _history_count(db, proposal.workflow_id) != proposal.inactive_history_count)
         or await indexed_pins(db, set(declaration.manifest)) != declaration.manifest
     ):
         raise AnalysisRejected("Workflow scope, source pins or current approval changed during review")
 
-    if current is not None:
-        current.is_current = False
-        await db.flush()
-    row = CloudflareApproval(
-        revision=proposal.revision, workflow_id=proposal.workflow_id, organization_id=proposal.organization_id,
-        policy_version=POLICY_VERSION, declaration=declaration.model_dump(mode="json"), accepted_by=accepted_by,
-    )
-    db.add(row)
+    try:
+        async with db.begin_nested():
+            if current is not None:
+                current.is_current = False
+                await db.flush()
+            row = CloudflareApproval(
+                revision=proposal.revision, workflow_id=proposal.workflow_id, organization_id=proposal.organization_id,
+                policy_version=POLICY_VERSION, declaration=declaration.model_dump(mode="json"), accepted_by=accepted_by,
+            )
+            db.add(row)
+            await db.flush()
+    except IntegrityError as exc:
+        raise AnalysisRejected("Workflow scope, source pins or current approval changed during review") from exc
     return row
 
 
