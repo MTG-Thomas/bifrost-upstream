@@ -1,12 +1,12 @@
 # Property-based testing for the Bifrost TypeScript front-end
 
-**Date:** 2026-11-17 · **Status:** adopted, narrowly — one property live; expansion is gated on defect yield · **Scope:** `client/` only (fork-only work; see §9)
+**Date:** 2026-11-17 · **Status:** adopted, narrowly — two properties live; expansion gated on defect yield · **Scope:** `client/` only (fork-only work; see §10)
 
 ## TL;DR
 
 - **Yes, but only at the reducer and pure-function layer.** The front-end already has 659 Vitest files and 139 Playwright specs; the gap is not test *count* but the absence of any statement about *all* inputs to its stateful logic.
-- **One real defect, found by the first property.** `applyChatStreamEnvelopes` applied one render frame against a single shared clone, but rejected envelopes mutated that clone before deciding to reject — inventing phantom runs, and letting a rejected envelope bind an unscoped projection to its conversation. Fixed in `client/src/lib/chat-runtime.ts`; both counterexamples pinned as example tests.
-- **`fast-check` 4.10.2, a dev dependency.** One property file, fixed seed in the normal suite, 100 runs, ~1.5 s of wall time. No new CI job, no change to the `@smoke` gate, no change to `maxWorkers`.
+- **Two real defects, both found by properties.** The first: `applyChatStreamEnvelopes` applied one render frame against a single shared clone, but rejected envelopes mutated that clone before deciding to reject — inventing phantom runs, and letting a rejected envelope bind an unscoped projection to its conversation. The second: the execution log buffer expected 1-based sequences while the server publishes from 0, so the first line of every streamed execution was dropped, and retransmitted buffered logs flushed twice. Both fixed; both counterexamples pinned as example tests.
+- **`fast-check` 4.10.2, a dev dependency.** Two property files, fixed seed in the normal suite, 100 runs each. No new CI job, no change to the `@smoke` gate, no change to `maxWorkers`.
 - **Bombadil is deliberately deferred.** It is pre-1.0, Chrome-only, and its findings need an owner to be dispositioned; none of the current candidate invariants need a browser.
 - **Upstream eligibility is unaffected.** A test suite is not a contribution basis, and this fork is public. The defect becomes upstream-eligible only with a concrete actual-use consequence.
 
@@ -73,13 +73,27 @@ The first envelope is rejected by sequencing after materialising `run-2`; the se
 
 **Fix.** `applyEnvelopeToProjection` now decides against the pre-existing state and only then commits: chunk/run-id/sequence/dedupe rejection happens first, using `projection.runs[runId]` for the last-sequence lookup instead of a freshly inserted run. The accepted path is unchanged. Both counterexamples are pinned as example tests in `chat-runtime.test.ts` — the phantom run and the premature conversation binding — so a later generator change cannot silently drop a regression.
 
-## 4. Seed policy
+## 4. Second property: the execution log reorder buffer
 
-- **PR / `npm test`:** fixed seed (`SEED = 20261117`), `numRuns: 100`. Reproducible, deterministic, no flakes.
+`src/stores/executionStreamStore.ts` buffers out-of-order websocket logs against `expectedSequence`. It had four example tests, none of which touched sequencing, so the reorder buffer was untested.
+
+**Oracle.** Given any delivery order and any batching, the store must display exactly the contiguous run of sequences starting at the server's first sequence — ascending, deduplicated — and completion must flush every delivered log exactly once, in order. The oracle is computed from the delivered set, not from the reducer.
+
+**Counterexample 1 (seed `20261118`): `[0]` displayed nothing.** The server's counter starts at 0 (`api/bifrost/_logging.py:267`, and persistence allocates from `coalesce(max(sequence), -1) + 1` at lines 627-657), but `expectedSequence` was initialised to 1. Sequence 0 therefore matched neither `=== nextExpected` nor `> nextExpected` and fell through the "duplicates" branch. The first log line of every streamed execution was dropped from the live view until the persisted logs were fetched.
+
+**Counterexample 2: `[10, 10]` flushed as `[10, 10]`.** Future logs buffered while a gap existed were queued once per delivery, and `completeExecution` flushes `pendingLogs` verbatim. A retransmitted future log became a visible duplicate on completion.
+
+**Fixes.** Expect sequence 0; queue at most one buffered log per sequence within a pass (previously buffered logs are already part of the pending + incoming set, so the dedupe set is built inside the pass rather than pre-seeded). Both are internal to the store; no API or contract change.
+
+**Known and deliberately unchanged.** A batch that mixes sequenced and unsequenced logs drops the unsequenced ones, because the sequenced loop admits only `=== nextExpected` or `> nextExpected`. Production batches are uniform and single-element (`useExecutionStream.ts:156`, `useWorkflowMutation.ts:309`), so the path is unreachable today; adding a branch for it would be a fallback nobody asked for. The trigger is recorded here so a future mixed-source caller sees it.
+
+## 5. Seed policy
+
+- **PR / `npm test`:** fixed seed per file (`20261117` for the chat projection, `20261118` for the log buffer), `numRuns: 100`. Reproducible, deterministic, no flakes.
 - **Nightly (future):** rotate the seed, print it on failure. A rotating-seed failure is a real counterexample and gets a disposition under the testing skill — never a retry.
 - **Every counterexample** is pinned as an explicit example test at the narrowest layer.
 
-## 5. What not to do
+## 6. What not to do
 
 - Do not put randomised runs in the `@smoke` gate or the merge queue.
 - Do not property-test presentational components, and do not fuzz the login form.
@@ -87,29 +101,30 @@ The first envelope is rejected by sequencing after materialising `run-2`; the se
 - Do not let a property test touch the DOM, timers, `Math.random` or the network.
 - Do not expand to component-level PBT until the unit tier has produced a defect per unit of effort.
 
-## 6. Next slices under consideration
+## 7. Next slices under consideration
 
-1. **`executionStreamStore.appendLogs`** — permutations of positive sequences with identical retransmissions against a contiguous-prefix oracle; include the completion flush path. The current contract is narrower than it looks: production callers pass one-element arrays, and a batch that mixes sequenced with unsequenced logs silently drops the unsequenced ones.
-2. **`applyPagedEvent`** — from a sorted, unique window within `pageSize`, events must preserve size, uniqueness and order, and must follow the documented page-edge rules. `sortedIndex` is private, so drive it through the hook's reducer.
-3. **`compileFilterToExpr`** — never emits `{and: [...]}` with fewer than two operands (the server validator rejects it), empty filter maps to `null`, unsupported operators always throw.
-4. **`parseApiError`** — total over `unknown`: never throws, always yields a non-empty message.
-5. **`compareRows` vs PostgreSQL** — differential, live-stack, e2e only: the module comment already admits an intentional collation approximation; the property bounds the divergence instead of leaving it anecdotal.
+1. **`applyPagedEvent`** — from a sorted, unique window within `pageSize`, events must preserve size, uniqueness and order, and must follow the documented page-edge rules. `sortedIndex` is private, so drive it through the hook's reducer.
+2. **`compileFilterToExpr`** — never emits `{and: [...]}` with fewer than two operands (the server validator rejects it), empty filter maps to `null`, unsupported operators always throw.
+3. **`parseApiError`** — total over `unknown`: never throws, always yields a non-empty message.
+4. **`compareRows` vs PostgreSQL** — differential, live-stack, e2e only: the module comment already admits an intentional collation approximation; the property bounds the divergence instead of leaving it anecdotal.
+5. **Server/client sequence agreement** — the two defects above were both off-by-one or origin mismatches found by reading `api/bifrost/_logging.py`. A single cross-boundary test that asserts the published origin matches the client's expectation would make the next such mismatch fail loudly.
 
-## 7. Bombadil
+## 8. Bombadil
 
 Not evaluated. Deferred for three reasons — pre-1.0 and Chrome-only, it needs a named owner for its findings, and none of the current candidate invariants require a browser. A future evaluation should not be scheduled as a required check until it can produce a replayable trace that someone dispositions.
 
-## 8. Acceptance criteria met
+## 9. Acceptance criteria met
 
-- Property file runs inside the existing suite; no new CI job, no gate change.
-- 100 generated cases execute in under 2 s of test time; total run time is dominated by happy-dom environment creation, which happens per test file.
+- Property files run inside the existing suite; no new CI job, no gate change.
+- 100 generated cases per property execute in under 2 s of test time; total run time is dominated by happy-dom environment creation, which happens per test file.
 - `npm test` determinism preserved: fixed seed, no retries, no timers. The cost of a fixed seed is that the same 100 cases repeat forever; a rotating seed would need its own scheduled job, which does not exist.
-- Fix verified against both the property and the pre-existing `chat-runtime.test.ts` and `chatStore.test.ts` suites.
+- Every fix verified three ways: the property red before and green after, the pinned example red against the pre-fix source and green after, and the pre-existing suites still green.
 
-## 9. Upstream position
+## 10. Upstream position
 
 `CONTRIBUTING.md` is explicit that a reproduction, benchmark or test suite does not by itself make a submission eligible, and that unsolicited non-security audit findings are out of scope. This fork is public. Therefore:
 
 - The harness and this note stay fork-only.
 - The `chat-runtime` fix is a candidate only with a concrete actual-use basis: the deployment or task, the version, and the practical consequence (for example a stuck active-run indicator after a reconnect).
+- The log-buffer fixes have a clearer user-visible claim — the first line of a streamed execution's live log was missing until a refetch — but that still needs a real deployment observation, not a deduction from source.
 - Anything that turns out to be a path-filter or authorization divergence goes through `SECURITY.md` as a private draft, never a fork PR.
