@@ -19,6 +19,7 @@ from src.worker import pool_main
 from src.worker.remote import host
 from src.worker.remote.ownership import RemoteOwnerLease
 from src.worker.remote.protocol import (
+    CLOUDFLARE_CREDENTIAL_PROTOCOL,
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
     ControlEnvelope,
 )
@@ -27,7 +28,7 @@ from src.worker.remote.remote_pool import ThinRemoteProcessPool
 
 @pytest.mark.asyncio
 async def test_cloudflare_executor_starts_and_reconnects_with_workflow_only(monkeypatch) -> None:
-    lease = RemoteOwnerLease(uuid4(), uuid4(), uuid4(), 1)
+    lease = RemoteOwnerLease(uuid4(), uuid4(), uuid4(), 1, credential_protocol=CLOUDFLARE_CREDENTIAL_PROTOCOL)
     socket = Mock()
     handlers = (("workflow.execute", 1),)
     bridge = host.Bridge(socket, {
@@ -93,7 +94,8 @@ async def test_cloudflare_executor_starts_and_reconnects_with_workflow_only(monk
     monkeypatch.setattr(host, "release_remote_owner", AsyncMock())
     monkeypatch.setattr(worker, "_idle_seconds", AsyncMock(return_value=3600))
     monkeypatch.setattr(pool_main, "begin_drain", AsyncMock())
-    monkeypatch.setattr(pool_main, "retire_worker", AsyncMock())
+    retire_worker = AsyncMock()
+    monkeypatch.setattr(pool_main, "retire_worker", retire_worker)
     monkeypatch.setattr(pool_main, "remove_scheduler_replica", AsyncMock())
     monkeypatch.setattr(pool_main, "claim_next", claim)
     beat_mock = AsyncMock(side_effect=beat)
@@ -171,4 +173,5 @@ async def test_cloudflare_executor_starts_and_reconnects_with_workflow_only(monk
         else:
             await session.detach()
     assert await session.task == 0
-    assert commands == ["ready", "retired"]
+    retire_worker.assert_awaited_once_with(lease.worker_id, runs_handled=0)
+    assert commands == ["ready"]

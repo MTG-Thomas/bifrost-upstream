@@ -596,18 +596,20 @@ async def test_lost_remote_owner_detaches_without_retiring_live_launcher_claims(
 
 @pytest.mark.asyncio
 async def test_drained_remote_owner_retires_its_launcher() -> None:
-    executor = object.__new__(ApiExecutor)
-    executor._lost = False
-    executor.bridge = Mock(handoff=False, connected=True, lease=LEASE, request=AsyncMock())
+    bridge = Bridge(Mock(), {
+        "current": 1, "limit": 100, "requirements": {}, "hostname": "runner",
+    }, LEASE)
+    executor = ApiExecutor(bridge, LEASE.worker_id)
 
     with (
         patch("src.worker.remote.host.owns_remote_session", new=AsyncMock(return_value=True)),
         patch.object(PoolWorker, "_retire", new_callable=AsyncMock) as retire,
+        patch.object(bridge, "request", new_callable=AsyncMock) as request,
     ):
         await executor._retire()
 
     retire.assert_awaited_once_with()
-    executor.bridge.request.assert_awaited_once_with("retired", {})
+    request.assert_awaited_once_with("retired", {})
 
 
 def test_remote_admission_uses_launcher_pressure_ratio_not_unbounded_usage_ratio() -> None:

@@ -127,22 +127,26 @@ async def test_cloudflare_hello_preserves_the_external_warm_worker(db, capacity,
     await capacity.pool.reconcile_worker(worker_id, policy)
     uid = capacity.provider.resources[str(worker_id)]["resource_uid"]
     launcher_id = uuid4()
-    assert await claims.admit_external_worker(
-        worker_id, resource_uid=uid, launcher_id=launcher_id,
-        version=capacity.provider.profile.worker_version, hostname="cloudflare-worker",
-    ) == worker_id
+    version = capacity.provider.profile.worker_version
+    # Seed the Cloudflare binding that a future provider would prepare before hello.
     async with db.context() as session:
         worker = await session.get(ExecutionWorker, worker_id)
-        assert worker.runtime_profile == LINUX_RUNTIME_PROFILE
+        assert worker.state == "starting"
+        worker.runtime_profile = CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+        worker.remote_launcher_id = launcher_id
+        worker.supported_handlers = ["workflow.execute"]
 
     monkeypatch.setattr(ownership, "get_liveness_db_context", db.context)
     lease = await ownership.acquire_remote_owner(
         worker_id=worker_id, owner_id=uuid4(), launcher_id=launcher_id,
         nonce_digest="a" * 64, hello_sequence=1, runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+        credential_protocol=2,
+        cloudflare_enrollment=ownership.CloudflareEnrollment(uid, version, "cloudflare-worker"),
     )
     assert lease is not None
     async with db.context() as session:
         worker = await session.get(ExecutionWorker, worker_id)
+        assert worker.state == "ready"
         assert worker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
         worker.memory_budget_bytes = CLOUDFLARE_DEV_BUDGET_BYTES
 

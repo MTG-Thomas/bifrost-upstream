@@ -259,6 +259,23 @@ async def test_legacy_linux_hello_cannot_take_cloudflare_enrollment(hello, enrol
 
 
 @pytest.mark.asyncio
+async def test_legacy_linux_hello_cannot_admit_unbound_cloudflare_row(hello, enrollment):
+    async with enrollment() as db:
+        row = await db.get(ExecutionWorker, hello.incarnation_id)
+        row.remote_launcher_id = None
+    linux = replace(hello, runtime_profile=None)
+    socket = socket_for(linux, key=PLATFORM_KEY, sample={"current": 1, "limit": 100})
+
+    with pytest.raises(AuthenticationError, match="prepared capacity resource"):
+        await host.RemoteControlHost().connect(socket)
+    socket.send_text.assert_not_awaited()
+    async with enrollment() as db:
+        row = await db.get(ExecutionWorker, hello.incarnation_id)
+        assert row.state == "starting"
+        assert row.remote_launcher_id is None
+
+
+@pytest.mark.asyncio
 async def test_retirement_fences_cloudflare_session_and_reconnect(hello, enrollment):
     original = host.RemoteControlHost()
     session, _ = await original.connect(socket_for(hello))

@@ -307,16 +307,29 @@ the planner assumes new starts are Linux. A live authenticated launcher that
 could hold marked work can defer early rejection by a smaller Linux ceiling
 until the ordinary queue deadline.
 
-### Phase 3 opaque workflow wire contract
+### Phase 3 manual dev enrollment
 
-- Before starting a dev launcher, the operator or future provider prepares an
-  `execution_workers` row in `starting` state with the incarnation UUID,
-  `form=external`, `execution_lane=normal`,
-  `runtime_profile=cloudflare-python-v1`, the exact DO resource UID in
-  `capacity_resource_uid`, the intended launcher UUID in `remote_launcher_id`,
-  and the exact reported build in `version`. The launcher receives these
-  identities and build as configuration and sends the build in the hello
-  frame's top-level `version`.
+- Set `BIFROST_CLOUDFLARE_WORKER_HELLO_ENABLED=true` on the dev API. The
+  setting permits hello validation, and the operator must still seed the
+  incarnation because no Cloudflare capacity provider creates the row.
+  Before the first hello, insert and commit a fresh row in the dev database's
+  `execution_workers` table with these values.
+
+  | Column | Value |
+  | --- | --- |
+  | `id` | Fresh incarnation UUID, sent as signed `incarnation_id` |
+  | `form`, `state`, `resource_class` | `external`, `starting`, `standard` |
+  | `execution_lane`, `runtime_profile` | `normal`, `cloudflare-python-v1` |
+  | `capacity_resource_uid` | Exact dev DO resource UID, sent as signed `resource_uid` |
+  | `remote_launcher_id` | Fresh pre-bound launcher UUID, sent as signed `launcher_id` |
+  | `version` | Exact build string sent as top-level `version` in the hello frame |
+  | `supported_handlers` | JSONB `["workflow.execute"]` |
+  | `remote_hello_sequence`, `remote_session_generation`, `active_runs`, `runs_handled`, `memory_reserved_bytes` | `0` |
+  | `remote_owner_id`, `remote_owner_lease_expires_at`, `capacity_resource_deleted_at`, `memory_budget_bytes`, `capacity_scope` | `NULL` for the manually managed dev incarnation |
+
+  Use the schema defaults for other columns. Configure the launcher with the
+  same identities, lane, profile, and build, and send the first signed hello
+  with sequence 1.
 - Keep `BIFROST_WORKER_CAPACITY_TOKEN` on the API and with the operator or
   provider responsible for enrollment. Derive
   `external_worker_control_key(capacity_token, incarnation_id, resource_uid)`
@@ -324,11 +337,28 @@ until the ordinary queue deadline.
   `BIFROST_WORKER_CONTROL_SECRET` (a Worker secret). Never provision the
   platform `BIFROST_SECRET_KEY` or `BIFROST_WORKER_CAPACITY_TOKEN` on the
   launcher. Use the derived value to sign the hello with `protocol.mjs`.
+  Anyone who obtains the capacity token, including the provider or a system
+  that logs it, can mint a control key for any Cloudflare incarnation.
+  Impersonating a launcher still requires a matching prepared row and its
+  pre-bound launcher ID. Keep the capacity token out of logs. Raise with the
+  #1424 maintainer that its `external_worker_environment` denylist should
+  also exclude `BIFROST_WORKER_CAPACITY_TOKEN`.
+
+### Phase 3 opaque workflow wire contract
+
 - First admission promotes the prepared row to `ready` in the same database
   update that acquires ownership. Reconnect and takeover recheck the same
   bindings on `ready` or `draining` rows. Retiring the row immediately revokes
   enrollment and makes the current database fence fail for control and
-  transaction checks. The host closes the socket during session cleanup.
+  transaction checks. When another actor marks the row `lost` or `retired`,
+  liveness-only heartbeats can still refresh the in-memory transport timestamp
+  until the host detects the loss or its tracked lease expires. The next
+  renewal normally starts within 10 seconds for a connected, heartbeating
+  launcher and fails the database fence. If the database is slow or
+  unavailable, heartbeat acceptance is bounded by the remaining tracked
+  lease (20 seconds from acquisition or renewal start). The host closes the
+  socket during session cleanup. This keeps a database read off every
+  launcher heartbeat while database-gated actions remain fenced.
   Reconnect requires a newly prepared incarnation and derived key after
   retirement. The dedicated Cloudflare capacity provider is future work.
 - The Cloudflare hello advertises the signed runtime profile and capabilities
