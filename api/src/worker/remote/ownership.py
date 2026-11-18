@@ -93,6 +93,10 @@ async def acquire_remote_owner(
                 remote_hello_sequence=hello_sequence,
                 remote_credential_protocol=credential_protocol,
                 runtime_profile=runtime_profile,
+                **(
+                    {"memory_budget_bytes": None}
+                    if runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE else {}
+                ),
             )
             .returning(ExecutionWorker.remote_session_generation, ExecutionWorker.remote_credential_protocol)
         )

@@ -801,7 +801,7 @@ class PoolWorker:
 
     def _capacity_budget_bytes(self) -> int | None:
         if self.admission is not None and self.admission.declared_slots is not None:
-            return self.admission.budget_bytes
+            return self.admission.budget_bytes if self._claims_open() else None
         return self.budget.budget_bytes if self.budget is not None else None
 
     async def _heartbeat_loop(self) -> None:

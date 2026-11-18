@@ -93,11 +93,9 @@ lands.
   slot and its own request from that budget until settlement.
 - **Eligibility at claim time.** A Cloudflare launcher must only claim
   executions the Pyodide runtime can run (no unpackaged native dependencies,
-  within subrequest/CPU limits). The census rule
-  (`dev/routing/eligibility.mjs`, 317/317 current workflows eligible) becomes a
-  claim filter for this profile. This is the one genuinely new concept
-  relative to Jack's design, which has no per-worker job filter beyond
-  handlers.
+  within subrequest/CPU limits). The fenced claim uses the API's durable
+  approval marker for the Normal workflow handler. The first version only
+  approves explicit, reviewed workspace fixture revisions.
 - Termination: the API's deadline and cancellation paths already end in
   `terminate`; for this profile the terminal is reported as a cooperative
   stop, and the existing fencing keeps late effects from committing.
@@ -246,6 +244,55 @@ run. Findings, checked against the cited code:
      and late egress.
 6. Scale-out through a provider last. Production only with explicit
    authorization.
+
+### Phase 3 workspace approval and placement
+
+`BIFROST_CLOUDFLARE_WORKFLOW_APPROVALS` is an operator environment or
+`.env` setting containing a JSON array. Its default is empty. Each item
+specifies:
+
+- `workflow_id`, `entry_path`, `function_name`, `entry_sha256`, and
+  `module_sha256` (relative Python path to raw UTF-8 source SHA-256).
+- `manifest_sha256`, the SHA-256 of the UTF-8 JSON path-to-digest map
+  including the entry, with sorted keys and no separator whitespace.
+- `packages` (canonical distribution names from the dev build),
+  `https_hosts` (lowercase exact HTTPS hostnames), and
+  `required_https_hosts` (a subset).
+- `estimated_subrequests` and `subrequest_allowance` (integer counts, with
+  a maximum allowance of 50), plus `estimated_cpu_ms` and `cpu_budget_ms`
+  (integer milliseconds with a positive budget).
+
+Review covers the complete dependency and egress declarations, expected
+costs and the exact workflow inputs the fixture supports. The API checks
+the entry against the workflow record, reads all pinned files from
+`_repo/`, and checks the manifest, declarations, and source (including
+the Pyodide process clock trap). Inline code, Fast Path, Solution and
+artifact-workspace dispatches are outside this policy. The resulting
+marker hashes the policy version and canonical approval. The census
+(`dev/routing/eligibility.mjs`) can later propose declarations and pins for
+review into this same list.
+
+Before sending `workflow`, the API repeats verification against the current
+approval and source. The command context carries `cloudflare_workspace`
+with the approved `manifest`, the exact verified UTF-8 `sources` keyed by
+path, `packages`, `https_hosts`, `subrequest_allowance`, and `cpu_budget_ms`.
+The launcher must execute that snapshot and enforce the declared outbound
+policy. Missing, revoked or changed pins prevent a send and hand the run
+back as Linux-only. Other definitive refusals retain the revision and
+original queue age.
+
+Linux remains eligible for every dispatch it can already claim. Planning
+places eligible work on reconciled Cloudflare slots first, preserving
+Linux capacity for requests only Linux can run. Actual claims retain
+per-worker priority and queue order, with the first eligible claimant
+winning. A Cloudflare reservation covers only an eligible request that
+fits its declared capacity. Linux retains its existing reserved-work
+priority and physical memory gate. An idle, reconciled dev launcher with
+no eligible fitting demand can yield a capped slot to Linux. It contributes
+to the shared worker cap, while warm floors, calibration and measured Linux
+budget ceilings use Linux reports. A live authenticated launcher that
+could hold marked work can defer early rejection by a smaller Linux ceiling
+until the ordinary queue deadline.
 
 ### Phase 3 opaque workflow wire contract
 

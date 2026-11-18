@@ -294,13 +294,19 @@ async def _settle_pool_dispatch(
             row.assigned_worker_id = None
         return None
     if largest is not None and row.memory_request_bytes > largest:
-        from src.services.worker_pool.unfit import too_large_message
+        from src.services.worker_pool.eligibility import declared_alternative_sql
 
-        reason = too_large_message(row.memory_request_bytes, largest)
-        await family.fail(db, row.subject_id, reason)
-        payload = row.payload
-        await db.delete(row)
-        return payload, reason
+        alternative = row.cloudflare_revision is not None and await db.scalar(
+            select(WorkDispatch.id).where(WorkDispatch.id == row.id, declared_alternative_sql())
+        )
+        if not alternative:
+            from src.services.worker_pool.unfit import too_large_message
+
+            reason = too_large_message(row.memory_request_bytes, largest)
+            await family.fail(db, row.subject_id, reason)
+            payload = row.payload
+            await db.delete(row)
+            return payload, reason
     if row.created_at <= datetime.now(timezone.utc) - POOL_CLAIM_DEADLINE:
         reason = "No worker capacity became available for this run."
         await family.fail(db, row.subject_id, reason)
@@ -372,6 +378,8 @@ async def reconcile_work_dispatches(*, limit: int = RECONCILE_BATCH) -> None:
     under SKIP LOCKED. Work larger than any executor can hold is settled
     at once, whatever its age, so its caller hears within seconds.
     """
+    from src.services.worker_pool.eligibility import declared_alternative_sql
+
     now = datetime.now(timezone.utc)
     async with get_db_context() as db:
         from src.services.worker_pool.claims import SUPPORTED_HANDLERS
@@ -389,6 +397,7 @@ async def reconcile_work_dispatches(*, limit: int = RECONCILE_BATCH) -> None:
                     & (WorkDispatch.handler == handler)
                     & (WorkDispatch.execution_lane == lane)
                     & (WorkDispatch.memory_request_bytes > largest)
+                    & ~declared_alternative_sql()
                 )
         candidates = (
             await db.execute(

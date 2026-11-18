@@ -46,6 +46,8 @@ from src.worker.remote.ownership import (
     renew_remote_owner,
 )
 from src.worker.remote.protocol import (
+    CLOUDFLARE_DEV_BUDGET_BYTES,
+    CLOUDFLARE_DEV_SLOTS,
     AuthenticationError,
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
     ControlEnvelope,
@@ -67,8 +69,6 @@ from src.worker.remote.protocol import (
 RENEW_RETRY_SECONDS = 2.0
 # API-owned capacity for the dev build. Provider enrollment will own this
 # policy when multiple Cloudflare capacity profiles are supported.
-CLOUDFLARE_DEV_SLOTS = 1
-CLOUDFLARE_DEV_BUDGET_BYTES = 128 * 2**20
 ADMISSION_FRESHNESS_SECONDS = 3
 
 

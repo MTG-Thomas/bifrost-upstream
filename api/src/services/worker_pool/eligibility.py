@@ -1,0 +1,47 @@
+"""Runtime eligibility for dispatch claims and capacity planning."""
+
+from sqlalchemy import exists, func
+from sqlalchemy.sql.elements import ColumnElement
+
+from src.models.orm.execution_workers import ExecutionWorker
+from src.models.orm.work_dispatches import WorkDispatch
+from src.worker.remote.protocol import (
+    CLOUDFLARE_DEV_BUDGET_BYTES,
+    CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+    CLOUDFLARE_WORKFLOW_HANDLER,
+    LINUX_RUNTIME_PROFILE,
+)
+
+
+def cloudflare_dispatch_sql() -> ColumnElement[bool]:
+    return (
+        (WorkDispatch.handler == CLOUDFLARE_WORKFLOW_HANDLER[0])
+        & (WorkDispatch.handler_version == CLOUDFLARE_WORKFLOW_HANDLER[1])
+        & (WorkDispatch.execution_lane == "normal")
+        & WorkDispatch.cloudflare_revision.is_not(None)
+    )
+
+
+def profile_matches(runtime_profile: str, handler: str | None, version: int | None, revision: str | None) -> bool:
+    """Match Normal-lane planner requests, including local jobs (handler None)."""
+    return runtime_profile == LINUX_RUNTIME_PROFILE or (
+        runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+        and (handler, version) == CLOUDFLARE_WORKFLOW_HANDLER
+        and revision is not None
+    )
+
+
+def declared_alternative_sql() -> ColumnElement[bool]:
+    """An authenticated launcher might execute work above Linux's ceiling."""
+    return (
+        cloudflare_dispatch_sql()
+        & (WorkDispatch.memory_request_bytes <= CLOUDFLARE_DEV_BUDGET_BYTES)
+        & exists().where(
+            ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+            ExecutionWorker.form == "external",
+            ExecutionWorker.state == "ready",
+            ExecutionWorker.execution_lane == "normal",
+            ExecutionWorker.remote_owner_lease_expires_at > func.now(),
+            ExecutionWorker.supported_handlers.contains([CLOUDFLARE_WORKFLOW_HANDLER[0]]),
+        )
+    )

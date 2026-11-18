@@ -46,6 +46,9 @@ LINUX_RUNTIME_PROFILE = "linux-process-v1"
 # workload eligibility and deployed resource/cancellation qualification remain
 # separate from this pool-level representation.
 CLOUDFLARE_PYTHON_RUNTIME_PROFILE = "cloudflare-python-v1"
+CLOUDFLARE_DEV_SLOTS = 1
+CLOUDFLARE_DEV_BUDGET_BYTES = 128 * 2**20
+CLOUDFLARE_WORKFLOW_HANDLER = ("workflow.execute", 1)
 
 # Exact handler versions a physical launcher can execute. Older launchers
 # advertised no list and implemented only workflow and agent-run commands.

@@ -14,8 +14,9 @@ from src.core.database import get_db_context, get_liveness_db_context
 from src.models.orm.execution_workers import MANAGED_WORKER_FORMS, ExecutionWorker, ExecutionWorkerClaim
 from src.models.orm.work_dispatches import WorkDispatch
 from src.services.kubernetes_execution import load_kubernetes_policy
+from src.services.worker_pool.eligibility import cloudflare_dispatch_sql
 from src.worker.remote.fencing import fence_remote_owner
-from src.worker.remote.protocol import CLOUDFLARE_PYTHON_RUNTIME_PROFILE, EXECUTION_HANDLERS
+from src.worker.remote.protocol import CLOUDFLARE_PYTHON_RUNTIME_PROFILE, EXECUTION_HANDLERS, LINUX_RUNTIME_PROFILE
 
 # Shared with the capacity controller: launches and idle drains serialize.
 CAPACITY_LOCK = "bifrost:worker-pool:capacity"
@@ -212,11 +213,20 @@ async def claim_next(
     the transaction fails.
     """
     pairs = [pair for pair in handlers if pair in SUPPORTED_HANDLERS]
+    profile_eligible = exists().where(
+        ExecutionWorker.id == incarnation_id,
+        (ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE)
+        | (
+            (ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE)
+            & cloudflare_dispatch_sql()
+        ),
+    )
     unassigned = (
         WorkDispatch.assigned_worker_id.is_(None),
         WorkDispatch.execution_lane == select(ExecutionWorker.execution_lane)
         .where(ExecutionWorker.id == incarnation_id).scalar_subquery(),
         tuple_(WorkDispatch.handler, WorkDispatch.handler_version).in_(pairs),
+        profile_eligible,
     )
     reserved_for = (
         select(ExecutionWorker.reserved_for_dispatch_id)
@@ -231,17 +241,17 @@ async def claim_next(
         ExecutionWorker.id == incarnation_id,
         ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
     )
+    fits = (WorkDispatch.memory_request_bytes <= fits_bytes) | (
+        (WorkDispatch.id == reserved_for)
+        & (WorkDispatch.handler == "workflow.execute")
+        & ~declared_capacity
+    )
     candidate = (
         select(WorkDispatch.id, WorkDispatch.created_at)
         .where(
             *unassigned,
             worker_supports_handler,
-            (WorkDispatch.memory_request_bytes <= fits_bytes)
-            | (
-                (WorkDispatch.id == reserved_for)
-                & (WorkDispatch.handler == "workflow.execute")
-                & ~declared_capacity
-            ),
+            fits,
         )
         .order_by(
             (WorkDispatch.id == reserved_for).is_(True).desc(),
@@ -280,7 +290,7 @@ async def claim_next(
             row = (
                 await db.execute(
                     update(WorkDispatch)
-                    .where(WorkDispatch.id == picked.id, ready)
+                    .where(WorkDispatch.id == picked.id, ready, profile_eligible)
                     .values(assigned_worker_id=incarnation_id)
                     .returning(
                         WorkDispatch.id.label("dispatch_id"),
@@ -422,7 +432,7 @@ async def begin_idle_drain(incarnation_id: UUID) -> bool:
         # A sized Job always drains once idle: only standard Jobs make up the
         # warm minimum.
         worker = await db.execute(
-            select(ExecutionWorker.resource_class, ExecutionWorker.execution_lane).where(
+            select(ExecutionWorker.resource_class, ExecutionWorker.execution_lane, ExecutionWorker.runtime_profile).where(
                 ExecutionWorker.id == incarnation_id
             )
         )
@@ -435,16 +445,18 @@ async def begin_idle_drain(incarnation_id: UUID) -> bool:
             if worker_row.execution_lane == "fast_path"
             else policy.warm_workers
         )
-        ready_jobs = await db.scalar(
-            select(func.count(ExecutionWorker.id)).where(
-                ExecutionWorker.form.in_(MANAGED_WORKER_FORMS),
-                ExecutionWorker.resource_class == "standard",
-                ExecutionWorker.state == "ready",
-                ExecutionWorker.execution_lane == worker_row.execution_lane,
-            )
-        ) or 0
-        if not sized and ready_jobs <= keep_ready:
-            return False
+        if worker_row.runtime_profile == LINUX_RUNTIME_PROFILE and not sized:
+            ready_jobs = await db.scalar(
+                select(func.count(ExecutionWorker.id)).where(
+                    ExecutionWorker.form.in_(MANAGED_WORKER_FORMS),
+                    ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE,
+                    ExecutionWorker.resource_class == "standard",
+                    ExecutionWorker.state == "ready",
+                    ExecutionWorker.execution_lane == worker_row.execution_lane,
+                )
+            ) or 0
+            if ready_jobs <= keep_ready:
+                return False
         drained = await db.scalar(
             update(ExecutionWorker)
             .where(ExecutionWorker.id == incarnation_id, ExecutionWorker.state == "ready")
