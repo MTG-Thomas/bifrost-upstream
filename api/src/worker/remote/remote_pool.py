@@ -1353,20 +1353,7 @@ class ThinRemoteProcessPool(ProcessPoolManager):
             error_type = result.get("error_type")
             # The launcher journals the stop reason, so this also works when
             # a new API owner replays a terminal without an in-memory stop.
-            if error_type == "CancelledError":
-                from src.core.database import get_db_context
-                from src.models.enums import ExecutionStatus
-                from src.models.orm.executions import Execution
-
-                execution = handle.current_execution
-                assert execution is not None
-                async with get_db_context() as db:
-                    status = await db.scalar(select(Execution.status).where(
-                        Execution.id == UUID(execution.execution_id),
-                    ))
-                if status != ExecutionStatus.CANCELLING:
-                    error_type = "WorkflowAttemptUncertain"
-            elif error_type != "TimeoutError":
+            if error_type not in ("CancelledError", "TimeoutError"):
                 error_type = "WorkflowAttemptUncertain"
             result = {
                 **result,

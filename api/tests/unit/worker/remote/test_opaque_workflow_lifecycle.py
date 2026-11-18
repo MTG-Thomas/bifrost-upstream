@@ -946,7 +946,10 @@ async def test_cooperative_stop_waits_for_terminal(
 @pytest.mark.parametrize(("state", "error_type", "cancelling", "expected"), [
     ("not_started", "CancelledError", True, ExecutionStatus.CANCELLED),
     ("uncertain", "CancelledError", True, ExecutionStatus.CANCELLED),
-    ("uncertain", "CancelledError", False, ExecutionStatus.FAILED),
+    pytest.param(
+        "uncertain", "CancelledError", False, ExecutionStatus.CANCELLED,
+        id="cancel-terminal-before-cancelling-is-visible",
+    ),
     ("not_started", "TimeoutError", False, ExecutionStatus.TIMEOUT),
     ("uncertain", "TimeoutError", False, ExecutionStatus.TIMEOUT),
     ("uncertain", "TimeoutError", True, ExecutionStatus.TIMEOUT),

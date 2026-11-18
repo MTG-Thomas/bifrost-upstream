@@ -612,21 +612,26 @@ class WorkflowResultHandler:
             await session.commit()
         await announce()
 
-    async def stage_lost_cancellation(
-        self, session: AsyncSession, execution_id: UUID, error: str,
-    ) -> Callable[[], Awaitable[None]]:
-        """Stage cancellation follow-ups after recovery writes its locked claim."""
+    async def announce_lost_cancellation(self, execution_id: UUID, error: str) -> None:
+        """Stage and announce follow-ups for a committed worker-loss cancellation."""
+        from src.core.database import get_session_factory
+
         execution_id_str = str(execution_id)
         metadata, recovered = await self._load_completion_metadata(
-            execution_id_str, session, settled_status=ExecutionStatus.CANCELLED,
+            execution_id_str, settled_status=ExecutionStatus.CANCELLED,
         )
-        assert metadata is not None  # The recovery transaction just cancelled this row.
-        return await self._stage_failure_followups(
-            session, execution_id_str, ExecutionStatus.CANCELLED, metadata, recovered,
-            {"error": error, "error_type": "CancelledError", "duration_ms": 0},
-            # A lost lease cannot tell us whether a sync caller is waiting.
-            is_sync=recovered or metadata["sync"],
-        )
+        if metadata is None:
+            return
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            announce = await self._stage_failure_followups(
+                session, execution_id_str, ExecutionStatus.CANCELLED, metadata, recovered,
+                {"error": error, "error_type": "CancelledError", "duration_ms": 0},
+                # A lost lease cannot tell us whether a sync caller is waiting.
+                is_sync=recovered or metadata["sync"],
+            )
+            await session.commit()
+        await announce()
 
     async def _stage_failure_followups(
         self,

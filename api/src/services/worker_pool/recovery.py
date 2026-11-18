@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
@@ -52,14 +51,14 @@ class LostRuns:
     agent_runs: list[UUID] = field(default_factory=list)
     summary_runs: list[UUID] = field(default_factory=list)
     uncertain_workflow_runs: list[UUID] = field(default_factory=list)
-    cancelled_workflow_updates: list[Callable[[], Awaitable[None]]] = field(default_factory=list)
+    cancelled_workflow_runs: list[tuple[UUID, str]] = field(default_factory=list)
 
     def extend(self, other: LostRuns) -> None:
         self.workflow_runs.extend(other.workflow_runs)
         self.agent_runs.extend(other.agent_runs)
         self.summary_runs.extend(other.summary_runs)
         self.uncertain_workflow_runs.extend(other.uncertain_workflow_runs)
-        self.cancelled_workflow_updates.extend(other.cancelled_workflow_updates)
+        self.cancelled_workflow_runs.extend(other.cancelled_workflow_runs)
 
 
 async def end_runs_of_lost_worker(
@@ -103,7 +102,7 @@ async def end_runs_of_lost_worker(
     now = datetime.now(timezone.utc)
     ended: list[UUID] = []
     uncertain: list[UUID] = []
-    cancelled_updates: list[Callable[[], Awaitable[None]]] = []
+    cancelled_runs: list[tuple[UUID, str]] = []
     if workflow_ids:
         error: str | Case[str] = EXECUTOR_LOST
         if uncertain_workflows:
@@ -131,17 +130,15 @@ async def end_runs_of_lost_worker(
                     case((cancelled, ExecutionStatus.CANCELLED), else_=ExecutionStatus.FAILED),
                     Execution.__table__.c.status.type,
                 ),
-                error_message=case((cancelled, WORKFLOW_ATTEMPT_UNCERTAIN), else_=error),
                 duration_ms=case((cancelled, 0), else_=Execution.duration_ms),
             )
-        rows = (await db.execute(statement.returning(Execution.id, Execution.workflow_id, Execution.status))).all()
-        for execution_id, _, status in rows:
+        rows = (await db.execute(statement.returning(
+            Execution.id, Execution.workflow_id, Execution.status, Execution.error_message,
+        ))).all()
+        for execution_id, _, status, error_message in rows:
             if status == ExecutionStatus.CANCELLED:
-                from src.jobs.consumers.workflow_execution import WorkflowResultHandler
-
-                cancelled_updates.append(await WorkflowResultHandler().stage_lost_cancellation(
-                    db, execution_id, WORKFLOW_ATTEMPT_UNCERTAIN,
-                ))
+                assert error_message is not None  # Set by this UPDATE.
+                cancelled_runs.append((execution_id, error_message))
             elif execution_id in uncertain_workflows:
                 uncertain.append(execution_id)
             else:
@@ -152,7 +149,7 @@ async def end_runs_of_lost_worker(
                 ExecutionWorker.runtime_profile != CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
             ))
             if budget is not None and budget > WORKFLOW_REQUEST_MARGIN_BYTES:
-                for workflow_id in sorted({wf for _, wf, _ in rows if wf is not None}):
+                for workflow_id in sorted({wf for _, wf, _, _ in rows if wf is not None}):
                     await record_peak_growth(
                         db, workflow_id, budget - WORKFLOW_REQUEST_MARGIN_BYTES, None
                     )
@@ -167,18 +164,18 @@ async def end_runs_of_lost_worker(
         ).all()
         for run_id, backfill_job_id in interrupted:
             await stage_summary(db, run_id, backfill=backfill_job_id is not None)
-    if ended or uncertain or cancelled_updates or agent_ids:
+    if ended or uncertain or cancelled_runs or agent_ids:
         logger.warning(
             "Ended runs of a lost executor",
             extra={
                 "worker_id": str(worker_id),
-                "workflow_runs": len(ended) + len(uncertain) + len(cancelled_updates),
+                "workflow_runs": len(ended) + len(uncertain) + len(cancelled_runs),
                 "agent_runs": len(agent_ids),
             },
         )
     return LostRuns(
         workflow_runs=ended, agent_runs=agent_ids, summary_runs=summary_ids,
-        uncertain_workflow_runs=uncertain, cancelled_workflow_updates=cancelled_updates,
+        uncertain_workflow_runs=uncertain, cancelled_workflow_runs=cancelled_runs,
     )
 
 
@@ -189,11 +186,18 @@ async def announce_lost_runs(lost: LostRuns) -> None:
         await announce_ended_runs(
             lost.uncertain_workflow_runs, WORKFLOW_ATTEMPT_UNCERTAIN, error_type="WorkflowAttemptUncertain",
         )
-    for announce in lost.cancelled_workflow_updates:
-        try:
-            await announce()
-        except Exception:
-            logger.warning("Could not announce a cancelled workflow of a lost executor", exc_info=True)
+    if lost.cancelled_workflow_runs:
+        from src.jobs.consumers.workflow_execution import WorkflowResultHandler
+
+        handler = WorkflowResultHandler()
+        for execution_id, error in lost.cancelled_workflow_runs:
+            try:
+                await handler.announce_lost_cancellation(execution_id, error)
+            except Exception:
+                logger.warning(
+                    "Could not announce cancelled workflow %s after worker loss", execution_id, exc_info=True,
+                )
+
     from src.services.execution.summary_dispatch import report_unclaimed_summary
 
     for run_id in lost.summary_runs:

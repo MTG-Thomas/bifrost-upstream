@@ -1796,8 +1796,12 @@ async def test_cloudflare_worker_loss_does_not_learn_oom_peak(db, monkeypatch) -
     peak.assert_not_awaited()
 
 
-@pytest.mark.parametrize("profile", [CLOUDFLARE_PYTHON_RUNTIME_PROFILE, LINUX_RUNTIME_PROFILE])
-async def test_lost_cancelling_run_announces_its_terminal_status(db, monkeypatch, profile) -> None:
+@pytest.mark.parametrize(("profile", "uncertain"), [
+    (CLOUDFLARE_PYTHON_RUNTIME_PROFILE, True),
+    (CLOUDFLARE_PYTHON_RUNTIME_PROFILE, False),
+    (LINUX_RUNTIME_PROFILE, False),
+])
+async def test_lost_cancelling_run_announces_its_terminal_status(db, monkeypatch, profile, uncertain) -> None:
     from src.jobs.consumers import workflow_execution
 
     worker_id, execution_id = uuid4(), uuid4()
@@ -1827,21 +1831,21 @@ async def test_lost_cancelling_run_announces_its_terminal_status(db, monkeypatch
     try:
         async with db.sessions() as session:
             lost = await recovery.end_runs_of_lost_worker(
-                session, worker_id, uncertain_workflows=frozenset({execution_id}) if opaque else frozenset(),
+                session, worker_id, uncertain_workflows=frozenset({execution_id}) if uncertain else frozenset(),
             )
             redis.push_result.assert_not_awaited()
             await session.commit()
         await recovery.announce_lost_runs(lost)
 
-        status, error, error_type = (
-            (ExecutionStatus.CANCELLED, recovery.WORKFLOW_ATTEMPT_UNCERTAIN, "CancelledError") if opaque
-            else (ExecutionStatus.FAILED, recovery.EXECUTOR_LOST, "ExecutorLost")
+        status, error_type = (
+            (ExecutionStatus.CANCELLED, "CancelledError") if opaque
+            else (ExecutionStatus.FAILED, "ExecutorLost")
         )
+        error = recovery.WORKFLOW_ATTEMPT_UNCERTAIN if uncertain else recovery.EXECUTOR_LOST
         async with db.sessions() as session:
             execution = await session.get(Execution, execution_id)
             assert execution.status == status
             assert execution.error_message == error
-            assert not await session.scalar(select(WorkDispatch.id).where(WorkDispatch.subject_id == execution_id))
 
         redis.push_result.assert_awaited_once_with(
             execution_id=str(execution_id), status=status.value, error=error, error_type=error_type, duration_ms=0,
@@ -1861,6 +1865,74 @@ async def test_lost_cancelling_run_announces_its_terminal_status(db, monkeypatch
         async with db.sessions() as session:
             await session.execute(delete(ExecutionWorker).where(ExecutionWorker.id == worker_id))
             await session.execute(delete(Execution).where(Execution.id == execution_id))
+            await session.commit()
+
+
+async def test_cancelled_run_followup_failure_does_not_undo_worker_loss(db, monkeypatch) -> None:
+    from bifrost._logging import stage_logs_to_postgres
+    from src.jobs.consumers import workflow_execution
+    from src.models.orm.executions import ExecutionLog
+
+    worker_id = uuid4()
+    execution_ids = [uuid4(), uuid4()]
+    redis = AsyncMock()
+    redis.get_active_execution.return_value = None
+    monkeypatch.setattr(workflow_execution, "get_redis_client", lambda: redis)
+    monkeypatch.setattr(workflow_execution, "publish_execution_update", AsyncMock())
+    monkeypatch.setattr(workflow_execution, "publish_history_update", AsyncMock())
+    monkeypatch.setattr("src.services.events.builtins.emit_workflow_failure_events", AsyncMock())
+    monkeypatch.setattr("src.core.database.get_session_factory", lambda: db.sessions)
+
+    async def stage_logs(execution_id, session):
+        if stage.await_count == 1:
+            # Make PostgreSQL reject a log write and leave this session needing rollback.
+            session.add(ExecutionLog(
+                execution_id=UUID(execution_id), level="INFO", message="invalid\x00text",
+            ))
+            await session.flush()
+        return await stage_logs_to_postgres(execution_id, session)
+
+    stage = AsyncMock(side_effect=stage_logs)
+    monkeypatch.setattr("bifrost._logging.stage_logs_to_postgres", stage)
+    async with db.sessions() as session:
+        session.add(ExecutionWorker(
+            id=worker_id, form="external", state="ready", runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+        ))
+        for execution_id in execution_ids:
+            session.add(Execution(
+                id=execution_id, workflow_name="lost workflow", executed_by_name="user",
+                status=ExecutionStatus.CANCELLING,
+            ))
+            session.add(ExecutionWorkerClaim(
+                worker_id=worker_id, subject_id=execution_id, family=work_dispatch.WAKE_WORKFLOW,
+            ))
+        await session.commit()
+
+    try:
+        async with db.sessions() as session:
+            await session.execute(update(ExecutionWorker).where(ExecutionWorker.id == worker_id).values(state="lost"))
+            lost = await recovery.end_runs_of_lost_worker(session, worker_id)
+            stage.assert_not_awaited()
+            redis.get_active_execution.assert_not_awaited()
+            await session.commit()
+
+        await recovery.announce_lost_runs(lost)
+        async with db.sessions() as session:
+            worker = await session.get(ExecutionWorker, worker_id)
+            assert worker.state == "lost"
+            statuses = (await session.scalars(select(Execution.status).where(Execution.id.in_(execution_ids)))).all()
+            assert statuses == [ExecutionStatus.CANCELLED, ExecutionStatus.CANCELLED]
+
+        failed_execution_id = UUID(stage.await_args_list[0].args[0])
+        remaining_execution_id, = set(execution_ids) - {failed_execution_id}
+        redis.push_result.assert_awaited_once_with(
+            execution_id=str(remaining_execution_id), status="Cancelled", error=recovery.EXECUTOR_LOST,
+            error_type="CancelledError", duration_ms=0,
+        )
+    finally:
+        async with db.sessions() as session:
+            await session.execute(delete(ExecutionWorker).where(ExecutionWorker.id == worker_id))
+            await session.execute(delete(Execution).where(Execution.id.in_(execution_ids)))
             await session.commit()
 
 
