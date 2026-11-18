@@ -99,7 +99,7 @@ def seeded_api():
     approval = [{
         "workflow_id": workflow["id"], "entry_path": ENTRY, "function_name": FUNCTION,
         "entry_sha256": entry_hash, "module_sha256": {},
-        "manifest_sha256": sha256(json.dumps({ENTRY: entry_hash}, separators=(",", ":")).encode()),
+        "manifest_sha256": sha256(json.dumps({ENTRY: entry_hash}, sort_keys=True, separators=(",", ":")).encode()),
         "packages": [], "https_hosts": ["phase5-fixture.invalid"], "required_https_hosts": [],
         "estimated_subrequests": 6, "subrequest_allowance": 10,
         "estimated_cpu_ms": 100, "cpu_budget_ms": 1000,
@@ -109,12 +109,13 @@ def seeded_api():
 
     # Re-exec the API application under its existing Uvicorn reload supervisor.
     # This reloads the cached settings while leaving its container and data up.
+    since = str(int(time.time()))
     (ROOT / "api/src/config.py").touch()
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         # Read the configured approval in the running application indirectly
         # via startup log lines emitted by the new application process.
-        logs = command("docker", "logs", "--tail", "40", f"{project}-api-1", stderr=subprocess.STDOUT)
+        logs = command("docker", "logs", "--since", since, f"{project}-api-1", stderr=subprocess.STDOUT)
         reload = logs.rsplit("src/config.py", 1)
         if len(reload) == 2 and "Application startup complete" in reload[1]:
             break

@@ -5,6 +5,7 @@ import {readFileSync, utimesSync} from 'node:fs';
 import {mkdir} from 'node:fs/promises';
 import {createServer} from 'node:http';
 import {createRequire} from 'node:module';
+import {posix} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import {fileURLToPath} from 'node:url';
 import {supervisorModules} from '../tenant-workers/supervisor-digest.mjs';
@@ -40,7 +41,7 @@ async function until(label, probe, ms = 30_000) {
 
 function sql(query) {
   const output = execFileSync('docker', ['exec', '-i', config.project + '-postgres-1',
-    'psql', '-XAt', '-v', 'ON_ERROR_STOP=1', '-U', 'bifrost', '-d', 'bifrost'], {
+    'psql', '-XqAt', '-v', 'ON_ERROR_STOP=1', '-U', 'bifrost', '-d', 'bifrost'], {
     encoding: 'utf8', input: query, timeout: 5000,
   }).trim();
   return output ? JSON.parse(output) : null;
@@ -171,7 +172,7 @@ proxy.on('upgrade', (request, socket, head) => {
     upstream.on('close', (code) => {
       wire.push({kind: 'api-close', code});
       evidence('wire', wire.at(-1));
-      if (launcher.readyState === WebSocket.OPEN) launcher.close(code === 1006 ? 1012 : code);
+      if (launcher.readyState === WebSocket.OPEN) launcher.close([1005, 1006].includes(code) ? 1012 : code);
     });
     launcher.on('close', () => upstream.close());
     launcher.on('error', () => upstream.close());
@@ -243,9 +244,10 @@ async function launch(port) {
   await mkdir(staged, {recursive: true});
   await stageRuntimeLoader(staged);
   const entry = fileURLToPath(new URL('tenant-workers/launcher-entry.mjs', root));
-  const modules = Object.fromEntries(supervisorModules(entry).map(([path, source]) => [path, module(source)]));
-  modules['runtime/generated-runtime.mjs'] = module(artifact.toString('utf8'));
-  modules['phase5-harness.mjs'] = module(harnessEntry);
+  const modules = Object.fromEntries(supervisorModules(entry)
+    .map(([path, source]) => [posix.join('dev', path), module(source)]));
+  modules['dev/runtime/generated-runtime.mjs'] = module(artifact.toString('utf8'));
+  modules['dev/phase5-harness.mjs'] = module(harnessEntry);
   const exports = {CloudflareLauncher: {type: 'durable-object', storage: 'sqlite'},
     TenantHost: {type: 'durable-object', storage: 'sqlite'}};
   const env = Object.fromEntries(Object.entries({
@@ -258,7 +260,7 @@ async function launch(port) {
     dev: {outboundService: {type: 'worker', worker: 'relay'}},
     config: {name: 'launcher', compatibilityDate: '2026-10-30', exports,
       env: {...env, LOADER: {type: 'worker-loader'}},
-      manifest: {mainModule: 'phase5-harness.mjs', modulesRoot: fileURLToPath(root), modules}},
+      manifest: {mainModule: 'dev/phase5-harness.mjs', modulesRoot: fileURLToPath(new URL('../', root)), modules}},
   }, {
     config: {name: 'relay', compatibilityDate: '2026-10-30',
       manifest: {mainModule: 'relay.mjs', modules: {'relay.mjs': module(`
@@ -315,7 +317,7 @@ async function startRun(scenario) {
     if (result) throw new Error('Launcher settled before the fixture entered: ' + JSON.stringify(runRow(id)));
     return false;
   });
-  return {id, gate, route: dispatch.route};
+  return {id, gate, route: dispatch.route, claim: row.claim};
 }
 
 async function settle(scenario, run, status, ackCount = 1) {
@@ -325,9 +327,12 @@ async function settle(scenario, run, status, ackCount = 1) {
     return wire.filter((event) => event.kind === 'ack' && ids.has(event.event)).length >= ackCount;
   });
   await until('launcher slot cleared', async () => !(await control('ledger', 200)).slot);
+  const terminals = wire.filter((event) => event.kind === 'result' && event.route === run.route);
+  assert.equal(terminals.length, ackCount);
+  assert.equal(new Set(terminals.map((event) => event.event)).size, 1);
   const row = runRow(run.id);
   assert.equal(row.status, status);
-  assert.equal(row.claim, null);
+  assert.deepEqual(row.claim, run.claim);
   assert.equal(row.queued, 0);
   if (status === 'Success') {
     assert.deepEqual(row.result, {case: scenario, table_count: 0});
@@ -341,21 +346,26 @@ async function settle(scenario, run, status, ackCount = 1) {
 await new Promise((resolve) => proxy.listen(0, '127.0.0.1', resolve));
 try {
   assert.equal(workerRow().state, 'starting');
-  // Keep the Linux worker running and healthy, but remove it from the claim race.
-  execFileSync('docker', ['pause', config.project + '-worker-1']);
+  // Both debug launchers advertise workflow.execute on the Normal lane.
+  const linuxLaunchers = ['worker', 'scheduler'].map((service) => config.project + '-' + service + '-1');
+  execFileSync('docker', ['pause', ...linuxLaunchers]);
   try {
+    // Claims live in the API. Wait until the last Linux samples have aged
+    // past host.py's three-second admission window after pausing the sources.
+    const linuxSamplesStale = delay(3100);
     await launch(proxy.address().port);
     await control('start');
     await until('hello inventory and ready', () => wire.some((event) => event.kind === 'ready'));
     assert.equal(workerRow().state, 'ready');
     evidence('enrollment', {row: workerRow(), ledger: await control('ledger', 200)});
 
+    await linuxSamplesStale;
     const happy = await startRun('happy');
     const token = tokens.get(happy.id);
-    assert.equal((await api('/api/tables', undefined, token)).status, 200);
+    assert.equal((await api('/api/sdk/tables/list', {}, token)).status, 200);
     happy.gate.release.resolve();
     await settle('happy', happy, 'Success');
-    assert.equal((await api('/api/tables', undefined, token)).status, 401);
+    assert.equal((await api('/api/sdk/tables/list', {}, token)).status, 401);
     evidence('run-credential', {id: happy.id, before: 200, after: 401});
 
     const beforeWelcome = workerRow();
@@ -375,9 +385,6 @@ try {
     const first = runRow(replay.id);
     assert.equal(first.status, 'Success');
     assert.deepEqual(await settle('lost-ack', replay, 'Success', 2), first);
-    const receipts = wire.filter((event) => event.kind === 'result' && event.route === replay.route);
-    assert.equal(receipts.length, 2);
-    assert.equal(receipts[0].event, receipts[1].event);
 
     const takeover = await startRun('takeover');
     const beforeTakeover = workerRow();
@@ -399,17 +406,25 @@ try {
     reset.gate.release.resolve();
 
     const cancel = await startRun('cancel');
-    assert.equal((await api('/api/executions/' + cancel.id + '/cancel', {})).status, 200);
-    await settle('cancel', cancel, 'Cancelled');
+    const cancelling = await api('/api/executions/' + cancel.id + '/cancel', {});
+    assert.equal(cancelling.status, 200);
+    assert.equal(cancelling.data.status, 'Cancelling');
+    // Engine entry already occurred. Stop revokes the generation but cannot
+    // establish that the workflow had no effects before stopping.
+    const cancelled = await settle('cancel', cancel, 'Failed');
+    assert.match(cancelled.error, /may already have taken effect.*cancelled/);
+    assert.equal(wire.filter((event) => event.kind === 'result' && event.route === cancel.route &&
+      event.attempt === 'uncertain' && event.errorType === 'CancelledError').length, 1);
     assert.ok(wire.some((event) => event.kind === 'terminate' && event.route === cancel.route));
     await until('late egress refused', () => wire.some((event) => event.kind === 'late-egress' && event.route === cancel.route));
     assert.ok(wire.every((event) => event.kind !== 'unexpected-egress'));
     cancel.gate.release.resolve();
   } finally {
-    execFileSync('docker', ['unpause', config.project + '-worker-1']);
+    execFileSync('docker', ['unpause', ...linuxLaunchers]);
   }
 
-  sql(`UPDATE execution_workers SET state='retired' WHERE id='${config.incarnation}' RETURNING to_json(state)`);
+  assert.equal(sql(`UPDATE execution_workers SET state='retired'
+    WHERE id='${config.incarnation}' RETURNING to_json(state)`), 'retired');
   for (const socket of sockets.clients) socket.close(1012, 'phase5a reconnect after retirement');
   await until('API returned close code 4001', () => wire.some((event) => event.kind === 'api-close' && event.code === 4001));
   const retired = await until('retirement persisted', async () => {

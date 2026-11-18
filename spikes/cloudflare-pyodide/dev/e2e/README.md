@@ -40,11 +40,15 @@ The harness prints JSON lines with the execution ID, prepared incarnation,
 claim and worker IDs, sanitized wire events, DO ledger summaries, and PostgreSQL
 settlement fields. It blocks each fixture after a real SDK call so the
 operator can read the active claim and trigger the next fault deterministically.
-Linux capacity is paused during the claim sequence and unpaused on exit.
+The harness pauses both Linux launchers (`worker` and `scheduler`) during the
+claim sequence, waits for their three-second API admission window to close, and
+unpauses both on exit. PostgreSQL retains each claim for provenance.
 
 The relay drops exactly one welcome and one ACK. API takeover uses Uvicorn's
 reload supervisor. A test RPC aborts the launcher DO while preserving its
 SQLite journal, and a test hook calls the real TenantHost egress gate after
-stop. Cancellation uses the execution API. Retirement marks the enrolled row
+stop. Cancellation uses the execution API. Once the engine has started, the
+cooperative stop leaves an uncertain outcome and the API stores a failure.
+Retirement marks the enrolled row
 and forces a reconnect so the API can return close code 4001. These hooks are
 loaded only by Miniflare in this harness.
