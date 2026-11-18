@@ -12,7 +12,9 @@ only ever report two states in their heartbeat:
 
 import json
 import logging
+from collections.abc import Awaitable
 from datetime import datetime, timedelta, timezone
+from typing import cast
 
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -436,7 +438,8 @@ async def recycle_process(
             detail=f"Pool {worker_id} not found",
         )
 
-    if await r.hget(pool_key, "runtime_profile") == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
+    runtime_profile = await cast(Awaitable[str | None], r.hget(pool_key, "runtime_profile"))
+    if runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Pool {worker_id} has no OS processes",
