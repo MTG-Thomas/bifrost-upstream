@@ -114,9 +114,21 @@ Not yet at parity:
   `/api/organizations` 52 ms). The trace puts **~258 ms inside the child before
   its first SDK call**; host setup was ~60 ms and nothing followed the last
   call. So the gap to Linux is in-child engine work ahead of the first call,
-  not network, API or host. Whether it persists in a steady-state child (warm,
-  warm-up list learned) is what the following cycles show. The child's own CPU
-  time is not observable: Dynamic Worker children emit no telemetry events.
+  not network, API or host. **It persists in a steady-state child:** at 03:12
+  the child was resident (`first_request: false`) and all 8 learned warm-up
+  modules were already loaded (`prime_listed: 8, primed: 0`), yet engine time
+  was 341 ms with 94 ms of API. So ~250 ms per attempt at this cadence is
+  in-child work that is not boot, lazy imports, API or host; back-to-back
+  attempts in the same child take ~90–110 ms total. The leading hypothesis is
+  that the engine's code paths go cold between attempts even though the 45 s
+  ping keeps the isolate alive (the ping exercises almost none of them). The
+  child's own CPU time is not observable: Dynamic Worker children emit no
+  telemetry events.
+- Both cycles also went through the warm-up path (`cloud_warm` present): the
+  TenantHost instance had been recreated since the last attempt, losing its
+  in-memory `childReady`, even with alarms every 45 s. The child itself
+  survived (`child_ms: 0`), so this costs one extra RPC (tens of ms), not a
+  boot.
 
   To trace one attempt (all canary-worker events in a window, including
   `TenantHost` RPCs, `TenantApi` calls with wall/CPU ms, and spans):
