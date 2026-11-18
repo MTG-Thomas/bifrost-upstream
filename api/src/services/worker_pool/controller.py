@@ -466,7 +466,10 @@ class WorkerCapacityController(ABC):
                 if worker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
                 and worker.form == "external" and worker.state == "ready"
                 and worker.execution_lane == "normal" and not worker.memory_pressured
-                and worker.memory_budget_bytes in (None, CLOUDFLARE_DEV_BUDGET_BYTES)
+                and (
+                    worker.memory_budget_bytes == CLOUDFLARE_DEV_BUDGET_BYTES
+                    or (worker.memory_budget_bytes is None and worker.capacity_scope is not None)
+                )
                 # The owner reports declared active_runs from Admission holds,
                 # including routes that have not started or settled yet.
                 and worker.active_runs == 0 and worker.memory_reserved_bytes == 0
