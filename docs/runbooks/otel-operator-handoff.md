@@ -8,7 +8,7 @@ you own collection, storage, retention, dashboards, and alerts.
 
 | Signal | Content | Notes |
 |---|---|---|
-| Traces | HTTP server spans (auto), DB/Redis/HTTP-client spans (auto), `run.<handler>` spans covering one dispatch (claim → routed or finished) with a `bifrost.queue.wait_s` attribute, and a `workflow.run` span for each forked workflow run | No log bodies, no SQL text, no Redis args, no raw URL paths or queries: `http.target`/`http.url`/`url.full`/`url.path` are dropped at export; `http.route` (the template) remains |
+| Traces | HTTP server spans (auto), DB/Redis/HTTP-client spans (auto), `run.<handler>` spans covering one dispatch (claim → routed or finished) with a `bifrost.queue.wait_s` attribute, a `workflow.run` span for each forked workflow run (opening with `workflow.startup`), and a `workflow.launch` span for each remote-launcher fork | No log bodies, no SQL text, no Redis args, no raw URL paths or queries: `http.target`/`http.url`/`url.full`/`url.path` are dropped at export; `http.route` (the template) remains |
 | Error status | `ERROR` with the exception *type* only | Messages and stack traces never leave the process |
 | Span attributes | IDs only (`bifrost.execution.id`, `bifrost.workflow.id`, `bifrost.handler`, protocol/host/port/db metadata) | No user content, keys, tokens, or request/response bodies |
 | Logs | Unchanged plain text to your existing pipeline | Not exported, and no trace/span IDs are injected into records in v1: that needs a structured log format, which the design keeps out of scope |
@@ -79,9 +79,12 @@ never filters.
    `request → <family> publish → <handler> process → run.<handler>`,
    linked by the W3C `traceparent` the platform injects at dispatch. For
    workflows, `run.workflow.execute` (claim → hand-off) is followed by
-   `workflow.run` from the forked child, which covers module load and
-   execution and carries `bifrost.execution.id`; the run's outbound calls
-   nest under it. Child spans are exported by the worker, not the child.
+   `workflow.run` from the forked child, which covers start-up, module load
+   and execution and carries `bifrost.execution.id`; it opens with a short
+   `workflow.startup` span and the run's outbound calls nest under it. On a
+   remote worker a `workflow.launch` span sits between the two, covering
+   the launcher's fork. Child spans are exported by the worker, not the
+   child.
 3. Trigger a failing run; confirm `workflow.run` has status `ERROR` with a
    bare exception-type description and no message, stack, or events.
 4. Confirm DB spans carry operation/host but no statement text, HTTP spans

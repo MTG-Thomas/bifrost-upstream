@@ -166,6 +166,12 @@ def _template_main(
     if ready_fields is None:
         return
 
+    # Resolve the children's telemetry set-up once, here, so each fork
+    # inherits it instead of paying imports and package-metadata reads.
+    from src.core.telemetry import prepare_child_telemetry
+
+    prepare_child_telemetry()
+
     if profile == "agent":
         # Move everything loaded so far to the permanent generation. A child's
         # collections then never write to the shared objects' GC headers, so

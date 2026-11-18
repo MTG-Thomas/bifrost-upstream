@@ -392,30 +392,35 @@ class Launcher:
         try:
             response: dict[str, Any] = {}
             if action in ("workflow", "service"):
-                self.check_fork_pressure()
-                route_id = payload["route_id"]
-                if route_id in self.children or route_id in self.jobs:
-                    raise ValueError("Duplicate route")
-                if generation != self.session_generation:
-                    return
-                async with self._template_lock:
+                from src.core.telemetry import launch_span
+
+                context = payload["context"]
+                # Parented by the dispatch, so the trace accounts for the
+                # template wait and fork between hand-off and the child.
+                with launch_span(payload["execution_id"], context):
+                    self.check_fork_pressure()
+                    route_id = payload["route_id"]
+                    if route_id in self.children or route_id in self.jobs:
+                        raise ValueError("Duplicate route")
                     if generation != self.session_generation:
                         return
-                    pid, work, result = await asyncio.to_thread(
-                        self.template.fork, worker_id=route_id, sdk_socket_path=None,
-                    )
-                context = payload["context"]
-                timeout = context.get("timeout_seconds", 300) if action == "workflow" else 0
-                child = Child(route_id, payload["execution_id"], pid, work, result,
-                              time.monotonic(), timeout,
-                              service=payload.get("service"),
-                              memory_kill_growth_bytes=payload.get("memory_kill_growth_bytes", 0),
-                              grace=payload.get("graceful_shutdown_seconds", 5),
-                              active_execution=payload.get("active_execution"),
-                              started_at=payload.get("started_at"),
-                              memory_request_bytes=payload.get("memory_request_bytes"))
-                self.track_child(child)
-                work.put_nowait((child.execution_id, context))
+                    async with self._template_lock:
+                        if generation != self.session_generation:
+                            return
+                        pid, work, result = await asyncio.to_thread(
+                            self.template.fork, worker_id=route_id, sdk_socket_path=None,
+                        )
+                    timeout = context.get("timeout_seconds", 300) if action == "workflow" else 0
+                    child = Child(route_id, payload["execution_id"], pid, work, result,
+                                  time.monotonic(), timeout,
+                                  service=payload.get("service"),
+                                  memory_kill_growth_bytes=payload.get("memory_kill_growth_bytes", 0),
+                                  grace=payload.get("graceful_shutdown_seconds", 5),
+                                  active_execution=payload.get("active_execution"),
+                                  started_at=payload.get("started_at"),
+                                  memory_request_bytes=payload.get("memory_request_bytes"))
+                    self.track_child(child)
+                    work.put_nowait((child.execution_id, context))
                 response["pid"] = pid
             elif action in ("agent_run", "agent_summary"):
                 handler = "agent.run" if action == "agent_run" else payload["handler"]

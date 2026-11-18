@@ -320,9 +320,8 @@ def _instrument_libraries() -> None:
 
 
 def _instrument_http_client() -> None:
-    """Outbound HTTP spans. This is the only instrumentation a run child
-    needs: it talks to the engine SDK over a private socket and does no
-    DB/Redis work itself."""
+    """Outbound HTTP spans for a long-lived process. Run children instrument
+    the HTTP client in :func:`init_telemetry_in_child` instead."""
     try:
         from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
@@ -361,6 +360,13 @@ def _discard_inherited_providers() -> None:
 CHILD_SPANS_KEY = "_otel_spans"
 _CHILD_SPAN_LIMIT = 512
 _child_buffer: _ChildSpanBuffer | None = None
+# Resolved once in the template before it forks (prepare_child_telemetry),
+# so a child's set-up never imports modules or reads package metadata.
+_child_resource: Any = None
+_child_http_instrumentable = False
+# Wall clock at child set-up; the first run's span starts here so fork and
+# start-up time is attributed instead of appearing as a gap.
+_child_started_ns: int | None = None
 # The long-lived process's batch processor; relayed child spans enter here.
 _relay_processor: Any = None
 
@@ -446,37 +452,74 @@ class _ChildSpanBuffer(SpanProcessor):
         return spans
 
 
+def prepare_child_telemetry() -> None:
+    """Resolve, once in a template process, what its forked children need.
+
+    Loads the SDK and HTTPX instrumentor modules, builds the run resource and
+    runs the instrumentor's dependency check. Children inherit all of it
+    copy-on-write, so per-run set-up stays off the import and package-metadata
+    paths (tens of milliseconds per fork when left to the child).
+    Never raises, and a no-op when telemetry is disabled.
+    """
+    global _child_resource, _child_http_instrumentable
+    if not is_enabled():
+        return
+    try:
+        from opentelemetry.instrumentation.dependencies import get_dependency_conflicts
+        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+        from opentelemetry.sdk.trace import TracerProvider  # noqa: F401 — loaded for children
+
+        conflict = get_dependency_conflicts(
+            HTTPXClientInstrumentor().instrumentation_dependencies()
+        )
+        resource = _resource("run")
+    except Exception as e:  # noqa: BLE001 — telemetry must never break a template
+        logger.warning("OpenTelemetry child preparation failed, runs stay untraced: %s", e)
+        return
+    if conflict is not None:
+        logger.warning("HTTPX instrumentation unavailable: %s", conflict)
+    _child_http_instrumentable = conflict is None
+    _child_resource = resource
+
+
 def init_telemetry_in_child() -> bool:
-    """Install child-local tracing in a process forked from the launcher.
+    """Install child-local tracing in a process forked from a template.
 
     ``os.fork`` copies memory but no threads, so inherited providers are
     discarded. The child records spans into a bounded in-memory buffer that
     :func:`take_child_spans` drains into the run result; it starts no
     exporter thread, opens no collector connection and installs no metric
     reader (a one-shot run must not duplicate the owning process's runtime
-    metrics). Only the HTTP client is instrumented.
+    metrics). Only the HTTP client is instrumented. Requires the template to
+    have run :func:`prepare_child_telemetry`; without it the child stays
+    untraced.
 
     Idempotent, never raises, and a no-op when telemetry is disabled.
     """
-    global _child_initialized, _initialized, _child_buffer
+    global _child_initialized, _initialized, _child_buffer, _child_started_ns
     if _child_initialized:
         return True
-    if not is_enabled():
+    if not is_enabled() or _child_resource is None:
         return False
+    started_ns = time.time_ns()
     try:
+        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
         from opentelemetry.sdk.trace import TracerProvider
 
         _discard_inherited_providers()
         buffer = _ChildSpanBuffer()
-        provider = TracerProvider(resource=_resource("run"), sampler=_sampler())
+        provider = TracerProvider(resource=_child_resource, sampler=_sampler())
         provider.add_span_processor(buffer)
         trace.set_tracer_provider(provider)
-        _instrument_http_client()
+        if _child_http_instrumentable:
+            # The template already ran the dependency check.
+            HTTPXClientInstrumentor().instrument(skip_dep_check=True)
     except Exception as e:  # noqa: BLE001 — telemetry must never break a run
         logger.warning("OpenTelemetry child setup failed, continuing untraced: %s", e)
         _initialized = False
         return False
     _child_buffer = buffer
+    _child_started_ns = started_ns
     _child_initialized = True
     _initialized = True
     logger.debug("OpenTelemetry enabled in forked child (pid=%s)", os.getpid())
@@ -508,26 +551,65 @@ def relay_child_spans(wire_spans: Any) -> None:
             logger.debug("OpenTelemetry dropped a relayed child span: %s", e)
 
 
-@contextlib.contextmanager
-def child_run_span(execution_id: str, context: dict[str, Any]) -> Iterator[Any]:
-    """Span for a forked child's run, parented by the dispatching run span.
-
-    Covers the child's whole execution (module load and workflow code), so
-    outbound calls nest under it. Call :func:`mark_child_run` with the result.
-    """
-    tracer = trace.get_tracer(__name__)
+def _execution_attributes(execution_id: str, context: dict[str, Any]) -> dict[str, Any]:
     attributes: dict[str, Any] = {"bifrost.execution.id": execution_id}
     workflow_id = context.get("workflow_id")
     if workflow_id:
         attributes["bifrost.workflow.id"] = str(workflow_id)
+    return attributes
+
+
+@contextlib.contextmanager
+def launch_span(execution_id: str, context: dict[str, Any]) -> Iterator[Any]:
+    """Span for a remote launcher forking a run, parented by the dispatch.
+
+    Covers the fork command from receipt to the work being handed to the
+    child, including any wait for the template. Exceptions propagate after
+    marking the span failed with their type only.
+    """
+    tracer = trace.get_tracer(__name__)
+    with tracer.start_as_current_span(
+        "workflow.launch",
+        context=extract_context(context),
+        kind=SpanKind.INTERNAL,
+        attributes=_execution_attributes(execution_id, context),
+        record_exception=False,
+        set_status_on_exception=False,
+    ) as span:
+        try:
+            yield span
+        except Exception as e:
+            span.set_status(StatusCode.ERROR, type(e).__name__)
+            raise
+
+
+@contextlib.contextmanager
+def child_run_span(execution_id: str, context: dict[str, Any]) -> Iterator[Any]:
+    """Span for a forked child's run, parented by the dispatching span.
+
+    Covers the child's whole execution (module load and workflow code), so
+    outbound calls nest under it. A child's first run starts at its
+    telemetry set-up, just after fork, and opens with a ``workflow.startup``
+    span for the time before the work began. Call :func:`mark_child_run`
+    with the result.
+    """
+    global _child_started_ns
+    started_ns, _child_started_ns = _child_started_ns, None
+    tracer = trace.get_tracer(__name__)
+    attributes = _execution_attributes(execution_id, context)
     with tracer.start_as_current_span(
         "workflow.run",
         context=extract_context(context),
         kind=SpanKind.INTERNAL,
         attributes=attributes,
+        start_time=started_ns,
         record_exception=False,
         set_status_on_exception=False,
     ) as span:
+        if started_ns is not None:
+            tracer.start_span(
+                "workflow.startup", start_time=started_ns, attributes=attributes
+            ).end()
         yield span
 
 

@@ -1,7 +1,7 @@
 """Unit tests for child-side telemetry after ``os.fork``.
 
 Fork copies memory but no threads, so a child installs its own tracer
-provider. It exports nothing itself: finished spans are buffered, returned
+provider from what its template prepared before forking. It exports nothing itself: finished spans are buffered, returned
 with the run result and exported by the parent's long-lived processor. The
 OTLP exporter package is faked in ``sys.modules``: these tests need no
 collector, database, or network.
@@ -91,6 +91,9 @@ def _isolate_global_state(monkeypatch):
         ("_run_duration", None),
         ("_run_failed", None),
         ("_child_buffer", None),
+        ("_child_resource", None),
+        ("_child_http_instrumentable", False),
+        ("_child_started_ns", None),
         ("_relay_processor", None),
     ):
         monkeypatch.setattr(telemetry, name, value)
@@ -101,6 +104,15 @@ def _isolate_global_state(monkeypatch):
         metrics_internal._METER_PROVIDER,
         metrics_internal._METER_PROVIDER_SET_ONCE._done,
     ) = saved[2], saved[3]
+
+
+def _prepared_child(monkeypatch):
+    """Enable telemetry and prepare as the template does, then set up the
+    child the way a fork does."""
+    _fake_exporters(monkeypatch)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", _ENDPOINT)
+    telemetry.prepare_child_telemetry()
+    assert telemetry.init_telemetry_in_child() is True
 
 
 def _parent_context():
@@ -117,16 +129,32 @@ def _parent_context():
 
 def test_noop_when_disabled():
     before = trace_api._TRACER_PROVIDER
+    telemetry.prepare_child_telemetry()
+    assert telemetry._child_resource is None
     assert telemetry.init_telemetry_in_child() is False
     assert trace_api._TRACER_PROVIDER is before
     # Nothing is buffered, so there is nothing to return with the result.
     assert telemetry.take_child_spans() == []
 
 
-def test_child_buffers_spans_without_an_exporter(monkeypatch):
+def test_child_stays_untraced_without_template_preparation(monkeypatch):
     _fake_exporters(monkeypatch)
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", _ENDPOINT)
-    assert telemetry.init_telemetry_in_child() is True
+    assert telemetry.init_telemetry_in_child() is False
+
+
+def test_dependency_conflict_found_by_the_template_skips_http_instrumentation(monkeypatch):
+    import opentelemetry.instrumentation.dependencies as dependencies
+
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", _ENDPOINT)
+    monkeypatch.setattr(dependencies, "get_dependency_conflicts", lambda deps: "httpx 0.1 conflicts")
+    telemetry.prepare_child_telemetry()
+    assert telemetry._child_resource is not None
+    assert telemetry._child_http_instrumentable is False
+
+
+def test_child_buffers_spans_without_an_exporter(monkeypatch):
+    _prepared_child(monkeypatch)
 
     # No exporter, thread or collector connection in the one-shot child.
     assert _FakeSpanExporter.created == []
@@ -146,9 +174,7 @@ def test_child_buffers_spans_without_an_exporter(monkeypatch):
 
 
 def test_buffer_is_bounded(monkeypatch):
-    _fake_exporters(monkeypatch)
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", _ENDPOINT)
-    assert telemetry.init_telemetry_in_child() is True
+    _prepared_child(monkeypatch)
     telemetry._child_buffer._limit = 3
     tracer = trace_api.get_tracer(__name__)
     for i in range(5):
@@ -158,14 +184,13 @@ def test_buffer_is_bounded(monkeypatch):
 
 
 def test_child_run_span_parents_on_the_dispatch_and_marks_failure(monkeypatch):
-    _fake_exporters(monkeypatch)
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", _ENDPOINT)
-    assert telemetry.init_telemetry_in_child() is True
+    _prepared_child(monkeypatch)
     carrier = {}
     with trace_api.use_span(trace_api.get_current_span(_parent_context())):
         telemetry.inject_traceparent(carrier)
     context = {"workflow_id": "wf-1", **carrier}
 
+    started_ns = telemetry._child_started_ns
     with telemetry.child_run_span("exec-1", context) as span:
         with trace_api.get_tracer(__name__).start_as_current_span("GET"):
             pass
@@ -175,8 +200,13 @@ def test_child_run_span_parents_on_the_dispatch_and_marks_failure(monkeypatch):
     with telemetry.child_run_span("exec-3", {}) as span:
         telemetry.mark_child_run(span, {"success": True})
 
-    get, run1, run2, run3 = telemetry.take_child_spans()
+    startup, get, run1, run2, run3 = telemetry.take_child_spans()
     assert run1["name"] == "workflow.run" and run1["parent"][:2] == (_TRACE_ID, _SPAN_ID)
+    # The first run starts at child set-up and opens with its start-up span.
+    assert run1["start"] == startup["start"] == started_ns
+    assert startup["name"] == "workflow.startup" and startup["parent"][1] == run1["span_id"]
+    assert startup["end"] <= get["start"]
+    assert run2["start"] > run1["end"]  # later runs start when they begin
     assert run1["attributes"] == {"bifrost.execution.id": "exec-1", "bifrost.workflow.id": "wf-1"}
     assert get["parent"][1] == run1["span_id"]  # outbound calls nest under the run
     assert run1["status"] == (StatusCode.ERROR.value, "ValueError")
@@ -189,9 +219,7 @@ def test_parent_relays_returned_spans_through_its_batch_processor(monkeypatch):
     sink = InMemorySpanExporter()
     processor = SimpleSpanProcessor(sink)
     monkeypatch.setattr(telemetry, "_relay_processor", processor)
-    _fake_exporters(monkeypatch)
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", _ENDPOINT)
-    assert telemetry.init_telemetry_in_child() is True
+    _prepared_child(monkeypatch)
     with trace_api.get_tracer(__name__).start_as_current_span("child-work", context=_parent_context()):
         pass
     wire = telemetry.take_child_spans()
@@ -209,9 +237,7 @@ def test_parent_relays_returned_spans_through_its_batch_processor(monkeypatch):
 
 
 def test_idempotent(monkeypatch):
-    _fake_exporters(monkeypatch)
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", _ENDPOINT)
-    assert telemetry.init_telemetry_in_child() is True
+    _prepared_child(monkeypatch)
     buffer = telemetry._child_buffer
     assert telemetry.init_telemetry_in_child() is True
     assert telemetry._child_buffer is buffer
@@ -219,11 +245,12 @@ def test_idempotent(monkeypatch):
 
 def test_never_raises_when_setup_fails(monkeypatch):
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", _ENDPOINT)
+    telemetry.prepare_child_telemetry()
 
     def broken(*args, **kwargs):
-        raise RuntimeError("instrumentor unavailable")
+        raise RuntimeError("sampler unavailable")
 
-    monkeypatch.setattr(telemetry, "_instrument_http_client", broken)
+    monkeypatch.setattr(telemetry, "_sampler", broken)
     try:
         result = telemetry.init_telemetry_in_child()
     except Exception as e:  # noqa: BLE001 — must never propagate
@@ -249,6 +276,7 @@ def test_real_fork_child_returns_spans_over_a_pipe(monkeypatch):
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", _ENDPOINT)
     sink = InMemorySpanExporter()
     monkeypatch.setattr(telemetry, "_relay_processor", SimpleSpanProcessor(sink))
+    telemetry.prepare_child_telemetry()  # the template's step, before it forks
 
     recv, send = multiprocessing.Pipe(duplex=False)
     pid = os.fork()
@@ -272,6 +300,34 @@ def test_real_fork_child_returns_spans_over_a_pipe(monkeypatch):
     os.waitpid(pid, 0)
     assert result["started"] is True
     telemetry.relay_child_spans(result.pop(telemetry.CHILD_SPANS_KEY))
-    (span,) = sink.get_finished_spans()
-    assert span.name == "workflow.run"
-    assert span.attributes["bifrost.execution.id"] == "exec-1"
+    startup, run = sink.get_finished_spans()
+    assert (startup.name, run.name) == ("workflow.startup", "workflow.run")
+    assert startup.parent.span_id == run.context.span_id
+    assert run.attributes["bifrost.execution.id"] == "exec-1"
+
+
+def test_launch_span_parents_on_the_dispatch_and_marks_failure(monkeypatch):
+    from opentelemetry.sdk.trace import TracerProvider
+
+    sink = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(sink))
+    telemetry._discard_inherited_providers()
+    trace_api.set_tracer_provider(provider)
+    carrier = {}
+    with trace_api.use_span(trace_api.get_current_span(_parent_context())):
+        telemetry.inject_traceparent(carrier)
+
+    with telemetry.launch_span("exec-1", {"workflow_id": "wf-1", **carrier}):
+        pass
+    with pytest.raises(MemoryError):
+        with telemetry.launch_span("exec-2", {}):
+            raise MemoryError("Launcher memory pressure rejects fork")
+
+    ok, failed = sink.get_finished_spans()
+    assert ok.name == "workflow.launch" and ok.parent.span_id == _SPAN_ID
+    assert dict(ok.attributes) == {"bifrost.execution.id": "exec-1", "bifrost.workflow.id": "wf-1"}
+    assert ok.status.status_code == StatusCode.UNSET
+    assert failed.status.status_code == StatusCode.ERROR
+    assert failed.status.description == "MemoryError"  # type only
+    assert failed.events == ()

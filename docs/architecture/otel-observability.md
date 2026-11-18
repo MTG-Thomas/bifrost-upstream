@@ -173,6 +173,13 @@ logs (unchanged path) → Loki, now carrying trace_id/span_id
   and the `run.<handler>` span is its child. One trace therefore reads
   request → publish → process → run. Covered by
   `api/tests/unit/test_otel_messaging.py`.
+- Each template process resolves its children's telemetry set-up once,
+  before it forks (`prepare_child_telemetry`): it loads the SDK and HTTPX
+  instrumentor modules, builds the run resource and runs the instrumentor's
+  dependency check. Children inherit that copy-on-write. Left to each
+  child, the imports and package-metadata reads cost roughly 45-100 ms per
+  run; prepared, child set-up measured about 6 ms. Without preparation a
+  child stays untraced.
 - Execution children re-initialize tracing after `os.fork` and export
   nothing themselves. `init_telemetry_in_child` discards the inherited
   providers (fork carries memory but no threads, so an inherited batch
@@ -186,7 +193,14 @@ logs (unchanged path) → Loki, now carrying trace_id/span_id
   execution in a `workflow.run` span (`bifrost.execution.id`,
   `bifrost.workflow.id`) parented on that context, and marks it `ERROR`
   with the exception type only when the run reports failure. Its outbound
-  HTTP and engine SDK calls nest beneath it.
+  HTTP and engine SDK calls nest beneath it. A child's first run starts at
+  its telemetry set-up, just after fork, and opens with a
+  `workflow.startup` span covering the time before the work began.
+- A remote launcher wraps the fork command in a `workflow.launch` span
+  parented on the same context: receipt, any wait for the template, the
+  fork and the hand-off to the child. A failure is marked `ERROR` with its
+  type only. Locally the pool forks inside `run.workflow.execute`, so no
+  separate span is needed there.
 - The child returns its finished spans with the run result
   (`_otel_spans`). The process that reads the result (the pool, or the
   remote launcher before anything crosses the route socket) strips them
@@ -197,7 +211,9 @@ logs (unchanged path) → Loki, now carrying trace_id/span_id
   `api/tests/unit/test_telemetry_fork.py`, the pool and launcher result
   tests, and the consumer routing test.
   One trace therefore reads request → publish → process →
-  `run.workflow.execute` → `workflow.run` → outbound calls.
+  `run.workflow.execute` → (`workflow.launch`) → `workflow.run`
+  (`workflow.startup`, then outbound calls), with no unattributed time
+  between the dispatch and the run.
 - `ScrubbingSpanExporter` enforces the export privacy boundary in-process
   before OTLP: SQL text and parameters, Redis `FT.SEARCH` queries and
   returned document fields, HTTP query strings, **all span events**, and
