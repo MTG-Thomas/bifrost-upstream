@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare and enroll only the disposable Phase 5a debug stack."""
+"""Prepare and enroll a disposable phase 5 debug stack."""
 
 import argparse
 import hashlib
@@ -31,11 +31,12 @@ def sha256(value):
     return hashlib.sha256(value).hexdigest()
 
 
-def prepare():
-    if not ROOT.name.startswith("phase5-") or command("git", "remote") or command(
+def prepare(hosted=False):
+    prefix = "phase5b-" if hosted else "phase5-"
+    if not ROOT.name.startswith(prefix) or command("git", "remote") or command(
         "git", "status", "--porcelain"
     ):
-        raise SystemExit("Use a clean, freshly initialized phase5-* archive without Git remotes")
+        raise SystemExit(f"Use a clean, freshly initialized {prefix}* archive without Git remotes")
     if ROOT.stat().st_mode & 0o077:
         raise SystemExit("Create the disposable archive with mode 0700")
     # Uvicorn drops privileges inside the container. Only this private archive
@@ -66,9 +67,16 @@ def prepare():
     compose.write_bytes(original)
     overlay = ROOT / "docker-compose.debug.port.yml"
     overlay.write_bytes(overlay.read_bytes().replace(b'"${DEBUG_CLIENT_PORT}', b'"127.0.0.1:${DEBUG_CLIENT_PORT}'))
+    if hosted:
+        defaults = ROOT / ".env.debug"
+        defaults.chmod(0o600)
+        defaults.write_bytes(defaults.read_bytes().replace(
+            b"BIFROST_DEFAULT_USER_PASSWORD=password",
+            f"BIFROST_DEFAULT_USER_PASSWORD={secrets.token_hex(32)}".encode(),
+        ) + f"\nBIFROST_SECRET_KEY={secrets.token_hex(32)}\n".encode())
 
 
-def seeded_api():
+def seeded_api(hosted):
     status = command("env", "BIFROST_FORCE_PORT=1", "./debug.sh", "status")
     project = re.search(r"^Project:\s+(bifrost-debug-[0-9a-f]+)$", status, re.MULTILINE)[1]
     address = command("docker", "port", f"{project}-api-1", "8000/tcp")
@@ -77,6 +85,8 @@ def seeded_api():
     login = re.search(r"^Login:\s+(\S+) / (.+)$", status, re.MULTILINE)
     if login is None:
         raise SystemExit("The debug API did not report its seeded login")
+    if hosted and not re.fullmatch(r"[0-9a-f]{64}", login[2]):
+        raise SystemExit("The hosted run requires the random seeded admin password")
     origin = f"http://{address}"
 
     def send(path, body, token=None, method="POST"):
@@ -91,19 +101,30 @@ def seeded_api():
             raise SystemExit(f"{method} {path} returned HTTP {error.code}") from None
 
     admin = send("/auth/login", urlencode({"username": login[1], "password": login[2]}).encode())["access_token"]
-    content = (HERE / "fixture.py").read_bytes()
-    send("/api/files/write", {"path": ENTRY, "content": content.decode(), "location": "workspace"}, admin)
-    workflow = send("/api/workflows/register", {"path": ENTRY, "function_name": FUNCTION}, admin)
-    send(f"/api/workflows/{workflow['id']}", {"timeout_seconds": 60}, admin, method="PATCH")
-    entry_hash = sha256(content)
-    approval = [{
-        "workflow_id": workflow["id"], "entry_path": ENTRY, "function_name": FUNCTION,
-        "entry_sha256": entry_hash, "module_sha256": {},
-        "manifest_sha256": sha256(json.dumps({ENTRY: entry_hash}, sort_keys=True, separators=(",", ":")).encode()),
-        "packages": [], "https_hosts": ["phase5-fixture.invalid"], "required_https_hosts": [],
-        "estimated_subrequests": 6, "subrequest_allowance": 10,
-        "estimated_cpu_ms": 100, "cpu_budget_ms": 1000,
-    }]
+    fixtures = (
+        ("hosted", "phase5b_fixture", "fixture-hosted.py", 10, 1000),
+        ("allowance", "phase5b_allowance", "fixture-hosted.py", 4, 1000),
+    ) if hosted else (("local", FUNCTION, "fixture.py", 10, 1000),)
+    approval = []
+    workflows = {}
+    for kind, function, filename, allowance, cpu in fixtures:
+        entry = f"workflows/{function}.py" if hosted else ENTRY
+        content = (HERE / filename).read_bytes()
+        if kind == "allowance":
+            content = content.replace(b"phase5b_fixture", b"phase5b_allowance")
+        send("/api/files/write", {"path": entry, "content": content.decode(), "location": "workspace"}, admin)
+        workflow = send("/api/workflows/register", {"path": entry, "function_name": function}, admin)
+        workflow_id = workflows[kind] = workflow["id"]
+        send(f"/api/workflows/{workflow_id}", {"timeout_seconds": 60}, admin, method="PATCH")
+        entry_hash = sha256(content)
+        approval.append({
+            "workflow_id": workflow_id, "entry_path": entry, "function_name": function,
+            "entry_sha256": entry_hash, "module_sha256": {},
+            "manifest_sha256": sha256(json.dumps({entry: entry_hash}, sort_keys=True, separators=(",", ":")).encode()),
+            "packages": [], "https_hosts": [] if hosted else ["phase5-fixture.invalid"], "required_https_hosts": [],
+            "estimated_subrequests": min(6, allowance), "subrequest_allowance": allowance,
+            "estimated_cpu_ms": 100, "cpu_budget_ms": cpu,
+        })
     with API_ENV.open("a") as env:
         env.write(f"BIFROST_CLOUDFLARE_WORKFLOW_APPROVALS='{json.dumps(approval, separators=(',', ':'))}'\n")
 
@@ -122,19 +143,20 @@ def seeded_api():
         time.sleep(0.25)
     else:
         raise SystemExit("The debug API did not finish reloading the workflow approval")
-    return origin, project, admin, workflow["id"], entry_hash
+    return origin, project, admin, workflows, approval
 
 
-def run(runtime):
+def run(runtime, hosted):
     sys.path.insert(0, str(ROOT / "api"))
     from shared.worker_control_auth import external_worker_control_key
 
-    if not API_ENV.is_file() or not ROOT.name.startswith("phase5-"):
+    prefix = "phase5b-" if hosted else "phase5-"
+    if not API_ENV.is_file() or not ROOT.name.startswith(prefix):
         raise SystemExit("Run prepare and start this disposable archive's debug stack first")
-    origin, project, admin, workflow_id, entry_hash = seeded_api()
+    origin, project, admin, workflows, approval = seeded_api(hosted)
     incarnation, launcher = uuid4(), uuid4()
-    resource = f"phase5a:do:{incarnation}"
-    build = "phase5a-local"
+    resource = f"{'phase5b' if hosted else 'phase5a'}:do:{incarnation}"
+    build = "phase5b-hosted" if hosted else "phase5a-local"
     sql = f"""
         INSERT INTO execution_workers (
             id, form, state, resource_class, execution_lane, runtime_profile,
@@ -154,12 +176,12 @@ def run(runtime):
                     if line.startswith("BIFROST_WORKER_CAPACITY_TOKEN="))
     key = external_worker_control_key(capacity, incarnation, resource)
     print(json.dumps({"prepared": str(incarnation), "project": project,
-                      "workflow": workflow_id, "entry_sha256": entry_hash,
+                      "workflows": workflows, "entry_sha256": [item["entry_sha256"] for item in approval],
                       "runtime_sha256": sha256(runtime.read_bytes())}), flush=True)
     subprocess.run(
         ["node", str(HERE / "run.mjs")], cwd=ROOT, check=True, text=True,
         input=json.dumps({"origin": origin, "project": project, "admin": admin,
-                          "workflowId": workflow_id, "runtime": str(runtime),
+                          "workflows": workflows, "runtime": str(runtime), "hosted": hosted,
                           "incarnation": str(incarnation), "launcher": str(launcher),
                           "resource": resource, "build": build, "controlKey": key}),
     )
@@ -168,10 +190,12 @@ def run(runtime):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
-    sub.add_parser("prepare")
-    sub.add_parser("run").add_argument("runtime", type=Path, help="Prepared generated-runtime.mjs")
+    sub.add_parser("prepare").add_argument("--hosted", action="store_true")
+    run_parser = sub.add_parser("run")
+    run_parser.add_argument("runtime", type=Path, help="Prepared generated-runtime.mjs")
+    run_parser.add_argument("--hosted", action="store_true")
     args = parser.parse_args()
     if args.action == "prepare":
-        prepare()
+        prepare(args.hosted)
     else:
-        run(args.runtime.resolve(strict=True))
+        run(args.runtime.resolve(strict=True), args.hosted)

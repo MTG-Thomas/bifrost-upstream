@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {readFileSync, utimesSync} from 'node:fs';
+import {readFileSync, utimesSync, writeFileSync} from 'node:fs';
 import {mkdir} from 'node:fs/promises';
 import {createServer} from 'node:http';
 import {createRequire} from 'node:module';
@@ -13,7 +13,6 @@ import {stageRuntimeLoader} from '../stage-runtime-loader.mjs';
 
 const root = new URL('../', import.meta.url);
 const require = createRequire(new URL('tenant-workers/package.json', root));
-const {Miniflare} = createRequire(require.resolve('wrangler'))('miniflare');
 const {WebSocket, WebSocketServer} = require('ws');
 const config = JSON.parse(readFileSync(0, 'utf8'));
 const origin = 'https://phase5-api.invalid';
@@ -21,9 +20,12 @@ const fixtureOrigin = 'https://phase5-fixture.invalid';
 const wire = [];
 const tokens = new Map();
 const gates = new Map();
+const hostedReads = new Map();
+const sdkPath = '/api/sdk/tables/list';
 let fault = null;
 let worker;
 let mf;
+let nextHostedGate;
 
 function evidence(label, data) {
   console.log(JSON.stringify({label, ...data}));
@@ -61,7 +63,7 @@ function runRow(id) {
       FROM execution_worker_claims WHERE subject_id=e.id),
     'queued',(SELECT count(*) FROM work_dispatches WHERE subject_id=e.id),
     'logs',(SELECT count(*) FROM execution_logs WHERE execution_id=e.id
-      AND message LIKE '%phase5a committed fixture%')) FROM executions e WHERE id='${id}'`);
+      AND message LIKE '%committed fixture%')) FROM executions e WHERE id='${id}'`);
 }
 
 async function api(path, body, token = config.admin) {
@@ -89,6 +91,10 @@ function observe(direction, raw) {
   } else if (frame.kind === 'command' && payload.action === 'workflow') {
     const command = payload.payload;
     tokens.set(command.execution_id, command.context.engine_token);
+    if (nextHostedGate) {
+      gates.set(command.execution_id, nextHostedGate);
+      nextHostedGate = undefined;
+    }
     event = {kind: 'workflow', id: command.execution_id, route: command.route_id,
       generation: frame.session_generation};
   } else if (frame.kind === 'command' && ['terminate', 'ready'].includes(payload.action)) {
@@ -115,6 +121,10 @@ function observe(direction, raw) {
 const proxy = createServer(async (request, response) => {
   const path = request.url;
   try {
+    if (config.hosted && (request.method !== 'POST' || ![sdkPath, '/auth/refresh'].includes(path))) {
+      response.writeHead(404).end();
+      return;
+    }
     if (path.startsWith('/__fixture/hold/')) {
       const scenario = path.split('/').at(-1);
       assert.ok(gates.has(scenario));
@@ -144,10 +154,27 @@ const proxy = createServer(async (request, response) => {
       ...(['GET', 'HEAD'].includes(request.method) ? {} : {body: request, duplex: 'half'}),
       signal: AbortSignal.timeout(10_000),
     });
+    const body = Buffer.from(await upstream.arrayBuffer());
+    if (config.hosted && path === sdkPath) {
+      const token = headers.get('authorization')?.replace(/^Bearer /, '');
+      const entry = [...tokens].find(([, value]) => value === token);
+      if (entry) {
+        const [id] = entry;
+        const reads = hostedReads.get(id) ?? [];
+        reads.push(upstream.status);
+        hostedReads.set(id, reads);
+        evidence('hosted-sdk-read', {id, status: upstream.status, count: reads.length});
+        const gate = gates.get(id);
+        if (gate && upstream.ok) {
+          gate.entered = true;
+          await gate.release.promise;
+        }
+      }
+    }
     const headersOut = Object.fromEntries(upstream.headers);
     for (const key of ['connection', 'content-encoding', 'content-length', 'transfer-encoding']) delete headersOut[key];
     response.writeHead(upstream.status, headersOut);
-    response.end(Buffer.from(await upstream.arrayBuffer()));
+    response.end(body);
   } catch {
     response.writeHead(502).end();
   }
@@ -239,6 +266,7 @@ function module(contents) {
 }
 
 async function launch(port) {
+  const {Miniflare} = createRequire(require.resolve('wrangler'))('miniflare');
   const artifact = readFileSync(config.runtime);
   const staged = new URL('runtime/', root);
   await mkdir(staged, {recursive: true});
@@ -289,11 +317,13 @@ function reloadApi() {
   utimesSync(file, now, now);
 }
 
-async function startRun(scenario) {
+async function startRun(scenario, hold = true) {
   const gate = {release: Promise.withResolvers(), entered: false};
   gates.set(scenario, gate);
+  if (config.hosted && hold) nextHostedGate = gate;
   const submitted = await api('/api/workflows/execute', {
-    workflow_id: config.workflowId, input_data: {case: scenario}, sync: false,
+    workflow_id: config.workflows[scenario === 'allowance' ? 'allowance' : config.hosted ? 'hosted' : 'local'],
+    input_data: {case: scenario}, sync: false,
   });
   assert.equal(submitted.status, 200);
   const id = submitted.data.execution_id;
@@ -311,7 +341,7 @@ async function startRun(scenario) {
   assert.equal(row.claim[0].worker, config.incarnation);
   assert.equal(row.credential, 2);
   evidence('claimed', {scenario, id, route: dispatch.route, row});
-  await until('Python fixture entered the hold', () => {
+  if (hold) await until('Python fixture entered the hold', () => {
     if (gate.entered) return true;
     const result = wire.find((event) => event.kind === 'result' && event.route === dispatch.route);
     if (result) throw new Error('Launcher settled before the fixture entered: ' + JSON.stringify(runRow(id)));
@@ -326,7 +356,7 @@ async function settle(scenario, run, status, ackCount = 1) {
       .map((event) => event.event));
     return wire.filter((event) => event.kind === 'ack' && ids.has(event.event)).length >= ackCount;
   });
-  await until('launcher slot cleared', async () => !(await control('ledger', 200)).slot);
+  if (!config.hosted) await until('launcher slot cleared', async () => !(await control('ledger', 200)).slot);
   const terminals = wire.filter((event) => event.kind === 'result' && event.route === run.route);
   assert.equal(terminals.length, ackCount);
   assert.equal(new Set(terminals.map((event) => event.event)).size, 1);
@@ -339,8 +369,118 @@ async function settle(scenario, run, status, ackCount = 1) {
     assert.equal(row.logs, 1);
   }
   assert.equal(wire.filter((event) => event.kind === 'workflow' && event.id === run.id).length, 1);
-  evidence('settled', {scenario, id: run.id, row, ledger: await control('ledger', 200)});
+  evidence('settled', {scenario, id: run.id, row, ...(config.hosted ? {} : {ledger: await control('ledger', 200)})});
   return row;
+}
+
+async function hostedChecks() {
+  const happy = await startRun('happy');
+  const token = tokens.get(happy.id);
+  assert.deepEqual(hostedReads.get(happy.id), [200]);
+  happy.gate.release.resolve();
+  await settle('happy', happy, 'Success');
+  assert.equal((await api(sdkPath, {}, token)).status, 401);
+  evidence('run-credential', {id: happy.id, before: 200, after: 401});
+
+  const limits = await startRun('allowance', false);
+  await settle('allowance', limits, 'Failed');
+  const limitReads = hostedReads.get(limits.id);
+  assert.ok(limitReads?.length > 0 && limitReads.length <= 4 && limitReads.every((status) => status === 200));
+  evidence('allowance', {id: limits.id, allowed: 4, upstreamReads: limitReads.length});
+
+  const takeover = await startRun('takeover');
+  const beforeTakeover = workerRow();
+  reloadApi();
+  await until('replacement API inventories the live route', () => wire.some((event) =>
+    event.kind === 'inventory' && event.generation > beforeTakeover.generation && event.active.includes(takeover.route)));
+  const afterTakeover = workerRow();
+  assert.notEqual(afterTakeover.owner, beforeTakeover.owner);
+  assert.ok(afterTakeover.hello > beforeTakeover.hello);
+  evidence('takeover', {before: beforeTakeover, after: afterTakeover});
+  takeover.gate.release.resolve();
+  await settle('takeover', takeover, 'Success');
+
+  const reset = await startRun('reset');
+  const beforeReset = workerRow();
+  evidence('redeploy-requested', {id: reset.id, route: reset.route, before: beforeReset});
+  const inventory = await until('deployed launcher recovered the interrupted route', () => wire.find((event) =>
+    event.kind === 'inventory' && event.generation > beforeReset.generation && event.terminal.length > 0));
+  const resetRow = await settle('reset', reset, 'Failed');
+  assert.match(resetRow.error, /may already have taken effect/);
+  assert.ok(workerRow().hello > beforeReset.hello);
+  const terminal = wire.find((event) => event.kind === 'result' && event.route === reset.route);
+  assert.equal(terminal.attempt, 'uncertain');
+  assert.equal(terminal.errorType, 'LauncherReset');
+  assert.deepEqual(inventory.terminal, [terminal.event]);
+  reset.gate.release.resolve();
+
+  const cpu = await startRun('cpu', false);
+  const cpuRow = await settle('cpu', cpu, 'Failed');
+  assert.match(cpuRow.error, /may already have taken effect/);
+  const cpuTerminal = wire.find((event) => event.kind === 'result' && event.route === cpu.route);
+  assert.equal(cpuTerminal.attempt, 'uncertain');
+  assert.deepEqual(hostedReads.get(cpu.id), [200]);
+  evidence('cpu', {id: cpu.id, budgetMs: 1000, terminal: cpuTerminal});
+}
+
+async function localChecks() {
+  const happy = await startRun('happy');
+  const token = tokens.get(happy.id);
+  assert.equal((await api(sdkPath, {}, token)).status, 200);
+  happy.gate.release.resolve();
+  await settle('happy', happy, 'Success');
+  assert.equal((await api(sdkPath, {}, token)).status, 401);
+  evidence('run-credential', {id: happy.id, before: 200, after: 401});
+
+  const beforeWelcome = workerRow();
+  fault = 'welcome';
+  for (const socket of sockets.clients) socket.close(1012, 'phase5a lost welcome setup');
+  await until('higher hello after dropped welcome', () => {
+    const lost = wire.find((event) => event.kind === 'welcome' && event.dropped);
+    return lost && wire.find((event) => event.kind === 'inventory' && event.generation > lost.generation);
+  });
+  assert.ok(workerRow().hello >= beforeWelcome.hello + 2);
+  evidence('lost-welcome', {before: beforeWelcome, after: workerRow(), ledger: await control('ledger', 200)});
+
+  const replay = await startRun('lost-ack');
+  fault = 'ack';
+  replay.gate.release.resolve();
+  await until('first ACK dropped', () => wire.some((event) => event.kind === 'ack' && event.dropped));
+  const first = runRow(replay.id);
+  assert.equal(first.status, 'Success');
+  assert.deepEqual(await settle('lost-ack', replay, 'Success', 2), first);
+
+  const takeover = await startRun('takeover');
+  const beforeTakeover = workerRow();
+  reloadApi();
+  await until('replacement API inventories the live route', () => wire.some((event) =>
+    event.kind === 'inventory' && event.generation > beforeTakeover.generation && event.active.includes(takeover.route)));
+  assert.notEqual(workerRow().owner, beforeTakeover.owner);
+  evidence('takeover', {before: beforeTakeover, after: workerRow()});
+  takeover.gate.release.resolve();
+  await settle('takeover', takeover, 'Success');
+
+  const reset = await startRun('reset');
+  assert.equal((await control('ledger', 200)).slot.state, 'entering');
+  await control('reset');
+  const resetRow = await settle('reset', reset, 'Failed');
+  assert.match(resetRow.error, /may already have taken effect/);
+  assert.ok(wire.some((event) => event.kind === 'result' && event.route === reset.route &&
+    event.attempt === 'uncertain' && event.errorType === 'LauncherReset'));
+  reset.gate.release.resolve();
+
+  const cancel = await startRun('cancel');
+  const cancelling = await api('/api/executions/' + cancel.id + '/cancel', {});
+  assert.equal(cancelling.status, 200);
+  assert.equal(cancelling.data.status, 'Cancelling');
+  const cancelled = await settle('cancel', cancel, 'Failed');
+  assert.match(cancelled.error, /may already have taken effect.*cancelled/);
+  assert.equal(wire.filter((event) => event.kind === 'result' && event.route === cancel.route &&
+    event.attempt === 'uncertain' && event.errorType === 'CancelledError').length, 1);
+  assert.ok(wire.some((event) => event.kind === 'terminate' && event.route === cancel.route));
+  await until('late egress refused', () => wire.some((event) => event.kind === 'late-egress' && event.route === cancel.route));
+  assert.ok(wire.every((event) => event.kind !== 'unexpected-egress'));
+  cancel.gate.release.resolve();
 }
 
 await new Promise((resolve) => proxy.listen(0, '127.0.0.1', resolve));
@@ -353,72 +493,23 @@ try {
     // Claims live in the API. Wait until the last Linux samples have aged
     // past host.py's three-second admission window after pausing the sources.
     const linuxSamplesStale = delay(3100);
-    await launch(proxy.address().port);
-    await control('start');
-    await until('hello inventory and ready', () => wire.some((event) => event.kind === 'ready'));
+    if (config.hosted) {
+      const {incarnation, launcher, resource, build, controlKey} = config;
+      writeFileSync('.phase5b-deploy.json', JSON.stringify({
+        port: proxy.address().port, incarnation, launcher, resource, build, controlKey,
+      }), {flag: 'wx', mode: 0o600});
+      evidence('hosted-relay-ready', {port: proxy.address().port});
+    } else {
+      await launch(proxy.address().port);
+      await control('start');
+    }
+    await until('hello inventory and ready', () => wire.some((event) => event.kind === 'ready'),
+      config.hosted ? 180_000 : 30_000);
     assert.equal(workerRow().state, 'ready');
-    evidence('enrollment', {row: workerRow(), ledger: await control('ledger', 200)});
-
+    evidence('enrollment', {row: workerRow(), ...(config.hosted ? {} : {ledger: await control('ledger', 200)})});
     await linuxSamplesStale;
-    const happy = await startRun('happy');
-    const token = tokens.get(happy.id);
-    assert.equal((await api('/api/sdk/tables/list', {}, token)).status, 200);
-    happy.gate.release.resolve();
-    await settle('happy', happy, 'Success');
-    assert.equal((await api('/api/sdk/tables/list', {}, token)).status, 401);
-    evidence('run-credential', {id: happy.id, before: 200, after: 401});
-
-    const beforeWelcome = workerRow();
-    fault = 'welcome';
-    for (const socket of sockets.clients) socket.close(1012, 'phase5a lost welcome setup');
-    await until('higher hello after dropped welcome', () => {
-      const lost = wire.find((event) => event.kind === 'welcome' && event.dropped);
-      return lost && wire.find((event) => event.kind === 'inventory' && event.generation > lost.generation);
-    });
-    assert.ok(workerRow().hello >= beforeWelcome.hello + 2);
-    evidence('lost-welcome', {before: beforeWelcome, after: workerRow(), ledger: await control('ledger', 200)});
-
-    const replay = await startRun('lost-ack');
-    fault = 'ack';
-    replay.gate.release.resolve();
-    await until('first ACK dropped', () => wire.some((event) => event.kind === 'ack' && event.dropped));
-    const first = runRow(replay.id);
-    assert.equal(first.status, 'Success');
-    assert.deepEqual(await settle('lost-ack', replay, 'Success', 2), first);
-
-    const takeover = await startRun('takeover');
-    const beforeTakeover = workerRow();
-    reloadApi();
-    await until('replacement API inventories the live route', () => wire.some((event) =>
-      event.kind === 'inventory' && event.generation > beforeTakeover.generation && event.active.includes(takeover.route)));
-    assert.notEqual(workerRow().owner, beforeTakeover.owner);
-    evidence('takeover', {before: beforeTakeover, after: workerRow()});
-    takeover.gate.release.resolve();
-    await settle('takeover', takeover, 'Success');
-
-    const reset = await startRun('reset');
-    assert.equal((await control('ledger', 200)).slot.state, 'entering');
-    await control('reset');
-    const resetRow = await settle('reset', reset, 'Failed');
-    assert.match(resetRow.error, /may already have taken effect/);
-    assert.ok(wire.some((event) => event.kind === 'result' && event.route === reset.route &&
-      event.attempt === 'uncertain' && event.errorType === 'LauncherReset'));
-    reset.gate.release.resolve();
-
-    const cancel = await startRun('cancel');
-    const cancelling = await api('/api/executions/' + cancel.id + '/cancel', {});
-    assert.equal(cancelling.status, 200);
-    assert.equal(cancelling.data.status, 'Cancelling');
-    // Engine entry already occurred. Stop revokes the generation but cannot
-    // establish that the workflow had no effects before stopping.
-    const cancelled = await settle('cancel', cancel, 'Failed');
-    assert.match(cancelled.error, /may already have taken effect.*cancelled/);
-    assert.equal(wire.filter((event) => event.kind === 'result' && event.route === cancel.route &&
-      event.attempt === 'uncertain' && event.errorType === 'CancelledError').length, 1);
-    assert.ok(wire.some((event) => event.kind === 'terminate' && event.route === cancel.route));
-    await until('late egress refused', () => wire.some((event) => event.kind === 'late-egress' && event.route === cancel.route));
-    assert.ok(wire.every((event) => event.kind !== 'unexpected-egress'));
-    cancel.gate.release.resolve();
+    if (config.hosted) await hostedChecks();
+    else await localChecks();
   } finally {
     execFileSync('docker', ['unpause', ...linuxLaunchers]);
   }
@@ -427,13 +518,13 @@ try {
     WHERE id='${config.incarnation}' RETURNING to_json(state)`), 'retired');
   for (const socket of sockets.clients) socket.close(1012, 'phase5a reconnect after retirement');
   await until('API returned close code 4001', () => wire.some((event) => event.kind === 'api-close' && event.code === 4001));
-  const retired = await until('retirement persisted', async () => {
+  const retired = config.hosted ? null : await until('retirement persisted', async () => {
     const ledger = await control('ledger', 200);
     return ledger.control?.state === 'retired' && ledger;
   });
   const helloCount = wire.filter((event) => event.kind === 'hello').length;
-  await control('start');
-  await delay(16_000); // Observe through the DO's 15 s watchdog window.
+  if (!config.hosted) await control('start');
+  await delay(config.hosted ? 65_000 : 16_000); // Observe through the DO's 15 s watchdog window.
   assert.equal(wire.filter((event) => event.kind === 'hello').length, helloCount);
   evidence('retired', {row: workerRow(), ledger: retired, helloCount});
 } finally {

@@ -110,6 +110,7 @@ export class CloudflareLauncher extends DurableObject {
     }
     const connection = {session: dial.session, socket: null, welcomeTimer: null, heartbeat: null};
     this.#connection = connection;
+    console.info('launcher_control_dial', this.#settings.identity.incarnationId);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), DIAL_TIMEOUT_MS);
     try {
@@ -118,6 +119,7 @@ export class CloudflareLauncher extends DurableObject {
       }).finally(() => clearTimeout(timeout));
       connection.socket = response.webSocket;
       if (!connection.socket) {
+        console.info('launcher_control_upgrade_refused', response.status);
         await response.body?.cancel();
         await this.#disconnect(connection);
         return;
@@ -138,6 +140,7 @@ export class CloudflareLauncher extends DurableObject {
     await this.#core.receive(connection.session, data);
     if (this.#connection !== connection) return;
     if (connection.session.generation && connection.heartbeat === null) {
+      console.info('launcher_control_welcome', connection.session.generation);
       clearTimeout(connection.welcomeTimer);
       this.#backoff = 1000;
       connection.heartbeat = setInterval(() =>
@@ -158,6 +161,7 @@ export class CloudflareLauncher extends DurableObject {
     clearInterval(connection.heartbeat);
     const ws = connection.socket;
     await this.#core.closed(connection.session, code);
+    console.info('launcher_control_closed', code ?? null, this.#core.retired);
     if (ws?.readyState === WebSocket.OPEN) ws.close(1000, 'launcher reconnecting');
     if (this.#core.retired) {
       await this.ctx.storage.deleteAlarm();
