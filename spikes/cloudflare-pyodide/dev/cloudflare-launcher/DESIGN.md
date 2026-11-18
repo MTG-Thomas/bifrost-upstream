@@ -417,7 +417,8 @@ Revocation clears the current approval and makes later runs Linux-only.
 Earlier approvals and derived children remain inactive in history with their
 lineage intact. A queued reanalysis becomes superseded and a queued dispatch
 fails send-time approval verification. A new human acceptance is required
-after revocation.
+after revocation. A run already past the final send-time approval recheck
+is still sent.
 
 The analyzer is a review aid. It is not a sandbox. TenantHost and the runtime
 enforce the security boundary. The offline census uses the same AST analyzer
@@ -442,10 +443,12 @@ and both estimates fit the current limits. It retains the parent HTTPS allowlist
 and limits and records
 the parent approval and each added, changed, or removed pin. The job fences
 publication on its lease, the current approval, the workflow owner, and indexed
-source digests. Later dispatches may use the derived approval. A deterministic refusal keeps that observation Linux-only until its pins change
-or an operator accepts a new proposal. Storage failures and unresolved
-dependencies can retry through PlatformJob and be staged again after cooldown.
-Staging uses a separate short transaction. The shared queue releases its dedupe
+source digests. Later dispatches may use the derived approval. A deterministic refusal keeps that observation Linux-only until an analysed
+path, including a dependency discovered by this analysis, changes in the file
+index or an operator accepts a new proposal. Storage failures and unresolved
+dependencies can retry through PlatformJob and be staged again after cooldown
+when they are present in the index. Missing unindexed imports require review.
+Staging happens after workflow commit in a separate short transaction. The shared queue releases its dedupe
 lock at the end of that transaction, and the triggering Linux run can proceed
 if staging fails.
 
