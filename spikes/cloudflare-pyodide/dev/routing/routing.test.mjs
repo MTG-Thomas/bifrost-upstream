@@ -11,7 +11,7 @@ test('census uses the approval analyzer to pin imports and reject a runtime trap
   mkdirSync(join(root, '.bifrost'));
   writeFileSync(join(root, '.bifrost', 'workflows.yaml'),
     'first:\n  path: good.py\n  function_name: run\nsecond:\n  path: bad.py\n  function_name: run\n');
-  writeFileSync(join(root, 'good.py'), 'from helper import url\ndef run():\n    return url\n');
+  writeFileSync(join(root, 'good.py'), 'from helper import url\nfrom js import fetch\nasync def run():\n    await fetch("https://api.example.com/path")\n    return await fetch(url)\n');
   writeFileSync(join(root, 'helper.py'), 'url = "https://example.com/path"\n');
   writeFileSync(join(root, 'bad.py'), 'from time import process_time as clock\ndef run():\n    return clock()\n');
   const out = join(root, 'report.json');
@@ -21,7 +21,8 @@ test('census uses the approval analyzer to pin imports and reject a runtime trap
   const [good, bad] = JSON.parse(readFileSync(out, 'utf8')).workspaces[0].rows;
   assert.equal(good.backend, 'cloudflare');
   assert.match(good.module_sha256['helper.py'], /^[0-9a-f]{64}$/);
-  assert.deepEqual(good.https_hosts, ['example.com']);
+  assert.deepEqual(good.https_hosts, ['api.example.com']);
+  assert.equal(good.unresolved_url_calls, 1);
   assert.equal(bad.backend, 'linux');
   assert.match(bad.reasons[0], /runtime operation/);
 });

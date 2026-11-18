@@ -863,7 +863,19 @@ from src.services.execution.cloudflare_analysis import analyze
                     return await client.get("https://api.x.com/a")
             """,
         },
-        ['api.x.com'], 1, 0, id="ambiguous_client_with_url",
+        [], 1, 1, id="ambiguous_client_with_url",
+    ),
+    pytest.param(
+        {"workflows/w.py": "async def main(obj, field): return getattr(obj, field, None)"},
+        [], 0, 0, id="getattr_dynamic",
+    ),
+    pytest.param(
+        {"workflows/w.py": """
+            async def main():
+                data = {}
+                return data.get("https://api.x.com")
+        """},
+        [], 0, 0, id="mapping_key_that_looks_like_a_url",
     ),
 ])
 async def test_review_probe(sources, hosts, calls, unresolved):

@@ -391,6 +391,7 @@ class _Analysis:
         clients = {name: value for name, value in inherited_clients.items() if name not in local_names}
         factories = {name: value for name, value in inherited_factories.items() if name not in local_names}
         requests: dict[str, _URL | None] = {}
+        mappings: set[str] = set()
         parameters = set()
         if arguments is not None:
             parameters = {
@@ -432,7 +433,7 @@ class _Analysis:
         direct_calls = {id(node.func) for node in nodes if isinstance(node, ast.Call)}
         callback_args = {id(arg) for node in nodes if isinstance(node, ast.Call) for arg in node.args}
         for node in nodes:
-            self.inspect(node, aliases, constants, clients, factories, requests, direct_calls, callback_args)
+            self.inspect(node, aliases, constants, clients, factories, requests, direct_calls, callback_args, mappings)
             if isinstance(node, _SCOPES):
                 shared = {} if isinstance(node, ast.ClassDef) else class_clients
                 if isinstance(node, ast.ClassDef):
@@ -462,6 +463,9 @@ class _Analysis:
                 else:
                     clients[name] = client
                 requests.pop(name, None)
+                mappings.discard(name)
+                if isinstance(value, (ast.Dict, ast.DictComp)):
+                    mappings.add(name)
                 if isinstance(value, ast.Call):
                     built = self.request_url(value, aliases, constants, clients, factories)
                     if built is not None:
@@ -493,7 +497,7 @@ class _Analysis:
     def inspect(
         self, node: ast.AST, aliases: dict[str, str], constants: dict[str, str], clients: dict[str, _Client],
         factories: dict[str, _Client], requests: dict[str, _URL | None], direct_calls: set[int],
-        callback_args: set[int],
+        callback_args: set[int], mappings: set[str],
     ) -> None:
         if isinstance(node, ast.Attribute) and (
             node.attr in _BLOCKED_ATTRIBUTES
@@ -525,9 +529,12 @@ class _Analysis:
             raise AnalysisRejected("Unsupported dynamic namespace lookup")
         if qualified == "builtins.getattr":
             attr = node.args[1] if len(node.args) > 1 else None
+            if not isinstance(attr, ast.Constant) or not isinstance(attr.value, str):
+                if node.args and (_qualified(node.args[0], aliases) == "builtins" or id(node) in direct_calls):
+                    raise AnalysisRejected("Unsupported dynamic attribute lookup")
+                return
             if (
-                not isinstance(attr, ast.Constant) or not isinstance(attr.value, str)
-                or attr.value in _DYNAMIC | _TRAPS | _BLOCKED_ATTRIBUTES | {"getattr", "modules"}
+                attr.value in _DYNAMIC | _TRAPS | _BLOCKED_ATTRIBUTES | {"getattr", "modules"}
                 or attr.value == "__dict__" and _qualified(node.args[0], aliases) == "builtins"
             ):
                 raise AnalysisRejected("Unsupported dynamic attribute lookup")
@@ -555,7 +562,9 @@ class _Analysis:
                 argument = _argument(node, index + 1, "url")
                 literal = _url_literal(argument, constants) if argument is not None else None
                 self.record_call(literal, cb[1].host)
-        if method in _HTTP_METHODS:
+        if method in _HTTP_METHODS and (
+            not isinstance(node.func, ast.Attribute) or _dotted(node.func.value) not in mappings
+        ):
             literal = self.call_url(node, method, aliases, constants, clients, factories, requests)
             self.call_hints.append(_CallHint(namespace, literal))
 
@@ -577,8 +586,10 @@ class _Analysis:
     def finish_call_hints(self) -> None:
         for hint in self.call_hints:
             client = self.exports.get(hint.receiver)
-            if client is not None or hint.url and hint.url.prefix.startswith(("http://", "https://")):
-                self.record_call(hint.url, client.host if client else None)
+            if client is not None:
+                self.record_call(hint.url, client.host)
+            elif hint.url and hint.url.prefix.startswith(("http://", "https://")):
+                self.record_call(None)
 
 
 async def analyze(

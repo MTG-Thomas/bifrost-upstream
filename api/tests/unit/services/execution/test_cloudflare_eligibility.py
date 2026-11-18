@@ -332,6 +332,23 @@ async def test_oversized_storage_object_checks_observed_digest_before_refusal(re
     assert not pins
 
 
+async def test_inactive_workflow_is_superseded_before_reading_source(review, monkeypatch):
+    approval, _, _ = review
+
+    @asynccontextmanager
+    async def inactive_context():
+        yield Mock(get=AsyncMock(return_value=SimpleNamespace(is_active=False)))
+
+    storage = Mock()
+    monkeypatch.setattr(cloudflare_eligibility, "get_db_context", inactive_context)
+    monkeypatch.setattr(cloudflare_eligibility, "RepoStorage", storage)
+    with pytest.raises(cloudflare_eligibility.ObservationChanged, match="active loose-workspace"):
+        await cloudflare_eligibility.propose_approval(
+            approval.workflow_id, subrequest_allowance=10, cpu_budget_ms=100,
+        )
+    storage.assert_not_called()
+
+
 @pytest.mark.parametrize("problem", ["missing-marker", "removed-approval", "changed-entry", "changed-module"])
 async def test_opaque_route_refuses_a_missing_or_stale_revision_before_send(review, monkeypatch, problem):
     approval, sources, stored = review
