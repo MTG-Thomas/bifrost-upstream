@@ -27,21 +27,22 @@ not modelled — see the meter table in the cloud acceptance doc.
 | `tenant-registry.mjs` | deterministic `tenant id -> worker id` (`tenant-py-<sha256[:32]>`); reused across code changes because the script is constant |
 | `generic-worker-code.mjs` | the CONSTANT Python script plus `genericWorkerCode()` and a digest; workflow source never appears here (path-keyed `_PathImporter` records storage paths) |
 | `tenant-gateway.mjs` | in-supervisor module gateway: serves the attempt store pin-verified via `GET /api/sdk/modules/<path>` + `GET /api/sdk/modules-resolve` (mirrors `dev/executor`); holds the run token parent-side, callers present `DUMMY_CREDENTIAL` |
-| `tenant-entry.mjs` | supervisor: auth/expiry gate (cloud), capability + egress gates before any loader effect, gateway resolve/fetch preflight, per-tenant serialization chain, output budget, import audit/deny; `legacy_load` action is the per-attempt meter control |
+| `tenant-entry.mjs` | supervisor: auth/expiry gate (cloud), capability + egress gates before any loader effect, gateway resolve/fetch preflight, output budget, import audit/deny; `legacy_load` action is the per-attempt meter control. Exports only its handler and the `TenantHost`/`TenantApi` classes: workerd treats every named export of the main module as an entrypoint |
+| `tenant-dispatch.mjs` | constant-time spike auth, per-tenant serialization chain, runtime error classes, warm-then-dispatch-once (`hostAttempt`) |
+| `tenant-api.mjs` | `TenantHost` (one DO per tenant: warm child, attempt serialization, run-token handles, learned warm-up list) and `TenantApi` (the child's outbound gateway) |
+| `supervisor-digest.mjs` | deploy-time hash of the supervisor's own import closure (`SUPERVISOR_SHA256`, reported by `/__code_digest`) |
 | `wrangler.tenant-local.jsonc` | local `workerd` config (LOADER binding only; the gateway is in-supervisor, no extra binding) |
 | `cloudflare.config.ts` / `package.json` | cloud config for `cf deploy` (`workersDev`, LOADER binding, expiry var) |
-| `tenant-isolation.test.mjs` | local `workerd` integration suite |
+| `tenant-isolation.test.mjs` | local `workerd` integration suite; starts and stops its own workerd |
 | `cloud-acceptance.mjs` | deployed acceptance suite (auth, isolation, serialization, cold/warm, gates, path audit) |
 | `meter-readback.mjs` / `meter-delta.mjs` | Dynamic Worker creation meter readback and controlled delta experiment |
-| `*.test.mjs` | 28 unit tests |
+| other `*.test.mjs` | 49 unit tests |
 
 ## Run locally
 
 ```sh
 cd spikes/cloudflare-pyodide/dev/tenant-workers
-node --test tenant-registry.test.mjs generic-code.test.mjs tenant-gateway.test.mjs tenant-gates.test.mjs
-npx wrangler dev --config wrangler.tenant-local.jsonc --port 8811 --ip 127.0.0.1 &
-node tenant-isolation.test.mjs
+node --test    # 49 unit tests plus the 8-check workerd suite (~20 s; it boots its own workerd)
 ```
 
 ## Run in cloud

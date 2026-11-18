@@ -5,8 +5,12 @@
 // every cold child recompiles every imported module from source. Shipping
 // unchecked-hash .pyc files removes that compile step from the boot.
 //
-//   node precompile-runtime.mjs <in generated-runtime.mjs> <out .mjs> \
-//     --mode cache|sourceless-vendor --python "py -V:Astral/CPython3.14.4"
+//   node precompile-runtime.mjs dev/runtime/source-runtime.mjs dev/runtime/generated-runtime.mjs \
+//     [--mode sourceless-vendor|cache] [--python "py -V:Astral/CPython3.14.4"]
+//
+// The input is the source runtime, the output the deployed artifact. Its
+// bytecode is unchecked, so the output must never be edited afterwards; the
+// build steps refuse compiled input (assertSourceRuntime).
 //
 // cache              keep every .py and add __pycache__/<name>.cpython-314.pyc
 // sourceless-vendor  third-party packages (python_modules/) ship .pyc only, in
@@ -20,6 +24,7 @@ import {mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync}
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {pathToFileURL} from 'node:url';
+import {assertSourceRuntime} from './vendor-patches.mjs';
 
 const EXPECTED_MAGIC = '2b0e0d0a';
 const CACHE_TAG = 'cpython-314';
@@ -31,13 +36,15 @@ const flag = (name, fallback) => {
   const i = process.argv.indexOf(`--${name}`);
   return i === -1 ? fallback : process.argv[i + 1];
 };
-const mode = flag('mode', 'cache');
+const mode = flag('mode', 'sourceless-vendor');
 const python = flag('python', 'py -V:Astral/CPython3.14.4').split(' ');
 if (!input || !output || !['cache', 'sourceless-vendor'].includes(mode)) {
   throw new Error('usage: precompile-runtime.mjs <in> <out> --mode cache|sourceless-vendor');
 }
 
 const packaged = (await import(pathToFileURL(input).href)).default;
+// Compiling a compiled runtime would re-emit bytecode with its sources gone.
+assertSourceRuntime(packaged, input);
 const sourceOf = (value) => value.py ?? (value.base64 !== undefined
   ? Buffer.from(value.base64, 'base64').toString('utf8') : null);
 

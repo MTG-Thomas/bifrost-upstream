@@ -1,6 +1,7 @@
 // Integration: per-tenant persistent workers under local workerd.
-// Boot:  npx wrangler dev --config dev/tenant-workers/wrangler.tenant-local.jsonc --port 8811 --ip 127.0.0.1
-// Run:    node dev/tenant-workers/tenant-isolation.test.mjs [--url http://127.0.0.1:8811]
+//   node --test dev/tenant-workers/tenant-isolation.test.mjs
+// The suite starts its own local workerd (wrangler.tenant-local.jsonc, a free
+// port) and stops it afterwards; nothing has to be running beforehand.
 //
 // Proves: (a) different tenants get different isolates (hostile canary style);
 // (b) same-tenant attempts serialize, with within-tenant residue reported as a
@@ -8,7 +9,14 @@
 // (d) gates reject undeclared modules/egress before effects; module source is
 // PATH-keyed through the gateway (/api/sdk/modules/<path>,
 // /api/sdk/modules-resolve) so recorded loads are REAL storage paths.
+import {after, before, test} from 'node:test';
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
+import {readFileSync} from 'node:fs';
+import {fileURLToPath} from 'node:url';
+import {unstable_startWorker} from 'wrangler';
+import {engineDigest} from './generic-worker-code.mjs';
+import {supervisorDigest} from './supervisor-digest.mjs';
 
 async function sha256Hex(text) {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
@@ -18,173 +26,155 @@ async function sha256Hex(text) {
 const WF = 'workflows/wf.py';
 const GHOST = 'workflows/ghost.py';
 const HELPER = 'workflows/helper.py';
+const ATTEMPT = `t${Date.now().toString(36)}`;
+const tenant = (role) => `tenant-${role}-${ATTEMPT}`;
 
-const args = process.argv.slice(2);
-const urlIdx = args.indexOf('--url');
-const BASE = urlIdx >= 0 ? args[urlIdx + 1] : 'http://127.0.0.1:8811';
+// The identities cloudflare.config.ts computes at deploy, computed the same
+// way here so the local supervisor reports real values.
+const runtimeSha256 = createHash('sha256')
+  .update(readFileSync(new URL('../runtime/generated-runtime.mjs', import.meta.url))).digest('hex');
+const supervisorSha256 = supervisorDigest(fileURLToPath(new URL('./tenant-entry.mjs', import.meta.url)));
 
-let failures = 0;
-function verdict(name, pass, detail = '') {
-  console.log(`${pass ? 'PASS' : 'FAIL'} ${name}${detail ? ' — ' + detail : ''}`);
-  if (!pass) failures++;
-}
+let worker;
+let base;
+
+before(async () => {
+  worker = await unstable_startWorker({
+    config: fileURLToPath(new URL('./wrangler.tenant-local.jsonc', import.meta.url)),
+    bindings: {
+      RUNTIME_SHA256: {type: 'plain_text', value: runtimeSha256},
+      SUPERVISOR_SHA256: {type: 'plain_text', value: supervisorSha256},
+    },
+    dev: {server: {hostname: '127.0.0.1', port: 0}, inspector: false, logLevel: 'warn'},
+  });
+  await worker.ready;
+  base = (await worker.url).href;
+});
+
+after(async () => {
+  await worker?.dispose();
+});
 
 async function post(body) {
-  const t0 = Date.now();
-  const response = await fetch(BASE, {method: 'POST',
+  const started = Date.now();
+  const response = await fetch(base, {method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(body), signal: AbortSignal.timeout(120000)});
-  const parsed = await response.json();
-  return {status: response.status, body: parsed, wallMs: Date.now() - t0};
+  return {status: response.status, body: await response.json(), wallMs: Date.now() - started};
 }
 
-const ATTEMPT = `t${Date.now().toString(36)}`;
-const tenantA = `tenant-A-${ATTEMPT}`;
-const tenantB = `tenant-B-${ATTEMPT}`;
-const tenantD = `tenant-serial-${ATTEMPT}`;
-const tenantE = `tenant-latency-${ATTEMPT}`;
-const tenantF = `tenant-gate-${ATTEMPT}`;
-const tenantG = `tenant-egress-${ATTEMPT}`;
-const tenantH = `tenant-audit-${ATTEMPT}`;
-
-try {
-  // (a) Cross-tenant isolation, hostile-canary style.
-  const plantA = await post({tenant_id: tenantA, action: 'plant_builtins', marker: 'marker-A'});
-  assert.equal(plantA.status, 200);
-  const readB = await post({tenant_id: tenantB, action: 'read_builtins'});
+test('(a) tenants never see each other; (b) one tenant keeps its own residue', async () => {
+  const a = tenant('A');
+  const b = tenant('B');
+  assert.equal((await post({tenant_id: a, action: 'plant_builtins', marker: 'marker-A'})).status, 200);
+  const readB = await post({tenant_id: b, action: 'read_builtins'});
   assert.equal(readB.status, 200);
-  verdict('a-cross-tenant-builtins', readB.body.output.builtins == null,
-    JSON.stringify(readB.body.output));
+  assert.equal(readB.body.output.builtins ?? null, null, 'B sees A\'s builtins marker');
 
-  const plantB = await post({tenant_id: tenantB, action: 'plant_module', marker: 'marker-B'});
-  assert.equal(plantB.status, 200);
-  const readAmod = await post({tenant_id: tenantA, action: 'read_module'});
-  assert.equal(readAmod.status, 200);
-  verdict('a-cross-tenant-module', readAmod.body.output.present === false,
-    JSON.stringify(readAmod.body.output));
+  assert.equal((await post({tenant_id: b, action: 'plant_module', marker: 'marker-B'})).status, 200);
+  const readModule = await post({tenant_id: a, action: 'read_module'});
+  assert.equal(readModule.status, 200);
+  assert.equal(readModule.body.output.present, false, 'A sees B\'s sys.modules marker');
 
-  // A is unaffected by B's plant: still exactly A's own marker.
-  const readAagain = await post({tenant_id: tenantA, action: 'read_builtins'});
-  verdict('a-tenant-A-unaffected', readAagain.body.output.builtins === 'marker-A',
-    JSON.stringify(readAagain.body.output));
+  // Documented limitation: a persistent per-tenant child keeps what an
+  // earlier attempt of the SAME tenant left behind.
+  const readA = await post({tenant_id: a, action: 'read_builtins'});
+  assert.equal(readA.body.output.builtins, 'marker-A');
+});
 
-  // (b) Same-tenant residue: honestly reported as a documented limitation
-  // (persistent worker, NOT a fresh isolate like Phase-1 LOADER.load).
-  const readAres = await post({tenant_id: tenantA, action: 'read_builtins'});
-  verdict('b-same-tenant-residue-documented', readAres.body.output.builtins === 'marker-A',
-    `expected residue visible within one tenant: ${JSON.stringify(readAres.body.output)}`);
-
-  // (b) Serialization: two concurrent slow attempts on one tenant must not interleave.
+test('(b) same-tenant attempts serialize; different tenants run in parallel', async () => {
+  const serial = tenant('serial');
+  const parallel = tenant('parallel');
   const slowMs = 500;
   const [s1, s2] = await Promise.all([
-    post({tenant_id: tenantD, action: 'slow', marker: 'first', ms: slowMs}),
-    post({tenant_id: tenantD, action: 'slow', marker: 'second', ms: slowMs}),
+    post({tenant_id: serial, action: 'slow', marker: 'first', ms: slowMs}),
+    post({tenant_id: serial, action: 'slow', marker: 'second', ms: slowMs}),
   ]);
   assert.equal(s1.status, 200);
   assert.equal(s2.status, 200);
-  const r1 = s1.body.output;
-  const r2 = s2.body.output;
-  const noOverlap = r1.ended_at <= r2.started_at || r2.ended_at <= r1.started_at;
-  verdict('b-serialized-no-interleave', noOverlap, JSON.stringify({r1, r2}));
+  const [r1, r2] = [s1.body.output, s2.body.output];
+  assert.ok(r1.ended_at <= r2.started_at || r2.ended_at <= r1.started_at,
+    `attempts interleaved: ${JSON.stringify({r1, r2})}`);
   const waits = [s1.body.queue_wait_ms, s2.body.queue_wait_ms].sort((x, y) => x - y);
-  verdict('b-queue-wait-recorded', waits[1] >= slowMs * 0.8,
-    `waits=${JSON.stringify(waits)} (second waiter should queue ~${slowMs}ms)`);
-  // Different tenants overlap: pre-warm the parallel tenant so its cold start
-  // does not confound the wall measurement, then run both slows at once.
-  const tenantI = `tenant-parallel-${ATTEMPT}`;
-  await post({tenant_id: tenantI, action: 'honest'});
-  await post({tenant_id: tenantD, action: 'honest'});
-  const t0 = Date.now();
-  await Promise.all([
-    post({tenant_id: tenantD, action: 'slow', marker: 'third', ms: slowMs}),
-    post({tenant_id: tenantI, action: 'slow', marker: 'parallel', ms: slowMs}),
-  ]);
-  verdict('b-cross-tenant-parallel', Date.now() - t0 < slowMs * 1.8,
-    `wall=${Date.now() - t0}ms for 2x${slowMs}ms across tenants`);
+  assert.ok(waits[1] >= slowMs * 0.8, `second waiter should queue ~${slowMs} ms: ${waits}`);
 
-  // (c) Cold first attempt vs warm reuse on the same tenant.
-  const cold = await post({tenant_id: tenantE, action: 'honest'});
-  const warm = await post({tenant_id: tenantE, action: 'honest'});
+  // Warm both so a cold boot does not confound the wall-clock comparison.
+  await post({tenant_id: parallel, action: 'honest'});
+  await post({tenant_id: serial, action: 'honest'});
+  const started = Date.now();
+  await Promise.all([
+    post({tenant_id: serial, action: 'slow', marker: 'third', ms: slowMs}),
+    post({tenant_id: parallel, action: 'slow', marker: 'parallel', ms: slowMs}),
+  ]);
+  const wall = Date.now() - started;
+  assert.ok(wall < slowMs * 1.8, `two tenants took ${wall} ms for 2x${slowMs} ms`);
+});
+
+test('(c) a tenant\'s second attempt reuses its child', async () => {
+  const latency = tenant('latency');
+  const cold = await post({tenant_id: latency, action: 'honest'});
+  const warm = await post({tenant_id: latency, action: 'honest'});
   assert.equal(cold.status, 200);
   assert.equal(warm.status, 200);
-  console.log(`COLD_MS=${cold.wallMs} WARM_MS=${warm.wallMs} cold_reused=${cold.body.worker_reused} warm_reused=${warm.body.worker_reused}`);
-  verdict('c-warm-faster-than-cold', warm.wallMs < cold.wallMs,
-    `cold=${cold.wallMs}ms warm=${warm.wallMs}ms`);
+  assert.equal(warm.body.worker_reused, true);
+  assert.ok(warm.wallMs < cold.wallMs, `cold=${cold.wallMs} ms warm=${warm.wallMs} ms`);
+});
 
-  // (d) Gates reject before effects: capability (declared path missing from
-  // the manifest rejects BEFORE any gateway module fetch: api_calls is empty).
-  const wfSrcCap = 'X = 1\n';
-  const capReject = await post({tenant_id: tenantF, action: 'run',
-    modules: {[WF]: wfSrcCap}, entry: WF,
-    requirements: {modules: [WF, GHOST]}, manifest: {[WF]: await sha256Hex(wfSrcCap)}});
-  verdict('d-capability-rejects-before-effects',
-    capReject.status === 422 && capReject.body.phase === 'capability-rejected' &&
-    (capReject.body.missing_modules ?? []).includes(GHOST),
-    JSON.stringify(capReject.body));
-  verdict('d-capability-before-any-module-fetch',
-    Array.isArray(capReject.body.api_calls) && capReject.body.api_calls.length === 0,
-    JSON.stringify(capReject.body.api_calls));
-  const afterCap = await post({tenant_id: tenantF, action: 'honest'});
-  verdict('d-rejected-workflow-never-ran',
-    afterCap.status === 200 && afterCap.body.output.clean.builtins == null,
-    JSON.stringify(afterCap.body.output));
+test('(d) capability gate rejects before any module fetch or child effect', async () => {
+  const gate = tenant('gate');
+  const source = 'X = 1\n';
+  const rejected = await post({tenant_id: gate, action: 'run', modules: {[WF]: source}, entry: WF,
+    requirements: {modules: [WF, GHOST]}, manifest: {[WF]: await sha256Hex(source)}});
+  assert.equal(rejected.status, 422);
+  assert.equal(rejected.body.phase, 'capability-rejected');
+  assert.ok(rejected.body.missing_modules.includes(GHOST));
+  assert.deepEqual(rejected.body.api_calls, []);
+  const after = await post({tenant_id: gate, action: 'honest'});
+  assert.equal(after.status, 200);
+  assert.equal(after.body.output.clean.builtins ?? null, null);
+});
 
-  // (d) Gates reject before effects: egress.
-  const egReject = await post({tenant_id: tenantG, action: 'honest',
+test('(d) egress gate rejects an unlisted host before effects', async () => {
+  const rejected = await post({tenant_id: tenant('egress'), action: 'honest',
     url: 'https://evil.example/collect', egress: {hosts: ['example.com']}});
-  verdict('d-egress-rejects-before-effects',
-    egReject.status === 422 && egReject.body.phase === 'egress-rejected',
-    JSON.stringify(egReject.body));
+  assert.equal(rejected.status, 422);
+  assert.equal(rejected.body.phase, 'egress-rejected');
+});
 
-  // (d) Import audit denies undeclared workspace PATH imports post-hoc
-  // (effects may exist). A declared path that loads appears in recorded paths
-  // and reconciles clean; the undeclared-but-loadable path is named as a path.
-  const denyWfSrc = 'import workflows.helper\ndef main():\n    return {"ok": True}\n';
-  const denyHelperSrc = 'X = 1\n';
-  const deny = await post({tenant_id: tenantH, action: 'run',
-    modules: {[WF]: denyWfSrc, [HELPER]: denyHelperSrc}, entry: WF,
-    requirements: {modules: [WF]},
-    manifest: {[WF]: await sha256Hex(denyWfSrc), [HELPER]: await sha256Hex(denyHelperSrc)}});
-  verdict('d-undeclared-import-terminal',
-    deny.status === 502 && deny.body.phase === 'undeclared-import' &&
-    (deny.body.provider_outcome.undeclared_modules ?? []).includes(HELPER),
-    JSON.stringify(deny.body));
-  verdict('d-undeclared-terminal-names-paths',
-    (deny.body.provider_outcome.undeclared_modules ?? []).every((m) => m.endsWith('.py') && m.includes('/')),
-    JSON.stringify(deny.body.provider_outcome));
-  // Declared run succeeds and reports its path-level audit trail.
-  const okWfSrc = 'def main():\n    return {"ok": True}\n';
-  const okRun = await post({tenant_id: tenantH, action: 'run',
-    modules: {[WF]: okWfSrc}, entry: WF,
-    requirements: {modules: [WF]}, manifest: {[WF]: await sha256Hex(okWfSrc)}});
-  verdict('d-declared-run-succeeds',
-    okRun.status === 200 && okRun.body.output.result.ok === true,
-    JSON.stringify(okRun.body));
-  verdict('d-declared-path-recorded-reconciles-clean',
-    okRun.status === 200 &&
-    (okRun.body.output.recorded ?? []).includes(WF) &&
-    (okRun.body.api_calls ?? []).some((c) => c.path === `/api/sdk/modules/${WF}` && c.status === 200),
-    JSON.stringify({recorded: okRun.body.output?.recorded, api_calls: okRun.body.api_calls}));
+test('(d) import audit names undeclared storage paths; declared runs reconcile clean', async () => {
+  const audit = tenant('audit');
+  const entry = 'import workflows.helper\ndef main():\n    return {"ok": True}\n';
+  const helper = 'X = 1\n';
+  const denied = await post({tenant_id: audit, action: 'run',
+    modules: {[WF]: entry, [HELPER]: helper}, entry: WF, requirements: {modules: [WF]},
+    manifest: {[WF]: await sha256Hex(entry), [HELPER]: await sha256Hex(helper)}});
+  assert.equal(denied.status, 502);
+  assert.equal(denied.body.phase, 'undeclared-import');
+  const undeclared = denied.body.provider_outcome.undeclared_modules;
+  assert.ok(undeclared.includes(HELPER));
+  assert.ok(undeclared.every((path) => path.endsWith('.py') && path.includes('/')));
 
-  // Child holds no credentials: no token-shaped env, dummy never lands in env.
-  const envCheck = await post({tenant_id: tenantB, action: 'env_check'});
-  verdict('d-child-holds-no-credentials',
-    envCheck.status === 200 &&
-    envCheck.body.output.token_shaped_present === false &&
-    envCheck.body.output.dummy_credential_present === false,
-    JSON.stringify(envCheck.body.output));
+  const ok = 'def main():\n    return {"ok": True}\n';
+  const run = await post({tenant_id: audit, action: 'run', modules: {[WF]: ok}, entry: WF,
+    requirements: {modules: [WF]}, manifest: {[WF]: await sha256Hex(ok)}});
+  assert.equal(run.status, 200);
+  assert.equal(run.body.output.result.ok, true);
+  assert.ok(run.body.output.recorded.includes(WF));
+  assert.ok(run.body.api_calls.some((call) => call.path === `/api/sdk/modules/${WF}` && call.status === 200));
+});
 
-  // Generic code digest is stable and tenant-independent.
-  const digestRes = await fetch(`${BASE}/__code_digest`);
-  const digestBody = await digestRes.json();
-  verdict('code-digest-exposed', /^[0-9a-f]{64}$/.test(digestBody.generic_code_sha256),
-    JSON.stringify(digestBody));
+test('the child holds no credentials', async () => {
+  const check = await post({tenant_id: tenant('env'), action: 'env_check'});
+  assert.equal(check.status, 200);
+  assert.equal(check.body.output.token_shaped_present, false);
+  assert.equal(check.body.output.dummy_credential_present, false);
+});
 
-  console.log(failures === 0
-    ? 'TENANT ISOLATION: ALL CHECKS PASS'
-    : `TENANT ISOLATION: ${failures} CHECK(S) FAIL`);
-} catch (error) {
-  failures++;
-  console.error('HARNESS ERROR:', error);
-}
-if (failures > 0) process.exitCode = 1;
+test('the code digest names the engine and the supervisor', async () => {
+  const response = await fetch(new URL('/__code_digest', base));
+  assert.equal(response.status, 200);
+  const digest = await response.json();
+  assert.match(digest.generic_code_sha256, /^[0-9a-f]{64}$/);
+  assert.equal(digest.engine_code_sha256, await engineDigest(runtimeSha256));
+  assert.equal(digest.supervisor_code_sha256, supervisorSha256);
+});

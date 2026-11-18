@@ -33,6 +33,8 @@ import {egressRejection, isUrlAllowed} from '../executor/egress-allowlist.mjs';
 import {reconcileImports, deniedTerminal} from '../executor/import-audit.mjs';
 import {readBudgetedJson} from '../executor/output-budget.mjs';
 import {DUMMY_CREDENTIAL} from '../executor/gateway-injection.mjs';
+import {enqueueTenant, hostAttempt, markTenantSeen, runtimeErrorClass, spikeAuthorized,
+  warmHost} from './tenant-dispatch.mjs';
 
 // Node unit tests cannot resolve cloudflare:workers, so the exports are loaded
 // only where the runtime provides them; ctx.exports cannot see them otherwise.
@@ -45,74 +47,6 @@ try {
   TenantHost = undefined;
 }
 export {TenantApi, TenantHost};
-
-// Per-tenant serialization chains + first-use tracking. Module-level: one
-// supervisor isolate holds one chain per tenant id.
-const tails = new Map();
-const seenTenants = new Set();
-
-export function resetTenantState() {
-  tails.clear();
-  seenTenants.clear();
-}
-
-// Serializes fn behind the tenant's chain. Resolves with {result, queueWaitMs}
-// where queueWaitMs is the time spent waiting for the previous attempt on the
-// same tenant. A rejection in one attempt never breaks the chain for later ones.
-export async function enqueueTenant(tenantId, fn) {
-  const prev = tails.get(tenantId) ?? Promise.resolve();
-  const enqueuedAt = Date.now();
-  const cur = prev.then(async () => {
-    const queueWaitMs = Date.now() - enqueuedAt;
-    return {result: await fn(), queueWaitMs};
-  });
-  tails.set(tenantId, cur.catch(() => {}));
-  return cur;
-}
-
-// Platform failure classes, matched against the runtime's own messages and
-// reported as a fixed slug: diagnosable without ever echoing exception text.
-const RUNTIME_ERROR_CLASSES = [
-  ['cpu_limit', /exceeded CPU time limit/i],
-  ['memory_limit', /exceeded (its )?memory limit/i],
-  ['code_updated', /code (was|has been) updated/i],
-  ['overloaded', /overloaded/i],
-  ['connection_lost', /network connection lost|disconnected/i],
-  ['internal', /internal error/i],
-];
-
-export function runtimeErrorClass(error) {
-  const message = String(error?.message ?? '');
-  const match = RUNTIME_ERROR_CLASSES.find(([, pattern]) => pattern.test(message));
-  return {error_class: match ? match[0] : 'other',
-    retryable: error?.retryable === true, overloaded: error?.overloaded === true};
-}
-
-// Warm-up is idempotent and carries no attempt data, so a retryable platform
-// failure (observed: `code_updated` while a fresh host boots its child) is
-// retried with a fresh stub, as broken DO stubs must not be reused.
-export const WARM_ATTEMPTS = 3;
-export async function warmHost(getHost, tenantId) {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      return {...await getHost().warm({tenantId}), warm_attempts: attempt};
-    } catch (error) {
-      if (error?.retryable !== true || attempt >= WARM_ATTEMPTS) throw error;
-    }
-  }
-}
-
-// An engine attempt is dispatched at most once. A host that has not confirmed
-// its child refuses with needsWarm before doing any attempt work; only the
-// warm-up is retried.
-export async function hostAttempt(getHost, attempt) {
-  const first = await getHost().run(attempt);
-  if (!first.needsWarm) return first;
-  const warm = await warmHost(getHost, attempt.tenantId);
-  const result = await getHost().run(attempt);
-  if (result.needsWarm) return {notReady: true, warm};
-  return {...result, warm};
-}
 
 function json(status, value) {
   return Response.json(value, {status});
@@ -129,15 +63,18 @@ export default {
     // Local workerd sets LOCAL_PROBE=true. A deployed instance instead needs the
     // spike auth header inside an unexpired window (same shape as the other
     // spike entries); anything else fails closed before any tenant work.
-    if (env.LOCAL_PROBE !== 'true' &&
-        (!env.SPIKE_AUTH || request.headers.get('X-Spike-Auth') !== env.SPIKE_AUTH ||
-         !(Date.now() < Number(env.SPIKE_EXPIRES_AT)))) {
+    if (env.LOCAL_PROBE !== 'true' && !(await spikeAuthorized(request, env))) {
       return new Response('Local prototype only', {status: 403});
     }
     const url = new URL(request.url);
     if (request.method === 'GET' && url.pathname === '/__code_digest') {
+      // engine: the child (entry + packaged runtime). supervisor: this
+      // Worker's own source closure, hashed at deploy (cloudflare.config.ts).
+      // version: the deployment itself, so a config-only redeploy is visible too.
       return Response.json({generic_code_sha256: await genericCodeDigest(),
-        engine_code_sha256: await engineDigest(env.RUNTIME_SHA256)});
+        engine_code_sha256: await engineDigest(env.RUNTIME_SHA256),
+        supervisor_code_sha256: env.SUPERVISOR_SHA256 ?? null,
+        worker_version_id: env.VERSION?.id ?? null});
     }
     if (request.method === 'GET' && url.pathname === '/__gateway_probe') {
       // Diagnostic: can this Worker reach the configured API origin at all?
@@ -287,11 +224,11 @@ export default {
           ...(hosted.warm ? {warm: hosted.warm} : {})}});
     }
 
-    const workerReused = seenTenants.has(workerId);
+    let workerReused;
     let outcome;
     try {
       outcome = await enqueueTenant(workerId, async () => {
-      seenTenants.add(workerId);
+      workerReused = markTenantSeen(workerId);
       // One long-lived generic worker PER TENANT. The factory closes over NO
       // per-attempt data: the script is constant. Workflow source travels as
       // PATH-keyed DATA below, but only bytes the TenantGateway served after

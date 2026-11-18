@@ -26,3 +26,10 @@ test('a changed upstream fails the build instead of half-patching', () => {
     /matched 0 times; upstream changed/);
   assert.throws(() => applyPatches({}), /patch target missing/);
 });
+
+test('source-only steps refuse a compiled runtime', async () => {
+  const {assertSourceRuntime} = await import('./vendor-patches.mjs');
+  assert.doesNotThrow(() => assertSourceRuntime({'a.py': {py: ''}, 'b.so': {base64: ''}}, 'source'));
+  assert.throws(() => assertSourceRuntime({'a.py': {py: ''}, '__pycache__/a.cpython-314.pyc': {base64: ''}},
+    'compiled'), /compiled runtime/);
+});

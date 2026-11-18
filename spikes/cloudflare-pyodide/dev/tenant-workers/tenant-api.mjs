@@ -18,7 +18,7 @@
 // the SDK capability surface (apiTarget).
 import {DurableObject, WorkerEntrypoint} from 'cloudflare:workers';
 import {apiTarget} from '../executor/policy.mjs';
-import {engineDigest, tenantEngineCode} from './generic-worker-code.mjs';
+import {engineDigest, mergePrimeList, tenantEngineCode} from './generic-worker-code.mjs';
 import {readBudgetedJson} from '../executor/output-budget.mjs';
 
 const HANDLE_RE = /^run_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -66,6 +66,22 @@ export class TenantHost extends DurableObject {
     this.#generation = ((await this.ctx.storage.get('generation')) ?? 0) + 1;
     await this.ctx.storage.put('generation', this.#generation);
     this.#childReady = false;
+  }
+
+  async #primeList() {
+    const engine = await engineDigest(this.env.RUNTIME_SHA256);
+    const stored = await this.ctx.storage.get('prime');
+    return stored?.engine === engine ? stored.modules : [];
+  }
+
+  async #learnImports(imported) {
+    if (!Array.isArray(imported) || imported.length === 0) return;
+    const engine = await engineDigest(this.env.RUNTIME_SHA256);
+    const stored = await this.ctx.storage.get('prime');
+    const merged = mergePrimeList(stored, engine, imported);
+    if (stored?.engine !== engine || merged.modules.length !== stored.modules.length) {
+      await this.ctx.storage.put('prime', merged);
+    }
   }
 
   // Resolves an attempt handle for this tenant's outbound gateway only.
@@ -145,8 +161,13 @@ export class TenantHost extends DurableObject {
           response_bytes: error.observedBytes, retention_limit_bytes: error.limitBytes,
           api_calls: this.#calls.get(handle)}};
       }
+      // The import trace feeds the next child's warm-up; only its size is
+      // reported upward.
+      const {imported, ...child} = output.child ?? {};
+      await this.#learnImports(imported);
       return {output: output.upstream_result, queueWaitMs,
-        timings: {child_ms: childMs, child: output.child ?? null,
+        timings: {child_ms: childMs,
+          child: output.child ? {...child, imported: Array.isArray(imported) ? imported.length : 0} : null,
           api_calls: this.#calls.get(handle)}};
     } finally {
       this.#current = null;
@@ -163,11 +184,12 @@ export class TenantHost extends DurableObject {
   // Boots (or touches) the child with no attempt, token or tenant data.
   async #ping(tenantId) {
     const worker = await this.#engine(tenantId);
+    const modules = await this.#primeList();
     const mark = Date.now();
     const response = await worker.getEntrypoint().fetch(new Request('https://attempt.invalid/', {
-      method: 'POST', body: JSON.stringify({action: 'ping'}),
+      method: 'POST', body: JSON.stringify({action: 'ping', modules}),
     }));
-    const {first_request: firstRequest} = await response.json();
+    const {first_request: firstRequest, primed, prime_skipped: primeSkipped} = await response.json();
     this.#childReady = true;
     // Keep the connection to the API origin warm too: a fresh child's first
     // SDK calls measured ~2x slower (104-126 ms vs ~50 ms). Unauthenticated
@@ -176,6 +198,7 @@ export class TenantHost extends DurableObject {
     const origin = await fetch(new URL('/health/ready', this.env.API_ORIGIN), {redirect: 'manual'})
       .then((r) => { r.body?.cancel(); return r.status; }, () => 0);
     return {child_ms: originMark - mark, first_request: firstRequest,
+      prime_listed: modules.length, primed, prime_skipped: primeSkipped,
       origin_status: origin, origin_ms: Date.now() - originMark};
   }
 

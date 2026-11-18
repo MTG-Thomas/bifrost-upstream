@@ -182,8 +182,30 @@ export async function genericCodeDigest() {
 // constrains egress. Unlike the minimal child, this one holds the attempt-scoped
 // run token, because the engine authenticates SDK calls itself; see
 // dev/staging/README.md for the posture note.
+// Upper bound on module names one attempt reports and one warm-up imports.
+export const MAX_TRACED_MODULES = 400;
+
+// The warm-up import list: the union of packaged modules this tenant's
+// attempts imported lazily, as traced by the child. It is kept per engine
+// digest, so a runtime change starts a fresh list instead of priming names
+// the new runtime may not have.
+export function mergePrimeList(stored, engine, imported) {
+  const current = stored?.engine === engine && Array.isArray(stored.modules) ? stored.modules : [];
+  const names = new Set(current);
+  for (const name of Array.isArray(imported) ? imported : []) {
+    if (names.size >= MAX_TRACED_MODULES) break;
+    if (typeof name === 'string' && IMPORT_NAME_RE.test(name)) names.add(name);
+  }
+  return {engine, modules: [...names].sort()};
+}
+
 export const ENGINE_PYTHON = `
+import importlib
+import importlib.machinery
+import zipimport
 import json
+import re
+import sys
 import time
 from workers import WorkerEntrypoint, Response
 from runtime_runner import run_authorized_attempt
@@ -192,17 +214,52 @@ from runtime_runner import run_authorized_attempt
 # and import cost cannot be timed in here: Workers clocks only advance across
 # I/O, so it shows up as the host's child_ms minus engine_ms.
 _SERVED = 0
-# Modules the engine imports inside run_authorized_attempt on its first
-# attempt (measured by diffing sys.modules across a fresh child's first run).
-_PRIME_MODULES = (
-    "src.services.execution.engine",
-    "src.sdk.context",
-    "src.sdk.error_handling",
-    "src.models.enums",
-    "src.core.error_messages",
-    "src.core.secret_string",
-    "bifrost._runtime_io",
-)
+_MODULE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$")
+_FILE_LOADERS = (importlib.machinery.SourceFileLoader,
+                 importlib.machinery.SourcelessFileLoader,
+                 importlib.machinery.ExtensionFileLoader,
+                 zipimport.zipimporter)
+_BUILTIN_LOADERS = (importlib.machinery.BuiltinImporter, importlib.machinery.FrozenImporter)
+MAX_TRACED = ${MAX_TRACED_MODULES}
+
+
+def _packaged(name):
+    # True for a loaded module that came from the packaged runtime, the stdlib
+    # or the interpreter itself. Workspace modules (the engine's virtual
+    # importer) never qualify, so a warm-up can never fetch tenant code.
+    module = sys.modules.get(name)
+    loader = getattr(getattr(module, "__spec__", None), "loader", None)
+    if isinstance(loader, _FILE_LOADERS):
+        return True
+    return isinstance(loader, type) and issubclass(loader, _BUILTIN_LOADERS)
+
+
+def _on_disk(name):
+    # Warm-up guard: the top-level package must be importable from sys.path or
+    # built in, without consulting the engine's remote import hook.
+    top = name.split(".", 1)[0]
+    return (top in sys.builtin_module_names
+            or importlib.machinery.PathFinder.find_spec(top) is not None)
+
+
+def _prime(names):
+    # Imports what earlier attempts in this tenant imported lazily (learned by
+    # the host from each attempt's trace), so the first attempt after a re-boot
+    # does not pay for it. A name that no longer imports is reported, not fatal:
+    # priming only moves cost off the request path.
+    primed, skipped = 0, []
+    for name in names[:MAX_TRACED]:
+        if not isinstance(name, str) or not _MODULE_NAME.match(name) or not _on_disk(name):
+            skipped.append(str(name)[:80])
+            continue
+        if name in sys.modules:
+            continue
+        try:
+            importlib.import_module(name)
+            primed += 1
+        except Exception:
+            skipped.append(name)
+    return primed, skipped[:16]
 
 class Default(WorkerEntrypoint):
     async def fetch(self, request):
@@ -212,16 +269,14 @@ class Default(WorkerEntrypoint):
         body = json.loads(await request.text())
         if body.get("action") == "ping":
             # Keep-warm from the tenant host: proves the isolate is resident
-            # (or pays its boot off the request path), and pre-imports what the
-            # engine otherwise imports lazily on its first attempt (measured:
-            # ~160 ms of a fresh child's first run). Touches no tenant data.
-            import importlib
-            for name in _PRIME_MODULES:
-                importlib.import_module(name)
-            return Response.json({"pong": True, "first_request": first_request})
+            # (or pays its boot off the request path), and pre-imports what
+            # this tenant's attempts imported lazily (measured: ~160 ms of a
+            # fresh child's first run). Module names only, no tenant data.
+            primed, skipped = _prime(body.get("modules") or [])
+            return Response.json({"pong": True, "first_request": first_request,
+                                  "primed": primed, "prime_skipped": skipped})
         if body.get("action") == "inventory":
             # Diagnostic: which modules are loaded (names only, no data).
-            import sys
             return Response.json({"modules": sorted(sys.modules)})
         # One persistent child serves EVERY attempt for this tenant, so the
         # process-scoped SDK state a one-shot child gets for free must be
@@ -236,17 +291,22 @@ class Default(WorkerEntrypoint):
         token = context.get("engine_token")
         if token:
             _install_cached_access_token(body["api_url"], token)
+        loaded_before = set(sys.modules)
         engine_started = time.perf_counter()
         result = await run_authorized_attempt(
             body["execution_id"], context, body["api_url"],
             public_url=body.get("public_url", "https://staging.invalid"))
         done = time.perf_counter()
+        # Import trace: packaged modules this attempt loaded for the first time
+        # in this child. The host keeps the union and primes the next child.
+        imported = sorted(n for n in set(sys.modules) - loaded_before if _packaged(n))[:MAX_TRACED]
         # default=str matches the Linux persistence contract
         # (src/repositories/executions.py::_make_json_safe): datetimes, UUIDs
         # and Decimals in a workflow result become strings instead of failing.
         return Response(json.dumps({"upstream_result": result, "child": {
             "first_request": first_request, "served": _SERVED,
-            "engine_ms": int((done - engine_started) * 1000)}}, default=str),
+            "engine_ms": int((done - engine_started) * 1000),
+            "imported": imported}}, default=str),
             headers={"content-type": "application/json"})
 `;
 

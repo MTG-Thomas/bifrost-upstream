@@ -1,7 +1,7 @@
 // Explicit, verified changes to third-party code vendored in the packaged
 // runtime, plus whole packages the runtime adds. Applied in place:
 //
-//   node vendor-patches.mjs <generated-runtime.mjs> [--add-wheel <file.whl>]...
+//   node vendor-patches.mjs <dev/runtime/source-runtime.mjs> [--add-wheel <file.whl>]...
 //
 // Each patch names the exact upstream text it replaces and must match exactly
 // once; already-patched files are left alone, and anything else fails the
@@ -29,6 +29,19 @@ export const PATCHES = [
     return Response(`,
   },
 ];
+
+// The source runtime (dev/runtime/source-runtime.mjs) is the only thing the
+// build and these patches edit; precompile-runtime.mjs derives the deployed
+// generated-runtime.mjs from it. Compiled bytecode is shipped unchecked, so
+// editing a compiled artifact would leave stale bytecode in front of new
+// source. Every step that edits source refuses one.
+export function assertSourceRuntime(packaged, label) {
+  const compiled = Object.keys(packaged).filter((key) => key.endsWith('.pyc'));
+  if (compiled.length > 0) {
+    throw new Error(`${label} is a compiled runtime (${compiled.length} .pyc files, e.g. ${compiled[0]}); ` +
+      'edit dev/runtime/source-runtime.mjs and re-run precompile-runtime.mjs instead');
+  }
+}
 
 const textOf = (value) => value.py ?? (value.base64 !== undefined
   ? Buffer.from(value.base64, 'base64').toString('utf8') : null);
@@ -97,6 +110,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const target = process.argv[2];
   const wheels = process.argv.flatMap((arg, i) => (process.argv[i - 1] === '--add-wheel' ? [arg] : []));
   const packaged = {...(await import(pathToFileURL(target).href)).default};
+  assertSourceRuntime(packaged, target);
   const applied = applyPatches(packaged);
   const added = [];
   for (const wheel of wheels) {

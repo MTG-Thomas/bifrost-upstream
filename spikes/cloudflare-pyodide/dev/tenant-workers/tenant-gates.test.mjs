@@ -5,8 +5,9 @@
 // manifest-pin verification (never the raw store).
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import entry, {enqueueTenant, hostAttempt, resetTenantState, runtimeErrorClass, warmHost,
-  WARM_ATTEMPTS} from './tenant-entry.mjs';
+import entry from './tenant-entry.mjs';
+import {enqueueTenant, hostAttempt, resetTenantState, runtimeErrorClass, spikeAuthorized,
+  warmHost, WARM_ATTEMPTS} from './tenant-dispatch.mjs';
 import {bootProbeCode, engineDigest, genericCodeDigest} from './generic-worker-code.mjs';
 
 const WF = 'workflows/wf.py';
@@ -184,14 +185,17 @@ test('child request carries only the dummy placeholder, never a secret', async (
   assert.ok(!JSON.stringify(seen).match(/eyJ[A-Za-z0-9_-]{10,}/), 'no JWT may ride the child request');
 });
 
-test('/__code_digest exposes the constant script hash and the engine identity', async () => {
+test('/__code_digest names the engine, the supervisor and the deployment', async () => {
   const runtimeA = 'a'.repeat(64);
   const digest = async (runtime) => (await (await entry.fetch(
     new Request('https://sup.invalid/__code_digest'),
-    {LOCAL_PROBE: 'true', RUNTIME_SHA256: runtime}, {})).json());
+    {LOCAL_PROBE: 'true', RUNTIME_SHA256: runtime, SUPERVISOR_SHA256: 'c'.repeat(64),
+      VERSION: {id: 'version-1', tag: '', timestamp: ''}}, {})).json());
   const a = await digest(runtimeA);
   assert.equal(a.generic_code_sha256, await genericCodeDigest());
   assert.equal(a.engine_code_sha256, await engineDigest(runtimeA));
+  assert.equal(a.supervisor_code_sha256, 'c'.repeat(64));
+  assert.equal(a.worker_version_id, 'version-1');
   assert.notEqual((await digest('b'.repeat(64))).engine_code_sha256, a.engine_code_sha256,
     'a runtime change must change the engine identity (and so the loader id)');
 });
@@ -321,4 +325,25 @@ test('legacy_load uses LOADER.load with no id (per-attempt meter control)', asyn
   assert.equal(seen.load, 1, 'per-attempt control must call LOADER.load');
   assert.equal(seen.get, 0, 'per-attempt control must not use a stable tenant id');
   assert.equal(seen.bodies[0].credential, 'gateway-injected');
+});
+
+test('spike auth: exact secret inside the window only', async () => {
+  const env = {SPIKE_AUTH: 'correct-horse', SPIKE_EXPIRES_AT: String(Date.now() + 60_000)};
+  const asking = (value) => new Request('https://sup.invalid/', value === undefined ? {} : {headers: {'X-Spike-Auth': value}});
+  assert.equal(await spikeAuthorized(asking('correct-horse'), env), true);
+  for (const wrong of ['correct-hors', 'correct-horse!', 'CORRECT-HORSE', '', undefined]) {
+    assert.equal(await spikeAuthorized(asking(wrong), env), false, `accepted ${wrong}`);
+  }
+  assert.equal(await spikeAuthorized(asking('correct-horse'), {...env, SPIKE_EXPIRES_AT: String(Date.now() - 1)}), false);
+  assert.equal(await spikeAuthorized(asking('correct-horse'), {...env, SPIKE_EXPIRES_AT: 'never'}), false);
+  assert.equal(await spikeAuthorized(asking(''), {...env, SPIKE_AUTH: ''}), false,
+    'an unset secret must never match an empty header');
+});
+
+test('a deployed supervisor refuses before any tenant work without the secret', async () => {
+  const env = {SPIKE_AUTH: 'correct-horse', SPIKE_EXPIRES_AT: String(Date.now() + 60_000),
+    LOADER: {get: () => assert.fail('no loader effect before auth')}};
+  const response = await entry.fetch(new Request('https://sup.invalid/__code_digest',
+    {headers: {'X-Spike-Auth': 'wrong'}}), env, {});
+  assert.equal(response.status, 403);
 });

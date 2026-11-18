@@ -21,7 +21,7 @@ routing, instant kill switch.
 | Worker window | `SPIKE_EXPIRES_AT` = 7 days (2026-11-21T17:00Z), matched to the session's real lifetime |
 | Workflow | `docs_list_organizations` (solution `44832b44-…`, module `functions/catalog.py`) — reads only, `organizations.list()` |
 | Identity | device-flow session for the provider-org platform admin; refresh token at `/etc/bifrost-canary/last.json` `0600`; session expires 2026-11-21T16:32Z |
-| Runner | `/opt/bifrost-canary/canary.py` `0700` (`dev/staging/prod-canary.py`), 9 unit tests |
+| Runner | `/opt/bifrost-canary/canary.py` `0700` (`dev/staging/prod-canary.py`), 17 unit tests |
 | Schedule | `bifrost-canary.timer`, every 15 min, `Persistent=true` (catch-up after downtime) |
 
 Nothing in the application stack was modified: no image change, no restart, no
@@ -83,9 +83,12 @@ Not yet at parity:
   | + shipping the runtime | ~1.6–1.8 s |
   | + engine imports (current) | ~3.6 s (median of 8) |
   | + third-party bytecode (`precompile-runtime.mjs`) | ~3.2 s (−11 %) |
+  | 2026-11-18 A/B, same window: source runtime vs **compiled (now deployed)** | 7.1–7.6 s vs **4.1–4.8 s** (≈ −40 %) |
   | same runtime as a **deployed** Python Worker (memory snapshot) | **0.7–1.7 s** end to end |
 
-  Dynamic Workers never get the deploy-time snapshot. Per-tenant snapshots
+  The compiled runtime is deployed since 2026-11-18 (`dev/staging/README.md`,
+  "Building the packaged runtime"); absolute cold boot varied by day, the gap
+  held in all 15 paired rounds. Dynamic Workers never get the deploy-time snapshot. Per-tenant snapshots
   need one deployed script per tenant, i.e. Workers for Platforms dispatch
   namespaces, which this account does not have (`10121`, a purchase).
 - **The "idle" penalty was really a first-run penalty.** API calls stay
@@ -97,9 +100,40 @@ Not yet at parity:
   change the 15-minute canary still shows 248–260 ms engine time, against
   ~90–110 ms for back-to-back runs of the same workflow (which lists 297 orgs)
   and 32–38 ms on Linux. Something besides lazy imports still pays after a
-  quiet period; not yet identified.
-- `worker_code_sha256` identifies the engine child (entry + runtime), not the
-  supervisor/host code; a supervisor-only change is not attributed.
+  quiet period; not yet identified. **Instrumented since 2026-11-18:** each
+  record now carries `cloud_api_calls` (per SDK call: route with ids replaced
+  by `{id}`, status, ms, token-lookup ms) plus `api_ms`/`api_count` in
+  `cloud_timings`, so engine time splits into API time and in-child time; and
+  the canary worker runs with Workers Logs and traces on (every request
+  sampled, query strings redacted), queryable with
+  `cf o11y telemetry query`.
+- The warm-up list is learned from each attempt's import trace instead of
+  kept by hand (`dev/staging/README.md`, "Warm child per tenant").
+- **First attribution (2026-11-18 02:57 cycle, fresh child after a deploy):**
+  engine 353 ms, of which the two SDK calls were 87 ms (module fetch 35 ms,
+  `/api/organizations` 52 ms). The trace puts **~258 ms inside the child before
+  its first SDK call**; host setup was ~60 ms and nothing followed the last
+  call. So the gap to Linux is in-child engine work ahead of the first call,
+  not network, API or host. Whether it persists in a steady-state child (warm,
+  warm-up list learned) is what the following cycles show. The child's own CPU
+  time is not observable: Dynamic Worker children emit no telemetry events.
+
+  To trace one attempt (all canary-worker events in a window, including
+  `TenantHost` RPCs, `TenantApi` calls with wall/CPU ms, and spans):
+
+  ```sh
+  cf o11y telemetry query --query-id adhoc --view events --limit 100 \
+    --timeframe-from <epoch-ms> --timeframe-to <epoch-ms> \
+    --parameters-filters '[{"key":"$workers.scriptName","operation":"eq","type":"string","value":"bifrost-pyodide-canary-ddf316c1"}]'
+  ```
+- **Regression caused and fixed on 2026-11-18.** The deploy at 02:35 broke
+  every engine attempt (`cloud_execution_failed`, `PythonError`, one cycle at
+  02:42): a function-local `import sys` in the child's `inventory` branch made
+  `sys` local to the whole `fetch`, so the new import trace raised
+  `UnboundLocalError`. Fixed and redeployed at 02:49. The 02:57 cycle matched.
+  A unit test now rejects any function-local import that shadows a module-level
+  one in the engine child. The unit tests do not execute the child's Python
+  (only workerd does), which is why it shipped.
 
 ## Two production-only defects found
 
@@ -129,15 +163,18 @@ Phases are greppable: `ok`, `session_expired`, `api_unreachable`,
 `workflow_missing`, `module_pin_missing`, `worker_gate_rejected`,
 `worker_unreachable`, `cloud_execution_failed`, `mismatch`.
 
-**2. Upgrade attribution.** Each record carries `api_version` (prod build) and
+**2. Upgrade attribution.** Each record carries `api_version` (prod build),
 `worker_code_sha256` (the engine child: entry script + packaged runtime; it
-previously hashed the unused minimal child), and the solution `module_sha256`
-(kept in `status.json` so a pin transition is actually detectable — it was not
-before 2026-11-15). A
-transition writes one line to `events.jsonl`
-(`prod_build_changed` / `worker_runtime_changed` / `module_pin_changed`). So a
-mismatch after a deploy is attributable to *prod changed*, *canary runtime
-changed*, or *source changed* — instead of an unexplained red line.
+previously hashed the unused minimal child), `worker_supervisor_sha256` (the
+supervisor's own import closure: host, gateway, dispatch, policy; since
+2026-11-18), `worker_version_id` (the Cloudflare deployment, so a config-only
+redeploy is visible too), and the solution `module_sha256` (kept in
+`status.json` so a pin transition is actually detectable — it was not before
+2026-11-15). A transition writes one line to `events.jsonl`
+(`prod_build_changed` / `worker_runtime_changed` / `worker_supervisor_changed`
+/ `worker_deployed` / `module_pin_changed`). So a mismatch after a deploy is
+attributable to *prod changed*, *canary engine changed*, *canary host changed*,
+*canary redeployed*, or *source changed* — instead of an unexplained red line.
 
 **3. Retries are GET-only by construction.** A deploy window makes GETs 502;
 those retry with backoff. The engine POST never retries, so an attempt can never

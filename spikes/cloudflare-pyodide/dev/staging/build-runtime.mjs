@@ -1,15 +1,20 @@
 // Seam-only rebuild: carry the pinned companion runtime and replace exactly the
 // modules the upstream PRs change. Adding the whole upstream src closure pulls
 // the application (src.config) into the runtime, which is not runtime-compatible.
-// Usage: node build-runtime3.mjs <spike-root> <api-root> <out-file>
+// Usage: node build-runtime.mjs <spike-root> <api-root> <out-file>
+// The base is the SOURCE runtime (dev/runtime/source-runtime.mjs), never the
+// compiled deploy artifact; write the output back to source-runtime.mjs.
 import {readFile, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
+import {assertSourceRuntime} from './vendor-patches.mjs';
 
 const spike = process.argv[2];
 const api = process.argv[3];
 const out = process.argv[4];
-const old = (await import(pathToFileURL(join(spike, 'dev/runtime/generated-runtime.mjs')).href)).default;
+const basePath = join(spike, 'dev/runtime/source-runtime.mjs');
+const old = (await import(pathToFileURL(basePath).href)).default;
+assertSourceRuntime(old, basePath);
 
 const REPLACE = [
   'src/services/execution/engine.py',

@@ -1,5 +1,7 @@
 import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
+import {fileURLToPath} from 'node:url';
+import {supervisorDigest} from './supervisor-digest.mjs';
 import {defineConfig, exports} from 'cf/config';
 
 // Cloud acceptance config for the per-tenant persistent-worker prototype.
@@ -24,6 +26,12 @@ const runtimeSha256 = createHash('sha256')
   .update(readFileSync(new URL('../runtime/generated-runtime.mjs', import.meta.url)))
   .digest('hex');
 
+// Identity of the supervisor itself: every module tenant-entry.mjs reaches by
+// relative import, hashed by path and content. The engine digest above does
+// not cover it, so without this a host- or gateway-only change was not
+// attributable in canary evidence.
+const supervisorSha256 = supervisorDigest(fileURLToPath(new URL('./tenant-entry.mjs', import.meta.url)));
+
 export default defineConfig({
   worker: {
     name: workerName,
@@ -44,6 +52,9 @@ export default defineConfig({
       LOADER: {type: 'worker-loader'},
       SPIKE_EXPIRES_AT: {type: 'text', value: process.env.SPIKE_EXPIRES_AT ?? '0'},
       RUNTIME_SHA256: {type: 'text', value: runtimeSha256},
+      SUPERVISOR_SHA256: {type: 'text', value: supervisorSha256},
+      // Deployment identity ({id, tag, timestamp}); reported by /__code_digest.
+      VERSION: {type: 'version-metadata'},
       // Staging only: when set, the supervisor fetches modules from this real
       // Bifrost API instead of an attempt-supplied store.
       API_ORIGIN: {type: 'text', value: process.env.STAGING_API_ORIGIN ?? ''},
@@ -60,6 +71,16 @@ export default defineConfig({
       LAB_ECHO_ERRORS: {type: 'text', value: process.env.LAB_ECHO_ERRORS === 'true' ? 'true' : 'false'},
     },
     limits: {cpuMs: 1000},
-    observability: {enabled: false},
+    // Workers Logs and traces attribute where an attempt's time goes (host,
+    // child, outbound gateway, API origin). Every request is sampled: the
+    // canary sends ~100 attempts a day plus the keep-warm pings.
+    // Query strings are redacted in traces; the supervisor logs nothing itself.
+    observability: {
+      enabled: true,
+      headSamplingRate: 1,
+      redactQueryString: true,
+      logs: {enabled: true, invocationLogs: true},
+      traces: {enabled: true, headSamplingRate: 1},
+    },
   },
 });

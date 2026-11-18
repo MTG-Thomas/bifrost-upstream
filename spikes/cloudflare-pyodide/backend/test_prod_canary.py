@@ -179,6 +179,44 @@ class AttributionTest(unittest.TestCase):
             info = self.m.build_info()
         self.assertEqual(info["worker_code_sha256"], "engine")
 
+    def test_supervisor_and_deployment_are_attributed(self):
+        def fake_call(method, url, **kwargs):
+            if url.endswith("/__code_digest"):
+                return 200, {"engine_code_sha256": "engine", "supervisor_code_sha256": "sup",
+                             "worker_version_id": "v1"}
+            return 200, {"version": "2.0.1"}
+
+        with patch.object(self.m, "call", fake_call), \
+                patch.object(self.m, "worker_secret", lambda: "s"):
+            info = self.m.build_info()
+        self.assertEqual((info["worker_supervisor_sha256"], info["worker_version_id"]), ("sup", "v1"))
+
+    def test_supervisor_only_change_is_its_own_event(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            paths = {"BASE": str(base), "OUT": str(base / "runs.jsonl"),
+                     "EVENTS": str(base / "events.jsonl"), "STATUS": str(base / "status.json"),
+                     "ENABLED": str(base / "ENABLED"), "LOCK": str(base / ".lock")}
+            (base / "ENABLED").write_text("1")
+            fake_fcntl = type(sys)("fcntl")
+            fake_fcntl.LOCK_EX, fake_fcntl.LOCK_NB = 2, 4
+            fake_fcntl.flock = lambda *_a: None
+            cycles = iter([("sup-a", "v1"), ("sup-b", "v2")])
+
+            def cycle():
+                sup, version = next(cycles)
+                return {"ts": "t", "match": True, "phase": "ok", "worker_code_sha256": "engine",
+                        "worker_supervisor_sha256": sup, "worker_version_id": version}
+
+            with patch.dict(sys.modules, {"fcntl": fake_fcntl}), \
+                    patch.multiple(self.m, one_cycle=cycle, **paths), \
+                    patch("builtins.print"):
+                self.m.main()
+                self.m.main()
+            events = [json.loads(line) for line in (base / "events.jsonl").read_text().splitlines()]
+        self.assertEqual([e["kind"] for e in events], ["worker_supervisor_changed", "worker_deployed"])
+
     def test_module_pin_transition_is_recorded(self):
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
@@ -231,7 +269,44 @@ class TimingTest(unittest.TestCase):
                 patch.object(self.m, "worker_secret", lambda: "s"):
             cloud = self.m.run_cloud("tok", {"id": "u", "email": "e"}, "pin")
         self.assertEqual(cloud["timings"], {"host_ms": 6180, "child_ms": 6100,
-                                            "first_request": True, "engine_ms": 900})
+                                            "first_request": True, "engine_ms": 900,
+                                            "api_ms": 0, "api_count": 0})
+        self.assertIsNone(cloud["warm"])
+
+    def test_per_call_timings_keep_routes_not_identifiers(self):
+        org = "3f2c1a9e-1b2c-4d5e-8f90-a1b2c3d4e5f6"
+        calls = [
+            {"method": "GET", "path": f"/api/sdk/modules/_solutions/{org}/functions/catalog.py",
+             "status": 200, "token_ms": 3, "ms": 41},
+            {"method": "GET", "path": f"/api/organizations/{org}", "status": 200, "token_ms": 2, "ms": 120},
+            {"method": "GET", "host": "api.example.com", "path": "/secret/path", "status": 200, "ms": 9},
+        ]
+        payload = {"output": {"status": "Success", "result": {}},
+                   "timings": {"host_ms": 300, "child_ms": 280, "api_calls": calls,
+                               "child": {"first_request": False, "engine_ms": 250}}}
+        with patch.object(self.m, "call", lambda *a, **k: (200, payload)), \
+                patch.object(self.m, "worker_secret", lambda: "s"):
+            cloud = self.m.run_cloud("tok", {"id": "u", "email": "e"}, "pin")
+        self.assertEqual(cloud["api_calls"], [
+            ["GET", "/api/sdk/modules/_solutions/{id}/functions/catalog.py", 200, 41, 3],
+            ["GET", "/api/organizations/{id}", 200, 120, 2],
+            ["GET", "api.example.com", 200, 9, None],
+        ])
+        self.assertEqual(cloud["timings"]["api_ms"], 170)
+        self.assertNotIn(org, json.dumps(cloud))
+
+    def test_cold_path_warm_up_is_kept(self):
+        payload = {"output": {"status": "Success", "result": {}},
+                   "timings": {"host_ms": 4000, "child_ms": 300,
+                               "warm": {"child_ms": 3500, "first_request": True, "prime_listed": 12,
+                                        "primed": 12, "origin_ms": 40, "warm_attempts": 1,
+                                        "prime_skipped": []},
+                               "child": {"first_request": False, "engine_ms": 250}}}
+        with patch.object(self.m, "call", lambda *a, **k: (200, payload)), \
+                patch.object(self.m, "worker_secret", lambda: "s"):
+            cloud = self.m.run_cloud("tok", {"id": "u", "email": "e"}, "pin")
+        self.assertEqual(cloud["warm"], {"child_ms": 3500, "first_request": True, "prime_listed": 12,
+                                         "primed": 12, "origin_ms": 40, "warm_attempts": 1})
 
 
 if __name__ == "__main__":

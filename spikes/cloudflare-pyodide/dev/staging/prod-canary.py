@@ -33,6 +33,7 @@ Install (production):
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -57,6 +58,10 @@ SOLUTION = "44832b44-87db-4837-afab-b22fc47f88db"
 LOGICAL = "functions/catalog.py"
 MODULE = f"_solutions/{SOLUTION}/{LOGICAL}"
 UA = "bifrost-canary/1.0"
+# Identifiers inside an API path (UUIDs, long hex/numeric ids) become {id}, so a
+# per-call record carries the route, never an entity identity.
+_PATH_ID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|\b[0-9a-fA-F]{16,}\b|\b\d{4,}\b")
+MAX_CALLS = 64
 
 
 def now_iso():
@@ -163,10 +168,15 @@ def build_info():
                    headers={"X-Spike-Auth": worker_secret()}, timeout=20, retries=1)
     # The engine digest covers the child entry and the packaged runtime: the
     # code the comparison actually runs (the generic digest is the unused
-    # minimal child).
+    # minimal child). The supervisor digest covers the host, gateway and
+    # dispatch code around it; the version id changes on every deployment,
+    # including a config-only one.
+    code = code if isinstance(code, dict) else {}
     return {
         "api_version": (version or {}).get("version") if isinstance(version, dict) else None,
-        "worker_code_sha256": (code or {}).get("engine_code_sha256") if isinstance(code, dict) else None,
+        "worker_code_sha256": code.get("engine_code_sha256"),
+        "worker_supervisor_sha256": code.get("supervisor_code_sha256"),
+        "worker_version_id": code.get("worker_version_id"),
     }
 
 
@@ -196,6 +206,25 @@ def run_linux(token, workflow_id):
                     "engine_ms": ex.get("duration_ms"),
                     "ms": int((time.time() - started) * 1000)}
     return {"status": "Timeout", "result": None, "ms": int((time.time() - started) * 1000)}
+
+
+def compact_calls(calls):
+    """Per-call API timings, reduced to route, status and latency.
+
+    Each entry is [method, route, status, ms, token_ms]; third-party egress
+    (none for this workflow) keeps only its host. Attributes where an
+    attempt's time goes without storing identifiers or data.
+    """
+    out = []
+    for call in (calls or [])[:MAX_CALLS]:
+        if not isinstance(call, dict):
+            continue
+        route = call.get("path") or ""
+        if call.get("host"):
+            route = call["host"]
+        out.append([call.get("method"), _PATH_ID.sub("{id}", str(route))[:120],
+                    call.get("status"), call.get("ms"), call.get("token_ms")])
+    return out
 
 
 def run_cloud(token, me, pin, tenant_id="prod-canary"):
@@ -231,9 +260,18 @@ def run_cloud(token, me, pin, tenant_id="prod-canary"):
     out = (payload or {}).get("output") or {}
     timings = (payload or {}).get("timings") or {}
     child = timings.get("child") or {}
+    calls = compact_calls(timings.get("api_calls"))
+    warm = timings.get("warm") or {}
     return {
         "timings": {k: timings.get(k) for k in ("host_ms", "child_ms")} | {
-            k: child.get(k) for k in ("first_request", "engine_ms")},
+            k: child.get(k) for k in ("first_request", "engine_ms")} | {
+            "api_ms": sum(c[3] for c in calls if isinstance(c[3], (int, float))),
+            "api_count": len(calls)},
+        "api_calls": calls,
+        # Present only when the attempt had to boot the child first.
+        "warm": ({k: warm.get(k) for k in ("child_ms", "first_request", "prime_listed",
+                                            "primed", "origin_ms", "warm_attempts")}
+                 if warm else None),
         "http": status,
         "phase": (payload or {}).get("phase"),
         "status": out.get("status") or (payload or {}).get("phase"),
@@ -306,6 +344,8 @@ def write_status(record):
         "consecutive_failures": consecutive,
         "api_version": record.get("api_version"),
         "worker_code_sha256": record.get("worker_code_sha256"),
+        "worker_supervisor_sha256": record.get("worker_supervisor_sha256"),
+        "worker_version_id": record.get("worker_version_id"),
         # Kept so the next cycle can detect a pin transition.
         "module_sha256": record.get("module_sha256"),
         "last": {k: record.get(k) for k in (
@@ -393,6 +433,8 @@ def one_cycle():
         "linux_engine_ms": linux.get("engine_ms"),
         "cloud_ms": cloud["ms"],
         "cloud_timings": cloud.get("timings"),
+        "cloud_api_calls": cloud.get("api_calls"),
+        "cloud_warm": cloud.get("warm"),
         "cloud_cold": (cloud.get("timings") or {}).get("first_request"),
         "worker_reused": cloud.get("reused"),
         "cloud_http": cloud.get("http"),
@@ -431,6 +473,8 @@ def main():
     if previous:
         for field, kind in (("api_version", "prod_build_changed"),
                             ("worker_code_sha256", "worker_runtime_changed"),
+                            ("worker_supervisor_sha256", "worker_supervisor_changed"),
+                            ("worker_version_id", "worker_deployed"),
                             ("module_sha256", "module_pin_changed")):
             if record.get(field) and previous.get(field) and record[field] != previous[field]:
                 record_event(kind, {"field": field, "from": previous[field], "to": record[field]})

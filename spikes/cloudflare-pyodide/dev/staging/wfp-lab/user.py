@@ -10,6 +10,7 @@
 #   2. How much CPU may one invocation use? `?action=burn&n=N` runs a pure
 #      Python loop; the driver times it from outside (Workers clocks do not
 #      advance during CPU work).
+import hmac
 import time
 from urllib.parse import parse_qs, urlparse
 
@@ -32,7 +33,10 @@ class Default(WorkerEntrypoint):
     async def fetch(self, request):
         global _SERVED
         expires = int(getattr(self.env, "LAB_EXPIRES_AT", "0") or "0")
-        if request.headers.get("x-lab-auth") != getattr(self.env, "LAB_AUTH", None) or time.time() * 1000 > expires:
+        secret = getattr(self.env, "LAB_AUTH", None) or ""
+        presented = request.headers.get("x-lab-auth") or ""
+        # compare_digest: constant time, so response timing does not leak the secret.
+        if not secret or not hmac.compare_digest(presented.encode(), secret.encode()) or time.time() * 1000 > expires:
             return Response("forbidden", status=403)
         _SERVED += 1
         query = parse_qs(urlparse(request.url).query)
