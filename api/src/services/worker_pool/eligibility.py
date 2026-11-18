@@ -1,5 +1,6 @@
 """Runtime eligibility for dispatch claims and capacity planning."""
 
+from typing import cast
 from uuid import UUID
 
 from sqlalchemy import exists, func, select
@@ -36,7 +37,9 @@ def cloudflare_active_claims() -> Select[tuple[UUID, UUID | None, UUID | None]]:
     return (
         select(
             ExecutionWorkerClaim.worker_id, Execution.organization_id.label("tenant_id"),
-            Execution.id.label("execution_id"),
+            # SQLAlchemy types the column from the ORM and does not infer
+            # the outer join makes the execution identity nullable.
+            cast(ColumnElement[UUID | None], Execution.id.label("execution_id")),
         )
         .join(worker, worker.id == ExecutionWorkerClaim.worker_id)
         .outerjoin(Execution, Execution.id == ExecutionWorkerClaim.subject_id)

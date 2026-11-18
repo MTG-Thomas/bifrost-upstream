@@ -39,7 +39,7 @@ workspace_review = _workspace_review
 
 @pytest.fixture
 async def opaque_dispatch(monkeypatch, workspace_review):
-    approval, _, _ = workspace_review()
+    approval, _, _ = workspace_review
     workspace = await _prepare(approval)
     assert workspace is not None
     workflow_id = str(approval.workflow_id)
@@ -67,14 +67,14 @@ async def opaque_dispatch(monkeypatch, workspace_review):
         context = {
             "timeout_seconds": 30,
             "workflow_id": workflow_id,
-            "file_path": approval.entry_path,
-            "function_name": approval.function_name,
-            "content_hash": approval.entry_sha256,
+            "file_path": approval.declaration["entry_path"],
+            "function_name": approval.declaration["function_name"],
+            "content_hash": approval.declaration["entry_sha256"],
             "tags": ["workflow"],
         }
         await pool.route_execution(
             "opaque-run", context, active_execution,
-            credential_route=pool.credential_route(), cloudflare_revision=workspace.revision,
+            credential_route=pool.credential_route(), cloudflare_revision=approval.revision,
         )
         route = transport.request.await_args.args[1]['route_id']
         return pool, transport, callback, route
