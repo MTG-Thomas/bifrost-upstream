@@ -10,7 +10,6 @@ import re
 import secrets
 import subprocess
 import sys
-import time
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -138,33 +137,21 @@ def seed_workflows(project, admin, send, hosted):
         workflow = send("/api/workflows/register", {"path": entry, "function_name": function}, admin)
         workflow_id = workflows[kind] = workflow["id"]
         send(f"/api/workflows/{workflow_id}", {"timeout_seconds": 60}, admin, method="PATCH")
-        entry_hash = sha256(content)
-        approval.append({
-            "workflow_id": workflow_id, "entry_path": entry, "function_name": function,
-            "entry_sha256": entry_hash, "module_sha256": {},
-            "manifest_sha256": sha256(json.dumps({entry: entry_hash}, sort_keys=True, separators=(",", ":")).encode()),
-            "packages": [], "https_hosts": [] if hosted else ["phase5-fixture.invalid"], "required_https_hosts": [],
-            "estimated_subrequests": min(6, allowance), "subrequest_allowance": allowance,
-            "estimated_cpu_ms": 100, "cpu_budget_ms": cpu,
-        })
-    with API_ENV.open("a") as env:
-        env.write(f"BIFROST_CLOUDFLARE_WORKFLOW_APPROVALS='{json.dumps(approval, separators=(',', ':'))}'\n")
-
-    # Re-exec the API application under its existing Uvicorn reload supervisor.
-    # This reloads the cached settings while leaving its container and data up.
-    since = str(int(time.time()))
-    (ROOT / "api/src/config.py").touch()
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        # Read the configured approval in the running application indirectly
-        # via startup log lines emitted by the new application process.
-        logs = command("docker", "logs", "--since", since, f"{project}-api-1", stderr=subprocess.STDOUT)
-        reload = logs.rsplit("src/config.py", 1)
-        if len(reload) == 2 and "Application startup complete" in reload[1]:
-            break
-        time.sleep(0.25)
-    else:
-        raise SystemExit("The debug API did not finish reloading the workflow approval")
+        operator = [
+            "docker", "exec", f"{project}-api-1", "python", "-m",
+            "scripts.cloudflare_workflow_approval",
+        ]
+        arguments = [
+            workflow_id, "--subrequest-allowance", str(allowance), "--cpu-budget-ms", str(cpu),
+        ]
+        proposal = json.loads(command(*operator, "propose", *arguments))
+        if proposal["workflow_id"] != workflow_id or proposal["entry_sha256"] != sha256(content):
+            raise SystemExit("Generated proposal does not match the disposable fixture")
+        # The harness approves only the checked-in, byte-matched test fixture.
+        approval.append(json.loads(command(
+            *operator, "accept", *arguments, "--review-sha256", proposal["review_sha256"],
+            "--operator", "phase5/6 disposable fixture",
+        )))
     return workflows, approval
 
 
@@ -194,11 +181,18 @@ def resume_enrollment(project, reset_route):
         raise SystemExit("Expected an idle hosted enrollment or the named interrupted claim")
     if not 1024 <= enrollment["port"] <= 65535:
         raise SystemExit("Invalid hosted relay port")
-    value = next(line.partition("=")[2] for line in API_ENV.read_text().splitlines()
-                 if line.startswith("BIFROST_CLOUDFLARE_WORKFLOW_APPROVALS="))
-    approval = json.loads(value[1:-1])
+    approval = json.loads(postgres(project, """
+        SELECT json_agg(a.declaration || jsonb_build_object('workflow_id', w.id)
+                        ORDER BY w.function_name)
+        FROM cloudflare_workflow_approvals a JOIN workflows w ON a.workflow_id=w.id
+        WHERE a.is_current AND w.organization_id IS NULL AND w.solution_id IS NULL
+          AND w.function_name IN ('phase5b_fixture', 'phase5b_allowance')
+          AND w.path = 'workflows/' || w.function_name || '.py';
+    """) or "null")
+    if approval is None or len(approval) != 2:
+        raise SystemExit("Expected the two durable hosted fixture approvals")
     workflows = {kind: str(UUID(item["workflow_id"])) for kind, item in zip(
-        ("hosted", "allowance"), approval, strict=True)}
+        ("allowance", "hosted"), approval, strict=True)}
     return workflows, approval, incarnation, launcher, enrollment["port"]
 
 

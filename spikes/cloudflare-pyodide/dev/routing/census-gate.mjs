@@ -6,7 +6,7 @@
 //
 //   node census-gate.mjs --workspace <root> --allowance 50 --baseline baseline.json
 //
-// Exit 1 on regression. No dependencies beyond Node.
+// Exit 1 on regression. Requires Node and the shared Python analyzer.
 import {spawnSync} from 'node:child_process';
 import {readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';

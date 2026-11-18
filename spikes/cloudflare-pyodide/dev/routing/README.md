@@ -1,38 +1,25 @@
-# Eligibility routing and workspace census
+# Workspace eligibility census
 
-Two small, dependency-free modules:
-
-| File | Purpose |
-|---|---|
-| `eligibility.mjs` | `decideBackend(attempt)` — pure, fail-closed decision. Returns `{backend: 'cloudflare' \| 'linux', reasons}`. Never dispatches, enqueues, or calls an API. Also owns the curated allowlist and import→distribution normalization. |
-| `census.mjs` | Runs that same rule over real files: discovers workspaces (`.bifrost/workflows.yaml`) or scans a repo, estimates subrequests per workflow function, and emits JSON + a summary. |
-| `census-gate.mjs` | CI gate: fails when the eligible share drops below a threshold, or when a workflow eligible in the recorded baseline becomes ineligible. |
-| `workspace-census.workflow.yml` | Reference GitHub Actions job for the workspace repo (copy into `.github/workflows/`). |
-
-## Run
+`census.mjs` discovers workflow entries in `.bifrost/workflows.yaml` or scans for
+workflow-shaped Python files. `analyze-file.py` calls the server's
+`cloudflare_analysis.py` over local source. `census-gate.mjs` compares the report
+with a threshold and baseline. Use Node and Python 3.11 or newer.
 
 ```sh
-node --test routing.test.mjs
-
-# workspace mode: real workflow entries from .bifrost manifests
-node census.mjs --workspace ../../../.. --allowance 12 --out out.json
-
-# repo mode: every workflow-shaped Python file (context only, not a workload mix)
-node census.mjs --repo ../../../.. --allowance 12 --out out.json
+node --test
+node census.mjs --workspace ../../../.. --allowance 12 --cpu 1000 --out out.json
+node census.mjs --repo ../../../.. --out out.json
 ```
 
-`--allowance` is the dispatcher's configured subrequest budget (default **50**; 12 was
-the qualification fixture). `--cpu` sets the declared CPU budget (default `1000ms`). Both
-are policy inputs, not platform constants.
+Set `BIFROST_ANALYZER_PATH` to the directory containing `cloudflare_analysis.py`
+when running outside the Bifrost checkout. The example Actions workflow
+expects a copy of the analyzer from the policy revision being evaluated.
+Regenerate the baseline when adopting this analyzer. Previous census reports
+describe the earlier experimental build and detection rules.
 
-## What the census does and does not do
+The report includes transitive workspace pins, bundled packages, identifiable
+literal HTTPS origins, and static CPU and subrequest estimates. It neither
+executes source nor grants an approval. Review and accept deployed workspace
+source using the operator command in [the launcher design](../cloudflare-launcher/DESIGN.md#phase-3-workspace-approval-and-placement).
 
-It classifies imports (stdlib / allowlisted / provided / workspace-local),
-resolves local imports against the workspace on disk, scans the named workflow
-function for known Pyodide traps, and estimates subrequests from call density.
-
-It does **not** infer egress (a dispatch-time declaration), see dynamic imports,
-measure real request counts, or execute anything. Treat the output as a routing
-preview, not a qualification.
-
-Measured results and limits: [`../../backend/WORKSPACE-CENSUS.md`](../../backend/WORKSPACE-CENSUS.md).
+Historical results: [workspace census](../../backend/WORKSPACE-CENSUS.md).

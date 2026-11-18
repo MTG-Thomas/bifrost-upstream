@@ -1,67 +1,18 @@
 // Workspace eligibility census.
 //
-// Drives the same `decideBackend` rule the dispatcher uses over real files, so
-// "can Cloudflare run our normal workloads?" stops being an opinion.
-//
-// Usage:
-//   node census.mjs --workspace ../..            # discover .bifrost/workflows.yaml
-//   node census.mjs --repo ../..                 # workbook-shaped Python in a tree
-//   node census.mjs --workspace <dir> --allowance 12 --out results/census.json
-//
-// Static analysis only: no workspace is executed, no API is called. The
-// subrequest figure is a heuristic (SDK call sites + entry/module resolution),
-// and egress is a dispatching-time declaration, so this census treats a file as
-// having no declared egress requirement. Both are marked in the output.
+// Discovers workflows and runs the server's Python approval analyzer over
+// local bytes. No workspace code is executed and no API is called.
 import {readFile, readdir, stat, writeFile} from 'node:fs/promises';
-import {join, relative, extname, dirname} from 'node:path';
-import {decideBackend} from './eligibility.mjs';
+import {join, relative, extname, dirname, delimiter} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
 
-const STDLIB = new Set(`__future__ _thread abc aifc argparse array ast asynchat asyncio asyncore atexit audioop base64
-bdb binascii bisect builtins bz2 cProfile calendar cgi cgitb chunk cmath cmd code codecs codeop
-collections colorsys compileall concurrent configparser contextlib contextvars copy copyreg
-crypt csv ctypes curses dataclasses datetime dbm decimal difflib dis distutils doctest email encodings
-ensurepip enum errno faulthandler fcntl filecmp fileinput fnmatch formatter fractions ftplib
-functools gc getopt getpass gettext glob graphlib grp gzip hashlib heapq hmac html http idlelib
-imaplib imghdr imp importlib inspect io ipaddress itertools json keyword lib2to3 linecache locale
-logging lzma mailbox mailcap marshal math mimetypes mmap modulefinder msilib msvcrt multiprocessing
-netrc nis nntplib numbers operator optparse os ossaudiodev parser pathlib pdb pickle pickletools
-pipes pkgutil platform plistlib poplib posix posixpath pprint profile pstats pty pwd py_compile
-pyclbr pydoc pydoc_data pyexpat queue quopri random re readline reprlib resource rlcompleter runpy
-sched secrets select selectors shelve shlex shutil signal site smtpd smtplib sndhdr socket
-socketserver spwd sqlite3 sre_compile sre_constants sre_parse ssl stat statistics string
-stringprep struct subprocess sunau symbol symtable sys sysconfig syslog tabnanny tarfile telnetlib
-tempfile termios test textwrap threading time timeit tkinter token tokenize tomllib trace traceback
-tracemalloc tty turtle turtledemo types typing unicodedata unittest urllib uu uuid venv warnings
-wave weakref webbrowser winreg winsound wsgiref xdrlib xml xmlrpc zipapp zipfile zipimport zlib
-zoneinfo`.split(/\s+/).filter(Boolean));
-
-// Roots provided by the platform/runtime, not by the workspace: the bundled SDK,
-// vendored engine modules, and Pyodide/Workers shims. They are neither
-// third-party packages nor workspace modules that must resolve in a manifest.
-const PROVIDED = new Set(['bifrost', 'src', 'shared', 'bifrost_shared', 'workers', 'pyodide', 'js', '_pyodide']);
-
-// Project-local import roots. A root is treated as local when the workspace
-// actually contains it; this list only seeds the check.
-const LOCAL_HINT = new Set(['bifrost', 'src', 'shared', 'modules', 'workflows', 'functions',
-  'apps', 'helpers', 'lib', 'core', 'services', 'models', 'utils', 'providers', 'config',
-  'engine', 'runtime_runner', 'bifrost_shared']);
-
-// Child-side runtime traps. Warnings do not necessarily make a file ineligible;
-// they are reported so a reviewer sees them.
-const HARD_TRAPS = [
-  [/\btime\.process_time\s*\(/, 'time.process_time() raises in Pyodide'],
-  [/\bsubprocess\b/, 'subprocess is unavailable in Pyodide'],
-  [/\bmultiprocessing\b/, 'multiprocessing is unavailable in Pyodide'],
-  [/\bfcntl\b/, 'fcntl is unavailable in Pyodide'],
-  [/\bos\.fork\s*\(/, 'os.fork() is unavailable in Pyodide'],
-  [/\bctypes\b/, 'ctypes is unavailable in Pyodide'],
-  [/\bsocket\.socket\s*\(/, 'raw sockets are unavailable; use declared egress'],
-  [/\bsignal\.\w+\s*\(/, 'POSIX signal handling is unavailable'],
-];
-const SOFT_TRAPS = [
-  [/\bthreading\b/, 'threads import but do not run in parallel'],
-  [/\bresource\b/, 'resource is not available in Pyodide'],
-];
+const run = promisify(execFile);
+const analyzer = fileURLToPath(new URL('./analyze-file.py', import.meta.url));
+const analyzerModule = fileURLToPath(new URL(
+  '../../../../api/src/services/execution/', import.meta.url,
+));
 
 const args = process.argv.slice(2);
 const flag = (name, fallback) => args.includes(`--${name}`) ? args[args.indexOf(`--${name}`) + 1] : fallback;
@@ -89,143 +40,28 @@ async function walk(dir, files = []) {
   return files;
 }
 
-function importsOf(source) {
-  const roots = new Set();
-  for (const line of source.split(/\r?\n/)) {
-    const m = line.match(/^\s*from\s+([A-Za-z_][\w.]*)\s+import\b/);
-    if (m) { roots.add(m[1].split('.')[0]); continue; }
-    const n = line.match(/^\s*import\s+([A-Za-z_][\w.]*(?:\s*,\s*[A-Za-z_][\w.]*)*)/);
-    if (n) for (const part of n[1].split(',')) roots.add(part.trim().split('.')[0]);
-  }
-  return roots;
-}
-
-function dottedImports(source) {
-  const mods = [];
-  for (const line of source.split(/\r?\n/)) {
-    const m = line.match(/^\s*from\s+([A-Za-z_][\w.]*)\s+import\b/);
-    if (m) mods.push(m[1]);
-  }
-  return mods;
-}
-
 async function exists(p) {
   try { await stat(p); return true; } catch { return false; }
 }
 
-// A root is workspace-local if it is a known hint OR the workspace actually
-// contains it. The dynamic check is what makes layouts like `features/`,
-// `delivery/` and solution-root `modules/` resolve without a hardcoded list.
-async function isLocalRoot(root, roots) {
-  if (PROVIDED.has(root)) return false;
-  if (LOCAL_HINT.has(root)) return true;
-  for (const r of roots) {
-    if (!r) continue;
-    if (await exists(join(r, root)) || await exists(join(r, `${root}.py`))) return true;
-  }
-  return false;
-}
-
-// Resolve a local dotted import to a workspace storage path, mirroring the
-// engine's logical-name -> base-path rule. Tries the workspace root first, then
-// the enclosing workspace repo (shared `modules/`, `helpers/`, `features/`).
-async function localStoragePath(roots, dotted) {
-  const base = dotted.replaceAll('.', '/');
-  for (const root of roots) {
-    if (!root) continue;
-    for (const cand of [`${base}.py`, `${base}/__init__.py`]) {
-      if (await exists(join(root, cand))) return cand;
-    }
-  }
-  return null;
-}
-
-// A directory without __init__.py is a namespace package: importable, but it
-// has no concrete module to declare. The engine's importer resolves these
-// transparently, so the census must not call them missing.
-async function localNamespace(roots, dotted) {
-  const base = dotted.replaceAll('.', '/');
-  for (const root of roots) {
-    if (root && (await exists(join(root, base)))) return true;
-  }
-  return false;
-}
-
-function subrequestEstimate(source, localCount) {
-  const calls = (source.match(/\b(?:await\s+)?(?:sdk|tables|files|config|ai|integrations|agents|forms|events|storage|http|bifrost)\.[a-zA-Z_]+\s*\(/g) ?? []).length;
-  return calls + 2 + localCount; // + entry resolve + entry load
-}
-
-// Approximate per-workflow call density: the manifest names the entry function,
-// and each workflow is dispatched separately, so counting the whole file would
-// over-estimate multi-workflow modules.
-function functionSlice(source, name) {
-  if (!name) return source;
-  const start = source.match(new RegExp(`^[ \\t]*(?:async\\s+)?def\\s+${name}\\s*\\(`, 'm'));
-  if (!start) return source;
-  const rest = source.slice(start.index + start[0].length);
-  const next = rest.search(/^[ \t]*(?:async\s+)?def\s+\w+\s*\(/m);
-  return next === -1 ? rest : rest.slice(0, next);
-}
-
 async function censusFile(workspaceRoot, file, opts) {
-  const source = await readFile(file, 'utf8');
-  const roots = importsOf(source);
-  const searchRoots = [workspaceRoot, opts.fallbackRoot].filter(Boolean);
-  const local = new Set();
-  for (const r of roots) if (await isLocalRoot(r, searchRoots)) local.add(r);
-  const declaredModules = [];
-  const unresolvedLocal = [];
-  if (opts.resolveLocal !== false) {
-    for (const dotted of dottedImports(source)) {
-      const root = dotted.split('.')[0];
-      if (!local.has(root)) continue;
-      const p = await localStoragePath(searchRoots, dotted);
-      if (p) declaredModules.push(p);
-      else if (!(await localNamespace(searchRoots, dotted))) unresolvedLocal.push(dotted);
-    }
+  const path = relative(workspaceRoot, file).replaceAll('\\', '/');
+  const python = process.env.PYTHON ?? (process.platform === 'win32' ? 'python' : 'python3');
+  const args = [analyzer, workspaceRoot, path, '--allowance', String(opts.allowance),
+    '--cpu', opts.cpuBudget];
+  if (opts.functionName) args.push('--function', opts.functionName);
+  if (opts.fallbackRoot) args.push('--fallback', opts.fallbackRoot);
+  const {stdout} = await run(python, args, {
+    env: {...process.env, PYTHONPATH: [process.env.BIFROST_ANALYZER_PATH ?? analyzerModule,
+      process.env.PYTHONPATH].filter(Boolean).join(delimiter)},
+  });
+  const result = JSON.parse(stdout);
+  if (result.error) {
+    return {path, backend: 'linux', reasons: [result.error], packages: [],
+      declared_modules: [], estimated_subrequests: null};
   }
-  const packages = [...roots].filter((r) => !STDLIB.has(r) && !local.has(r) && !PROVIDED.has(r));
-  const scope = functionSlice(source, opts.functionName);
-  const traps = [];
-  for (const [re, why] of HARD_TRAPS) if (re.test(scope)) traps.push({severity: 'hard', why});
-  for (const [re, why] of SOFT_TRAPS) if (re.test(scope)) traps.push({severity: 'soft', why});
-
-  const declaration = {
-    modules: declaredModules,
-    packages,
-    egressHosts: [],
-    egressRequired: [],
-    estimatedSubrequests: subrequestEstimate(scope, declaredModules.length),
-    cpuBudget: opts.cpuBudget,
-    source: scope,
-  };
-  // Modules that resolve on disk can be staged into the bundle, so the manifest
-  // used for the decision is the workspace manifest plus this file's resolved
-  // local imports. Whether the import resolves at all is checked separately
-  // (`unresolvedLocal`), which is the meaningful module gate here.
-  const judgedManifest = [...new Set([...(opts.manifest ?? []), ...declaredModules])];
-  const decision = decideBackend({declaration, bundleManifest: judgedManifest,
-    subrequestAllowance: opts.allowance});
-  // A local import that does not resolve on disk fails at dispatch, so the
-  // census must not call it eligible just because it is not third-party.
-  if (unresolvedLocal.length > 0) {
-    decision.reasons.push(`unresolved local module: ${unresolvedLocal.join(', ')}`);
-    decision.backend = 'linux';
-  }
-  return {
-    path: relative(workspaceRoot, file).replaceAll('\\', '/'),
-    backend: decision.backend,
-    reasons: decision.reasons,
-    packages, declared_modules: declaredModules, unresolved_local: unresolvedLocal,
-    estimated_subrequests: declaration.estimatedSubrequests,
-    traps,
-  };
-}
-
-async function workspaceManifest(root) {
-  const files = (await walk(root)).filter((f) => extname(f) === '.py' && !SKIP_PATH.test(f));
-  return {files, manifest: files.map((f) => relative(root, f).replaceAll('\\', '/'))};
+  return {path, backend: 'cloudflare', reasons: [], ...result,
+    declared_modules: Object.keys(result.module_sha256)};
 }
 
 function summarize(rows, label) {
@@ -235,8 +71,6 @@ function summarize(rows, label) {
     const key = reason.split(':')[0];
     reasons.set(key, (reasons.get(key) ?? 0) + 1);
   }
-  const trapCounts = new Map();
-  for (const r of rows) for (const t of r.traps) trapCounts.set(t.why, (trapCounts.get(t.why) ?? 0) + 1);
   return {
     label,
     files: rows.length,
@@ -244,7 +78,6 @@ function summarize(rows, label) {
     ineligible: rows.length - eligible.length,
     eligible_pct: rows.length ? Math.round((1000 * eligible.length) / rows.length) / 10 : null,
     by_reason: Object.fromEntries([...reasons].sort((a, b) => b[1] - a[1])),
-    traps: Object.fromEntries([...trapCounts].sort((a, b) => b[1] - a[1])),
   };
 }
 
@@ -273,7 +106,6 @@ if (wsRoot) {
       report.workspaces_skipped.push({root: rel, reason: 'reference manifest, files not present'});
       continue;
     }
-    const {manifest} = await workspaceManifest(root);
     const yaml = await readFile(manifestPath, 'utf8');
     const entries = [];
     let cur = null;
@@ -284,7 +116,6 @@ if (wsRoot) {
       if (f && cur) cur.function_name = f[1].trim();
     }
     if (cur?.path) entries.push(cur);
-    let outerManifest = null;
     const rows = [];
     for (const entry of entries) {
       let entryRoot = root;
@@ -295,14 +126,12 @@ if (wsRoot) {
       }
       if (!(await exists(file))) {
         rows.push({path: entry.path, workflow: entry.function_name ?? null, backend: 'linux',
-          reasons: ['missing workflow file'], traps: [], packages: [], declared_modules: [],
+          reasons: ['missing workflow file'], packages: [], declared_modules: [],
           estimated_subrequests: null});
         continue;
       }
-      const manifestForEntry = entryRoot === root ? manifest
-        : (outerManifest ??= (await workspaceManifest(wsRoot)).manifest);
-      const row = await censusFile(entryRoot, file, {manifest: manifestForEntry, allowance,
-        cpuBudget: flag('cpu', '1000ms'), functionName: entry.function_name, fallbackRoot: wsRoot});
+      const row = await censusFile(entryRoot, file, {allowance,
+        cpuBudget: flag('cpu', '1000'), functionName: entry.function_name, fallbackRoot: wsRoot});
       rows.push({...row, workflow: entry.function_name ?? null});
     }
     report.workspaces.push({root: relative(wsRoot, root).replaceAll('\\', '/') || '.', ...summarize(rows, relative(wsRoot, root)), rows});
@@ -316,8 +145,8 @@ if (repoRoot) {
     const source = await readFile(file, 'utf8');
     const isWorkflow = /^\s*(?:from|import)\s+bifrost\b/m.test(source) && /^\s*async\s+def\s/m.test(source);
     if (!isWorkflow) continue;
-    rows.push({...await censusFile(repoRoot, file, {manifest: [], allowance,
-      cpuBudget: flag('cpu', '1000ms'), resolveLocal: false}),
+    rows.push({...await censusFile(repoRoot, file, {allowance,
+      cpuBudget: flag('cpu', '1000')}),
       path: relative(repoRoot, file).replaceAll('\\', '/'), role: roleOf(relative(repoRoot, file))});
   }
   report.repo = {...summarize(rows, 'repo workflow-shaped Python'), rows};
@@ -325,13 +154,7 @@ if (repoRoot) {
     const subset = rows.filter((r) => r.role === role);
     return [role, {files: subset.length, eligible: subset.filter((r) => r.backend === 'cloudflare').length}];
   }));
-  report.repo.allowance_sensitivity = Object.fromEntries([12, 50, 200].map((a) => {
-    const n = rows.filter((r) => decideBackend({
-      declaration: {modules: r.declared_modules, packages: r.packages, egressHosts: [], egressRequired: [],
-        estimatedSubrequests: r.estimated_subrequests, cpuBudget: flag('cpu', '1000ms')},
-      bundleManifest: r.declared_modules, subrequestAllowance: a}).backend === 'cloudflare').length;
-    return [String(a), n];
-  }));
+
 }
 
 const lines = ['# Eligibility census', ''];

@@ -1,79 +1,151 @@
-"""Verify operator-reviewed loose-workspace revisions for the dev launcher."""
+"""Review workspace proposals and verify approved sources before an opaque send."""
 
 from __future__ import annotations
 
-import ast
 import asyncio
-import hashlib
-import json
-import logging
-import re
-import sys
 from dataclasses import dataclass
+from typing import Annotated
+from uuid import UUID
 
-from src.config import CloudflareWorkflowApproval, get_settings
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.core.database import get_db_context
 from src.core.storage.contracts import StorageError
+from src.models.orm import CloudflareApproval, FileIndex, Workflow
+from src.services.execution.cloudflare_analysis import (
+    MAX_BUNDLE_BYTES,
+    MAX_CPU_MS,
+    MAX_MODULES,
+    MAX_SOURCE_BYTES,
+    MAX_SUBREQUESTS,
+    POLICY_VERSION,
+    AnalysisRejected,
+    analyze,
+    digest,
+)
 from src.services.repo_storage import RepoStorage
 
-logger = logging.getLogger(__name__)
-
-_POLICY_VERSION = "cloudflare-workflow-approval-v1"
-_warned_invalid_revisions: set[str] = set()
-_MAX_SOURCE_BYTES = 2 * 1024**2
-_MAX_BUNDLE_BYTES = 4 * 1024**2
-_WORKSPACE_PATH = re.compile(r"(?:[a-zA-Z_][a-zA-Z0-9_]*/)*[a-zA-Z_][a-zA-Z0-9_]*\.py")
-_HOST_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
-# The shipped spike build's direct dependencies plus Pydantic's native companion.
-# Wider package qualification is separate from inclusion in this build.
-_BUNDLED_PACKAGES = frozenset({
-    "httpx", "pydantic", "pydantic-core", "python-dotenv", "pyyaml", "redis",
-    "workers-runtime-sdk",
-})
-_RUNTIME_ROOTS = sys.stdlib_module_names | {
-    "bifrost", "main", "runtime_runner", "runtime_guard", "pyodide_refresh", "sdk_cleanup",
-}
-_PROCESS_CLOCKS = {"process_time", "process_time_ns"}
+_SourceDigest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
 
-def _digest(value: object) -> str:
-    return hashlib.sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+class ApprovalDeclaration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    entry_path: str
+    function_name: str
+    entry_sha256: _SourceDigest
+    module_sha256: dict[str, _SourceDigest] = Field(max_length=MAX_MODULES - 1)
+    manifest_sha256: _SourceDigest
+    packages: list[str] = Field(max_length=32)
+    https_hosts: list[str] = Field(max_length=32)
+    required_https_hosts: list[str] = Field(max_length=32)
+    estimated_subrequests: int = Field(strict=True, ge=0)
+    subrequest_allowance: int = Field(strict=True, ge=0, le=MAX_SUBREQUESTS)
+    estimated_cpu_ms: int = Field(strict=True, ge=0)
+    cpu_budget_ms: int = Field(strict=True, gt=0, le=MAX_CPU_MS)
+
+    @property
+    def manifest(self) -> dict[str, str]:
+        return {**self.module_sha256, self.entry_path: self.entry_sha256}
 
 
-def _https_hostname(host: str) -> bool:
-    labels = host.split(".")
-    return (
-        1 < len(labels) and len(host) <= 253
-        and all(_HOST_LABEL.fullmatch(label) for label in labels)
-        and not labels[-1].isdigit()
-    )
+@dataclass(frozen=True)
+class ApprovalProposal:
+    workflow_id: UUID
+    organization_id: UUID | None
+    previous_revision: str | None
+    declaration: ApprovalDeclaration
 
+    def review_document(self) -> dict[str, object]:
+        return {
+            "policy_version": POLICY_VERSION,
+            "workflow_id": str(self.workflow_id),
+            "organization_id": str(self.organization_id) if self.organization_id else None,
+            "previous_revision": self.previous_revision,
+            **self.declaration.model_dump(mode="json"),
+        }
 
-def _approved_manifest(approval: CloudflareWorkflowApproval) -> dict[str, str] | None:
-    manifest = {approval.entry_path: approval.entry_sha256, **approval.module_sha256}
-    if (
-        approval.entry_path in approval.module_sha256
-        or approval.manifest_sha256 != _digest(manifest)
-        or any(
-            len(path) > 512 or not _WORKSPACE_PATH.fullmatch(path)
-            or path.split("/")[0].removesuffix(".py") in _RUNTIME_ROOTS
-            for path in manifest
-        )
-        or not set(approval.packages) <= _BUNDLED_PACKAGES
-        or not all(_https_hostname(host) for host in approval.https_hosts)
-        or not set(approval.required_https_hosts) <= set(approval.https_hosts)
-        or approval.estimated_subrequests > approval.subrequest_allowance
-        or approval.estimated_cpu_ms > approval.cpu_budget_ms
-    ):
-        return None
-    return manifest
+    @property
+    def revision(self) -> str:
+        return digest(self.review_document())
 
 
 @dataclass(frozen=True)
 class ApprovedWorkspace:
-    revision: str
     bundle: dict[str, object]
+
+
+async def current_approval(db: AsyncSession, workflow_id: UUID) -> CloudflareApproval | None:
+    return await db.scalar(select(CloudflareApproval).where(
+        CloudflareApproval.workflow_id == workflow_id, CloudflareApproval.is_current,
+    ))
+
+
+async def indexed_pins(db: AsyncSession, paths: set[str]) -> dict[str, str | None]:
+    rows = await db.execute(select(FileIndex.path, FileIndex.content_hash).where(FileIndex.path.in_(paths)))
+    return {row.path: row.content_hash for row in rows}
+
+
+def _loose_workflow(workflow: Workflow | None) -> bool:
+    return bool(
+        workflow is not None and workflow.is_active and workflow.solution_id is None
+        and workflow.type == "workflow"
+    )
+
+
+async def propose_approval(
+    workflow_id: UUID, *, subrequest_allowance: int, cpu_budget_ms: int,
+) -> ApprovalProposal:
+    async with get_db_context() as db:
+        workflow = await db.get(Workflow, workflow_id)
+        if workflow is None or not _loose_workflow(workflow):
+            raise AnalysisRejected("Expected an active loose-workspace workflow")
+        current = await current_approval(db, workflow_id)
+        previous_revision = current.revision if current else None
+        entry_path, function_name, organization_id = workflow.path, workflow.function_name, workflow.organization_id
+
+    storage = RepoStorage()
+
+    async def read(path: str, max_bytes: int) -> bytes | None:
+        try:
+            return await storage.read(path, max_bytes=max_bytes)
+        except StorageError as error:
+            if error.kind == "not_found":
+                return None
+            raise
+
+    declaration = ApprovalDeclaration.model_validate(await analyze(
+        read, entry_path, function_name, subrequest_allowance=subrequest_allowance, cpu_budget_ms=cpu_budget_ms,
+    ))
+    return ApprovalProposal(workflow_id, organization_id, previous_revision, declaration)
+
+
+async def accept_proposal(db: AsyncSession, proposal: ApprovalProposal, *, accepted_by: str) -> CloudflareApproval:
+    """Publish under the workflow lock, after rechecking scope, pins and review lineage."""
+    workflow = await db.get(Workflow, proposal.workflow_id, with_for_update=True)
+    declaration = proposal.declaration
+    current = await current_approval(db, proposal.workflow_id)
+    if (
+        workflow is None or not _loose_workflow(workflow)
+        or (workflow.organization_id, workflow.path, workflow.function_name) != (
+            proposal.organization_id, declaration.entry_path, declaration.function_name,
+        )
+        or (current.revision if current else None) != proposal.previous_revision
+        or await indexed_pins(db, set(declaration.manifest)) != declaration.manifest
+    ):
+        raise AnalysisRejected("Workflow scope, source pins or current approval changed during review")
+
+    if current is not None:
+        current.is_current = False
+        await db.flush()
+    row = CloudflareApproval(
+        revision=proposal.revision, workflow_id=proposal.workflow_id, organization_id=proposal.organization_id,
+        policy_version=POLICY_VERSION, declaration=declaration.model_dump(mode="json"), accepted_by=accepted_by,
+    )
+    db.add(row)
+    return row
 
 
 async def prepare_approved_workspace(
@@ -82,64 +154,50 @@ async def prepare_approved_workspace(
     entry_path: str | None,
     function_name: str | None,
     entry_sha256: str | None,
-    expected_revision: str | None = None,
+    expected_revision: str,
 ) -> ApprovedWorkspace | None:
-    """Read and check the exact source bytes that would go on the workflow wire."""
-    for approval in get_settings().cloudflare_workflow_approvals:
-        if (
-            str(approval.workflow_id) != workflow_id
-            or approval.entry_path != entry_path
-            or approval.function_name != function_name
-            or approval.entry_sha256 != entry_sha256
-        ):
-            continue
-        revision = _digest([_POLICY_VERSION, approval.model_dump(mode="json")])
-        manifest = _approved_manifest(approval)
-        if manifest is None:
-            if revision not in _warned_invalid_revisions:
-                _warned_invalid_revisions.add(revision)
-                logger.warning(
-                    "Ignoring invalid BIFROST_CLOUDFLARE_WORKFLOW_APPROVALS entry for workflow %s "
-                    "(approval revision %s). Check manifest pins, packages, HTTPS hosts and budgets.",
-                    approval.workflow_id,
-                    revision,
-                )
-            continue
-        if expected_revision is not None and revision != expected_revision:
-            continue
-        sources: dict[str, str] = {}
-        remaining = _MAX_BUNDLE_BYTES
-        storage = RepoStorage()
-        try:
-            async with asyncio.timeout(20):
-                for path, sha256 in manifest.items():
-                    content = await storage.read(path, max_bytes=min(remaining, _MAX_SOURCE_BYTES))
-                    if storage.compute_hash(content) != sha256:
-                        break
-                    source = content.decode("utf-8")
-                    syntax = ast.parse(source, filename=path)
-                    if any(
-                        (isinstance(node, ast.Attribute) and node.attr in _PROCESS_CLOCKS)
-                        or (isinstance(node, ast.alias) and node.name in _PROCESS_CLOCKS)
-                        for node in ast.walk(syntax)
-                    ):
-                        break
-                    if path == entry_path and not any(
-                        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                        and node.name == function_name for node in syntax.body
-                    ):
-                        break
-                    sources[path] = source
-                    remaining -= len(content)
-        except (StorageError, TimeoutError, ValueError, SyntaxError, RecursionError):
-            continue
-        if len(sources) == len(manifest):
-            return ApprovedWorkspace(revision, {
-                "manifest": manifest,
-                "sources": sources,
-                "packages": approval.packages,
-                "https_hosts": approval.https_hosts,
-                "subrequest_allowance": approval.subrequest_allowance,
-                "cpu_budget_ms": approval.cpu_budget_ms,
-            })
-    return None
+    """Check the active approval and send only the exact pinned UTF-8 bytes."""
+    async with get_db_context() as db:
+        approval = await db.scalar(
+            select(CloudflareApproval)
+            .join(Workflow, Workflow.id == CloudflareApproval.workflow_id)
+            .where(
+                CloudflareApproval.revision == expected_revision,
+                CloudflareApproval.workflow_id == UUID(workflow_id),
+                CloudflareApproval.policy_version == POLICY_VERSION,
+                CloudflareApproval.is_current,
+                CloudflareApproval.organization_id.is_not_distinct_from(Workflow.organization_id),
+                Workflow.is_active, Workflow.solution_id.is_(None), Workflow.type == "workflow",
+                Workflow.path == entry_path, Workflow.function_name == function_name,
+            )
+        )
+        if approval is None:
+            return None
+        declaration = ApprovalDeclaration.model_validate(approval.declaration)
+    if (declaration.entry_path, declaration.function_name, declaration.entry_sha256) != (
+        entry_path, function_name, entry_sha256,
+    ):
+        return None
+
+    sources: dict[str, str] = {}
+    remaining = MAX_BUNDLE_BYTES
+    storage = RepoStorage()
+    manifest = declaration.manifest
+    if digest(manifest) != declaration.manifest_sha256:
+        return None
+    try:
+        async with asyncio.timeout(20):
+            for path, sha256 in manifest.items():
+                content = await storage.read(path, max_bytes=min(remaining, MAX_SOURCE_BYTES))
+                if storage.compute_hash(content) != sha256:
+                    return None
+                sources[path] = content.decode("utf-8")
+                remaining -= len(content)
+    except (StorageError, TimeoutError, ValueError):
+        return None
+
+    return ApprovedWorkspace({
+        "manifest": manifest, "sources": sources,
+        "packages": declaration.packages, "https_hosts": declaration.https_hosts,
+        "subrequest_allowance": declaration.subrequest_allowance, "cpu_budget_ms": declaration.cpu_budget_ms,
+    })

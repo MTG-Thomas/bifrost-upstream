@@ -61,7 +61,6 @@ CLOUDFLARE_REVISION = "ab" * 32
 SETTINGS = SimpleNamespace(
     worker_capacity_url=None,
     worker_capacity_token=None,
-    cloudflare_workflow_approvals=[],
     kubernetes_job_namespace="test",
     kubernetes_job_image="api:test",
     kubernetes_job_configmap="config",

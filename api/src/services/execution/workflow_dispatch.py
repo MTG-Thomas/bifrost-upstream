@@ -11,15 +11,16 @@ import logging
 from collections.abc import Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from shared.execution_lanes import resolve_admitted_execution_lane
+from shared.run_cancellation import claim_pending_run_for_dispatch
+from shared.run_lineage import lineage_columns
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.run_cancellation import claim_pending_run_for_dispatch
-from shared.run_lineage import lineage_columns
 from src.config import get_settings
 from src.core.database import get_db_context
 from src.core.redis_client import PendingExecution, get_redis_client
@@ -29,8 +30,12 @@ from src.models.orm.executions import Execution
 from src.models.orm.workflows import Workflow
 from src.services.durable_impersonation import pending_durable_impersonation
 from src.services.memory_requests import workflow_request_bytes
-from shared.execution_lanes import resolve_admitted_execution_lane
-from src.services.work_dispatch import WAKE_WORKFLOW, hand_off, stage_dispatch, take_dispatch_payload
+from src.services.work_dispatch import (
+    WAKE_WORKFLOW,
+    hand_off,
+    stage_dispatch,
+    take_dispatch_payload,
+)
 from src.worker.remote.fencing import fence_remote_owner
 
 logger = logging.getLogger(__name__)
@@ -51,7 +56,7 @@ class AcceptedRun:
 def _organization_id(org_id: str | None) -> UUID | None:
     if not org_id or org_id == "GLOBAL":
         return None
-    return UUID(org_id[4:] if org_id.startswith("ORG:") else org_id)
+    return UUID(org_id.removeprefix("ORG:"))
 
 
 async def _row_identity(
@@ -183,19 +188,24 @@ async def _cloudflare_revision(
         workflow_id is None or message.get("workflow_id") != workflow_id
         or pending.get("script_name") or message.get("code") is not None
         or pending.get("artifact_workspace_id") is not None
-        or not any(
-            str(approval.workflow_id) == workflow_id
-            for approval in get_settings().cloudflare_workflow_approvals
-        )
+        or not get_settings().cloudflare_worker_hello_enabled
     ):
         return None
-    from src.services.execution.cloudflare_eligibility import prepare_approved_workspace
+    from src.services.execution.cloudflare_eligibility import (
+        POLICY_VERSION,
+        ApprovalDeclaration,
+        current_approval,
+        indexed_pins,
+    )
     from src.services.execution.service import (
         WorkflowLoadError,
         WorkflowNotFoundError,
         get_workflow_for_execution,
     )
 
+    approval = await current_approval(db, UUID(workflow_id))
+    if approval is None or approval.policy_version != POLICY_VERSION:
+        return None
     try:
         workflow = await get_workflow_for_execution(workflow_id, db=db)
     except (WorkflowLoadError, WorkflowNotFoundError):
@@ -208,11 +218,15 @@ async def _cloudflare_revision(
         for key in ("path", "function_name", "content_hash", "solution_id", "type")
     ):
         return None
-    workspace = await prepare_approved_workspace(
-        workflow_id=workflow_id, entry_path=workflow["path"],
-        function_name=workflow["function_name"], entry_sha256=workflow["content_hash"],
-    )
-    return workspace.revision if workspace is not None else None
+    declaration = ApprovalDeclaration.model_validate(approval.declaration)
+    owner = str(approval.organization_id) if approval.organization_id else None
+    if (owner, declaration.entry_path, declaration.function_name, declaration.entry_sha256) != (
+        workflow["organization_id"], workflow["path"], workflow["function_name"], workflow["content_hash"],
+    ):
+        return None
+    if await indexed_pins(db, set(declaration.module_sha256)) != declaration.module_sha256:
+        return None
+    return approval.revision
 
 
 async def hand_off_workflow_run(accepted: AcceptedRun) -> None:
@@ -354,7 +368,7 @@ async def fail_unclaimed_run(db: AsyncSession, execution_id: UUID, reason: str) 
         .values(
             status=ExecutionStatus.FAILED,
             error_message=reason,
-            completed_at=datetime.now(timezone.utc),
+            completed_at=datetime.now(UTC),
         )
     )
 
@@ -437,10 +451,10 @@ async def notify_discarded_sync_run(db: AsyncSession, execution_id: UUID) -> Non
 
 
 __all__ = [
-    "AcceptedRun",
     "FAMILY",
     "HANDLER",
     "HANDLER_VERSION",
+    "AcceptedRun",
     "claim_workflow_dispatch",
     "fail_unclaimed_run",
     "hand_off_workflow_run",

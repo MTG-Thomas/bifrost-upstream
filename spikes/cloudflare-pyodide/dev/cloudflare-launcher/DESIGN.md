@@ -352,34 +352,28 @@ run. Findings, checked against the cited code:
 
 ### Phase 3 workspace approval and placement
 
-`BIFROST_CLOUDFLARE_WORKFLOW_APPROVALS` is an operator environment or
-`.env` setting containing a JSON array. Its default is empty. Each item
-specifies:
+A server operator runs these commands inside the API container, from `/app`:
 
-- `workflow_id`, `entry_path`, `function_name`, `entry_sha256`, and
-  `module_sha256` (relative Python path to raw UTF-8 source SHA-256).
-- `manifest_sha256`, the SHA-256 of the UTF-8 JSON path-to-digest map
-  including the entry, with sorted keys and no separator whitespace.
-- `packages` (canonical distribution names from the dev build),
-  `https_hosts` (lowercase exact HTTPS hostnames), and
-  `required_https_hosts` (a subset).
-- `estimated_subrequests` and `subrequest_allowance` (integer counts, with
-  a maximum allowance of 50), plus `estimated_cpu_ms` and `cpu_budget_ms`
-  (integer milliseconds with a positive budget).
+```sh
+python -m scripts.cloudflare_workflow_approval propose WORKFLOW_UUID --subrequest-allowance 10 --cpu-budget-ms 1000
+python -m scripts.cloudflare_workflow_approval accept WORKFLOW_UUID --subrequest-allowance 10 --cpu-budget-ms 1000 --review-sha256 REVIEW_SHA256 --operator OPERATOR_LABEL
+```
 
-Review covers the complete dependency and egress declarations, expected
-costs and the exact workflow inputs the fixture supports. The API checks
-the entry against the workflow record, reads all pinned files from
-`_repo/`, and checks the manifest, declarations, and source (including
-the Pyodide process clock trap). Inline code, Fast Path, Solution and
-artifact-workspace dispatches are outside this policy. The resulting
-marker hashes the policy version and canonical approval. The census
-(`dev/routing/eligibility.mjs`) can later propose declarations and pins for
-review into this same list.
+Review the complete proposal and the pinned source against the expected inputs,
+dependencies, HTTPS destinations, and resource usage. The digest covers the policy
+version, workflow and owning organization, prior approval, entry and module
+SHA-256 pins, canonical manifest digest, packages, exact HTTPS hosts, and both
+estimates and limits. Accept regenerates the proposal and checks the reviewed
+digest. PostgreSQL stores the accepted revision and operator label. The command
+requires trusted server access and has no HTTP or tenant-facing surface.
 
-The approved dev enqueue path reads pinned sources from S3 and parses
-their ASTs inside the caller's database transaction. Revisit that
-transaction cost before production use.
+The offline census uses the same AST analyzer as the server. It resolves
+transitive workspace imports, rejects known Pyodide traps, and discovers literal
+HTTPS origins. The estimates are static sizing signals. A call site may execute
+many times and CPU varies with inputs. TenantHost and the platform apply the
+actual limits. Inline code, Fast Path, Solution and artifact-workspace dispatches
+are outside this policy. Enqueue compares indexed digests and workflow identity
+against the current approval without reading or parsing source.
 
 Before sending `workflow`, the API repeats verification against the current
 approval and source. The command context carries `cloudflare_workspace`
