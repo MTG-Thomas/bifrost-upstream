@@ -49,7 +49,18 @@ import {
 } from "@/lib/executionLogs";
 import { useQueryClient } from "@tanstack/react-query";
 import { createPortal } from "react-dom";
-import { useEffect, useState, useCallback, useMemo, useRef } from "react";
+import {
+	Suspense,
+	useEffect,
+	useState,
+	useCallback,
+	useMemo,
+	useRef,
+} from "react";
+import {
+	LazyFoldkitExecutionLogsPanel,
+	useFoldkitLogsOptIn,
+} from "@/foldkit/executionLogs/spikeSwitch";
 import { copyToClipboard } from "@/lib/clipboard";
 import type { StreamingLog } from "@/stores/executionStreamStore";
 import {
@@ -315,6 +326,7 @@ export function ExecutionDetails({
 	// Execution status and completion check
 	const executionStatus = execution?.status as ExecutionStatus | undefined;
 	const reduceMotion = useReducedMotion();
+	const isFoldkitLogsOptIn = useFoldkitLogsOptIn();
 	const isCancelled = executionStatus === "Cancelled";
 	const outcomeTone = isCancelled
 		? "border-border bg-muted/50 text-muted-foreground"
@@ -684,7 +696,7 @@ export function ExecutionDetails({
 		/>
 	);
 
-	const logsContent = (
+	const reactLogsPanel = (
 		<ExecutionLogsPanel
 			key={executionId}
 			logs={mergedLogs as LogEntry[]}
@@ -695,6 +707,23 @@ export function ExecutionDetails({
 			maxHeight="min(60vh, 42rem)"
 			variant="primary"
 		/>
+	);
+	// Evaluation-only: the Foldkit spike renders the same inputs when a
+	// developer opts in (see src/foldkit/executionLogs/spikeSwitch.tsx).
+	const logsContent = isFoldkitLogsOptIn ? (
+		<Suspense fallback={reactLogsPanel}>
+			<LazyFoldkitExecutionLogsPanel
+				key={executionId}
+				logs={mergedLogs as LogEntry[]}
+				status={executionStatus}
+				isConnected={isConnected}
+				isLoading={isLoadingLogs}
+				canReadDiagnostics={canReadDiagnostics}
+				maxHeight="min(60vh, 42rem)"
+			/>
+		</Suspense>
+	) : (
+		reactLogsPanel
 	);
 
 	const renderExtraDetails = (triggerClassName?: string) => {
