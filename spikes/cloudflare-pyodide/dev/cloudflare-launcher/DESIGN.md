@@ -1,6 +1,7 @@
 # Cloudflare launcher: Workers as an external worker in the upstream pool
 
-Status: design, 2026-11-18. No code yet. Targets upstream `main` (Jack's merged
+Status: phase 4 implemented on the fork, 2026-11-18. Real API qualification
+is phase 5. Targets upstream `main` (Jack's merged
 capacity core, #1423) and stays compatible with the direction of #1424
 (API-owned compute, derived worker keys) and #1425 (Cloudflare Containers
 provider). Workers for Platforms is out of scope.
@@ -234,10 +235,18 @@ run. Findings, checked against the cited code:
      (wire contract below);
    - slot and byte reservations with labelled declared telemetry;
    - the eligibility marker in the fenced claim and the planner.
-4. **Launcher DO** speaking the full protocol, including inventory-first,
-   replay, sequence persistence, alarm reconnect and the uncertain-route
-   fence. Reuse #1425's ledger semantics (uncertain start, confirmed
-   deletion).
+4. ~~**Launcher DO.**~~ Done. The core confirms hello sequences and engine
+   intent before use, sends inventory before replay, and holds the slot
+   until terminal acknowledgement. The DO reconnects by alarm. TenantHost
+   serves the approved snapshot and applies the workflow's absolute deadline,
+   HTTPS allowlist, and per-invocation CPU and subrequest limits.
+
+   **Accepted residuals.** Stop is cooperative and already-issued requests
+   may finish. Phase 2's within-tenant egress attribution caveat still
+   applies. The launcher retains route-ID tombstones for the incarnation's
+   lifetime. The local workerd test covers the control handshake. Claims,
+   durable log delivery, and behavior under Cloudflare relocation remain
+   phase 5 work.
 5. **End to end against a real API host:**
    - one real claim, committed, logs flushed, credential revoked;
    - then lost welcome and lost ack, API takeover, DO reset, cancellation
@@ -343,6 +352,13 @@ until the ordinary queue deadline.
   pre-bound launcher ID. Keep the capacity token out of logs. Raise with the
   #1424 maintainer that its `external_worker_environment` denylist should
   also exclude `BIFROST_WORKER_CAPACITY_TOKEN`.
+- To configure the launcher, set `BIFROST_CLOUDFLARE_LAUNCHER_ENABLED=true`,
+  a distinct `WORKER_NAME`, the fixed HTTPS `STAGING_API_ORIGIN`,
+  `BIFROST_WORKER_INCARNATION_ID`, `BIFROST_WORKER_LAUNCHER_ID`,
+  `BIFROST_WORKER_RESOURCE_UID`, and `BIFROST_WORKER_VERSION` in the
+  tenant-workers config. Supply only `BIFROST_WORKER_CONTROL_SECRET` in its
+  secret file. The separate Worker's cron starts the DO, and DO alarms
+  handle reconnect. There is no public start endpoint.
 
 ### Phase 3 opaque workflow wire contract
 
@@ -359,8 +375,11 @@ until the ordinary queue deadline.
   lease (20 seconds from acquisition or renewal start). The host closes the
   socket during session cleanup. This keeps a database read off every
   launcher heartbeat while database-gated actions remain fenced.
-  Reconnect requires a newly prepared incarnation and derived key after
-  retirement. The dedicated Cloudflare capacity provider is future work.
+  A fresh, verified Cloudflare hello matching a `retired` or `lost` row
+  receives close code 4001 (`incarnation ended`). That code permanently
+  stops reconnect for that incarnation. Other closes keep alarm backoff.
+  Re-enrollment requires a new incarnation and derived key. The capacity
+  provider is future work.
 - The Cloudflare hello advertises the signed runtime profile and capabilities
   above and omits `sample`. The API owns the slot count and request byte
   budget. This dev build fixes them at one slot and 134217728 bytes per
@@ -404,7 +423,8 @@ until the ordinary queue deadline.
   earlier control generation, it must never enter the engine for that route
   or report it in a later reply, event, or inventory. The API may already
   have settled the omitted attempt as uncertain.
-- After welcome, send one inventory per control generation. It must contain
+- After welcome, send one inventory per control generation under the
+  `inventory` key of the `{"event":"inventory"}` payload. It must contain
   `version: 1` and both `routes` and `terminal_routes` arrays. Omit Linux's
   `baseline_bytes`. Each entry carries `kind: "workflow"`,
   `route_id`, `subject_id` (the execution UUID), `runtime_handle`,
@@ -436,6 +456,13 @@ until the ordinary queue deadline.
   carry a success. The API records `uncertain` as a failed execution with
   `WorkflowAttemptUncertain` and acknowledges terminal delivery under its
   owner fence. A stop reply alone never releases a reservation.
+- The Cloudflare logical envelope limit is 16 MiB, with individual frames
+  capped at 1 MiB. With one message assembling at a time, the limit leaves
+  room within a 128 MiB isolate for fragment buffers, the joined bytes,
+  decoded JSON, and source copies for dispatch. The API checks serialized
+  size before its first send. An oversized workflow returns to the queue
+  with its Cloudflare revision cleared. The launcher enforces the same
+  bound during reassembly.
 
 ## Open questions
 

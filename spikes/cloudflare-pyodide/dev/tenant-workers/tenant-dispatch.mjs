@@ -75,8 +75,9 @@ export function runtimeErrorClass(error) {
 // failure (observed: `code_updated` while a fresh host boots its child) is
 // retried with a fresh stub, as broken DO stubs must not be reused.
 export const WARM_ATTEMPTS = 3;
-export async function warmHost(getHost, tenantId) {
+export async function warmHost(getHost, tenantId, {check = () => {}} = {}) {
   for (let attempt = 1; ; attempt++) {
+    check();
     try {
       return {...await getHost().warm({tenantId}), warm_attempts: attempt};
     } catch (error) {
@@ -93,21 +94,21 @@ export async function warmHost(getHost, tenantId) {
 // An engine attempt is dispatched at most once. A host that has not confirmed
 // its child refuses with needsWarm before doing any attempt work; only the
 // warm-up is retried.
-export async function hostAttempt(getHost, attempt) {
-  const first = await getHost().run(attempt);
+export async function hostAttempt(getHost, attempt, {beforeRun = () => null, warm = warmHost} = {}) {
+  const first = beforeRun() ?? await getHost().run(attempt);
   if (!first.needsWarm) return first;
-  let warm;
+  let warmed;
   try {
-    warm = await warmHost(getHost, attempt.tenantId);
+    warmed = await warm(getHost, attempt.tenantId);
   } catch (error) {
     // The host refused the attempt before any work and the warm-up failed:
     // nothing was dispatched, so the caller may safely retry elsewhere.
     error.attemptState = 'not_started';
     throw error;
   }
-  const result = await getHost().run(attempt);
-  if (result.needsWarm) return {notReady: true, warm};
-  return {...result, warm};
+  const result = beforeRun() ?? await getHost().run(attempt);
+  if (result.needsWarm) return {notReady: true, warm: warmed};
+  return {...result, warm: warmed};
 }
 
 // The supervisor's engine path: one attempt through the tenant's host, shaped

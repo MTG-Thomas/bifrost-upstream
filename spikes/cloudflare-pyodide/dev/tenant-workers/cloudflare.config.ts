@@ -2,7 +2,7 @@ import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {supervisorDigest} from './supervisor-digest.mjs';
-import {defineConfig, exports} from 'cf/config';
+import {defineConfig, exports, triggers} from 'cf/config';
 
 // Cloud acceptance config for the per-tenant persistent-worker prototype.
 // Deploy with:
@@ -18,6 +18,12 @@ import {defineConfig, exports} from 'cf/config';
 //   cf deploy --secrets-file <canary secrets>
 // Kill switch: redeploy with SPIKE_EXPIRES_AT=0, or rotate SPIKE_AUTH.
 const workerName = process.env.WORKER_NAME ?? 'bifrost-pyodide-tenant-ddf316c1';
+const launcherEnabled = process.env.BIFROST_CLOUDFLARE_LAUNCHER_ENABLED === 'true';
+if (launcherEnabled && (!process.env.WORKER_NAME ||
+    ['bifrost-pyodide-tenant-ddf316c1', 'bifrost-pyodide-canary-ddf316c1'].includes(workerName))) {
+  throw new Error('Use a distinct WORKER_NAME for the Cloudflare launcher');
+}
+const entrypoint = launcherEnabled ? './launcher-entry.mjs' : './tenant-entry.mjs';
 
 // Identity of the packaged Python runtime the engine child loads. Hashed here,
 // once per deploy, so the supervisor can key child isolates by engine version
@@ -30,14 +36,14 @@ const runtimeSha256 = createHash('sha256')
 // relative import, hashed by path and content. The engine digest above does
 // not cover it, so without this a host- or gateway-only change was not
 // attributable in canary evidence.
-const supervisorSha256 = supervisorDigest(fileURLToPath(new URL('./tenant-entry.mjs', import.meta.url)));
+const supervisorSha256 = supervisorDigest(fileURLToPath(new URL(entrypoint, import.meta.url)));
 
 export default defineConfig({
   worker: {
     name: workerName,
-    entrypoint: './tenant-entry.mjs',
+    entrypoint,
     compatibilityDate: '2026-10-30',
-    workersDev: true,
+    workersDev: !launcherEnabled,
     previewUrls: false,
     exports: {
       // One host per tenant: owns the warm engine child, serializes the
@@ -46,8 +52,11 @@ export default defineConfig({
       TenantHost: exports.durableObject({storage: 'sqlite'}),
       // Retired per-attempt token broker (one DO created per attempt cost
       // 0.2-0.5 s on every run); tombstoned so its namespace is deleted.
-      RunTokenBroker: {type: 'durable-object', state: 'deleted'},
+      ...(launcherEnabled ?
+        {CloudflareLauncher: exports.durableObject({storage: 'sqlite'})} :
+        {RunTokenBroker: {type: 'durable-object' as const, state: 'deleted' as const}}),
     },
+    ...(launcherEnabled ? {triggers: [triggers.scheduled({schedule: '* * * * *'})]} : {}),
     env: {
       LOADER: {type: 'worker-loader'},
       SPIKE_EXPIRES_AT: {type: 'text', value: process.env.SPIKE_EXPIRES_AT ?? '0'},
@@ -58,9 +67,13 @@ export default defineConfig({
       // Staging only: when set, the supervisor fetches modules from this real
       // Bifrost API instead of an attempt-supplied store.
       API_ORIGIN: {type: 'text', value: process.env.STAGING_API_ORIGIN ?? ''},
+      ...(launcherEnabled ? Object.fromEntries([
+        'BIFROST_CLOUDFLARE_LAUNCHER_ENABLED', 'BIFROST_WORKER_INCARNATION_ID', 'BIFROST_WORKER_LAUNCHER_ID',
+        'BIFROST_WORKER_RESOURCE_UID', 'BIFROST_WORKER_VERSION',
+      ].map((key) => [key, {type: 'text' as const, value: process.env[key] ?? ''}])) : {}),
       // Child SDK surface: 'sdk' (default, the narrow allowlist in
       // executor/policy.mjs) or 'all' (capability lab only).
-      SDK_SCOPE: {type: 'text', value: process.env.SDK_SCOPE === 'all' ? 'all' : 'sdk'},
+      SDK_SCOPE: {type: 'text', value: !launcherEnabled && process.env.SDK_SCOPE === 'all' ? 'all' : 'sdk'},
       // Engine child CPU budget per request; empty keeps the packaged default.
       ENGINE_CPU_MS: {type: 'text', value: process.env.ENGINE_CPU_MS ?? ''},
       // Engine child subrequests per attempt; empty keeps the packaged default.
@@ -70,7 +83,9 @@ export default defineConfig({
       // Capability lab only: echo runtime error text in dynamic-runtime replies.
       LAB_ECHO_ERRORS: {type: 'text', value: process.env.LAB_ECHO_ERRORS === 'true' ? 'true' : 'false'},
     },
-    limits: {cpuMs: 1000},
+    // The launcher decodes fragmented logical envelopes. Child CPU limits
+    // remain per workflow, applied by TenantHost.
+    limits: {cpuMs: launcherEnabled ? 30_000 : 1000},
     // Workers Logs and traces attribute where an attempt's time goes (host,
     // child, outbound gateway, API origin). Every request is sampled: the
     // canary sends ~100 attempts a day plus the keep-warm pings.

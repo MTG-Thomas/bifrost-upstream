@@ -20,7 +20,9 @@ import {DurableObject, WorkerEntrypoint} from 'cloudflare:workers';
 import {apiTarget} from '../executor/policy.mjs';
 import {engineDigest, mergePrimeList, tenantEngineCode} from './generic-worker-code.mjs';
 import {readBudgetedJson} from '../executor/output-budget.mjs';
+import {DUMMY_CREDENTIAL} from '../executor/gateway-injection.mjs';
 import {AttemptCredentials, isRefreshChallenge, refreshReply, refreshRequestHandle} from './attempt-credentials.mjs';
+import {createTenantGateway} from './tenant-gateway.mjs';
 
 const HANDLE_RE = /^run_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const VIRTUAL_API_ORIGIN = 'https://test-api.invalid';
@@ -34,6 +36,7 @@ export const WARM_PING_MS = 45 * 1000;
 // ATTEMPT_DEADLINE_MS overrides it per deploy.
 const DEFAULT_ATTEMPT_DEADLINE_MS = 1800 * 1000;
 const DEADLINE = Symbol('attempt-deadline');
+const STOPPED = Symbol('attempt-stopped');
 // Bookkeeping writes (warm window, alarms, warm-up list, retirement, marker
 // cleanup) never hold outgoing messages at the output gate. A held send would
 // leave after its liveness check had passed, possibly after the deadline.
@@ -150,6 +153,16 @@ export class TenantHost extends DurableObject {
         denied: 'unknown handle'});
       return new Response('unknown handle', {status: 401});
     }
+    const snapshot = this.#current?.handle === handle && this.#current.snapshot;
+    if (snapshot) {
+      const path = new URL(target).pathname;
+      if (path === '/api/sdk/modules-resolve' || path.startsWith('/api/sdk/modules/')) {
+        if (request.method !== 'GET') return new Response('Method not allowed', {status: 405});
+        return snapshot.fetch(new Request(request.url, {
+          headers: {Authorization: `Bearer ${DUMMY_CREDENTIAL}`},
+        }));
+      }
+    }
     const headers = new Headers(request.headers);
     headers.set('Authorization', `Bearer ${token}`);
     headers.delete('cookie');
@@ -172,7 +185,7 @@ export class TenantHost extends DurableObject {
       return new Response('egress not declared', {status: 403});
     }
     const started = Date.now();
-    const response = await fetch(request);
+    const response = await fetch(this.#current.routeId ? new Request(request, {redirect: 'manual'}) : request);
     this.noteEgress({...note, status: response.status, ms: Date.now() - started});
     return response;
   }
@@ -196,7 +209,7 @@ export class TenantHost extends DurableObject {
   // declared; nothing is allowed between attempts.
   #egressAllowed(hostname, generation) {
     const current = this.#current;
-    return current !== null && generation === current.generation && Date.now() < current.deadlineAt &&
+    return current !== null && !current.stopped && generation === current.generation && Date.now() < current.deadlineAt &&
       current.egress.has(String(hostname).toLowerCase());
   }
 
@@ -204,7 +217,25 @@ export class TenantHost extends DurableObject {
     if (this.#current) this.noteCall(this.#current.handle, call);
   }
 
-  async run({tenantId, executionId, context, publicUrl, egressHosts = [], dispatchedAt}) {
+  async stopWorkflow(routeId) {
+    const current = this.#current;
+    let retirement;
+    if (current?.routeId === routeId) {
+      if (!current.stopped) {
+        current.stopped = true;
+        this.#credentials.close(current.handle);
+        current.retirement = this.#retireChild();
+        current.stop(STOPPED);
+      }
+      retirement = current.retirement;
+    }
+    // Covers a queued attempt and a stop that reaches the host before the
+    // first run RPC. Marker writes at engine entry are still checked below.
+    await Promise.all([this.ctx.storage.put(`stopped:${routeId}`, true), retirement]);
+    await this.ctx.storage.sync();
+  }
+
+  async run({tenantId, executionId, context, publicUrl, egressHosts = [], dispatchedAt, routeId, workflowDeadline}) {
     // Booting a child inside a fresh host can reset the host
     // (`code_updated`, retryable) even though the boot itself completes.
     // An attempt must never be in flight when that happens, because it cannot
@@ -216,9 +247,17 @@ export class TenantHost extends DurableObject {
     // warm-up retry), so queueing and warm-up count against it.
     const deadlineMs = Number(this.env.ATTEMPT_DEADLINE_MS) || DEFAULT_ATTEMPT_DEADLINE_MS;
     const now = Date.now();
-    const deadlineAt = (Number.isFinite(dispatchedAt) && dispatchedAt <= now ? dispatchedAt : now) + deadlineMs;
-    const expiredInQueue = (queueWaitMs) => ({terminal: {phase: 'attempt-deadline',
-      attempt_state: 'not_started', deadline_ms: deadlineMs, queue_wait_ms: queueWaitMs, api_calls: []}});
+    const deadlineAt = routeId ?
+      (workflowDeadline === null ? Infinity : Date.parse(workflowDeadline)) :
+      (Number.isFinite(dispatchedAt) && dispatchedAt <= now ? dispatchedAt : now) + deadlineMs;
+    const terminal = (phase, attempt_state, queue_wait_ms, api_calls) => ({
+      terminal: {phase, attempt_state, ...(routeId ? {} : {deadline_ms: deadlineMs}),
+        ...(queue_wait_ms === undefined ? {} : {queue_wait_ms}), api_calls},
+    });
+    const expiredInQueue = (queueWaitMs) => terminal('attempt-deadline', 'not_started', queueWaitMs, []);
+    const stopKey = routeId ? `stopped:${routeId}` : null;
+    const stoppedInQueue = () => terminal('attempt-stopped', 'not_started', undefined, []);
+    if (stopKey && await this.ctx.storage.get(stopKey)) return stoppedInQueue();
     // Waiting stops at the deadline. The next attempt still waits for the
     // predecessor, so no two attempts ever overlap in the child.
     const previous = this.#tail;
@@ -229,7 +268,9 @@ export class TenantHost extends DurableObject {
     let queueTimer;
     const turn = await Promise.race([
       previous.then(() => 'turn'),
-      new Promise((resolve) => { queueTimer = setTimeout(() => resolve('expired'), Math.max(0, deadlineAt - now)); }),
+      new Promise((resolve) => {
+        if (deadlineAt !== Infinity) queueTimer = setTimeout(() => resolve('expired'), Math.max(0, deadlineAt - Date.now()));
+      }),
     ]).finally(() => clearTimeout(queueTimer));
     const queueWaitMs = Date.now() - queuedAt;
     if (turn === 'expired' || Date.now() >= deadlineAt) {
@@ -249,12 +290,19 @@ export class TenantHost extends DurableObject {
     this.#credentials.open(handle, {token: context.engine_token,
       refreshToken: context.engine_refresh_token ?? null, expiresAt: deadlineAt});
     const {engine_refresh_token: _refresh, ...childContext} = context;
+    const workspace = context.cloudflare_workspace;
+    if (routeId) delete childContext.cloudflare_workspace;
     this.#calls.set(handle, []);
+    let dispatched = false;
     try {
       const {worker, generation} = await this.#engine(tenantId);
+      if (stopKey && await this.ctx.storage.get(stopKey)) return stoppedInQueue();
       if (Date.now() >= deadlineAt) return expiredInQueue(Date.now() - queuedAt);
-      this.#current = {handle, generation, deadlineAt,
-        egress: new Set(egressHosts.map((h) => h.toLowerCase()))};
+      let stop;
+      const stopped = new Promise((resolve) => { stop = resolve; });
+      this.#current = {handle, generation, deadlineAt, routeId, stop, stopped: false,
+        egress: new Set((routeId ? workspace.https_hosts : egressHosts).map((h) => h.toLowerCase())),
+        snapshot: routeId ? createTenantGateway({store: workspace.sources, manifest: workspace.manifest}) : null};
       // Survives a host reset: the next instance retires this generation. The
       // only gated write: it is made durable before the final deadline check,
       // so nothing is left to hold the child dispatch at the output gate.
@@ -265,28 +313,40 @@ export class TenantHost extends DurableObject {
         this.#current = null;
         return expiredInQueue(Date.now() - queuedAt);
       }
+      if (this.#current.stopped) {
+        await this.#current.retirement;
+        return stoppedInQueue();
+      }
       const mark = Date.now();
+      const entrypoint = routeId ? worker.getEntrypoint(null, {
+        limits: {cpuMs: workspace.cpu_budget_ms, subRequests: workspace.subrequest_allowance},
+      }) : worker.getEntrypoint();
+      const request = new Request('https://attempt.invalid/', {
+        method: 'POST',
+        body: JSON.stringify({execution_id: executionId,
+          context: {...childContext, engine_token: handle},
+          api_url: 'https://test-api.invalid',
+          public_url: publicUrl ?? 'https://staging.invalid'}),
+      });
+      if (routeId && Date.now() >= deadlineAt) return expiredInQueue(Date.now() - queuedAt);
+      dispatched = true;
+      const responseTask = entrypoint.fetch(request);
       let timer;
       const expired = new Promise((resolve) => {
-        timer = setTimeout(() => resolve(DEADLINE), Math.max(0, deadlineAt - Date.now()));
+        if (deadlineAt !== Infinity) timer = setTimeout(() => resolve(DEADLINE), Math.max(0, deadlineAt - Date.now()));
       });
       const response = await Promise.race([
-        worker.getEntrypoint().fetch(new Request('https://attempt.invalid/', {
-          method: 'POST',
-          body: JSON.stringify({execution_id: executionId,
-            context: {...childContext, engine_token: handle},
-            api_url: 'https://test-api.invalid',
-            public_url: publicUrl ?? 'https://staging.invalid'}),
-        })),
+        responseTask,
         expired,
+        stopped,
       ]).finally(() => clearTimeout(timer));
-      if (response === DEADLINE) {
+      if (response === DEADLINE || response === STOPPED || this.#current.stopped) {
         // The attempt started and may still be running in the old child: its
         // effects are unknown. The handle and the child's generation are
         // revoked below, so it can no longer reach the API or egress.
-        await this.#retireChild();
-        return {terminal: {phase: 'attempt-deadline', attempt_state: 'uncertain',
-          deadline_ms: deadlineMs, api_calls: this.#calls.get(handle)}};
+        await (this.#current.retirement ?? this.#retireChild());
+        return terminal(response === DEADLINE ? 'attempt-deadline' : 'attempt-stopped',
+          'uncertain', undefined, this.#calls.get(handle));
       }
       const childMs = Date.now() - mark;
       let output;
@@ -308,6 +368,9 @@ export class TenantHost extends DurableObject {
         timings: {child_ms: childMs,
           child: output.child ? {...child, imported: Array.isArray(imported) ? imported.length : 0} : null,
           api_calls: this.#calls.get(handle)}};
+    } catch (error) {
+      if (routeId && dispatched && !this.#current?.stopped) await this.#retireChild();
+      throw error;
     } finally {
       this.#current = null;
       this.#credentials.close(handle);
