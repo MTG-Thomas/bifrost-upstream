@@ -111,14 +111,21 @@ export function createEngine({ profile, store, runtime, clock = { now: () => Dat
         }
     }
 
-    async function finishPrepare(workerId, row) {
+    async function finishPrepare(workerId, row, fresh = false) {
         if (!await store.reserve(workerId)) {
-            await store.discard(workerId);
+            if (fresh) await store.discard(workerId);
             throw new ProtocolError(409, "capacity ceiling reached");
         }
         // A confirmed ledger and scope slot precede enrollment. Replaying
         // prepare addresses the same launcher and uses the same key.
-        await runtime.prepare(row);
+        try {
+            await runtime.prepare(row);
+        } catch (error) {
+            // Enrollment cannot dial. Keep the documented UID for retry or
+            // terminal cleanup, but give up the scope slot until the retry.
+            await store.release(workerId);
+            throw error;
+        }
         row.intent = null;
         await store.write(workerId, row);
         return resource(row);
@@ -129,20 +136,14 @@ export function createEngine({ profile, store, runtime, clock = { now: () => Dat
             return serialize(workerId, async () => {
                 const row = await store.read(workerId);
                 if (!row || row.scope !== profile.scope) return null;
-                if (row.state === STATE.DELETED) {
-                    await store.release(workerId);
-                    return resource(row);
-                }
-                if (row.intent === "prepare") return finishPrepare(workerId, row);
-                if (row.state === STATE.PREPARED && !row.intent) return resource(row);
+                if (row.state === STATE.DELETED || row.intent === "prepare" || row.intent === "delete" ||
+                    (row.state === STATE.PREPARED && !row.intent) || row.state === STATE.STOPPED) return resource(row);
                 const observation = await runtime.observe(row);
-                if (row.intent === "delete") return resource(row);
                 if (row.intent === "start" && observation.start_fact === "accepted") {
                     row.started_at ??= clock.now();
                 }
                 if (observation.state !== row.state) {
                     settle(row, observation);
-                    await store.write(workerId, row);
                 }
                 return resource(row);
             });
@@ -158,6 +159,9 @@ export function createEngine({ profile, store, runtime, clock = { now: () => Dat
                     }
                     if (existing.state === STATE.DELETED) {
                         throw new ProtocolError(409, "worker incarnation already terminated");
+                    }
+                    if (existing.intent === "delete") {
+                        throw new ProtocolError(409, "worker deletion is pending");
                     }
                     if (RESERVATION_FIELDS.some((key) => existing.reservation[key] !== reservation[key])) {
                         throw new ProtocolError(409, "conflicting reservation for this worker");
@@ -181,7 +185,7 @@ export function createEngine({ profile, store, runtime, clock = { now: () => Dat
                     intent: "prepare",
                 };
                 await store.write(workerId, row);
-                return finishPrepare(workerId, row);
+                return finishPrepare(workerId, row, true);
             });
         },
 
@@ -195,10 +199,17 @@ export function createEngine({ profile, store, runtime, clock = { now: () => Dat
                 if (body?.resource_uid !== row.resource_uid) {
                     throw new ProtocolError(409, "resource UID does not match the prepared incarnation");
                 }
-                if (row.intent === "prepare" || row.intent === "delete") {
+                if (row.intent === "delete") {
                     throw new ProtocolError(409, "worker lifecycle transition is pending");
                 }
+                if (row.intent === "prepare") await finishPrepare(workerId, row);
                 if (row.state === STATE.STARTING || row.state === STATE.RUNNING) {
+                    const prior = await runtime.observe(row);
+                    if (prior.state === STATE.STOPPED || prior.state === STATE.DELETED) {
+                        settle(row, {...prior, state: STATE.STOPPED});
+                        await store.write(workerId, row);
+                        throw new ProtocolError(409, "worker incarnation already stopped");
+                    }
                     return resource(row); // replay: never launch twice
                 }
                 if (row.state === STATE.STOPPED) {
@@ -263,10 +274,7 @@ export function createEngine({ profile, store, runtime, clock = { now: () => Dat
                 if (body?.resource_uid !== row.resource_uid) {
                     throw new ProtocolError(409, "resource UID does not match this worker");
                 }
-                if (row.state === STATE.DELETED) {
-                    await store.release(workerId);
-                    return resource(row);
-                }
+                if (row.state === STATE.DELETED) return resource(row);
 
                 row.intent = "delete";
                 await store.write(workerId, row);
@@ -276,11 +284,13 @@ export function createEngine({ profile, store, runtime, clock = { now: () => Dat
                 } catch (error) {
                     throw new ProtocolError(502, `delete outcome unknown: ${error.name}`);
                 }
+                // Until the slot release succeeds, readback still directs
+                // the controller to retry DELETE.
+                await store.release(workerId);
                 row.state = STATE.DELETED;
                 row.intent = null;
                 row.revision = (row.revision ?? 0) + 1;
                 await store.write(workerId, row);
-                await store.release(workerId);
                 return resource(row);
             });
         },

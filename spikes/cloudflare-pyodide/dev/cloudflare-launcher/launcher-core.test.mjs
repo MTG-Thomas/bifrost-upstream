@@ -107,24 +107,22 @@ async function connect(api, generation = 1) {
   await api.welcome(generation);
 }
 
-test('drain closes admission and keeps the active route and terminal until acknowledgement', async () => {
+test('terminal release stops the active route and fences late results after the ledger is cleared', async () => {
   const finish = deferred();
   const api = peer({runHost: () => finish.promise});
   await connect(api);
-  await api.command('workflow', workflow());
+  const attempt = workflow();
+  await api.command('workflow', attempt);
   await api.entered;
-  assert.equal(await api.core.drain(START + 5000), false);
-  assert.deepEqual(api.frames().at(-1), {event: 'draining'});
-  await api.command('workflow', workflow('2'));
-  assert.equal(api.frames().at(-1).error_type, 'MemoryError');
-  assert.equal(api.calls.length, 1);
+  await api.core.release();
+  assert.deepEqual(api.stopped, [attempt.route_id]);
+  assert.equal(api.calls[0].signal.aborted, true);
+  api.data.clear();
   finish.resolve(COMPLETED);
   await api.finish();
-  const terminal = api.frames().at(-1);
-  assert.equal(await api.core.drain(START + 5000), false);
-  await api.ack(terminal._event_id);
-  assert.equal(await api.core.drain(START + 5000), true);
-  assert.equal(await api.core.canReconnect(), false);
+  assert.equal(api.data.size, 0);
+  assert.equal(await api.dial(), null);
+  assert.equal(api.frames().some(({event}) => event === 'result'), false);
 });
 
 test('hello sequence is confirmed before every dial, including after a lost welcome', async () => {

@@ -139,9 +139,7 @@ export class CloudflareLauncher extends DurableObject {
   prepareManaged(enrollment) {
     return this.#serialize(async () => {
       const settings = enrollmentSettings(enrollment, this.env);
-      if (enrollment.launcherId !== enrollment.incarnationId ||
-          !Number.isInteger(enrollment.drainGraceSeconds) || enrollment.drainGraceSeconds < 0 ||
-          enrollment.drainGraceSeconds > 3600) throw new Error('Invalid managed enrollment');
+      if (enrollment.launcherId !== enrollment.incarnationId) throw new Error('Invalid managed enrollment');
       const fact = this.#binding(enrollment.resourceUid);
       if (fact) {
         if (!fact.enrollment || Object.keys(enrollment).some((key) => enrollment[key] !== fact.enrollment[key])) {
@@ -172,7 +170,7 @@ export class CloudflareLauncher extends DurableObject {
       const fact = this.#binding(resourceUid);
       if (!fact || fact.state === 'prepared') return {state: 'prepared', start_fact: 'never_started'};
       if (fact.state === 'deleted') return {state: 'deleted', start_fact: 'destroyed'};
-      if (this.#core && !await this.#core.canReconnect()) return {state: 'stopped', start_fact: 'exited'};
+      if (await this.#core.isStopped()) return {state: 'stopped', start_fact: 'exited'};
       return {state: this.#connection?.session.generation ? 'running' : 'starting', start_fact: 'accepted'};
     });
   }
@@ -182,18 +180,12 @@ export class CloudflareLauncher extends DurableObject {
       const fact = this.#binding(resourceUid);
       if (fact?.state === 'deleted') {
         await this.#stopReleased();
-        return true;
+        return;
       }
-      if (!fact || fact.state === 'prepared') {
-        await this.#finishRelease(resourceUid);
-        return true;
-      }
-      if (fact.state !== 'draining') {
-        const deadline = Date.now() + fact.enrollment.drainGraceSeconds * 1000;
-        await this.ctx.storage.setAlarm(Date.now());
-        await this.#saveFact({...fact, deadline, state: 'draining'});
-      }
-      return this.#drainManaged();
+      // The API already fenced this incarnation. Release cannot deliver a
+      // terminal or wait for an ACK from a successor owner.
+      await this.#core?.release();
+      await this.#finishRelease(resourceUid);
     });
   }
 
@@ -211,12 +203,6 @@ export class CloudflareLauncher extends DurableObject {
     await this.ctx.storage.deleteAlarm();
   }
 
-  async #drainManaged() {
-    if (!await this.#core.drain(this.#fact.deadline)) return false;
-    await this.#finishRelease(this.#fact.resourceUid);
-    return true;
-  }
-
   async start() {
     if (this.#managed) throw new Error('Managed launch requires the capacity provider');
     if (await this.#core.canReconnect() && await this.ctx.storage.getAlarm() === null) {
@@ -225,16 +211,7 @@ export class CloudflareLauncher extends DurableObject {
   }
 
   async alarm() {
-    if (this.#managed) {
-      const proceed = await this.#serialize(async () => {
-        if (!['accepted', 'draining'].includes(this.#fact?.state)) return false;
-        if (this.#fact.state !== 'draining') return true;
-        const now = Date.now();
-        await this.ctx.storage.setAlarm(Math.max(now + 1000, Math.min(now + ALARM_WATCHDOG_MS, this.#fact.deadline)));
-        return !await this.#drainManaged();
-      });
-      if (!proceed) return;
-    }
+    if (this.#managed && !await this.#serialize(() => this.#fact?.state === 'accepted')) return;
     // Keep a durable wake-up even if the DO resets while a connection is open.
     // A close schedules an earlier retry. Only the current alarm opens sockets.
     const core = this.#core;
@@ -294,11 +271,6 @@ export class CloudflareLauncher extends DurableObject {
       connection.heartbeat = setInterval(() =>
         this.#observe(connection, this.#core.tick(connection.session)), 1000);
     }
-    if (this.#fact?.state === 'draining') {
-      await this.#serialize(async () => {
-        if (this.#fact.state === 'draining') await this.#drainManaged();
-      });
-    }
   }
 
   #observe(connection, task) {
@@ -314,10 +286,11 @@ export class CloudflareLauncher extends DurableObject {
     clearTimeout(connection.welcomeTimer);
     clearInterval(connection.heartbeat);
     const ws = connection.socket;
-    await this.#core.closed(connection.session, code);
-    console.info('launcher_control_closed', code ?? null, this.#core.retired);
+    const core = this.#core;
+    await core.closed(connection.session, code);
+    console.info('launcher_control_closed', code ?? null, core.retired);
     if (ws?.readyState === WebSocket.OPEN) ws.close(1000, 'launcher control closed');
-    if (this.#core.retired || this.#fact?.state === 'deleted') {
+    if (core.retired || this.#fact?.state === 'deleted') {
       await this.ctx.storage.deleteAlarm();
       return;
     }

@@ -171,7 +171,7 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
 
 test('shared capacity conformance exercises the real local HTTP provider', async () => {
   const suite = fileURLToPath(new URL('../../../../deploy/capacity/conformance/conformance.py', import.meta.url));
-  const hook = fileURLToPath(new URL('../../../../deploy/capacity/conformance/hooks/workers-local.py', import.meta.url));
+  const hook = fileURLToPath(new URL('../e2e/workers-local.py', import.meta.url));
   const python = process.platform === 'win32' ? 'py' : 'python3';
   const flags = process.platform === 'win32' ? ['-3'] : [];
   const args = [...flags, suite, '--base-url', base, '--scope', settings.scope,

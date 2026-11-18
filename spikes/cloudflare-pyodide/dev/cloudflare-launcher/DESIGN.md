@@ -314,28 +314,35 @@ run. Findings, checked against the cited code:
   pending Cloudflare starts. Give Linux the first chance to launch. When its
   scope reaches its advertised worker ceiling, Cloudflare can start for
   remaining approved Normal workflows that fit one 128 MiB declared slot.
-  An unavailable provider does not authorize failover. Static Linux workers
-  still participate in packing when Cloudflare is the sole managed scope.
+  Linux reconciles independently of burst discovery. Burst launches require
+  a successful primary reconciliation and count only live Linux
+  incarnations toward the primary ceiling. Unconfirmed terminal resources
+  still consume physical capacity until cleanup. Static Linux workers
+  participate in packing when Cloudflare is the sole managed scope.
 - Both scopes use the existing reservation lock and shared managed-worker cap.
-  Linux owns the warm floor in dual mode and counts Cloudflare capacity toward
-  it. A sole Cloudflare scope can maintain the Normal warm floor. Cloudflare
+  Only Linux workers count toward the Normal warm floor in dual mode.
+  A sole Cloudflare scope can maintain the Normal warm floor. Cloudflare
   never supplies Fast Path or Linux memory probes. Idle drain and rotation
   use the existing lane floors and profile-specific fit. Only a Linux
-  controller with room in its own scope and unmet Linux demand may make an
-  idle Cloudflare worker yield a shared slot. The worker's owning scope
+  controller with room in its own scope and unmet Linux demand or a Normal
+  warm floor deficit may make an idle Cloudflare worker yield a shared slot. The worker's owning scope
   reconciles physical deletion.
 - The Workers provider holds the dedicated capacity token in its own Worker
   environment. Its `WorkerLedger` derives the key using the incarnation and
   resource UID, and sends only the identity and derived key to the launcher
   DO over a private binding. Prepare persists that enrollment without dialing.
-  Start records durable intent and schedules the first dial. Observe reports
-  accepted start and socket state. Only authenticated API hello grants work.
-- Release durably closes admission, drains the route and retained terminal
-  while the control socket remains usable, then stops the socket and alarm
-  and removes the key. Release can complete immediately after canonical idle
-  retirement. A bounded drain after loss cannot prove that external requests
-  already sent by a workflow have ended. The provider confirms launcher stop
-  and writes the deletion tombstone before freeing the scope slot.
+  Start records durable intent and schedules the first dial. Observe reads
+  the reservation, accepted start and socket state. A failed enrollment
+  frees its scope slot and retains its UID. Prepare or start can retry that
+  enrollment. The API bounds both phases by the incarnation's start
+  deadline. Only authenticated API hello grants work.
+- The API drains and settles work while its row is live. It sends release
+  only after retirement or loss, when ownership is fenced and terminals
+  can no longer be delivered. Release immediately stops the socket and
+  alarm, revokes the enrollment key and fences late results. An active
+  route gets a best-effort cooperative stop. External requests already sent
+  may still finish. The provider confirms launcher stop, frees the scope
+  slot and records deletion before reporting success.
 - As in #1425, `ScopeRegistry` serializes the scope ceiling and `WorkerLedger`
   serializes operations for one incarnation. An uncertain start is observed
   before retry and can be retried only on durable proof it never reached the
@@ -389,8 +396,9 @@ Linux capacity for requests only Linux can run. Actual claims retain
 per-worker priority and queue order, with the first eligible claimant
 winning. Linux retains its existing reserved-work priority and physical
 memory gate. Managed launchers of either runtime count toward the shared
-worker cap and lane-specific warm floors, including for idle drain and
-rollout. The owning controller can rotate an outdated Cloudflare launcher.
+worker cap. Dual mode reserves the Normal warm floor for Linux across
+placement, idle drain and rollout. The owning controller can rotate an
+outdated Cloudflare launcher.
 Calibration and measured Linux budget ceilings use Linux reports.
 An idle, reconciled dev launcher with no eligible fitting demand can
 yield a capped slot to a controller outside its scope. A controller

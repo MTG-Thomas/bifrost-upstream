@@ -77,7 +77,6 @@ export class WorkerLedger {
             incarnationId: row.worker_id, launcherId: row.worker_id, resourceUid: row.resource_uid,
             version: row.reservation.worker_version,
             secret: await externalWorkerControlKey(env.CAPACITY_TOKEN, row.worker_id, row.resource_uid),
-            drainGraceSeconds: row.reservation.drain_grace_seconds,
           });
         },
         async start(row) {
@@ -85,7 +84,8 @@ export class WorkerLedger {
           return {state: STATE.STARTING};
         },
         async destroy(row) {
-          return {state: await launcher(row).releaseManaged(row.resource_uid) ? STATE.DELETED : STATE.STARTING};
+          await launcher(row).releaseManaged(row.resource_uid);
+          return {state: STATE.DELETED};
         },
         async observe(row) {
           return launcher(row).observeManaged(row.resource_uid);

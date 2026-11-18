@@ -69,6 +69,7 @@ export class LauncherCore {
   #session = null;
   #tail = Promise.resolve();
   #abort = null;
+  #released = false;
 
   constructor({identity, secret, clock, storage, send, runHost, stopHost, background, newId = newNonce}) {
     this.identity = identity;
@@ -83,7 +84,7 @@ export class LauncherCore {
   }
 
   get retired() {
-    return this.#control?.state === 'retired';
+    return this.#released || this.#control?.state === 'retired';
   }
 
   status() {
@@ -97,22 +98,18 @@ export class LauncherCore {
     });
   }
 
-  drain(deadline) {
+  isStopped() {
+    return this.#serialize(async () => this.retired || (await this.storage.get(CONTROL))?.state === 'retired');
+  }
+
+  release() {
     return this.#serialize(async () => {
-      await this.#load();
-      if (!this.retired && this.#control.state !== 'draining') {
-        await this.#saveControl({...this.#control, state: 'draining'});
-        this.#emitCurrent({event: 'draining'});
-      }
-      if (this.#slot && this.clock() < deadline && !this.retired) return false;
-      if (this.#slot?.state === 'entering') {
-        this.#abort?.abort();
-        // A forced release must confirm the cooperative stop request before
-        // the provider discards the incarnation's key and alarm.
-        await this.stopHost(this.#slot.route);
-      }
-      await this.#saveControl({...this.#control, state: 'retired'});
-      return true;
+      if (this.#released) return;
+      const slot = this.#slot ?? await this.storage.get(SLOT);
+      this.#released = true;
+      this.#session = null;
+      this.#slot = null;
+      if (slot?.state === 'entering') this.#stop(slot.route);
     });
   }
 
@@ -148,6 +145,7 @@ export class LauncherCore {
 
   beginDial() {
     return this.#serialize(async () => {
+      if (this.#released) return null;
       await this.#load();
       if (this.retired || this.#session) return null;
       const helloSequence = this.#control.helloSequence + 1;
@@ -237,7 +235,6 @@ export class LauncherCore {
         attempt_state: terminal.attempt_state}] : [],
     }});
     if (terminal) this.#emit(session, terminal);
-    if (this.#control.state === 'draining') this.#emit(session, {event: 'draining'});
     session.nextHeartbeat = this.clock() + 1000;
   }
 
@@ -295,10 +292,6 @@ export class LauncherCore {
         return;
       }
       case 'workflow':
-        if (this.#control.state === 'draining' || this.retired) {
-          refuse('MemoryError', 'Cloudflare launcher is draining');
-          return;
-        }
         return this.#workflow(session, payload, accept, refuse);
       default:
         refuse('ValueError', 'Unknown launcher command');
@@ -368,7 +361,9 @@ export class LauncherCore {
     const outcome = await work.outcome;
     await this.#serialize(async () => {
       if (this.#abort === work.controller) this.#abort = null;
-      if (this.#slot?.route === route && this.#slot.state === 'entering') await this.#settle(route, outcome);
+      if (!this.#released && this.#slot?.route === route && this.#slot.state === 'entering') {
+        await this.#settle(route, outcome);
+      }
     });
   }
 

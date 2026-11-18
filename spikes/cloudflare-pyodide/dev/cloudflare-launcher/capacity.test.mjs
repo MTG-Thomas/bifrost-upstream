@@ -37,7 +37,7 @@ function fixture() {
   return {restart, runtime, facts, slots};
 }
 
-test('prepare readback completes an uncertain enrollment under the same scope slot and UID', async () => {
+test('uncertain prepare releases its slot and readback leaves retry to start', async () => {
   const {restart, runtime, slots} = fixture();
   let uid;
   runtime.prepare = async (row) => {
@@ -45,9 +45,18 @@ test('prepare readback completes an uncertain enrollment under the same scope sl
     throw new Error('reply lost');
   };
   await assert.rejects(restart().prepare(id, reservation));
-  assert.equal(slots.size, 1);
-  runtime.prepare = async (row) => assert.equal(row.resource_uid, uid);
+  assert.equal(slots.size, 0);
+  let retries = 0;
+  runtime.prepare = async (row) => {
+    assert.equal(row.resource_uid, uid);
+    retries++;
+  };
   assert.equal((await restart().get(id)).resource_uid, uid);
+  assert.equal(retries, 0);
+  assert.equal(slots.size, 0);
+  assert.equal((await restart().start(id, {resource_uid: uid})).state, STATE.STARTING);
+  assert.equal(retries, 1);
+  assert.equal(slots.size, 1);
 });
 
 test('observe reconciles a lost start reply without a second start', async () => {
