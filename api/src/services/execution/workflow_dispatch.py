@@ -220,11 +220,19 @@ async def _cloudflare_revision(
         return None
     declaration = ApprovalDeclaration.model_validate(approval.declaration)
     owner = str(approval.organization_id) if approval.organization_id else None
-    if (owner, declaration.entry_path, declaration.function_name, declaration.entry_sha256) != (
-        workflow["organization_id"], workflow["path"], workflow["function_name"], workflow["content_hash"],
+    if (owner, declaration.entry_path, declaration.function_name) != (
+        workflow["organization_id"], workflow["path"], workflow["function_name"],
     ):
         return None
-    if await indexed_pins(db, set(declaration.module_sha256)) != declaration.module_sha256:
+    manifest = declaration.manifest
+    indexed = await indexed_pins(db, set(manifest))
+    observed = {path: indexed.get(path) for path in manifest}
+    if observed[declaration.entry_path] != workflow["content_hash"]:
+        return None
+    if observed != manifest:
+        from src.jobs.platform.cloudflare_reapproval import stage_reapproval
+
+        await stage_reapproval(db, approval, observed)
         return None
     return approval.revision
 

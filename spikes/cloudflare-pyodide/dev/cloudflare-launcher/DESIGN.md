@@ -375,6 +375,19 @@ actual limits. Inline code, Fast Path, Solution and artifact-workspace dispatche
 are outside this policy. Enqueue compares indexed digests and workflow identity
 against the current approval without reading or parsing source.
 
+The first Normal dispatch to observe changed entry or module pins stays
+Linux-only and queues a deduplicated `workflow.cloudflare_reapproval` PlatformJob.
+The job loads the transitive sources outside the enqueue transaction. It may
+replace the current approval when packages match exactly, hosts are a subset,
+and both estimates fit the current limits. It retains those limits and records
+the parent approval and each added, changed, or removed pin. The job fences
+publication on its lease, the current approval, the workflow owner, and indexed
+source digests. Later dispatches may use the derived approval. A rejected
+revision stays Linux-only unless it passes a later analysis or an operator
+reviews and accepts a new proposal. Same-input analyses are throttled for ten
+minutes so missing dependencies and storage failures can recover without
+repeated analysis on every run.
+
 Before sending `workflow`, the API repeats verification against the current
 approval and source. The command context carries `cloudflare_workspace`
 with the approved `manifest`, the exact verified UTF-8 `sources` keyed by

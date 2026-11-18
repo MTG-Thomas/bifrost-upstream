@@ -122,9 +122,11 @@ async def propose_approval(
     return ApprovalProposal(workflow_id, organization_id, previous_revision, declaration)
 
 
-async def accept_proposal(db: AsyncSession, proposal: ApprovalProposal, *, accepted_by: str) -> CloudflareApproval:
+async def accept_proposal(
+    db: AsyncSession, proposal: ApprovalProposal, *, accepted_by: str,
+) -> CloudflareApproval:
     """Publish under the workflow lock, after rechecking scope, pins and review lineage."""
-    workflow = await db.get(Workflow, proposal.workflow_id, with_for_update=True)
+    workflow = await db.get(Workflow, proposal.workflow_id, with_for_update={"key_share": True})
     declaration = proposal.declaration
     current = await current_approval(db, proposal.workflow_id)
     if (
@@ -157,20 +159,21 @@ async def prepare_approved_workspace(
     expected_revision: str,
 ) -> ApprovedWorkspace | None:
     """Check the active approval and send only the exact pinned UTF-8 bytes."""
-    async with get_db_context() as db:
-        approval = await db.scalar(
-            select(CloudflareApproval)
-            .join(Workflow, Workflow.id == CloudflareApproval.workflow_id)
-            .where(
-                CloudflareApproval.revision == expected_revision,
-                CloudflareApproval.workflow_id == UUID(workflow_id),
-                CloudflareApproval.policy_version == POLICY_VERSION,
-                CloudflareApproval.is_current,
-                CloudflareApproval.organization_id.is_not_distinct_from(Workflow.organization_id),
-                Workflow.is_active, Workflow.solution_id.is_(None), Workflow.type == "workflow",
-                Workflow.path == entry_path, Workflow.function_name == function_name,
-            )
+    matching = (
+        select(CloudflareApproval)
+        .join(Workflow, Workflow.id == CloudflareApproval.workflow_id)
+        .where(
+            CloudflareApproval.revision == expected_revision,
+            CloudflareApproval.workflow_id == UUID(workflow_id),
+            CloudflareApproval.policy_version == POLICY_VERSION,
+            CloudflareApproval.is_current,
+            CloudflareApproval.organization_id.is_not_distinct_from(Workflow.organization_id),
+            Workflow.is_active, Workflow.solution_id.is_(None), Workflow.type == "workflow",
+            Workflow.path == entry_path, Workflow.function_name == function_name,
         )
+    )
+    async with get_db_context() as db:
+        approval = await db.scalar(matching)
         if approval is None:
             return None
         declaration = ApprovalDeclaration.model_validate(approval.declaration)
@@ -196,6 +199,10 @@ async def prepare_approved_workspace(
     except (StorageError, TimeoutError, ValueError):
         return None
 
+    # A review or scope change can race the storage reads.
+    async with get_db_context() as db:
+        if await db.scalar(matching.with_only_columns(CloudflareApproval.revision)) is None:
+            return None
     return ApprovedWorkspace({
         "manifest": manifest, "sources": sources,
         "packages": declaration.packages, "https_hosts": declaration.https_hosts,

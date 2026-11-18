@@ -52,6 +52,12 @@ _METADATA = MappingProxyType(
         item.job_type: item
         for item in (
             _metadata(
+                "workflow.cloudflare_reapproval",
+                "src.jobs.platform.cloudflare_reapproval",
+                "CLOUDFLARE_REAPPROVAL_DEFINITION",
+                PlatformJobPolicy(60, max_attempts=2, max_concurrency=2, min_memory_headroom_mb=128),
+            ),
+            _metadata(
                 "application.deploy",
                 "src.jobs.platform.application_deploy",
                 "APPLICATION_DEPLOY_DEFINITION",

@@ -27,3 +27,5 @@ class CloudflareApproval(Base):
     is_current: Mapped[bool] = mapped_column(Boolean, default=True)
     accepted_by: Mapped[str] = mapped_column(String(255))
     accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    derived_from: Mapped[str | None] = mapped_column(ForeignKey("cloudflare_workflow_approvals.revision"))
+    pin_diff: Mapped[dict[str, dict[str, str | None]] | None] = mapped_column(JSONB(none_as_null=True))

@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 from src.core.redis_client import PendingExecution, pending_execution_record
+from src.jobs.platform import cloudflare_reapproval
 from src.models.orm import CloudflareApproval
 from src.services.execution import cloudflare_eligibility, service, workflow_dispatch
 from src.services.execution.cloudflare_analysis import (
@@ -68,8 +69,8 @@ async def _prepare(approval):
     )
 
 
-@pytest.mark.parametrize("approved", [False, True])
-async def test_enqueue_uses_only_the_durable_approval_and_index(review, monkeypatch, approved):
+@pytest.mark.parametrize("state", ["unapproved", "unchanged", "changed-helper", "changed-owner"])
+async def test_enqueue_uses_only_the_durable_approval_and_index(review, monkeypatch, state):
     approval, _, stored = review
     record = dict(pending_execution_record(
         execution_id=str(uuid4()), workflow_id=str(approval.workflow_id), parameters={}, org_id=None,
@@ -77,25 +78,51 @@ async def test_enqueue_uses_only_the_durable_approval_and_index(review, monkeypa
     ))
     del record["script_name"]
     pending = PendingExecution(**record)  # type: ignore[typeddict-item]
-    if not approved:
+    if state == "unapproved":
         stored.return_value = None
     lookup = AsyncMock(return_value={
         "path": ENTRY, "function_name": "run", "content_hash": approval.declaration["entry_sha256"],
-        "solution_id": None, "type": "workflow", "organization_id": None,
+        "solution_id": None, "type": "workflow",
+        "organization_id": str(uuid4()) if state == "changed-owner" else None,
     })
     monkeypatch.setattr(service, "get_workflow_for_execution", lookup)
-    monkeypatch.setattr(cloudflare_eligibility, "indexed_pins", AsyncMock(
-        return_value=approval.declaration["module_sha256"],
-    ))
+    pins = {ENTRY: approval.declaration["entry_sha256"], **approval.declaration["module_sha256"]}
+    if state == "changed-helper":
+        pins[HELPER] = "b" * 64
+    monkeypatch.setattr(cloudflare_eligibility, "indexed_pins", AsyncMock(return_value=pins))
+    enqueue = AsyncMock()
+    monkeypatch.setattr(cloudflare_reapproval, "stage_reapproval", enqueue)
     monkeypatch.setattr(cloudflare_eligibility, "RepoStorage", Mock(side_effect=AssertionError("enqueue read source")))
     monkeypatch.setattr(workflow_dispatch, "_request_for", AsyncMock(return_value=64 << 20))
     db = Mock(scalar=AsyncMock(return_value="normal"))
     await workflow_dispatch.stage_workflow_run(db, pending, {
         "workflow_id": pending["workflow_id"], "cloudflare_revision": "f" * 64,
     }, record_exists=True)
-    assert db.add.call_args.args[0].cloudflare_revision == (approval.revision if approved else None)
-    if not approved:
+    assert db.add.call_args.args[0].cloudflare_revision == (approval.revision if state == "unchanged" else None)
+    if state == "unapproved":
         lookup.assert_not_awaited()
+    if state == "changed-helper":
+        enqueue.assert_awaited_once_with(db, approval, pins)
+    else:
+        enqueue.assert_not_awaited()
+
+
+@pytest.mark.parametrize("changed, allowed", [
+    ({"https_hosts": []}, True),
+    ({"https_hosts": ["example.com", "new.example.com"]}, False),
+    ({"packages": ["pydantic"]}, False),
+    ({"packages": ["httpx", "pydantic"]}, False),
+    ({"estimated_subrequests": 11}, False),
+    ({"estimated_cpu_ms": 501}, False),
+    ({"cpu_budget_ms": 501}, False),
+    ({"subrequest_allowance": 11}, False),
+])
+def test_carry_forward_never_widens_the_latest_envelope(review, changed, allowed):
+    approval, _, _ = review
+    declaration = cloudflare_eligibility.ApprovalDeclaration.model_validate({
+        **approval.declaration, "packages": ["httpx"], "https_hosts": ["example.com"],
+    })
+    assert cloudflare_reapproval._carry_forward(declaration, declaration.model_copy(update=changed)) is allowed
 
 
 async def _analyze(sources, **limits):
