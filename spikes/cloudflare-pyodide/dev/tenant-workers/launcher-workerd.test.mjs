@@ -1,20 +1,103 @@
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import {createRequire} from 'node:module';
+import {after, before, test} from 'node:test';
 import {fileURLToPath} from 'node:url';
-import {test} from 'node:test';
 import {signHello} from '../cloudflare-launcher/protocol.mjs';
 
-// Use the same workerd dependency as the pinned Wrangler harness.
-const {Miniflare} = createRequire(import.meta.resolve('wrangler'))('miniflare');
+const {Miniflare, Response} = createRequire(import.meta.resolve('wrangler'))('miniflare');
+const root = new URL('../../', import.meta.url);
+const compatibilityDate = '2026-10-30';
+const engineModule = 'dev/tenant-workers/generic-worker-code.mjs';
+const mainModule = 'test-host.mjs';
 const secret = 'a'.repeat(64);
 const incarnation = '0e9d8c7b-6a59-4847-b6a5-948372615041';
 const launcher = '6f1c2d3e-4a5b-4c6d-8e7f-0a1b2c3d4e5f';
-const compatibilityDate = '2026-10-30';
 const path = (name) => fileURLToPath(new URL(name, import.meta.url));
+const cases = new Map(['queued-block', 'active-block'].map((name) =>
+  [`/${name}`, {entered: Promise.withResolvers(), release: Promise.withResolvers()}]));
+const origins = [];
+let mf;
+let worker;
 
-test('workerd launcher alarm exchanges hello and inventory over an outbound Upgrade', {timeout: 15_000}, async (t) => {
-  const mf = new Miniflare({workers: [{
+// Keep the real Durable Object, gateway, and WorkerLoader. Use a small JS
+// child in place of the packaged Python engine to exercise transport policy.
+function engine() {
+  return {
+    async fetch(request) {
+      const body = await request.json();
+      if (body.action === 'ping') return Response.json({first_request: false, primed: 0});
+      const {scenario, engine_token} = body.context;
+      let result;
+      if (scenario === 'snapshot') {
+        const headers = {Authorization: `Bearer ${engine_token}`};
+        const pinned = await fetch('https://test-api.invalid/api/sdk/modules/wf.py', {headers});
+        const absent = await fetch('https://test-api.invalid/api/sdk/modules/missing.py', {headers});
+        result = {content: (await pinned.json()).content, missing: absent.status};
+      } else if (scenario === 'budget') {
+        const statuses = [];
+        for (let index = 0; index < 2; index++) {
+          const response = await fetch('https://approved.invalid/count');
+          statuses.push(response.status);
+          await response.body?.cancel();
+        }
+        result = statuses;
+      } else {
+        const response = await fetch(`https://approved.invalid/${scenario}`);
+        result = response.status;
+        await response.body?.cancel();
+      }
+      return Response.json({upstream_result: {status: 'Success', result}});
+    },
+  };
+}
+
+const main = `
+  import {TenantHost as Host, TenantApi} from './dev/tenant-workers/tenant-api.mjs';
+  export {TenantApi};
+  export class TenantHost extends Host {
+    #started = new Map();
+    #signal(id) {
+      if (!this.#started.has(id)) this.#started.set(id, Promise.withResolvers());
+      return this.#started.get(id);
+    }
+    run(input) {
+      const attempt = super.run(input);
+      this.#signal(input.routeId).resolve();
+      return attempt;
+    }
+    async waitForRun(id) { await this.#signal(id).promise; }
+    async stopAndTryEgress(id) {
+      const stopped = super.stopWorkflow(id);
+      const result = await super.egress(new Request('https://approved.invalid/after-stop'), 0);
+      await stopped;
+      return result.status;
+    }
+  }
+  export default {
+    async fetch(request, _env, ctx) {
+      const {tenantId, action, input} = await request.json();
+      const host = ctx.exports.TenantHost.getByName(tenantId);
+      if (action === 'run') return Response.json(await host.run(input));
+      if (action === 'warm') return Response.json(await host.warm({tenantId}));
+      if (action === 'wait') await host.waitForRun(input);
+      if (action === 'stop') await host.stopWorkflow(input);
+      if (action === 'stop-egress') return Response.json(await host.stopAndTryEgress(input));
+      return Response.json(null);
+    },
+  };
+`;
+
+before(async () => {
+  const deps = [
+    'dev/tenant-workers/tenant-api.mjs', 'dev/tenant-workers/tenant-gateway.mjs',
+    'dev/tenant-workers/attempt-credentials.mjs', 'dev/executor/policy.mjs',
+    'dev/executor/output-budget.mjs', 'dev/executor/gateway-injection.mjs',
+    'dev/executor/egress-allowlist.mjs', 'backend/module-response.mjs',
+    'backend/resolution-response.mjs', 'probe-io.mjs',
+  ];
+  mf = new Miniflare({workers: [{
     dev: {outboundService: {type: 'worker', worker: 'api'}},
     config: {name: 'launcher', compatibilityDate,
       exports: {CloudflareLauncher: {type: 'durable-object', storage: 'sqlite'}},
@@ -76,9 +159,69 @@ test('workerd launcher alarm exchanges hello and inventory over an outbound Upgr
       }};
     `}}},
     },
+  }, {
+    config: {
+      name: 'tenant', compatibilityDate,
+      exports: {TenantHost: {type: 'durable-object', storage: 'sqlite'}, TenantApi: {type: 'worker'}},
+      env: {LOADER: {type: 'worker-loader'}, API_ORIGIN: {type: 'text', value: 'https://upstream.invalid'},
+        ATTEMPT_DEADLINE_MS: {type: 'text', value: '1'}},
+      manifest: {mainModule, modulesRoot: fileURLToPath(root), modules: {
+        [mainModule]: {type: 'esm', contents: main},
+        [engineModule]: {type: 'esm', contents: `
+          export const engineDigest = async () => 'test-engine';
+          export const mergePrimeList = () => [];
+          export const tenantEngineCode = (globalOutbound) => ({
+            compatibilityDate: '${compatibilityDate}',
+            mainModule: 'engine.js',
+            modules: {'engine.js': 'export default (' + ${JSON.stringify(engine.toString())} + ')()'},
+            globalOutbound,
+          });
+        `},
+        ...Object.fromEntries(deps.map((path) => [path, {type: 'esm', contents: readFileSync(new URL(path, root), 'utf8')}])),
+      }},
+    },
+    dev: {outboundService: {type: 'fetcher', handler: async (request) => {
+      const url = new URL(request.url);
+      origins.push(url.href);
+      if (url.pathname === '/redirect') return Response.redirect('https://undeclared.invalid/target', 302);
+      const gate = cases.get(url.pathname);
+      if (gate) {
+        gate.entered.resolve();
+        await gate.release.promise;
+      }
+      return new Response('upstream');
+    }}},
   }]});
+  worker = await mf.getWorker('tenant');
+});
+
+after(async () => {
+  for (const gate of cases.values()) gate.release.resolve();
+  await mf?.dispose();
+});
+
+async function host(tenantId, action, input, signal) {
+  const response = await worker.fetch('https://tenant.invalid/', {
+    method: 'POST', body: JSON.stringify({tenantId, action, input}), signal,
+  });
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
+}
+
+function route(tenantId, {routeId = tenantId, scenario = 'count', allowance = 8,
+  workflowDeadline = new Date(Date.now() + 20_000).toISOString()} = {}) {
+  const content = 'pinned = True\n';
+  return {tenantId, executionId: routeId, routeId, workflowDeadline, dispatchedAt: 1, context: {
+    scenario, engine_token: 'test-access', cloudflare_workspace: {
+      sources: {'wf.py': content},
+      manifest: {'wf.py': createHash('sha256').update(content).digest('hex')},
+      https_hosts: ['approved.invalid'], cpu_budget_ms: 200, subrequest_allowance: allowance,
+    },
+  }};
+}
+
+test('workerd launcher alarm exchanges hello and inventory over an outbound Upgrade', {timeout: 15_000}, async (t) => {
   const {signal} = t;
-  t.after(() => mf.dispose());
   const observer = await (await mf.getWorker('api')).fetch('https://test-api.invalid/observe', {
     headers: {Upgrade: 'websocket'},
   });
@@ -99,4 +242,76 @@ test('workerd launcher alarm exchanges hello and inventory over an outbound Upgr
   assert.deepEqual(await signHello(secret, hello.hello), hello.hello);
   assert.deepEqual(inventory, {kind: 'event', sequence: 1, session_generation: 1,
     payload: {event: 'inventory', inventory: {version: 1, routes: [], terminal_routes: []}}});
+});
+
+test('TenantHost serves the pinned module and keeps missing modules inside the snapshot', async () => {
+  await host('snapshot', 'warm');
+  const result = await host('snapshot', 'run', route('snapshot', {scenario: 'snapshot'}));
+  assert.deepEqual(result.output.result, {content: 'pinned = True\n', missing: 404});
+  assert.ok(origins.every((url) => !url.includes('/api/sdk/modules')));
+});
+
+test('TenantHost refuses a redirect to an undeclared egress host', async () => {
+  await host('redirect', 'warm');
+  const result = await host('redirect', 'run', route('redirect', {scenario: 'redirect'}));
+  assert.equal(result.output.result, 403);
+  assert.ok(origins.includes('https://approved.invalid/redirect'));
+  assert.ok(!origins.includes('https://undeclared.invalid/target'));
+});
+
+test('a null workflow deadline permits the attempt without an expiry timer', async () => {
+  await host('no-deadline', 'warm');
+  const result = await host('no-deadline', 'run', route('no-deadline', {workflowDeadline: null}));
+  assert.equal(result.attempt_state, 'completed');
+  assert.equal(result.output.result, 200);
+});
+
+test('a stop recorded before the run prevents dispatch', async () => {
+  await host('pre-stop', 'warm');
+  await host('pre-stop', 'stop', 'pre-stop');
+  const result = await host('pre-stop', 'run', route('pre-stop', {scenario: 'before-entry'}));
+  assert.deepEqual(result.terminal, {phase: 'attempt-stopped', attempt_state: 'not_started', api_calls: []});
+  assert.ok(!origins.includes('https://approved.invalid/before-entry'));
+});
+
+test('stopping a queued route settles it before an unbounded predecessor finishes', {timeout: 10_000}, async (t) => {
+  const tenant = 'queued-stop';
+  const {entered, release} = cases.get('/queued-block');
+  await host(tenant, 'warm');
+  const first = host(tenant, 'run', route(tenant, {routeId: 'active', scenario: 'queued-block', workflowDeadline: null}));
+  try {
+    await entered.promise;
+    const queued = host(tenant, 'run', route(tenant, {routeId: 'queued', workflowDeadline: null}), t.signal);
+    await host(tenant, 'wait', 'queued', t.signal);
+    await host(tenant, 'stop', 'queued', t.signal);
+    assert.equal((await queued).terminal.attempt_state, 'not_started');
+  } finally {
+    release.resolve();
+    await first;
+  }
+});
+
+test('stopping an active route revokes its egress before retirement finishes', {timeout: 10_000}, async () => {
+  const tenant = 'active-stop';
+  const {entered, release} = cases.get('/active-block');
+  await host(tenant, 'warm');
+  const running = host(tenant, 'run', route(tenant, {scenario: 'active-block', workflowDeadline: null}));
+  try {
+    await entered.promise;
+    assert.equal(await host(tenant, 'stop-egress', tenant), 403);
+    assert.equal((await running).terminal.attempt_state, 'uncertain');
+    assert.ok(!origins.includes('https://approved.invalid/after-stop'));
+  } finally {
+    release.resolve();
+  }
+});
+
+test('the per-call subrequest allowance blocks the second outbound request', async () => {
+  await host('budget', 'warm');
+  const control = await host('budget', 'run', route('budget', {routeId: 'budget-control', scenario: 'budget', allowance: 2}));
+  assert.deepEqual(control.output.result, [200, 200]);
+  const beforeCount = origins.length;
+  const limited = await host('budget', 'run', route('budget', {scenario: 'budget', allowance: 1}));
+  assert.deepEqual(limited.output.result, [200, 429]);
+  assert.equal(origins.slice(beforeCount).filter((url) => url.endsWith('/count')).length, 1);
 });

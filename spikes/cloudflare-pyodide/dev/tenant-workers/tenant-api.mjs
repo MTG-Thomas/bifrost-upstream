@@ -53,6 +53,7 @@ export class TenantHost extends DurableObject {
   #current = null;
   #generation;
   #tail = Promise.resolve();
+  #queuedStops = new Map();
   // The generation whose child last answered a ping. In memory on purpose: a
   // fresh or reset host instance must re-confirm its child before it accepts
   // an attempt (see run()), and a late answer from a retired generation can
@@ -153,6 +154,7 @@ export class TenantHost extends DurableObject {
         denied: 'unknown handle'});
       return new Response('unknown handle', {status: 401});
     }
+    if (!this.#reserveSubrequest()) return new Response('subrequest allowance exhausted', {status: 429});
     const snapshot = this.#current?.handle === handle && this.#current.snapshot;
     if (snapshot) {
       const path = new URL(target).pathname;
@@ -184,6 +186,7 @@ export class TenantHost extends DurableObject {
       this.noteEgress({...note, status: 403, denied: 'egress not declared'});
       return new Response('egress not declared', {status: 403});
     }
+    if (!this.#reserveSubrequest()) return new Response('subrequest allowance exhausted', {status: 429});
     const started = Date.now();
     const response = await fetch(this.#current.routeId ? new Request(request, {redirect: 'manual'}) : request);
     this.noteEgress({...note, status: response.status, ms: Date.now() - started});
@@ -193,7 +196,18 @@ export class TenantHost extends DurableObject {
   // The SDK's own POST /auth/refresh, answered for the handle (see
   // attempt-credentials.mjs): 'refreshed' | 'current' | 'refused' | 'gone'.
   refresh(handle) {
+    if (this.#current?.handle === handle && this.#credentials.token(handle) && !this.#reserveSubrequest()) {
+      return 'unavailable';
+    }
     return this.#credentials.refresh(handle);
+  }
+
+  #reserveSubrequest() {
+    const current = this.#current;
+    if (!current?.routeId) return true;
+    if (current.remainingSubrequests === 0) return false;
+    current.remainingSubrequests--;
+    return true;
   }
 
   // The outbound gateway reports each SDK call (path without query, status,
@@ -218,6 +232,7 @@ export class TenantHost extends DurableObject {
   }
 
   async stopWorkflow(routeId) {
+    this.#queuedStops.get(routeId)?.();
     const current = this.#current;
     let retirement;
     if (current?.routeId === routeId) {
@@ -236,13 +251,18 @@ export class TenantHost extends DurableObject {
   }
 
   async run({tenantId, executionId, context, publicUrl, egressHosts = [], dispatchedAt, routeId, workflowDeadline}) {
+    const stopKey = routeId ? `stopped:${routeId}` : null;
+    const stoppedInQueue = () => ({terminal: {phase: 'attempt-stopped', attempt_state: 'not_started', api_calls: []}});
     // Booting a child inside a fresh host can reset the host
     // (`code_updated`, retryable) even though the boot itself completes.
     // An attempt must never be in flight when that happens, because it cannot
     // be safely retried. So a host that has not confirmed its child refuses
     // before doing anything; the supervisor warms it (idempotent, retryable)
     // and dispatches once.
-    if (!this.#childIsReady()) return {needsWarm: true, attempt_state: 'not_started'};
+    if (!this.#childIsReady()) {
+      if (stopKey && await this.ctx.storage.get(stopKey)) return stoppedInQueue();
+      return {needsWarm: true, attempt_state: 'not_started'};
+    }
     // The deadline runs from the supervisor's dispatch (one value across its
     // warm-up retry), so queueing and warm-up count against it.
     const deadlineMs = Number(this.env.ATTEMPT_DEADLINE_MS) || DEFAULT_ATTEMPT_DEADLINE_MS;
@@ -255,10 +275,7 @@ export class TenantHost extends DurableObject {
         ...(queue_wait_ms === undefined ? {} : {queue_wait_ms}), api_calls},
     });
     const expiredInQueue = (queueWaitMs) => terminal('attempt-deadline', 'not_started', queueWaitMs, []);
-    const stopKey = routeId ? `stopped:${routeId}` : null;
-    const stoppedInQueue = () => terminal('attempt-stopped', 'not_started', undefined, []);
-    if (stopKey && await this.ctx.storage.get(stopKey)) return stoppedInQueue();
-    // Waiting stops at the deadline. The next attempt still waits for the
+    // Waiting stops at cancellation or the deadline. The next attempt still waits for the
     // predecessor, so no two attempts ever overlap in the child.
     const previous = this.#tail;
     let release;
@@ -266,13 +283,37 @@ export class TenantHost extends DurableObject {
     this.#tail = previous.then(() => mine);
     const queuedAt = Date.now();
     let queueTimer;
+    let wakeStop;
+    let stopRequested = false;
+    const queuedStop = new Promise((resolve) => {
+      wakeStop = () => {
+        stopRequested = true;
+        resolve(STOPPED);
+      };
+    });
+    if (routeId) this.#queuedStops.set(routeId, wakeStop);
     const turn = await Promise.race([
       previous.then(() => 'turn'),
+      queuedStop,
+      ...(stopKey ? [this.ctx.storage.get(stopKey).then((stopped) => {
+        if (stopped) wakeStop();
+        return queuedStop;
+      })] : []),
       new Promise((resolve) => {
         if (deadlineAt !== Infinity) queueTimer = setTimeout(() => resolve('expired'), Math.max(0, deadlineAt - Date.now()));
       }),
-    ]).finally(() => clearTimeout(queueTimer));
+    ]).catch((error) => {
+      release();
+      throw error;
+    }).finally(() => {
+      clearTimeout(queueTimer);
+      if (routeId) this.#queuedStops.delete(routeId);
+    });
     const queueWaitMs = Date.now() - queuedAt;
+    if (stopRequested) {
+      release();
+      return stoppedInQueue();
+    }
     if (turn === 'expired' || Date.now() >= deadlineAt) {
       // Expired in the queue: the child never saw it, so it is safe to retry.
       release();
@@ -301,6 +342,7 @@ export class TenantHost extends DurableObject {
       let stop;
       const stopped = new Promise((resolve) => { stop = resolve; });
       this.#current = {handle, generation, deadlineAt, routeId, stop, stopped: false,
+        remainingSubrequests: routeId ? workspace.subrequest_allowance : undefined,
         egress: new Set((routeId ? workspace.https_hosts : egressHosts).map((h) => h.toLowerCase())),
         snapshot: routeId ? createTenantGateway({store: workspace.sources, manifest: workspace.manifest}) : null};
       // Survives a host reset: the next instance retires this generation. The

@@ -55,7 +55,7 @@ One `CloudflareLauncher` DO per launcher incarnation (`launcher_id`,
      Reply with a route acknowledgement (no PID; see API side).
    - `terminate` → retire that tenant child's generation (best effort; the
      platform offers no physical kill) and emit a terminal for the route.
-   - `ready`, `retired` → state transitions.
+   - `ready` → mark the launcher ready.
    - anything else → error reply (not advertised, so the API never sends it).
 4. Emits `result` events with the engine's result, keeps them in DO storage
    until `ack {event_id}`, and replays unacknowledged terminals after a
@@ -239,14 +239,18 @@ run. Findings, checked against the cited code:
    intent before use, sends inventory before replay, and holds the slot
    until terminal acknowledgement. The DO reconnects by alarm. TenantHost
    serves the approved snapshot and applies the workflow's absolute deadline,
-   HTTPS allowlist, and per-invocation CPU and subrequest limits.
+   HTTPS allowlist, and subrequest allowance. It passes the CPU and subrequest
+   limits to Dynamic Workers. The pinned local workerd accepts those options
+   and allowed a second fetch with an allowance of one. The gateway enforces
+   the allowance for SDK, module, refresh, and third-party calls.
 
    **Accepted residuals.** Stop is cooperative and already-issued requests
    may finish. Phase 2's within-tenant egress attribution caveat still
    applies. The launcher retains route-ID tombstones for the incarnation's
-   lifetime. The local workerd test covers the control handshake. Claims,
-   durable log delivery, and behavior under Cloudflare relocation remain
-   phase 5 work.
+   lifetime. Local workerd tests cover the control handshake and TenantHost
+   route policy using a small dynamic test child. Claims, durable log
+   delivery, hosted CPU enforcement, and behavior under Cloudflare
+   relocation remain phase 5 work.
 5. **End to end against a real API host:**
    - one real claim, committed, logs flushed, credential revoked;
    - then lost welcome and lost ack, API takeover, DO reset, cancellation
@@ -414,6 +418,10 @@ until the ordinary queue deadline.
   opaque 1–255 character token using letters, digits, `.`, `_`, `:`, and
   `-`. Use the same handle for the route's lifetime and omit `pid`. A lost
   or ambiguous reply leaves the route reserved.
+  Once the launcher sends the reply, a transport disconnect leaves the
+  route eligible to enter the engine under its original deadline. The
+  next inventory includes the route or its retained terminal. A route
+  needs both confirmed storage and a sent reply to enter the engine.
 - An error reply to a `workflow` command is a definitive refusal
   (`not_started`). The launcher has never entered and must never enter
   the engine for that route. If engine entry may have occurred and the
@@ -456,6 +464,10 @@ until the ordinary queue deadline.
   carry a success. The API records `uncertain` as a failed execution with
   `WorkflowAttemptUncertain` and acknowledges terminal delivery under its
   owner fence. A stop reply alone never releases a reservation.
+  When recovering an engine-entry marker after a launcher reset, the
+  launcher also requests a best-effort TenantHost stop for that route.
+  TenantHost wakes cancelled queued attempts and returns `not_started`
+  while the predecessor continues to hold its place.
 - The Cloudflare logical envelope limit is 16 MiB, with individual frames
   capped at 1 MiB. With one message assembling at a time, the limit leaves
   room within a 128 MiB isolate for fragment buffers, the joined bytes,
