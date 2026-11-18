@@ -242,12 +242,16 @@ run. Findings, checked against the cited code:
    HTTPS allowlist, and subrequest allowance. It passes the CPU and subrequest
    limits to Dynamic Workers. The pinned local workerd accepts those options
    and allowed a second fetch with an allowance of one. The gateway enforces
-   the allowance for SDK, module, refresh, and third-party calls.
+   the allowance for SDK, module, and third-party calls, and for refreshes
+   that reach the API. It records each refusal against the attempt. Once the
+   allowance is spent, refresh is refused for the rest of the attempt.
 
    **Accepted residuals.** Stop is cooperative and already-issued requests
    may finish. Phase 2's within-tenant egress attribution caveat still
    applies. The launcher retains route-ID tombstones for the incarnation's
-   lifetime. Local workerd tests cover the control handshake and TenantHost
+   lifetime. TenantHost keeps a stop marker for each stopped route, without
+   a bound; the provider phase should expire them with the incarnation. The
+   launcher has no drain yet; the provider's `release` adds it. Local workerd tests cover the control handshake and TenantHost
    route policy using a small dynamic test child. Claims, durable log
    delivery, hosted CPU enforcement, and behavior under Cloudflare
    relocation remain phase 5 work.

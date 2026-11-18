@@ -125,7 +125,11 @@ export class TenantHost extends DurableObject {
     return this.#readyGeneration !== null && this.#readyGeneration === this.#generation;
   }
 
+  // Only an upstream refresh spends the attempt's subrequest allowance. Once
+  // the allowance is gone every later API call would be refused anyway, so
+  // the refresh is refused for the rest of the attempt.
   async #refreshUpstream(refreshToken) {
+    if (!this.#reserveSubrequest()) return 'refused';
     let response;
     try {
       response = await fetch(new URL('/auth/refresh', this.env.API_ORIGIN), {
@@ -154,7 +158,12 @@ export class TenantHost extends DurableObject {
         denied: 'unknown handle'});
       return new Response('unknown handle', {status: 401});
     }
-    if (!this.#reserveSubrequest()) return new Response('subrequest allowance exhausted', {status: 429});
+    if (!this.#reserveSubrequest()) {
+      await request.body?.cancel();
+      this.noteCall(handle, {method: request.method, path: new URL(target).pathname, status: 429,
+        denied: 'subrequest allowance exhausted'});
+      return new Response('subrequest allowance exhausted', {status: 429});
+    }
     const snapshot = this.#current?.handle === handle && this.#current.snapshot;
     if (snapshot) {
       const path = new URL(target).pathname;
@@ -186,7 +195,11 @@ export class TenantHost extends DurableObject {
       this.noteEgress({...note, status: 403, denied: 'egress not declared'});
       return new Response('egress not declared', {status: 403});
     }
-    if (!this.#reserveSubrequest()) return new Response('subrequest allowance exhausted', {status: 429});
+    if (!this.#reserveSubrequest()) {
+      await request.body?.cancel();
+      this.noteEgress({...note, status: 429, denied: 'subrequest allowance exhausted'});
+      return new Response('subrequest allowance exhausted', {status: 429});
+    }
     const started = Date.now();
     const response = await fetch(this.#current.routeId ? new Request(request, {redirect: 'manual'}) : request);
     this.noteEgress({...note, status: response.status, ms: Date.now() - started});
@@ -196,9 +209,6 @@ export class TenantHost extends DurableObject {
   // The SDK's own POST /auth/refresh, answered for the handle (see
   // attempt-credentials.mjs): 'refreshed' | 'current' | 'refused' | 'gone'.
   refresh(handle) {
-    if (this.#current?.handle === handle && this.#credentials.token(handle) && !this.#reserveSubrequest()) {
-      return 'unavailable';
-    }
     return this.#credentials.refresh(handle);
   }
 

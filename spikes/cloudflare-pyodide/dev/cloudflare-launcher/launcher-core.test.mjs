@@ -152,17 +152,15 @@ test('inventory is first, then replay, then replies in each generation', async (
   assert.deepEqual(reset.events.map((frame) => frame.sequence), [1, 2, 3]);
 });
 
-test('a lost ack keeps the same result until the matching ack, including while draining', async () => {
+test('a lost ack keeps the same result until the matching ack', async () => {
   const api = peer();
   await connect(api);
   await api.command('workflow', workflow());
   await api.finish();
   const terminal = api.frames().at(-1);
-  await api.core.drain();
   await api.close();
   await connect(api, 2);
-  assert.deepEqual(api.frames().at(-2), terminal);
-  assert.deepEqual(api.frames().at(-1), {event: 'draining'});
+  assert.deepEqual(api.frames().at(-1), terminal);
   await api.ack('wrong-event');
   assert.ok(api.data.has('slot'));
   await api.ack(terminal._event_id);

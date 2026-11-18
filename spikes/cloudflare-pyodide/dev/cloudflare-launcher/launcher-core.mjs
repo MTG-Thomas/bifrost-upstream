@@ -218,7 +218,6 @@ export class LauncherCore {
         attempt_state: terminal.attempt_state}] : [],
     }});
     if (terminal) this.#emit(session, terminal);
-    if (this.status() === 'draining') this.#emit(session, {event: 'draining'});
     session.nextHeartbeat = this.clock() + 1000;
   }
 
@@ -228,15 +227,6 @@ export class LauncherCore {
       this.#emit(session, {event: 'heartbeat'});
       session.nextHeartbeat += 1000;
       if (session.nextHeartbeat <= this.clock()) session.nextHeartbeat = this.clock() + 1000;
-    });
-  }
-
-  drain() {
-    return this.#serialize(async () => {
-      await this.#load();
-      if (this.retired || this.status() === 'draining') return;
-      await this.#saveControl({...this.#control, state: 'draining'});
-      this.#emitCurrent({event: 'draining'});
     });
   }
 
@@ -306,7 +296,7 @@ export class LauncherCore {
       refuse('ValueError', 'Invalid Cloudflare workflow dispatch');
       return;
     }
-    if (this.#slot || this.status() === 'draining') {
+    if (this.#slot) {
       refuse('MemoryError', 'No Cloudflare workflow slot available');
       return;
     }

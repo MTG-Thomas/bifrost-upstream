@@ -306,7 +306,7 @@ test('stopping an active route revokes its egress before retirement finishes', {
   }
 });
 
-test('the per-call subrequest allowance blocks the second outbound request', async () => {
+test('TenantHost refuses and records an outbound request past the subrequest allowance', async () => {
   await host('budget', 'warm');
   const control = await host('budget', 'run', route('budget', {routeId: 'budget-control', scenario: 'budget', allowance: 2}));
   assert.deepEqual(control.output.result, [200, 200]);
@@ -314,4 +314,6 @@ test('the per-call subrequest allowance blocks the second outbound request', asy
   const limited = await host('budget', 'run', route('budget', {scenario: 'budget', allowance: 1}));
   assert.deepEqual(limited.output.result, [200, 429]);
   assert.equal(origins.slice(beforeCount).filter((url) => url.endsWith('/count')).length, 1);
+  assert.deepEqual(limited.timings.api_calls.map(({status, denied}) => [status, denied ?? null]),
+    [[200, null], [429, 'subrequest allowance exhausted']]);
 });
