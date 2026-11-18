@@ -92,6 +92,7 @@ const main = `
 before(async () => {
   const deps = [
     'dev/tenant-workers/tenant-api.mjs', 'dev/tenant-workers/tenant-gateway.mjs',
+    'dev/tenant-workers/tenant-dispatch.mjs',
     'dev/tenant-workers/attempt-credentials.mjs', 'dev/executor/policy.mjs',
     'dev/executor/output-budget.mjs', 'dev/executor/gateway-injection.mjs',
     'dev/executor/egress-allowlist.mjs', 'backend/module-response.mjs',

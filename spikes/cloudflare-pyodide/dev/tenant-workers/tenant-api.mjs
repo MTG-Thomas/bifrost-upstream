@@ -23,6 +23,7 @@ import {readBudgetedJson} from '../executor/output-budget.mjs';
 import {DUMMY_CREDENTIAL} from '../executor/gateway-injection.mjs';
 import {AttemptCredentials, isRefreshChallenge, refreshReply, refreshRequestHandle} from './attempt-credentials.mjs';
 import {createTenantGateway} from './tenant-gateway.mjs';
+import {runtimeErrorClass} from './tenant-dispatch.mjs';
 
 const HANDLE_RE = /^run_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const VIRTUAL_API_ORIGIN = 'https://test-api.invalid';
@@ -215,7 +216,10 @@ export class TenantHost extends DurableObject {
   #reserveSubrequest() {
     const current = this.#current;
     if (!current?.routeId) return true;
-    if (current.remainingSubrequests === 0) return false;
+    if (current.remainingSubrequests === 0) {
+      console.info('launcher_subrequest_allowance_exhausted', current.routeId);
+      return false;
+    }
     current.remainingSubrequests--;
     return true;
   }
@@ -421,7 +425,10 @@ export class TenantHost extends DurableObject {
           child: output.child ? {...child, imported: Array.isArray(imported) ? imported.length : 0} : null,
           api_calls: this.#calls.get(handle)}};
     } catch (error) {
-      if (routeId && dispatched && !this.#current?.stopped) await this.#retireChild();
+      if (routeId && dispatched && !this.#current?.stopped) {
+        console.info('launcher_child_outcome_unknown', routeId, runtimeErrorClass(error).error_class);
+        await this.#retireChild();
+      }
       throw error;
     } finally {
       this.#current = null;
