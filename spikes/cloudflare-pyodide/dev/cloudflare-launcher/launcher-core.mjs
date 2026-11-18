@@ -1,3 +1,4 @@
+import {isStoragePath} from '../tenant-workers/tenant-gateway.mjs';
 import {
   CLOUDFLARE_HANDLERS, CLOUDFLARE_INCARNATION_ENDED, CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
   CREDENTIAL_PROTOCOL, FragmentAssembler, ProtocolError, encodeEnvelope, envelope, fragment,
@@ -10,7 +11,6 @@ const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const ROUTE = new RegExp(`^workflow:(${UUID}):${UUID}$`);
 const INSTANT = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?(?:Z|[+-]\d\d:\d\d)$/;
 const HOSTNAME = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
-const PYTHON_PATH = /^(?:[a-zA-Z_][a-zA-Z0-9_]*\/)*[a-zA-Z_][a-zA-Z0-9_]*\.py$/;
 const HEX64 = /^[0-9a-f]{64}$/;
 const STATES = new Set(['not_started', 'completed', 'uncertain']);
 const record = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -28,7 +28,7 @@ function validWorkspace(workspace, entry) {
 
   const paths = Object.keys(workspace.manifest);
   return paths.length === Object.keys(workspace.sources).length && paths.every((path) =>
-    PYTHON_PATH.test(path) && HEX64.test(workspace.manifest[path]) &&
+    isStoragePath(path) && path.length <= 512 && HEX64.test(workspace.manifest[path]) &&
     Object.hasOwn(workspace.sources, path) && typeof workspace.sources[path] === 'string');
 }
 

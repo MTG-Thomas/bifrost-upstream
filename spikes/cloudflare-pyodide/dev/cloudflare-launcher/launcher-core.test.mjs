@@ -117,6 +117,21 @@ function tenantWorkflow(suffix, tenant) {
   return attempt;
 }
 
+test('workspace entry supports hyphenated storage directories', async () => {
+  const h = peer();
+  await h.dial();
+  await h.welcome(1);
+  const payload = workflow();
+  const file = 'workflows/halo-psa/sync.py';
+  const bundle = payload.context.cloudflare_workspace;
+  bundle.manifest = {[file]: 'a'.repeat(64)};
+  bundle.sources = {[file]: 'def run(): return 42'};
+  payload.context.file_path = file;
+  await h.command('workflow', payload);
+  await h.entered;
+  assert.equal(h.calls[0].context.file_path, file);
+});
+
 test('distinct tenants run concurrently and ACK releases only its route', async () => {
   const first = deferred();
   const second = deferred();

@@ -25,6 +25,7 @@ async def run(args: argparse.Namespace) -> None:
         return
     proposal = await propose_approval(
         args.workflow_id, subrequest_allowance=args.subrequest_allowance, cpu_budget_ms=args.cpu_budget_ms,
+        https_hosts=args.https_host,
     )
     if args.command == "accept":
         if proposal.revision != args.review_sha256:
@@ -46,6 +47,7 @@ def main() -> None:
         command.add_argument("workflow_id", type=UUID)
         command.add_argument("--subrequest-allowance", type=int, required=True)
         command.add_argument("--cpu-budget-ms", type=int, required=True)
+        command.add_argument("--https-host", action="append", default=[], help="Exact additional HTTPS hostname")
         if name == "accept":
             command.add_argument("--review-sha256", required=True)
             command.add_argument("--operator", required=True)

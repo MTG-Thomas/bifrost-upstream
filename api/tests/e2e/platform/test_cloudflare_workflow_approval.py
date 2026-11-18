@@ -133,16 +133,24 @@ async def test_changed_module_carries_forward_through_live_platform_job(
             entry_sha256=entry_sha256, expected_revision=revision,
         )
 
+    original = b"from js import fetch\nasync def value(url): return await fetch('https://example.com/test')\n"
+    changed = b"from js import fetch\nasync def value(url): return await fetch(url)\n"
+
     try:
-        entry_sha = await index.write(path, f"from {module} import VALUE\ndef run(): return VALUE\n".encode())
-        old_sha = await index.write(module_path, b"VALUE = 'https://example.com/test'\n")
+        entry_sha = await index.write(path, f"from {module} import value\nasync def run(url): return await value(url)\n".encode())
+        old_sha = await index.write(module_path, original)
         await db_session.commit()
-        proposal = await propose_approval(workflow_id, subrequest_allowance=5, cpu_budget_ms=100)
+        discovered = await propose_approval(workflow_id, subrequest_allowance=5, cpu_budget_ms=100)
+        proposal = await propose_approval(
+            workflow_id, subrequest_allowance=5, cpu_budget_ms=100, https_hosts=["tenant.example.com"],
+        )
+        assert proposal.revision != discovered.revision
+        assert proposal.declaration.required_https_hosts == ["example.com"]
         await accept_proposal(db_session, proposal, accepted_by="test operator")
         await db_session.commit()
         assert await marker() == proposal.revision
 
-        new_sha = await index.write(module_path, b"VALUE = 'updated'\n")
+        new_sha = await index.write(module_path, changed)
         await db_session.commit()
         marker_before, request = await workflow_dispatch._cloudflare_placement(db_session, pending, message)
         assert marker_before is None and request is not None
@@ -151,14 +159,11 @@ async def test_changed_module_carries_forward_through_live_platform_job(
         await workflow_dispatch.hand_off_workflow_run(
             workflow_dispatch.AcceptedRun(uuid4(), message, pending, request),
         )
-        job_id = (await db_session.execute(select(PlatformJob.id).where(*job_filter))).scalar_one()
-        await db_session.commit()
         async with asyncio.timeout(120):
             while True:
                 async with async_session_factory() as observer:
-                    job = await observer.get(PlatformJob, job_id)
-                    assert job is not None
-                    if job.completed_at is not None:
+                    job = await observer.scalar(select(PlatformJob).where(*job_filter))
+                    if job is not None and job.completed_at is not None:
                         assert job.status == "succeeded", (job.error_code, job.error_message)
                         assert job.started_at is not None
                         result = job.result
@@ -170,7 +175,8 @@ async def test_changed_module_carries_forward_through_live_platform_job(
         assert result == {"outcome": "approved", "revision": derived.revision}
         assert derived.derived_from == proposal.revision
         assert derived.pin_diff == {module_path: {"before": old_sha, "after": new_sha}}
-        assert derived.declaration["https_hosts"] == ["example.com"]
+        assert derived.declaration["https_hosts"] == ["example.com", "tenant.example.com"]
+        assert derived.declaration["unresolved_url_calls"] == 1
         assert derived.declaration["required_https_hosts"] == []
         assert await marker() == derived.revision
         assert await prepare(proposal.revision, entry_sha) is None
@@ -178,10 +184,10 @@ async def test_changed_module_carries_forward_through_live_platform_job(
         assert workspace is not None
         verified_sources = workspace.bundle["sources"]
         assert isinstance(verified_sources, dict)
-        assert verified_sources[module_path] == "VALUE = 'updated'\n"
+        assert verified_sources[module_path] == changed.decode()
         await RepoStorage().write(module_path, b"VALUE = 'changed after enqueue'\n")
         assert await prepare(derived.revision, entry_sha) is None
-        await RepoStorage().write(module_path, b"VALUE = 'updated'\n")
+        await RepoStorage().write(module_path, changed)
         assert await revoke_approval(db_session, workflow_id) == derived.revision
         await db_session.commit()
         assert await marker() is None

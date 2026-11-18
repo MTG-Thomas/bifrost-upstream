@@ -107,6 +107,7 @@ async def test_lease_loss_prevents_acceptance(scenario, worker):
 
 @pytest.mark.parametrize("error, outcome", [
     (ObservationChanged("changed"), "superseded"),
+    (ObservationChanged("Expected an active loose-workspace workflow"), "superseded"),
     (AnalysisRejected("Unresolved import: requests"), "review_required"),
     (SourceUnresolved("Indexed source missing"), "retryable"),
 ])
@@ -127,7 +128,7 @@ async def test_analysis_failure_outcomes(scenario, worker, error, outcome):
 async def test_stage_failure_is_advisory(scenario, db_session, caplog):
     _, _, payload, _ = scenario
     definition = reapproval.CLOUDFLARE_REAPPROVAL_DEFINITION
-    dedupe = reapproval.digest(["reapproval-v3", payload.parent_revision, payload.observed_pins])
+    dedupe = reapproval._dedupe_key(payload)
     await db_session.execute(
         text("SELECT pg_advisory_xact_lock(hashtext('bifrost:platform-job:' || :key))"),
         {"key": f"{definition.job_type}:{dedupe}"},

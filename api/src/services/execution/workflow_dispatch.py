@@ -260,9 +260,9 @@ async def hand_off_workflow_run(accepted: AcceptedRun) -> None:
         request_queue_position_refresh()
     await hand_off(FAMILY)
     if accepted.reapproval is not None:
-        from src.jobs.platform.cloudflare_reapproval import stage_reapproval
+        from src.jobs.platform.cloudflare_reapproval import schedule_reapproval
 
-        await stage_reapproval(accepted.reapproval)
+        schedule_reapproval(accepted.reapproval)
 
 
 async def claim_workflow_dispatch(

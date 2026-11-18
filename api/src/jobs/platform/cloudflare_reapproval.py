@@ -154,6 +154,22 @@ async def _run_reapproval(context: PlatformJobContext, payload: ReapprovalPayloa
 CLOUDFLARE_REAPPROVAL_DEFINITION = define_platform_job(_JOB_TYPE, ReapprovalPayload, _run_reapproval)
 
 
+_staging: dict[str, asyncio.Task[None]] = {}
+
+
+def _dedupe_key(payload: ReapprovalPayload) -> str:
+    return digest(["reapproval-v4", payload.parent_revision, payload.observed_pins])
+
+
+def schedule_reapproval(request: ReapprovalRequest) -> None:
+    """Start best-effort enqueue after run commit. PlatformJob owns analysis."""
+    key = _dedupe_key(request.payload)
+    if key not in _staging:
+        task = asyncio.create_task(stage_reapproval(request))
+        _staging[key] = task
+        task.add_done_callback(lambda _: _staging.pop(key, None))
+
+
 async def stage_reapproval(request: ReapprovalRequest) -> None:
     """Stage optional work in its own short transaction after workflow commit."""
     try:
@@ -168,7 +184,7 @@ async def stage_reapproval(request: ReapprovalRequest) -> None:
 async def _stage_reapproval(db: AsyncSession, request: ReapprovalRequest) -> None:
     payload = request.payload
     workflow_key = f"{_JOB_TYPE}:{payload.workflow_id}"
-    dedupe_key = digest(["reapproval-v3", payload.parent_revision, payload.observed_pins])
+    dedupe_key = _dedupe_key(payload)
     analysed = func.json_each_text(PlatformJob.result["analysed_pins"]).table_valued(
         column("key"), column("value"),
     )

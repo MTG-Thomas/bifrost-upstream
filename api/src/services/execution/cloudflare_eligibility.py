@@ -26,6 +26,7 @@ from src.services.execution.cloudflare_analysis import (
     SourceUnresolved,
     analyze,
     digest,
+    reviewed_https_hosts,
 )
 from src.services.repo_storage import RepoStorage
 
@@ -43,6 +44,7 @@ class ApprovalDeclaration(BaseModel):
     packages: list[str] = Field(max_length=32)
     https_hosts: list[str] = Field(max_length=32)
     required_https_hosts: list[str] = Field(max_length=32)
+    unresolved_url_calls: int = Field(default=0, strict=True, ge=0)
     estimated_subrequests: int = Field(strict=True, ge=0)
     subrequest_allowance: int = Field(strict=True, ge=0, le=MAX_SUBREQUESTS)
     estimated_cpu_ms: int = Field(strict=True, ge=0)
@@ -129,11 +131,12 @@ async def propose_approval(
     workflow_id: UUID, *, subrequest_allowance: int, cpu_budget_ms: int,
     expected_pins: dict[str, str | None] | None = None,
     analysed_pins: dict[str, str | None] | None = None,
+    https_hosts: list[str] | None = None,
 ) -> ApprovalProposal:
     async with get_db_context() as db:
         workflow = await db.get(Workflow, workflow_id)
         if workflow is None or not _loose_workflow(workflow):
-            raise AnalysisRejected("Expected an active loose-workspace workflow")
+            raise ObservationChanged("Expected an active loose-workspace workflow")
         current = await current_approval(db, workflow_id)
         previous_revision = current.revision if current else None
         history_count = 0 if current else await _history_count(db, workflow_id)
@@ -168,9 +171,14 @@ async def propose_approval(
         if analysed_pins is not None:
             analysed_pins[path] = pin
 
-    declaration = ApprovalDeclaration.model_validate(await analyze(
+    result = await analyze(
         read, entry_path, function_name, subrequest_allowance=subrequest_allowance, cpu_budget_ms=cpu_budget_ms,
-    ))
+    )
+    declaration = ApprovalDeclaration.model_validate(result)
+    merged_hosts = sorted(set(declaration.required_https_hosts) | set(reviewed_https_hosts(https_hosts or [])))
+    if len(merged_hosts) > 32:
+        raise AnalysisRejected("The reviewed HTTPS allowlist exceeds 32 hosts")
+    declaration = declaration.model_copy(update={"https_hosts": merged_hosts})
     return ApprovalProposal(workflow_id, organization_id, previous_revision, declaration, history_count)
 
 

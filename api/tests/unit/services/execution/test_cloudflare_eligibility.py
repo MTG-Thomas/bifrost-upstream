@@ -1,5 +1,6 @@
 """Operator approval, source pinning and the opaque workflow send gate."""
 
+import asyncio
 import hashlib
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -109,6 +110,8 @@ async def test_enqueue_uses_only_the_durable_approval_and_index(review, monkeypa
         assert accepted.reapproval.payload.observed_pins == pins
         monkeypatch.setattr(workflow_dispatch, "hand_off", AsyncMock())
         await workflow_dispatch.hand_off_workflow_run(accepted)
+        assert enqueue.await_count == 0
+        await asyncio.gather(*cloudflare_reapproval._staging.values())
         enqueue.assert_awaited_once_with(accepted.reapproval)
     else:
         assert accepted.reapproval is None
@@ -145,9 +148,6 @@ async def test_analyzer_pins_transitive_modules_and_infers_packages_and_hosts():
 @pytest.mark.parametrize("source, limits, reason", [
     (b"from time import process_time as clock\ndef run(): return clock()\n", {}, "runtime operation"),
     (b"import unknown\ndef run(): pass\n", {}, "Unresolved import"),
-    (b"from js import fetch\ndef run(url): return fetch(url)\n", {}, "statically identifiable"),
-    (b"def run(host): return f'https://{host}/path'\n", {}, "fixed HTTPS origin"),
-    (b"def run(): return 'http://example.com'\n", {}, "exact, bare HTTPS"),
     (SOURCE, {"subrequest_allowance": 1}, "exceed the allowance"),
     (b"def run(): return [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22]\n",
      {"cpu_budget_ms": 1}, "exceeds the budget"),
@@ -172,10 +172,11 @@ async def test_regex_compile_is_allowed(statement):
     ("import httpx", "httpx.AsyncClient().get({url})"),
     ("from httpx import AsyncClient\nclient = AsyncClient()", "client.get({url})"),
 ])
-async def test_http_calls_require_identifiable_urls(prefix, call):
+async def test_http_calls_report_unresolved_urls(prefix, call):
     source = prefix + "\nasync def run(url): return await " + call + "\n"
-    with pytest.raises(AnalysisRejected, match="identifiable HTTPS URL"):
-        await _analyze({ENTRY: source.format(url="url").encode()})
+    unresolved = await _analyze({ENTRY: source.format(url="url").encode()})
+    assert unresolved["unresolved_url_calls"] == 1
+    assert unresolved["estimated_subrequests"] == 2
     result = await _analyze({ENTRY: source.format(url="'https://example.com/path'").encode()})
     assert result["required_https_hosts"] == ["example.com"]
 
@@ -203,8 +204,9 @@ async def test_http_analysis_ignores_data_access_and_tracks_client_origins(sourc
 
 async def test_relative_client_url_cannot_supply_a_new_authority():
     source = b"import httpx\ndef run():\n    c = httpx.Client(base_url='https://api.example.com')\n    return c.get('//other.example.com/x')"
-    with pytest.raises(AnalysisRejected, match="exact, bare HTTPS hostname"):
-        await _analyze({ENTRY: source})
+    result = await _analyze({ENTRY: source})
+    assert result["unresolved_url_calls"] == 1
+    assert result["https_hosts"] == ["api.example.com"]
 
 
 async def test_shadowed_builtin_names_are_local():
@@ -229,6 +231,7 @@ async def test_mapping_get_without_http_intent_is_allowed():
     "import importlib",
     "e = __import__",
     "import builtins; builtins.__dict__['compile']",
+    "import builtins; builtins.compile = str",
     "__builtins__['compile']",
     "x.__subclasses__()",
     "x.__globals__",
@@ -241,9 +244,6 @@ async def test_mapping_get_without_http_intent_is_allowed():
     "import runpy",
     "import code",
     "import codeop",
-    "import httpx; getattr(httpx, 'post')",
-    "import js; g = js.fetch",
-    "import httpx; client = httpx.Client(); g = client.get",
 ])
 async def test_dynamic_python_is_rejected(statement):
     with pytest.raises(AnalysisRejected, match="dynamic|Unsupported Pyodide import"):
