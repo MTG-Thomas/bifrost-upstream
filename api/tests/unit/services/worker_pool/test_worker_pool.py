@@ -558,6 +558,56 @@ async def test_cloudflare_claim_lock_leaves_other_tenants_free(db, monkeypatch) 
     assert claimed is not None and claimed.subject_id == UUID(first)
 
 
+async def test_cloudflare_losing_tenant_race_claims_next_tenant_without_waiting(db, monkeypatch) -> None:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    other_tenant = uuid4()
+    async with db.context() as session:
+        session.add(Organization(id=other_tenant, name=str(other_tenant), created_by="unit"))
+    winner, contender = await _declared_worker(db), await _declared_worker(db)
+    first, second = await _accept_pool_run(), await _accept_pool_run()
+    third = await _accept_pool_run(org_id=str(other_tenant))
+    for execution_id in (first, second, third):
+        await _set_request(db.sessions, execution_id, 32 * MIB, approved=True)
+
+    winning_claim, losing_lock, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    original_claim = workflow_dispatch.claim_workflow_dispatch
+
+    async def pause_winner(*args, **kwargs):
+        if kwargs["execution_id"] == UUID(first):
+            winning_claim.set()
+            await release.wait()
+        return await original_claim(*args, **kwargs)
+
+    monkeypatch.setattr(workflow_dispatch, "claim_workflow_dispatch", pause_winner)
+    execute = AsyncSession.execute
+    losing_task = None
+
+    async def observe_tenant_lock(session, statement, params=None, **kwargs):
+        if asyncio.current_task() is losing_task and params == {
+            "key": "bifrost:worker-pool:cloudflare-claim:platform",
+        }:
+            losing_lock.set()
+        return await execute(session, statement, params, **kwargs)
+
+    monkeypatch.setattr(AsyncSession, "execute", observe_tenant_lock)
+    winning_task = asyncio.create_task(_claim(winner))
+    try:
+        await asyncio.wait_for(winning_claim.wait(), timeout=10)
+        losing_task = asyncio.create_task(_claim(contender))
+        await asyncio.wait_for(losing_lock.wait(), timeout=10)
+    finally:
+        release.set()
+        won = await winning_task
+        retried = await losing_task if losing_task is not None else None
+
+    assert won is not None and won.subject_id == UUID(first)
+    assert retried is not None and retried.subject_id == UUID(third)
+    async with db.context() as session:
+        queued = await session.scalar(select(WorkDispatch).where(WorkDispatch.subject_id == UUID(second)))
+        assert queued is not None and queued.assigned_worker_id is None
+
+
 async def test_missing_claim_counts_only_against_its_launchers_slots(db) -> None:
     occupied = await _declared_worker(db)
     free = await _declared_worker(db)

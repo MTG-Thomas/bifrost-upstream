@@ -294,116 +294,125 @@ async def claim_next(
     claim: PoolClaim | None = None
     reserved = False
     try:
-        async with get_db_context() as db:
-            if not await fence_remote_owner(db, for_update=True):
-                return None
-            picked = (await db.execute(candidate)).one_or_none()
-            if picked is None:
-                return None
-            assignment = [WorkDispatch.id == picked.id, ready, profile_eligible]
-            if picked.opaque:
-                # The dispatch row is locked, but another launcher can pick a
-                # different dispatch for this tenant. Recheck eligibility in
-                # the UPDATE's fresh snapshot after taking the tenant lock.
-                await db.execute(
-                    text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-                    {"key": f"bifrost:worker-pool:cloudflare-claim:{picked.tenant_id or 'platform'}"},
-                )
-                assignment.append(dispatch_tenant.is_not_distinct_from(picked.tenant_id))
-            blocked = await db.scalar(
-                select(
-                    exists().where(
-                        *unassigned,
-                        WorkDispatch.created_at < picked.created_at,
-                        WorkDispatch.created_at < _now() - HEAD_OF_LINE_WAIT,
-                        WorkDispatch.memory_request_bytes > fits_bytes,
-                        WorkDispatch.memory_request_bytes <= budget_bytes,
+        for attempt in range(2):
+            async with get_db_context() as db:
+                if not await fence_remote_owner(db, for_update=True):
+                    return None
+                picked = (await db.execute(candidate)).one_or_none()
+                if picked is None:
+                    return None
+                assignment = [WorkDispatch.id == picked.id, ready, profile_eligible]
+                if picked.opaque:
+                    # The dispatch row is locked, but another launcher can pick a
+                    # different dispatch for this tenant. Recheck eligibility in
+                    # the UPDATE's fresh snapshot after taking the tenant lock.
+                    await db.execute(
+                        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                        {"key": f"bifrost:worker-pool:cloudflare-claim:{picked.tenant_id or 'platform'}"},
+                    )
+                    assignment.append(dispatch_tenant.is_not_distinct_from(picked.tenant_id))
+                blocked = await db.scalar(
+                    select(
+                        exists().where(
+                            *unassigned,
+                            WorkDispatch.created_at < picked.created_at,
+                            WorkDispatch.created_at < _now() - HEAD_OF_LINE_WAIT,
+                            WorkDispatch.memory_request_bytes > fits_bytes,
+                            WorkDispatch.memory_request_bytes <= budget_bytes,
+                        )
                     )
                 )
-            )
-            if blocked:
-                return None
-            row = (
-                await db.execute(
-                    update(WorkDispatch)
-                    .where(*assignment)
-                    .values(assigned_worker_id=incarnation_id)
-                    .returning(
-                        WorkDispatch.id.label("dispatch_id"),
-                        WorkDispatch.handler.label("handler"),
-                        WorkDispatch.message.label("message"),
-                        WorkDispatch.family.label("dispatch_family"),
-                        WorkDispatch.subject_id.label("subject"),
-                        WorkDispatch.memory_request_bytes.label("memory_request_bytes"),
-                        WorkDispatch.created_at.label("queued_at"),
-                        WorkDispatch.cloudflare_revision,
+                if blocked:
+                    return None
+                row = (
+                    await db.execute(
+                        update(WorkDispatch)
+                        .where(*assignment)
+                        .values(assigned_worker_id=incarnation_id)
+                        .returning(
+                            WorkDispatch.id.label("dispatch_id"),
+                            WorkDispatch.handler.label("handler"),
+                            WorkDispatch.message.label("message"),
+                            WorkDispatch.family.label("dispatch_family"),
+                            WorkDispatch.subject_id.label("subject"),
+                            WorkDispatch.memory_request_bytes.label("memory_request_bytes"),
+                            WorkDispatch.created_at.label("queued_at"),
+                            WorkDispatch.cloudflare_revision,
+                        )
+                    )
+                ).one_or_none()
+                if row is None:
+                    if picked.opaque and attempt == 0:
+                        # Leave this transaction before taking another tenant's
+                        # lock. The retry still fences ownership and queue order.
+                        other_tenant = dispatch_tenant.is_distinct_from(picked.tenant_id)
+                        unassigned = (*unassigned, other_tenant)
+                        candidate = candidate.where(other_tenant)
+                        continue
+                    return None
+                claim_id = uuid4()
+                db.add(
+                    ExecutionWorkerClaim(
+                        id=claim_id,
+                        worker_id=incarnation_id,
+                        family=row.dispatch_family,
+                        subject_id=row.subject,
                     )
                 )
-            ).one_or_none()
-            if row is None:
-                return None
-            claim_id = uuid4()
-            db.add(
-                ExecutionWorkerClaim(
-                    id=claim_id,
-                    worker_id=incarnation_id,
-                    family=row.dispatch_family,
-                    subject_id=row.subject,
-                )
-            )
-            claimed = None
-            if row.handler == "workflow.execute":
-                from src.services.execution.workflow_dispatch import claim_workflow_dispatch
+                claimed = None
+                if row.handler == "workflow.execute":
+                    from src.services.execution.workflow_dispatch import claim_workflow_dispatch
 
-                # One transaction for assignment and the run's own claim. A run
-                # that moved on (cancelled) leaves claimed None: the consumer then
-                # finds nothing to claim and discards it, waking a sync caller.
-                claimed = await claim_workflow_dispatch(
-                    db, dispatch_id=row.dispatch_id, execution_id=row.subject
-                )
-            await db.execute(
-                update(ExecutionWorker)
-                .where(ExecutionWorker.id == incarnation_id)
-                .values(
-                    last_claim_at=_now(), reserved_for_dispatch_id=None,
-                    # Opaque settlement can beat the next heartbeat. Publish
-                    # the busy slot atomically with its durable claim.
-                    active_runs=case(
-                        (
-                            ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
-                            ExecutionWorker.active_runs + 1,
+                    # One transaction for assignment and the run's own claim. A run
+                    # that moved on (cancelled) leaves claimed None: the consumer then
+                    # finds nothing to claim and discards it, waking a sync caller.
+                    claimed = await claim_workflow_dispatch(
+                        db, dispatch_id=row.dispatch_id, execution_id=row.subject
+                    )
+                await db.execute(
+                    update(ExecutionWorker)
+                    .where(ExecutionWorker.id == incarnation_id)
+                    .values(
+                        last_claim_at=_now(), reserved_for_dispatch_id=None,
+                        # Opaque settlement can beat the next heartbeat. Publish
+                        # the busy slot atomically with its durable claim.
+                        active_runs=case(
+                            (
+                                ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+                                ExecutionWorker.active_runs + 1,
+                            ),
+                            else_=ExecutionWorker.active_runs,
                         ),
-                        else_=ExecutionWorker.active_runs,
-                    ),
-                    memory_reserved_bytes=case(
-                        (
-                            ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
-                            ExecutionWorker.memory_reserved_bytes + row.memory_request_bytes,
+                        memory_reserved_bytes=case(
+                            (
+                                ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+                                ExecutionWorker.memory_reserved_bytes + row.memory_request_bytes,
+                            ),
+                            else_=ExecutionWorker.memory_reserved_bytes,
                         ),
-                        else_=ExecutionWorker.memory_reserved_bytes,
-                    ),
+                    )
                 )
-            )
-            claim = PoolClaim(
-                dispatch_id=row.dispatch_id,
-                handler=row.handler,
-                message={
-                    **row.message,
-                    **({"claim_id": str(claim_id)} if row.dispatch_family == "agent_summary" else {}),
-                },
-                subject_id=row.subject,
-                memory_request_bytes=row.memory_request_bytes,
-                queued_at=row.queued_at,
-                claimed=dict(claimed) if claimed is not None else None,
-                cloudflare_revision=row.cloudflare_revision,
-                tenant_id=picked.tenant_id if picked.opaque else None,
-            )
-            if reserve_claim is not None:
-                reserve_claim(claim)
-                reserved = True
-            # Keep commit inside the reservation's cleanup guard so a failed
-            # transaction cannot retain a local admission hold.
-            await db.commit()
+                claim = PoolClaim(
+                    dispatch_id=row.dispatch_id,
+                    handler=row.handler,
+                    message={
+                        **row.message,
+                        **({"claim_id": str(claim_id)} if row.dispatch_family == "agent_summary" else {}),
+                    },
+                    subject_id=row.subject,
+                    memory_request_bytes=row.memory_request_bytes,
+                    queued_at=row.queued_at,
+                    claimed=dict(claimed) if claimed is not None else None,
+                    cloudflare_revision=row.cloudflare_revision,
+                    tenant_id=picked.tenant_id if picked.opaque else None,
+                )
+                if reserve_claim is not None:
+                    reserve_claim(claim)
+                    reserved = True
+                # Keep commit inside the reservation's cleanup guard so a failed
+                # transaction cannot retain a local admission hold.
+                await db.commit()
+                break
     except BaseException:
         if reserved and claim is not None and release_reservation is not None:
             release_reservation(claim)
