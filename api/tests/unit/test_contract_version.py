@@ -432,7 +432,9 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Preserve both merged surfaces; existing CLI minimum stays unchanged.
     # Inline-code permission clarification only changes an existing field description.
     # CLI shapes and MIN_CLI_VERSION remain unchanged.
-    "5001d16c3d26682f5f3bddfb388303378b8d28bd0239b3e20507f9417e334925"
+    # WorkerCapacityProfile.runtime_profile is additive and defaults to the
+    # Linux runtime, so existing CLI shapes and the minimum stay unchanged.
+    "9fdd97e7141336e1e407c16a6981c97b14fc9e1d2c2506884833a50e23a020ce"
 )
 
 
