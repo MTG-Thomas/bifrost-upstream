@@ -86,7 +86,7 @@ def seeded_api():
             body = json.dumps(body).encode()
         try:
             with urlopen(Request(origin + path, data=body, headers=headers, method=method), timeout=15) as response:
-                return json.load(response)
+                return None if response.status == 204 else json.load(response)
         except HTTPError as error:
             raise SystemExit(f"{method} {path} returned HTTP {error.code}") from None
 
