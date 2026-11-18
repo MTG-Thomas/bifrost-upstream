@@ -1,7 +1,7 @@
 # Cloudflare launcher: Workers as an external worker in the upstream pool
 
-Status: phase 4 implemented on the fork, 2026-11-18. Real API qualification
-is phase 5. Targets upstream `main` (Jack's merged
+Status: phase 5a passed on the fork, 2026-11-18. Hosted qualification is
+phase 5b. Targets upstream `main` (Jack's merged
 capacity core, #1423) and stays compatible with the direction of #1424
 (API-owned compute, derived worker keys) and #1425 (Cloudflare Containers
 provider). Workers for Platforms is out of scope.
@@ -259,13 +259,24 @@ run. Findings, checked against the cited code:
    - one real claim, committed, logs flushed, credential revoked;
    - then lost welcome and lost ack, API takeover, DO reset, cancellation
      and late egress.
-   - **Phase 5a local qualification is in progress.** The CT128 debug API
-     exposed a provider configuration conflict with token-only manual
-     enrollment. The fork permits that configuration with Cloudflare hello
-     enabled. CT128 workerd passed eight launcher and gateway tests and a
-     Python Dynamic Worker smoke probe. The
-     [real API harness](../e2e/README.md) remains to be qualified through
-     claim, settlement, credential revocation, and recovery.
+   - **Phase 5a passed on CT128.** The [local harness](../e2e/README.md)
+     ran the real Bifrost API and Python Dynamic Worker in Miniflare/workerd
+     from fork commit `7e1f7c846`. Signed hello and inventory opened claims.
+     PostgreSQL attributed execution `c3f5668d-2f9e-4f47-bb59-a5b32e34eaee`
+     to the Cloudflare incarnation and stored its result and one fixture log.
+     The same run token returned HTTP 200 during execution and 401 after settlement.
+   - Lost welcome advanced hello from 2 to 3. Lost ACK replayed the same
+     event once, with unchanged settlement and log count. A replacement API
+     owner adopted the live route and committed it once. A launcher reset
+     recovered an uncertain terminal and the API recorded
+     `WorkflowAttemptUncertain` without redispatch. An active cancellation
+     sent `terminate`, revoked egress (HTTP 403), and settled as uncertain.
+     Retirement returned close code 4001 and no further hello was observed
+     across the 15-second watchdog window.
+   - The dev API initially required a provider endpoint with the capacity
+     token. Token-only manual enrollment now works with the Cloudflare
+     hello gate enabled. The focused configuration suite passed 13 tests.
+     Deadline-only late egress was outside this real-API run.
    - **Phase 5b** covers hosted CPU enforcement and Cloudflare relocation.
 6. Scale-out through a provider last. Before enabling it, each managed
    scope must declare the runtime profile its launches produce. The

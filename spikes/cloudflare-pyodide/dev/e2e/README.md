@@ -18,7 +18,11 @@ umask 077
 python3 spikes/cloudflare-pyodide/dev/e2e/phase5a.py prepare
 BIFROST_FORCE_PORT=1 nohup setsid ./debug.sh up >.phase5-debug.log 2>&1 </dev/null &
 # Wait for "Stack is up." in the private boot log.
-python3 spikes/cloudflare-pyodide/dev/e2e/phase5a.py run /absolute/path/generated-runtime.mjs
+BIFROST_RUNTIME=/absolute/path/generated-runtime.mjs nohup setsid sh -c '
+  python3 spikes/cloudflare-pyodide/dev/e2e/phase5a.py run "$BIFROST_RUNTIME"
+  printf "PHASE5_RUN_EXIT=%s\n" "$?"
+' >.phase5-run.log 2>&1 </dev/null &
+# Wait for PHASE5_RUN_EXIT in .phase5-run.log.
 BIFROST_FORCE_PORT=1 ./debug.sh down
 ```
 
@@ -52,3 +56,8 @@ cooperative stop leaves an uncertain outcome and the API stores a failure.
 Retirement marks the enrolled row
 and forces a reconnect so the API can return close code 4001. These hooks are
 loaded only by Miniflare in this harness.
+
+The verified run used archive `7e1f7c846` on CT128, project
+`bifrost-debug-a3acd344`. Its log is
+`/opt/bifrost-tests/phase5-7e1f7c846/.phase5-run.log`. The runtime digest was
+`fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5`.
