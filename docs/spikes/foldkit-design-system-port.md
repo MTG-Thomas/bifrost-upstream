@@ -156,7 +156,7 @@ It runs on oxlint (Rust) as a JS plugin, beside ESLint rather than inside it. On
 
 They report nothing on the spike code. A deliberately planted `Effect.sync(() => promise)` was caught.
 
-Setup friction for Bifrost:
+Setup friction for Bifrost (resolved in step 2 below):
 
 - The type-aware layer runs on TypeScript-Go (TS 7). It **rejects Bifrost's `tsconfig.app.json`** because TS 7 removed `baseUrl`. It also needs a separately installed and patched `oxlint-tsgolint` binary.
 - To run it here, I copied the code into a scratch project with a TS 7-compatible `tsconfig`.
@@ -196,6 +196,44 @@ If Bifrost adopts Foldkit as a direction, here is a staged path that keeps every
    - Raise the Tab-focus and disabled-semantics findings upstream.
 3. **Pilot a whole route, not an island**, with no Radix-only dependencies. Execution history detail is a candidate once its dependencies are ported. Vendor the Foldkit subtree and run both lint layers in CI.
 4. **Gate expansion** on the pilot's measured cost: bundle, review time for Submodel wiring, defect rate, and agent iteration counts. Keep the parity harness running against each newly ported primitive.
+
+## Progress on the Staged Path
+
+Steps 1, 2, and 4 are done; step 3 (a whole-route pilot) is not started.
+
+**1. Shared style layer.**
+
+- These now live in framework-free `client/src/components/ui/*-variants.ts` modules that the React components consume:
+  - `cva` variants for button, badge, alert, tabs, toggle, and input-group
+  - class strings for input, label, and skeleton
+  - structural classes for dialog and dropdown-menu
+- The Foldkit port imports the same modules. Dialog and dropdown share structure only, because Radix and Foldkit use different animation and highlight hooks.
+- Rendering 94 React component and variant combinations before and after produced identical class sets (92 byte-identical, 2 reordered).
+- Sharing removed three drifts the hand copies had accumulated: dialog header padding, separator opacity, and label line height.
+
+**2. Tooling blockers.**
+
+- **`baseUrl` removed** from `client/tsconfig*.json`; `tsc -b` passes.
+- **Lint.** `npm run lint:foldkit` runs both lint layers on `src/foldkit` against Bifrost's real `tsconfig.app.json`, in about 3.5 s. A seeded defect fails each layer.
+- **Scoped Vite plugin.** `client/src/build-plugins/foldkit-scoped.ts` wraps `@foldkit/vite-plugin`:
+  - view identity applies only to `.ts` modules under `src/foldkit`
+  - the full-page reload fires only for those files
+  - the DevTools overlay loads on demand, when a program enables DevTools
+- **Verified on Bifrost's own Vite dev server:**
+  - Editing `src/pages/Login.tsx` hot-updated with no page reload, and the embedded runtime stayed mounted.
+  - Editing `src/foldkit/executionLogs/logs.ts` triggered one Model-preserving reload.
+  - The DevTools MCP discovered the runtime inside the Bifrost page, read the Model, and dispatched `UpdatedQuery`; the live DOM updated.
+- **Bundle effect.** The production entry chunk and `ExecutionDetails` are byte-identical with and without the plugin. The Foldkit chunk grows about 0.7 kB gzip for view identity.
+- **Tests.** The plugin is in the Vitest config too; the full client suite passes (666 files, 4,473 tests).
+- **Dependencies.** The plugin brings `@effect/platform-node`, which pulls a Redis client and `ws` into dev dependencies, and bumps `ws` 8.21.0 → 8.23.0.
+- **Upstream.** Seven upstream asks are drafted in [Foldkit Upstream Drafts](foldkit-upstream-drafts.md). Nothing has been filed.
+
+**4. Gates.** [Foldkit Adoption Gates](foldkit-adoption-gates.md) defines four automated gates (lint, tests, bundle, parity) and the review thresholds a pilot must meet:
+
+- `client/scripts/foldkit-gates.mjs` fails on Effect or Foldkit code outside Foldkit chunks, or on budget overruns.
+- The parity harness now fails on any unaccepted or resolved difference (`accepted-differences.json`).
+
+Wiring the gates up surfaced a harness bug: Tailwind generated almost no CSS for the parity and benchmark pages. After the fix, parity is unchanged at 43 of 48, and the execution-logs benchmark was re-run. A real-browser check with `prefers-reduced-motion` confirmed dialogs close and reopen correctly in both renderers.
 
 ## Verification
 

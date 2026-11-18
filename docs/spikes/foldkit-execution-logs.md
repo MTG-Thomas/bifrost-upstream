@@ -81,20 +81,22 @@ According to an esbuild metafile of the same module graph, about **70% of the Fo
 
 ### Runtime Performance
 
-These are production builds in headless Chromium, with 6 runs per cell; values are the median and [min–max]. The harness streams appends: it re-renders with one more line and waits until the line is in the DOM, 100 appends per run (50 at 5,000 lines). "Task" is CDP `TaskDuration` (total main-thread work) for the whole run. The harness is in `docs/spikes/foldkit/bench/`.
+These are production builds in headless Chromium, with 6 runs per cell; values are the median and [min–max]. The harness streams appends: it re-renders with one more line and waits until the line is in the DOM, 100 appends per run (50 at 5,000 lines). "Task" is CDP `TaskDuration` (total main-thread work) for the whole run. Both panels are fully styled. The harness is in `docs/spikes/foldkit/bench/`.
 
-| Base lines | Renderer | Append → visible p50 | p95 | Filter keystroke | Main-thread task ms | JS heap MB |
-|---|---|---|---|---|---|---|
-| 200 | React | **4** [4–5] | 8 | **7** | 744 | **7** |
-| 200 | Foldkit | 33 [33–34] | 34 | 22 | **639** | 12 |
-| 2,000 | React | **22** [17–30] | 39 | **27** | 3,090 [2,336–4,272] | **25** |
-| 2,000 | Foldkit | 34 [34–36] | 37 | 36 | **2,000** [1,836–3,713] | 39 |
-| 5,000 | React | 46 [43–50] | 68 | **39** | 3,220 | 48 |
-| 5,000 | Foldkit | **37** [36–41] | 56 | 51 | **2,624** | 52 |
+| Base lines | Renderer | Initial render ms | Append → visible p50 | p95 | Filter keystroke | Main-thread task ms | JS heap MB |
+|---|---|---|---|---|---|---|---|
+| 200 | React | 109 | **6** [5–6] | **8** | **7** | 1,072 | **7** |
+| 200 | Foldkit | 123 | 34 [34–34] | 36 | 23 | **962** | 12 |
+| 2,000 | React | 359 | **21** [19–24] | 40 | **19** | 4,139 [3,546–4,404] | **14** |
+| 2,000 | Foldkit | **227** | 34 [34–34] | 44 | 36 | **2,993** [2,809–3,128] | 38 |
+| 5,000 | React | 1,101 | 55 [45–67] | 99 | **42** | 5,672 [5,373–6,636] | **40** |
+| 5,000 | Foldkit | **439** | **44** [43–46] | **74** | 66 | **3,706** [3,522–4,247] | 54 |
+
+**Correction (follow-up work):** the first published table came from a harness whose Vite root was outside `client/`. Tailwind therefore never scanned the design-system sources and both panels rendered almost unstyled. The table above is the re-run with full CSS. The conclusions held, but styling makes React's large-list costs relatively heavier, especially initial render at 5,000 lines.
 
 How to read this:
 
-- **Latency floor.** The Foldkit panel has a floor of about two frames, ≈33 ms at 60 Hz. Its path is: React passive effect → port `send` → Schema decode → subscription stream → `update` → render on the next animation frame. React's synchronous commit puts small lists on screen in 4 ms.
+- **Latency floor.** The Foldkit panel has a floor of about two frames, ≈33 ms at 60 Hz. Its path is: React passive effect → port `send` → Schema decode → subscription stream → `update` → render on the next animation frame. React's synchronous commit puts small lists on screen in 6 ms.
 - **Throughput.** With per-row memoization, Foldkit does less total main-thread work at 2,000+ lines and its latency stays flat. The React panel rebuilds every row on each append because its rows are not memoized. A `React.memo` row would probably close that gap but was not tested. This compares implementations, not a framework ceiling.
 - **First version was much slower.** An idiomatic first version without row memoization did **2.75× React's main-thread work** at 2,000 lines (6,714 vs 2,440 ms), with 65 ms p50 latency. A CPU profile attributed the excess to Foldkit's per-vnode attribute and style sanitisation (`toHtmlAttributeName`, `cssDeclarationName`, `assertStyleIsRepresentable`, `hasUnsafeStyleSyntax`), `dedupeChildList`, and port decoding.
 - **The fix required structural sharing.** Port values are Schema-decoded into fresh objects, so `createLazy`/`createKeyedLazy` (which compare by reference) never hit until `update` reconciles new lines against the previous Model (`reconcileLogs`). This is an inherent cost of the port boundary that React props do not have.

@@ -1,0 +1,5 @@
+/* The client stylesheet, with Tailwind pointed at the client sources: this
+   harness's Vite root is outside client/, so automatic source detection
+   would otherwise miss every design-system class. */
+@import "../../../../client/src/index.css";
+@source "../../../../client/src";

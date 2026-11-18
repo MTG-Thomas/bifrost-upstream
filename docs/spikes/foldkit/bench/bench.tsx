@@ -1,4 +1,4 @@
-import "@/index.css";
+import "./styles.css";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { ExecutionLogsPanel, type LogEntry } from "@/components/execution/ExecutionLogsPanel";

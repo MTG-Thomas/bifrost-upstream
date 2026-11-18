@@ -25,7 +25,8 @@
 		"test:e2e:ui": "playwright test --ui",
 		"test:e2e:headed": "playwright test --headed",
 		"test:e2e:debug": "playwright test --debug",
-		"playwright:install": "playwright install chromium"
+		"playwright:install": "playwright install chromium",
+		"lint:foldkit": "oxlint -c .oxlintrc.foldkit.json --deny-warnings src/foldkit && effect-tsgo patch --no-typescript --oxlint && oxlint -c .oxlintrc.effect.json --type-aware --tsconfig tsconfig.app.json --deny-warnings src/foldkit"
 	},
 	"dependencies": {
 		"@atlaskit/pragmatic-drag-and-drop": "^4.0.0",
@@ -111,7 +112,11 @@
 		"zustand": "^5.1.0"
 	},
 	"devDependencies": {
+		"@effect/tsgo": "0.70.0",
 		"@eslint/js": "^9.39.5",
+		"@foldkit/devtools": "0.171.0",
+		"@foldkit/oxlint-plugin": "0.15.4",
+		"@foldkit/vite-plugin": "0.29.1",
 		"@playwright/test": "^1.65.0",
 		"@shadcn/lint": "^0.2.5",
 		"@tailwindcss/typography": "^0.5.20",
@@ -135,6 +140,8 @@
 		"js-yaml": "^5.5.0",
 		"jsdom": "^31.0.1",
 		"openapi-typescript": "^7.9.1",
+		"oxlint": "1.94.0",
+		"oxlint-tsgolint": "7.0.2007",
 		"playwright": "^1.56.0",
 		"prettier": "^3.10.1",
 		"typescript": "^5.9.3",

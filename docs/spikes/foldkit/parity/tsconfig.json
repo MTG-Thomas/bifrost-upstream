@@ -1,7 +1,7 @@
 {
 	"extends": "../../../../client/tsconfig.app.json",
 	"compilerOptions": {
-		"baseUrl": "../../../../client",
+		"paths": { "@/*": ["../../../../client/src/*"] },
 		"types": [],
 		"typeRoots": ["../../../../client/node_modules/@types"]
 	},

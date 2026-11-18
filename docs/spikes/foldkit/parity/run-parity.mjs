@@ -1,6 +1,10 @@
 // Drives the React (shadcn/Radix) and Foldkit galleries through identical
 // keyboard and pointer scenarios in Chromium and prints what each one did.
 // Usage: node run-parity.mjs parity-dist [path/to/axe.min.js]
+//
+// Exits 1 when the renderers differ anywhere not listed, with the same
+// values, in accepted-differences.json, or when a listed difference no
+// longer occurs (so the list never outlives the behaviour it describes).
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -354,3 +358,30 @@ for (const row of rows) {
 console.log(
   `\n${rows.filter((row) => row.react === row.foldkit).length}/${rows.length} observations identical`,
 );
+
+const accepted = JSON.parse(
+  fs.readFileSync(
+    new URL("./accepted-differences.json", import.meta.url),
+    "utf8",
+  ),
+);
+const problems = [];
+for (const row of rows) {
+  if (!axePath && row.key.startsWith("axe.")) continue;
+  const entry = accepted[row.key];
+  if (row.react !== row.foldkit && !entry) {
+    problems.push(`unexpected difference: ${row.key}`);
+  } else if (
+    entry &&
+    (entry.react !== row.react || entry.foldkit !== row.foldkit)
+  ) {
+    problems.push(
+      `accepted difference changed or resolved: ${row.key} (update accepted-differences.json)`,
+    );
+  }
+}
+if (problems.length > 0) {
+  console.error(`\nParity gate failed:\n- ${problems.join("\n- ")}`);
+  process.exit(1);
+}
+console.log("Parity gate passed");

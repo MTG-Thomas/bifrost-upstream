@@ -54,6 +54,8 @@ export function toLogLine(log: LogEntry, index: number): EncodedLogLine {
 
 const decodeHostInputs = Schema.decodeUnknownSync(HostInputs);
 
+type EmbedHandle = Runtime.EmbedHandle<ReturnType<typeof makeElement>["ports"]>;
+
 /**
  * React host for the Foldkit execution-logs program. React keeps ownership
  * of server state, the execution stream, authorization, and toasts; the
@@ -89,9 +91,7 @@ export function FoldkitExecutionLogsPanel({
 	);
 
 	const latestInputs = useRef(inputs);
-	const handleRef = useRef<Runtime.EmbedHandle<
-		ReturnType<typeof makeElement>["ports"]
-	> | null>(null);
+	const handleRef = useRef<EmbedHandle | null>(null);
 
 	// NOTE: Foldkit swaps its rendered root in for the container node and only
 	// swaps the container back from an asynchronous scope finalizer. React
@@ -105,25 +105,48 @@ export function FoldkitExecutionLogsPanel({
 		const container = document.createElement("div");
 		container.id = `${elementId}-root`;
 		host.appendChild(container);
-		const handle = Runtime.embed(
-			makeElement(
-				container,
-				{
-					elementId,
-					maxHeight,
-					inputs: decodeHostInputs(latestInputs.current),
-				},
-				{ isDevToolsEnabled: isDevToolsOptedIn() },
-			),
-		);
-		const unsubscribe = handle.ports.notificationRequested.subscribe(
-			({ text }) => toast.error(text),
-		);
-		handleRef.current = handle;
+		let maybeHandle: EmbedHandle | null = null;
+		let unsubscribe = () => {};
+		let isDisposed = false;
+		const start = () => {
+			if (isDisposed) return;
+			const isDevToolsEnabled = isDevToolsOptedIn();
+			const handle = Runtime.embed(
+				makeElement(
+					container,
+					{
+						elementId,
+						maxHeight,
+						inputs: decodeHostInputs(latestInputs.current),
+					},
+					{ isDevToolsEnabled },
+				),
+			);
+			unsubscribe = handle.ports.notificationRequested.subscribe(
+				({ text }) => toast.error(text),
+			);
+			maybeHandle = handle;
+			handleRef.current = handle;
+		};
+		// The DevTools overlay registers itself with the Foldkit runtime, so it
+		// must load before the program boots. foldkitScoped() serves it on
+		// demand instead of injecting it into every page. The DEV check is
+		// static, so production builds drop the import and its chunk.
+		if (import.meta.env.DEV && isDevToolsOptedIn()) {
+			void import("virtual:foldkit-devtools-overlay").then(start);
+		} else {
+			start();
+		}
 		return () => {
+			isDisposed = true;
 			unsubscribe();
 			handleRef.current = null;
-			void handle.disposeAsync().then(() => container.remove());
+			const handle = maybeHandle;
+			if (handle) {
+				void handle.disposeAsync().then(() => container.remove());
+			} else {
+				container.remove();
+			}
 		};
 	}, [elementId, maxHeight]);
 

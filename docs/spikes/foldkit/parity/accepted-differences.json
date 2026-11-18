@@ -1,0 +1,27 @@
+{
+  "menu.triggerInAccessibilityTree": {
+    "reason": "Radix's modal menu hides the rest of the page, trigger included, from assistive technology; Foldkit's non-modal menu leaves it in place.",
+    "react": "false",
+    "foldkit": "true"
+  },
+  "menu.focusModel": {
+    "reason": "Radix moves DOM focus to each item; Foldkit keeps focus on role=menu and tracks the item with aria-activedescendant. Both are ARIA menu patterns.",
+    "react": "menuitem:Edit",
+    "foldkit": "menu:EditDuplicateArchiveDanger ZoneDelete"
+  },
+  "axe.menuOpen": {
+    "reason": "Radix's modal hiding produces aria-hidden-focus, landmark-one-main and page-has-heading-one; html-has-lang and region come from the bare harness page.",
+    "react": "aria-hidden-focus(1) html-has-lang(1) landmark-one-main(1) page-has-heading-one(1) region(1)",
+    "foldkit": "html-has-lang(1) region(1)"
+  },
+  "menu.arrowDownWalk": {
+    "reason": "Radix stops at the last item unless loop is set; Foldkit's Menu always wraps.",
+    "react": "Duplicate → Delete → Delete → Delete",
+    "foldkit": "Duplicate → Delete → Edit → Duplicate"
+  },
+  "menu.tabWhileOpen": {
+    "reason": "Known Foldkit defect, drafted upstream: Tab closes the menu without restoring focus, so focus falls to <body>. Remove this entry when the fix lands.",
+    "react": "open / menuitem:Edit",
+    "foldkit": "closed / body"
+  }
+}
