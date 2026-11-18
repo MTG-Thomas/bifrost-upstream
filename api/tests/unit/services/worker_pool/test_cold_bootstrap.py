@@ -127,12 +127,13 @@ async def test_local_platform_job_bootstraps_without_being_marked_too_large(db):
         assert (await session.get(PlatformJob, job.id)).status == "queued"
 
 
-@pytest.mark.parametrize("max_workers", [1, 2])
-async def test_cloudflare_capacity_does_not_cover_local_platform_jobs(db, max_workers):
+@pytest.mark.parametrize(("max_workers", "expected_launches"), [(1, 0), (2, 1)], ids=["at-cap", "spare-slot"])
+async def test_cloudflare_capacity_does_not_cover_local_platform_jobs(db, max_workers, expected_launches):
     policy = replace(POLICY, max_workers=max_workers)
     async with db.context() as session:
         session.add(ExecutionWorker(
             id=uuid4(), form="external", state="ready", runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+            capacity_scope="test-provider",
             supported_handlers=["workflow.execute"], active_runs=1, active_handler_counts={"workflow.execute": 1},
             memory_budget_bytes=128 * MIB, memory_reserved_bytes=32 * MIB,
         ))
@@ -142,10 +143,12 @@ async def test_cloudflare_capacity_does_not_cover_local_platform_jobs(db, max_wo
             requested_by_name="Fixture", title="Cold file move",
         ))
     pool = controller.WorkerPoolController(FakeCluster(), SETTINGS, SPEC)
-    [worker_id] = await pool.launch_for_demand(policy)
-    async with db.context() as session:
-        worker = await session.get(ExecutionWorker, worker_id)
-        assert worker is not None and worker.form == "job"
+    launched = await pool.launch_for_demand(policy)
+    assert len(launched) == expected_launches
+    if launched:
+        async with db.context() as session:
+            worker = await session.get(ExecutionWorker, launched[0])
+            assert worker is not None and worker.form == "job"
 
 
 @pytest.mark.parametrize("state", ["ready", "retired"])

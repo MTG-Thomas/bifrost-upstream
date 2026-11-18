@@ -21,6 +21,8 @@ from src.models.enums import ExecutionStatus
 from src.services.worker_pool import claims, controller, external_controller
 from src.services.worker_pool.external_client import CapacityProtocolError, ExternalCapacityClient
 from src.services.worker_pool.external_controller import ExternalWorkerPoolController
+from src.worker.remote import ownership
+from src.worker.remote.protocol import CLOUDFLARE_PYTHON_RUNTIME_PROFILE, LINUX_RUNTIME_PROFILE
 from tests.unit.services.worker_pool.test_worker_pool import (
     GIB, POLICY, SETTINGS, _accept_pool_run, _clean as _clean,
     _store_policy, db as db_fixture,
@@ -112,6 +114,38 @@ async def test_prepared_uid_is_committed_before_start(db, capacity):
     capacity.provider.before_start = before_start
     await capacity.pool.reconcile_worker(worker_id, capacity.policy)
     assert capacity.provider.starts == [str(worker_id)]
+
+
+@pytest.mark.parametrize("max_workers", [1, 2], ids=["at-cap", "spare-slot"])
+async def test_cloudflare_hello_preserves_the_external_warm_worker(db, capacity, monkeypatch, max_workers):
+    policy = replace(capacity.policy, warm_workers=1, max_workers=max_workers)
+    [worker_id] = await capacity.pool.launch_for_demand(policy)
+    await capacity.pool.reconcile_worker(worker_id, policy)
+    uid = capacity.provider.resources[str(worker_id)]["resource_uid"]
+    launcher_id = uuid4()
+    assert await claims.admit_external_worker(
+        worker_id, resource_uid=uid, launcher_id=launcher_id,
+        version=capacity.provider.profile.worker_version, hostname="cloudflare-worker",
+    ) == worker_id
+    async with db.context() as session:
+        worker = await session.get(ExecutionWorker, worker_id)
+        assert worker.runtime_profile == LINUX_RUNTIME_PROFILE
+
+    monkeypatch.setattr(ownership, "get_liveness_db_context", db.context)
+    lease = await ownership.acquire_remote_owner(
+        worker_id=worker_id, owner_id=uuid4(), launcher_id=launcher_id,
+        nonce_digest="a" * 64, hello_sequence=1, runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+    )
+    assert lease is not None
+    async with db.context() as session:
+        worker = await session.get(ExecutionWorker, worker_id)
+        assert worker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+
+    # With headroom, add no idle capacity. At the cap, pending demand must
+    # not launch a second worker even though the Cloudflare budget is excluded.
+    if max_workers == 1:
+        await _accept_pool_run()
+    assert await capacity.pool.launch_for_demand(policy) == []
 
 
 async def test_lost_start_response_is_observed_without_resending_the_start(db, capacity):
@@ -226,7 +260,10 @@ async def test_build_mismatch_does_not_prevent_exact_cleanup_after_fencing(db, c
     assert capacity.provider.starts == [str(worker_id)]
 
 
-async def test_provider_rollout_rotates_an_admitted_worker_from_the_same_controller(db, capacity):
+@pytest.mark.parametrize(
+    "runtime_profile", [LINUX_RUNTIME_PROFILE, CLOUDFLARE_PYTHON_RUNTIME_PROFILE], ids=["linux", "cloudflare"],
+)
+async def test_provider_rollout_rotates_an_admitted_worker_from_the_same_controller(db, capacity, runtime_profile):
     await _accept_pool_run()
     [worker_id] = await capacity.pool.launch_for_demand(capacity.policy)
     await capacity.pool.reconcile_worker(worker_id, capacity.policy)
@@ -234,6 +271,9 @@ async def test_provider_rollout_rotates_an_admitted_worker_from_the_same_control
     await claims.admit_external_worker(
         worker_id, resource_uid=uid, launcher_id=uuid4(), version="test-worker", hostname="old-build",
     )
+    async with db.context() as session:
+        worker = await session.get(ExecutionWorker, worker_id)
+        worker.runtime_profile = runtime_profile
     # This controller remains alive while the external provider changes builds.
     capacity.pool.live = external_controller.LiveControllers(
         ids=frozenset({capacity.pool.id}), versions=frozenset({"next-worker"}),

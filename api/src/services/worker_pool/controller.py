@@ -334,16 +334,16 @@ class WorkerCapacityController(ABC):
                     .order_by(text("created_at"))
                 )
             ).all()
-            # Declared-runtime capacity requires its own eligibility and slot
-            # rules. Only measured Linux capacity participates in this plan.
+            # Managed resources share the worker ceiling across provider forms.
+            # Only Linux workers participate in memory packing and probes.
             workers = (
                 await db.execute(
                     select(ExecutionWorker).where(
                         ExecutionWorker.state.in_(LIVE_STATES),
-                        ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE,
                     ).with_for_update()
                 )
             ).scalars().all()
+            linux_workers = [worker for worker in workers if worker.runtime_profile == LINUX_RUNTIME_PROFILE]
             generation = int(await db.scalar(select(func.coalesce(func.max(PackageChange.id), 0))) or 0)
             environment = self._memory_environment(generation)
             history = (await db.scalars(select(ExecutionWorker).where(
@@ -373,7 +373,7 @@ class WorkerCapacityController(ABC):
             request_handlers = {row.id: row.handler for row in waiting}
             free: list[FreeBudget] = []
             covered: set[UUID] = set()
-            for worker in workers:
+            for worker in linux_workers:
                 # Only physical workers contribute launcher capacity.
                 if (
                     "workflow.execute" not in worker.supported_handlers
@@ -468,7 +468,7 @@ class WorkerCapacityController(ABC):
                  (worker.state == "ready" and worker.memory_budget_bytes is None))
                 and worker.memory_calibration
                 and worker.memory_calibration.get("environment") == environment
-                for worker in workers if worker.form in MANAGED_WORKER_FORMS
+                for worker in linux_workers if worker.form in MANAGED_WORKER_FORMS
             ):
                 return []
             # Pace failures per resource size without disabling recovery. An
@@ -484,7 +484,7 @@ class WorkerCapacityController(ABC):
             ))).all())
             known_limits = {sample.limit_bytes for sample in measurements}
             probing_limits = {
-                worker.memory_limit_bytes for worker in workers
+                worker.memory_limit_bytes for worker in linux_workers
                 if worker.form in MANAGED_WORKER_FORMS and worker.memory_budget_bytes is None
                 and worker.memory_calibration
                 and worker.memory_calibration.get("environment") == environment
@@ -534,7 +534,7 @@ class WorkerCapacityController(ABC):
                 # An idle undersized worker may yield the warm minimum, but it
                 # still occupies its slot until the canonical owner retires it.
                 owned = set((await db.scalars(select(ExecutionWorker.id).where(self._managed_scope(), ExecutionWorker.state == "ready"))).all())
-                ready = [worker for worker in workers
+                ready = [worker for worker in linux_workers
                          if worker.id in owned and worker.state == "ready"
                          and worker.active_runs == 0 and worker.memory_reserved_bytes == 0
                          and worker.active_handler_counts is not None
@@ -634,7 +634,6 @@ class WorkerCapacityController(ABC):
                 await db.execute(
                     select(ExecutionWorker).where(
                         ExecutionWorker.form.in_(MANAGED_WORKER_FORMS),
-                        ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE,
                         ExecutionWorker.state.in_(LIVE_STATES),
                     )
                 )
