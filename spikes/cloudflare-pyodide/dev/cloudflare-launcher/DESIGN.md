@@ -422,10 +422,14 @@ is still sent.
 
 The analyzer is a review aid. It is not a sandbox. TenantHost and the runtime
 enforce the security boundary. The offline census uses the same AST analyzer
-and pinned Pyodide 314.0.6 stdlib list as the server. It resolves
+and pinned Pyodide 314.0.6 stdlib list as the server. The list is the union of
+top-level modules in the Workerd runtime's `python314.zip` and
+`sys.builtin_module_names`. A loopback probe of the pinned bundle successfully
+imported `ssl`, `sqlite3` and `lzma` without loading extra packages. It resolves
 transitive workspace imports, rejects known Pyodide traps, and discovers literal
-HTTPS origins. Calls with identifiable HTTP intent require a recognized client
-and a literal HTTPS origin. Before parsing, analysis limits raw source buffers
+HTTPS origins. The analyzer follows imported HTTP namespaces, known client
+constructors, and the supported fetch functions. These calls require a literal
+HTTPS URL or a relative literal path against a known HTTPS base URL. Before parsing, analysis limits raw source buffers
 to 128 KiB per file and 512 KiB per bundle, with a single module AST processed
 at a time and at most 100,000 visited nodes across the bundle. Python object
 overhead is additional and the worker admission and memory limits apply.

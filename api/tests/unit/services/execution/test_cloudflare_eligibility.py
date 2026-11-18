@@ -180,7 +180,7 @@ async def test_http_calls_require_identifiable_urls(prefix, call):
     assert result["required_https_hosts"] == ["example.com"]
 
 
-async def test_http_context_manager_and_unknown_receiver():
+async def test_http_context_manager_keeps_client_origin():
     source = b"import httpx\nasync def run():\n    async with httpx.AsyncClient() as c:\n        return await c.get('https://example.com/path')\n"
     assert (await _analyze({ENTRY: source}))["required_https_hosts"] == ["example.com"]
 
@@ -233,6 +233,7 @@ async def test_mapping_get_without_http_intent_is_allowed():
     "x.__subclasses__()",
     "x.__globals__",
     "x.__code__",
+    "x.__code__ = None",
     "import operator; operator.attrgetter",
     "from operator import methodcaller",
     "import pydoc; pydoc.locate",

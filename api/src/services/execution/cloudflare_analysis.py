@@ -23,9 +23,46 @@ _MAX_NODES = 100_000
 _WORKSPACE_PATH = re.compile(r"(?:[a-zA-Z_][a-zA-Z0-9_]*/)*[a-zA-Z_][a-zA-Z0-9_]*\.py")
 _HOST_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 _PROVIDED = {"bifrost", "js", "pyodide", "_pyodide"}
-# Pyodide 314.0.6, CPython 3.14 WebAssembly. Captured from the packaged
-# python314.zip top-level Python files plus sys.builtin_module_names.
-_PYODIDE_STDLIB = frozenset(["__future__", "__hello__", "__phello__", "_abc", "_ast", "_ast_unparse", "_asyncio", "_bisect", "_blake2", "_bz2", "_codecs", "_codecs_cn", "_codecs_hk", "_codecs_iso2022", "_codecs_jp", "_codecs_kr", "_codecs_tw", "_collections", "_collections_abc", "_colorize", "_compat_pickle", "_contextvars", "_csv", "_ctypes", "_datetime", "_decimal", "_elementtree", "_functools", "_heapq", "_hmac", "_imp", "_io", "_json", "_locale", "_lsprof", "_lzma", "_markupbase", "_md5", "_multibytecodec", "_opcode", "_opcode_metadata", "_operator", "_pickle", "_posixsubprocess", "_py_abc", "_py_warnings", "_pydatetime", "_pyio", "_pylong", "_pyodide", "_pyodide_core", "_pyrepl", "_queue", "_random", "_remote_debugging", "_sha1", "_sha2", "_sha3", "_signal", "_sitebuiltins", "_socket", "_sqlite3", "_sre", "_ssl", "_stat", "_statistics", "_string", "_strptime", "_struct", "_suggestions", "_symtable", "_sysconfig", "_sysconfigdata__emscripten_wasm32-emscripten", "_testbuffer", "_testcapi", "_testclinic", "_testclinic_limited", "_testinternalcapi", "_testlimitedcapi", "_thread", "_threading_local", "_tokenize", "_tracemalloc", "_types", "_typing", "_warnings", "_weakref", "_weakrefset", "_xxtestfuzz", "_zoneinfo", "_zstd", "abc", "annotationlib", "antigravity", "argparse", "array", "ast", "asyncio", "atexit", "base64", "bdb", "binascii", "bisect", "builtins", "bz2", "cProfile", "calendar", "cmath", "cmd", "code", "codecs", "codeop", "collections", "colorsys", "compileall", "compression", "concurrent", "configparser", "contextlib", "contextvars", "copy", "copyreg", "csv", "ctypes", "dataclasses", "datetime", "decimal", "difflib", "dis", "doctest", "email", "encodings", "enum", "errno", "faulthandler", "fcntl", "filecmp", "fileinput", "fnmatch", "fractions", "ftplib", "functools", "gc", "genericpath", "getopt", "getpass", "gettext", "glob", "graphlib", "gzip", "hashlib", "heapq", "hmac", "html", "http", "imaplib", "importlib", "inspect", "io", "ipaddress", "itertools", "json", "keyword", "linecache", "locale", "logging", "lzma", "mailbox", "marshal", "math", "mimetypes", "mmap", "modulefinder", "multiprocessing", "netrc", "ntpath", "nturl2path", "numbers", "opcode", "operator", "optparse", "os", "pathlib", "pdb", "pickle", "pickletools", "pkgutil", "platform", "plistlib", "poplib", "posix", "posixpath", "pprint", "profile", "pstats", "pty", "py_compile", "pyclbr", "pydoc", "pyexpat", "pyodide", "queue", "quopri", "random", "re", "reprlib", "rlcompleter", "runpy", "sched", "secrets", "select", "selectors", "shelve", "shlex", "shutil", "signal", "site", "smtplib", "socket", "socketserver", "sqlite3", "sre_compile", "sre_constants", "sre_parse", "ssl", "stat", "statistics", "string", "stringprep", "struct", "subprocess", "symtable", "sys", "sysconfig", "tabnanny", "tarfile", "tempfile", "termios", "textwrap", "this", "threading", "time", "timeit", "token", "tokenize", "tomllib", "trace", "traceback", "tracemalloc", "tty", "types", "typing", "unicodedata", "unittest", "urllib", "uuid", "warnings", "wave", "weakref", "webbrowser", "wsgiref", "xml", "xmlrpc", "xxsubtype", "zipapp", "zipfile", "zipimport", "zlib", "zoneinfo"])
+# Pyodide 314.0.6, CPython 3.14 WebAssembly. Verified in Workerd against
+# python314.zip top-level Python roots plus sys.builtin_module_names.
+# Workerd bundle SHA-256: 3c3fd5a4179230e21e018e28b0e735e7c4abd8fe8e4ff39d2fd6bb2ea3a2e260.
+_PYODIDE_STDLIB = frozenset([
+    "__future__", "__hello__", "__phello__", "_abc", "_ast", "_ast_unparse", "_asyncio", "_bisect",
+    "_blake2", "_bz2", "_codecs", "_codecs_cn", "_codecs_hk", "_codecs_iso2022", "_codecs_jp",
+    "_codecs_kr", "_codecs_tw", "_collections", "_collections_abc", "_colorize", "_compat_pickle",
+    "_contextvars", "_csv", "_ctypes", "_datetime", "_decimal", "_elementtree", "_functools",
+    "_heapq", "_hmac", "_imp", "_io", "_json", "_locale", "_lsprof", "_lzma", "_markupbase", "_md5",
+    "_multibytecodec", "_opcode", "_opcode_metadata", "_operator", "_pickle", "_posixsubprocess",
+    "_py_abc", "_py_warnings", "_pydatetime", "_pyio", "_pylong", "_pyodide", "_pyodide_core",
+    "_pyrepl", "_queue", "_random", "_remote_debugging", "_sha1", "_sha2", "_sha3", "_signal",
+    "_sitebuiltins", "_socket", "_sqlite3", "_sre", "_ssl", "_stat", "_statistics", "_string",
+    "_strptime", "_struct", "_suggestions", "_symtable", "_sysconfig",
+    "_sysconfigdata__emscripten_wasm32-emscripten", "_testbuffer", "_testcapi", "_testclinic",
+    "_testclinic_limited", "_testinternalcapi", "_testlimitedcapi", "_thread", "_threading_local",
+    "_tokenize", "_tracemalloc", "_types", "_typing", "_warnings", "_weakref", "_weakrefset",
+    "_xxtestfuzz", "_zoneinfo", "_zstd", "abc", "annotationlib", "antigravity", "argparse", "array",
+    "ast", "asyncio", "atexit", "base64", "bdb", "binascii", "bisect", "builtins", "bz2",
+    "cProfile", "calendar", "cmath", "cmd", "code", "codecs", "codeop", "collections", "colorsys",
+    "compileall", "compression", "concurrent", "configparser", "contextlib", "contextvars", "copy",
+    "copyreg", "csv", "ctypes", "dataclasses", "datetime", "decimal", "difflib", "dis", "doctest",
+    "email", "encodings", "enum", "errno", "faulthandler", "fcntl", "filecmp", "fileinput",
+    "fnmatch", "fractions", "ftplib", "functools", "gc", "genericpath", "getopt", "getpass",
+    "gettext", "glob", "graphlib", "gzip", "hashlib", "heapq", "hmac", "html", "http", "imaplib",
+    "importlib", "inspect", "io", "ipaddress", "itertools", "json", "keyword", "linecache",
+    "locale", "logging", "lzma", "mailbox", "marshal", "math", "mimetypes", "mmap", "modulefinder",
+    "multiprocessing", "netrc", "ntpath", "nturl2path", "numbers", "opcode", "operator", "optparse",
+    "os", "pathlib", "pdb", "pickle", "pickletools", "pkgutil", "platform", "plistlib", "poplib",
+    "posix", "posixpath", "pprint", "profile", "pstats", "pty", "py_compile", "pyclbr", "pydoc",
+    "pyexpat", "pyodide", "queue", "quopri", "random", "re", "reprlib", "rlcompleter", "runpy",
+    "sched", "secrets", "select", "selectors", "shelve", "shlex", "shutil", "signal", "site",
+    "smtplib", "socket", "socketserver", "sqlite3", "sre_compile", "sre_constants", "sre_parse",
+    "ssl", "stat", "statistics", "string", "stringprep", "struct", "subprocess", "symtable", "sys",
+    "sysconfig", "tabnanny", "tarfile", "tempfile", "termios", "textwrap", "this", "threading",
+    "time", "timeit", "token", "tokenize", "tomllib", "trace", "traceback", "tracemalloc", "tty",
+    "types", "typing", "unicodedata", "unittest", "urllib", "uuid", "warnings", "wave", "weakref",
+    "webbrowser", "wsgiref", "xml", "xmlrpc", "xxsubtype", "zipapp", "zipfile", "zipimport", "zlib",
+    "zoneinfo",
+])
 _RESERVED = _PYODIDE_STDLIB | _PROVIDED | {
     "main", "runtime_runner", "runtime_guard", "pyodide_refresh", "sdk_cleanup",
 }
@@ -320,12 +357,13 @@ class _Analysis:
             ("http://", "https://")
         ):
             self.hosts.add(_https_host(node.value))
+        if isinstance(node, ast.Attribute) and node.attr in _BLOCKED_ATTRIBUTES:
+            raise AnalysisRejected("Unsupported dynamic or Pyodide runtime operation")
         if isinstance(node, (ast.Name, ast.Attribute)) and isinstance(node.ctx, ast.Load):
             qualified = _qualified(node, aliases)
             if (
                 qualified in _REFLECTION or qualified.removeprefix("builtins.") in _DYNAMIC | {"__builtins__"}
                 or qualified.rsplit(".", 1)[-1] in _TRAPS
-                or (isinstance(node, ast.Attribute) and node.attr in _BLOCKED_ATTRIBUTES)
             ):
                 raise AnalysisRejected("Unsupported dynamic or Pyodide runtime operation")
             if id(node) not in calls and (
@@ -340,7 +378,7 @@ class _Analysis:
             if (
                 not isinstance(attr, ast.Constant) or not isinstance(attr.value, str)
                 or attr.value in _DYNAMIC | _TRAPS | _BLOCKED_ATTRIBUTES | {"getattr", "modules"}
-                or _http_target(ast.Attribute(value=node.args[0], attr=attr.value), aliases, clients) is not None
+                or _http_target(ast.Attribute(value=node.args[0], attr=attr.value, ctx=ast.Load()), aliases, clients) is not None
             ):
                 raise AnalysisRejected("Unsupported dynamic attribute lookup")
         if qualified in _HTTP_CLIENTS:
