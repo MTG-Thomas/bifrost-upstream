@@ -6,7 +6,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import entry from './tenant-entry.mjs';
-import {enqueueTenant, hostAttempt, resetTenantState, runtimeErrorClass, spikeAuthorized,
+import {engineAttempt, enqueueTenant, hostAttempt, resetTenantState, runtimeErrorClass, spikeAuthorized,
   warmHost, WARM_ATTEMPTS} from './tenant-dispatch.mjs';
 import {bootProbeCode, engineDigest, genericCodeDigest} from './generic-worker-code.mjs';
 
@@ -263,7 +263,9 @@ test('a warm host costs one round trip', async () => {
 
 test('warm-up gives up after its budget and never dispatches', async () => {
   const {seen, getHost} = fakeHost({failWarms: WARM_ATTEMPTS});
-  await assert.rejects(hostAttempt(getHost, {tenantId: 't'}), /code was updated/);
+  const failure = await hostAttempt(getHost, {tenantId: 't'}).then(() => null, (error) => error);
+  assert.match(String(failure?.message), /code was updated/);
+  assert.equal(failure.attemptState, 'not_started', 'nothing was dispatched, so it may be retried');
   assert.equal(seen.warms, WARM_ATTEMPTS);
   assert.equal(seen.dispatched, 0);
 });
@@ -346,4 +348,30 @@ test('a deployed supervisor refuses before any tenant work without the secret', 
   const response = await entry.fetch(new Request('https://sup.invalid/__code_digest',
     {headers: {'X-Spike-Auth': 'wrong'}}), env, {});
   assert.equal(response.status, 403);
+});
+
+test('engine outcomes say whether the attempt may be dispatched again', async () => {
+  const run = async (host) => (await engineAttempt(() => host, {tenantId: 'tenant-x'})).body;
+  // The attempt RPC failed after dispatch: it may have run.
+  assert.equal((await run({run: async () => { throw new Error('Network connection lost'); }})).attempt_state,
+    'uncertain');
+  // Warm-up failed before any attempt work: safe to retry.
+  assert.equal((await run({run: async () => ({needsWarm: true}),
+    warm: async () => { throw Object.assign(new Error('code was updated'), {retryable: false}); }})).attempt_state,
+  'not_started');
+  assert.equal((await run({run: async () => ({needsWarm: true}), warm: async () => ({})})).attempt_state,
+    'not_started', 'still cold after warm-up');
+  const done = await run({run: async () => ({output: {status: 'Success'}, queueWaitMs: 0,
+    timings: {child_ms: 1, child: {first_request: false}}})});
+  assert.equal(done.attempt_state, 'completed');
+  assert.equal((await run({run: async () => ({terminal: {phase: 'attempt-deadline',
+    attempt_state: 'uncertain'}})})).attempt_state, 'uncertain');
+});
+
+test('gate rejections are reported as never started', async () => {
+  const env = {LOCAL_PROBE: 'true', LOADER: {get: () => assert.fail('no loader effect')}};
+  const response = await entry.fetch(post({tenant_id: 'tenant-x', action: 'engine', execution_id: 'e1',
+    context: {engine_token: 't'}, egress: {hosts: ['*']}}), env, {});
+  assert.equal(response.status, 422);
+  assert.equal((await response.json()).attempt_state, 'not_started');
 });

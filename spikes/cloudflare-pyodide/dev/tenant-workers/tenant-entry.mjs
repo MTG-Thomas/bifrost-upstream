@@ -33,7 +33,7 @@ import {egressRejection, isUrlAllowed} from '../executor/egress-allowlist.mjs';
 import {reconcileImports, deniedTerminal} from '../executor/import-audit.mjs';
 import {readBudgetedJson} from '../executor/output-budget.mjs';
 import {DUMMY_CREDENTIAL} from '../executor/gateway-injection.mjs';
-import {enqueueTenant, hostAttempt, markTenantSeen, runtimeErrorClass, spikeAuthorized,
+import {engineAttempt, enqueueTenant, markTenantSeen, runtimeErrorClass, spikeAuthorized,
   warmHost} from './tenant-dispatch.mjs';
 
 // Node unit tests cannot resolve cloudflare:workers, so the exports are loaded
@@ -118,16 +118,18 @@ export default {
     // Capability gate BEFORE any loader/network/SDK effect.
     const capability = capabilityRejection(body.requirements, body.manifest);
     if (capability) {
-      return json(422, {phase: 'capability-rejected',
+      return json(422, {phase: 'capability-rejected', attempt_state: 'not_started',
         missing_modules: capability.missing_modules, api_calls: []});
     }
     // Egress gate BEFORE any loader/network/SDK effect.
     const egress = egressRejection(body.egress);
     if (egress) {
-      return json(422, {phase: 'egress-rejected', reason: egress.reason, api_calls: []});
+      return json(422, {phase: 'egress-rejected', attempt_state: 'not_started', reason: egress.reason,
+        api_calls: []});
     }
     if (body.url !== undefined && !isUrlAllowed(body.url, body.egress)) {
-      return json(422, {phase: 'egress-rejected', reason: 'unlisted', api_calls: []});
+      return json(422, {phase: 'egress-rejected', attempt_state: 'not_started', reason: 'unlisted',
+        api_calls: []});
     }
 
     // Run entries are storage paths (e.g. 'workflows/wf.py'), validated BEFORE
@@ -203,40 +205,17 @@ export default {
       // The engine authenticates SDK calls with an opaque handle that only
       // this tenant's outbound gateway can resolve (dev/staging/README).
       if (typeof TenantHost !== 'function') {
-        return json(502, {phase: 'engine-unavailable', tenant_worker_id: workerId, api_calls: []});
+        return json(502, {phase: 'engine-unavailable', attempt_state: 'not_started', tenant_worker_id: workerId,
+          api_calls: []});
       }
-      const mark = Date.now();
-      let hosted;
-      try {
-        hosted = await hostAttempt(() => ctx.exports.TenantHost.getByName(workerId), {
+      const {status, body: outcome} = await engineAttempt(
+        () => ctx.exports.TenantHost.getByName(workerId), {
           tenantId: workerId, executionId: body.execution_id, context: body.context,
           publicUrl: body.public_url,
           // Already validated by the egress gate above.
-          egressHosts: body.egress?.hosts ?? []});
-      } catch (error) {
-        // Never echo exception strings (may contain workflow data or
-        // credentials) -- except on a capability-lab deploy that opts in.
-        return json(502, {phase: 'dynamic-runtime', error_type: error?.name ?? 'Error',
-          ...runtimeErrorClass(error), tenant_worker_id: workerId, api_calls: [],
-          ...(env.LAB_ECHO_ERRORS === 'true'
-            ? {lab_error: String(error?.message ?? error).slice(-600)} : {})});
-      }
-      if (hosted.notReady) {
-        // Warmed, yet the host still has not confirmed its child; the
-        // attempt was never started.
-        return json(502, {phase: 'engine-not-ready', tenant_worker_id: workerId, api_calls: []});
-      }
-      if (hosted.terminal) {
-        // e.g. output-budget: the attempt ran; its effects may already exist.
-        return json(502, {...hosted.terminal, tenant_worker_id: workerId});
-      }
-      // Reuse is the child's own view: the supervisor's memory is lost
-      // whenever the supervisor isolate is recycled.
-      return Response.json({tenant_worker_id: workerId,
-        worker_reused: hosted.timings.child?.first_request === false,
-        queue_wait_ms: hosted.queueWaitMs, output: hosted.output, api_calls: [],
-        timings: {host_ms: Date.now() - mark, ...hosted.timings,
-          ...(hosted.warm ? {warm: hosted.warm} : {})}});
+          egressHosts: body.egress?.hosts ?? []},
+        {echoErrors: env.LAB_ECHO_ERRORS === 'true'});
+      return json(status, outcome);
     }
 
     let workerReused;

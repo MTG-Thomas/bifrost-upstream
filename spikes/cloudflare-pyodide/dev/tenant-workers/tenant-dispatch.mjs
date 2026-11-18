@@ -85,14 +85,62 @@ export async function warmHost(getHost, tenantId) {
   }
 }
 
+// Every engine outcome carries attempt_state: 'not_started' (safe to
+// dispatch again), 'completed', or 'uncertain' (it may have run, with effects;
+// never blindly redispatch). An error thrown by the attempt RPC itself is
+// uncertain unless it is tagged not_started here.
+//
 // An engine attempt is dispatched at most once. A host that has not confirmed
 // its child refuses with needsWarm before doing any attempt work; only the
 // warm-up is retried.
 export async function hostAttempt(getHost, attempt) {
   const first = await getHost().run(attempt);
   if (!first.needsWarm) return first;
-  const warm = await warmHost(getHost, attempt.tenantId);
+  let warm;
+  try {
+    warm = await warmHost(getHost, attempt.tenantId);
+  } catch (error) {
+    // The host refused the attempt before any work and the warm-up failed:
+    // nothing was dispatched, so the caller may safely retry elsewhere.
+    error.attemptState = 'not_started';
+    throw error;
+  }
   const result = await getHost().run(attempt);
   if (result.needsWarm) return {notReady: true, warm};
   return {...result, warm};
+}
+
+// The supervisor's engine path: one attempt through the tenant's host, shaped
+// into {status, body}. Every body names its attempt_state.
+export async function engineAttempt(getHost, attempt, {echoErrors = false} = {}) {
+  const workerId = attempt.tenantId;
+  const mark = Date.now();
+  let hosted;
+  try {
+    hosted = await hostAttempt(getHost, attempt);
+  } catch (error) {
+    // Never echo exception strings (may contain workflow data or
+    // credentials) -- except on a capability-lab deploy that opts in.
+    return {status: 502, body: {phase: 'dynamic-runtime', error_type: error?.name ?? 'Error',
+      attempt_state: error?.attemptState ?? 'uncertain',
+      ...runtimeErrorClass(error), tenant_worker_id: workerId, api_calls: [],
+      ...(echoErrors ? {lab_error: String(error?.message ?? error).slice(-600)} : {})}};
+  }
+  if (hosted.notReady) {
+    // Warmed, yet the host still has not confirmed its child; the attempt was
+    // never started.
+    return {status: 502, body: {phase: 'engine-not-ready', attempt_state: 'not_started',
+      tenant_worker_id: workerId, api_calls: []}};
+  }
+  if (hosted.terminal) {
+    // e.g. output-budget or attempt-deadline; the host names the state.
+    return {status: 502, body: {...hosted.terminal, tenant_worker_id: workerId}};
+  }
+  // Reuse is the child's own view: the supervisor's memory is lost whenever
+  // the supervisor isolate is recycled.
+  return {status: 200, body: {tenant_worker_id: workerId, attempt_state: 'completed',
+    worker_reused: hosted.timings.child?.first_request === false,
+    queue_wait_ms: hosted.queueWaitMs, output: hosted.output, api_calls: [],
+    timings: {host_ms: Date.now() - mark, ...hosted.timings,
+      ...(hosted.warm ? {warm: hosted.warm} : {})}}};
 }

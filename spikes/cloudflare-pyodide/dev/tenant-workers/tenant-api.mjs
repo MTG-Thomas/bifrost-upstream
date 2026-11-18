@@ -20,10 +20,10 @@ import {DurableObject, WorkerEntrypoint} from 'cloudflare:workers';
 import {apiTarget} from '../executor/policy.mjs';
 import {engineDigest, mergePrimeList, tenantEngineCode} from './generic-worker-code.mjs';
 import {readBudgetedJson} from '../executor/output-budget.mjs';
+import {AttemptCredentials, forwardWithRefresh} from './attempt-credentials.mjs';
 
 const HANDLE_RE = /^run_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const VIRTUAL_API_ORIGIN = 'https://test-api.invalid';
-const TOKEN_TTL_MS = 10 * 60 * 1000;
 const MAX_NOTED_CALLS = 64;
 // Warm-pool policy: a tenant that ran in the last WARM_WINDOW_MS keeps a
 // resident child. This is the knob that trades idle cost for latency, the
@@ -36,7 +36,10 @@ const DEFAULT_ATTEMPT_DEADLINE_MS = 1800 * 1000;
 const DEADLINE = Symbol('attempt-deadline');
 
 export class TenantHost extends DurableObject {
-  #tokens = new Map();
+  // Run credentials stay here; the child holds an opaque handle. Refresh is
+  // the gateway's job (credential protocol 2), so the child never sees the
+  // refresh token either.
+  #credentials = new AttemptCredentials({refresh: (refreshToken) => this.#refreshUpstream(refreshToken)});
   #calls = new Map();
   #current = null;
   #generation;
@@ -56,7 +59,10 @@ export class TenantHost extends DurableObject {
     this.#generation ??= (await this.ctx.storage.get('generation')) ?? 0;
     return this.env.LOADER.get(
       `${engineId}-cpu${cpuMs ?? 'default'}-sr${subRequests ?? 'default'}-g${this.#generation}`,
-      () => tenantEngineCode(this.ctx.exports.TenantApi({props: {tenantId}}), {cpuMs, subRequests}));
+      // The generation rides in the outbound gateway's props, so a retired
+      // child that is still running can never act for a later attempt.
+      () => tenantEngineCode(this.ctx.exports.TenantApi({props: {tenantId, generation: this.#generation}}),
+        {cpuMs, subRequests}));
   }
 
   // A child that blew its attempt deadline may be wedged (observed: a
@@ -84,11 +90,27 @@ export class TenantHost extends DurableObject {
     }
   }
 
+  async #refreshUpstream(refreshToken) {
+    const response = await fetch(new URL('/auth/refresh', this.env.API_ORIGIN), {
+      method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify({refresh_token: refreshToken}), redirect: 'manual',
+    });
+    if (response.status !== 200) {
+      await response.body?.cancel();
+      return null;
+    }
+    return response.json();
+  }
+
   // Resolves an attempt handle for this tenant's outbound gateway only.
   token(handle) {
-    const record = this.#tokens.get(handle);
-    if (!record || Date.now() >= record.expires) return null;
-    return record.token;
+    return this.#credentials.token(handle);
+  }
+
+  // A newer access token after `observed` was refused (401), refreshed at
+  // most once at a time per attempt.
+  refreshedToken(handle, observed) {
+    return this.#credentials.refreshed(handle, observed);
   }
 
   // The outbound gateway reports each SDK call (path without query, status,
@@ -102,8 +124,9 @@ export class TenantHost extends DurableObject {
   // so it is attributed to the attempt in flight: attempts are serialized per
   // host, so there is at most one. Allowed only for hosts that attempt
   // declared; nothing is allowed between attempts.
-  egressAllowed(hostname) {
-    return this.#current !== null && this.#current.egress.has(String(hostname).toLowerCase());
+  egressAllowed(hostname, generation) {
+    return this.#current !== null && generation === this.#generation &&
+      this.#current.egress.has(String(hostname).toLowerCase());
   }
 
   noteEgress(call) {
@@ -117,38 +140,55 @@ export class TenantHost extends DurableObject {
     // be safely retried. So a host that has not confirmed its child refuses
     // before doing anything; the supervisor warms it (idempotent, retryable)
     // and dispatches once.
-    if (!this.#childReady) return {needsWarm: true};
+    if (!this.#childReady) return {needsWarm: true, attempt_state: 'not_started'};
+    // The deadline runs from dispatch, so time spent queued behind this
+    // tenant's previous attempt counts against it.
+    const deadlineMs = Number(this.env.ATTEMPT_DEADLINE_MS) || DEFAULT_ATTEMPT_DEADLINE_MS;
+    const deadlineAt = Date.now() + deadlineMs;
     const previous = this.#tail;
     let release;
     this.#tail = new Promise((resolve) => { release = resolve; });
     const queuedAt = Date.now();
     await previous;
     const queueWaitMs = Date.now() - queuedAt;
-    // The child carries only an opaque handle; the run token stays here.
+    if (Date.now() >= deadlineAt) {
+      // Expired in the queue: the child never saw it, so it is safe to retry.
+      release();
+      return {terminal: {phase: 'attempt-deadline', attempt_state: 'not_started',
+        deadline_ms: deadlineMs, queue_wait_ms: queueWaitMs, api_calls: []}};
+    }
+    // The child carries only an opaque handle. Neither run token (access or
+    // refresh) enters it, and the handle dies with the attempt's deadline.
     const handle = `run_${crypto.randomUUID()}`;
-    this.#tokens.set(handle, {token: context.engine_token, expires: Date.now() + TOKEN_TTL_MS});
+    this.#credentials.open(handle, {token: context.engine_token,
+      refreshToken: context.engine_refresh_token ?? null, expiresAt: deadlineAt});
+    const {engine_refresh_token: _refresh, ...childContext} = context;
     this.#calls.set(handle, []);
     this.#current = {handle, egress: new Set(egressHosts.map((h) => h.toLowerCase()))};
     try {
       const worker = await this.#engine(tenantId);
       const mark = Date.now();
-      const deadlineMs = Number(this.env.ATTEMPT_DEADLINE_MS) || DEFAULT_ATTEMPT_DEADLINE_MS;
       let timer;
-      const expired = new Promise((resolve) => { timer = setTimeout(() => resolve(DEADLINE), deadlineMs); });
+      const expired = new Promise((resolve) => {
+        timer = setTimeout(() => resolve(DEADLINE), Math.max(0, deadlineAt - Date.now()));
+      });
       const response = await Promise.race([
         worker.getEntrypoint().fetch(new Request('https://attempt.invalid/', {
           method: 'POST',
           body: JSON.stringify({execution_id: executionId,
-            context: {...context, engine_token: handle},
+            context: {...childContext, engine_token: handle},
             api_url: 'https://test-api.invalid',
             public_url: publicUrl ?? 'https://staging.invalid'}),
         })),
         expired,
       ]).finally(() => clearTimeout(timer));
       if (response === DEADLINE) {
+        // The attempt started and may still be running in the old child: its
+        // effects are unknown. The handle and the child's generation are
+        // revoked below, so it can no longer reach the API or egress.
         await this.#retireChild();
-        return {terminal: {phase: 'attempt-deadline', deadline_ms: deadlineMs,
-          api_calls: this.#calls.get(handle)}};
+        return {terminal: {phase: 'attempt-deadline', attempt_state: 'uncertain',
+          deadline_ms: deadlineMs, api_calls: this.#calls.get(handle)}};
       }
       const childMs = Date.now() - mark;
       let output;
@@ -157,7 +197,8 @@ export class TenantHost extends DurableObject {
       } catch (error) {
         // Error subclasses do not survive RPC, so name the outcome here.
         if (error?.name !== 'ExecutorBodyTooLargeError') throw error;
-        return {terminal: {phase: 'output-budget', error_type: 'ExecutorBodyTooLargeError',
+        return {terminal: {phase: 'output-budget', attempt_state: 'completed',
+          error_type: 'ExecutorBodyTooLargeError',
           response_bytes: error.observedBytes, retention_limit_bytes: error.limitBytes,
           api_calls: this.#calls.get(handle)}};
       }
@@ -165,13 +206,13 @@ export class TenantHost extends DurableObject {
       // reported upward.
       const {imported, ...child} = output.child ?? {};
       await this.#learnImports(imported);
-      return {output: output.upstream_result, queueWaitMs,
+      return {output: output.upstream_result, queueWaitMs, attempt_state: 'completed',
         timings: {child_ms: childMs,
           child: output.child ? {...child, imported: Array.isArray(imported) ? imported.length : 0} : null,
           api_calls: this.#calls.get(handle)}};
     } finally {
       this.#current = null;
-      this.#tokens.delete(handle);
+      this.#credentials.close(handle);
       this.#calls.delete(handle);
       release();
       await this.ctx.storage.put({tenantId, lastAttempt: Date.now()});
@@ -299,20 +340,13 @@ export class TenantApi extends WorkerEntrypoint {
     const token = await host.token(handle);
     if (!token) return deny(401, 'unknown handle');
     const tokenMs = Date.now() - started;
-    const headers = new Headers(request.headers);
-    headers.set('Authorization', `Bearer ${token}`);
-    headers.delete('cookie');
-    const response = await fetch(new Request(target, {
-      method: request.method,
-      headers,
-      body: request.body,
-      redirect: 'manual',
-    }));
+    const {response, refreshed} = await forwardWithRefresh({request, target, token, fetchFn: fetch,
+      refreshed: (observed) => host.refreshedToken(handle, observed)});
     // Awaited, not waitUntil: the last call's note must land before run()
     // reports, or the breakdown silently drops it.
     await host.noteCall(handle, {method: request.method,
       path: new URL(target).pathname, status: response.status,
-      token_ms: tokenMs, ms: Date.now() - started - tokenMs});
+      token_ms: tokenMs, ms: Date.now() - started - tokenMs, ...(refreshed ? {refreshed: true} : {})});
     return response;
   }
 
@@ -321,7 +355,7 @@ export class TenantApi extends WorkerEntrypoint {
   async #egress(host, request, url) {
     const note = {method: request.method, host: url.hostname, path: url.pathname};
     if (url.protocol !== 'https:' || url.username || url.password || url.port ||
-        !(await host.egressAllowed(url.hostname))) {
+        !(await host.egressAllowed(url.hostname, this.ctx.props?.generation))) {
       await host.noteEgress({...note, status: 403, denied: 'egress not declared'});
       return new Response('egress not declared', {status: 403});
     }
