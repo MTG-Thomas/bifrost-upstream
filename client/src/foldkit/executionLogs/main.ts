@@ -1,4 +1,3 @@
-import { buttonVariants } from "@/components/ui/button";
 import { copyToClipboard } from "@/lib/clipboard";
 import clsx from "clsx";
 import { Effect, Option, Queue, Schema, Stream } from "effect";
@@ -20,9 +19,14 @@ import {
 import { defineMessageUnion } from "foldkit/message";
 import { defineTaggedUnion } from "foldkit/schema";
 import { modifyFields } from "foldkit/struct";
-import { Button, Input, Select } from "@foldkit/ui";
+import { Select } from "@foldkit/ui";
+import { ArrowDown, Check, Copy, Download, Search, X } from "lucide";
 
-import { icon } from "./icons";
+import * as BifrostBadge from "@/foldkit/ui/badge";
+import * as BifrostButton from "@/foldkit/ui/button";
+import * as BifrostInput from "@/foldkit/ui/input";
+
+import { icon } from "@/foldkit/ui/icons";
 import {
 	ExecutionStatus,
 	LevelFilter,
@@ -342,9 +346,6 @@ const LEVEL_COLORS: Record<string, string> = {
 const ROW_CLASS =
 	"grid min-w-0 grid-cols-[auto_1fr] gap-x-3 gap-y-1 border-b border-border/50 px-4 py-3 font-mono text-xs last:border-0 @3xl:grid-cols-[auto_78px_minmax(0,1fr)] @3xl:py-2 hover:bg-muted/40";
 
-const INPUT_CLASS =
-	"h-11 w-full min-w-0 rounded-[var(--bf-radius-control)] border border-border/70 bg-background px-3 py-2 text-base outline-none placeholder:text-muted-foreground hover:border-border focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/25 md:h-[var(--bf-control-height)] md:text-sm pl-9 pr-11";
-
 const SELECT_CLASS =
 	"h-10 w-full rounded-[var(--bf-radius-control)] border border-border/70 bg-background px-3 py-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/25";
 
@@ -529,51 +530,13 @@ const iconButton = (
 	}>,
 	h: HtmlBuilder<Message>,
 ): Html =>
-	Button.view(
+	BifrostButton.view(
 		{
+			variant: "ghost",
+			size: "icon-lg",
 			onClick: config.onClick,
-			toView: (attributes) =>
-				h.button(
-					[
-						...attributes.button,
-						h.Class(
-							buttonVariants({
-								variant: "ghost",
-								size: "icon-lg",
-							}),
-						),
-						h.Title(config.title),
-						h.AriaLabel(config.label),
-					],
-					[config.content],
-				),
-		},
-		h,
-	);
-
-const outlineButton = (
-	config: Readonly<{
-		onClick: Message;
-		content: ReadonlyArray<Html | string>;
-	}>,
-	h: HtmlBuilder<Message>,
-): Html =>
-	Button.view(
-		{
-			onClick: config.onClick,
-			toView: (attributes) =>
-				h.button(
-					[
-						...attributes.button,
-						h.Class(
-							clsx(
-								buttonVariants({ variant: "outline" }),
-								"min-h-11",
-							),
-						),
-					],
-					config.content,
-				),
+			attributes: [h.Title(config.title), h.AriaLabel(config.label)],
+			content: [config.content],
 		},
 		h,
 	);
@@ -620,26 +583,23 @@ const headerView = (
 								: h.empty,
 							connection === "Connected" &&
 							isRunningStatus(maybeStatus)
-								? h.span(
-										[
-											h.Class(
-												"inline-flex h-5 items-center gap-1 rounded-[var(--bf-radius-control)] bg-secondary px-2 py-0.5 text-xs font-medium text-secondary-foreground",
-											),
-										],
-										[
-											h.span(
-												[
+								? BifrostBadge.view(
+										{
+											variant: "secondary",
+											className: "gap-1 text-xs",
+											content: [
+												h.span([
 													h.DataAttribute(
 														"testid",
 														"execution-live-indicator",
 													),
 													h.AriaHidden(true),
 													h.Class(LIVE_DOT_CLASS),
-												],
-												[],
-											),
-											"Live",
-										],
+												]),
+												"Live",
+											],
+										},
+										h,
 									)
 								: h.empty,
 						],
@@ -657,15 +617,11 @@ const headerView = (
 											onClick: Message.ClickedCopyLogs(),
 											content: isCopied
 												? icon(
-														"check",
+														Check,
 														"h-3.5 w-3.5 text-[var(--bf-success)]",
 														h,
 													)
-												: icon(
-														"copy",
-														"h-3.5 w-3.5",
-														h,
-													),
+												: icon(Copy, "h-3.5 w-3.5", h),
 										},
 										h,
 									),
@@ -676,7 +632,7 @@ const headerView = (
 											onClick:
 												Message.ClickedDownloadLogs(),
 											content: icon(
-												"download",
+												Download,
 												"h-3.5 w-3.5",
 												h,
 											),
@@ -707,79 +663,48 @@ const filtersView = (model: Model, h: HtmlBuilder<Message>): Html =>
 	h.div(
 		[h.Class("grid gap-2 @lg:grid-cols-[minmax(0,1fr)_9rem]")],
 		[
-			Input.view(
+			BifrostInput.view(
 				{
 					id: `${model.elementId}-search`,
+					label: "Search logs",
+					isLabelVisible: false,
 					value: model.query,
 					placeholder: "Search logs...",
 					onInput: (query) => Message.UpdatedQuery({ query }),
-					toView: (attributes) =>
-						h.div(
-							[h.Class("relative min-w-0")],
-							[
-								h.label(
-									[...attributes.label, h.Class("sr-only")],
-									["Search logs"],
+					className: "pl-9 pr-11",
+					leading: icon(
+						Search,
+						"pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground",
+						h,
+					),
+					trailing:
+						model.query === ""
+							? undefined
+							: h.span(
+									[
+										h.Class(
+											"absolute inset-y-0 right-1 z-20 flex items-center",
+										),
+									],
+									[
+										BifrostButton.view(
+											{
+												variant: "ghost",
+												size: "icon",
+												className: "size-8",
+												onClick:
+													Message.ClickedClearQuery(),
+												attributes: [
+													h.AriaLabel(
+														"Clear log search",
+													),
+												],
+												content: [icon(X, "size-4", h)],
+											},
+											h,
+										),
+									],
 								),
-								icon(
-									"search",
-									"pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground",
-									h,
-								),
-								h.input([
-									...attributes.input,
-									h.Class(INPUT_CLASS),
-								]),
-								model.query !== ""
-									? h.span(
-											[
-												h.Class(
-													"absolute inset-y-0 right-1 z-20 flex items-center",
-												),
-											],
-											[
-												Button.view(
-													{
-														onClick:
-															Message.ClickedClearQuery(),
-														toView: (
-															buttonAttributes,
-														) =>
-															h.button(
-																[
-																	...buttonAttributes.button,
-																	h.Class(
-																		clsx(
-																			buttonVariants(
-																				{
-																					variant:
-																						"ghost",
-																					size: "icon",
-																				},
-																			),
-																			"size-8",
-																		),
-																	),
-																	h.AriaLabel(
-																		"Clear log search",
-																	),
-																],
-																[
-																	icon(
-																		"x",
-																		"size-4",
-																		h,
-																	),
-																],
-															),
-													},
-													h,
-												),
-											],
-										)
-									: h.empty,
-							],
-						),
 				},
 				h,
 			),
@@ -859,9 +784,9 @@ const contentView = (
 				h.Class("space-y-2 p-4"),
 			],
 			[
-				h.div([h.Class(clsx(SKELETON_CLASS, "w-full"))], []),
-				h.div([h.Class(clsx(SKELETON_CLASS, "w-5/6"))], []),
-				h.div([h.Class(clsx(SKELETON_CLASS, "w-4/5"))], []),
+				h.div([h.Class(clsx(SKELETON_CLASS, "w-full"))]),
+				h.div([h.Class(clsx(SKELETON_CLASS, "w-5/6"))]),
+				h.div([h.Class(clsx(SKELETON_CLASS, "w-4/5"))]),
 			],
 		);
 	}
@@ -875,8 +800,10 @@ const contentView = (
 			],
 			[
 				h.p([], ["No logs match the current filters"]),
-				outlineButton(
+				BifrostButton.view(
 					{
+						variant: "outline",
+						className: "min-h-11",
 						onClick: Message.ClickedClearFilters(),
 						content: ["Clear filters"],
 					},
@@ -939,11 +866,13 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Html => {
 								],
 								["Following paused"],
 							),
-							outlineButton(
+							BifrostButton.view(
 								{
+									variant: "outline",
+									className: "min-h-11",
 									onClick: Message.ClickedJumpToLatest(),
 									content: [
-										icon("arrowDown", "h-4 w-4", h),
+										icon(ArrowDown, "h-4 w-4", h),
 										"Jump to latest",
 									],
 								},

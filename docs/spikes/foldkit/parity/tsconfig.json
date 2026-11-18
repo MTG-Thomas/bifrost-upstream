@@ -1,0 +1,10 @@
+{
+	"extends": "../../../../client/tsconfig.app.json",
+	"compilerOptions": {
+		"baseUrl": "../../../../client",
+		"types": [],
+		"typeRoots": ["../../../../client/node_modules/@types"]
+	},
+	"include": ["*.ts", "*.tsx", "../../../../client/src/vite-env.d.ts"],
+	"exclude": ["vite.config.ts"]
+}

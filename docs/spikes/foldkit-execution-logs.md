@@ -2,6 +2,8 @@
 
 **Recommendation: retain React for the control plane.** Do not migrate incrementally to Foldkit or adopt it selectively at this time. Foldkit's architecture delivered real benefits. However, in Bifrost's React shell the measured costs were higher: bundle size, a second UI paradigm, design-system duplication, dev-tooling conflicts, and pre-1.0 churn. The benefits can mostly be obtained inside React. The revisit conditions are at the end.
 
+> **Follow-up:** [Design-System Port](foldkit-design-system-port.md) ports Button, Badge, Input, Dialog, DropdownMenu, and icons, and measures parity against Radix. It revises the design-system cost described below: that cost is lower than this document assumed. The remaining blockers are listed there.
+
 Scope: fork-only evaluation spike, dated 2026-11-18. It covers Foldkit `0.171.0`, `@foldkit/ui 0.171.0`, `effect 4.1.4`, React `19.3`, and Vite `8.3`.
 
 ## What Was Built
@@ -32,6 +34,7 @@ ExecutionDetails (React)
 | `client/src/foldkit/executionLogs/logs.ts` | Framework-free log domain: filter, traceback coalescing, export text, reconciliation |
 | `client/src/foldkit/executionLogs/FoldkitExecutionLogsPanel.tsx` | React host adapter (embed, port bridge, dispose) |
 | `client/src/foldkit/executionLogs/spikeSwitch.tsx` | Opt-in switch plus `React.lazy` boundary |
+| `client/src/foldkit/ui/*` | Ported Bifrost design-system components (see the follow-up) |
 | `client/src/foldkit/executionLogs/*.test.ts(x)` | Story, Scene, pure-logic, parity, and host-boundary tests |
 
 ### Try It
@@ -116,7 +119,7 @@ Lines are non-blank and non-comment, formatted with the repo's Prettier config.
 | Host adapter + switch | — | 146 |
 | Tests | 460 | 707 |
 
-Most of the difference is in the view. None of Bifrost's React design system (shadcn/Radix, `lucide-react`) can render in a Foldkit view, so the markup, class strings, and icons were re-expressed. The shadcn `cva` variant functions are framework-agnostic and were reused.
+Most of the difference is in the view. None of Bifrost's React design system (shadcn/Radix, `lucide-react`) can render in a Foldkit view, so the markup, class strings, and icons were re-expressed. The shadcn `cva` variant functions are framework-agnostic and were reused. These counts predate the design-system port, which cut the view to 528 lines and replaced the hand-copied icons with vanilla `lucide`.
 
 ## Assessment
 
@@ -145,7 +148,7 @@ Most of the difference is in the view. None of Bifrost's React design system (sh
 
 - **`@foldkit/vite-plugin` has no include/exclude.** It brands every application module's function returns (React components included) and answers *every* HMR update with a full page reload. Enabling it would disable React Fast Refresh for all of Bifrost. It is therefore not enabled, so the spike runs without view-identity branding (branch points are hand-keyed), Model-preserving reloads, the DevTools overlay, and the MCP relay.
 - **`foldkit/test/vitest` `setup()` collides with jest-dom.** It registers global matchers that collide with jest-dom (`toHaveClass`, `toHaveValue`, `toBeVisible`, `toBeDisabled`, `toBeEnabled`, `toBeChecked`, `toBeEmpty`, `toHaveStyle`), so it was not used; Scene's own `expect` works without it.
-- **Bifrost's design-system lint does not see Foldkit views.** The shadcn lint (`shadcn/no-restyle`, `no-arbitrary-values`, DESIGN.md enforcement) analyses JSX `className` only, so it effectively does not check `h.Class(...)`.
+- **Bifrost's design-system lint does not see Foldkit views.** The shadcn lint (`shadcn/no-restyle`, `no-arbitrary-values`, DESIGN.md enforcement) analyses JSX `className` only, so it effectively does not check `h.Class(...)`. Foldkit has its own linters (`@foldkit/oxlint-plugin` plus Effect's type-aware rules), covered in the follow-up.
 - **`@foldkit/ui` changed a shared transitive dependency.** Installing it bumped `@floating-ui/dom` (shared with Radix) from 1.7.5 to 1.8.0.
 - **Two idioms.** Foldkit conventions (`Option` over `null`, `Array.map` over methods, `modifyFields` over spread, no comments) differ from the surrounding React/TypeScript, so contributors would maintain both.
 
@@ -185,7 +188,7 @@ A control-plane migration would leave Bifrost maintaining two UI paradigms perma
 
 ## Migration Risks
 
-1. **Permanent dual paradigm.** Apps/Solutions stay React, so every shared surface (design system, icons, test utilities, lint) needs two implementations or stays React-only.
+1. **Permanent dual paradigm.** Apps/Solutions stay React, so behavioural components, test utilities, and lint need two implementations or stay React-only. The style layer (tokens, `cva` variants, lucide icons) can be shared; the follow-up does that.
 2. **Bundle.** About +107 kB gzip for the first island on a route, mostly Effect. That is significant next to a 112 kB gzip entry chunk.
 3. **Boundary costs.** These are full-snapshot decode per update, lost reference identity, a two-frame minimum update latency, and the unmount hazard in the documented embed pattern. Every island pays them.
 4. **Tooling.** The unscoped Vite plugin (no Fast Refresh coexistence) and the matcher collisions mean the best DevTools/MCP experience is unavailable inside Bifrost without upstream Foldkit changes.
