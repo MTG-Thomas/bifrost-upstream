@@ -39,6 +39,7 @@ from src.core.redis_client import ActiveExecution, PendingExecution, get_redis_c
 from src.models.enums import ExecutionStatus
 from src.models.orm import Execution, User
 from src.repositories.executions import create_execution, update_execution
+from src.worker.remote.protocol import OpaqueWorkflowNotStarted
 
 if TYPE_CHECKING:
     from src.services.execution.process_pool import ProcessPoolManager
@@ -1159,9 +1160,8 @@ class WorkflowExecutionConsumer:
             logger.info(f"Execution task {execution_id} was cancelled")
             raise
 
-        except MemoryError:
-            # The fork was refused before the run started; the executor hands
-            # the run back (pool_main) instead of failing it.
+        except (MemoryError, OpaqueWorkflowNotStarted):
+            # The executor hands back a run refused before it started.
             raise
 
         except Exception as e:

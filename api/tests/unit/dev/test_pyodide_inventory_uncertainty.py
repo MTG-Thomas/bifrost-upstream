@@ -7,7 +7,7 @@ from sqlalchemy import delete
 from src.models.enums import ExecutionStatus
 from src.models.orm.execution_workers import ExecutionWorkerClaim
 from src.models.orm.executions import Execution
-from src.services.worker_pool.recovery import EXECUTOR_LOST
+from src.services.worker_pool.recovery import WORKFLOW_ATTEMPT_UNCERTAIN
 from src.worker.remote.remote_pool import ThinRemoteProcessPool
 from tests.unit.dev.test_thin_remote_pool import _active, _Transport
 from tests.unit.worker.remote.test_opaque_workflow_lifecycle import (
@@ -35,7 +35,7 @@ async def test_omitted_inventory_only_settles_the_linux_process_contract(
         async with async_session_factory() as session:
             for subject in subjects:
                 run = await session.get(Execution, subject)
-                assert run.status == ExecutionStatus.FAILED and run.error_message == EXECUTOR_LOST
+                assert run.status == ExecutionStatus.FAILED and run.error_message == WORKFLOW_ATTEMPT_UNCERTAIN
         return
 
     transport = _Transport()

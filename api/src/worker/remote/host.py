@@ -217,14 +217,22 @@ class Bridge:
             elif not future.done():
                 future.cancel()
 
-    async def acknowledge(self, event_id: str) -> None:
+    async def acknowledge(
+        self, event_id: str, *, reconciliation_lease: RemoteOwnerLease | None = None,
+    ) -> None:
         """Release a launcher-retained terminal result after canonical delivery."""
-        ref = current_remote_lease_ref() or self.lease_ref
+        ref = LeaseRef(reconciliation_lease) if reconciliation_lease is not None else (
+            current_remote_lease_ref() or self.lease_ref
+        )
         lease = ref.lease if ref is not None else self.lease
         socket = self.socket
         async with self.lock, contextlib.AsyncExitStack() as stack:
-            if self.runtime_profile != LINUX_RUNTIME_PROFILE and not self.reconciliation_ready.is_set():
-                raise ConnectionError("Opaque launcher inventory is not reconciled")
+            if self.runtime_profile != LINUX_RUNTIME_PROFILE:
+                if reconciliation_lease is not None:
+                    if not self.connected or not self.inventory_ready.is_set():
+                        raise ConnectionError("Opaque terminal replay session is unavailable")
+                elif not self.reconciliation_ready.is_set():
+                    raise ConnectionError("Opaque launcher inventory is not reconciled")
             if ref is not None:
                 if self.lease != lease or self.socket is not socket:
                     raise ConnectionError("Remote session was replaced before ACK")

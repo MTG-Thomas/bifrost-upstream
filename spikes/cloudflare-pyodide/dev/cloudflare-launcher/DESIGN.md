@@ -260,6 +260,11 @@ run. Findings, checked against the cited code:
   opaque 1–255 character token using letters, digits, `.`, `_`, `:`, and
   `-`. Use the same handle for the route's lifetime and omit `pid`. A lost
   or ambiguous reply leaves the route reserved.
+- An error reply to a `workflow` command is a definitive refusal
+  (`not_started`). The launcher has never entered and must never enter
+  the engine for that route. If engine entry may have occurred and the
+  outcome is unknown, journal an `uncertain` terminal. An explicit
+  `MemoryError` refusal lets the API hand the claim back for redispatch.
 - After welcome, send one inventory per control generation. It must contain
   `version: 1`, a nonnegative integer `baseline_bytes`, and both `routes` and
   `terminal_routes` arrays. Each entry carries `kind: "workflow"`,
@@ -267,9 +272,14 @@ run. Findings, checked against the cited code:
   `active_execution`, `started_at`, `timeout_seconds`, `workflow_deadline`,
   and `memory_request_bytes`. Terminal entries also carry `event_id` and
   `attempt_state`. The API checks the snapshot against live durable claims
-  and routes already tracked by that owner. A missing claim or route, or
-  an unclaimed live route, loses the worker and settles its outstanding runs
-  under the ownership fence. Those runs are never redispatched.
+  and routes already tracked by that owner. A claim still preparing to
+  dispatch can be absent from inventory. An omitted route whose launch was
+  never acknowledged settles individually as uncertain, including an
+  interrupted send. An unclaimed live route, an omitted acknowledged
+  route, or another claim/route mismatch loses the worker and settles its
+  outstanding runs under the ownership fence. A tracked invocation may
+  already have run even when the current inventory omits it. Runs failed by
+  inventory loss are never redispatched.
 - A `terminate` command carries `route_id`, `error_type`, and `error` in the
   current control generation. `{received: true}` acknowledges the stop
   request only. The API bounds this request, retains the route if the reply

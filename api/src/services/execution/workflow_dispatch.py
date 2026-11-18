@@ -8,6 +8,7 @@ moving the row to ``RUNNING`` and deleting the dispatch in one transaction.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -28,6 +29,7 @@ from src.services.durable_impersonation import pending_durable_impersonation
 from src.services.memory_requests import workflow_request_bytes
 from shared.execution_lanes import resolve_admitted_execution_lane
 from src.services.work_dispatch import WAKE_WORKFLOW, hand_off, stage_dispatch, take_dispatch_payload
+from src.worker.remote.fencing import fence_remote_owner
 
 logger = logging.getLogger(__name__)
 
@@ -201,19 +203,35 @@ async def release_workflow_run(
     payload: dict[str, Any],
     memory_request_bytes: int,
     queued_at: datetime,
+    release_unsent_reservation: Callable[[], None] | None = None,
 ) -> None:
     """Hand a claimed run back before it started: RUNNING -> PENDING.
 
-    For an executor that claimed a run but could not fork it (memory rose in
-    between). The run gets a new dispatch, keeping its place in line and its
-    claim deadline, and loses this executor's claim record, so another
-    executor takes it as if it had never been claimed.
+    For an executor that claimed a run but could not launch it. The run gets
+    a new dispatch, keeping its place in line and its claim deadline, and
+    loses this executor's claim record. For a provably unsent opaque
+    dispatch, keep its starting reservation until the owner fence is
+    locked so a concurrent inventory still recognizes the in-flight claim.
     """
     execution_id = UUID(payload["execution_id"])
     async with get_db_context() as db:
+        statement = update(Execution).where(
+            Execution.id == execution_id, Execution.status == ExecutionStatus.RUNNING,
+        )
+        if release_unsent_reservation is not None:
+            owns_session = await fence_remote_owner(db)
+            release_unsent_reservation()
+            if not owns_session:
+                return
+            statement = statement.where(
+                select(ExecutionWorkerClaim.subject_id).where(
+                    ExecutionWorkerClaim.worker_id == worker_id,
+                    ExecutionWorkerClaim.family == FAMILY,
+                    ExecutionWorkerClaim.subject_id == execution_id,
+                ).exists()
+            )
         released = await db.scalar(
-            update(Execution)
-            .where(Execution.id == execution_id, Execution.status == ExecutionStatus.RUNNING)
+            statement
             .values(status=ExecutionStatus.PENDING, started_at=None)
             .returning(Execution.id)
         )

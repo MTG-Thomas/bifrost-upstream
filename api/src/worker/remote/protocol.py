@@ -111,6 +111,10 @@ class CredentialRouteChanged(Exception):
     since been replaced; they are never sent to the new session."""
 
 
+class OpaqueWorkflowNotStarted(CredentialRouteChanged):
+    """The opaque workflow command was refused locally before sending any frame."""
+
+
 class OpaqueDispatchInterrupted(ConnectionError):
     """The opaque socket changed or failed while sending a command."""
 

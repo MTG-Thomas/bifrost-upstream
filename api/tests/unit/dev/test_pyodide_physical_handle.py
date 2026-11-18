@@ -92,7 +92,7 @@ async def test_invalid_opaque_ack_retains_uncertain_invocation(opaque_dispatch, 
 
 
 @pytest.mark.asyncio
-async def test_unqualified_cancellation_does_not_claim_stop_or_release_route(opaque_dispatch):
+async def test_cooperative_cancellation_sends_terminate_and_retains_route(opaque_dispatch):
     pool, transport, callback, route = await opaque_dispatch({'runtime_handle': 'opaque'})
     transport.request.return_value = {"received": True}
     await pool._handle_cancel_request('opaque-run')

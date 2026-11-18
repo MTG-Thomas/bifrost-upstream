@@ -431,6 +431,7 @@ async def test_a_refused_fork_hands_the_run_back(monkeypatch) -> None:  # type: 
         payload={"execution_id": execution_id, "sync": False},
         memory_request_bytes=100 * MIB,
         queued_at=QUEUED_AT,
+        release_unsent_reservation=None,
     )
     assert worker.admission.free_bytes() == GIB, "the hold went back with the run"
 

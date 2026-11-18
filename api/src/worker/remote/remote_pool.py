@@ -39,6 +39,7 @@ from src.worker.remote.protocol import (
     LINUX_RUNTIME_PROFILE,
     CredentialRouteChanged,
     OpaqueDispatchInterrupted,
+    OpaqueWorkflowNotStarted,
 )
 
 if TYPE_CHECKING:
@@ -85,6 +86,12 @@ class ThinRemoteTransport(Protocol):
         """Return retained result events replayed after the inventory."""
         raise NotImplementedError
 
+    async def acknowledge(
+        self, event_id: str, *, reconciliation_lease: RemoteOwnerLease | None = None,
+    ) -> None:
+        """Release a retained terminal after durable settlement."""
+        raise NotImplementedError
+
 
 class _RemoteProcess:
     """PID-less ProcessHandle shim; remote liveness arrives as launcher events."""
@@ -94,7 +101,6 @@ class _RemoteProcess:
         self.remote_pid: int | None = None
         self.runtime_handle: str | None = None
         self.memory_request_bytes: int | None = None
-        self.dispatch_interrupted = False
         self.stop_generation: int | None = None
         self.stop_reason: tuple[str, str] | None = None
         self.stop_confirmed = False
@@ -403,13 +409,20 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                 subject for subject in claims.keys() - tracked.keys()
                 if admission is not None and admission.workflow_is_starting(str(subject))
             }
+            for subject in tracked.keys() - claims.keys():
+                handle = tracked[subject]
+                if handle.id not in entries:
+                    self._cancel_opaque_stop_task(handle)
+                    self._forget_route(handle)
+                    if admission is not None:
+                        admission.release(str(subject))
             await db.commit()
 
-        interrupted = {
+        unacknowledged = {
             subject: handle for subject, handle in tracked.items()
-            if subject in claims and subject not in subjects and handle.process.dispatch_interrupted
+            if subject in claims and subject not in subjects and handle.process.runtime_handle is None
         }
-        mismatch |= bool(claims.keys() - subjects - pending - interrupted.keys() or live_subjects - claims.keys())
+        mismatch |= bool(claims.keys() - subjects - pending - unacknowledged.keys() or live_subjects - claims.keys())
         matched = {}
         for route_id, (entry, execution, reservation, receipt) in entries.items():
             subject = UUID(execution.execution_id)
@@ -423,19 +436,28 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                 continue
             matched[route_id] = (entry, execution, reservation, receipt)
         mismatch |= any(
-            subject in claims and subject not in interrupted and handle.id not in matched
+            subject in claims and subject not in unacknowledged and handle.id not in matched
             for subject, handle in tracked.items()
         )
 
         if mismatch:
             # Inventory describes receipts. Payloads arrive separately as replay
             # events, including when the inconsistency prevents opening claims.
-            receipts = {receipt[0] for _, _, _, receipt in matched.values() if receipt is not None}
+            # A terminal whose claim already closed can also need an ACK if
+            # settlement committed before a disconnect.
+            terminals_to_ack = {
+                route_id: (entry, execution, reservation, receipt)
+                for route_id, (entry, execution, reservation, receipt) in entries.items()
+                if receipt is not None and (
+                    route_id in matched
+                    or UUID(execution.execution_id) not in claims and UUID(execution.execution_id) not in duplicates
+                )
+            }
+            receipts = {receipt[0] for _, _, _, receipt in terminals_to_ack.values()}
             replay = await self.transport.wait_for_opaque_terminals(receipts, lease) if receipts else {}
+            failures: list[Exception] = []
             with remote_owner_context(LeaseRef(lease)):
-                for route_id, (entry, execution, reservation, receipt) in matched.items():
-                    if receipt is None:
-                        continue
+                for route_id, (entry, execution, reservation, receipt) in terminals_to_ack.items():
                     event = replay.get(receipt[0])
                     if (
                         event is None or event.get("route_id") != route_id
@@ -444,8 +466,18 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                         or not self._valid_opaque_terminal_result(event.get("result"), receipt[1])
                     ):
                         continue
-                    await self._attach_opaque_inventory_route(route_id, entry, execution, reservation, receipt)
-                    await self._handle_opaque_terminal(event)
+                    try:
+                        if route_id in matched:
+                            await self._attach_opaque_inventory_route(route_id, entry, execution, reservation, receipt)
+                            await self._handle_opaque_terminal(event)
+                        await self.transport.acknowledge(receipt[0], reconciliation_lease=lease)
+                    except Exception as exc:  # noqa: BLE001 - report all failed receipts after the batch
+                        exc.add_note(f"Opaque terminal replay for {route_id}")
+                        failures.append(exc)
+            if failures:
+                # Keep the claims gate closed and the worker fenced. Reconnect
+                # can retry failed receipts without overwriting their outcomes.
+                raise ExceptionGroup("Opaque inventory terminal settlement failed", failures)
 
             async with get_db_context() as db:
                 with remote_owner_context(LeaseRef(lease)):
@@ -456,7 +488,7 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                     ended_at=func.now(), remote_owner_lease_expires_at=func.now(),
                 ))
                 lost = await end_runs_of_lost_worker(
-                    db, worker_id, uncertain_workflows=frozenset(subjects | interrupted.keys()),
+                    db, worker_id, uncertain_workflows=frozenset(subjects | tracked.keys()),
                 )
                 await db.commit()
             await self.ownership_lost("Opaque inventory does not match canonical claims")
@@ -464,12 +496,12 @@ class ThinRemoteProcessPool(ProcessPoolManager):
             return None
 
         with remote_owner_context(LeaseRef(lease)):
-            for handle in interrupted.values():
-                # The inventory could race an interrupted send. Settle just
-                # this invocation without redispatching it or losing siblings.
+            for handle in unacknowledged.values():
+                # A missing launch receipt cannot prove whether the engine ran.
+                # Settle just this invocation without redispatching it.
                 await self._handle_result(handle, {
                     "success": False, "error_type": "WorkflowAttemptUncertain",
-                    "error": "Workflow may already have taken effect. Its command send was interrupted.",
+                    "error": "Workflow may already have taken effect. Its launch was never acknowledged.",
                 })
         workflows = {}
         live_workflows = {}
@@ -540,7 +572,6 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         else:
             self._bind_workflow_handle(handle, entry)
         handle.process.terminal_receipt = receipt
-        handle.process.dispatch_interrupted = False
         assert handle.current_execution is not None
         await self._write_active_execution_lease(handle.current_execution)
 
@@ -863,16 +894,16 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                 )
                 self._bind_workflow_handle(handle, response)
             except OpaqueDispatchInterrupted:
-                handle.process.dispatch_interrupted = True
                 logger.warning("Opaque workflow command send interrupted: %s", route_id)
             except (ConnectionError, TimeoutError):
                 # The child may already exist. Inventory resolves this exact
                 # route after reconnect; reporting failure now could duplicate
                 # side effects while its original process continues.
                 logger.warning("Remote workflow launch ACK uncertain: %s", route_id)
-            except Exception:
-                # A pre-send fence rejection or explicit launcher refusal is
-                # definitive. Let the consumer fail or hand back the claim.
+            except Exception as exc:
+                # The opaque wire contract permits a workflow error reply
+                # only for a definitive refusal before engine entry. A launch
+                # that may have entered must report an uncertain terminal.
                 self.processes.pop(handle.id, None)
                 self._routes.pop(route_id, None)
                 self._route_metrics.pop(route_id, None)
@@ -884,6 +915,8 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                     )
                 except Exception:
                     logger.warning("Could not clean failed remote dispatch %s", execution_id)
+                if opaque and isinstance(exc, CredentialRouteChanged):
+                    raise OpaqueWorkflowNotStarted(str(exc)) from exc
                 raise
             finally:
                 if opaque and self._routes.get(route_id) is handle:
@@ -1325,11 +1358,14 @@ class ThinRemoteProcessPool(ProcessPoolManager):
             handle.result_reported = True
             handle.process.exitcode = 0
             handle.current_execution = None
-            self.processes.pop(handle.id, None)
-            self.service_processes.pop(handle.id, None)
-            self._routes.pop(handle.id, None)
-            self._route_metrics.pop(handle.id, None)
-            self._result_locks.pop(handle.id, None)
+            self._forget_route(handle)
+
+    def _forget_route(self, handle: ProcessHandle) -> None:
+        self.processes.pop(handle.id, None)
+        self.service_processes.pop(handle.id, None)
+        self._routes.pop(handle.id, None)
+        self._route_metrics.pop(handle.id, None)
+        self._result_locks.pop(handle.id, None)
 
     def _build_heartbeat(self) -> dict[str, Any]:
         """Publish remote cgroup usage without inspecting the API host."""

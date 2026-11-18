@@ -77,6 +77,7 @@ from src.services.worker_pool.recovery import UNSTARTED_CLAIM_WINDOW, release_un
 from src.worker.remote.protocol import (
     HANDLER_CONCURRENCY_LIMITS,
     LINUX_RUNTIME_PROFILE,
+    OpaqueWorkflowNotStarted,
     WORKER_DRAIN_GRACE_SECONDS as DRAIN_GRACE_SECONDS,
 )
 
@@ -618,12 +619,14 @@ class PoolWorker:
                         if claim.claimed is not None
                         else None,
                     )
-                except MemoryError:
-                    # Memory rose between the claim and the fork: the run
-                    # goes back to waiting for an executor with room.
+                except (MemoryError, OpaqueWorkflowNotStarted) as exc:
+                    # A refused fork or provably unsent opaque command can
+                    # go back to waiting for an executor.
                     from src.services.execution.workflow_dispatch import release_workflow_run
 
-                    self.admission.release(str(claim.subject_id))
+                    unsent = isinstance(exc, OpaqueWorkflowNotStarted)
+                    if not unsent or claim.claimed is None:
+                        self._release_claim_reservation(claim)
                     handed_back = True
                     if claim.claimed is None:
                         logger.error(
@@ -637,6 +640,7 @@ class PoolWorker:
                         payload=claim.claimed,
                         memory_request_bytes=claim.memory_request_bytes,
                         queued_at=claim.queued_at,
+                        release_unsent_reservation=(lambda: self._release_claim_reservation(claim)) if unsent else None,
                     )
             elif claim.handler == "agent.run":
                 assert self._agent_consumer is not None

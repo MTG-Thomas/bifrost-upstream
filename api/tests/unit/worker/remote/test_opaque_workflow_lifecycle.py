@@ -10,16 +10,22 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import delete, select, update
+from src.core.redis_client import pending_execution_record
+from src.jobs.consumers import workflow_execution
 from src.models.enums import ExecutionStatus
 from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
 from src.models.orm.executions import Execution
 from src.models.orm.work_dispatches import WorkDispatch
 from src.repositories.executions import ExecutionRepository
 from src.routers.platform import workers
+from src.services.authorization import runtime, tokens
+from src.services.execution import workflow_dispatch
 from src.services.work_dispatch import WAKE_WORKFLOW
 from src.services.worker_pool import recovery
+from src.services.worker_pool.claims import PoolClaim
 from src.worker.admission import Admission
 from src.worker.remote import remote_pool
+from src.worker.remote.fencing import LeaseRef, remote_owner_context
 from src.worker.remote.host import ApiExecutor, Bridge
 from src.worker.remote.ownership import RemoteOwnerLease
 from src.worker.remote.protocol import (
@@ -27,6 +33,7 @@ from src.worker.remote.protocol import (
     MAX_FRAME_BYTES,
     ControlEnvelope,
     CredentialRouteChanged,
+    OpaqueWorkflowNotStarted,
     ProtocolError,
 )
 
@@ -46,7 +53,8 @@ async def opaque_executor(async_session_factory, monkeypatch):
     lease = RemoteOwnerLease(uuid4(), uuid4(), uuid4(), 2)
     bridge = opaque_bridge(Mock(close=AsyncMock()), lease)
     worker = ApiExecutor(bridge, lease.worker_id)
-    pool = worker._make_workflow_consumer()._pool
+    worker._workflow_consumer = worker._make_workflow_consumer()
+    pool = worker._workflow_consumer._pool
     worker.admission = bridge.admission = Admission(
         budget_bytes=128 * 2**20, under_pressure=lambda: False,
         running_workflow_ids=pool.active_execution_ids, workflow_growth=pool.workflow_growth,
@@ -65,6 +73,9 @@ async def opaque_executor(async_session_factory, monkeypatch):
             yield db
 
     monkeypatch.setattr("src.core.database.get_db_context", db_context)
+    monkeypatch.setattr("src.worker.remote.host.get_db_context", db_context)
+    monkeypatch.setattr(workflow_execution, "get_db_context", db_context)
+    monkeypatch.setattr(workflow_dispatch, "get_db_context", db_context)
     monkeypatch.setattr("src.worker.remote.ownership.get_liveness_db_context", db_context)
     monkeypatch.setattr(recovery, "announce_lost_runs", AsyncMock())
     subjects = [uuid4(), uuid4()]
@@ -88,6 +99,7 @@ async def opaque_executor(async_session_factory, monkeypatch):
     finally:
         await pool.ownership_lost()
         async with async_session_factory() as db:
+            await db.execute(delete(WorkDispatch).where(WorkDispatch.subject_id.in_(subjects)))
             await db.execute(delete(ExecutionWorker).where(ExecutionWorker.id == lease.worker_id))
             await db.execute(delete(Execution).where(Execution.id.in_(subjects)))
             await db.commit()
@@ -256,7 +268,7 @@ async def test_reconnect_excludes_workflow_still_entering_dispatch(
     replacement = Mock(send_text=AsyncMock())
 
     async def dispatch():
-        with pytest.raises(CredentialRouteChanged, match="before workflow dispatch"):
+        with pytest.raises(OpaqueWorkflowNotStarted, match="before workflow dispatch"):
             await pool.route_execution(
                 str(subject), {"timeout_seconds": 300}, entry["active_execution"],
                 credential_route=credential_route,
@@ -309,8 +321,9 @@ async def test_reconnect_excludes_workflow_still_entering_dispatch(
 
 
 @pytest.mark.asyncio
-async def test_interrupted_send_omission_settles_only_its_workflow(
-    opaque_executor, async_session_factory, monkeypatch,
+@pytest.mark.parametrize("interrupted_send", [True, False], ids=["interrupted-send", "lost-reply"])
+async def test_unacknowledged_launch_omission_settles_only_its_workflow(
+    opaque_executor, async_session_factory, monkeypatch, interrupted_send,
 ):
     worker, pool, (subject, sibling_subject) = opaque_executor
     bridge = worker.bridge
@@ -319,10 +332,21 @@ async def test_interrupted_send_omission_settles_only_its_workflow(
     monkeypatch.setattr(bridge, "request", Bridge.request.__get__(bridge))
     sending, release_send = asyncio.Event(), asyncio.Event()
 
+    async def persist(result):
+        async with async_session_factory() as db:
+            assert await ExecutionRepository(db).update_execution(
+                execution_id=result["execution_id"], owner_worker_id=worker.incarnation_id,
+                status=ExecutionStatus.FAILED, error_message=result["error"], duration_ms=1,
+            )
+            await db.commit()
+
+    pool.on_result.side_effect = persist
+
     async def send(frame):
         assert ControlEnvelope.from_json(frame).payload["action"] == "workflow"
         sending.set()
-        await release_send.wait()
+        if interrupted_send:
+            await release_send.wait()
 
     bridge.socket.send_text = AsyncMock(side_effect=send)
     dispatch = asyncio.create_task(pool.route_execution(
@@ -330,23 +354,117 @@ async def test_interrupted_send_omission_settles_only_its_workflow(
         credential_route=pool.credential_route(),
     ))
     await sending.wait()
+    if not interrupted_send:
+        # All frames were sent and request() is waiting for the reply.
+        assert not bridge.lock.locked()
+        assert bridge.pending and not dispatch.done()
+        bridge.disconnect()
+        await dispatch
     replacement = Mock(send_text=AsyncMock())
     generation = await receive_reconnect(
         bridge, async_session_factory, inventory([sibling]), socket=replacement,
     )
     release_send.set()
     await dispatch
+    worker.admission.started(str(subject))
     await worker.reconcile_transport_inventory(expected_generation=generation)
 
     assert worker._claims_open()
     assert list(pool.processes) == [sibling["route_id"]]
+    assert worker.admission.held_bytes() == RESERVATION
     pool.on_result.assert_awaited_once()
     result = pool.on_result.await_args.args[0]
     assert result["error_type"] == "WorkflowAttemptUncertain"
     assert result["execution_id"] == str(subject)
     replacement.send_text.assert_not_awaited()
     async with async_session_factory() as db:
+        assert (await db.get(Execution, subject)).status == ExecutionStatus.FAILED
         assert (await db.get(Execution, sibling_subject)).status == ExecutionStatus.RUNNING
+        assert await db.scalar(select(WorkDispatch.id).where(WorkDispatch.subject_id == subject)) is None
+
+
+@pytest.mark.asyncio
+async def test_omitted_unclaimed_route_releases_admission(opaque_executor, async_session_factory):
+    worker, pool, subjects = opaque_executor
+    orphan, sibling = map(workflow_entry, subjects)
+    await worker.bridge.receive(inventory([orphan, sibling]))
+    await worker._prepare_admission()
+    async with async_session_factory() as db:
+        await db.execute(delete(ExecutionWorkerClaim).where(ExecutionWorkerClaim.subject_id == subjects[0]))
+        await db.commit()
+
+    generation = await receive_reconnect(worker.bridge, async_session_factory, inventory([sibling]))
+    await worker.reconcile_transport_inventory(expected_generation=generation)
+
+    assert worker._claims_open()
+    assert pool._build_heartbeat()["busy_count"] == 1
+    assert list(pool.processes) == [sibling["route_id"]]
+    assert worker.admission.request_bytes(str(subjects[0])) is None
+    assert worker.admission.held_bytes() == RESERVATION
+    pool.on_result.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pre_send", [True, False], ids=["reconnect-before-send", "explicit-memory-refusal"])
+async def test_definitively_unsent_workflow_is_handed_back(
+    opaque_executor, async_session_factory, monkeypatch, pre_send,
+):
+    worker, pool, (subject, sibling_subject) = opaque_executor
+    bridge = worker.bridge
+    sibling = workflow_entry(sibling_subject)
+    await prepare_sibling_then_claim(worker, subject, sibling, async_session_factory)
+    monkeypatch.setattr(bridge, "request", Bridge.request.__get__(bridge))
+    socket = Mock(send_text=AsyncMock())
+    bridge.socket = socket
+    lease_ref = LeaseRef(bridge.lease)
+    queued_at = datetime.now(UTC) - timedelta(seconds=10)
+    payload = pending_execution_record(
+        execution_id=str(subject), workflow_id=None, parameters={}, org_id=None,
+        user_id=str(uuid4()), user_name="test", user_email="test@example.com", sync=True, lineage=None,
+    )
+    claim = PoolClaim(
+        dispatch_id=uuid4(), handler="workflow.execute", subject_id=subject,
+        message={"execution_id": str(subject), "code": "eA==", "sync": True}, claimed=dict(payload),
+        memory_request_bytes=RESERVATION, queued_at=queued_at,
+    )
+
+    async def issue_credentials(*args, **kwargs):
+        if pre_send:
+            generation = await receive_reconnect(bridge, async_session_factory, inventory([sibling]), socket=socket)
+            lease_ref.lease = bridge.lease
+            await worker.reconcile_transport_inventory(expected_generation=generation)
+        return tokens.RunCredentials("test-access", None, datetime.now(UTC), 1)
+
+    async def refuse(frame):
+        command = ControlEnvelope.from_json(frame)
+        assert command.payload["action"] == "workflow"
+        await bridge.receive({
+            "reply": command.payload["id"], "error": "Refused before engine entry", "error_type": "MemoryError",
+        })
+
+    socket.send_text.side_effect = refuse
+    monkeypatch.setattr(tokens, "issue_run_credentials", issue_credentials)
+    monkeypatch.setattr(runtime, "load_runtime_authority", AsyncMock(side_effect=runtime.RuntimeIdentityError))
+    monkeypatch.setattr(workflow_execution, "create_execution", AsyncMock())
+    monkeypatch.setattr(workflow_execution, "update_execution", AsyncMock(return_value=False))
+    monkeypatch.setattr(workflow_dispatch, "hand_off", AsyncMock())
+
+    with remote_owner_context(lease_ref):
+        await worker._run_claim(claim)
+
+    assert socket.send_text.await_count == (0 if pre_send else 1)
+    assert worker._claims_open()
+    assert list(pool.processes) == [sibling["route_id"]]
+    assert worker.admission.request_bytes(str(subject)) is None
+    workflow_execution.update_execution.assert_not_awaited()
+    pool.on_result.assert_not_awaited()
+    async with async_session_factory() as db:
+        row = await db.get(Execution, subject)
+        assert row.status == ExecutionStatus.PENDING and row.started_at is None
+        assert await db.scalar(select(ExecutionWorkerClaim.id).where(ExecutionWorkerClaim.subject_id == subject)) is None
+        dispatch = await db.scalar(select(WorkDispatch).where(WorkDispatch.subject_id == subject))
+        assert dispatch.created_at == queued_at
+        assert dispatch.memory_request_bytes == RESERVATION
 
 
 @pytest.mark.asyncio
@@ -505,6 +623,7 @@ async def test_inventory_loss_preserves_retained_completion_and_classifies_live_
     assert not worker._claims_open()
     assert not pool.processes
     bridge.request.assert_not_awaited()
+    bridge.acknowledge.assert_awaited_once_with(terminal["event_id"], reconciliation_lease=bridge.lease)
     lost = recovery.announce_lost_runs.await_args.args[0]
     assert lost.uncertain_workflow_runs == [subjects[1]]
     assert lost.workflow_runs == [omitted]
@@ -516,6 +635,70 @@ async def test_inventory_loss_preserves_retained_completion_and_classifies_live_
         assert uncertain.status == ExecutionStatus.FAILED
         assert uncertain.error_message == recovery.WORKFLOW_ATTEMPT_UNCERTAIN
         assert missing.status == ExecutionStatus.FAILED and missing.error_message == recovery.EXECUTOR_LOST
+
+
+@pytest.mark.asyncio
+async def test_inventory_loss_acks_other_completions_before_retrying_failed_settlement(
+    opaque_executor, async_session_factory, monkeypatch,
+):
+    worker, pool, subjects = opaque_executor
+    bridge = worker.bridge
+    first, second = map(workflow_entry, subjects)
+    await bridge.receive(inventory([first, second]))
+    await worker._prepare_admission()
+    monkeypatch.setattr(bridge, "acknowledge", Bridge.acknowledge.__get__(bridge))
+    first.update(event_id="retry-completion", attempt_state="completed")
+    second.update(event_id="successful-completion", attempt_state="completed")
+    unclaimed = workflow_entry(uuid4())
+    fail_first = True
+
+    async def persist(result):
+        if result["execution_id"] == str(subjects[0]) and fail_first:
+            raise RuntimeError("transient result write failure")
+        assert not bridge.reconciliation_ready.is_set()
+        async with async_session_factory() as db:
+            assert await ExecutionRepository(db).update_execution(
+                execution_id=result["execution_id"], owner_worker_id=worker.incarnation_id,
+                status=ExecutionStatus.SUCCESS, result=result["result"], duration_ms=1,
+            )
+            await db.commit()
+
+    pool.on_result.side_effect = persist
+    socket = Mock(send_text=AsyncMock())
+    generation = await receive_reconnect(
+        bridge, async_session_factory, inventory([unclaimed], [first, second]), socket=socket,
+    )
+    for entry in (first, second):
+        await bridge.receive(terminal_event(entry))
+    with pytest.raises(ExceptionGroup, match="Opaque inventory terminal settlement failed") as failure:
+        await worker.reconcile_transport_inventory(expected_generation=generation)
+    assert [str(error) for error in failure.value.exceptions] == ["transient result write failure"]
+    assert not worker._claims_open()
+    assert not worker._lost
+    assert list(pool.processes) == [first["route_id"]]
+    socket.send_text.assert_awaited_once()
+    ack = ControlEnvelope.from_json(socket.send_text.await_args.args[0])
+    assert ack.kind == "ack" and ack.payload == {"event_id": second["event_id"]}
+    async with async_session_factory() as db:
+        assert (await db.get(Execution, subjects[0])).status == ExecutionStatus.RUNNING
+        assert (await db.get(Execution, subjects[1])).status == ExecutionStatus.SUCCESS
+
+    fail_first = False
+    retry_socket = Mock(send_text=AsyncMock())
+    generation = await receive_reconnect(
+        bridge, async_session_factory, inventory([unclaimed], [first]), socket=retry_socket,
+    )
+    await bridge.receive(terminal_event(first))
+    await worker.reconcile_transport_inventory(expected_generation=generation)
+
+    assert worker._lost and not worker._claims_open()
+    retry_socket.send_text.assert_awaited_once()
+    ack = ControlEnvelope.from_json(retry_socket.send_text.await_args.args[0])
+    assert ack.kind == "ack" and ack.payload == {"event_id": first["event_id"]}
+    async with async_session_factory() as db:
+        assert (await db.get(ExecutionWorker, worker.incarnation_id)).state == "lost"
+        for subject in subjects:
+            assert (await db.get(Execution, subject)).status == ExecutionStatus.SUCCESS
 
 
 @pytest.mark.asyncio
