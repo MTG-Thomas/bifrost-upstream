@@ -20,7 +20,7 @@ import {DurableObject, WorkerEntrypoint} from 'cloudflare:workers';
 import {apiTarget} from '../executor/policy.mjs';
 import {engineDigest, mergePrimeList, tenantEngineCode} from './generic-worker-code.mjs';
 import {readBudgetedJson} from '../executor/output-budget.mjs';
-import {AttemptCredentials, forwardWithRefresh} from './attempt-credentials.mjs';
+import {AttemptCredentials, isRefreshChallenge, refreshReply, refreshRequestHandle} from './attempt-credentials.mjs';
 
 const HANDLE_RE = /^run_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const VIRTUAL_API_ORIGIN = 'https://test-api.invalid';
@@ -55,21 +55,40 @@ export class TenantHost extends DurableObject {
     const cpuMs = Number(this.env.ENGINE_CPU_MS) || undefined;
     const subRequests = Number(this.env.ENGINE_SUBREQUESTS) || undefined;
     // The generation changes when a child is retired (attempt deadline), so a
-    // wedged isolate is never handed back by the loader cache.
-    this.#generation ??= (await this.ctx.storage.get('generation')) ?? 0;
-    return this.env.LOADER.get(
-      `${engineId}-cpu${cpuMs ?? 'default'}-sr${subRequests ?? 'default'}-g${this.#generation}`,
-      // The generation rides in the outbound gateway's props, so a retired
-      // child that is still running can never act for a later attempt.
-      () => tenantEngineCode(this.ctx.exports.TenantApi({props: {tenantId, generation: this.#generation}}),
-        {cpuMs, subRequests}));
+    // wedged isolate is never handed back by the loader cache. One value keys
+    // the loader and rides in the outbound gateway's props, so a retired child
+    // that is still running can never act for a later attempt.
+    const generation = await this.#currentGeneration();
+    return {generation, worker: this.env.LOADER.get(
+      `${engineId}-cpu${cpuMs ?? 'default'}-sr${subRequests ?? 'default'}-g${generation}`,
+      () => tenantEngineCode(this.ctx.exports.TenantApi({props: {tenantId, generation}}),
+        {cpuMs, subRequests}))};
+  }
+
+  // A host instance that starts while storage still records an attempt in
+  // flight was reset mid-attempt: that attempt's child may still be running,
+  // so its generation is retired before any child is used again.
+  async #currentGeneration() {
+    if (this.#generation === undefined) {
+      const state = await this.ctx.storage.get(['generation', 'inflight']);
+      const stored = state.get('generation') ?? 0;
+      const inflight = state.get('inflight');
+      if (inflight) {
+        this.#generation = Math.max(stored, inflight.generation) + 1;
+        await this.ctx.storage.put('generation', this.#generation);
+        await this.ctx.storage.delete('inflight');
+      } else {
+        this.#generation = stored;
+      }
+    }
+    return this.#generation;
   }
 
   // A child that blew its attempt deadline may be wedged (observed: a
   // subrequest-limit exception lost inside the synchronous import bridge
   // deadlocks the isolate). Never reuse it: next attempt warms a new one.
   async #retireChild() {
-    this.#generation = ((await this.ctx.storage.get('generation')) ?? 0) + 1;
+    this.#generation = (await this.#currentGeneration()) + 1;
     await this.ctx.storage.put('generation', this.#generation);
     this.#childReady = false;
   }
@@ -107,10 +126,15 @@ export class TenantHost extends DurableObject {
     return this.#credentials.token(handle);
   }
 
-  // A newer access token after `observed` was refused (401), refreshed at
-  // most once at a time per attempt.
-  refreshedToken(handle, observed) {
-    return this.#credentials.refreshed(handle, observed);
+  // The API answered `refused` with its refresh challenge.
+  noteChallenge(handle, refused) {
+    this.#credentials.noteChallenge(handle, refused);
+  }
+
+  // The SDK's own POST /auth/refresh, answered for the handle (see
+  // attempt-credentials.mjs): 'refreshed' | 'current' | 'refused' | 'gone'.
+  refresh(handle) {
+    return this.#credentials.refresh(handle);
   }
 
   // The outbound gateway reports each SDK call (path without query, status,
@@ -125,15 +149,16 @@ export class TenantHost extends DurableObject {
   // host, so there is at most one. Allowed only for hosts that attempt
   // declared; nothing is allowed between attempts.
   egressAllowed(hostname, generation) {
-    return this.#current !== null && generation === this.#generation &&
-      this.#current.egress.has(String(hostname).toLowerCase());
+    const current = this.#current;
+    return current !== null && generation === current.generation && Date.now() < current.deadlineAt &&
+      current.egress.has(String(hostname).toLowerCase());
   }
 
   noteEgress(call) {
     if (this.#current) this.noteCall(this.#current.handle, call);
   }
 
-  async run({tenantId, executionId, context, publicUrl, egressHosts = []}) {
+  async run({tenantId, executionId, context, publicUrl, egressHosts = [], dispatchedAt}) {
     // Booting a child inside a fresh host can reset the host
     // (`code_updated`, retryable) even though the boot itself completes.
     // An attempt must never be in flight when that happens, because it cannot
@@ -141,21 +166,36 @@ export class TenantHost extends DurableObject {
     // before doing anything; the supervisor warms it (idempotent, retryable)
     // and dispatches once.
     if (!this.#childReady) return {needsWarm: true, attempt_state: 'not_started'};
-    // The deadline runs from dispatch, so time spent queued behind this
-    // tenant's previous attempt counts against it.
+    // The deadline runs from the supervisor's dispatch (one value across its
+    // warm-up retry), so queueing and warm-up count against it.
     const deadlineMs = Number(this.env.ATTEMPT_DEADLINE_MS) || DEFAULT_ATTEMPT_DEADLINE_MS;
-    const deadlineAt = Date.now() + deadlineMs;
+    const now = Date.now();
+    const deadlineAt = (Number.isFinite(dispatchedAt) && dispatchedAt <= now ? dispatchedAt : now) + deadlineMs;
+    const expiredInQueue = (queueWaitMs) => ({terminal: {phase: 'attempt-deadline',
+      attempt_state: 'not_started', deadline_ms: deadlineMs, queue_wait_ms: queueWaitMs, api_calls: []}});
+    // Waiting stops at the deadline. The next attempt still waits for the
+    // predecessor, so no two attempts ever overlap in the child.
     const previous = this.#tail;
     let release;
-    this.#tail = new Promise((resolve) => { release = resolve; });
+    const mine = new Promise((resolve) => { release = resolve; });
+    this.#tail = previous.then(() => mine);
     const queuedAt = Date.now();
-    await previous;
+    let queueTimer;
+    const turn = await Promise.race([
+      previous.then(() => 'turn'),
+      new Promise((resolve) => { queueTimer = setTimeout(() => resolve('expired'), Math.max(0, deadlineAt - now)); }),
+    ]).finally(() => clearTimeout(queueTimer));
     const queueWaitMs = Date.now() - queuedAt;
-    if (Date.now() >= deadlineAt) {
+    if (turn === 'expired' || Date.now() >= deadlineAt) {
       // Expired in the queue: the child never saw it, so it is safe to retry.
       release();
-      return {terminal: {phase: 'attempt-deadline', attempt_state: 'not_started',
-        deadline_ms: deadlineMs, queue_wait_ms: queueWaitMs, api_calls: []}};
+      return expiredInQueue(queueWaitMs);
+    }
+    if (!this.#childReady) {
+      // The predecessor retired the child: this attempt needs a confirmed
+      // warm-up like any other, and has done no work.
+      release();
+      return {needsWarm: true, attempt_state: 'not_started'};
     }
     // The child carries only an opaque handle. Neither run token (access or
     // refresh) enters it, and the handle dies with the attempt's deadline.
@@ -164,9 +204,13 @@ export class TenantHost extends DurableObject {
       refreshToken: context.engine_refresh_token ?? null, expiresAt: deadlineAt});
     const {engine_refresh_token: _refresh, ...childContext} = context;
     this.#calls.set(handle, []);
-    this.#current = {handle, egress: new Set(egressHosts.map((h) => h.toLowerCase()))};
     try {
-      const worker = await this.#engine(tenantId);
+      const {worker, generation} = await this.#engine(tenantId);
+      if (Date.now() >= deadlineAt) return expiredInQueue(Date.now() - queuedAt);
+      this.#current = {handle, generation, deadlineAt,
+        egress: new Set(egressHosts.map((h) => h.toLowerCase()))};
+      // Survives a host reset: the next instance retires this generation.
+      await this.ctx.storage.put('inflight', {generation});
       const mark = Date.now();
       let timer;
       const expired = new Promise((resolve) => {
@@ -214,6 +258,7 @@ export class TenantHost extends DurableObject {
       this.#current = null;
       this.#credentials.close(handle);
       this.#calls.delete(handle);
+      await this.ctx.storage.delete('inflight');
       release();
       await this.ctx.storage.put({tenantId, lastAttempt: Date.now()});
       if (await this.ctx.storage.getAlarm() === null) {
@@ -245,7 +290,7 @@ export class TenantHost extends DurableObject {
   // pre-first-call path hot between real attempts. Callers must hold
   // #exclusive when exercising.
   async #ping(tenantId, {exercise = false} = {}) {
-    const worker = await this.#engine(tenantId);
+    const {worker} = await this.#engine(tenantId);
     const modules = await this.#primeList();
     const mark = Date.now();
     const response = await worker.getEntrypoint().fetch(new Request('https://attempt.invalid/', {
@@ -274,7 +319,7 @@ export class TenantHost extends DurableObject {
 
   // Diagnostic: module names loaded in this tenant's child (no tenant data).
   async inventory({tenantId}) {
-    const worker = await this.#engine(tenantId);
+    const {worker} = await this.#engine(tenantId);
     const response = await worker.getEntrypoint().fetch(new Request('https://attempt.invalid/', {
       method: 'POST', body: JSON.stringify({action: 'inventory'}),
     }));
@@ -320,6 +365,7 @@ export class TenantApi extends WorkerEntrypoint {
     const host = this.ctx.exports.TenantHost.getByName(tenantId);
     const url = new URL(request.url);
     if (url.origin !== VIRTUAL_API_ORIGIN) return this.#egress(host, request, url);
+    if (request.method === 'POST' && url.pathname === '/auth/refresh') return this.#refresh(host, request);
 
     // Every refusal is noted against the attempt in flight, so a call the
     // gateway turned away is visible in the breakdown instead of vanishing.
@@ -340,14 +386,34 @@ export class TenantApi extends WorkerEntrypoint {
     const token = await host.token(handle);
     if (!token) return deny(401, 'unknown handle');
     const tokenMs = Date.now() - started;
-    const {response, refreshed} = await forwardWithRefresh({request, target, token, fetchFn: fetch,
-      refreshed: (observed) => host.refreshedToken(handle, observed)});
+    // Sent exactly once, body streamed: replay after a refresh challenge is
+    // the SDK's decision, under its own rules.
+    const headers = new Headers(request.headers);
+    headers.set('Authorization', `Bearer ${token}`);
+    headers.delete('cookie');
+    const response = await fetch(new Request(target, {method: request.method, headers,
+      body: request.body, redirect: 'manual'}));
+    const challenged = isRefreshChallenge(response);
+    if (challenged) await host.noteChallenge(handle, token);
     // Awaited, not waitUntil: the last call's note must land before run()
     // reports, or the breakdown silently drops it.
     await host.noteCall(handle, {method: request.method,
       path: new URL(target).pathname, status: response.status,
-      token_ms: tokenMs, ms: Date.now() - started - tokenMs, ...(refreshed ? {refreshed: true} : {})});
+      token_ms: tokenMs, ms: Date.now() - started - tokenMs, ...(challenged ? {challenged: true} : {})});
     return response;
+  }
+
+  // The SDK refreshing its "token", i.e. the handle it holds in both slots.
+  // Never forwarded: the host refreshes the real tokens if the API challenged
+  // the current one, and the reply hands back the same handle.
+  async #refresh(host, request) {
+    const handle = await refreshRequestHandle(request);
+    const outcome = HANDLE_RE.test(handle ?? '') ? await host.refresh(handle) : 'gone';
+    const reply = refreshReply(outcome, handle);
+    if (outcome !== 'gone') {
+      await host.noteCall(handle, {method: 'POST', path: '/auth/refresh', status: reply.status, refresh: outcome});
+    }
+    return reply;
   }
 
   // The workflow's own third-party HTTPS request: forwarded as-is (its own

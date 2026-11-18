@@ -117,7 +117,9 @@ export async function engineAttempt(getHost, attempt, {echoErrors = false} = {})
   const mark = Date.now();
   let hosted;
   try {
-    hosted = await hostAttempt(getHost, attempt);
+    // One dispatch time across the warm-up retry: the host's deadline runs
+    // from here, not from whichever run() call finally starts the attempt.
+    hosted = await hostAttempt(getHost, {...attempt, dispatchedAt: mark});
   } catch (error) {
     // Never echo exception strings (may contain workflow data or
     // credentials) -- except on a capability-lab deploy that opts in.
