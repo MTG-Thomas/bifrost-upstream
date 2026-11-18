@@ -23,27 +23,12 @@ from fastapi import HTTPException
 
 from shared.sdk_organizations import OrganizationServiceError
 from src.services.authorization.reach import EVERYTHING
+from src.core.constants import PROVIDER_ORG_ID
+from src.models.orm.organizations import Organization as OrganizationModel
 
 
 def _stub_user(email: str = "admin@test.local"):
     return SimpleNamespace(email=email)
-
-
-async def _make_provider(db_session, org_id):
-    from sqlalchemy import select
-
-    from src.models.orm.organizations import Organization as OrganizationModel
-
-    row = (
-        await db_session.execute(
-            select(OrganizationModel).where(OrganizationModel.id == org_id)
-        )
-    ).scalar_one()
-    row.is_provider = True
-    db_session.add(row)
-    await db_session.flush()
-    await db_session.refresh(row)
-    return row
 
 
 @pytest.mark.asyncio
@@ -110,21 +95,10 @@ class TestOrganizationService:
             settings=None, actor_email="a@t.local",
         )
         assert alpha.id != beta.id
-        provider = await create_organization(
-            db_session, name=f"Zulu Provider {tag}", domain=None, is_active=True,
-            settings=None, actor_email="a@t.local",
-        )
-        await _make_provider(db_session, provider.id)
-
-        from src.models.orm.organizations import Organization as OrganizationModel
-        from sqlalchemy import select
-
-        row = (
-            await db_session.execute(
-                select(OrganizationModel).where(OrganizationModel.id == provider.id)
-            )
-        ).scalar_one()
-        assert row.is_provider is True
+        provider = await db_session.get(OrganizationModel, PROVIDER_ORG_ID)
+        assert provider is not None
+        provider.name = f"Zulu Provider {tag}"
+        await db_session.flush()
 
         await delete_organization(db_session, org_id=beta.id)
 
@@ -172,13 +146,10 @@ class TestOrganizationService:
         assert exc_info.value.status_code == 404
 
     async def test_update_provider_cannot_be_disabled(self, db_session):
-        from shared.sdk_organizations import create_organization, update_organization
+        from shared.sdk_organizations import update_organization
 
-        created = await create_organization(
-            db_session, name=f"Prov {uuid4().hex[:8]}", domain=None,
-            is_active=True, settings=None, actor_email="a@t.local",
-        )
-        await _make_provider(db_session, created.id)
+        created = await db_session.get(OrganizationModel, PROVIDER_ORG_ID)
+        assert created is not None
 
         with pytest.raises(OrganizationServiceError) as exc_info:
             await update_organization(
@@ -215,13 +186,10 @@ class TestOrganizationService:
         assert exc_info.value.status_code == 404
 
     async def test_delete_provider_forbidden(self, db_session):
-        from shared.sdk_organizations import create_organization, delete_organization
+        from shared.sdk_organizations import delete_organization
 
-        created = await create_organization(
-            db_session, name=f"ProvDel {uuid4().hex[:8]}", domain=None,
-            is_active=True, settings=None, actor_email="a@t.local",
-        )
-        await _make_provider(db_session, created.id)
+        created = await db_session.get(OrganizationModel, PROVIDER_ORG_ID)
+        assert created is not None
 
         with pytest.raises(OrganizationServiceError) as exc_info:
             await delete_organization(db_session, org_id=created.id)
@@ -276,6 +244,7 @@ class TestOrganizationsRouterBoundary:
             "domain": "ACME.COM",
             "is_active": True,
             "settings": {"a": 1},
+            "tags": [],
             "actor_email": "me@t.local",
         }
 
@@ -331,6 +300,28 @@ class TestOrganizationsRouterBoundary:
         assert kwargs["domain"] is None
         assert kwargs["is_active"] is None
         assert kwargs["settings"] is None
+        assert kwargs["tags"] is None
+
+    async def test_bulk_tags_delegates_after_authorizing_every_org(self):
+        from src.models import OrganizationTagsBulkUpdate
+        from src.routers.organizations import bulk_update_organization_tags
+
+        org_ids = [uuid4(), uuid4()]
+        request = OrganizationTagsBulkUpdate(
+            organization_ids=org_ids, add=["MSP"], remove=["Old"]
+        )
+        with patch(
+            "shared.sdk_organizations.bulk_update_organization_tags",
+            new=AsyncMock(return_value=["ORG"]),
+        ) as mock_bulk:
+            assert await bulk_update_organization_tags(
+                request, _stub_user(), AsyncMock()
+            ) == ["ORG"]
+        assert mock_bulk.call_args[1] == {
+            "organization_ids": org_ids,
+            "add": ["MSP"],
+            "remove": ["Old"],
+        }
 
     async def test_delete_maps_404(self):
         from src.routers.organizations import delete_organization
@@ -351,3 +342,141 @@ class TestOrganizationsRouterBoundary:
             with pytest.raises(HTTPException) as exc_info:
                 await delete_organization(org_id, _stub_user(), AsyncMock())
         assert exc_info.value.status_code == 404
+
+
+class TestOrganizationTagContracts:
+    def test_tags_are_trimmed_and_deduplicated_case_insensitively(self):
+        from src.models import OrganizationUpdate
+
+        update = OrganizationUpdate(tags=["  MSP ", "msp", "", "Licence  Tier", "Connectivity"])
+        assert update.tags == ["MSP", "Licence Tier", "Connectivity"]
+        assert OrganizationUpdate().tags is None
+
+    def test_overlong_tag_rejected(self):
+        from pydantic import ValidationError
+
+        from src.models import OrganizationUpdate
+
+        with pytest.raises(ValidationError):
+            OrganizationUpdate(tags=["x" * 51])
+
+    def test_bulk_requires_a_change(self):
+        from pydantic import ValidationError
+
+        from src.models import OrganizationTagsBulkUpdate
+
+        with pytest.raises(ValidationError):
+            OrganizationTagsBulkUpdate(organization_ids=[uuid4()], add=[" "], remove=[])
+
+
+@pytest.mark.asyncio
+class TestOrganizationTagService:
+    async def test_create_and_update_replace_tags(self, db_session):
+        from shared.sdk_organizations import create_organization, update_organization
+
+        created = await create_organization(
+            db_session, name=f"Tagged {uuid4().hex[:8]}", domain=None,
+            tags=["MSP"], actor_email="a@t.local",
+        )
+        assert created.tags == ["MSP"]
+
+        renamed = await update_organization(db_session, org_id=created.id, name="Renamed")
+        assert renamed.tags == ["MSP"]
+
+        retagged = await update_organization(
+            db_session, org_id=created.id, tags=["Licence", "Connectivity"]
+        )
+        assert retagged.tags == ["Licence", "Connectivity"]
+
+    async def test_bulk_add_and_remove(self, db_session):
+        from shared.sdk_organizations import (
+            bulk_update_organization_tags,
+            create_organization,
+        )
+
+        first = await create_organization(
+            db_session, name=f"First {uuid4().hex[:8]}", domain=None,
+            tags=["msp", "Legacy"], actor_email="a@t.local",
+        )
+        second = await create_organization(
+            db_session, name=f"Second {uuid4().hex[:8]}", domain=None,
+            actor_email="a@t.local",
+        )
+
+        result = await bulk_update_organization_tags(
+            db_session,
+            organization_ids=[second.id, first.id],
+            add=["MSP", "Licence"],
+            remove=["legacy"],
+        )
+        assert [org.id for org in result] == [second.id, first.id]
+        assert result[0].tags == ["MSP", "Licence"]
+        # The existing spelling wins over a case-insensitive duplicate.
+        assert result[1].tags == ["msp", "Licence"]
+
+    async def test_bulk_missing_org_changes_nothing(self, db_session):
+        from shared.sdk_organizations import (
+            bulk_update_organization_tags,
+            create_organization,
+            get_organization,
+        )
+
+        org = await create_organization(
+            db_session, name=f"Keep {uuid4().hex[:8]}", domain=None,
+            actor_email="a@t.local",
+        )
+        with pytest.raises(OrganizationServiceError) as exc_info:
+            await bulk_update_organization_tags(
+                db_session, organization_ids=[org.id, uuid4()], add=["MSP"], remove=[],
+            )
+        assert exc_info.value.status_code == 404
+        assert (await get_organization(db_session, org_id=org.id)).tags == []
+
+
+@pytest.mark.asyncio
+class TestOrganizationTagAuthorization:
+    async def test_bulk_tags_refuses_an_org_outside_the_callers_reach(self):
+        from src.models import OrganizationTagsBulkUpdate
+        from src.routers.organizations import bulk_update_organization_tags
+        from src.services.authorization.context import (
+            AuthorizationContext,
+            Boundary,
+            BoundaryKind,
+            RoleGrant,
+        )
+        from src.services.authorization.enforce import Caller
+        from src.core.principal import UserPrincipal
+        from shared.builtin_roles import USER_ROLE_ID
+        from tests.helpers.authorization import handlers_as
+
+        allowed, other = uuid4(), uuid4()
+        principal = UserPrincipal(
+            user_id=uuid4(), email="tech@example.com", organization_id=allowed,
+            name="Tech", is_superuser=False, is_verified=True,
+        )
+        caller = Caller(
+            principal,
+            AuthorizationContext(
+                user_id=principal.user_id,
+                home_organization_id=allowed,
+                base_role_id=USER_ROLE_ID,
+                is_external=False,
+                base_permissions=frozenset(),
+                role_grants=(
+                    RoleGrant(
+                        uuid4(),
+                        frozenset({"organizations.readwrite"}),
+                        (Boundary(BoundaryKind.ORGANIZATION, allowed),),
+                    ),
+                ),
+            ),
+        )
+        request = OrganizationTagsBulkUpdate(organization_ids=[allowed, other], add=["MSP"])
+        with handlers_as(caller, "src.routers.organizations"), patch(
+            "shared.sdk_organizations.bulk_update_organization_tags",
+            new=AsyncMock(return_value=[]),
+        ) as mock_bulk:
+            with pytest.raises(HTTPException) as exc_info:
+                await bulk_update_organization_tags(request, _stub_user(), AsyncMock())
+        assert exc_info.value.status_code == 403
+        mock_bulk.assert_not_awaited()

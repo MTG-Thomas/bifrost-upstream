@@ -78,7 +78,10 @@ export interface FormFieldValidation {
 /**
  * Form field definition (input for creating/editing)
  */
-export interface FormField {
+export interface FormField extends Pick<
+	components["schemas"]["FormRuntimeField"],
+	"optional_provider_inputs"
+> {
 	name: string;
 	label?: string | null;
 	type: FormFieldType;
@@ -105,6 +108,7 @@ export interface FormField {
  */
 export interface FormSchema {
 	fields: FormField[];
+	layout?: components["schemas"]["FormLayout"] | null;
 }
 
 export interface FormSubmission {

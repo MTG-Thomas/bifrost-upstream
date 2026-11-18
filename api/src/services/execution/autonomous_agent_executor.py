@@ -860,7 +860,7 @@ class AutonomousAgentExecutor:
                 },
             )
         except Exception as exc:
-            logger.error("Agent runtime failed in run %s: %s", run_id, exc, exc_info=True)
+            logger.exception("Agent runtime failed in run %s: %s", run_id, exc, exc_info=True)
             status = "failed"
             error = str(exc)
 
@@ -1260,7 +1260,7 @@ class AutonomousAgentExecutor:
             })
 
         except Exception as e:
-            logger.error(f"Knowledge search failed: {e}", exc_info=True)
+            logger.exception(f"Knowledge search failed: {e}", exc_info=True)
             raise ToolError(f"Knowledge search error: {e}") from e
 
     async def run_delegation(
@@ -1372,6 +1372,10 @@ class AutonomousAgentExecutor:
                 run_user_id=run_user_id,
                 run_as_user_id=UUID(run_as.user_id) if run_as else None,
                 acting_user_id=acting_user_id,
+                permission_workflow_id=(
+                    None if caller.principal.runtime_authority is None
+                    else caller.principal.runtime_authority.workflow_id
+                ),
                 **principal_durable_impersonation(caller.principal).columns(),
                 parent_run_id=UUID(parent_run_id) if parent_run_id else None,
                 budget_max_iterations=target_agent.max_iterations,
@@ -1465,7 +1469,7 @@ class AutonomousAgentExecutor:
                 "error": f"Delegation to {target_agent.name} was cancelled",
             }
         except Exception as exc:
-            logger.error(
+            logger.exception(
                 f"Delegation to '{target_agent.name}' failed: {exc}",
                 exc_info=True,
             )
@@ -1675,7 +1679,7 @@ class AutonomousAgentExecutor:
             return json.dumps(result_data) if isinstance(result_data, (dict, list)) else str(result_data)
 
         except Exception as e:
-            logger.error(f"System tool {tool_call.name} failed: {e}", exc_info=True)
+            logger.exception(f"System tool {tool_call.name} failed: {e}", exc_info=True)
             raise ToolError(f"System tool error: {e}") from e
 
     # ------------------------------------------------------------------

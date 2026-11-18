@@ -2995,11 +2995,12 @@
       },
       "operation": {
         "action_scopes": [
-          "workflows.execute"
+          "workflows.execute",
+          "code.execute"
         ],
         "async_policy": "execution_worker",
         "audit_event": null,
-        "authorization_resolver": "WorkflowRepository execution access and execution-context policy",
+        "authorization_resolver": "Workflow execution access, or Execute Code for inline Python; existing execution-context policy",
         "cli": {
           "path": [
             "workflows",
@@ -3024,7 +3025,7 @@
         "side_effects": [
           "enqueue tracked execution work and publish shared execution progress"
         ],
-        "summary": "Execute a Workflow",
+        "summary": "Execute a Workflow or inline Python",
         "target_kind": "resource"
       }
     },
@@ -8841,6 +8842,61 @@
     {
       "observed": {
         "cli": {
+          "path": null,
+          "status": "intentionally_unsupported"
+        },
+        "manifest": {
+          "entity": null,
+          "status": "intentionally_unsupported"
+        },
+        "mcp": {
+          "name": null,
+          "status": "intentionally_unsupported"
+        },
+        "rest": {
+          "operation_id": "organizations.tags.bulk_update",
+          "status": "exact_parity"
+        },
+        "sdk": {
+          "binding": null,
+          "status": "intentionally_unsupported"
+        }
+      },
+      "operation": {
+        "action_scopes": [
+          "organizations.readwrite"
+        ],
+        "async_policy": "synchronous",
+        "audit_event": "organization.tags_bulk_update",
+        "authorization_resolver": "organizations.readwrite at every requested Organization; all or nothing",
+        "cli": null,
+        "exclusions": {
+          "cli": "Bulk tagging is an administrative UI action; `bifrost orgs update --tags` sets one Organization's tags.",
+          "manifest": "Organizations are deployment-local and are not portable manifest content.",
+          "mcp": "Bulk tagging is an administrative UI action; bifrost_organization_update sets one Organization's tags.",
+          "native_builder": "Organization lifecycle belongs to platform Settings, not a coding target.",
+          "sdk": "Organization administration is not available to application SDKs."
+        },
+        "manifest": null,
+        "mcp": null,
+        "native_builder": false,
+        "operation_id": "organizations.tags.bulk_update",
+        "rest": {
+          "method": "PATCH",
+          "path": "/api/organizations/tags",
+          "request_model": "OrganizationTagsBulkUpdate",
+          "response_model": "list[OrganizationPublic]"
+        },
+        "side_effects": [
+          "replace the tags of each requested Organization"
+        ],
+        "summary": "Add or remove tags on several Organizations",
+        "target_kind": "collection"
+      }
+    },
+    {
+      "observed": {
+        "cli": {
           "path": [
             "organizations",
             "delete"
@@ -10690,8 +10746,8 @@
   "counts": {
     "cli": 180,
     "manifest": 16,
-    "mcp": 100,
-    "rest": 723,
+    "mcp": 101,
+    "rest": 724,
     "sdk": 21
   },
   "schema_version": 1,
@@ -11636,6 +11692,18 @@
     "mcp": [
       {
         "hidden": false,
+        "name": "bifrost_execute_code",
+        "reason": "MCP tool has not entered the canonical operation catalog yet.",
+        "status": "missing_surface"
+      },
+      {
+        "hidden": false,
+        "name": "bifrost_get_docs",
+        "reason": "Reads generated platform documentation; owns no entity or state.",
+        "status": "transport_only"
+      },
+      {
+        "hidden": false,
         "name": "delete_content",
         "reason": "MCP tool has not entered the canonical operation catalog yet.",
         "status": "missing_surface"
@@ -11645,12 +11713,6 @@
         "name": "get_content",
         "reason": "MCP tool has not entered the canonical operation catalog yet.",
         "status": "missing_surface"
-      },
-      {
-        "hidden": false,
-        "name": "get_docs",
-        "reason": "Reads generated platform documentation; owns no entity or state.",
-        "status": "transport_only"
       },
       {
         "hidden": false,

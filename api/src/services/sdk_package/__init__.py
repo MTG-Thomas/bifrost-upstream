@@ -32,11 +32,12 @@ from src.core.storage import object_store, optional_read
 from src.core.storage.contracts import ContentProperties, ObjectStore, StorageConfigurationError, WriteOptions
 
 _HERE = Path(__file__).resolve().parent
+_LICENSE_PATH = Path("/app/LICENSE")
 _SDK_SRC = _HERE / "sdk_src"
 _BUILDER = _HERE / "build_sdk.js"
 _TYPE_BUILDER = _HERE / "build_types.js"
-# The hosted factory also bundles lucide, so use this package's complete build
-# toolchain instead of the app bundler's esbuild-only dependency directory.
+# Resolve SDK imports (including lucide) from this package's dependencies.
+# build_sdk.js shares esbuild with app_bundler; declaration tools stay here.
 _NODE_MODULES = _HERE / "node_modules"
 
 # The binding shares the App's React singleton.  The hosted factory contains its
@@ -222,6 +223,7 @@ def build_sdk_tarball(version: str) -> bytes:
         "name": "bifrost",
         "version": pkg_version,
         "description": "Bifrost web SDK for standalone v2 apps.",
+        "license": "AGPL-3.0-only",
         "type": "module",
         "module": "dist/index.mjs",
         "main": "dist/index.mjs",
@@ -246,6 +248,7 @@ def build_sdk_tarball(version: str) -> bytes:
 
             # npm expects everything under a top-level "package/" dir.
             _add("package/package.json", json.dumps(package_json, indent=2).encode())
+            _add("package/LICENSE", _LICENSE_PATH.read_bytes())
             _add("package/dist/index.mjs", bundle)
             for declaration in types_root.rglob("*.d.ts"):
                 _add(

@@ -40,8 +40,6 @@ def test_missing_values_keep_defaults_and_unknown_metrics():
 async def test_linux_adapter_keeps_resource_accounting_with_shared_envelope(monkeypatch):
     from src.services.execution import simple_worker, worker
 
-    pss = iter([100, 160])
-    monkeypatch.setattr(simple_worker, "_get_pss_bytes", lambda: next(pss))
     monkeypatch.setattr(simple_worker, "_get_process_rss", lambda: 20)
     monkeypatch.setattr(simple_worker, "_peak_memory_growth", lambda _start: 7)
     run = AsyncMock(return_value={"status": "Success", "result": 70, "duration_ms": 12,
@@ -51,5 +49,5 @@ async def test_linux_adapter_keeps_resource_accounting_with_shared_envelope(monk
     run.assert_awaited_once_with("execution", {"parameters": {}})
     assert result["success"] is True and result["result"] == 70
     assert result["duration_ms"] == 12
-    assert result["metrics"] == {"cpu_total_seconds": None, "peak_memory_bytes": 60,
-                                 "peak_memory_growth_bytes": 7}
+    # Worker-supplied metrics are preserved; only the local growth delta is added.
+    assert result["metrics"] == {"cpu_total_seconds": None, "peak_memory_growth_bytes": 7}

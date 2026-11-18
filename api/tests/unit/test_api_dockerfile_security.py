@@ -51,7 +51,7 @@ def test_production_image_drops_privileges_before_serving():
 def test_package_copy_matches_python_image_minor(filename):
     """A runtime upgrade must also copy the installed packages for that interpreter."""
     text = (_api_dir() / filename).read_text()
-    versions = re.findall(r"^FROM python:(\d+\.\d+)\.", text, re.MULTILINE)
+    versions = re.findall(r"^FROM python:(\d+\.\d+)[.-]", text, re.MULTILINE)
     assert len(versions) == 2
     assert versions[0] == versions[1]
     paths = re.findall(
@@ -62,3 +62,9 @@ def test_package_copy_matches_python_image_minor(filename):
     )
     expected = f"/usr/local/lib/python{versions[0]}/site-packages"
     assert paths == [(expected, expected)]
+
+
+@pytest.mark.parametrize("filename", ["Dockerfile", "Dockerfile.dev"])
+def test_sdk_license_is_readable_by_runtime_user(filename):
+    text = (_api_dir() / filename).read_text()
+    assert "COPY --chmod=644 LICENSE /app/LICENSE" in text

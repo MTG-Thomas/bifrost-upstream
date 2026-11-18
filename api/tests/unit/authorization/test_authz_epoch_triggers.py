@@ -197,8 +197,9 @@ _CASES: list[tuple[str, str, int]] = [
     ("users last login", "UPDATE users SET last_login = now() WHERE id = :user", 0),
     ("users same value", "UPDATE users SET name = name WHERE id = :user", 0),
     ("users delete", "DELETE FROM users WHERE id = :other_user", 1),
-    # organizations: provider flag, DELETE.
-    ("organizations provider", "UPDATE organizations SET is_provider = NOT is_provider WHERE id = :other_org", 1),
+    # organizations: immutable provider flag (rejection covered by the mutation
+    # matrix), metadata and DELETE.
+    ("organizations provider unchanged", "UPDATE organizations SET is_provider = is_provider WHERE id = :other_org", 0),
     ("organizations name", "UPDATE organizations SET name = name || ' renamed' WHERE id = :org", 0),
     ("organizations delete", "DELETE FROM organizations WHERE id = :other_org", 1),
     # user_roles, user_role_boundaries, role_permissions: every event.
@@ -224,9 +225,10 @@ _CASES: list[tuple[str, str, int]] = [
     ("roles name", "UPDATE roles SET name = name || ' renamed' WHERE id = :role", 1),
     ("roles description", "UPDATE roles SET description = 'changed' WHERE id = :role", 0),
     ("roles delete", "DELETE FROM roles WHERE id = :role", 1),
-    # workflows: ownership and mode, DELETE.
+    # workflows: ownership, mode and activation, DELETE.
     ("workflows solution", "UPDATE workflows SET solution_id = :solution WHERE id = :other_workflow", 1),
     ("workflows mode", "UPDATE workflows SET permission_mode = 'restricted' WHERE id = :workflow", 1),
+    ("workflows deactivation", "UPDATE workflows SET is_active = false WHERE id = :workflow", 1),
     ("workflows description", "UPDATE workflows SET description = 'changed' WHERE id = :workflow", 0),
     ("workflows delete", "DELETE FROM workflows WHERE id = :other_workflow", 1),
     # workflow_permission_grants and solution_workflow_permission_requests: every event.
@@ -294,6 +296,7 @@ _CASES: list[tuple[str, str, int]] = [
     ("executions delete", "DELETE FROM executions WHERE id = :execution", 0),
     ("agent_runs status", "UPDATE agent_runs SET status = 'completed' WHERE id = :agent_run", 0),
     ("agent_runs actor", "UPDATE agent_runs SET acting_user_id = :other_user WHERE id = :agent_run", 1),
+    ("agent_runs permission source", "UPDATE agent_runs SET permission_workflow_id = :workflow WHERE id = :agent_run", 1),
     ("agent_runs agent", "UPDATE agent_runs SET agent_id = NULL WHERE id = :agent_run", 1),
     ("service_attempts state", "UPDATE service_attempts SET state = 'stopped' WHERE id = :attempt", 0),
     ("service_attempts lease", "UPDATE service_attempts SET lease_expires_at = now() WHERE id = :attempt", 0),

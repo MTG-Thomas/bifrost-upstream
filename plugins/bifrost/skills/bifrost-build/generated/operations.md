@@ -55,7 +55,7 @@ caller's own items.
 | `workflows.list` | `bifrost workflows list` | `bifrost_workflow_list` | `workflows.read` |
 | `workflows.validate` | `bifrost workflows validate` | `bifrost_workflow_validate` | `workflows.read` |
 | `workflows.register` | `bifrost workflows register` | `bifrost_workflow_register` | `workflows.readwrite`, `repository.read` |
-| `workflows.execute` | `bifrost workflows execute` | `bifrost_workflow_execute` | `workflows.execute` |
+| `workflows.execute` | `bifrost workflows execute` | `bifrost_workflow_execute` | `workflows.execute`, `code.execute` |
 | `workflows.parameters` | — | — | `workflows.execute` |
 | `workflows.get` | `bifrost workflows get` | `bifrost_workflow_get` | `workflows.read` |
 | `workflows.update` | `bifrost workflows update` | `bifrost_workflow_update` | `workflows.readwrite` |
@@ -155,6 +155,7 @@ caller's own items.
 | `organizations.get` | `bifrost organizations get` | `bifrost_organization_get` | `organizations.read` |
 | `organizations.create` | `bifrost organizations create` | `bifrost_organization_create` | `organizations.readwrite` |
 | `organizations.update` | `bifrost organizations update` | `bifrost_organization_update` | `organizations.readwrite` |
+| `organizations.tags.bulk_update` | — | — | `organizations.readwrite` |
 | `organizations.delete` | `bifrost organizations delete` | `bifrost_organization_delete` | `organizations.readwrite` |
 | `events.sources.list` | `bifrost events list-sources` | `bifrost_event_source_list` | `events.read` |
 | `events.sources.get` | `bifrost events get-source` | `bifrost_event_source_get` | `events.read` |

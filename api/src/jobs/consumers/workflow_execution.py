@@ -159,7 +159,7 @@ class WorkflowExecutionConsumer:
             else:
                 await self._process_failure(execution_id, result)
         except Exception as e:
-            logger.error(f"Failed to process result for {execution_id}: {e}")
+            logger.exception(f"Failed to process result for {execution_id}: {e}")
             raise
 
     async def _load_completion_metadata(
@@ -891,6 +891,7 @@ class WorkflowExecutionConsumer:
                     workflow_name = workflow_data["name"]
                     workflow_function_name = workflow_data["function_name"]
                     file_path = workflow_data["path"]  # Used for __file__ injection and Redis/S3 loading
+                    content_hash = workflow_data.get("content_hash")
                     workflow_type = workflow_data["type"]
                     cache_ttl_seconds = workflow_data["cache_ttl_seconds"]
 
@@ -1208,7 +1209,7 @@ class WorkflowExecutionConsumer:
                     duration_ms=duration_ms,
                 )
 
-            logger.error(
+            logger.exception(
                 f"Workflow execution error: {execution_id}",
                 extra={
                     "execution_id": execution_id,

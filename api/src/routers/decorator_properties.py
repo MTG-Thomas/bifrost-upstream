@@ -89,7 +89,7 @@ async def get_decorator_properties(
             detail=f"File not found: {path}",
         )
     except Exception as e:
-        logger.error(f"Error reading decorator properties from {log_safe(path)}: {log_safe(e)}", exc_info=True)
+        logger.exception(f"Error reading decorator properties from {log_safe(path)}: {log_safe(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to read decorator properties",
@@ -141,7 +141,7 @@ async def update_decorator_properties(
 
         # Check ETag for conflict detection
         if request.expected_etag:
-            current_etag = hashlib.md5(content).hexdigest()
+            current_etag = hashlib.sha256(content).hexdigest()
             if current_etag != request.expected_etag:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
@@ -164,7 +164,7 @@ async def update_decorator_properties(
 
         if not result.modified:
             # No changes needed - return current ETag
-            current_etag = hashlib.md5(content).hexdigest()
+            current_etag = hashlib.sha256(content).hexdigest()
             return UpdatePropertiesResponse(
                 modified=False,
                 changes=result.changes,
@@ -179,7 +179,7 @@ async def update_decorator_properties(
             updated_by=user.email,
         )
 
-        new_etag = hashlib.md5(write_result.final_content).hexdigest()
+        new_etag = hashlib.sha256(write_result.final_content).hexdigest()
         logger.info(
             f"Updated decorator properties in {log_safe(request.path)} "
             f"for {log_safe(request.function_name)}: {result.changes}"
@@ -194,7 +194,7 @@ async def update_decorator_properties(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(
+        logger.exception(
             f"Error updating decorator properties in {log_safe(request.path)}: {log_safe(e)}",
             exc_info=True,
         )

@@ -156,6 +156,78 @@ beforeEach(() => {
 	});
 });
 
+describe("FormRenderer — display blocks", () => {
+	it.each(["markdown", "html"] as const)(
+		"submits input values without the %s block",
+		async (type) => {
+			const form = makeForm([
+				{
+					name: "comment",
+					label: "Comment",
+					type: "text",
+					required: true,
+				},
+				{
+					name: "instructions",
+					label: "Instructions",
+					type,
+					content: "Read before submitting",
+					required: false,
+				},
+			]);
+			const { user } = renderWithProviders(<FormRenderer form={form} />);
+			expect(
+				screen.getByText("Read before submitting"),
+			).toBeInTheDocument();
+			await user.type(screen.getByLabelText(/comment/i), "hello");
+			await user.click(screen.getByRole("button", { name: /submit/i }));
+			await waitFor(() =>
+				expect(mockMutateAsync).toHaveBeenCalledWith(
+					expect.objectContaining({
+						body: expect.objectContaining({
+							form_data: { comment: "hello" },
+						}),
+					}),
+				),
+			);
+		},
+	);
+
+	it("ignores required flags and stale defaults on display-only blocks", async () => {
+		const form = makeForm([
+			{
+				name: "instructions",
+				label: "Instructions",
+				type: "markdown",
+				content: "Read me",
+				required: true,
+			},
+			{
+				name: "details",
+				label: "Details",
+				type: "html",
+				content: "Details",
+				default_value: "old input value",
+				required: true,
+			},
+		]);
+		const { user } = renderWithProviders(<FormRenderer form={form} />);
+		await waitFor(() =>
+			expect(
+				screen.getByRole("button", { name: /submit/i }),
+			).toBeEnabled(),
+		);
+		await user.click(screen.getByRole("button", { name: /submit/i }));
+		await waitFor(() =>
+			expect(mockMutateAsync).toHaveBeenCalledWith(
+				expect.objectContaining({
+					body: expect.objectContaining({ form_data: {} }),
+				}),
+			),
+		);
+	});
+});
+
 describe("FormRenderer — required validation", () => {
 	it("keeps the Submit button disabled when a required field is empty", () => {
 		const form = makeForm([
@@ -260,6 +332,44 @@ describe("FormRenderer — required validation", () => {
 		expect(body.body.submission_nonce).toMatch(/^[A-Za-z0-9-]{16,}$/);
 	});
 
+	it("accepts decimal defaults and submits edited decimal number fields", async () => {
+		const form = makeForm([
+			{
+				name: "annual_wage",
+				label: "Annual Wage",
+				type: "number",
+				required: true,
+				default_value: 12345.67,
+			},
+			{
+				name: "adjustment",
+				label: "Adjustment",
+				type: "number",
+				required: true,
+				default_value: 2.5,
+			},
+		]);
+		const { user } = renderWithProviders(<FormRenderer form={form} />);
+		const wage = screen.getByRole("spinbutton", { name: /annual wage/i });
+		const adjustment = screen.getByRole("spinbutton", {
+			name: /adjustment/i,
+		});
+		expect(wage).toHaveValue(12345.67);
+		expect(adjustment).toHaveValue(2.5);
+		expect(wage).toHaveAttribute("step", "any");
+		expect(adjustment).toHaveAttribute("step", "any");
+		fireEvent.change(wage, { target: { value: "12345.89" } });
+		fireEvent.change(adjustment, { target: { value: "2.75" } });
+		const submit = screen.getByRole("button", { name: /submit/i });
+		await waitFor(() => expect(submit).toBeEnabled());
+		await user.click(submit);
+		await waitFor(() => expect(mockMutateAsync).toHaveBeenCalledTimes(1));
+		expect(mockMutateAsync.mock.calls[0]![0].body.form_data).toEqual({
+			annual_wage: 12345.89,
+			adjustment: 2.75,
+		});
+	});
+
 	it("requires and submits a CAPTCHA payload for an anonymous runtime", async () => {
 		const form = {
 			...makeForm([]),
@@ -324,6 +434,130 @@ describe("FormRenderer — conditional rendering", () => {
 });
 
 describe("FormRenderer — field types", () => {
+	it("renders a date control and submits the selected calendar date as a string", async () => {
+		const form = makeForm([
+			{
+				name: "start_date",
+				label: "Start Date",
+				type: "date",
+				required: true,
+				default_value: "2026-11-10",
+				help_text: "Choose the employee start date.",
+			},
+		]);
+		const { user } = renderWithProviders(<FormRenderer form={form} />);
+		const input = screen.getByLabelText(/start date/i);
+		expect(input).toHaveTextContent("Nov 10, 2026");
+		expect(input).toHaveAccessibleDescription(
+			"Nov 10, 2026 Choose the employee start date.",
+		);
+		await user.click(input);
+		await user.click(
+			await screen.findByRole("button", { name: /November 20.*2026/i }),
+		);
+		const submit = screen.getByRole("button", { name: /submit/i });
+		await waitFor(() => expect(submit).toBeEnabled());
+		await user.click(submit);
+		await waitFor(() =>
+			expect(mockMutateAsync).toHaveBeenCalledWith(
+				expect.objectContaining({
+					body: expect.objectContaining({
+						form_data: { start_date: "2026-11-20" },
+					}),
+				}),
+			),
+		);
+	});
+
+	it("submits a shared datetime selection as a local datetime string", async () => {
+		const form = makeForm([
+			{
+				name: "appointment",
+				label: "Appointment",
+				type: "datetime",
+				required: true,
+				default_value: "2026-11-10T09:00",
+			},
+		]);
+		const { user } = renderWithProviders(<FormRenderer form={form} />);
+		const control = screen.getByLabelText("Appointment");
+		expect(control).toHaveTextContent("Nov 10, 2026 · 9:00 AM");
+		await user.click(control);
+		await user.click(
+			screen.getByRole("button", { name: /November 20.*2026/i }),
+		);
+		fireEvent.change(screen.getByLabelText("Time"), {
+			target: { value: "14:30" },
+		});
+		await user.keyboard("{Escape}");
+		const submit = screen.getByRole("button", { name: /submit/i });
+		await waitFor(() => expect(submit).toBeEnabled());
+		await user.click(submit);
+		await waitFor(() =>
+			expect(mockMutateAsync).toHaveBeenCalledWith(
+				expect.objectContaining({
+					body: expect.objectContaining({
+						form_data: { appointment: "2026-11-20T14:30" },
+					}),
+				}),
+			),
+		);
+	});
+
+	it("validates a required datetime after clearing it", async () => {
+		const form = makeForm([
+			{
+				name: "appointment",
+				label: "Appointment",
+				type: "datetime",
+				required: true,
+				default_value: "2026-11-10T09:00",
+			},
+		]);
+		const { user } = renderWithProviders(<FormRenderer form={form} />);
+		await user.click(screen.getByLabelText("Appointment"));
+		await user.click(
+			screen.getByRole("button", { name: "Clear Date & Time" }),
+		);
+		await waitFor(() =>
+			expect(
+				screen.getByText("This field is required"),
+			).toBeInTheDocument(),
+		);
+		expect(screen.getByLabelText("Appointment")).toHaveAttribute(
+			"aria-invalid",
+			"true",
+		);
+		expect(screen.getByRole("button", { name: /submit/i })).toBeDisabled();
+	});
+
+	it("validates a required date after clearing the shared picker", async () => {
+		const form = makeForm([
+			{
+				name: "start_date",
+				label: "Start Date",
+				type: "date",
+				required: true,
+				default_value: "2026-11-10",
+			},
+		]);
+		const { user } = renderWithProviders(<FormRenderer form={form} />);
+		await user.click(screen.getByLabelText(/start date/i));
+		await user.click(
+			await screen.findByRole("button", { name: "Clear Date" }),
+		);
+		await waitFor(() =>
+			expect(
+				screen.getByText("This field is required"),
+			).toBeInTheDocument(),
+		);
+		expect(screen.getByLabelText(/start date/i)).toHaveAttribute(
+			"aria-invalid",
+			"true",
+		);
+		expect(screen.getByRole("button", { name: /submit/i })).toBeDisabled();
+	});
+
 	it("renders a markdown field's content", () => {
 		const form = makeForm([
 			{
@@ -784,4 +1018,236 @@ it("submits and reloads form inputs within the selected organization", async () 
 			}),
 		),
 	);
+});
+
+it("renders opted-in layout sections in their configured field order", () => {
+	const form = makeForm([
+		{ name: "first", label: "First", type: "text", required: false },
+		{ name: "email", label: "Email", type: "email", required: false },
+	]);
+	const formSchema = form.form_schema!;
+	form.form_schema = {
+		fields: formSchema.fields,
+		layout: {
+			sections: [
+				{
+					title: "Contact",
+					rows: [
+						{
+							columns: [
+								{ field: "email", width: 4 },
+								{ field: "first", width: 8 },
+							],
+						},
+					],
+				},
+			],
+		},
+	};
+	renderWithProviders(<FormRenderer form={form} />);
+
+	expect(screen.getByText("Contact")).toBeInTheDocument();
+	expect(screen.getAllByRole("textbox").map((input) => input.id)).toEqual([
+		"email",
+		"first",
+	]);
+	expect(screen.getByLabelText("Email").parentElement?.parentElement).toHaveClass(
+		"md:col-span-4",
+	);
+});
+
+it("unblocks the initial loader when the options mount chain rejects", async () => {
+	const error = new Error("Options request could not start");
+	const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	let resolveOptions!: (options: unknown[]) => void;
+	mockGetOptions
+		.mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					resolveOptions = resolve;
+				}),
+		)
+		.mockImplementationOnce(() => {
+			throw error;
+		});
+	const { unmount } = renderWithProviders(
+		<FormRenderer
+			form={makeForm([
+				{
+					name: "summary",
+					label: "Summary",
+					type: "text",
+					required: true,
+				},
+				{
+					name: "pending",
+					label: "Pending",
+					type: "select",
+					has_dynamic_options: true,
+				},
+				{
+					name: "broken",
+					label: "Broken",
+					type: "select",
+					has_dynamic_options: true,
+				},
+			])}
+		/>,
+	);
+	try {
+		await waitFor(() =>
+			expect(log).toHaveBeenCalledWith(
+				"[FormRenderer] Initial options load failed:",
+				error,
+			),
+		);
+		expect(screen.getByLabelText(/Summary/)).toBeInTheDocument();
+		expect(
+			screen.queryByText("Loading form options..."),
+		).not.toBeInTheDocument();
+	} finally {
+		unmount();
+		resolveOptions([]);
+		log.mockRestore();
+	}
+});
+
+describe("provider input optionality", () => {
+	it.each(["fieldRef", "expression"] as const)(
+		"loads choices with blank optional %s and reloads when populated",
+		async (mode) => {
+			const { user } = renderWithProviders(
+				<FormRenderer
+					form={makeForm([
+						{ name: "middle", label: "Middle Name", type: "text" },
+						{
+							name: "username",
+							label: "Username",
+							type: "select",
+							has_dynamic_options: true,
+							optional_provider_inputs: ["middle_name"],
+							data_provider_inputs: {
+								middle_name:
+									mode === "fieldRef"
+										? { mode, field_name: "middle" }
+										: {
+												mode,
+												expression:
+													"context.field.middle || ''",
+											},
+							},
+						},
+					])}
+				/>,
+			);
+			await waitFor(() =>
+				expect(mockGetOptions).toHaveBeenCalledWith(
+					"form-1",
+					"username",
+					undefined,
+					undefined,
+				),
+			);
+			await user.type(screen.getByLabelText("Middle Name"), "Lee");
+			await user.tab();
+			await waitFor(() =>
+				expect(mockGetOptions).toHaveBeenCalledWith(
+					"form-1",
+					"username",
+					{ middle_name: "Lee" },
+					undefined,
+				),
+			);
+		},
+	);
+	it.each(["fieldRef", "expression"] as const)(
+		"waits for a required %s input",
+		async (mode) => {
+			const { user } = renderWithProviders(
+				<FormRenderer
+					form={makeForm([
+						{ name: "country", label: "Country", type: "text" },
+						{
+							name: "city",
+							label: "City",
+							type: "select",
+							has_dynamic_options: true,
+							optional_provider_inputs: [],
+							data_provider_inputs: {
+								country:
+									mode === "fieldRef"
+										? { mode, field_name: "country" }
+										: {
+												mode,
+												expression:
+													"context.field.country || ''",
+											},
+							},
+						},
+					])}
+				/>,
+			);
+			expect(mockGetOptions).not.toHaveBeenCalled();
+			await user.type(screen.getByLabelText("Country"), "UK");
+			await user.tab();
+			await waitFor(() =>
+				expect(mockGetOptions).toHaveBeenCalledWith(
+					"form-1",
+					"city",
+					{
+						country: "UK",
+					},
+					undefined,
+				),
+			);
+		},
+	);
+	it.each(["false", "0"])(
+		"passes a valid expression result of %s",
+		async (expression) => {
+			renderWithProviders(
+				<FormRenderer
+					form={makeForm([
+						{
+							name: "choice",
+							type: "select",
+							has_dynamic_options: true,
+							data_provider_inputs: {
+								filter: { mode: "expression", expression },
+							},
+						},
+					])}
+				/>,
+			);
+			await waitFor(() =>
+				expect(mockGetOptions).toHaveBeenCalledWith(
+					"form-1",
+					"choice",
+					{ filter: JSON.parse(expression) },
+					undefined,
+				),
+			);
+		},
+	);
+	it("does not hide expression errors on optional inputs", () => {
+		renderWithProviders(
+			<FormRenderer
+				form={makeForm([
+					{
+						name: "choice",
+						type: "select",
+						has_dynamic_options: true,
+						optional_provider_inputs: ["filter"],
+						data_provider_inputs: {
+							filter: {
+								mode: "expression",
+								expression: "context.field.missing.value",
+							},
+						},
+					},
+				])}
+			/>,
+		);
+		expect(mockGetOptions).not.toHaveBeenCalled();
+	});
 });

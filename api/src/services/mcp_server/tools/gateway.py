@@ -39,13 +39,34 @@ live input schema before execution. Do not guess tool references or arguments.
 If the user's request authorizes the action, call bifrost_execute_tool. The
 capability result declares supports_async and default_async. Delegations are
 asynchronous by default; other tools are synchronous by default. Set async
-explicitly only to override that declared default. For asynchronous calls, use
-bifrost_get_execution until it reaches a terminal state. If the request does
+explicitly only to override that declared default. A workflow still running
+after the response wait returns an asynchronous execution receipt. For any
+asynchronous receipt, use bifrost_get_execution until it reaches a terminal
+state; do not execute the tool again to retrieve its result. If the request does
 not authorize execution, offer the action instead of executing it.
 
 If validation fails, correct the arguments using the returned live schema and
 repair guidance. Do not call a tool that was not returned for the selected
-agent."""
+agent.
+
+When bifrost_execute_code is available, you may call it directly for trusted,
+one-off Python execution without selecting an agent or registering a workflow.
+It requires platform-administrator-level trust; the worker is not a security
+sandbox for untrusted Python. It
+returns an execution_id; use bifrost_get_execution to retrieve its result.
+Call bifrost_get_docs before writing SDK code: it provides live signatures and the
+inline Python and workspace import conventions. Use bifrost_get_docs with sdk_module
+(e.g. files, tables, artifacts, events) for a complete, focused SDK reference
+when the full docs are too large. Reuse existing modules after
+inspecting their source. With existing repository.read permission, inline
+code can list/read workspace source through the files SDK. Alternatively,
+search capabilities for an agent with list_content, bifrost_file_search, and
+read_content_lines, then use its discovered tools. If the Bifrost Build skill is
+installed in your client, its python-sdk, repository, and workflows references
+provide the broader authoring guide. Get the optional full Bifrost plugin from
+https://github.com/gobifrost/bifrost/tree/main/plugins/bifrost; bifrost_get_docs
+includes marketplace and Setup/Build guidance. SDK requests retain the execution identity's
+existing permissions and scoping; those checks do not contain arbitrary Python."""
 
 
 def _rest_error(action: str, status_code: int, body: Any) -> ToolResult:
@@ -185,7 +206,9 @@ async def bifrost_execute_tool(
         return _rest_error("Tool execution", status_code, data)
     if data.get("async") is True:
         return success_result(
-            f"Queued execution {data['execution_id']}.",
+            f"Execution {data['execution_id']} will continue in the background. "
+            "Use bifrost_get_execution with this execution_id to watch it and "
+            "retrieve its result. Do not start the tool again to retrieve the result.",
             data,
         )
     return direct_result(data["result"])
@@ -240,7 +263,9 @@ TOOLS = [
         "Execute a tool reference through its selected agent after inspecting its "
         "live schema. Arguments are strictly validated and authorization is "
         "rechecked on every call. Capability results declare supports_async and "
-        "default_async; delegations default to an async AgentRun receipt.",
+        "default_async; delegations default to an async AgentRun receipt. Slow "
+        "workflow calls return an execution receipt; use bifrost_get_execution "
+        "to retrieve their result without running the tool again.",
     ),
     (
         "bifrost_get_execution",

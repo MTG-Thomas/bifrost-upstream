@@ -16,6 +16,8 @@ import { FormConfirmation } from "@/components/forms/FormConfirmation";
 import { FormCaptcha } from "@/components/forms/FormCaptcha";
 import { JsxTemplateRenderer } from "@/components/ui/jsx-template-renderer";
 import { Input } from "@/components/ui/input";
+import { DatePicker } from "@/components/ui/date-picker";
+import { DateTimeFieldInput } from "@/components/forms/DateTimeFieldInput";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
@@ -36,6 +38,8 @@ import type {
 } from "@/lib/client-types";
 import { getEmbedTokenClaims } from "@/lib/auth-token";
 import { formRuntimeQueryParams } from "@/lib/form-embed-presentation";
+import { normalizeFormLayout } from "./form-layout";
+import { FormLayoutView } from "./FormLayoutView";
 
 type Form =
 	| components["schemas"]["FormPublic"]
@@ -207,6 +211,22 @@ function FormRendererInner({
 		() => (isFormSchema(form.form_schema) ? form.form_schema.fields : []),
 		[form.form_schema],
 	);
+	const layout = useMemo(
+		() =>
+			isFormSchema(form.form_schema)
+				? normalizeFormLayout(form.form_schema.layout)
+				: null,
+		[form.form_schema],
+	);
+
+	// Display blocks render content but are not values accepted by the form API.
+	const inputFields = useMemo(
+		() =>
+			fields.filter(
+				(field) => field.type !== "markdown" && field.type !== "html",
+			),
+		[fields],
+	);
 
 	// Single state object for all data provider state to batch updates
 	const [dataProviderState, setDataProviderState] = useState<{
@@ -319,11 +339,14 @@ function FormRendererInner({
 							if (
 								config.field_name &&
 								fieldValues[config.field_name] !== undefined &&
+								fieldValues[config.field_name] !== null &&
 								fieldValues[config.field_name] !== ""
 							) {
 								inputValues[key] =
 									fieldValues[config.field_name];
-							} else {
+							} else if (
+								!field.optional_provider_inputs?.includes(key)
+							) {
 								hasAllRequired = false;
 							}
 							break;
@@ -345,9 +368,17 @@ function FormRendererInner({
 										`return ${config.expression}`,
 									);
 									const result = evalFunc(evalContext);
-									if (result && result !== "") {
+									if (
+										result !== null &&
+										result !== undefined &&
+										result !== ""
+									) {
 										inputValues[key] = result;
-									} else {
+									} else if (
+										!field.optional_provider_inputs?.includes(
+											key,
+										)
+									) {
 										hasAllRequired = false;
 									}
 								} catch {
@@ -525,6 +556,10 @@ function FormRendererInner({
 			.then(() => (active ? loadDataProviders() : undefined))
 			.then(() => {
 				if (active) setHasCompletedInitialLoad(true);
+			})
+			.catch((error: unknown) => {
+				console.error("[FormRenderer] Initial options load failed:", error);
+				if (active) setHasCompletedInitialLoad(true);
 			});
 		return () => {
 			active = false;
@@ -533,7 +568,7 @@ function FormRendererInner({
 
 	// Handler for field blur events
 	const handleFieldBlur = useCallback(() => {
-		loadDataProviders();
+		void loadDataProviders();
 	}, [loadDataProviders]);
 
 	// Build Zod schema dynamically from form fields
@@ -542,7 +577,7 @@ function FormRendererInner({
 	const buildSchema = useCallback(() => {
 		const schemaFields: Record<string, z.ZodTypeAny> = {};
 
-		fields.forEach((field: FormField) => {
+		inputFields.forEach((field: FormField) => {
 			let fieldSchema: z.ZodTypeAny;
 
 			switch (field.type) {
@@ -643,7 +678,7 @@ function FormRendererInner({
 		});
 
 		return z.object(schemaFields);
-	}, [fields, dataProviderState.successfullyLoaded]);
+	}, [inputFields, dataProviderState.successfullyLoaded]);
 
 	// Create a custom resolver that calls buildSchema() to get the latest schema
 	const customResolver = useCallback<Resolver<Record<string, unknown>>>(
@@ -664,7 +699,7 @@ function FormRendererInner({
 	} = useForm({
 		resolver: customResolver,
 		mode: "onChange", // Validate on change to keep isValid up-to-date
-		defaultValues: fields.reduce(
+		defaultValues: inputFields.reduce(
 			(acc: Record<string, unknown>, field: FormField) => {
 				if (field.type === "multi_select") {
 					// default_value is a comma-separated list of option values
@@ -1026,6 +1061,55 @@ function FormRendererInner({
 		}
 
 		switch (field.type) {
+			case "date":
+			case "datetime": {
+				const DateControl =
+					field.type === "date" ? DatePicker : DateTimeFieldInput;
+				return (
+					<div className="space-y-2">
+						<Label htmlFor={field.name}>
+							{field.label}
+							{field.required && (
+								<span className="text-destructive ml-1">*</span>
+							)}
+						</Label>
+						<DateControl
+							id={field.name}
+							aria-label={field.label ?? field.name}
+							value={(formValues[field.name] as string) || ""}
+							onChange={(value) =>
+								setValue(field.name, value, {
+									shouldValidate: true,
+									shouldDirty: true,
+								})
+							}
+							onBlur={handleFieldBlur}
+							placeholder={field.placeholder ?? undefined}
+							aria-invalid={!!error}
+							aria-describedby={
+								field.help_text || error
+									? `${field.name}-description`
+									: undefined
+							}
+						/>
+						{(field.help_text || error) && (
+							<div id={`${field.name}-description`}>
+								{field.help_text && (
+									<p className="text-sm text-muted-foreground">
+										{field.help_text}
+									</p>
+								)}
+								{error && (
+									<p className="text-sm text-destructive">
+										{error.message as string}
+									</p>
+								)}
+							</div>
+						)}
+					</div>
+				);
+			}
+
 			case "textarea":
 				return (
 					<div className="space-y-2">
@@ -1263,34 +1347,6 @@ function FormRendererInner({
 				);
 			}
 
-			case "datetime":
-				return (
-					<div className="space-y-2">
-						<Label htmlFor={field.name}>
-							{field.label}
-							{field.required && (
-								<span className="text-destructive ml-1">*</span>
-							)}
-						</Label>
-						<Input
-							id={field.name}
-							type="datetime-local"
-							placeholder={field.placeholder ?? undefined}
-							{...register(field.name)}
-						/>
-						{field.help_text && (
-							<p className="text-sm text-muted-foreground">
-								{field.help_text}
-							</p>
-						)}
-						{error && (
-							<p className="text-sm text-destructive">
-								{error.message as string}
-							</p>
-						)}
-					</div>
-				);
-
 			case "markdown":
 				return (
 					<div className="space-y-2">
@@ -1457,6 +1513,7 @@ function FormRendererInner({
 										? "number"
 										: "text"
 							}
+							step={field.type === "number" ? "any" : undefined}
 							placeholder={field.placeholder ?? undefined}
 							{...register(field.name)}
 							onBlur={handleFieldBlur}
@@ -1705,52 +1762,67 @@ function FormRendererInner({
 									mode="popLayout"
 									initial={false}
 								>
-									{visibleFields.map((field: FormField) => (
-										<motion.div
-											key={field.name}
-											initial={
-												reduceMotion
-													? false
-													: {
-															opacity: 0,
-															height: 0,
-															marginBottom: 0,
-														}
-											}
-											animate={{
-												opacity: 1,
-												height: "auto",
-												marginBottom: 16,
-											}}
-											exit={{
-												opacity: 0,
-												height: 0,
-												marginBottom: 0,
-											}}
-											transition={{
-												opacity: {
-													duration: reduceMotion
-														? 0
-														: 0.12,
-												},
-												height: {
-													duration: reduceMotion
-														? 0
-														: 0.22,
-													ease: "easeInOut",
-												},
-												marginBottom: {
-													duration: reduceMotion
-														? 0
-														: 0.22,
-													ease: "easeInOut",
-												},
-											}}
-											style={{ overflow: "hidden" }}
-										>
-											{renderField(field)}
-										</motion.div>
-									))}
+									{layout ? (
+										<FormLayoutView
+											layout={layout}
+											fields={visibleFields}
+											renderField={renderField}
+										/>
+									) : (
+										visibleFields.map(
+											(field: FormField) => (
+												<motion.div
+													key={field.name}
+													initial={
+														reduceMotion
+															? false
+															: {
+																	opacity: 0,
+																	height: 0,
+																	marginBottom: 0,
+																}
+													}
+													animate={{
+														opacity: 1,
+														height: "auto",
+														marginBottom: 16,
+													}}
+													exit={{
+														opacity: 0,
+														height: 0,
+														marginBottom: 0,
+													}}
+													transition={{
+														opacity: {
+															duration:
+																reduceMotion
+																	? 0
+																	: 0.12,
+														},
+														height: {
+															duration:
+																reduceMotion
+																	? 0
+																	: 0.22,
+															ease: "easeInOut",
+														},
+														marginBottom: {
+															duration:
+																reduceMotion
+																	? 0
+																	: 0.22,
+															ease: "easeInOut",
+														},
+													}}
+													style={{
+														overflow: "hidden",
+													}}
+												>
+													{renderField(field)}
+												</motion.div>
+											),
+										)
+									)}
 								</AnimatePresence>
 							</fieldset>
 							<input

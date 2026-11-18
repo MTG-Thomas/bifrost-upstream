@@ -181,7 +181,7 @@ async def test_opencode_go_profiles_route_models_to_their_wire_surface(db_sessio
 
     messages_config = await service.resolve_config(profile_id=messages.id)
     assert messages_config.provider == "anthropic"
-    assert messages_config.endpoint == "https://opencode.ai/zen/go"
+    assert messages_config.endpoint == "https://opencode.ai/inference/go/anthropic"
     assert messages_config.openai_transport is None
 
 
@@ -242,7 +242,7 @@ async def test_opencode_go_unknown_models_probe_once_and_persist(db_session):
 
     detect.assert_awaited_once()
     assert config.provider == "anthropic"
-    assert config.endpoint == "https://opencode.ai/zen/go"
+    assert config.endpoint == "https://opencode.ai/inference/go/anthropic"
     assert profile.wire_api == "messages"
 
     # Second resolve reuses the persisted surface without probing again.
@@ -258,7 +258,9 @@ async def test_opencode_go_unknown_models_probe_once_and_persist(db_session):
 
     # Endpoint changes invalidate the persisted surface.
     await service.update_connection(
-        connection.id, endpoint="https://opencode.ai/zen/go/v1", endpoint_provided=True
+        connection.id,
+        endpoint="https://opencode.ai/inference/go/openai/v1",
+        endpoint_provided=True,
     )
     assert profile.wire_api is None
 
@@ -338,12 +340,15 @@ async def test_profile_and_connection_changes_clear_detected_transport(db_sessio
         capabilities=None,
         enabled_for_chat=True,
     )
+    profile.anthropic_prompt_cache_supported = False
     profile.openai_transport = "responses"
     await db_session.flush()
 
     updated = await service.update_profile(profile.id, model="model-two")
     assert updated.openai_transport is None
+    assert updated.anthropic_prompt_cache_supported is None
 
+    updated.anthropic_prompt_cache_supported = False
     updated.openai_transport = "chat_completions"
     await db_session.flush()
     await service.update_connection(
@@ -352,6 +357,7 @@ async def test_profile_and_connection_changes_clear_detected_transport(db_sessio
         endpoint_provided=True,
     )
     assert updated.openai_transport is None
+    assert updated.anthropic_prompt_cache_supported is None
 
 
 @pytest.mark.asyncio
@@ -372,9 +378,14 @@ async def test_resolve_config_carries_anthropic_cache_capability(db_session):
         enabled_for_chat=True,
     )
 
+    unknown = await service.resolve_config(profile_id=profile.id)
+    assert unknown.anthropic_prompt_cache_supported is None, "legacy connection state must not leak into a profile"
+    profile.anthropic_prompt_cache_supported = False
     config = await service.resolve_config(profile_id=profile.id)
 
     assert config.provider_connection_id == connection.id
+    assert config.model_profile_id == profile.id
+    assert config.provider_connection_updated_at == connection.updated_at
     assert config.anthropic_prompt_cache_supported is False
 
 

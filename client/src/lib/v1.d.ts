@@ -1449,6 +1449,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/organizations/tags": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Bulk add or remove organization tags
+         * @description Add and/or remove tags on several organizations in one transaction. Every organization must be updatable by the caller, or nothing changes.
+         */
+        patch: operations["organizations.tags.bulk_update"];
+        trace?: never;
+    };
     "/api/organizations/{org_id}": {
         parameters: {
             query?: never;
@@ -2282,7 +2302,7 @@ export interface paths {
         put?: never;
         /**
          * Execute a workflow, data provider, or script
-         * @description Execute a workflow or data provider by ID. For data providers, returns options list in result field. Requires platform admin, API key, or access via form/app/integration.
+         * @description Execute a workflow or data provider by ID. For data providers, returns options list in result field. Inline code requires the Platform-wide Execute Code permission.
          */
         post: operations["workflows.execute"];
         delete?: never;
@@ -8685,8 +8705,8 @@ export interface paths {
          * @description Get MCP server status and available tools for the current user.
          *
          *     This is a REST endpoint (not MCP protocol) for debugging and discovery.
-         *     Returns the stable gateway tools plus the number of agents the caller
-         *     can discover through them.
+         *     Returns the gateway and permission-enabled tools plus the number of
+         *     agents the caller can discover through them.
          */
         get: operations["mcp_status_api_mcp_status_get"];
         put?: never;
@@ -16364,6 +16384,13 @@ export interface components {
              * @description List of valid string options for dropdown UI
              */
             options?: string[] | null;
+            /**
+             * Option Labels
+             * @description Display labels keyed by stored option value
+             */
+            option_labels?: {
+                [key: string]: string;
+            } | null;
         };
         /**
          * ConfigType
@@ -20142,6 +20169,57 @@ export interface components {
          */
         FormFieldType: "text" | "email" | "number" | "select" | "multi_select" | "checkbox" | "textarea" | "radio" | "date" | "datetime" | "markdown" | "html" | "file";
         /**
+         * FormLayout
+         * @description Optional presentation structure for a form's normalized field records.
+         */
+        FormLayout: {
+            /** Sections */
+            sections?: components["schemas"]["FormLayoutSection"][];
+        };
+        /**
+         * FormLayoutColumn
+         * @description One responsive column. Empty columns are authoring slots, not field references.
+         */
+        FormLayoutColumn: {
+            /**
+             * Field
+             * @description Name of the form field in this column, or an empty authoring slot
+             */
+            field?: string | null;
+            /**
+             * Width
+             * @description Desktop width in a twelve-column row; all columns stack on small screens
+             * @default 12
+             * @enum {integer}
+             */
+            width: 3 | 4 | 6 | 8 | 9 | 12;
+        };
+        /**
+         * FormLayoutRow
+         * @description A horizontal row of field columns within a form section.
+         */
+        FormLayoutRow: {
+            /**
+             * Field
+             * @description Standalone field, without a Row component
+             */
+            field?: string | null;
+            /** Columns */
+            columns?: components["schemas"]["FormLayoutColumn"][];
+        };
+        /**
+         * FormLayoutSection
+         * @description A named grouping of rows. Empty sections and rows are allowed while authoring.
+         */
+        FormLayoutSection: {
+            /** Title */
+            title?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Rows */
+            rows?: components["schemas"]["FormLayoutRow"][];
+        };
+        /**
          * FormPublic
          * @description Form output for API responses.
          */
@@ -20360,6 +20438,11 @@ export interface components {
             data_provider_inputs?: {
                 [key: string]: components["schemas"]["DataProviderInputConfig"];
             } | null;
+            /**
+             * Optional Provider Inputs
+             * @description Configured inputs the provider declares optional
+             */
+            optional_provider_inputs?: string[];
             /** Default Value */
             default_value?: unknown | null;
             /** Placeholder */
@@ -20391,6 +20474,7 @@ export interface components {
         FormRuntimeSchema: {
             /** Fields */
             fields: components["schemas"]["FormRuntimeField"][];
+            layout?: components["schemas"]["FormLayout"] | null;
         };
         /**
          * FormSchema
@@ -20402,6 +20486,8 @@ export interface components {
              * @description Max 50 fields per form
              */
             fields: components["schemas"]["FormField"][];
+            /** @description Optional sections, rows, and field column widths. Omit to use the legacy vertical layout. */
+            layout?: components["schemas"]["FormLayout"] | null;
         };
         /**
          * FormStartupResponse
@@ -21498,6 +21584,11 @@ export interface components {
              */
             description?: string | null;
             /**
+             * Notes
+             * @description Optional Markdown setup notes for configuring this integration
+             */
+            notes?: string | null;
+            /**
              * Config Schema
              * @description Optional schema defining available configuration for this integration
              */
@@ -21541,6 +21632,11 @@ export interface components {
              * @description Optional integration description for admin UI cards
              */
             description?: string | null;
+            /**
+             * Notes
+             * @description Optional Markdown setup notes for configuring this integration
+             */
+            notes?: string | null;
             /**
              * List Entities Data Provider Id
              * @description Associated data provider ID for listing entities
@@ -21902,6 +21998,11 @@ export interface components {
              */
             description?: string | null;
             /**
+             * Notes
+             * @description Optional Markdown setup notes for configuring this integration
+             */
+            notes?: string | null;
+            /**
              * List Entities Data Provider Id
              * @description Associated data provider ID for listing entities
              */
@@ -22057,6 +22158,11 @@ export interface components {
              * @description Optional integration description for admin UI cards
              */
             description?: string | null;
+            /**
+             * Notes
+             * @description Optional Markdown setup notes; null explicitly clears saved notes
+             */
+            notes?: string | null;
             /**
              * List Entities Data Provider Id
              * @description Data provider ID for listing entities
@@ -24662,6 +24768,11 @@ export interface components {
             settings?: {
                 [key: string]: unknown;
             };
+            /**
+             * Tags
+             * @description Labels for grouping and filtering organizations (e.g. 'MSP')
+             */
+            tags?: string[];
         };
         /**
          * OrganizationMetricsResponse
@@ -24721,6 +24832,11 @@ export interface components {
                 [key: string]: unknown;
             };
             /**
+             * Tags
+             * @description Labels for grouping and filtering organizations (e.g. 'MSP')
+             */
+            tags?: string[];
+            /**
              * Id
              * Format: uuid
              */
@@ -24761,6 +24877,24 @@ export interface components {
             name: string;
         };
         /**
+         * OrganizationTagsBulkUpdate
+         * @description Add and/or remove tags across several organizations at once.
+         */
+        OrganizationTagsBulkUpdate: {
+            /** Organization Ids */
+            organization_ids: string[];
+            /**
+             * Add
+             * @description Tags to add to every organization
+             */
+            add?: string[];
+            /**
+             * Remove
+             * @description Tags to remove from every organization (case-insensitive)
+             */
+            remove?: string[];
+        };
+        /**
          * OrganizationUpdate
          * @description Input for updating an organization (all fields optional).
          */
@@ -24775,6 +24909,11 @@ export interface components {
             settings?: {
                 [key: string]: unknown;
             } | null;
+            /**
+             * Tags
+             * @description Replaces the organization's tags; omit to leave them unchanged
+             */
+            tags?: string[] | null;
         };
         /**
          * OrganizationUsage
@@ -31404,6 +31543,11 @@ export interface components {
              */
             group: string;
             /**
+             * Bucket Start
+             * @description Exact UTC bucket start
+             */
+            bucket_start?: string | null;
+            /**
              * Worker Id
              * @description Container/pool identifier
              */
@@ -31800,7 +31944,7 @@ export interface components {
             script_name?: string | null;
             /**
              * Org Id
-             * @description Override execution org context within the caller's reach; use global for Global scope. Requires workflows.execute in the target organization.
+             * @description Override execution org context within the caller's reach; use global for Global scope. Workflow runs require workflows.execute there; inline code requires Execute Code separately.
              */
             org_id?: string | null;
             /**
@@ -34634,6 +34778,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["OrganizationPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "organizations.tags.bulk_update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OrganizationTagsBulkUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrganizationPublic"][];
                 };
             };
             /** @description Validation Error */

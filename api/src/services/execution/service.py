@@ -136,7 +136,8 @@ async def get_workflow_for_execution(
 
     Returns metadata only (path, function_name, timeout, etc.) — no code.
     Workers load code via the virtual import hook: Redis cache → S3 _repo/ fallback.
-    Content hash is pinned separately by the consumer for reproducibility.
+    The workspace source digest travels with this metadata so workers can
+    verify the entry source before executing any module-level Python.
 
     This is DB-only (no Redis caching) since metadata may be updated frequently
     and we want the latest version for each execution.
@@ -156,23 +157,30 @@ async def get_workflow_for_execution(
         - execution_mode: sync or async
         - organization_id: Org scope (or None for global)
         - solution_id: Solution install id if solution-managed (else None)
+        - content_hash: Workspace entry digest (None for Solution workflows)
         - type: Executable type (workflow, tool, or data_provider)
         - cache_ttl_seconds: Data provider cache TTL
 
     Raises:
         WorkflowNotFoundError: If workflow doesn't exist in database
+        WorkflowLoadError: If workspace source has no digest
     """
-    from sqlalchemy import select
+    from sqlalchemy import and_, select
     from src.core.database import get_session_factory
     from src.models import Workflow as WorkflowORM
+    from src.models.orm.file_index import FileIndex
 
     async def _fetch(session: AsyncSession) -> dict[str, Any]:
         from sqlalchemy import or_
         from src.models.orm.solutions import Solution as SolutionORM
 
         stmt = (
-            select(WorkflowORM, SolutionORM.allow_outbound_access)
+            select(WorkflowORM, SolutionORM.allow_outbound_access, FileIndex.content_hash)
             .outerjoin(SolutionORM, WorkflowORM.solution_id == SolutionORM.id)
+            .outerjoin(FileIndex, and_(
+                WorkflowORM.solution_id.is_(None),
+                FileIndex.path == WorkflowORM.path,
+            ))
             .where(
                 WorkflowORM.id == workflow_id,
                 WorkflowORM.is_active == True,  # noqa: E712
@@ -191,7 +199,11 @@ async def get_workflow_for_execution(
         if row is None:
             raise WorkflowNotFoundError(f"Workflow with ID '{workflow_id}' not found")
 
-        workflow_record, allow_outbound_access = row
+        workflow_record, allow_outbound_access, content_hash = row
+        if workflow_record.solution_id is None and not content_hash:
+            raise WorkflowLoadError(
+                f"Workflow source digest is unavailable for '{workflow_record.path}'"
+            )
         logger.debug(f"Loaded workflow for execution: {workflow_id} -> {workflow_record.name}")
 
         return {
@@ -204,6 +216,7 @@ async def get_workflow_for_execution(
             "execution_mode": workflow_record.execution_mode or "async",
             "organization_id": str(workflow_record.organization_id) if workflow_record.organization_id else None,
             "solution_id": str(workflow_record.solution_id) if workflow_record.solution_id else None,
+            "content_hash": content_hash,
             # Wire key kept stable for in-flight workflow_data across deploys.
             "can_access_global_repo": bool(allow_outbound_access),
             "type": workflow_record.type or "workflow",
@@ -395,7 +408,7 @@ async def run_workflow(
         except WorkflowNotFoundError:
             raise
         except Exception as e:
-            logger.error(f"Failed to validate workflow {workflow_id}: {e}", exc_info=True)
+            logger.exception(f"Failed to validate workflow {workflow_id}: {e}", exc_info=True)
             raise WorkflowNotFoundError(
                 f"Failed to validate workflow '{workflow_id}': {str(e)}"
             )
@@ -491,15 +504,20 @@ async def _enqueue_workflow_async(
     trusted_app_context: bool = False,
     *,
     lineage: RunLineage | None,
+    result_wait_seconds: int | None = None,
 ) -> WorkflowExecutionResponse:
     """
     Accept a workflow run for the executors.
 
-    If sync=True, waits for result via Redis BLPOP.
+    If sync=True, waits for result via Redis BLPOP. An explicit
+    ``result_wait_seconds`` limits that wait while the worker continues.
     If sync=False, returns immediately with PENDING status.
     """
     from src.services.execution.async_executor import enqueue_workflow_execution
     from src.core.redis_client import get_redis_client
+
+    if result_wait_seconds is not None and result_wait_seconds <= 0:
+        raise ValueError("result_wait_seconds must be positive")
 
     execution_id = await enqueue_workflow_execution(
         context=context,
@@ -525,11 +543,19 @@ async def _enqueue_workflow_async(
     redis_client = get_redis_client()
     if timeout_seconds is None:
         timeout_seconds = (await get_workflow_metadata_only(workflow_id)).timeout_seconds
-    result = await redis_client.wait_for_result(
-        execution_id, timeout_seconds=sync_wait_seconds(timeout_seconds)
-    )
+    wait_seconds = sync_wait_seconds(timeout_seconds)
+    if result_wait_seconds is not None:
+        wait_seconds = min(wait_seconds, result_wait_seconds)
+    result = await redis_client.wait_for_result(execution_id, timeout_seconds=wait_seconds)
 
     if result is None:
+        if result_wait_seconds is not None:
+            return WorkflowExecutionResponse(
+                execution_id=execution_id,
+                workflow_id=workflow_id,
+                workflow_name=workflow_name,
+                status=ExecutionStatus.PENDING,
+            )
         return WorkflowExecutionResponse(
             execution_id=execution_id,
             workflow_id=workflow_id,
@@ -603,6 +629,7 @@ async def execute_tool(
     sync: bool = True,
     *,
     lineage: RunLineage | None,
+    result_wait_seconds: int | None = None,
 ) -> WorkflowExecutionResponse:
     """
     Execute a workflow as a tool (for AI agent tool calls).
@@ -623,6 +650,7 @@ async def execute_tool(
         execution_id: Optional pre-generated execution ID (for streaming)
         sync: Whether to wait for the result instead of returning Pending
         lineage: The agent run's run user (shared.run_lineage)
+        result_wait_seconds: Optional cap for a synchronous result wait
 
     Returns:
         WorkflowExecutionResponse with execution results
@@ -674,4 +702,5 @@ async def execute_tool(
         parameters=parameters,
         sync=sync,
         lineage=lineage,
+        result_wait_seconds=result_wait_seconds,
     )

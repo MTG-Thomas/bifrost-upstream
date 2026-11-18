@@ -516,3 +516,7 @@ def test_dependency_lock_regeneration_uses_production_python_image():
     ]
     regenerate = next(script for script in scripts if "pip-compile --generate-hashes" in script)
     assert f"{production_image} sh -c" in regenerate
+    for command in regenerate.splitlines():
+        if "pip-compile --generate-hashes" in command:
+            assert "--allow-unsafe" in command
+            assert "--no-reuse-hashes" in command

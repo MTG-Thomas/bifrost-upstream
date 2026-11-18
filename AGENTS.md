@@ -17,6 +17,11 @@ This repository keeps repo-maintenance skills under `.claude/skills/`. Codex age
 
 Do not treat `.claude/skills/bifrost-build` or `.claude/skills/bifrost-setup` as repo-local Codex skills here. Those are package/plugin-managed global Bifrost skills.
 
+## Contribution Eligibility
+
+Before creating or proposing an issue, PR, or public reply, read CONTRIBUTING.md's Contribution Scope and, for security or hardening, SECURITY.md. Record the eligible basis and concrete evidence: actual use, an explicit maintainer request, or a verified security finding. Keep unsolicited non-security audit discoveries private even if reproducible or accompanied by a patch. Obtain deliberate human review before publication. Existing scoped instructions and grants still govern authorized work; eligibility is not implementation or merge authority.
+
+
 ## Worktree rule (CRITICAL)
 
 All changes — features, fixes, refactors, doc edits — must be made in a git worktree, never directly on `main` (or any shared branch) in the primary checkout. If a task is about to modify files and the current working directory is the primary `bifrost` checkout, stop and create or enter a worktree first. Use `EnterWorktree` (or `git worktree add .claude/worktrees/<name>`). The only edits permitted on `main` are ones the user explicitly requests be made there.
@@ -222,7 +227,7 @@ Entity mutations have three parallel surfaces: **CLI** (`bifrost <entity> ...`),
 
 ## Product Updates
 
-For a user-visible change, classify the PR in its canonical disposition file, `product-updates/dispositions/pr-<number>.json`, and author approved entry prose in the shared `product-updates/` source. The PR template is a proposal, not the durable decision. Read [`docs/product-updates-authoring.md`](docs/product-updates-authoring.md) before editing entries, preparing a release, or validating Product Updates; it defines draft versus approved content, source/credit evidence, and deterministic release-body preparation.
+Classify every PR in its canonical disposition file, `product-updates/dispositions/pr-<number>.json`. Product Updates announce new user-facing features or breaking changes. Routine bug fixes, hardening, and maintenance use `omit` with a reason; they need no announcement prose or prose-approval request. Read [`docs/product-updates-authoring.md`](docs/product-updates-authoring.md) before selecting or authoring an announcement, preparing a release, or validating Product Updates. Eligible announcement prose requires exact-text approval. The PR template is a proposal, not the durable decision.
 
 ## Project Structure
 
@@ -371,8 +376,8 @@ export async function getDataProviders() {
 **Withdrawing a migration:** never turn an already-applied migration into a no-op without a forward migration that removes what it created. Databases that ran it keep that schema, fresh databases never get it, and later migrations collide with the difference. Fresh-database tests cannot see this, so add a rehearsal that applies the residue to a disposable database at the prior revision and upgrades to head (see `api/tests/e2e/platform/test_builder_residue_migration_rehearsal.py`), and register the tombstone in `api/tests/unit/test_migration_tombstones.py`.
 
 **After adding a Python dependency:**
-1. Add to `pyproject.toml` (root)
-2. Regenerate the lock: `docker run --rm -v "$PWD":/repo -w /repo python:3.14-slim sh -c "pip install --quiet --require-hashes -r requirements-piptools.lock && pip-compile --generate-hashes --output-file=requirements.lock pyproject.toml"`
+1. Add to `pyproject.toml` (root) — runtime deps to `dependencies`, test/lint/debug-only deps to `[project.optional-dependencies] dev` (issue #1379: the prod image installs the runtime closure only)
+2. Regenerate BOTH locks together (same index snapshot, so shared pins agree): `docker run --rm -v "$PWD":/repo -w /repo python:3.14-slim sh -c "pip install --quiet --require-hashes -r requirements-piptools.lock && pip-compile --generate-hashes --output-file=requirements.lock pyproject.toml && pip-compile --generate-hashes --extra dev --output-file=requirements-dev.lock pyproject.toml"`
 3. Rebuild and restart: `docker compose -f docker-compose.dev.yml up --build api`
 
 **Merging main into a long-lived branch:** Two specific gotchas:

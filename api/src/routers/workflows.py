@@ -303,7 +303,7 @@ async def list_workflows(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error retrieving workflows: {str(e)}", exc_info=True)
+        logger.exception(f"Error retrieving workflows: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve workflows",
@@ -473,7 +473,7 @@ async def get_workflow_usage_stats(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error retrieving workflow usage stats: {str(e)}", exc_info=True)
+        logger.exception(f"Error retrieving workflow usage stats: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve workflow usage stats",
@@ -484,7 +484,7 @@ async def get_workflow_usage_stats(
     "/execute",
     response_model=WorkflowExecutionResponse,
     summary="Execute a workflow, data provider, or script",
-    description="Execute a workflow or data provider by ID. For data providers, returns options list in result field. Requires platform admin, API key, or access via form/app/integration.",
+    description="Execute a workflow or data provider by ID. For data providers, returns options list in result field. Inline code requires the Platform-wide Execute Code permission.",
 **operation_route("workflows.execute"))
 async def execute_workflow(
     request: WorkflowExecutionRequest,
@@ -495,7 +495,7 @@ async def execute_workflow(
     """Execute a workflow, data provider, or inline script.
 
     Authorization:
-    - Inline code execution requires platform admin
+    - Inline code execution requires the Platform-wide Execute Code permission
     - Workflow/data provider execution requires one of:
       - Platform admin
       - User has access to a form using this workflow
@@ -629,7 +629,7 @@ async def validate_workflow(
             detail=f"Invalid request: {str(e)}",
         )
     except Exception as e:
-        logger.error(f"Error validating workflow: {str(e)}", exc_info=True)
+        logger.exception(f"Error validating workflow: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to validate workflow",
@@ -1212,7 +1212,7 @@ async def update_workflow(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error updating workflow: {str(e)}", exc_info=True)
+        logger.exception(f"Error updating workflow: {str(e)}", exc_info=True)
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1286,7 +1286,7 @@ async def list_orphaned_workflows(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error listing orphaned workflows: {e}", exc_info=True)
+        logger.exception(f"Error listing orphaned workflows: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to list orphaned workflows",
@@ -1346,7 +1346,7 @@ async def get_compatible_replacements(
             detail=str(e),
         )
     except Exception as e:
-        logger.error(f"Error getting compatible replacements: {e}", exc_info=True)
+        logger.exception(f"Error getting compatible replacements: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to get compatible replacements",
@@ -1412,7 +1412,7 @@ async def replace_workflow(
             detail=str(e),
         )
     except Exception as e:
-        logger.error(f"Error replacing workflow: {e}", exc_info=True)
+        logger.exception(f"Error replacing workflow: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to replace workflow",
@@ -1462,7 +1462,7 @@ async def remap_workflow_references(
             detail=str(e),
         )
     except Exception as e:
-        logger.error(f"Error remapping workflow references: {e}", exc_info=True)
+        logger.exception(f"Error remapping workflow references: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to remap workflow references",
@@ -1502,25 +1502,17 @@ async def recreate_workflow_file(
     try:
         orphan_service = WorkflowOrphanService(db)
 
-        # Get the workflow and mark as not orphaned
-        workflow = await orphan_service.recreate_file(workflow_id)
-
-        # Load code via Redis→S3 cache chain
-        from src.core.module_cache import get_module
-        cached = await get_module(workflow.path)
-        code_content = cached["content"] if cached else None
-
-        if not code_content:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Workflow has no stored code to recreate",
-            )
+        prepared = await orphan_service.recreate_file(workflow_id)
+        workflow = prepared.workflow
         file_storage = FileStorageService(db)
-        await file_storage.write_file(
+        written = await file_storage.write_file(
             path=workflow.path,
-            content=code_content.encode("utf-8"),
+            content=prepared.content,
             updated_by=user.email,
         )
+        if written.pending_deactivations:
+            raise HTTPException(status_code=409, detail="Workflow recreation requires deactivation confirmation")
+        await db.commit()
 
         logger.info(f"Recreated file for workflow {log_safe(workflow_id)} at {log_safe(workflow.path)}")
 
@@ -1538,7 +1530,7 @@ async def recreate_workflow_file(
             detail=str(e),
         )
     except Exception as e:
-        logger.error(f"Error recreating workflow file: {e}", exc_info=True)
+        logger.exception(f"Error recreating workflow file: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to recreate workflow file",
@@ -1598,7 +1590,7 @@ async def deactivate_workflow(
             detail=str(e),
         )
     except Exception as e:
-        logger.error(f"Error deactivating workflow: {e}", exc_info=True)
+        logger.exception(f"Error deactivating workflow: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to deactivate workflow",

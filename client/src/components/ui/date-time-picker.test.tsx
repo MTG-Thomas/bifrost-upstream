@@ -21,6 +21,7 @@ describe("DateTimePicker", () => {
 		});
 		expect(trigger.textContent).toMatch(/2026/);
 		expect(trigger.textContent).toMatch(/9:30\s*AM/i);
+		expect(trigger).toHaveAccessibleDescription("Apr 25, 2026 · 9:30 AM");
 	});
 
 	it("opens the popover with a calendar when the trigger is clicked", async () => {
@@ -29,6 +30,9 @@ describe("DateTimePicker", () => {
 		await user.click(
 			screen.getByRole("button", { name: /pick date and time/i }),
 		);
+		expect(
+			screen.queryByRole("button", { name: "Clear Date & Time" }),
+		).not.toBeInTheDocument();
 		// react-day-picker renders a grid role for the calendar
 		expect(await screen.findByRole("grid")).toBeInTheDocument();
 	});
@@ -152,3 +156,34 @@ describe("DateTimePicker", () => {
 		).toBe(true);
 	});
 });
+
+it.each(["minimum", "maximum"])(
+	"clamps time edits across the %s boundary day",
+	async (boundary) => {
+		const user = userEvent.setup();
+		const onChange = vi.fn();
+		const limit = new Date(2026, 3, 15, 12, 0);
+		const value = new Date(
+			2026,
+			3,
+			boundary === "minimum" ? 14 : 16,
+			10,
+			0,
+		);
+		render(
+			<DateTimePicker
+				value={value}
+				onChange={onChange}
+				minDate={boundary === "minimum" ? limit : undefined}
+				maxDate={boundary === "maximum" ? limit : undefined}
+			/>,
+		);
+		await user.click(
+			screen.getByRole("button", { name: /pick date and time/i }),
+		);
+		fireEvent.change(await screen.findByLabelText(/^time$/i), {
+			target: { value: "09:15" },
+		});
+		expect(onChange).toHaveBeenCalledWith(limit);
+	},
+);

@@ -6,6 +6,7 @@ Tests OAuth configuration and authorization endpoints.
 """
 
 import asyncio
+import json
 
 import pytest
 import pytest_asyncio
@@ -159,6 +160,92 @@ class TestIntegrationsCRUD:
         assert response.status_code == 200, f"Update failed: {response.text}"
         updated = response.json()
         assert updated["name"] == new_name
+
+    def test_notes_persist_export_import_and_clear(self, e2e_client, platform_admin):
+        """Notes round-trip through the live REST and archive surfaces."""
+        name = f"e2e_notes_{uuid4().hex[:8]}"
+        created = e2e_client.post(
+            "/api/integrations",
+            headers=platform_admin.headers,
+            json={"name": name, "notes": "## Prepare\n\nCreate an API key."},
+        )
+        assert created.status_code == 201, created.text
+        integration = created.json()
+        try:
+            assert integration["notes"] == "## Prepare\n\nCreate an API key."
+
+            exported = e2e_client.post(
+                "/api/export-import/export/integrations",
+                headers=platform_admin.headers,
+                json={"ids": [integration["id"]]},
+            )
+            assert exported.status_code == 200, exported.text
+            archive = exported.json()
+            assert len(archive["items"]) == 1
+            assert archive["items"][0]["name"] == name
+            assert archive["items"][0]["notes"] == "## Prepare\n\nCreate an API key."
+
+            cleared = e2e_client.put(
+                f"/api/integrations/{integration['id']}",
+                headers=platform_admin.headers,
+                json={"notes": None},
+            )
+            assert cleared.status_code == 200, cleared.text
+            assert cleared.json()["notes"] is None
+
+            multipart_headers = {
+                key: value
+                for key, value in platform_admin.headers.items()
+                if key.lower() != "content-type"
+            }
+            restored = e2e_client.post(
+                "/api/export-import/import/integrations",
+                headers=multipart_headers,
+                data={"replace_existing": "true"},
+                files={"file": ("integrations.json", exported.content, "application/json")},
+            )
+            assert restored.status_code == 200, restored.text
+            fetched = e2e_client.get(
+                f"/api/integrations/{integration['id']}", headers=platform_admin.headers
+            )
+            assert fetched.status_code == 200, fetched.text
+            assert fetched.json()["notes"] == "## Prepare\n\nCreate an API key."
+
+            # An archive from an older server must not erase current notes.
+            archive["items"][0].pop("notes")
+            legacy_import = e2e_client.post(
+                "/api/export-import/import/integrations",
+                headers=multipart_headers,
+                data={"replace_existing": "true"},
+                files={"file": ("legacy.json", json.dumps(archive), "application/json")},
+            )
+            assert legacy_import.status_code == 200, legacy_import.text
+            assert legacy_import.json()["updated"] == 1
+            assert legacy_import.json()["errors"] == 0
+            retained = e2e_client.get(
+                f"/api/integrations/{integration['id']}", headers=platform_admin.headers
+            )
+            assert retained.status_code == 200, retained.text
+            assert retained.json()["notes"] == "## Prepare\n\nCreate an API key."
+
+            archive["items"][0]["notes"] = None
+            cleared_import = e2e_client.post(
+                "/api/export-import/import/integrations",
+                headers=multipart_headers,
+                data={"replace_existing": "true"},
+                files={"file": ("clear.json", json.dumps(archive), "application/json")},
+            )
+            assert cleared_import.status_code == 200, cleared_import.text
+            assert cleared_import.json()["updated"] == 1
+            cleared_again = e2e_client.get(
+                f"/api/integrations/{integration['id']}", headers=platform_admin.headers
+            )
+            assert cleared_again.status_code == 200, cleared_again.text
+            assert cleared_again.json()["notes"] is None
+        finally:
+            e2e_client.delete(
+                f"/api/integrations/{integration['id']}", headers=platform_admin.headers
+            )
 
     def test_delete_integration(self, e2e_client, platform_admin):
         """Platform admin can soft-delete an integration."""
@@ -1619,6 +1706,206 @@ class TestIntegrationConfigSecrets:
             e2e_client.delete(f"{base}/mappings/{mapping['id']}", headers=platform_admin.headers)
 
 
+    def test_sdk_upsert_mapping_stores_secret_encrypted_and_masks_reads(
+        self,
+        e2e_client,
+        platform_admin,
+        integration_with_secret_schema,
+        org1,
+        sdk_secret_reader,
+        async_session_factory,
+    ):
+        """SDK ``upsert_mapping`` saves through the encrypting path on create
+        and update; callers without ``secrets.read`` see the placeholder."""
+        integration = integration_with_secret_schema
+        created_secret = f"sdk-create-{uuid4().hex}"
+        rotated_secret = f"sdk-rotate-{uuid4().hex}"
+
+        def upsert(secret: str):
+            response = e2e_client.post(
+                "/api/sdk/integrations/upsert_mapping",
+                headers=platform_admin.headers,
+                json={
+                    "name": integration["name"],
+                    "scope": str(org1["id"]),
+                    "entity_id": "sdk-secret",
+                    "config": {"api_key": secret},
+                },
+            )
+            assert response.status_code == 200, response.text
+            return response
+
+        created = upsert(created_secret)
+        try:
+            # Platform Admin lacks secrets.read: the echo is masked.
+            assert created.json()["config"]["api_key"] == "[SECRET]"
+            assert created_secret not in created.text
+            (row,) = asyncio.run(
+                _stored_configs(async_session_factory, integration["id"], "api_key", org1["id"])
+            )
+            assert row.config_type.value == "secret"
+            assert row.value["value"] != created_secret
+
+            rotated = upsert(rotated_secret)
+            assert rotated_secret not in rotated.text
+            (row,) = asyncio.run(
+                _stored_configs(async_session_factory, integration["id"], "api_key", org1["id"])
+            )
+            assert row.config_type.value == "secret"
+            assert row.value["value"] != rotated_secret
+
+            masked = _sdk_get(e2e_client, platform_admin.headers, name=integration["name"], org_id=org1["id"])
+            assert masked.status_code == 200, masked.text
+            assert masked.json()["config"]["api_key"] == "[SECRET]"
+
+            revealed = _sdk_get(e2e_client, sdk_secret_reader, name=integration["name"], org_id=org1["id"])
+            assert revealed.status_code == 200, revealed.text
+            assert revealed.json()["config"]["api_key"] == rotated_secret
+        finally:
+            e2e_client.post(
+                "/api/sdk/integrations/delete_mapping",
+                headers=platform_admin.headers,
+                json={"name": integration["name"], "scope": str(org1["id"])},
+            )
+
+    def test_changing_a_field_to_secret_encrypts_saved_values(
+        self,
+        e2e_client,
+        platform_admin,
+        org1,
+        sdk_secret_reader,
+        async_session_factory,
+    ):
+        """Retyping a schema field to secret encrypts values already saved;
+        retyping it back is refused while a secret value is stored."""
+        name = f"e2e_retype_{uuid4().hex[:8]}"
+        created = e2e_client.post(
+            "/api/integrations",
+            headers=platform_admin.headers,
+            json={"name": name, "config_schema": [{"key": "api_key", "type": "string"}]},
+        )
+        assert created.status_code == 201, created.text
+        integration = created.json()
+        base = f"/api/integrations/{integration['id']}"
+        default_value = f"retype-default-{uuid4().hex}"
+        org_value = f"retype-org-{uuid4().hex}"
+        try:
+            e2e_client.put(
+                f"{base}/config",
+                headers=platform_admin.headers,
+                json={"config": {"api_key": default_value}},
+            )
+            mapping = e2e_client.post(
+                f"{base}/mappings",
+                headers=platform_admin.headers,
+                json={
+                    "organization_id": str(org1["id"]),
+                    "entity_id": "retype",
+                    "config": {"api_key": org_value},
+                },
+            )
+            assert mapping.status_code == 201, mapping.text
+
+            retyped = e2e_client.put(
+                base,
+                headers=platform_admin.headers,
+                json={"config_schema": [{"key": "api_key", "type": "secret"}]},
+            )
+            assert retyped.status_code == 200, retyped.text
+
+            rows = asyncio.run(_stored_configs(async_session_factory, integration["id"], "api_key"))
+            assert len(rows) == 2
+            for row in rows:
+                assert row.config_type.value == "secret"
+                assert row.value["value"] not in (default_value, org_value)
+
+            detail = e2e_client.get(base, headers=platform_admin.headers)
+            assert default_value not in detail.text and org_value not in detail.text
+            sdk = _sdk_get(e2e_client, sdk_secret_reader, name=name, org_id=org1["id"])
+            assert sdk.json()["config"]["api_key"] == org_value
+
+            back = e2e_client.put(
+                base,
+                headers=platform_admin.headers,
+                json={"config_schema": [{"key": "api_key", "type": "string"}]},
+            )
+            assert back.status_code == 400, back.text
+            assert default_value not in back.text and org_value not in back.text
+        finally:
+            e2e_client.delete(base, headers=platform_admin.headers)
+
+
+    def test_generic_config_writes_keep_integration_rows_consistent(
+        self,
+        e2e_client,
+        platform_admin,
+        integration_with_secret_schema,
+        org1,
+        async_session_factory,
+    ):
+        """``PUT /api/config/{id}`` cannot give an integration value a type other
+        than its schema field's, and SDK ``configs.set`` of the same key writes a
+        separate plain config instead of the integration's row."""
+        integration = integration_with_secret_schema
+        base = f"/api/integrations/{integration['id']}"
+        secret = f"integration-secret-{uuid4().hex}"
+        mapping = e2e_client.post(
+            f"{base}/mappings",
+            headers=platform_admin.headers,
+            json={
+                "organization_id": str(org1["id"]),
+                "entity_id": "generic-write",
+                "config": {"api_key": secret},
+            },
+        )
+        assert mapping.status_code == 201, mapping.text
+        try:
+            (row,) = asyncio.run(
+                _stored_configs(async_session_factory, integration["id"], "api_key", org1["id"])
+            )
+            stored = row.value["value"]
+
+            retype = e2e_client.put(
+                f"/api/config/{row.id}",
+                headers=platform_admin.headers,
+                json={"type": "string", "value": "now-plain"},
+            )
+            assert retype.status_code == 400, retype.text
+
+            sdk_set = e2e_client.post(
+                "/api/sdk/config/set",
+                headers=platform_admin.headers,
+                json={"key": "api_key", "value": "plain-config", "scope": str(org1["id"])},
+            )
+            assert sdk_set.status_code == 204, sdk_set.text
+
+            (row,) = asyncio.run(
+                _stored_configs(async_session_factory, integration["id"], "api_key", org1["id"])
+            )
+            assert row.config_type.value == "secret"
+            assert row.value["value"] == stored
+        finally:
+            e2e_client.delete(
+                f"{base}/mappings/{mapping.json()['id']}", headers=platform_admin.headers
+            )
+            e2e_client.post(
+                "/api/sdk/config/delete",
+                headers=platform_admin.headers,
+                json={"key": "api_key", "scope": str(org1["id"])},
+            )
+
+
+async def _stored_configs(session_factory, integration_id: str, key: str, org_id=None):
+    """The stored config rows for one integration key (org row only when given)."""
+    async with session_factory() as session:
+        query = select(Config).where(
+            Config.integration_id == UUID(integration_id), Config.key == key
+        )
+        if org_id is not None:
+            query = query.where(Config.organization_id == UUID(str(org_id)))
+        return list((await session.execute(query)).scalars().all())
+
+
 @pytest.mark.e2e
 class TestIntegrationsAuthorization:
     """Test authorization for integrations endpoints."""
@@ -1977,3 +2264,24 @@ class TestBatchMappingUpsert:
         assert response.status_code == 404, (
             f"Expected 404 for nonexistent integration, got {response.status_code}: {response.text}"
         )
+
+
+@pytest.mark.e2e
+def test_integration_choice_labels_persist_on_create_and_update(e2e_client, platform_admin):
+    name = f"Choice metadata {uuid4().hex}"
+    schema = {"key": "region", "type": "string", "options": ["eu"], "option_labels": {"eu": "Europe"}}
+    response = e2e_client.post("/api/integrations", headers=platform_admin.headers, json={"name": name, "config_schema": [schema]})
+    assert response.status_code == 201, response.text
+    integration_id = response.json()["id"]
+    try:
+        created = e2e_client.get(f"/api/integrations/{integration_id}", headers=platform_admin.headers)
+        assert created.json()["config_schema"][0]["option_labels"] == {"eu": "Europe"}
+        schema["option_labels"] = {"eu": "European Union"}
+        updated = e2e_client.put(f"/api/integrations/{integration_id}", headers=platform_admin.headers, json={"config_schema": [schema]})
+        assert updated.status_code == 200, updated.text
+        read = e2e_client.get(f"/api/integrations/{integration_id}", headers=platform_admin.headers)
+        assert read.json()["config_schema"][0]["options"] == ["eu"]
+        assert read.json()["config_schema"][0]["option_labels"] == {"eu": "European Union"}
+    finally:
+        deleted = e2e_client.delete(f"/api/integrations/{integration_id}", headers=platform_admin.headers)
+        assert deleted.status_code in {200, 204}, deleted.text

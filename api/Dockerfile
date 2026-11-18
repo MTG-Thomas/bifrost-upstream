@@ -3,13 +3,13 @@
 # Multi-stage build for efficient image size
 
 # Use the same supported Node runtime for every App build surface.
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS node-toolchain
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS node-toolchain
 
 # =============================================================================
 # Stage 1: Builder
 # =============================================================================
 # Python security patch: interpreter denylist and patched bundled pip.
-FROM python:3.15.2-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 AS builder
+FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 AS builder
 
 WORKDIR /app
 
@@ -25,9 +25,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # pyproject.toml is the human-edited source; regen instructions are in
 # the header of requirements.lock.
 #
+# requirements.lock is the runtime-only closure: test/debug packages live
+# in requirements-dev.lock (installed by dev/CI images) and never ship in this
+# production image. See [project.optional-dependencies] in pyproject.toml
+# (issue #1379).
+#
 # We deliberately do NOT run `pip install --upgrade pip` first — Scorecard
-# flags unpinned `pip install <pkg>` invocations, and the pip shipped in
-# python:3.15.2-slim already supports --require-hashes (>= 8.0).
+# flags unpinned `pip install <pkg>` invocations. The bundled pip already
+# supports --require-hashes (>= 8.0).
 COPY pyproject.toml requirements.lock ./
 RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 
@@ -35,7 +40,7 @@ RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 # Stage 2: Runtime
 # =============================================================================
 # Python security patch: interpreter denylist and patched bundled pip.
-FROM python:3.15.2-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928
+FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928
 
 WORKDIR /app
 ARG BIFROST_VERSION=unknown
@@ -43,12 +48,12 @@ ARG BIFROST_VERSION=unknown
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
+    libfribidi0 \
     libcairo2 \
     curl \
     gosu \
     libnss-wrapper \
     git \
-    awscli \
     libjemalloc2 \
     libatomic1 \
     libstdc++6 \
@@ -91,6 +96,7 @@ COPY api/alembic.ini /app/
 COPY api/bifrost/ /app/bifrost/
 COPY api/bifrost.py /app/
 COPY api/scripts/ /app/scripts/
+COPY --chmod=644 LICENSE /app/LICENSE
 COPY assets/ /app/assets/
 RUN chmod -R a+rX /app/assets
 
@@ -109,11 +115,11 @@ RUN python -m compileall -f --invalidation-mode checked-hash -q /app/src /app/sh
 COPY api/src/services/app_compiler/package.json api/src/services/app_compiler/package-lock.json* /app/src/services/app_compiler/
 COPY api/src/services/app_compiler/compile.js /app/src/services/app_compiler/
 COPY api/src/services/app_compiler/tailwind.js /app/src/services/app_compiler/
-RUN cd /app/src/services/app_compiler && npm ci --omit=dev
+RUN cd /app/src/services/app_compiler && npm ci --omit=dev && npm cache clean --force
 
 # Install app bundler Node.js dependencies (esbuild)
 COPY api/src/services/app_bundler/package.json api/src/services/app_bundler/package-lock.json* /app/src/services/app_bundler/
-RUN cd /app/src/services/app_bundler && npm ci --omit=dev
+RUN cd /app/src/services/app_bundler && npm ci --omit=dev && npm cache clean --force
 
 # SDK package builder (esbuild) + the v2 `bifrost` SDK source it bundles. The
 # SDK source of truth lives in client/src/lib/app-sdk; it is copied here so
@@ -121,7 +127,7 @@ RUN cd /app/src/services/app_bundler && npm ci --omit=dev
 # the client/ tree at runtime. A unit test enforces this file list stays in sync.
 COPY api/src/services/sdk_package/package.json api/src/services/sdk_package/package-lock.json /app/src/services/sdk_package/
 COPY api/src/services/sdk_package/build_sdk.js api/src/services/sdk_package/build_types.js api/src/services/sdk_package/tsconfig.types.json /app/src/services/sdk_package/
-RUN cd /app/src/services/sdk_package && npm ci --omit=dev
+RUN cd /app/src/services/sdk_package && npm ci --omit=dev && npm cache clean --force
 COPY client/src/lib/app-sdk/provider.tsx \
      client/src/lib/app-sdk/tables.ts \
      client/src/lib/app-sdk/transport.ts \

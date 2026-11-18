@@ -13,6 +13,47 @@ import { FormPreview } from "./FormPreview";
 import type { FormField } from "@/lib/client-types";
 
 describe("FormPreview", () => {
+	it("renders a disabled shared datetime control with the local default", () => {
+		renderWithProviders(
+			<FormPreview
+				formName="F"
+				formDescription=""
+				fields={[
+					{
+						name: "appointment",
+						label: "Appointment",
+						type: "datetime",
+						default_value: "2026-11-10T09:00",
+					},
+				]}
+			/>,
+		);
+		const control = screen.getByLabelText("Appointment");
+		expect(control).toHaveTextContent("Nov 10, 2026 · 9:00 AM");
+		expect(control).toBeDisabled();
+	});
+
+	it("renders a disabled date control with its default calendar date", () => {
+		renderWithProviders(
+			<FormPreview
+				formName="F"
+				formDescription=""
+				fields={[
+					{
+						name: "start_date",
+						label: "Start Date",
+						type: "date",
+						required: false,
+						default_value: "2026-11-10",
+					},
+				]}
+			/>,
+		);
+		const input = screen.getByLabelText("Start Date");
+		expect(input).toHaveTextContent("Nov 10, 2026");
+		expect(input).toBeDisabled();
+	});
+
 	it("renders the form title and description", () => {
 		renderWithProviders(
 			<FormPreview
@@ -94,7 +135,12 @@ describe("FormPreview", () => {
 
 	it("renders a disabled checkbox with the label when type=checkbox", () => {
 		const fields: FormField[] = [
-			{ name: "agree", label: "I agree", type: "checkbox", required: false },
+			{
+				name: "agree",
+				label: "I agree",
+				type: "checkbox",
+				required: false,
+			},
 		];
 		renderWithProviders(
 			<FormPreview formName="F" formDescription="" fields={fields} />,
@@ -132,5 +178,44 @@ describe("FormPreview", () => {
 
 		const submit = screen.getByRole("button", { name: /submit/i });
 		expect(submit).toBeDisabled();
+	});
+
+	it("renders opted-in sections and desktop column widths", () => {
+		const fields: FormField[] = [
+			{ name: "first", label: "First", type: "text", required: false },
+			{ name: "last", label: "Last", type: "text", required: false },
+		];
+		renderWithProviders(
+			<FormPreview
+				formName="F"
+				formDescription=""
+				fields={fields}
+				layout={{
+					sections: [
+						{
+							title: "Your Details",
+							description: "Tell us who you are",
+							rows: [
+								{
+									columns: [
+										{ field: "first", width: 4 },
+										{ field: "last", width: 8 },
+									],
+								},
+							],
+						},
+					],
+				}}
+			/>,
+		);
+
+		expect(screen.getByText("Your Details")).toBeInTheDocument();
+		expect(screen.getByText("Tell us who you are")).toBeInTheDocument();
+		expect(
+			screen.getByText("First").closest('[class~="md:col-span-4"]'),
+		).toHaveClass("md:col-span-4");
+		expect(
+			screen.getByText("Last").closest('[class~="md:col-span-8"]'),
+		).toHaveClass("md:col-span-8");
 	});
 });
