@@ -46,14 +46,30 @@ async def test_external_capacity_is_the_only_selected_worker_provider(monkeypatc
         await asyncio.gather(*tasks)
 
 
-async def test_partial_external_configuration_does_not_fall_back_to_kubernetes(monkeypatch):
+@pytest.mark.parametrize(("url", "token", "manual"), [
+    ("https://capacity.invalid", None, False),
+    ("https://capacity.invalid", None, True),
+    (None, SecretStr("x" * 40), False),
+])
+async def test_partial_external_configuration_does_not_fall_back_to_kubernetes(monkeypatch, url, token, manual):
     permission = AsyncMock(return_value=True)
     monkeypatch.setattr(kubernetes_control, "may_manage_jobs", permission)
     with pytest.raises(ValueError, match="both endpoint"):
         await kubernetes_control.start_kubernetes_loops(asyncio.Event(), SimpleNamespace(
-            worker_capacity_url="https://capacity.invalid", worker_capacity_token=None,
+            worker_capacity_url=url, worker_capacity_token=token, cloudflare_worker_hello_enabled=manual,
         ))
     permission.assert_not_awaited()
+
+
+async def test_manual_cloudflare_enrollment_does_not_start_an_external_provider(monkeypatch):
+    permission = AsyncMock(return_value=False)
+    monkeypatch.setattr(kubernetes_control, "may_manage_jobs", permission)
+    settings = SimpleNamespace(
+        worker_capacity_url=None, worker_capacity_token=SecretStr("x" * 40),
+        cloudflare_worker_hello_enabled=True,
+    )
+    assert await kubernetes_control.start_kubernetes_loops(asyncio.Event(), settings) == []
+    permission.assert_awaited_once_with(settings)
 
 
 class _Client:

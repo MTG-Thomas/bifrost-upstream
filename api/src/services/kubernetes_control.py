@@ -71,9 +71,12 @@ async def start_kubernetes_loops(
     capacity_url = getattr(settings, "worker_capacity_url", None)
     capacity_token = getattr(settings, "worker_capacity_token", None)
     token = capacity_token.get_secret_value() if capacity_token is not None else None
-    if capacity_url or token:
-        if not capacity_url or not token:
-            raise ValueError("External worker capacity requires both endpoint and dedicated token")
+    # Manual Cloudflare enrollment uses the dedicated token for control-key
+    # derivation independently of the external capacity provider.
+    manual_enrollment = getattr(settings, "cloudflare_worker_hello_enabled", False)
+    if (capacity_url and not token) or (token and not capacity_url and not manual_enrollment):
+        raise ValueError("External worker capacity requires both endpoint and dedicated token")
+    if capacity_url and token:
         from src.services.worker_pool.external_client import ExternalCapacityClient
         from src.services.worker_pool.external_controller import external_worker_pool_loop
 
