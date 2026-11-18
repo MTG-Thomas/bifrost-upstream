@@ -17,8 +17,12 @@ from tests.unit.worker.remote.test_opaque_workflow_lifecycle import (
 from tests.unit.worker.remote.test_opaque_workflow_lifecycle import (
     opaque_executor as _opaque_executor,
 )
+from tests.unit.worker.remote.test_opaque_workflow_lifecycle import (
+    reviewed_workspace as _reviewed_workspace,
+)
 
 opaque_executor = _opaque_executor
+reviewed_workspace = _reviewed_workspace
 
 
 @pytest.mark.asyncio

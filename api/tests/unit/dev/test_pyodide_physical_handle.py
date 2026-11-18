@@ -16,6 +16,10 @@ from src.worker.remote.ownership import RemoteOwnerLease
 from src.worker.remote.protocol import Hello, ProtocolError, sign_hello
 from src.worker.remote.remote_pool import ThinRemoteProcessPool
 from tests.unit.dev.test_thin_remote_pool import _active, _Transport
+from tests.unit.services.execution.test_cloudflare_eligibility import _prepare
+from tests.unit.services.execution.test_cloudflare_eligibility import (
+    review as _workspace_review,
+)
 from tests.unit.worker.remote.test_opaque_workflow_lifecycle import (
     inventory,
     workflow_entry,
@@ -23,13 +27,23 @@ from tests.unit.worker.remote.test_opaque_workflow_lifecycle import (
 from tests.unit.worker.remote.test_opaque_workflow_lifecycle import (
     opaque_executor as _opaque_executor,
 )
+from tests.unit.worker.remote.test_opaque_workflow_lifecycle import (
+    reviewed_workspace as _reviewed_workspace,
+)
 
 PROFILE = "cloudflare-python-v1"
 opaque_executor = _opaque_executor
+reviewed_workspace = _reviewed_workspace
+workspace_review = _workspace_review
 
 
 @pytest.fixture
-async def opaque_dispatch(monkeypatch):
+async def opaque_dispatch(monkeypatch, workspace_review):
+    approval, _, _ = workspace_review()
+    workspace = await _prepare(approval)
+    assert workspace is not None
+    workflow_id = str(approval.workflow_id)
+
     transport = Bridge(
         Mock(), {"hostname": "opaque", "runtime_profile": PROFILE},
         RemoteOwnerLease(uuid4(), uuid4(), uuid4(), 1),
@@ -48,9 +62,19 @@ async def opaque_dispatch(monkeypatch):
     async def dispatch(ack):
         transport.request.return_value = ack
         transport.admission.hold("opaque-run", 1024, workflow=True)
+        active_execution = _active("opaque-run")
+        active_execution["workflow_id"] = workflow_id
+        context = {
+            "timeout_seconds": 30,
+            "workflow_id": workflow_id,
+            "file_path": approval.entry_path,
+            "function_name": approval.function_name,
+            "content_hash": approval.entry_sha256,
+            "tags": ["workflow"],
+        }
         await pool.route_execution(
-            'opaque-run', {'timeout_seconds': 30}, _active('opaque-run'),
-            credential_route=pool.credential_route(),
+            "opaque-run", context, active_execution,
+            credential_route=pool.credential_route(), cloudflare_revision=workspace.revision,
         )
         route = transport.request.await_args.args[1]['route_id']
         return pool, transport, callback, route

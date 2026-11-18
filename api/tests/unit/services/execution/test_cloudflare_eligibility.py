@@ -109,8 +109,8 @@ async def test_enqueue_legacy_pending_without_script_name_with_empty_approvals(r
     pending = PendingExecution(**record)  # type: ignore[typeddict-item]
     lookup = AsyncMock()
     monkeypatch.setattr(service, "get_workflow_for_execution", lookup)
-    db = Mock(scalar=AsyncMock(return_value="normal"), execute=AsyncMock())
-    db.execute.return_value.one_or_none.return_value = None
+    result = Mock(one_or_none=Mock(return_value=None))
+    db = Mock(scalar=AsyncMock(return_value="normal"), execute=AsyncMock(return_value=result))
 
     await workflow_dispatch.stage_workflow_run(
         db, pending, {"workflow_id": pending["workflow_id"]}, record_exists=True,
