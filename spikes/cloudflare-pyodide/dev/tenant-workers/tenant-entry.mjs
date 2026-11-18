@@ -167,6 +167,21 @@ export default {
       return Response.json(await ctx.exports.TenantHost.getByName(workerId).inventory({tenantId: workerId}));
     }
 
+    if (body.action === 'exercise') {
+      // Diagnostic: one keep-warm ping with a dry engine attempt, as the host's
+      // alarm runs it. No attempt, token or workflow data.
+      if (typeof TenantHost !== 'function') {
+        return json(502, {phase: 'engine-unavailable', tenant_worker_id: workerId});
+      }
+      try {
+        const timings = await ctx.exports.TenantHost.getByName(workerId).exercise({tenantId: workerId});
+        return Response.json({tenant_worker_id: workerId, timings});
+      } catch (error) {
+        return json(502, {phase: 'dynamic-runtime', error_type: error?.name ?? 'Error',
+          ...runtimeErrorClass(error), tenant_worker_id: workerId});
+      }
+    }
+
     if (body.action === 'warm') {
       // Boot the tenant's engine child ahead of an attempt. Carries no
       // attempt, token or workflow data.

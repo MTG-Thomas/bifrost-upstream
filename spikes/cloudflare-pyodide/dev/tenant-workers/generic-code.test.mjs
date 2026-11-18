@@ -52,7 +52,8 @@ test('engine child re-establishes attempt-scoped SDK state at every attempt', ()
   // the previous attempt's run handle and its SDK/module calls are refused.
   assert.ok(ENGINE_PYTHON.includes('from bifrost.client import _install_cached_access_token'));
   const handoff = ENGINE_PYTHON.indexOf('_install_cached_access_token(body["api_url"], token)');
-  const run = ENGINE_PYTHON.indexOf('await run_authorized_attempt');
+  const run = ENGINE_PYTHON.indexOf('await run_authorized_attempt(\n            body["execution_id"]');
+  assert.ok(run > 0, 'the attempt run is present');
   assert.ok(handoff > 0, 'credential handoff present');
   assert.ok(handoff < run, 'handoff happens before the engine run starts');
 });
@@ -93,4 +94,18 @@ test('engine child: no function-local import shadows a module-level one', () => 
   const moduleLevel = new Set(lines.filter((line) => /^(import|from)\s/.test(line)).flatMap(importedNames));
   const local = lines.filter((line) => /^\s+(import|from)\s/.test(line)).flatMap(importedNames);
   assert.deepEqual(local.filter((name) => moduleLevel.has(name)), []);
+});
+
+test('keep-warm exercise: a dry attempt under the given handle, never attempt data', () => {
+  const start = ENGINE_PYTHON.indexOf('async def _exercise(handle):');
+  const exercise = ENGINE_PYTHON.slice(start, ENGINE_PYTHON.indexOf('def _prime(names):'));
+  assert.ok(start > 0);
+  assert.ok(exercise.includes('_install_cached_access_token(api_url, handle)'));
+  assert.ok(exercise.includes('"engine_token": handle'));
+  assert.ok(exercise.includes('api_url = "https://test-api.invalid"'),
+    'only the virtual origin the outbound gateway owns');
+  assert.ok(!exercise.includes('body['), 'no attempt data reaches the dry run');
+  // The real attempt always installs its own credential first, so the dry
+  // run's handle never survives into it.
+  assert.ok(ENGINE_PYTHON.includes('if token:\n            _install_cached_access_token(body["api_url"], token)'));
 });

@@ -181,15 +181,38 @@ export class TenantHost extends DurableObject {
     }
   }
 
+  // Runs fn with no attempt in flight on this host, and holds attempts back
+  // until it finishes: the child is single-threaded and the engine's SDK
+  // credential is process-wide, so nothing that awaits inside the child may
+  // interleave with an attempt.
+  async #exclusive(fn) {
+    const previous = this.#tail;
+    let release;
+    this.#tail = new Promise((resolve) => { release = resolve; });
+    await previous;
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
+
   // Boots (or touches) the child with no attempt, token or tenant data.
-  async #ping(tenantId) {
+  // With exercise, the child also runs one dry engine attempt under a handle
+  // this host never registered: TenantApi refuses its first SDK call (401,
+  // "unknown handle") before anything reaches the API. That keeps the engine's
+  // pre-first-call path hot between real attempts. Callers must hold
+  // #exclusive when exercising.
+  async #ping(tenantId, {exercise = false} = {}) {
     const worker = await this.#engine(tenantId);
     const modules = await this.#primeList();
     const mark = Date.now();
     const response = await worker.getEntrypoint().fetch(new Request('https://attempt.invalid/', {
-      method: 'POST', body: JSON.stringify({action: 'ping', modules}),
+      method: 'POST', body: JSON.stringify({action: 'ping', modules,
+        ...(exercise ? {exercise: {handle: `run_${crypto.randomUUID()}`}} : {})}),
     }));
-    const {first_request: firstRequest, primed, prime_skipped: primeSkipped} = await response.json();
+    const {first_request: firstRequest, primed, prime_skipped: primeSkipped,
+      exercise: exercised} = await response.json();
     this.#childReady = true;
     // Keep the connection to the API origin warm too: a fresh child's first
     // SDK calls measured ~2x slower (104-126 ms vs ~50 ms). Unauthenticated
@@ -199,7 +222,13 @@ export class TenantHost extends DurableObject {
       .then((r) => { r.body?.cancel(); return r.status; }, () => 0);
     return {child_ms: originMark - mark, first_request: firstRequest,
       prime_listed: modules.length, primed, prime_skipped: primeSkipped,
+      ...(exercise ? {exercise: exercised ?? null} : {}),
       origin_status: origin, origin_ms: Date.now() - originMark};
+  }
+
+  // Diagnostic: one exercising ping on demand, serialized like the alarm's.
+  async exercise({tenantId}) {
+    return this.#exclusive(() => this.#ping(tenantId, {exercise: true}));
   }
 
   // Diagnostic: module names loaded in this tenant's child (no tenant data).
@@ -231,7 +260,10 @@ export class TenantHost extends DurableObject {
     // Outside the window the host lets the child (and itself) go cold.
     if (!tenantId || Date.now() - lastAttempt > WARM_WINDOW_MS) return;
     try {
-      await this.#ping(tenantId);
+      // Keep-warm pings run off the request path, so they also exercise the
+      // engine. Warm-ups on the request path (warm()) do not: an attempt is
+      // waiting on them.
+      await this.#exclusive(() => this.#ping(tenantId, {exercise: true}));
     } finally {
       await this.ctx.storage.setAlarm(Date.now() + WARM_PING_MS);
     }

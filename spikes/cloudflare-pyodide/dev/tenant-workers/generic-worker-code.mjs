@@ -242,6 +242,29 @@ def _on_disk(name):
             or importlib.machinery.PathFinder.find_spec(top) is not None)
 
 
+async def _exercise(handle):
+    # One dry engine attempt under an unregistered handle: the host's outbound
+    # gateway answers its first SDK call 401 before anything reaches the API,
+    # and the engine reports a load failure. Synthetic context only; the next
+    # real attempt installs its own credential before it starts.
+    from bifrost.client import _install_cached_access_token
+    api_url = "https://test-api.invalid"
+    _install_cached_access_token(api_url, handle)
+    context = {"caller": {"user_id": "00000000-0000-0000-0000-000000000000",
+                          "email": "keep-warm@example.invalid", "name": "keep-warm"},
+               "organization_id": None, "organization": None,
+               "name": "keep_warm", "function_name": "keep_warm",
+               "file_path": "keep_warm/probe.py", "engine_token": handle,
+               "transient": True, "no_cache": True, "parameters": {}}
+    try:
+        outcome = await run_authorized_attempt(
+            "00000000-0000-4000-8000-000000000000", context, api_url,
+            public_url="https://staging.invalid")
+        return {"status": outcome.get("status"), "error_type": outcome.get("error_type")}
+    except Exception as exc:
+        return {"status": "raised", "error_type": type(exc).__name__}
+
+
 def _prime(names):
     # Imports what earlier attempts in this tenant imported lazily (learned by
     # the host from each attempt's trace), so the first attempt after a re-boot
@@ -273,8 +296,12 @@ class Default(WorkerEntrypoint):
             # this tenant's attempts imported lazily (measured: ~160 ms of a
             # fresh child's first run). Module names only, no tenant data.
             primed, skipped = _prime(body.get("modules") or [])
-            return Response.json({"pong": True, "first_request": first_request,
-                                  "primed": primed, "prime_skipped": skipped})
+            reply = {"pong": True, "first_request": first_request,
+                     "primed": primed, "prime_skipped": skipped}
+            exercise = body.get("exercise")
+            if isinstance(exercise, dict) and isinstance(exercise.get("handle"), str):
+                reply["exercise"] = await _exercise(exercise["handle"])
+            return Response.json(reply)
         if body.get("action") == "inventory":
             # Diagnostic: which modules are loaded (names only, no data).
             return Response.json({"modules": sorted(sys.modules)})
