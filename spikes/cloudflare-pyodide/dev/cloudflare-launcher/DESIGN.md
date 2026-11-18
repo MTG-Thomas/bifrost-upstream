@@ -259,6 +259,14 @@ run. Findings, checked against the cited code:
    - one real claim, committed, logs flushed, credential revoked;
    - then lost welcome and lost ack, API takeover, DO reset, cancellation
      and late egress.
+   - **Phase 5a local qualification is in progress.** The CT128 debug API
+     exposed a provider configuration conflict with token-only manual
+     enrollment. The fork permits that configuration with Cloudflare hello
+     enabled. CT128 workerd passed eight launcher and gateway tests and a
+     Python Dynamic Worker smoke probe. The
+     [real API harness](../e2e/README.md) remains to be qualified through
+     claim, settlement, credential revocation, and recovery.
+   - **Phase 5b** covers hosted CPU enforcement and Cloudflare relocation.
 6. Scale-out through a provider last. Before enabling it, each managed
    scope must declare the runtime profile its launches produce. The
    controller must record that profile on the reserved incarnation and
