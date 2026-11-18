@@ -1,7 +1,7 @@
 # Cloudflare launcher: Workers as an external worker in the upstream pool
 
-Status: phase 5a passed on the fork, 2026-11-18. Hosted qualification is
-phase 5b. Targets upstream `main` (Jack's merged
+Status: phases 5a and 5b passed on the fork, 2026-11-18. Targets upstream
+`main` (Jack's merged
 capacity core, #1423) and stays compatible with the direction of #1424
 (API-owned compute, derived worker keys) and #1425 (Cloudflare Containers
 provider). Workers for Platforms is out of scope.
@@ -277,7 +277,19 @@ run. Findings, checked against the cited code:
      token. Token-only manual enrollment now works with the Cloudflare
      hello gate enabled. The focused configuration suite passed 13 tests.
      Deadline-only late egress was outside this real-API run.
-   - **Phase 5b** covers hosted CPU enforcement and Cloudflare relocation.
+   - **Phase 5b passed on deployed Cloudflare Workers through a fresh named
+     tunnel to CT128.** The compiled Python child committed a result and one
+     durable log, then the same run credential returned 401. Cloudflare
+     enforced the four-subrequest limit (three tables reads reached the API)
+     and stopped the CPU fixture at its 1,000 ms limit. The latter settled as
+     `uncertain` with a failed execution.
+   - A restarted API adopted the live route when hello advanced from 52 to 54.
+     An immediate version switch during a held SDK call advanced hello from
+     101 to 102 and recovered one `LauncherReset` terminal. The original
+     claim settled as `uncertain` without redispatch. Retirement closed with
+     4001 and a subsequent cron invocation produced no dial. See the
+     [hosted harness](../e2e/README.md#phase-5b-hosted-launcher) for the
+     procedure and execution IDs.
 6. Scale-out through a provider last. Before enabling it, each managed
    scope must declare the runtime profile its launches produce. The
    controller must record that profile on the reserved incarnation and
@@ -503,9 +515,9 @@ until the ordinary queue deadline.
 
 ## Open questions
 
-- Is the outbound WebSocket from a DO to the API stable across API restarts
-  and Cloudflare DO relocation? The protocol already reconnects with
-  `hello_sequence` and fencing; needs a deployed test.
+- Phase 5b verified outbound WebSocket recovery across an API process restart
+  and a forced Cloudflare DO version change. Long-duration behavior and
+  spontaneous relocation remain unmeasured.
 - Memory semantics: Workers do not expose isolate memory. Declared-request
   accounting is the honest substitute; it must not pretend to be a cgroup
   sample.

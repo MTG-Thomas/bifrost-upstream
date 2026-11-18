@@ -61,3 +61,89 @@ The verified run used archive `7e1f7c846` on CT128, project
 `bifrost-debug-a3acd344`. Its log is
 `/opt/bifrost-tests/phase5-7e1f7c846/.phase5-run.log`. The runtime digest was
 `fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5`.
+
+## Phase 5b hosted launcher
+
+Use a new mode-0700 `/opt/bifrost-tests/phase5b-<sha>` archive with a local Git
+commit and no remotes. Run the same preparation and foreground debug-owner
+commands with `phase5a.py prepare --hosted`. This seeds a random admin password
+and platform signing key. After the stack is ready, run
+`phase5a.py run /absolute/path/generated-runtime.mjs --hosted` under Node 26.
+Capture its output in a private log. The runner starts a loopback relay and
+writes `.phase5b-deploy.json` with mode 0600. Its enrollment window is 180 seconds.
+
+Verify the Cloudflare account and zone, a collision-free Worker and tunnel
+name, and the existing account spend policy with `spend-guard.mjs list`.
+Configure a fresh named tunnel to the relay port, with anchored ingress rules
+for `/api/worker-control`, `/api/sdk/tables/list`, `/api/sdk/runtime/logs`, and
+`/auth/refresh`, followed by `http_status:404`. The relay accepts only POST on
+the three HTTP routes. Snapshot module reads are handled in the gateway. Verify
+the login and OpenAPI routes return 404, and the unauthenticated tables request
+reaches the dev API and returns 401. Start cloudflared in the archive using
+`--token-file` with a private file and a bounded process lifetime.
+
+Deploy the launcher configuration with `cf deploy --secrets-file <private-json>`.
+Use the four enrollment identity fields from the private relay file, set the
+fixed tunnel HTTPS origin and enable launcher mode. The secret JSON contains
+only `BIFROST_WORKER_CONTROL_SECRET` from the relay file. Stage the compiled
+runtime and its loader files as in the staging instructions. With `cf`
+`1.0.0-beta.31`, the deployment build requires local `cf` and Wrangler 4.161.0
+or later. Install these in the deploy workspace with `npm install --no-save
+--no-package-lock cf@1.0.0-beta.31 wrangler@4.161.0`.
+
+If the initial enrollment window expires before the first Cron Trigger
+invocation, stop the connector while the schedule propagates. Once Workers
+Logs show the launcher dialing, run the same hosted command with
+`--resume-enrollment` and bring the connector back up. This reopens the same
+loopback port and accepts an idle incarnation. Keep the original private
+enrollment file until the trial ends.
+
+The relay records sanitized wire events and holds the first successful SDK
+response for each restart case. Upload the replacement in advance with
+`cf workers versions create` using the same enrollment and secret. On
+`redeploy-requested`, activate the prepared version at 100 percent with
+`cf workers deployments create --code-update-strategy-mode immediate`.
+The relay expects recovery inventory and a single uncertain terminal for the
+interrupted route. The API restart case reloads the application process and
+expects live-route adoption. If the observer disconnects during activation,
+`--resume-enrollment --resume-reset <workflow-route>` observes the existing
+claim. `--resume-enrollment --from-reset` starts at the reset case once earlier
+cases have been qualified and the previous claim has settled.
+Query `cf o11y telemetry query` from outside the Worker config directory,
+filtered to the trial Worker, for CPU-limit evidence and the 4001 close.
+
+Stop the task-owned connector, remove the exact trial DNS record, tunnel and
+Worker, then run `BIFROST_FORCE_PORT=1 ./debug.sh down` from the task archive.
+Verify the connector is gone, `cf` reports no live trial tunnel, DNS record,
+Worker or Durable Object namespaces, and Docker has no matching project
+containers, volumes, networks or local images. Remove the private enrollment,
+connector and secret handoff files.
+
+### Verified hosted run, 2026-11-18
+
+CT128 project `bifrost-debug-c4d59bff` used the compiled runtime digest from
+Phase 5a. Worker and tunnel were both named `bifrost-phase5b-69f706a71` in the
+Midtown Technology Group account. Each listed execution had one claim owned
+by incarnation `ac6c8ddf-4b1b-49d0-9a54-b6bad6665e8f` and zero dispatches
+remaining after settlement.
+
+| Check | Execution | Evidence |
+|---|---|---|
+| Happy path | `2b25379a-f164-41fc-8f3c-b2d565817a54` | Hello 52, generation 2. `completed`, DB `Success`, one durable fixture log, same credential HTTP 200 → 401. |
+| Allowance | `3ba66635-3765-4a9c-9802-bee3466d99d4` | Limit 4, three successful origin tables reads, then Cloudflare reported `Too many subrequests`. `completed`, DB `Failed`. |
+| API restart | `d93d4e6e-c3c0-459c-ba6e-36d2468e1a5a` | New API owner, hello 52 → 54, generation 2 → 3 and live inventory. DB `Success` under the original claim, one durable fixture log. |
+| DO reset | `328186f8-6ca8-4707-97bc-b3b1950c85a7` | Immediate activation of version `0099c151-9d9d-42e5-ab29-eb6c436b999d`, hello 101 → 102, generation 5 → 6. One `uncertain`/`LauncherReset` terminal in inventory and on the wire, one ACK, DB `Failed`. |
+| CPU budget | `71d8aa31-1c03-42ff-b667-ce86394ae0cb` | Workers Logs classified the failed child invocation as `cpu_limit`. With the 1,000 ms budget, the launcher reported `uncertain`/`TenantHostOutcomeUnknown` and the DB recorded `Failed`. |
+| Retirement | Same incarnation | API refused hello 103 with 4001. DB remained `retired` with last admitted hello 102. Workers Logs recorded `launcher_control_closed 4001 true`, and the 65-second observer saw no further hello. |
+
+The first hosted preflight exposed a Node HTTP relay failure on a streamed
+POST. The first hosted claim then exposed the missing runtime log ingress.
+The initial reset used a build-and-deploy operation that ran beyond the
+observer deadline, after which the original claim settled once with a retained
+transport error. The measured reset above activated a pre-uploaded version
+while its own SDK response was held.
+
+Workers Logs showed 255 invocation records and 21.0 aggregate CPU-seconds
+across the trial. Cloudflare readback verified zero trial Worker, namespace,
+DNS and connector matches and confirmed the tunnel deletion. Docker reported
+zero containers, networks, volumes and task images for both trial projects.
