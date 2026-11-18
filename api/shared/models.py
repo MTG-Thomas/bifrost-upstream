@@ -316,6 +316,7 @@ class WorkerCapacityProfile(BaseModel):
     memory_limit_bytes: int = Field(ge=67108864, le=137438953472, multiple_of=1048576, strict=True)
     max_workers: int = Field(ge=1, le=1000, strict=True)
     max_lifetime_seconds: int = Field(ge=60, le=604800, strict=True)
+    runtime_profile: Literal["linux-process-v1", "cloudflare-python-v1"] = "linux-process-v1"
 
 
 class WorkerCapacityReservation(BaseModel):

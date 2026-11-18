@@ -50,7 +50,7 @@ from src.services.worker_pool.external_client import (
     CapacityProviderUnavailable,
     ExternalCapacityClient,
 )
-from src.services.worker_pool.external_policy import validate_external_policy
+from src.services.worker_pool.external_policy import validate_burst_profiles, validate_external_policy
 
 logger = logging.getLogger(__name__)
 
@@ -433,6 +433,7 @@ class KubernetesExecutionService:
 
         settings = get_settings()
         profile = None
+        burst = None
         if settings.worker_capacity_url or settings.worker_capacity_token:
             # Fetch before the policy advisory lock; a slow provider must not
             # block other administrators while holding the settings lock.
@@ -446,6 +447,13 @@ class KubernetesExecutionService:
                         http=http,
                     )
                     profile = await client.profile()
+                    if settings.cloudflare_capacity_url and settings.cloudflare_capacity_token:
+                        burst = await ExternalCapacityClient(
+                            settings.cloudflare_capacity_url,
+                            settings.cloudflare_capacity_token.get_secret_value(),
+                            http=http,
+                        ).profile()
+                        validate_burst_profiles(profile, burst)
             except (httpx.HTTPError, CapacityProtocolError, ValueError) as exc:
                 raise CapacityProviderUnavailable(
                     "Cannot verify capacity provider limits; worker settings were not saved"
@@ -481,8 +489,13 @@ class KubernetesExecutionService:
             if profile is not None:
                 validate_external_policy(
                     _policy_from(payload), profile,
-                    max_lifetime_seconds=settings.pool_max_lifetime_seconds,
+                    max_lifetime_seconds=settings.pool_max_lifetime_seconds, peer=burst,
                 )
+                if burst is not None:
+                    validate_external_policy(
+                        _policy_from(payload), burst,
+                        max_lifetime_seconds=settings.pool_max_lifetime_seconds, peer=profile,
+                    )
             return bool(changes)
 
         await _merge(self.session, mutate, updated_by=updated_by)

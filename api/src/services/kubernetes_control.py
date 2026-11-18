@@ -66,7 +66,7 @@ async def may_manage_jobs(settings: Any) -> bool:
 async def start_kubernetes_loops(
     stop_event: asyncio.Event, settings: Any
 ) -> list[asyncio.Task[None]]:
-    """Select one worker provider and any permitted isolated-build controller."""
+    """Select managed worker capacity and any permitted isolated-build controller."""
     tasks: list[asyncio.Task[None]] = []
     capacity_url = getattr(settings, "worker_capacity_url", None)
     capacity_token = getattr(settings, "worker_capacity_token", None)
@@ -76,6 +76,19 @@ async def start_kubernetes_loops(
     manual_enrollment = getattr(settings, "cloudflare_worker_hello_enabled", False)
     if (capacity_url and not token) or (token and not capacity_url and not manual_enrollment):
         raise ValueError("External worker capacity requires both endpoint and dedicated token")
+    burst_url = getattr(settings, "cloudflare_capacity_url", None)
+    burst_secret = getattr(settings, "cloudflare_capacity_token", None)
+    burst_token = burst_secret.get_secret_value() if burst_secret is not None else None
+    if burst_url is not None or burst_secret is not None:
+        from src.services.worker_pool.external_client import ExternalCapacityClient
+
+        if not (capacity_url and token and manual_enrollment and burst_url and burst_token):
+            raise ValueError("Cloudflare burst capacity requires both provider credentials and Cloudflare hello opt-in")
+        if burst_token == token or (
+            ExternalCapacityClient.check_configuration(burst_url, burst_token)
+            == ExternalCapacityClient.check_configuration(capacity_url, token)
+        ):
+            raise ValueError("Cloudflare burst capacity requires a distinct endpoint and token")
     if capacity_url and token:
         from src.services.worker_pool.external_client import ExternalCapacityClient
         from src.services.worker_pool.external_controller import external_worker_pool_loop

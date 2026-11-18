@@ -1213,7 +1213,7 @@ class RemoteControlHost:
                     raise ProtocolError("Cloudflare worker hello is disabled")
                 if signed.form != "external" or signed.resource_uid is None:
                     raise AuthenticationError("Cloudflare workers require an external capacity resource")
-                token = settings.worker_capacity_token
+                token = settings.cloudflare_capacity_token or settings.worker_capacity_token
                 if not token:
                     raise AuthenticationError("Cloudflare worker control is not configured")
                 control_key = external_worker_control_key(

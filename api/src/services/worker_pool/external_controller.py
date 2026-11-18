@@ -19,11 +19,11 @@ from src.services.worker_pool.controller import (
     RECONCILE_SECONDS, SWEEP_SECONDS, LiveControllers, WorkerCapacityController, _now, _withdraw_live,
 )
 from src.services.worker_pool.external_client import CapacityProtocolError, ExternalCapacityClient
-from src.services.worker_pool.external_policy import validate_external_policy
+from src.services.worker_pool.external_policy import validate_burst_profiles, validate_external_policy
 from src.services.worker_pool.liveness import silent_executor
 from src.services.worker_pool.recovery import announce_lost_runs, end_runs_of_lost_worker
 from src.services.worker_pool.sizing import JobSizing
-from src.worker.remote.protocol import WORKER_DRAIN_GRACE_SECONDS
+from src.worker.remote.protocol import CLOUDFLARE_PYTHON_RUNTIME_PROFILE, WORKER_DRAIN_GRACE_SECONDS
 from src.services.work_dispatch import (
     DISPATCH_WAKE_FAMILIES,
     WAKE_PLATFORM_JOB,
@@ -43,6 +43,16 @@ class ExternalWorkerPoolController(WorkerCapacityController):
         self.version = profile.worker_version
         self.live = LiveControllers(ids=frozenset({self.id}), versions=frozenset({self.version}))
         self.cleanup_states = ("lost", "retired")
+        self.runtime_profile = profile.runtime_profile
+
+    @property
+    def profile(self) -> WorkerCapacityProfile:
+        assert self.capacity_profile is not None
+        return self.capacity_profile
+
+    @profile.setter
+    def profile(self, profile: WorkerCapacityProfile) -> None:
+        self.capacity_profile = profile
 
     def _memory_environment(self, generation: int) -> dict[str, Any]:
         return {**super()._memory_environment(generation), "scope": self.profile.scope}
@@ -64,6 +74,7 @@ class ExternalWorkerPoolController(WorkerCapacityController):
         try:
             validate_external_policy(
                 policy, self.profile, max_lifetime_seconds=self.settings.pool_max_lifetime_seconds,
+                peer=self.peer_profile,
             )
         except ValueError as exc:
             raise CapacityProtocolError(f"Worker policy differs from provider capabilities: {exc}") from exc
@@ -71,10 +82,12 @@ class ExternalWorkerPoolController(WorkerCapacityController):
 
     async def reconcile(self) -> None:
         current = await self.client.profile()
-        if current.scope != self.profile.scope:
-            raise CapacityProtocolError("Capacity provider scope changed; drain the original provider first")
+        if (current.scope, current.runtime_profile) != (self.profile.scope, self.runtime_profile):
+            raise CapacityProtocolError("Capacity provider scope or runtime profile changed; drain the original provider first")
         self.profile = current
         self.version = current.worker_version
+        if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and not self.settings.cloudflare_worker_hello_enabled:
+            raise CapacityProtocolError("Cloudflare capacity requires Cloudflare hello opt-in")
         await super().reconcile()
 
     async def reconcile_worker(self, worker_id: UUID, policy: KubernetesPolicy) -> None:
@@ -89,9 +102,10 @@ class ExternalWorkerPoolController(WorkerCapacityController):
                 return
             state, uid, limit = worker.state, worker.capacity_resource_uid, worker.memory_limit_bytes
             version = worker.version
+            runtime_profile = worker.runtime_profile
             created_at = worker.created_at
             deleted_at = worker.capacity_resource_deleted_at
-        if state == "reserved" and version != self.profile.worker_version:
+        if state == "reserved" and (version != self.profile.worker_version or runtime_profile != self.runtime_profile):
             # A provider rollout cannot relabel an already reserved incarnation.
             # Fence it before cleanup; queued demand may reserve a fresh UUID.
             await self._record_loss(worker_id, uid, "provider_version_changed", False)
@@ -199,7 +213,12 @@ async def external_worker_pool_loop(stop_event: asyncio.Event, settings: Setting
         client = ExternalCapacityClient(
             settings.worker_capacity_url, settings.worker_capacity_token.get_secret_value(), http=http,
         )
-        controller: ExternalWorkerPoolController | None = None
+        burst_client = None
+        if settings.cloudflare_capacity_url and settings.cloudflare_capacity_token:
+            burst_client = ExternalCapacityClient(
+                settings.cloudflare_capacity_url, settings.cloudflare_capacity_token.get_secret_value(), http=http,
+            )
+        controllers: list[ExternalWorkerPoolController] = []
         wake = asyncio.Event()
         listener = asyncio.create_task(
             listen_for_pool_wake(
@@ -215,19 +234,34 @@ async def external_worker_pool_loop(stop_event: asyncio.Event, settings: Setting
             while not stop_event.is_set():
                 started = time.monotonic()
                 try:
-                    if controller is None:
-                        controller = ExternalWorkerPoolController(client, settings, await client.profile())
-                    if await controller.reachability.check():
-                        await controller.reconcile()
+                    if not controllers:
+                        primary_profile = await client.profile()
+                        if burst_client is None:
+                            controllers = [ExternalWorkerPoolController(client, settings, primary_profile)]
+                        else:
+                            burst_profile = await burst_client.profile()
+                            validate_burst_profiles(primary_profile, burst_profile)
+                            controllers = [
+                                ExternalWorkerPoolController(client, settings, primary_profile),
+                                ExternalWorkerPoolController(burst_client, settings, burst_profile),
+                            ]
                 except asyncio.CancelledError:
                     raise
                 except Exception:
-                    logger.exception("External worker capacity reconciliation failed")
+                    logger.exception("External worker capacity discovery failed")
+                for index, controller in enumerate(controllers):
+                    if burst_client is not None:
+                        controller.peer_profile = controllers[1 - index].profile
+                    try:
+                        if await controller.reachability.check():
+                            await controller.reconcile()
+                    except Exception:
+                        logger.exception("External worker capacity reconciliation failed")
                 await wait_for_next_pass(
                     stop_event, wake, since=started, spacing=RECONCILE_SECONDS, sweep=SWEEP_SECONDS,
                 )
         finally:
             listener.cancel()
             await asyncio.gather(listener, return_exceptions=True)
-            if controller is not None:
+            for controller in controllers:
                 await _withdraw_live(controller.id)

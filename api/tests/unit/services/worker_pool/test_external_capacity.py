@@ -29,7 +29,7 @@ from src.worker.remote.protocol import (
 )
 from tests.unit.services.worker_pool.test_worker_pool import (
     GIB, POLICY, SETTINGS, _accept_pool_run, _clean as _clean,
-    _store_policy, db as db_fixture,
+    _set_request, _store_policy, db as db_fixture,
 )
 
 db = db_fixture
@@ -118,6 +118,61 @@ async def test_prepared_uid_is_committed_before_start(db, capacity):
     capacity.provider.before_start = before_start
     await capacity.pool.reconcile_worker(worker_id, capacity.policy)
     assert capacity.provider.starts == [str(worker_id)]
+
+
+async def test_cloudflare_reserves_only_approved_fitting_dispatches_before_hello(db, capacity):
+    capacity.provider.profile = capacity.provider.profile.model_copy(update={
+        "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+        "memory_limit_bytes": CLOUDFLARE_DEV_BUDGET_BYTES,
+    })
+    pool = ExternalWorkerPoolController(capacity.client, SETTINGS, await capacity.client.profile())
+    for amount, approved in ((1, False), (CLOUDFLARE_DEV_BUDGET_BYTES + 1, True)):
+        await _set_request(db.sessions, await _accept_pool_run(), amount, approved=approved)
+    assert await pool.launch_for_demand(capacity.policy) == []
+    await _set_request(db.sessions, await _accept_pool_run(), 1, approved=True)
+    [worker_id] = await pool.launch_for_demand(capacity.policy)
+    assert await pool.launch_for_demand(capacity.policy) == []  # pending declared slot covers the run
+
+    async def before_start(starting_id):
+        async with db.context() as session:
+            worker = await session.get(ExecutionWorker, starting_id)
+            assert worker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+            assert worker.remote_launcher_id == starting_id
+            assert worker.supported_handlers == ["workflow.execute"]
+            assert worker.state == "starting"
+            assert worker.capacity_resource_uid == capacity.provider.resources[str(starting_id)]["resource_uid"]
+
+    capacity.provider.before_start = before_start
+    await pool.reconcile_worker(worker_id, capacity.policy)
+    assert capacity.provider.starts == [str(worker_id)]
+
+
+async def test_cloudflare_burst_waits_for_linux_ceiling_and_respects_shared_cap(db, capacity):
+    linux = capacity.provider.profile.model_copy(update={"max_workers": 1})
+    cloudflare = capacity.provider.profile.model_copy(update={
+        "scope": "burst", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+        "memory_limit_bytes": CLOUDFLARE_DEV_BUDGET_BYTES,
+    })
+    capacity.pool.profile = linux
+    capacity.pool.peer_profile = cloudflare
+    burst = ExternalWorkerPoolController(capacity.client, SETTINGS, cloudflare)
+    burst.peer_profile = linux
+    for _ in range(2):
+        await _set_request(
+            db.sessions, await _accept_pool_run(), CLOUDFLARE_DEV_BUDGET_BYTES, approved=True,
+        )
+    assert await burst.launch_for_demand(capacity.policy) == []
+    [linux_id] = await capacity.pool.launch_for_demand(capacity.policy)
+    assert await burst.launch_for_demand(capacity.policy) == []
+    async with db.context() as session:
+        worker = await session.get(ExecutionWorker, linux_id)
+        worker.state = "ready"
+        worker.memory_pressured = True
+        await session.commit()
+    [burst_id] = await burst.launch_for_demand(capacity.policy)
+    assert burst_id != linux_id
+    assert await burst.launch_for_demand(capacity.policy) == []
+    assert await capacity.pool.launch_for_demand(capacity.policy) == []
 
 
 @pytest.mark.parametrize("max_workers", [1, 2], ids=["at-cap", "spare-slot"])

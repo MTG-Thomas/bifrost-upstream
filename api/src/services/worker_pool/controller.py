@@ -36,6 +36,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import and_, exists, func, literal, select, text, update
 
+from shared.models import WorkerCapacityProfile
 from shared.version import get_version
 from src.config import Settings, get_settings
 from src.core.database import get_db_context
@@ -159,6 +160,18 @@ class WorkerCapacityController(ABC):
         # pod. Unknown until applied once, so a restarted controller corrects
         # a mark left by its predecessor.
         self._evictable: dict[UUID, bool] = {}
+        self.runtime_profile = LINUX_RUNTIME_PROFILE
+        self.capacity_profile: WorkerCapacityProfile | None = None
+        self.peer_profile: WorkerCapacityProfile | None = None
+
+    def _outdated(self, worker: ExecutionWorker) -> bool:
+        if worker.form == "external" and worker.state == "ready":
+            for profile in (self.capacity_profile, self.peer_profile):
+                if profile is not None and worker.capacity_scope == profile.scope and (
+                    self.peer_profile is not None or profile.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+                ):
+                    return worker.version != profile.worker_version
+        return self.live.outdated(worker)
 
     @abstractmethod
     def _managed_scope(self) -> Any:
@@ -381,7 +394,9 @@ class WorkerCapacityController(ABC):
             confirmed_largest = largest_reports[-1] if largest_reports else None
             # Publication and decisions share one ordered snapshot. Predictions
             # choose resources; only a measured largest size can reject work.
-            await _publish_launchable(confirmed_largest, generation)
+            cloudflare = self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+            if not cloudflare:
+                await _publish_launchable(confirmed_largest, generation)
 
             waiting_requests = [
                 Request(row.id, row.memory_request_bytes, row.handler, row.handler_version, row.cloudflare_revision)
@@ -460,16 +475,39 @@ class WorkerCapacityController(ABC):
             }
             # Prefer the less flexible Cloudflare capacity for eligible work,
             # leaving Linux capacity for requests only Linux can execute.
-            free = [*idle_declared.values(), *free]
+            pending_declared = [
+                _cloudflare_budget()
+                for worker in workers
+                if worker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+                and worker.form == "external" and worker.state in ("reserved", "starting")
+                and worker.capacity_scope is not None
+            ]
+            free = [*idle_declared.values(), *pending_declared, *free]
             needed = [request for request in waiting_requests if request.id not in covered]
+            if cloudflare:
+                # Give Linux-only work first use of any remaining Linux budget.
+                needed.sort(key=_cloudflare_budget().fits)
+            jobs = sum(1 for worker in workers if worker.form in MANAGED_WORKER_FORMS)
+            room = max(0, policy.max_workers - jobs)
+            scope_room = room
+            profile, peer = self.capacity_profile, self.peer_profile
+            if profile is not None and (cloudflare or peer is not None):
+                scope_counts = await self._external_scope_counts(db, profile, peer)
+                live_in_scopes = sum(
+                    worker.form == "external" and worker.capacity_scope in scope_counts for worker in workers
+                )
+                room = max(0, policy.max_workers - jobs - (sum(scope_counts.values()) - live_in_scopes))
+                scope_room = max(0, profile.max_workers - scope_counts.get(profile.scope, 0))
+                if scope_room == 0 or (cloudflare and peer and scope_counts.get(peer.scope, 0) < peer.max_workers):
+                    return []
             plan = _plan_launches(
                 needed,
                 free,
                 standard_budget=standard_reports[-1] if standard_reports else sizing.standard_budget_bytes,
                 largest_budget=confirmed_largest if confirmed_largest is not None else sizing.largest_budget_bytes,
                 cold=not measurements, probe_largest=confirmed_largest is None,
+                runtime_profile=self.runtime_profile,
             )
-            jobs = sum(1 for worker in workers if worker.form in MANAGED_WORKER_FORMS)
             now = _now()
             # Only standard Jobs make up the warm minimum; a sized Job exists
             # for its large work and drains once idle. A standard Job near its
@@ -484,11 +522,21 @@ class WorkerCapacityController(ABC):
                 and worker.execution_lane == "normal"
                 and worker.resource_class == "standard"
                 and worker.state != "draining"
-                and not self.live.outdated(worker)
+                and not self._outdated(worker)
                 and not self._lifetime_handoff_imminent(worker, now)
             )
             warm = max(0, policy.warm_workers - undrained - plan.standard - len(plan.sized))
-            room = max(0, policy.max_workers - jobs)
+            if cloudflare:
+                launched = [
+                    self._reserve(
+                        db, resource_class="standard", memory_limit_bytes=CLOUDFLARE_DEV_BUDGET_BYTES,
+                        environment=environment,
+                    )
+                    for _ in range(min(room, scope_room, plan.standard + (0 if peer else warm)))
+                ]
+                if launched:
+                    await db.commit()
+                return launched
             # Fast Path capacity is a fixed exclusive reservation, not an
             # elastic overflow lane. It intentionally ignores background
             # demand and therefore cannot be borrowed by it.
@@ -499,14 +547,14 @@ class WorkerCapacityController(ABC):
                 and worker.execution_lane == "fast_path"
                 and worker.resource_class == "standard"
                 and worker.state != "draining"
-                and not self.live.outdated(worker)
+                and not self._outdated(worker)
                 and not self._lifetime_handoff_imminent(worker, now)
             )
             fast_path_warm = max(0, policy.reserved_fast_path_workers - fast_path_undrained)
             # Keep the reservation's slots out of the Normal planner. Without
             # this, a Normal burst arriving in the same pass could consume the
             # final slots before the Fast Path floor is reserved.
-            normal_room = max(0, room - fast_path_warm)
+            normal_room = max(0, min(room, scope_room) - fast_path_warm)
             # First initialization is singular; it may be sized by the hint,
             # but an uncertain prediction can never veto that initial attempt.
             if not measurements and any(
@@ -576,7 +624,7 @@ class WorkerCapacityController(ABC):
                         ).values(state="draining", end_reason="fast_path_reservation"))
                     await db.commit()
                     return []
-            if room == 0 and (plan.sized or plan.standard):
+            if jobs >= policy.max_workers and (plan.sized or plan.standard):
                 # An idle undersized worker may yield the warm minimum, but it
                 # still occupies its slot until the canonical owner retires it.
                 owned = set((await db.scalars(select(ExecutionWorker.id).where(self._managed_scope(), ExecutionWorker.state == "ready"))).all())
@@ -670,6 +718,27 @@ class WorkerCapacityController(ABC):
             )
         return launched
 
+    @staticmethod
+    async def _external_scope_counts(
+        db: Any, profile: WorkerCapacityProfile, peer: WorkerCapacityProfile | None,
+    ) -> dict[str, int]:
+        # A bound terminal row holds its provider slot until confirmed deletion.
+        counts = await db.execute(
+            select(ExecutionWorker.capacity_scope, func.count())
+            .where(
+                ExecutionWorker.form == "external",
+                ExecutionWorker.capacity_scope.in_([profile.scope, peer.scope] if peer else [profile.scope]),
+                ExecutionWorker.state.in_(LIVE_STATES)
+                | (
+                    ExecutionWorker.state.in_(("lost", "retired"))
+                    & ExecutionWorker.capacity_resource_uid.is_not(None)
+                    & ExecutionWorker.capacity_resource_deleted_at.is_(None)
+                ),
+            )
+            .group_by(ExecutionWorker.capacity_scope)
+        )
+        return dict(counts.tuples().all())
+
     async def replace_outdated(self, policy: KubernetesPolicy) -> list[UUID]:
         """Drain only old ready Jobs whose removal keeps the warm minimum.
 
@@ -704,8 +773,9 @@ class WorkerCapacityController(ABC):
                 worker
                 for worker, owned in managed
                 if worker.state == "ready"
-                and (worker.runtime_profile == LINUX_RUNTIME_PROFILE or owned)
-                and self.live.outdated(worker)
+                and (owned or (self.peer_profile is None and self.runtime_profile == LINUX_RUNTIME_PROFILE
+                               and worker.runtime_profile == LINUX_RUNTIME_PROFILE))
+                and self._outdated(worker)
                 and worker.reserved_for_dispatch_id is None
             ]
             if not outdated:
@@ -724,7 +794,7 @@ class WorkerCapacityController(ABC):
                     if worker.execution_lane == lane
                     and worker.resource_class == "standard"
                     and worker.memory_budget_bytes is not None
-                    and not self.live.outdated(worker)
+                    and not self._outdated(worker)
                 )
                 for lane in lane_floor
             }
@@ -741,7 +811,7 @@ class WorkerCapacityController(ABC):
                     worker.execution_lane == lane
                     and worker.resource_class == "standard"
                     and worker.state in ("reserved", "starting")
-                    and not self.live.outdated(worker)
+                    and not self._outdated(worker)
                     for worker in jobs
                 )
                 ready_standard = sum(
@@ -797,6 +867,7 @@ class WorkerCapacityController(ABC):
         """A durable row for one Job, recording the limit it launches with:
         a later Worker memory change applies to new Jobs only."""
         worker_id = uuid4()
+        cloudflare = self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
         db.add(
             ExecutionWorker(
                 id=worker_id,
@@ -804,8 +875,10 @@ class WorkerCapacityController(ABC):
                 state="reserved",
                 resource_class=resource_class,
                 memory_limit_bytes=memory_limit_bytes,
-                memory_calibration={"environment": environment},
-                supported_handlers=list(REMOTE_WORKER_HANDLER_NAMES),
+                memory_calibration=None if cloudflare else {"environment": environment},
+                supported_handlers=[CLOUDFLARE_WORKFLOW_HANDLER[0]] if cloudflare else list(REMOTE_WORKER_HANDLER_NAMES),
+                runtime_profile=self.runtime_profile,
+                remote_launcher_id=worker_id if cloudflare else None,
                 execution_lane=execution_lane,
                 **self._binding_fields(worker_id),
             )
@@ -976,6 +1049,17 @@ class FreeBudget:
             self.runtime_profile, request.handler, request.handler_version, request.cloudflare_revision,
         )
 
+    def fits(self, request: Request) -> bool:
+        return request.bytes <= self.bytes and self.takes(request)
+
+
+def _cloudflare_budget() -> FreeBudget:
+    handler = CLOUDFLARE_WORKFLOW_HANDLER[0]
+    return FreeBudget(
+        CLOUDFLARE_DEV_BUDGET_BYTES, frozenset({handler}),
+        {handler: CLOUDFLARE_DEV_SLOTS}, CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+    )
+
 
 def _plan_launches(
     waiting: list[Request],
@@ -985,6 +1069,7 @@ def _plan_launches(
     largest_budget: int,
     cold: bool = False,
     probe_largest: bool = False,
+    runtime_profile: str = LINUX_RUNTIME_PROFILE,
 ) -> LaunchPlan:
     """Place requests (oldest first) into free budgets, then into new Jobs.
 
@@ -992,13 +1077,14 @@ def _plan_launches(
     executor that can claim its handler. A request no standard Job can hold
     gets its own sized Job; one larger than the largest launchable budget is
     left for the reconciler to fail only after the largest size was measured.
-    Cold planning chooses one initial resource; uncertain large requests probe
-    the largest configured size. New Jobs claim every handler.
+    Linux cold planning chooses one initial resource. Cloudflare starts have
+    exactly one declared workflow slot and no measured-memory probes.
     """
     bins = list(free)
     rooms = [budget.bytes for budget in bins]
     slots = [dict(budget.handler_slots) for budget in bins]
     limited = dict(HANDLER_CONCURRENCY_LIMITS)
+    declared = _cloudflare_budget() if runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE else None
     sized: list[tuple[UUID, int]] = []
     for item in waiting:
         dispatch_id, request = item.id, item.bytes
@@ -1019,6 +1105,13 @@ def _plan_launches(
                 placed = True
                 break
         if placed:
+            continue
+        if declared is not None:
+            if declared.fits(item):
+                # A new Cloudflare worker's only slot is used by this item.
+                bins.append(declared)
+                rooms.append(0)
+                slots.append({CLOUDFLARE_WORKFLOW_HANDLER[0]: 0})
             continue
         if cold:
             return (LaunchPlan(standard=1, sized=[]) if request <= standard_budget
