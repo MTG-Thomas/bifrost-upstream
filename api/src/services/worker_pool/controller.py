@@ -752,16 +752,23 @@ class WorkerCapacityController(ABC):
             )
         return launched
 
-    @staticmethod
     async def _external_scope_counts(
-        db: Any, profile: WorkerCapacityProfile, peer: WorkerCapacityProfile | None,
+        self, db: Any, profile: WorkerCapacityProfile, peer: WorkerCapacityProfile | None,
     ) -> dict[str, int]:
         # A bound terminal row holds its provider slot until confirmed deletion.
+        scopes = ExecutionWorker.capacity_scope.in_([profile.scope, peer.scope] if peer else [profile.scope])
+        if self.dual_capacity and peer is None:
+            # Discovery can be down while a previous burst incarnation still
+            # occupies shared physical capacity. Its persisted profile is enough.
+            scopes = scopes | (
+                (ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE)
+                & ExecutionWorker.capacity_scope.is_not(None)
+            )
         counts = await db.execute(
             select(ExecutionWorker.capacity_scope, func.count())
             .where(
                 ExecutionWorker.form == "external",
-                ExecutionWorker.capacity_scope.in_([profile.scope, peer.scope] if peer else [profile.scope]),
+                scopes,
                 ExecutionWorker.state.in_(LIVE_STATES)
                 | (
                     ExecutionWorker.state.in_(("lost", "retired"))

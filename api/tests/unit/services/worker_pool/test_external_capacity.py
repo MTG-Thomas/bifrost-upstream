@@ -251,6 +251,18 @@ async def test_terminal_scope_slot_holds_physical_room_but_does_not_trigger_burs
     assert await burst.launch_for_demand(capacity.policy) == []
 
 
+async def test_undiscovered_burst_terminal_still_holds_shared_physical_room(db, capacity):
+    settings = SimpleNamespace(**vars(SETTINGS), cloudflare_capacity_url="https://burst.invalid")
+    pool = ExternalWorkerPoolController(capacity.client, settings, capacity.pool.profile)
+    async with db.context() as session:
+        session.add(ExecutionWorker(
+            id=uuid4(), form="external", state="retired", capacity_scope="burst",
+            runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE, capacity_resource_uid="unconfirmed",
+        ))
+    assert pool.peer_profile is None
+    assert await pool.launch_for_demand(replace(capacity.policy, max_workers=1, warm_workers=1)) == []
+
+
 @pytest.mark.parametrize("warm", [0, 1])
 async def test_linux_can_reclaim_an_idle_cloudflare_slot(db, capacity, warm):
     pool = capacity.pool
