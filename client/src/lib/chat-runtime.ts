@@ -1359,14 +1359,10 @@ function applyEnvelopeToProjection(
 		return false;
 	}
 
-	const resolvedConversationId = getConversationId(
-		projection,
-		conversationId,
-	);
-	if (resolvedConversationId !== projection.conversation_id) {
-		projection.conversation_id = resolvedConversationId;
-	}
-
+	// Everything below the accept checks mutates the projection. A render
+	// frame is applied against one shared clone, so a rejected envelope that
+	// mutated first would leak those changes whenever another envelope in the
+	// same frame succeeds. Decide against the pre-existing state, then commit.
 	if (!chunk) return false;
 
 	const runId =
@@ -1380,21 +1376,33 @@ function applyEnvelopeToProjection(
 		return false;
 	}
 
-	const run = ensureRun(projection, runId, resolvedConversationId);
+	const existingRun = projection.runs[runId] ?? null;
+	const lastSequence = existingRun?.last_sequence ?? 0;
+	const eventId = envelope.event_id ?? null;
+	const dedupeId = eventId ?? null;
 	const sequence =
 		typeof envelope.sequence === "number"
 			? envelope.sequence
-			: run.last_sequence + 1;
-	const eventId = envelope.event_id ?? null;
-	const occurredAt = envelope.occurred_at ?? DEFAULT_CREATED_AT;
-	const dedupeId = eventId ?? null;
+			: lastSequence + 1;
 
-	if (dedupeId && run.applied_event_ids.includes(dedupeId)) {
+	if (dedupeId && existingRun?.applied_event_ids.includes(dedupeId)) {
 		return false;
 	}
-	if (sequence <= run.last_sequence) {
+	if (sequence <= lastSequence) {
 		return false;
 	}
+
+	// Accepted: from here the envelope may mutate the shared clone.
+	const resolvedConversationId = getConversationId(
+		projection,
+		conversationId,
+	);
+	if (resolvedConversationId !== projection.conversation_id) {
+		projection.conversation_id = resolvedConversationId;
+	}
+
+	const run = ensureRun(projection, runId, resolvedConversationId);
+	const occurredAt = envelope.occurred_at ?? DEFAULT_CREATED_AT;
 
 	recordRunSequence(run, sequence, dedupeId);
 	updateTopLevelLastSequence(projection, sequence);
