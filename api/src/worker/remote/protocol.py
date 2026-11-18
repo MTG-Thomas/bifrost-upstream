@@ -115,6 +115,10 @@ class OpaqueWorkflowNotStarted(CredentialRouteChanged):
     """The opaque workflow command was refused locally before sending any frame."""
 
 
+class CloudflareRevisionRejected(OpaqueWorkflowNotStarted):
+    """The opaque workflow must be handed back with its stale approval cleared."""
+
+
 class OpaqueDispatchInterrupted(ConnectionError):
     """The opaque socket changed or failed while sending a command."""
 

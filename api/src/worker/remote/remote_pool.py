@@ -36,6 +36,7 @@ from src.services.execution.process_pool import (
 )
 from src.worker.remote.protocol import (
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+    CloudflareRevisionRejected,
     LINUX_RUNTIME_PROFILE,
     CredentialRouteChanged,
     OpaqueDispatchInterrupted,
@@ -823,6 +824,7 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         active_execution: ActiveExecution,
         *,
         credential_route: CredentialRoute | None = None,
+        cloudflare_revision: str | None = None,
     ) -> None:
         """Write canonical API ownership records, then await launcher ACK.
 
@@ -835,6 +837,29 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         if opaque and generation is None:
             raise CredentialRouteChanged("Opaque dispatch requires a credential route generation")
         dispatch_started_at = datetime.now(UTC) if opaque else None
+        workspace = None
+        if opaque:
+            from src.services.execution.cloudflare_eligibility import (
+                prepare_approved_workspace,
+            )
+
+            workflow_id = context.get("workflow_id")
+            if (
+                cloudflare_revision is None or not isinstance(workflow_id, str)
+                or workflow_id != active_execution.get("workflow_id")
+                or context.get("tags") != ["workflow"]
+                or any(context.get(key) is not None for key in (
+                    "solution_id", "artifact_workspace_id", "code", "service",
+                ))
+            ):
+                raise CloudflareRevisionRejected("An approved workspace workflow is required")
+            workspace = await prepare_approved_workspace(
+                workflow_id=workflow_id, entry_path=context.get("file_path"),
+                function_name=context.get("function_name"), entry_sha256=context.get("content_hash"),
+                expected_revision=cloudflare_revision,
+            )
+            if workspace is None:
+                raise CloudflareRevisionRejected("Cloudflare workflow revision no longer matches its approval")
         await self._write_context_to_redis(execution_id, context)
         if not opaque:
             self._ensure_remote_capacity()
@@ -878,6 +903,8 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                 )
             if opaque:
                 handle.process.memory_request_bytes = self._request_bytes(execution_id)
+            if workspace is not None:
+                context = {**context, "cloudflare_workspace": workspace.bundle}
             try:
                 response = await self.transport.request(
                     "workflow",

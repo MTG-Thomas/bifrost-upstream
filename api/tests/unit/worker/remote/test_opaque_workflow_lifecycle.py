@@ -19,7 +19,7 @@ from src.models.orm.work_dispatches import WorkDispatch
 from src.repositories.executions import ExecutionRepository
 from src.routers.platform import workers
 from src.services.authorization import runtime, tokens
-from src.services.execution import workflow_dispatch
+from src.services.execution import cloudflare_eligibility, workflow_dispatch
 from src.services.work_dispatch import WAKE_WORKFLOW
 from src.services.worker_pool import recovery
 from src.services.worker_pool.claims import PoolClaim
@@ -38,6 +38,20 @@ from src.worker.remote.protocol import (
 
 PROFILE = CLOUDFLARE_PYTHON_RUNTIME_PROFILE
 RESERVATION = 32 * 2**20
+REVISION = "ab" * 32
+
+
+@pytest.fixture
+def reviewed_workspace(monkeypatch):
+    prepare = AsyncMock(return_value=cloudflare_eligibility.ApprovedWorkspace(REVISION, {}))
+    monkeypatch.setattr(cloudflare_eligibility, "prepare_approved_workspace", prepare)
+    return prepare
+
+
+def approved_context(entry):
+    workflow_id = entry["subject_id"]
+    entry["active_execution"]["workflow_id"] = workflow_id
+    return {"workflow_id": workflow_id, "tags": ["workflow"], "timeout_seconds": 300}
 
 
 def opaque_bridge(socket, lease):
@@ -48,7 +62,7 @@ def opaque_bridge(socket, lease):
 
 
 @pytest.fixture
-async def opaque_executor(async_session_factory, monkeypatch):
+async def opaque_executor(async_session_factory, monkeypatch, reviewed_workspace):
     lease = RemoteOwnerLease(uuid4(), uuid4(), uuid4(), 2)
     bridge = opaque_bridge(Mock(close=AsyncMock()), lease)
     worker = ApiExecutor(bridge, lease.worker_id)
@@ -165,8 +179,8 @@ async def test_lost_launch_ack_recovers_the_same_opaque_route(opaque_executor, a
     await prepare_sibling_then_claim(worker, subject, sibling, async_session_factory)
     entry = workflow_entry(subject)
     await pool.route_execution(
-        str(subject), {"timeout_seconds": 300}, entry["active_execution"],
-        credential_route=pool.credential_route(),
+        str(subject), approved_context(entry), entry["active_execution"],
+        credential_route=pool.credential_route(), cloudflare_revision=REVISION,
     )
     worker.admission.started(str(subject))
     launch = bridge.request.await_args
@@ -281,8 +295,8 @@ async def test_reconnect_excludes_workflow_still_entering_dispatch(
     async def dispatch():
         with pytest.raises(OpaqueWorkflowNotStarted, match="before workflow dispatch"):
             await pool.route_execution(
-                str(subject), {"timeout_seconds": 300}, entry["active_execution"],
-                credential_route=credential_route,
+                str(subject), approved_context(entry), entry["active_execution"],
+                credential_route=credential_route, cloudflare_revision=REVISION,
             )
 
     if queued_send:
@@ -361,8 +375,8 @@ async def test_unacknowledged_launch_omission_settles_only_its_workflow(
 
     bridge.socket.send_text = AsyncMock(side_effect=send)
     dispatch = asyncio.create_task(pool.route_execution(
-        str(subject), {"timeout_seconds": 300}, entry["active_execution"],
-        credential_route=pool.credential_route(),
+        str(subject), approved_context(entry), entry["active_execution"],
+        credential_route=pool.credential_route(), cloudflare_revision=REVISION,
     ))
     await sending.wait()
     if not interrupted_send:
@@ -448,9 +462,9 @@ async def test_opaque_handback_releases_starting_reservation_on_db_failure(monke
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("pre_send", [True, False], ids=["reconnect-before-send", "explicit-memory-refusal"])
+@pytest.mark.parametrize("refusal", ["reconnect-before-send", "explicit-memory-refusal", "stale-revision"])
 async def test_definitively_unsent_workflow_is_handed_back(
-    opaque_executor, async_session_factory, monkeypatch, pre_send,
+    opaque_executor, async_session_factory, monkeypatch, reviewed_workspace, refusal,
 ):
     worker, pool, (subject, sibling_subject) = opaque_executor
     bridge = worker.bridge
@@ -461,14 +475,25 @@ async def test_definitively_unsent_workflow_is_handed_back(
     bridge.socket = socket
     lease_ref = LeaseRef(bridge.lease)
     queued_at = datetime.now(UTC) - timedelta(seconds=10)
+    workflow_id = str(uuid4())
+    if refusal == "stale-revision":
+        reviewed_workspace.return_value = None
     payload = pending_execution_record(
-        execution_id=str(subject), workflow_id=None, parameters={}, org_id=None,
+        execution_id=str(subject), workflow_id=workflow_id, parameters={}, org_id=None,
         user_id=str(uuid4()), user_name="test", user_email="test@example.com", sync=True, lineage=None,
     )
     claim = PoolClaim(
         dispatch_id=uuid4(), handler="workflow.execute", subject_id=subject,
-        message={"execution_id": str(subject), "code": "eA==", "sync": True}, claimed=dict(payload),
-        memory_request_bytes=RESERVATION, queued_at=queued_at,
+        message={
+            "execution_id": str(subject), "workflow_id": workflow_id, "sync": True,
+            "dispatch_metadata": {
+                "name": "opaque", "function_name": "run", "path": "workflows/fixture.py",
+                "type": "workflow", "cache_ttl_seconds": 0, "timeout_seconds": 300,
+                "time_saved": 0, "value": 0,
+            },
+        },
+        claimed=dict(payload), memory_request_bytes=RESERVATION, queued_at=queued_at,
+        cloudflare_revision=REVISION,
     )
 
     async def reconnect():
@@ -477,7 +502,7 @@ async def test_definitively_unsent_workflow_is_handed_back(
         await worker.reconcile_transport_inventory(expected_generation=generation)
 
     async def issue_credentials(*args, **kwargs):
-        if pre_send:
+        if refusal == "reconnect-before-send":
             await reconnect()
         return tokens.RunCredentials("test-access", None, datetime.now(UTC), 1)
 
@@ -489,7 +514,7 @@ async def test_definitively_unsent_workflow_is_handed_back(
         })
         bridge.disconnect(socket)
 
-    if not pre_send:
+    if refusal == "explicit-memory-refusal":
         db_context = workflow_dispatch.get_db_context
 
         @asynccontextmanager
@@ -512,7 +537,7 @@ async def test_definitively_unsent_workflow_is_handed_back(
     with remote_owner_context(lease_ref):
         await worker._run_claim(claim)
 
-    assert socket.send_text.await_count == (0 if pre_send else 1)
+    assert socket.send_text.await_count == (1 if refusal == "explicit-memory-refusal" else 0)
     assert worker._claims_open()
     assert list(pool.processes) == [sibling["route_id"]]
     assert worker.admission.request_bytes(str(subject)) is None
@@ -525,13 +550,14 @@ async def test_definitively_unsent_workflow_is_handed_back(
         dispatch = await db.scalar(select(WorkDispatch).where(WorkDispatch.subject_id == subject))
         assert dispatch.created_at == queued_at
         assert dispatch.memory_request_bytes == RESERVATION
+        assert dispatch.cloudflare_revision == (None if refusal == "stale-revision" else REVISION)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("refusal", [
     "disconnected", "inventory-gated", "generation-changed", "stale-heartbeat", "RuntimeError", "MemoryError",
 ])
-async def test_opaque_workflow_refusal_cleans_route_with_real_bridge(monkeypatch, refusal):
+async def test_opaque_workflow_refusal_cleans_route_with_real_bridge(monkeypatch, reviewed_workspace, refusal):
     socket = Mock(send_text=AsyncMock())
     bridge = opaque_bridge(socket, RemoteOwnerLease(uuid4(), uuid4(), uuid4(), 1))
     pool = remote_pool.ThinRemoteProcessPool(bridge, runtime_profile=PROFILE, on_result=AsyncMock())
@@ -565,8 +591,8 @@ async def test_opaque_workflow_refusal_cleans_route_with_real_bridge(monkeypatch
     try:
         with pytest.raises(error):
             await pool.route_execution(
-                subject, {"timeout_seconds": 300}, entry["active_execution"],
-                credential_route=credential_route,
+                subject, approved_context(entry), entry["active_execution"],
+                credential_route=credential_route, cloudflare_revision=REVISION,
             )
         assert not pool.processes and not pool._routes and not bridge.pending
         redis.delete.assert_awaited_once_with(f"bifrost:exec:{subject}:context",

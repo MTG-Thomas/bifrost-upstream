@@ -778,6 +778,8 @@ class WorkflowExecutionConsumer:
         self,
         message_data: dict[str, Any],
         claimed: PendingExecution | None,
+        *,
+        cloudflare_revision: str | None = None,
     ) -> None:
         """Run a claimed workflow dispatch.
 
@@ -1125,6 +1127,7 @@ class WorkflowExecutionConsumer:
                 execution_id=execution_id,
                 context=context_data,
                 credential_route=credential_route,
+                **({"cloudflare_revision": cloudflare_revision} if cloudflare_revision is not None else {}),
                 active_execution=ActiveExecution(
                     execution_id=execution_id,
                     workflow_id=str(workflow_id) if workflow_id else None,

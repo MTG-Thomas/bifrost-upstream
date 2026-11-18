@@ -75,6 +75,7 @@ from src.services.worker_pool.claims import (
 )
 from src.services.worker_pool.recovery import UNSTARTED_CLAIM_WINDOW, release_unstarted_claims
 from src.worker.remote.protocol import (
+    CloudflareRevisionRejected,
     HANDLER_CONCURRENCY_LIMITS,
     LINUX_RUNTIME_PROFILE,
     OpaqueWorkflowNotStarted,
@@ -621,19 +622,20 @@ class PoolWorker:
             # pool); agent runs return when finished.
             if claim.handler == "workflow.execute":
                 assert self._workflow_consumer is not None
+                opaque = self.runtime_profile != LINUX_RUNTIME_PROFILE
                 try:
                     await self._workflow_consumer.process_message(
                         claim.message,
                         PendingExecution(**claim.claimed)  # type: ignore[typeddict-item]
                         if claim.claimed is not None
                         else None,
+                        **({"cloudflare_revision": claim.cloudflare_revision} if opaque else {}),
                     )
-                except (MemoryError, OpaqueWorkflowNotStarted):
+                except (MemoryError, OpaqueWorkflowNotStarted) as exc:
                     # A refused fork or an opaque dispatch that never started
                     # can go back to waiting for an executor.
                     from src.services.execution.workflow_dispatch import release_workflow_run
 
-                    opaque = self.runtime_profile != LINUX_RUNTIME_PROFILE
                     if not opaque or claim.claimed is None:
                         self._release_claim_reservation(claim)
                     handed_back = True
@@ -649,6 +651,9 @@ class PoolWorker:
                         payload=claim.claimed,
                         memory_request_bytes=claim.memory_request_bytes,
                         queued_at=claim.queued_at,
+                        cloudflare_revision=(
+                            None if isinstance(exc, CloudflareRevisionRejected) else claim.cloudflare_revision
+                        ),
                         release_opaque_reservation=(
                             (lambda: self._release_claim_reservation(claim)) if opaque else None
                         ),

@@ -46,6 +46,7 @@ class PoolClaim:
     # as its dispatch; this is its context. None when the consumer still has
     # to claim (agent runs) or when the run had already moved on.
     claimed: dict[str, Any] | None = None
+    cloudflare_revision: str | None = None
 
 
 def _now() -> datetime:
@@ -289,6 +290,7 @@ async def claim_next(
                         WorkDispatch.subject_id.label("subject"),
                         WorkDispatch.memory_request_bytes.label("memory_request_bytes"),
                         WorkDispatch.created_at.label("queued_at"),
+                        WorkDispatch.cloudflare_revision,
                     )
                 )
             ).one_or_none()
@@ -329,6 +331,7 @@ async def claim_next(
                 memory_request_bytes=row.memory_request_bytes,
                 queued_at=row.queued_at,
                 claimed=dict(claimed) if claimed is not None else None,
+                cloudflare_revision=row.cloudflare_revision,
             )
             if reserve_claim is not None:
                 reserve_claim(claim)

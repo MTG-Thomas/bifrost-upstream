@@ -39,9 +39,14 @@ class RepoStorage:
     def _repo_key(self, path: str) -> str:
         return f"{REPO_PREFIX}{path.lstrip('/')}"
 
-    async def read(self, path: str) -> bytes:
+    async def read(self, path: str, *, max_bytes: int | None = None) -> bytes:
         async with self._get_store() as store:
             async with store.open_read(self._repo_key(path)) as read:
+                if max_bytes is not None:
+                    content = await read.body.read(max_bytes + 1)
+                    if len(content) > max_bytes:
+                        raise ValueError("Workspace source exceeds its read budget")
+                    return content
                 return await read.body.read()
 
     async def write(self, path: str, content: bytes) -> str:

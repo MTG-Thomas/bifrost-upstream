@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.run_cancellation import claim_pending_run_for_dispatch
 from shared.run_lineage import lineage_columns
+from src.config import get_settings
 from src.core.database import get_db_context
 from src.core.redis_client import PendingExecution, get_redis_client
 from src.models.enums import ExecutionStatus
@@ -162,12 +163,55 @@ async def stage_workflow_run(
         payload=dict(pending),
         memory_request_bytes=memory_request_bytes,
         execution_lane=execution_lane,
+        cloudflare_revision=(
+            await _cloudflare_revision(db, pending, message) if execution_lane == "normal" else None
+        ),
     )
     return AcceptedRun(
         dispatch_id=dispatch.id,
         message=dispatch.message,
         pending=pending,
     )
+
+
+async def _cloudflare_revision(
+    db: AsyncSession, pending: PendingExecution, message: dict[str, Any]
+) -> str | None:
+    workflow_id = pending["workflow_id"]
+    if (
+        workflow_id is None or message.get("workflow_id") != workflow_id
+        or pending["script_name"] or message.get("code") is not None
+        or pending.get("artifact_workspace_id") is not None
+        or not any(
+            str(approval.workflow_id) == workflow_id
+            for approval in get_settings().cloudflare_workflow_approvals
+        )
+    ):
+        return None
+    from src.services.execution.cloudflare_eligibility import prepare_approved_workspace
+    from src.services.execution.service import (
+        WorkflowLoadError,
+        WorkflowNotFoundError,
+        get_workflow_for_execution,
+    )
+
+    try:
+        workflow = await get_workflow_for_execution(workflow_id, db=db)
+    except (WorkflowLoadError, WorkflowNotFoundError):
+        return None
+    if workflow["solution_id"] is not None or workflow["type"] != "workflow":
+        return None
+    metadata = message.get("dispatch_metadata")
+    if metadata is not None and any(
+        metadata.get(key) != workflow[key]
+        for key in ("path", "function_name", "content_hash", "solution_id", "type")
+    ):
+        return None
+    workspace = await prepare_approved_workspace(
+        workflow_id=workflow_id, entry_path=workflow["path"],
+        function_name=workflow["function_name"], entry_sha256=workflow["content_hash"],
+    )
+    return workspace.revision if workspace is not None else None
 
 
 async def hand_off_workflow_run(accepted: AcceptedRun) -> None:
@@ -204,6 +248,7 @@ async def release_workflow_run(
     payload: dict[str, Any],
     memory_request_bytes: int,
     queued_at: datetime,
+    cloudflare_revision: str | None = None,
     release_opaque_reservation: Callable[[], None] | None = None,
 ) -> None:
     """Hand a claimed run back before it started: RUNNING -> PENDING.
@@ -268,6 +313,7 @@ async def release_workflow_run(
             memory_request_bytes=memory_request_bytes,
             execution_lane=execution_lane,
             queued_at=queued_at,
+            cloudflare_revision=cloudflare_revision,
         )
         await db.commit()
     logger.info("Handed a run back for another executor", extra={"execution_id": str(execution_id)})

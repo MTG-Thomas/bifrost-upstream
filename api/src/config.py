@@ -7,10 +7,41 @@ All configuration is centralized here for easy management.
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
+from uuid import UUID
 
-from pydantic import AliasChoices, Field, SecretStr, computed_field, field_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    computed_field,
+    field_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_SourceDigest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+
+
+class CloudflareWorkflowApproval(BaseModel):
+    """Operator-reviewed declaration for one loose-workspace fixture revision."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_id: UUID
+    entry_path: str
+    function_name: str
+    entry_sha256: _SourceDigest
+    module_sha256: dict[str, _SourceDigest] = Field(max_length=31)
+    manifest_sha256: _SourceDigest
+    packages: list[str] = Field(max_length=32)
+    https_hosts: list[str] = Field(max_length=32)
+    required_https_hosts: list[str] = Field(max_length=32)
+    estimated_subrequests: int = Field(strict=True, ge=0)
+    subrequest_allowance: int = Field(strict=True, ge=0, le=50)
+    estimated_cpu_ms: int = Field(strict=True, ge=0)
+    cpu_budget_ms: int = Field(strict=True, gt=0)
 
 
 class Settings(BaseSettings):
@@ -32,6 +63,10 @@ class Settings(BaseSettings):
 
     worker_capacity_url: str | None = Field(default=None, description="External physical-capacity provider HTTPS endpoint")
     worker_capacity_token: SecretStr | None = Field(default=None, repr=False, exclude=True)
+    cloudflare_workflow_approvals: list[CloudflareWorkflowApproval] = Field(
+        default_factory=list,
+        description="Operator-reviewed revisions for the dev Cloudflare workflow launcher",
+    )
 
     # ==========================================================================
     # Environment
