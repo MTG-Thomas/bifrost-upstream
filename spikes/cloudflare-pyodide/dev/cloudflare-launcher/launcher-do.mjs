@@ -97,10 +97,6 @@ export class CloudflareLauncher extends DurableObject {
     }
   }
 
-  async drain() {
-    await this.#core.drain();
-  }
-
   async alarm() {
     // Keep a durable wake-up even if the DO resets while a connection is open.
     // A close schedules an earlier retry. Only the current alarm opens sockets.
@@ -139,12 +135,8 @@ export class CloudflareLauncher extends DurableObject {
   }
 
   async #receive(connection, data) {
-    const result = await this.#core.receive(connection.session, data);
+    await this.#core.receive(connection.session, data);
     if (this.#connection !== connection) return;
-    if (result === 'reconnect') {
-      await this.#disconnect(connection);
-      return;
-    }
     if (connection.session.generation && connection.heartbeat === null) {
       clearTimeout(connection.welcomeTimer);
       this.#backoff = 1000;

@@ -119,6 +119,7 @@ export class LauncherCore {
     this.#slot = await this.storage.get(SLOT);
     if (this.#slot && this.#slot.state !== 'terminal') {
       const entering = this.#slot.state === 'entering';
+      if (entering) this.#stop(this.#slot.route);
       const outcome = this.#expired(this.#slot.route) && !entering ? timeout() :
         failure(entering ? 'uncertain' : 'not_started', 'LauncherReset', 'Launcher reset before a terminal was recorded');
       await this.#settle(this.#slot.route, outcome);
@@ -244,12 +245,13 @@ export class LauncherCore {
   }
 
   #emit(session, payload) {
-    if (this.#session !== session) return;
+    if (this.#session !== session) return false;
     const frames = fragment(envelope(session.generation, session.sent + 1, 'event', payload));
     for (const frame of frames) {
       this.send(session, encodeEnvelope(frame));
       session.sent = frame.sequence;
     }
+    return true;
   }
 
   async #command(session, {id, action, payload}) {
@@ -261,11 +263,6 @@ export class LauncherCore {
         if (this.status() === 'starting') await this.#saveControl({...this.#control, state: 'ready'});
         accept({});
         return;
-      case 'retired':
-        // Cloudflare retirement is confirmed on hello, not by a command.
-        accept({});
-        if (this.#session === session) this.#session = null;
-        return 'reconnect';
       case 'terminate': {
         const slot = this.#slot;
         if (typeof payload.route_id !== 'string' || !ROUTE.test(payload.route_id) ||
@@ -315,10 +312,15 @@ export class LauncherCore {
     }
     if (this.#session !== session) return;
     await this.#saveSlot({route, state: 'accepted'});
+    let replied = false;
     try {
-      accept({runtime_handle: route.runtime_handle});
+      replied = accept({runtime_handle: route.runtime_handle});
     } finally {
-      this.background(this.#execute(session, route, payload.context));
+      if (replied) {
+        this.background(this.#execute(route, payload.context));
+      } else {
+        await this.#settle(route, failure('not_started', 'ControlDisconnected', 'Workflow reply was not sent'));
+      }
     }
   }
 
@@ -326,21 +328,20 @@ export class LauncherCore {
     return route.workflow_deadline !== null && this.clock() >= Date.parse(route.workflow_deadline);
   }
 
-  async #execute(session, route, context) {
+  async #execute(route, context) {
     const work = await this.#serialize(async () => {
       if (this.#slot?.route !== route || this.#slot.state !== 'accepted') return null;
       if (this.#expired(route)) {
         await this.#settle(route, timeout());
         return null;
       }
-      if (this.#session !== session) {
-        await this.#settle(route, failure('not_started', 'ControlDisconnected', 'Control disconnected before engine entry'));
+      if (this.retired) {
+        await this.#settle(route, failure('not_started', 'LauncherRetired', 'The incarnation ended'));
         return null;
       }
       await this.#saveSlot({route, state: 'entering'});
-      if (this.#expired(route) || this.#session !== session) {
-        await this.#settle(route, this.#expired(route) ? timeout() :
-          failure('not_started', 'ControlDisconnected', 'Control disconnected before engine entry'));
+      if (this.#expired(route)) {
+        await this.#settle(route, timeout());
         return null;
       }
       const controller = new AbortController();

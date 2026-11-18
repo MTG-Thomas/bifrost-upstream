@@ -169,21 +169,25 @@ test('a lost ack keeps the same result until the matching ack, including while d
   assert.equal(api.data.has('slot'), false);
 });
 
-test('stale generations and non-increasing command and ack sequences are rejected', async () => {
+test('stale generations cannot acknowledge a retained terminal or welcome a new session', async () => {
   const api = peer();
   await connect(api, 2);
   await api.command('workflow', workflow());
   await api.finish();
   const ack = {event_id: api.frames().at(-1)._event_id};
   await assert.rejects(api.receive(envelope(1, 99, 'ack', ack)), /stale control generation/);
-  await assert.rejects(api.receive(envelope(2, 2, 'ack', ack)), /stale control connection/);
   assert.ok(api.data.has('slot'));
   await api.dial();
   await assert.rejects(api.welcome(2), /stale/);
+});
+
+test('a repeated command sequence is rejected on the current generation', async () => {
+  const api = peer();
   await connect(api, 3);
   await api.command('ready');
-  await assert.rejects(api.receive(envelope(3, 1, 'ack', ack)), /stale control generation/);
-  assert.ok(api.data.has('slot'));
+  await assert.rejects(api.receive(envelope(3, 1, 'command', {id: 'repeat', action: 'ready', payload: {}})),
+    /stale control generation or sequence/);
+  assert.equal(api.frames().length, 2);
 });
 
 test('one slot holds through terminal settlement and refuses a second engine entry', async () => {
@@ -220,6 +224,8 @@ test('reset during a host call journals uncertain before reconnect', async () =>
   assert.equal(reset.frames()[0].inventory.terminal_routes[0].attempt_state, 'uncertain');
   assert.equal(reset.frames()[1].result.success, false);
   assert.equal(reset.calls.length, 0);
+  await reset.finish();
+  assert.deepEqual(reset.stopped, [workflow().route_id]);
   running.resolve(COMPLETED);
   await api.finish();
 });
@@ -333,13 +339,31 @@ test('terminal retirement survives reset, while an ordinary refusal reconnects',
   assert.equal(await peer({data: api.data}).dial(), null);
 });
 
-test('a retired command fences its transport without permanently retiring the incarnation', async () => {
-  const api = peer();
+test('a replied route executes through disconnect and replays its terminal', async () => {
+  const attempt = workflow();
+  const api = peer({onSend: (payload) => {
+    if (payload.result?.runtime_handle) void api.close();
+  }});
   await connect(api);
-  await api.command('retired');
-  await assert.rejects(api.command('workflow', workflow()), /stale control connection/);
+  await api.command('workflow', attempt);
+  await api.finish();
+  assert.equal(api.calls.length, 1);
+  assert.equal(api.calls[0].route.workflow_deadline, attempt.workflow_deadline);
+  await connect(api, 2);
+  assert.equal(api.frames().at(-2).inventory.terminal_routes[0].route_id, attempt.route_id);
+  assert.equal(api.frames().at(-1).attempt_state, 'completed');
+});
+
+test('a persisted route whose reply could not be sent never enters the host', async () => {
+  const api = peer({beforePut: (key, value) => {
+    if (key === 'slot' && value.state === 'accepted') void api.close();
+  }});
+  await connect(api);
+  await api.command('workflow', workflow());
+  await api.finish();
   assert.equal(api.calls.length, 0);
-  assert.ok(await api.dial());
+  await connect(api, 2);
+  assert.equal(api.frames().at(-1).attempt_state, 'not_started');
 });
 
 test('heartbeats are sequenced at one-second cadence after welcome', async () => {
