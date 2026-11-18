@@ -23,7 +23,7 @@ from src.services.worker_pool.external_policy import validate_burst_profiles, va
 from src.services.worker_pool.liveness import silent_executor
 from src.services.worker_pool.recovery import announce_lost_runs, end_runs_of_lost_worker
 from src.services.worker_pool.sizing import JobSizing
-from src.worker.remote.protocol import CLOUDFLARE_PYTHON_RUNTIME_PROFILE, WORKER_DRAIN_GRACE_SECONDS
+from src.worker.remote.protocol import CLOUDFLARE_PYTHON_RUNTIME_PROFILE, LINUX_RUNTIME_PROFILE, WORKER_DRAIN_GRACE_SECONDS
 from src.services.work_dispatch import (
     DISPATCH_WAKE_FAMILIES,
     WAKE_PLATFORM_JOB,
@@ -44,6 +44,12 @@ class ExternalWorkerPoolController(WorkerCapacityController):
         self.live = LiveControllers(ids=frozenset({self.id}), versions=frozenset({self.version}))
         self.cleanup_states = ("lost", "retired")
         self.runtime_profile = profile.runtime_profile
+        self.burst_launch_allowed = True
+
+    async def launch_for_demand(self, policy: KubernetesPolicy) -> list[UUID]:
+        if not self.burst_launch_allowed:
+            return []
+        return await super().launch_for_demand(policy)
 
     @property
     def profile(self) -> WorkerCapacityProfile:
@@ -75,6 +81,7 @@ class ExternalWorkerPoolController(WorkerCapacityController):
             validate_external_policy(
                 policy, self.profile, max_lifetime_seconds=self.settings.pool_max_lifetime_seconds,
                 peer=self.peer_profile,
+                primary_only=self.dual_capacity and self.runtime_profile == LINUX_RUNTIME_PROFILE,
             )
         except ValueError as exc:
             raise CapacityProtocolError(f"Worker policy differs from provider capabilities: {exc}") from exc
@@ -105,6 +112,11 @@ class ExternalWorkerPoolController(WorkerCapacityController):
             runtime_profile = worker.runtime_profile
             created_at = worker.created_at
             deleted_at = worker.capacity_resource_deleted_at
+        if runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and state in ("reserved", "starting"):
+            if _now() - created_at >= timedelta(seconds=self.settings.pool_start_timeout_seconds):
+                reason = "prepare_timeout" if state == "reserved" else "start_timeout"
+                await self._record_loss(worker_id, uid, reason, False)
+                return
         if state == "reserved" and (version != self.profile.worker_version or runtime_profile != self.runtime_profile):
             # A provider rollout cannot relabel an already reserved incarnation.
             # Fence it before cleanup; queued demand may reserve a fresh UUID.
@@ -200,6 +212,8 @@ class ExternalWorkerPoolController(WorkerCapacityController):
                 return
             if reason == "start_timeout" and worker.state != "starting":
                 return
+            if reason == "prepare_timeout" and worker.state != "reserved":
+                return
             self._lose(worker, "out_of_memory" if out_of_memory else reason, _now())
             ended = await end_runs_of_lost_worker(db, worker.id, out_of_memory=out_of_memory)
             await db.commit()
@@ -218,7 +232,8 @@ async def external_worker_pool_loop(stop_event: asyncio.Event, settings: Setting
             burst_client = ExternalCapacityClient(
                 settings.cloudflare_capacity_url, settings.cloudflare_capacity_token.get_secret_value(), http=http,
             )
-        controllers: list[ExternalWorkerPoolController] = []
+        primary: ExternalWorkerPoolController | None = None
+        burst: ExternalWorkerPoolController | None = None
         wake = asyncio.Event()
         listener = asyncio.create_task(
             listen_for_pool_wake(
@@ -233,35 +248,38 @@ async def external_worker_pool_loop(stop_event: asyncio.Event, settings: Setting
         try:
             while not stop_event.is_set():
                 started = time.monotonic()
+                primary_available = False
                 try:
-                    if not controllers:
-                        primary_profile = await client.profile()
-                        if burst_client is None:
-                            controllers = [ExternalWorkerPoolController(client, settings, primary_profile)]
-                        else:
-                            burst_profile = await burst_client.profile()
-                            validate_burst_profiles(primary_profile, burst_profile)
-                            controllers = [
-                                ExternalWorkerPoolController(client, settings, primary_profile),
-                                ExternalWorkerPoolController(burst_client, settings, burst_profile),
-                            ]
-                except asyncio.CancelledError:
-                    raise
+                    if primary is None:
+                        profile = await client.profile()
+                        if burst_client is not None and profile.runtime_profile != LINUX_RUNTIME_PROFILE:
+                            raise CapacityProtocolError("Burst mode requires a primary Linux provider")
+                        primary = ExternalWorkerPoolController(client, settings, profile)
+                    if await primary.reachability.check():
+                        await primary.reconcile()
+                        primary_available = True
                 except Exception:
-                    logger.exception("External worker capacity discovery failed")
-                for index, controller in enumerate(controllers):
-                    if burst_client is not None:
-                        controller.peer_profile = controllers[1 - index].profile
+                    logger.exception("Primary worker capacity reconciliation failed")
+                if burst_client is not None and primary is not None:
                     try:
-                        if await controller.reachability.check():
-                            await controller.reconcile()
+                        if burst is None:
+                            profile = await burst_client.profile()
+                            validate_burst_profiles(primary.profile, profile)
+                            burst = ExternalWorkerPoolController(burst_client, settings, profile)
+                        primary.peer_profile = burst.profile
+                        burst.peer_profile = primary.profile
+                        burst.burst_launch_allowed = primary_available
+                        if await burst.reachability.check():
+                            await burst.reconcile()
+                        primary.peer_profile = burst.profile
                     except Exception:
-                        logger.exception("External worker capacity reconciliation failed")
+                        logger.exception("Burst worker capacity reconciliation failed")
                 await wait_for_next_pass(
                     stop_event, wake, since=started, spacing=RECONCILE_SECONDS, sweep=SWEEP_SECONDS,
                 )
         finally:
             listener.cancel()
             await asyncio.gather(listener, return_exceptions=True)
-            for controller in controllers:
-                await _withdraw_live(controller.id)
+            for controller in (primary, burst):
+                if controller is not None:
+                    await _withdraw_live(controller.id)

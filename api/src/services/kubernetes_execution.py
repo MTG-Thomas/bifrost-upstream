@@ -432,6 +432,8 @@ class KubernetesExecutionService:
         from src.config import get_settings
 
         settings = get_settings()
+        burst_url = getattr(settings, "cloudflare_capacity_url", None)
+        burst_token = getattr(settings, "cloudflare_capacity_token", None)
         profile = None
         burst = None
         if settings.worker_capacity_url or settings.worker_capacity_token:
@@ -447,10 +449,10 @@ class KubernetesExecutionService:
                         http=http,
                     )
                     profile = await client.profile()
-                    if settings.cloudflare_capacity_url and settings.cloudflare_capacity_token:
+                    if burst_url and burst_token:
                         burst = await ExternalCapacityClient(
-                            settings.cloudflare_capacity_url,
-                            settings.cloudflare_capacity_token.get_secret_value(),
+                            burst_url,
+                            burst_token.get_secret_value(),
                             http=http,
                         ).profile()
                         validate_burst_profiles(profile, burst)

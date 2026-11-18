@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import exists, func, select, text, tuple_, update
 
+from src.config import get_settings
 from src.core.database import get_db_context, get_liveness_db_context
 from src.models.orm.execution_workers import MANAGED_WORKER_FORMS, ExecutionWorker, ExecutionWorkerClaim
 from src.models.orm.work_dispatches import WorkDispatch
@@ -433,7 +434,7 @@ async def begin_idle_drain(incarnation_id: UUID) -> bool:
         # A sized Job always drains once idle: only standard Jobs make up the
         # warm minimum.
         worker = await db.execute(
-            select(ExecutionWorker.resource_class, ExecutionWorker.execution_lane).where(
+            select(ExecutionWorker.resource_class, ExecutionWorker.execution_lane, ExecutionWorker.runtime_profile).where(
                 ExecutionWorker.id == incarnation_id
             )
         )
@@ -446,15 +447,19 @@ async def begin_idle_drain(incarnation_id: UUID) -> bool:
             if worker_row.execution_lane == "fast_path"
             else policy.warm_workers
         )
-        if not sized:
-            ready_jobs = await db.scalar(
-                select(func.count(ExecutionWorker.id)).where(
-                    ExecutionWorker.form.in_(MANAGED_WORKER_FORMS),
-                    ExecutionWorker.resource_class == "standard",
-                    ExecutionWorker.state == "ready",
-                    ExecutionWorker.execution_lane == worker_row.execution_lane,
-                )
-            ) or 0
+        linux_floor = (
+            worker_row.execution_lane == "normal" and bool(getattr(get_settings(), "cloudflare_capacity_url", None))
+        )
+        if not sized and (not linux_floor or worker_row.runtime_profile == LINUX_RUNTIME_PROFILE):
+            ready = select(func.count(ExecutionWorker.id)).where(
+                ExecutionWorker.form.in_(MANAGED_WORKER_FORMS),
+                ExecutionWorker.resource_class == "standard",
+                ExecutionWorker.state == "ready",
+                ExecutionWorker.execution_lane == worker_row.execution_lane,
+            )
+            if linux_floor:
+                ready = ready.where(ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE)
+            ready_jobs = await db.scalar(ready) or 0
             if ready_jobs <= keep_ready:
                 return False
         drained = await db.scalar(

@@ -164,11 +164,22 @@ class WorkerCapacityController(ABC):
         self.capacity_profile: WorkerCapacityProfile | None = None
         self.peer_profile: WorkerCapacityProfile | None = None
 
+    @property
+    def dual_capacity(self) -> bool:
+        return self.peer_profile is not None or bool(getattr(self.settings, "cloudflare_capacity_url", None))
+
+    def _counts_for_warm_floor(self, worker: ExecutionWorker) -> bool:
+        return (
+            not self.dual_capacity
+            or worker.execution_lane != "normal"
+            or worker.runtime_profile == LINUX_RUNTIME_PROFILE
+        )
+
     def _outdated(self, worker: ExecutionWorker) -> bool:
         if worker.form == "external" and worker.state == "ready":
             for profile in (self.capacity_profile, self.peer_profile):
                 if profile is not None and worker.capacity_scope == profile.scope and (
-                    self.peer_profile is not None or profile.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+                    self.dual_capacity or profile.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
                 ):
                     return worker.version != profile.worker_version
         return self.live.outdated(worker)
@@ -452,7 +463,7 @@ class WorkerCapacityController(ABC):
                 if worker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
                 and worker.form == "external" and worker.state == "ready"
                 and worker.execution_lane == "normal" and not worker.memory_pressured
-                and worker.memory_budget_bytes == CLOUDFLARE_DEV_BUDGET_BYTES
+                and worker.memory_budget_bytes in (None, CLOUDFLARE_DEV_BUDGET_BYTES)
                 # The owner reports declared active_runs from Admission holds,
                 # including routes that have not started or settled yet.
                 and worker.active_runs == 0 and worker.memory_reserved_bytes == 0
@@ -491,14 +502,21 @@ class WorkerCapacityController(ABC):
             room = max(0, policy.max_workers - jobs)
             scope_room = room
             profile, peer = self.capacity_profile, self.peer_profile
-            if profile is not None and (cloudflare or peer is not None):
+            if profile is not None and (cloudflare or self.dual_capacity):
                 scope_counts = await self._external_scope_counts(db, profile, peer)
                 live_in_scopes = sum(
                     worker.form == "external" and worker.capacity_scope in scope_counts for worker in workers
                 )
                 room = max(0, policy.max_workers - jobs - (sum(scope_counts.values()) - live_in_scopes))
                 scope_room = max(0, profile.max_workers - scope_counts.get(profile.scope, 0))
-                if scope_room == 0 or (cloudflare and peer and scope_counts.get(peer.scope, 0) < peer.max_workers):
+                if scope_room == 0:
+                    return []
+                if cloudflare and self.dual_capacity and (
+                    peer is None or sum(
+                        worker.form == "external" and worker.capacity_scope == peer.scope
+                        for worker in linux_workers
+                    ) < peer.max_workers
+                ):
                     return []
             plan = _plan_launches(
                 needed,
@@ -514,7 +532,6 @@ class WorkerCapacityController(ABC):
             # self-managed lifetime is excluded here so its handoff can start
             # before it stops claiming. An outdated Job still claims until it
             # drains, so replacements stay within Max workers.
-            # The floor counts managed resources across runtime profiles.
             undrained = sum(
                 1
                 for worker in workers
@@ -522,6 +539,7 @@ class WorkerCapacityController(ABC):
                 and worker.execution_lane == "normal"
                 and worker.resource_class == "standard"
                 and worker.state != "draining"
+                and self._counts_for_warm_floor(worker)
                 and not self._outdated(worker)
                 and not self._lifetime_handoff_imminent(worker, now)
             )
@@ -532,7 +550,7 @@ class WorkerCapacityController(ABC):
                         db, resource_class="standard", memory_limit_bytes=CLOUDFLARE_DEV_BUDGET_BYTES,
                         environment=environment,
                     )
-                    for _ in range(min(room, scope_room, plan.standard + (0 if peer else warm)))
+                    for _ in range(min(room, scope_room, plan.standard + (0 if self.dual_capacity else warm)))
                 ]
                 if launched:
                     await db.commit()
@@ -624,7 +642,8 @@ class WorkerCapacityController(ABC):
                         ).values(state="draining", end_reason="fast_path_reservation"))
                     await db.commit()
                     return []
-            if jobs >= policy.max_workers and (plan.sized or plan.standard):
+            fill_linux_floor = self.dual_capacity and warm > 0
+            if jobs >= policy.max_workers and (plan.sized or plan.standard or fill_linux_floor):
                 # An idle undersized worker may yield the warm minimum, but it
                 # still occupies its slot until the canonical owner retires it.
                 owned = set((await db.scalars(select(ExecutionWorker.id).where(self._managed_scope(), ExecutionWorker.state == "ready"))).all())
@@ -636,11 +655,11 @@ class WorkerCapacityController(ABC):
                          and not worker.reserved_for_dispatch_id
                          and worker.memory_budget_bytes is not None]
                 for worker_id, budget in idle_declared.items():
-                    # A provider must not replace its own declared worker with
-                    # a launch the planner assumes will be Linux.
+                    # Retain legacy behavior for a manually enrolled row in
+                    # the Linux controller's own scope.
                     if worker_id in owned:
                         continue
-                    if not any(budget.takes(request) and request.bytes <= budget.bytes for request in needed):
+                    if fill_linux_floor or not any(budget.fits(request) for request in needed):
                         # Capacity demand is global. The fenced launcher owner
                         # observes draining and retires its own resource.
                         await db.execute(update(ExecutionWorker).where(
@@ -767,13 +786,12 @@ class WorkerCapacityController(ABC):
             ).all()
             jobs = [worker for worker, _ in managed]
             ready = [worker for worker in jobs if worker.state == "ready"]
-            # The floor is shared; a declared-runtime rollout belongs to its
-            # provider scope. Preserve the existing Linux rotation policy.
+            # Scope-local rotation compares the configured build for that scope.
             outdated = [
                 worker
                 for worker, owned in managed
                 if worker.state == "ready"
-                and (owned or (self.peer_profile is None and self.runtime_profile == LINUX_RUNTIME_PROFILE
+                and (owned or (not self.dual_capacity and self.runtime_profile == LINUX_RUNTIME_PROFILE
                                and worker.runtime_profile == LINUX_RUNTIME_PROFILE))
                 and self._outdated(worker)
                 and worker.reserved_for_dispatch_id is None
@@ -793,6 +811,7 @@ class WorkerCapacityController(ABC):
                     for worker in ready
                     if worker.execution_lane == lane
                     and worker.resource_class == "standard"
+                    and self._counts_for_warm_floor(worker)
                     and worker.memory_budget_bytes is not None
                     and not self._outdated(worker)
                 )
@@ -801,6 +820,8 @@ class WorkerCapacityController(ABC):
             drainable: list[ExecutionWorker] = []
             for lane, floor in lane_floor.items():
                 lane_outdated = [worker for worker in outdated if worker.execution_lane == lane]
+                drainable.extend(worker for worker in lane_outdated if not self._counts_for_warm_floor(worker))
+                lane_outdated = [worker for worker in lane_outdated if self._counts_for_warm_floor(worker)]
                 if floor == 0 or current_ready[lane] >= floor:
                     drainable.extend(lane_outdated)
                     continue
@@ -810,6 +831,7 @@ class WorkerCapacityController(ABC):
                 current_starting = any(
                     worker.execution_lane == lane
                     and worker.resource_class == "standard"
+                    and self._counts_for_warm_floor(worker)
                     and worker.state in ("reserved", "starting")
                     and not self._outdated(worker)
                     for worker in jobs
@@ -819,6 +841,7 @@ class WorkerCapacityController(ABC):
                     for worker in ready
                     if worker.execution_lane == lane
                     and worker.resource_class == "standard"
+                    and self._counts_for_warm_floor(worker)
                     and worker.memory_budget_bytes is not None
                 )
                 excess = max(0, ready_standard - floor)
