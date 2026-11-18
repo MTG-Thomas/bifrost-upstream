@@ -7,7 +7,7 @@ import asyncio
 import hashlib
 import json
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
@@ -36,14 +36,14 @@ _PACKAGES = {
     "dotenv": "python-dotenv", "yaml": "pyyaml", "redis": "redis",
     "workers": "workers-runtime-sdk",
 }
-_UNSUPPORTED = {"ctypes", "fcntl", "importlib", "multiprocessing", "resource", "signal", "socket", "subprocess"}
+_UNSUPPORTED = {"ctypes", "fcntl", "code", "codeop", "importlib", "multiprocessing", "runpy", "resource", "signal", "socket", "subprocess"}
 _TRAPS = {"process_time", "process_time_ns", "fork", "forkpty", "import_module"}
 _DYNAMIC = {"__import__", "eval", "exec", "compile", "vars", "globals"}
-_HTTP_NAMESPACES = {"httpx", "urllib.request", "js", "js.globalThis", "workers", "pyodide.http"}
-_HTTP_ROOTS = {name.split(".")[0] for name in _HTTP_NAMESPACES}
 _HTTP_CLIENTS = {"httpx.Client", "httpx.AsyncClient"}
-_HTTP_FUNCTIONS = {"fetch", "pyfetch", "request", "urlopen"}
-_HTTP_RECEIVERS = {"client", "http", "http_client", "http_session", "session"}
+_FETCH_FUNCTIONS = {"js.fetch", "js.globalThis.fetch", "pyodide.http.pyfetch", "workers.fetch"}
+_BLOCKED_ATTRIBUTES = {"__dict__", "__subclasses__", "__globals__", "__code__", "__builtins__"}
+_REFLECTION = {"sys.modules", "operator.attrgetter", "operator.methodcaller", "pydoc.locate", "pkgutil.resolve_name"}
+_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
 _HTTP_METHODS = {"fetch", "pyfetch", "request", "get", "head", "post", "put", "patch", "delete", "options", "stream", "urlopen"}
 
 SourceReader = Callable[[str, int], Awaitable[bytes | None]]
@@ -54,7 +54,7 @@ class AnalysisRejected(ValueError):
 
 
 class SourceUnresolved(AnalysisRejected):
-    """The current observation may be missing an unindexed dependency."""
+    """An indexed source could not be read from storage."""
 
 
 def digest(value: object) -> str:
@@ -107,7 +107,58 @@ def _dotted(node: ast.expr) -> str:
 
 def _qualified(node: ast.expr, aliases: dict[str, str]) -> str:
     root, _, tail = _dotted(node).partition(".")
-    return ".".join(filter(None, (aliases.get(root, root), tail))) if root else f".{tail}"
+    if not root:
+        return f".{tail}"
+    resolved = aliases.get(root)
+    if resolved is None:
+        resolved = f"builtins.{root}" if root in _DYNAMIC | {"getattr", "__builtins__"} else f"unbound.{root}"
+    return f"{resolved}.{tail}" if tail else resolved
+
+
+def _scoped_nodes(root: ast.AST) -> Iterator[ast.AST]:
+    """Walk one lexical scope. Headers of nested functions run in this scope."""
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        yield node
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            children = [*node.decorator_list, *node.args.defaults, *filter(None, node.args.kw_defaults)]
+        elif isinstance(node, ast.ClassDef):
+            children = [*node.bases, *node.keywords, *node.decorator_list]
+        elif isinstance(node, ast.Lambda):
+            children = [*node.args.defaults, *filter(None, node.args.kw_defaults)]
+        else:
+            children = list(ast.iter_child_nodes(node))
+        stack.extend(reversed(children))
+
+
+def _constructor_host(node: ast.Call) -> str | None:
+    base = next((item.value for item in node.keywords if item.arg == "base_url"), None)
+    if base is None:
+        return None
+    if not isinstance(base, ast.Constant) or not isinstance(base.value, str):
+        raise AnalysisRejected("HTTP client base_url requires a literal HTTPS origin")
+    return _https_host(base.value)
+
+
+def _http_target(
+    node: ast.expr, aliases: dict[str, str], clients: dict[str, str | None],
+) -> tuple[str, str | None] | None:
+    qualified = _qualified(node, aliases)
+    namespace, _, method = qualified.rpartition(".")
+    if qualified in _FETCH_FUNCTIONS or qualified in {"urllib.request.urlopen", "urllib.request.urlretrieve"}:
+        return method, None
+    if method not in _HTTP_METHODS:
+        return None
+    if namespace == "httpx" or namespace in _HTTP_CLIENTS:
+        return method, None
+    if isinstance(node, ast.Attribute):
+        receiver = node.value
+        if isinstance(receiver, ast.Name) and receiver.id in clients:
+            return method, clients[receiver.id]
+        if isinstance(receiver, ast.Call) and _qualified(receiver.func, aliases) in _HTTP_CLIENTS:
+            return method, _constructor_host(receiver)
+    return None
 
 
 @dataclass
@@ -171,7 +222,7 @@ class _Analysis:
         if package and module:
             raise AnalysisRejected(f"Ambiguous workspace import: {dotted}")
         if not (package or module or optional):
-            raise SourceUnresolved(f"Unresolved import: {dotted}")
+            raise AnalysisRejected(f"Unresolved import: {dotted}")
         return package or module
 
     async def import_from(self, path: str, node: ast.ImportFrom) -> None:
@@ -184,7 +235,7 @@ class _Analysis:
         if module.split(".")[0] in _RESERVED | _PACKAGES.keys():
             await self.resolve(module)
             if any(
-                alias.name in _TRAPS or alias.name == "*"
+                alias.name in _TRAPS or alias.name == "*" or f"{module}.{alias.name}" in _REFLECTION
                 or (module == "builtins" and alias.name in _DYNAMIC)
                 for alias in node.names
             ):
@@ -196,30 +247,48 @@ class _Analysis:
                 raise AnalysisRejected("Wildcard workspace imports require manual refactoring")
             child = await self.resolve(f"{module}.{alias.name}", optional=True)
             if not (found or child):
-                raise SourceUnresolved(f"Unresolved import: {module}.{alias.name}")
+                raise AnalysisRejected(f"Unresolved import: {module}.{alias.name}")
 
     def inspect_module(self, syntax: ast.Module) -> list[ast.Import | ast.ImportFrom]:
-        aliases: dict[str, str] = {}
-        imports: list[ast.Import | ast.ImportFrom] = []
-        for node in ast.walk(syntax):
+        # Count the full tree before constructing per-scope working sets.
+        for _ in ast.walk(syntax):
             self.nodes += 1
             if self.nodes > _MAX_NODES:
                 raise AnalysisRejected("Workspace sources exceed the analysis complexity budget")
+        imports: list[ast.Import | ast.ImportFrom] = []
+        self.inspect_scope(syntax.body, {}, {}, imports)
+        return imports
+
+    def inspect_scope(
+        self, body: list[ast.stmt] | ast.expr, inherited_aliases: dict[str, str],
+        inherited_clients: dict[str, str | None], imports: list[ast.Import | ast.ImportFrom],
+        arguments: ast.arguments | None = None,
+    ) -> None:
+        roots = body if isinstance(body, list) else [body]
+        nodes = [node for root in roots for node in _scoped_nodes(root)]
+        local_names = {
+            node.id for node in nodes if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del))
+        } | {node.name for node in nodes if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+        if arguments is not None:
+            local_names.update(node.arg for node in ast.iter_child_nodes(arguments) if isinstance(node, ast.arg))
+        aliases = {**inherited_aliases, **{name: f"local.{name}" for name in local_names}}
+        clients = {name: host for name, host in inherited_clients.items() if name not in local_names}
+        for node in nodes:
             if isinstance(node, ast.Import):
                 imports.append(node)
                 for item in node.names:
                     root = item.name.split(".")[0]
                     aliases[item.asname or root] = item.name if item.asname else root
+                    clients.pop(item.asname or root, None)
             elif isinstance(node, ast.ImportFrom):
                 imports.append(node)
-                if not node.level:
-                    aliases.update({item.asname or item.name: f"{node.module}.{item.name}" for item in node.names})
+                for item in node.names:
+                    name = item.asname or item.name
+                    aliases[name] = f"{node.module}.{item.name}" if not node.level else f"local.{name}"
+                    clients.pop(name, None)
 
-        clients: set[str] = set()
-        dynamic_getattr_calls: set[int] = set()
-        for node in ast.walk(syntax):
-            if isinstance(node, ast.Call) and _qualified(node.func, aliases) in {"getattr", "builtins.getattr"}:
-                dynamic_getattr_calls.add(id(node.func))
+        calls = {id(node.func) for node in nodes if isinstance(node, ast.Call)}
+        for node in nodes:
             if isinstance(node, ast.withitem):
                 value, targets = node.context_expr, [node.optional_vars]
             elif isinstance(node, ast.Assign):
@@ -229,16 +298,17 @@ class _Analysis:
             else:
                 continue
             if isinstance(value, ast.Call) and _qualified(value.func, aliases) in _HTTP_CLIENTS:
-                clients.update(target.id for target in targets if isinstance(target, ast.Name))
+                host = _constructor_host(value)
+                clients.update({target.id: host for target in targets if isinstance(target, ast.Name)})
 
-        has_http_import = any(name.split(".")[0] in _HTTP_ROOTS for name in aliases.values())
-        for node in ast.walk(syntax):
-            self.inspect(node, aliases, clients, has_http_import, dynamic_getattr_calls)
-        return imports
+        for node in nodes:
+            self.inspect(node, aliases, clients, calls)
+            if isinstance(node, _SCOPES):
+                parameters = node.args if not isinstance(node, ast.ClassDef) else None
+                self.inspect_scope(node.body, aliases, clients, imports, parameters)
 
     def inspect(
-        self, node: ast.AST, aliases: dict[str, str], clients: set[str],
-        has_http_import: bool, dynamic_getattr_calls: set[int],
+        self, node: ast.AST, aliases: dict[str, str], clients: dict[str, str | None], calls: set[int],
     ) -> None:
         if isinstance(node, ast.JoinedStr) and node.values:
             first = node.values[0]
@@ -253,51 +323,53 @@ class _Analysis:
         if isinstance(node, (ast.Name, ast.Attribute)) and isinstance(node.ctx, ast.Load):
             qualified = _qualified(node, aliases)
             if (
-                qualified in _DYNAMIC or qualified.removeprefix("builtins.") in _DYNAMIC
-                or qualified == "sys.modules" or qualified.rsplit(".", 1)[-1] in _TRAPS
-                or (qualified in {"getattr", "builtins.getattr"} and id(node) not in dynamic_getattr_calls)
+                qualified in _REFLECTION or qualified.removeprefix("builtins.") in _DYNAMIC | {"__builtins__"}
+                or qualified.rsplit(".", 1)[-1] in _TRAPS
+                or (isinstance(node, ast.Attribute) and node.attr in _BLOCKED_ATTRIBUTES)
             ):
                 raise AnalysisRejected("Unsupported dynamic or Pyodide runtime operation")
+            if id(node) not in calls and (
+                qualified == "builtins.getattr" or _http_target(node, aliases, clients) is not None
+            ):
+                raise AnalysisRejected("Unsupported indirect reference to an HTTP or dynamic operation")
         if not isinstance(node, ast.Call):
             return
         qualified = _qualified(node.func, aliases)
-        if qualified in {"getattr", "builtins.getattr"}:
+        if qualified == "builtins.getattr":
             attr = node.args[1] if len(node.args) > 1 else None
             if (
                 not isinstance(attr, ast.Constant) or not isinstance(attr.value, str)
-                or attr.value in _DYNAMIC | _TRAPS | {"getattr", "modules", "__dict__"} | _HTTP_FUNCTIONS
+                or attr.value in _DYNAMIC | _TRAPS | _BLOCKED_ATTRIBUTES | {"getattr", "modules"}
+                or _http_target(ast.Attribute(value=node.args[0], attr=attr.value), aliases, clients) is not None
             ):
                 raise AnalysisRejected("Unsupported dynamic attribute lookup")
-        namespace, _, method = qualified.rpartition(".")
-        if (
-            isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Call)
-            and _qualified(node.func.value.func, aliases) in _HTTP_CLIENTS
-        ):
-            namespace = "httpx"
-        if namespace.startswith("bifrost."):
+        if qualified in _HTTP_CLIENTS:
+            host = _constructor_host(node)
+            if host is not None:
+                self.hosts.add(host)
+        if qualified.rpartition(".")[0].startswith("bifrost."):
             self.calls += 1
             return
-        if method not in _HTTP_METHODS:
+        target = _http_target(node.func, aliases, clients)
+        if target is None:
             return
+        method, base_host = target
         index = 1 if method in {"request", "stream"} else 0
         url = node.args[index] if len(node.args) > index else next(
             (keyword.value for keyword in node.keywords if keyword.arg in {"url", "fullurl"}), None
         )
         literal = _url_literal(url) if url is not None else None
-        if namespace not in _HTTP_NAMESPACES and namespace not in clients:
-            if (
-                method in _HTTP_FUNCTIONS or has_http_import
-                or namespace.rsplit(".", 1)[-1] in _HTTP_RECEIVERS
-                or any(keyword.arg in {"url", "fullurl"} for keyword in node.keywords)
-                or (literal is not None and literal.startswith(("http://", "https://")))
-            ):
-                raise AnalysisRejected("Outbound call has no statically identifiable HTTP receiver")
-            return
         if literal is None:
             raise AnalysisRejected("Outbound call has no statically identifiable HTTPS URL")
+        if (
+            base_host is not None and literal and literal == literal.strip()
+            and not literal.startswith("//") and "\\" not in literal
+            and ":" not in literal.partition("/")[0]
+        ):
+            self.hosts.add(base_host)
+        else:
+            self.hosts.add(_https_host(literal))
         self.calls += 1
-        self.hosts.add(_https_host(literal))
-
 
 
 async def analyze(
@@ -311,7 +383,7 @@ async def analyze(
     try:
         async with asyncio.timeout(20):
             if not await analysis.load(entry_path, function_name):
-                raise SourceUnresolved("Workflow source is missing")
+                raise AnalysisRejected("Workflow source is missing")
     except (SyntaxError, UnicodeError, RecursionError) as exc:
         raise AnalysisRejected("Workspace source could not be analyzed as Python") from exc
     # Static sizing signals. Repeated calls, input-dependent work and library

@@ -12,7 +12,7 @@ from collections.abc import Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from shared.execution_lanes import resolve_admitted_execution_lane
@@ -38,6 +38,9 @@ from src.services.work_dispatch import (
 )
 from src.worker.remote.fencing import fence_remote_owner
 
+if TYPE_CHECKING:
+    from src.jobs.platform.cloudflare_reapproval import ReapprovalRequest
+
 logger = logging.getLogger(__name__)
 
 FAMILY = WAKE_WORKFLOW
@@ -51,6 +54,7 @@ class AcceptedRun:
     dispatch_id: UUID
     message: dict[str, Any]
     pending: PendingExecution
+    reapproval: ReapprovalRequest | None = None
 
 
 def _organization_id(org_id: str | None) -> UUID | None:
@@ -157,6 +161,9 @@ async def stage_workflow_run(
                 ).columns(),
             )
         )
+    revision, reapproval = (
+        await _cloudflare_placement(db, pending, message) if execution_lane == "normal" else (None, None)
+    )
     dispatch = stage_dispatch(
         db,
         family=FAMILY,
@@ -169,20 +176,19 @@ async def stage_workflow_run(
         payload=dict(pending),
         memory_request_bytes=memory_request_bytes,
         execution_lane=execution_lane,
-        cloudflare_revision=(
-            await _cloudflare_revision(db, pending, message) if execution_lane == "normal" else None
-        ),
+        cloudflare_revision=revision,
     )
     return AcceptedRun(
         dispatch_id=dispatch.id,
         message=dispatch.message,
         pending=pending,
+        reapproval=reapproval,
     )
 
 
-async def _cloudflare_revision(
+async def _cloudflare_placement(
     db: AsyncSession, pending: PendingExecution, message: dict[str, Any]
-) -> str | None:
+) -> tuple[str | None, ReapprovalRequest | None]:
     workflow_id = pending["workflow_id"]
     if (
         workflow_id is None or message.get("workflow_id") != workflow_id
@@ -190,7 +196,7 @@ async def _cloudflare_revision(
         or pending.get("artifact_workspace_id") is not None
         or not get_settings().cloudflare_worker_hello_enabled
     ):
-        return None
+        return None, None
     from src.services.execution.cloudflare_eligibility import (
         POLICY_VERSION,
         ApprovalDeclaration,
@@ -205,36 +211,43 @@ async def _cloudflare_revision(
 
     approval = await current_approval(db, UUID(workflow_id))
     if approval is None or approval.policy_version != POLICY_VERSION:
-        return None
+        return None, None
     try:
         workflow = await get_workflow_for_execution(workflow_id, db=db)
     except (WorkflowLoadError, WorkflowNotFoundError):
-        return None
+        return None, None
     if workflow["solution_id"] is not None or workflow["type"] != "workflow":
-        return None
+        return None, None
     metadata = message.get("dispatch_metadata")
     if metadata is not None and any(
         metadata.get(key) != workflow[key]
         for key in ("path", "function_name", "content_hash", "solution_id", "type")
     ):
-        return None
+        return None, None
     declaration = ApprovalDeclaration.model_validate(approval.declaration)
     owner = str(approval.organization_id) if approval.organization_id else None
     if (owner, declaration.entry_path, declaration.function_name) != (
         workflow["organization_id"], workflow["path"], workflow["function_name"],
     ):
-        return None
+        return None, None
     manifest = declaration.manifest
     indexed = await indexed_pins(db, set(manifest))
     observed = {path: indexed.get(path) for path in manifest}
     if observed[declaration.entry_path] != workflow["content_hash"]:
-        return None
+        return None, None
     if observed != manifest:
-        from src.jobs.platform.cloudflare_reapproval import stage_reapproval
+        from src.jobs.platform.cloudflare_reapproval import (
+            ReapprovalPayload,
+            ReapprovalRequest,
+        )
 
-        await stage_reapproval(approval, observed)
-        return None
-    return approval.revision
+        return None, ReapprovalRequest(
+            ReapprovalPayload(
+                workflow_id=approval.workflow_id, parent_revision=approval.revision, observed_pins=observed,
+            ),
+            approval.organization_id,
+        )
+    return approval.revision, None
 
 
 async def hand_off_workflow_run(accepted: AcceptedRun) -> None:
@@ -246,6 +259,10 @@ async def hand_off_workflow_run(accepted: AcceptedRun) -> None:
     if not accepted.pending["sync"]:
         request_queue_position_refresh()
     await hand_off(FAMILY)
+    if accepted.reapproval is not None:
+        from src.jobs.platform.cloudflare_reapproval import stage_reapproval
+
+        await stage_reapproval(accepted.reapproval)
 
 
 async def claim_workflow_dispatch(

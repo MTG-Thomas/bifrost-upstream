@@ -23,6 +23,7 @@ from src.services.execution.cloudflare_analysis import (
     MAX_SUBREQUESTS,
     POLICY_VERSION,
     AnalysisRejected,
+    SourceUnresolved,
     analyze,
     digest,
 )
@@ -127,6 +128,7 @@ class ObservationChanged(AnalysisRejected):
 async def propose_approval(
     workflow_id: UUID, *, subrequest_allowance: int, cpu_budget_ms: int,
     expected_pins: dict[str, str | None] | None = None,
+    analysed_pins: dict[str, str | None] | None = None,
 ) -> ApprovalProposal:
     async with get_db_context() as db:
         workflow = await db.get(Workflow, workflow_id)
@@ -142,15 +144,29 @@ async def propose_approval(
     async def read(path: str, max_bytes: int) -> bytes | None:
         try:
             content = await storage.read(path, max_bytes=max_bytes)
+        except ValueError:
+            if analysed_pins is not None:
+                # A bounded read cannot hash an oversized object. Confirm
+                # the full pin by streaming before recording a refusal.
+                await check_pin(path, await storage.content_hash(path))
+            raise AnalysisRejected("Workspace source exceeds its analysis read budget") from None
         except StorageError as error:
             if error.kind != "not_found":
                 raise
             content = None
-        if expected_pins is not None and path in expected_pins:
-            pin = storage.compute_hash(content) if content is not None else None
-            if pin != expected_pins[path]:
-                raise ObservationChanged("Observed workspace sources changed before analysis")
+        if analysed_pins is not None:
+            await check_pin(path, storage.compute_hash(content) if content is not None else None)
         return content
+
+    async def check_pin(path: str, pin: str | None) -> None:
+        if pin is None:
+            async with get_db_context() as db:
+                if path in await indexed_pins(db, {path}):
+                    raise SourceUnresolved("Indexed workspace source is missing from storage")
+        if expected_pins is not None and path in expected_pins and pin != expected_pins[path]:
+            raise ObservationChanged("Observed workspace sources changed before analysis")
+        if analysed_pins is not None:
+            analysed_pins[path] = pin
 
     declaration = ApprovalDeclaration.model_validate(await analyze(
         read, entry_path, function_name, subrequest_allowance=subrequest_allowance, cpu_budget_ms=cpu_budget_ms,

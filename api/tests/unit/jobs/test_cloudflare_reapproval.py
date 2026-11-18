@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from src.core.storage.contracts import StorageError
 from src.jobs.platform import cloudflare_reapproval as reapproval
 from src.jobs.platform.base import (
@@ -14,12 +14,17 @@ from src.jobs.platform.base import (
     PlatformJobContext,
     PlatformJobFailure,
 )
-from src.models.orm import CloudflareApproval, PlatformJob
+from src.models.orm import CloudflareApproval, FileIndex, PlatformJob
 from src.services import platform_jobs
-from src.services.execution.cloudflare_analysis import POLICY_VERSION
+from src.services.execution.cloudflare_analysis import (
+    POLICY_VERSION,
+    AnalysisRejected,
+    SourceUnresolved,
+)
 from src.services.execution.cloudflare_eligibility import (
     ApprovalDeclaration,
     ApprovalProposal,
+    ObservationChanged,
 )
 from src.services.platform_job_lease import LeaseLost
 
@@ -74,7 +79,7 @@ async def test_new_egress_or_package_needs_review(scenario, worker, changed):
         worker.workflow_id, None, worker.previous_revision, worker.declaration.model_copy(update=changed),
     )
     assert await reapproval._run_reapproval(context, payload) == {
-        "outcome": "review_required", "reason": "approval_envelope_changed",
+        "outcome": "review_required", "reason": "approval_envelope_changed", "analysed_pins": payload.observed_pins,
     }
     reapproval.accept_proposal.assert_not_awaited()
 
@@ -100,18 +105,47 @@ async def test_lease_loss_prevents_acceptance(scenario, worker):
     reapproval.accept_proposal.assert_not_awaited()
 
 
-async def test_stage_failure_is_advisory(scenario, worker, monkeypatch, caplog):
-    approval, _, payload, _ = scenario
-    monkeypatch.setattr(reapproval, "_stage_reapproval", AsyncMock(side_effect=RuntimeError("unavailable")))
-    await reapproval.stage_reapproval(approval, payload.observed_pins)
-    assert "Could not stage Cloudflare reapproval" in caplog.text
+@pytest.mark.parametrize("error, outcome", [
+    (ObservationChanged("changed"), "superseded"),
+    (AnalysisRejected("Unresolved import: requests"), "review_required"),
+    (SourceUnresolved("Indexed source missing"), "retryable"),
+])
+async def test_analysis_failure_outcomes(scenario, worker, error, outcome):
+    _, _, payload, context = scenario
+    reapproval.propose_approval.side_effect = error
+    if outcome == "retryable":
+        with pytest.raises(PlatformJobFailure) as failure:
+            await reapproval._run_reapproval(context, payload)
+        assert failure.value.retryable
+    else:
+        result = await reapproval._run_reapproval(context, payload)
+        assert result["outcome"] == outcome
+        if outcome == "review_required":
+            assert result["analysed_pins"] == payload.observed_pins
+
+
+async def test_stage_failure_is_advisory(scenario, db_session, caplog):
+    _, _, payload, _ = scenario
+    definition = reapproval.CLOUDFLARE_REAPPROVAL_DEFINITION
+    dedupe = reapproval.digest(["reapproval-v3", payload.parent_revision, payload.observed_pins])
+    await db_session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext('bifrost:platform-job:' || :key))"),
+        {"key": f"{definition.job_type}:{dedupe}"},
+    )
+    await reapproval.stage_reapproval(reapproval.ReapprovalRequest(payload, None))
+    (record,) = [record for record in caplog.records if "Could not stage Cloudflare reapproval" in record.message]
+    assert record.exc_info is not None and record.exc_info[0] is TimeoutError
+    assert await db_session.scalar(select(PlatformJob.id).where(PlatformJob.dedupe_key == dedupe)) is None
 
 
 async def test_shared_dedupe_cooldown_and_deterministic_refusal(scenario, db_session):
     approval, _, payload, _ = scenario
+    helper = f"helper_{approval.workflow_id.hex}.py"
+    file = FileIndex(path=helper, content_hash="d" * 64)
+    db_session.add(file)
 
     async def stage():
-        await reapproval._stage_reapproval(db_session, approval, payload.observed_pins)
+        await reapproval._stage_reapproval(db_session, reapproval.ReapprovalRequest(payload, None))
         return (await db_session.scalars(select(PlatformJob).where(
             PlatformJob.resource_id == str(approval.workflow_id),
         ).order_by(PlatformJob.created_at))).all()
@@ -120,14 +154,16 @@ async def test_shared_dedupe_cooldown_and_deterministic_refusal(scenario, db_ses
     job.created_at = datetime.now(UTC) - timedelta(minutes=11)
     assert len(await stage()) == 1  # Shared active-job deduplication.
     job.status = "succeeded"
-    job.result = {"outcome": "review_required"}
+    job.result = {"outcome": "review_required", "analysed_pins": {helper: file.content_hash}}
     assert len(await stage()) == 1  # Deterministic beyond the cooldown.
-    job.status = "failed"
     job.created_at = datetime.now(UTC)
-    job.result = None
-    assert len(await stage()) == 1  # Transient within the cooldown.
-    job.created_at -= timedelta(minutes=11)
-    assert len(await stage()) == 2
+    file.content_hash = "e" * 64
+    assert len(await stage()) == 2  # Fixing a new module invalidates the refusal immediately.
+    job, retry = await stage()
+    retry.status = "failed"
+    assert len(await stage()) == 2  # Transient within the cooldown.
+    retry.created_at -= timedelta(minutes=11)
+    assert len(await stage()) == 3
 
 
 async def test_retryable_storage_failure_requeues_shared_job(scenario, worker, async_session_factory, monkeypatch):

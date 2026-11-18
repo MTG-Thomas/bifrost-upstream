@@ -8,12 +8,14 @@ from uuid import uuid4
 
 import pytest
 from src.core.redis_client import PendingExecution, pending_execution_record
+from src.core.storage.contracts import StorageError
 from src.jobs.platform import cloudflare_reapproval
 from src.models.orm import CloudflareApproval
 from src.services.execution import cloudflare_eligibility, service, workflow_dispatch
 from src.services.execution.cloudflare_analysis import (
     POLICY_VERSION,
     AnalysisRejected,
+    SourceUnresolved,
     analyze,
     digest,
 )
@@ -95,16 +97,21 @@ async def test_enqueue_uses_only_the_durable_approval_and_index(review, monkeypa
     monkeypatch.setattr(cloudflare_eligibility, "RepoStorage", Mock(side_effect=AssertionError("enqueue read source")))
     monkeypatch.setattr(workflow_dispatch, "_request_for", AsyncMock(return_value=64 << 20))
     db = Mock(scalar=AsyncMock(return_value="normal"))
-    await workflow_dispatch.stage_workflow_run(db, pending, {
+    accepted = await workflow_dispatch.stage_workflow_run(db, pending, {
         "workflow_id": pending["workflow_id"], "cloudflare_revision": "f" * 64,
     }, record_exists=True)
     assert db.add.call_args.args[0].cloudflare_revision == (approval.revision if state == "unchanged" else None)
     if state == "unapproved":
         lookup.assert_not_awaited()
+    enqueue.assert_not_awaited()
     if state == "changed-helper":
-        enqueue.assert_awaited_once_with(approval, pins)
+        assert accepted.reapproval is not None
+        assert accepted.reapproval.payload.observed_pins == pins
+        monkeypatch.setattr(workflow_dispatch, "hand_off", AsyncMock())
+        await workflow_dispatch.hand_off_workflow_run(accepted)
+        enqueue.assert_awaited_once_with(accepted.reapproval)
     else:
-        enqueue.assert_not_awaited()
+        assert accepted.reapproval is None
 
 
 async def _analyze(sources, **limits):
@@ -176,10 +183,33 @@ async def test_http_calls_require_identifiable_urls(prefix, call):
 async def test_http_context_manager_and_unknown_receiver():
     source = b"import httpx\nasync def run():\n    async with httpx.AsyncClient() as c:\n        return await c.get('https://example.com/path')\n"
     assert (await _analyze({ENTRY: source}))["required_https_hosts"] == ["example.com"]
-    with pytest.raises(AnalysisRejected, match="identifiable HTTP receiver"):
-        await _analyze({ENTRY: b"def run(c): return c.get('https://example.com')\n"})
-    with pytest.raises(AnalysisRejected, match="identifiable HTTP receiver"):
-        await _analyze({ENTRY: b"def run(client, url): return client.get(url)\n"})
+
+
+@pytest.mark.parametrize("source", [
+    "import json, httpx\nasync def run():\n    async with httpx.AsyncClient() as c:\n        resp = await c.get('https://api.example.com')\n        return resp.json().get('id')",
+    "import httpx\ndef run():\n    r = httpx.get('https://api.example.com')\n    return r.headers.get('etag')",
+    "import os, httpx\ndef run():\n    httpx.get('https://api.example.com')\n    return os.environ.get('X')",
+    "from urllib.parse import urlencode\ndef run(params): return urlencode(params.get('a'))",
+    "import redis\ndef run(k):\n    client = redis.Redis()\n    return client.get(k)",
+    "def run(session, obj): return session.delete(obj)",
+    "import httpx\nasync def run():\n    async with httpx.AsyncClient(base_url='https://api.example.com') as c:\n        return await c.get('/v1/items')",
+    "from httpx import Client\ndef run():\n    c = Client(base_url='https://api.example.com')\n    return c.get('items')",
+    "from httpx import Client\ndef run():\n    with Client(base_url='https://api.example.com') as c:\n        return c.get('/items')",
+])
+async def test_http_analysis_ignores_data_access_and_tracks_client_origins(source):
+    result = await _analyze({ENTRY: source.encode()})
+    assert result["required_https_hosts"] == (["api.example.com"] if "https://" in source else [])
+
+
+async def test_relative_client_url_cannot_supply_a_new_authority():
+    source = b"import httpx\ndef run():\n    c = httpx.Client(base_url='https://api.example.com')\n    return c.get('//other.example.com/x')"
+    with pytest.raises(AnalysisRejected, match="exact, bare HTTPS hostname"):
+        await _analyze({ENTRY: source})
+
+
+async def test_shadowed_builtin_names_are_local():
+    source = b"def run(vars):\n    compile = str\n    globals = compile(vars)\n    return globals"
+    assert (await _analyze({ENTRY: source}))["packages"] == []
 
 
 async def test_mapping_get_without_http_intent_is_allowed():
@@ -198,6 +228,21 @@ async def test_mapping_get_without_http_intent_is_allowed():
     "import sys as s; s.modules",
     "import importlib",
     "e = __import__",
+    "import builtins; builtins.__dict__['compile']",
+    "__builtins__['compile']",
+    "x.__subclasses__()",
+    "x.__globals__",
+    "x.__code__",
+    "import operator; operator.attrgetter",
+    "from operator import methodcaller",
+    "import pydoc; pydoc.locate",
+    "import pkgutil; pkgutil.resolve_name",
+    "import runpy",
+    "import code",
+    "import codeop",
+    "import httpx; getattr(httpx, 'post')",
+    "import js; g = js.fetch",
+    "import httpx; client = httpx.Client(); g = client.get",
 ])
 async def test_dynamic_python_is_rejected(statement):
     with pytest.raises(AnalysisRejected, match="dynamic|Unsupported Pyodide import"):
@@ -212,6 +257,78 @@ async def test_parse_rejects_oversized_source_before_parsing(monkeypatch):
     with pytest.raises(AnalysisRejected, match="bundle budget"):
         await _analyze({ENTRY: b" " * (128 * 1024 + 1)})
     parse.assert_not_called()
+
+
+async def test_total_parse_budget_is_enforced_before_fifth_module(monkeypatch):
+    from src.services.execution import cloudflare_analysis
+
+    parse = Mock(wraps=cloudflare_analysis.ast.parse)
+    monkeypatch.setattr(cloudflare_analysis.ast, "parse", parse)
+    # Four 128 KiB files use the budget. Loading a fifth must stop before parsing.
+    entry = b"import a, b, c, d\ndef run(): pass\n"
+    size = 128 * 1024
+    sources = {ENTRY: entry.ljust(size), **{f"{name}.py": b"x=1\n".ljust(size) for name in "abcd"}}
+    with pytest.raises(AnalysisRejected, match="bundle budget"):
+        await _analyze(sources)
+    assert parse.call_count == 4
+
+
+@pytest.mark.parametrize("indexed", [False, True])
+async def test_missing_import_retries_only_if_the_index_has_the_path(review, monkeypatch, indexed):
+    approval, sources, _ = review
+    workflow = SimpleNamespace(
+        is_active=True, solution_id=None, type="workflow", path=ENTRY, function_name="run", organization_id=None,
+    )
+
+    @asynccontextmanager
+    async def db_context():
+        yield Mock(get=AsyncMock(return_value=workflow))
+
+    async def read(path, *, max_bytes):
+        if path == ENTRY:
+            return sources[path]
+        raise StorageError("not_found", provider_code="NoSuchKey")
+
+    monkeypatch.setattr(cloudflare_eligibility, "get_db_context", db_context)
+    monkeypatch.setattr(cloudflare_eligibility, "indexed_pins", AsyncMock(
+        side_effect=lambda _, paths: {HELPER: "a" * 64} if indexed and HELPER in paths else {},
+    ))
+    storage = SimpleNamespace(read=read, compute_hash=lambda content: hashlib.sha256(content).hexdigest())
+    monkeypatch.setattr(cloudflare_eligibility, "RepoStorage", lambda: storage)
+    pins: dict[str, str | None] = {}
+    with pytest.raises(AnalysisRejected) as failure:
+        await cloudflare_eligibility.propose_approval(
+            approval.workflow_id, subrequest_allowance=10, cpu_budget_ms=500, analysed_pins=pins,
+        )
+    assert isinstance(failure.value, SourceUnresolved) is indexed
+    if not indexed:
+        assert pins[HELPER] is None
+
+
+async def test_oversized_storage_object_checks_observed_digest_before_refusal(review, monkeypatch):
+    approval, _, _ = review
+    workflow = SimpleNamespace(
+        is_active=True, solution_id=None, type="workflow", path=ENTRY, function_name="run", organization_id=None,
+    )
+
+    @asynccontextmanager
+    async def db_context():
+        yield Mock(get=AsyncMock(return_value=workflow))
+
+    storage = Mock(
+        read=AsyncMock(side_effect=ValueError("oversized")),
+        content_hash=AsyncMock(return_value="b" * 64),
+    )
+    monkeypatch.setattr(cloudflare_eligibility, "get_db_context", db_context)
+    monkeypatch.setattr(cloudflare_eligibility, "RepoStorage", lambda: storage)
+    pins: dict[str, str | None] = {}
+    with pytest.raises(cloudflare_eligibility.ObservationChanged):
+        await cloudflare_eligibility.propose_approval(
+            approval.workflow_id, subrequest_allowance=10, cpu_budget_ms=500,
+            expected_pins={ENTRY: "a" * 64}, analysed_pins=pins,
+        )
+    storage.content_hash.assert_awaited_once_with(ENTRY)
+    assert not pins
 
 
 @pytest.mark.parametrize("problem", ["missing-marker", "removed-approval", "changed-entry", "changed-module"])

@@ -8,10 +8,11 @@ from sqlalchemy import delete, select
 from src.config import get_settings
 from src.core.redis_client import pending_execution_record
 from src.jobs.platform.cloudflare_reapproval import CLOUDFLARE_REAPPROVAL_DEFINITION
-from src.models.orm import Organization, PlatformJob, Workflow
+from src.models.orm import CloudflareApproval, Organization, PlatformJob, Workflow
 from src.services.execution import workflow_dispatch
 from src.services.execution.cloudflare_analysis import AnalysisRejected
 from src.services.execution.cloudflare_eligibility import (
+    POLICY_VERSION,
     accept_proposal,
     current_approval,
     prepare_approved_workspace,
@@ -65,6 +66,19 @@ async def test_review_is_bound_to_indexed_sources_and_workflow_owner(db_session,
         assert workspace is not None
         assert workspace.bundle["sources"] == {path: "def run(): return 2\n"}
 
+        collision = await propose()
+        db_session.add(CloudflareApproval(
+            revision=collision.revision, workflow_id=workflow_id, policy_version=POLICY_VERSION,
+            declaration=collision.declaration.model_dump(mode="json"), accepted_by="collision fixture",
+            is_current=False,
+        ))
+        await db_session.commit()
+        with pytest.raises(AnalysisRejected, match="current approval changed"):
+            await accept_proposal(db_session, collision, accepted_by="test operator")
+        await db_session.rollback()
+        retained = await current_approval(db_session, workflow_id)
+        assert retained is not None and retained.revision == reviewed.revision
+
         new_owner = Organization(id=uuid4(), name=f"Cloudflare review {workflow_id}", created_by="test")
         db_session.add(new_owner)
         await db_session.flush()
@@ -110,7 +124,8 @@ async def test_changed_module_carries_forward_through_live_platform_job(
     job_filter = (PlatformJob.job_type == job_type, PlatformJob.resource_id == str(workflow_id))
 
     async def marker():
-        return await workflow_dispatch._cloudflare_revision(db_session, pending, message)
+        revision, _ = await workflow_dispatch._cloudflare_placement(db_session, pending, message)
+        return revision
 
     async def prepare(revision, entry_sha256):
         return await prepare_approved_workspace(
@@ -129,7 +144,13 @@ async def test_changed_module_carries_forward_through_live_platform_job(
 
         new_sha = await index.write(module_path, b"VALUE = 'updated'\n")
         await db_session.commit()
-        assert await marker() is None
+        marker_before, request = await workflow_dispatch._cloudflare_placement(db_session, pending, message)
+        assert marker_before is None and request is not None
+        assert (await db_session.execute(select(PlatformJob.id).where(*job_filter))).scalar_one_or_none() is None
+        await db_session.commit()
+        await workflow_dispatch.hand_off_workflow_run(
+            workflow_dispatch.AcceptedRun(uuid4(), message, pending, request),
+        )
         job_id = (await db_session.execute(select(PlatformJob.id).where(*job_filter))).scalar_one()
         await db_session.commit()
         async with asyncio.timeout(120):
