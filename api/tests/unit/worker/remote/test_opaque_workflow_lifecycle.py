@@ -23,7 +23,6 @@ from src.services.execution import workflow_dispatch
 from src.services.work_dispatch import WAKE_WORKFLOW
 from src.services.worker_pool import recovery
 from src.services.worker_pool.claims import PoolClaim
-from src.worker.admission import Admission
 from src.worker.remote import remote_pool
 from src.worker.remote.fencing import LeaseRef, remote_owner_context
 from src.worker.remote.host import ApiExecutor, Bridge
@@ -43,7 +42,7 @@ RESERVATION = 32 * 2**20
 
 def opaque_bridge(socket, lease):
     return Bridge(socket, {
-        "hostname": "opaque", "current": 1, "limit": 256 * 2**20,
+        "hostname": "opaque",
         "runtime_profile": PROFILE, "handlers": (("workflow.execute", 1),),
     }, lease)
 
@@ -55,11 +54,7 @@ async def opaque_executor(async_session_factory, monkeypatch):
     worker = ApiExecutor(bridge, lease.worker_id)
     worker._workflow_consumer = worker._make_workflow_consumer()
     pool = worker._workflow_consumer._pool
-    worker.admission = bridge.admission = Admission(
-        budget_bytes=128 * 2**20, under_pressure=lambda: False,
-        running_workflow_ids=pool.active_execution_ids, workflow_growth=pool.workflow_growth,
-        claims_open=worker._claims_open,
-    )
+    bridge.admission = worker.admission
     monkeypatch.setattr(bridge, "request", AsyncMock())
     monkeypatch.setattr(bridge, "acknowledge", AsyncMock())
     monkeypatch.setattr(pool, "_write_context_to_redis", AsyncMock())
@@ -122,7 +117,7 @@ def workflow_entry(subject, *, expired=False):
 
 def inventory(live=(), terminals=()):
     return {"event": "inventory", "inventory": {
-        "version": 1, "baseline_bytes": 1, "routes": list(live), "terminal_routes": list(terminals),
+        "version": 1, "routes": list(live), "terminal_routes": list(terminals),
     }}
 
 
@@ -178,9 +173,13 @@ async def test_lost_launch_ack_recovers_the_same_opaque_route(opaque_executor, a
     dispatched = launch.args[1]
     assert launch.kwargs["expected_generation"] == bridge.lease.session_generation
     assert dispatched["workflow_deadline"] == dispatched["context"]["workflow_deadline"]
+    assert "memory_kill_growth_bytes" not in dispatched
     pending = pool._build_heartbeat()
     assert pending["processes"] == []
     assert pending["busy_count"] == 2
+    assert pending["declared_capacity"]["held_slots"] == 2
+    async with worker.admission.claiming() as fits:
+        assert fits is None
     assert next(invocation for invocation in pending["runtime_invocations"]
                 if invocation["execution_id"] == str(subject))["runtime_handle"] is None
 
@@ -204,12 +203,24 @@ async def test_takeover_adopts_live_and_replays_retained_terminal(opaque_executo
     pool.on_result.assert_not_awaited()
     assert not worker._claims_open()
 
+    async def settle(_result):
+        # Replayed terminals and live invocations both hold capacity until
+        # the terminal callback succeeds.
+        assert worker.admission.held_slots() == 2
+        assert worker.admission.held_bytes() == 2 * RESERVATION
+        async with worker.admission.claiming() as fits:
+            assert fits is None
+
+    pool.on_result.side_effect = settle
     await worker.bridge.receive(inventory([live], [terminal]))
     await worker._prepare_admission()
     await asyncio.gather(*worker.bridge.results)
 
     assert worker._claims_open()
+    assert worker.admission.held_slots() == 1
     assert worker.admission.held_bytes() == RESERVATION
+    async with worker.admission.claiming() as fits:
+        assert fits is None  # spare bytes, but the adopted route holds the only slot
     assert list(pool.processes) == [live["route_id"]]
     handle = pool.processes[live["route_id"]]
     assert pool._opaque_deadline(handle.current_execution).isoformat() == live["workflow_deadline"]
@@ -518,7 +529,7 @@ async def test_definitively_unsent_workflow_is_handed_back(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("refusal", [
-    "disconnected", "inventory-gated", "generation-changed", "RuntimeError", "MemoryError",
+    "disconnected", "inventory-gated", "generation-changed", "stale-heartbeat", "RuntimeError", "MemoryError",
 ])
 async def test_opaque_workflow_refusal_cleans_route_with_real_bridge(monkeypatch, refusal):
     socket = Mock(send_text=AsyncMock())
@@ -534,6 +545,9 @@ async def test_opaque_workflow_refusal_cleans_route_with_real_bridge(monkeypatch
         pool._write_active_execution_lease.side_effect = lambda execution: bridge.disconnect()
     elif refusal == "generation-changed":
         bridge.replace_socket(socket, replace(bridge.lease, session_generation=2))
+        bridge.reconciliation_ready.set()
+    elif refusal == "stale-heartbeat":
+        bridge.heartbeat_at -= 4
         bridge.reconciliation_ready.set()
     elif refusal != "inventory-gated":
         bridge.reconciliation_ready.set()
@@ -918,7 +932,7 @@ async def test_late_terminal_cannot_commit_after_owner_replaced(opaque_executor,
 
 @pytest.mark.asyncio
 async def test_opaque_bridge_requires_inventory_v1():
-    bridge = Bridge(Mock(), {"hostname": "opaque", "current": 1, "limit": 2, "runtime_profile": PROFILE},
+    bridge = Bridge(Mock(), {"hostname": "opaque", "runtime_profile": PROFILE},
                     RemoteOwnerLease(uuid4(), uuid4(), uuid4(), 1))
     message = inventory()
     message["inventory"]["version"] = 2

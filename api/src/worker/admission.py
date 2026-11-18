@@ -52,12 +52,18 @@ class Admission:
         running_workflow_ids: Callable[[], set[str]],
         workflow_growth: Callable[[], dict[str, int]],
         claims_open: Callable[[], bool] = lambda: True,
+        declared_slots: int | None = None,
     ) -> None:
         """``running_workflow_ids`` and ``workflow_growth`` come from the
         process pool: the runs whose children are alive, and how much each
         has grown since it started. ``claims_open`` is false while the
-        executor may not take new work for a reason other than memory."""
+        executor may not take new work for a reason other than memory.
+        Declared capacity uses the full byte budget and explicit settlement
+        of holds, independent of OS telemetry and start pacing."""
+        if declared_slots is not None and (declared_slots <= 0 or budget_bytes <= 0):
+            raise ValueError("Declared capacity requires a positive slot count and byte budget")
         self.budget_bytes = budget_bytes
+        self.declared_slots = declared_slots
         self._under_pressure = under_pressure
         self._claims_open = claims_open
         self._running_workflow_ids = running_workflow_ids
@@ -69,6 +75,8 @@ class Admission:
 
     def held_bytes(self) -> int:
         """What the held work reserves (rule 1)."""
+        if self.declared_slots is not None:
+            return sum(hold.request_bytes for hold in self._holds.values())
         running = self._running_workflow_ids()
         for key in [k for k, h in self._holds.items() if h.workflow and not h.starting]:
             if key not in running:
@@ -82,6 +90,9 @@ class Admission:
     def free_bytes(self) -> int:
         return max(0, self.budget_bytes - self.held_bytes())
 
+    def held_slots(self) -> int:
+        return len(self._holds)
+
     def request_bytes(self, key: str) -> int | None:
         """Return the original request held for ``key``, if it is active."""
         hold = self._holds.get(key)
@@ -89,6 +100,8 @@ class Admission:
 
     def pressured(self) -> bool:
         """Real memory over the threshold; logs each change."""
+        if self.declared_slots is not None:
+            return False
         pressured = self._under_pressure()
         if pressured != self._pressured:
             self._pressured = pressured
@@ -101,9 +114,16 @@ class Admission:
     @asynccontextmanager
     async def claiming(self) -> AsyncIterator[int | None]:
         """Claim one piece of work: yields the bytes a claim may take, or
-        None while claims are closed or memory is over the threshold (claim
-        nothing). Hold what was claimed before leaving the block."""
+        None while claims are closed, declared slots are occupied, or real
+        memory is over the threshold. Hold claimed work before leaving the block."""
         async with self._lock:
+            if self.declared_slots is not None:
+                yield (
+                    self.free_bytes()
+                    if self._claims_open() and self.held_slots() < self.declared_slots
+                    else None
+                )
+                return
             await self._pace()
             if not self._claims_open():
                 yield None

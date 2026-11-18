@@ -64,6 +64,7 @@ class ThinRemoteTransport(Protocol):
     # The current launcher session (RemoteOwnerLease): its generation and
     # the credential protocol the launcher reported.
     lease: Any
+    admission: Admission | None
 
     async def request(
         self, action: str, payload: dict[str, Any], *, expected_generation: int | None = None
@@ -640,16 +641,18 @@ class ThinRemoteProcessPool(ProcessPoolManager):
             return
         if not self.transport.connected:
             raise RuntimeError("Thin remote launcher is not connected")
-        await self.transport.request("configure", {
-            "pressure_threshold": get_settings().memory_pressure_threshold,
-            "dangerous_memory_ratio": DANGEROUS_MEMORY_RATIO,
-        })
+        if self.runtime_profile == LINUX_RUNTIME_PROFILE:
+            await self.transport.request("configure", {
+                "pressure_threshold": get_settings().memory_pressure_threshold,
+                "dangerous_memory_ratio": DANGEROUS_MEMORY_RATIO,
+            })
 
         self._started = True
         self._shutdown = False
         self._started_at = datetime.now(timezone.utc)
         self._last_active_execution_refresh = time.monotonic()
-        self._read_remote_memory()
+        if self.runtime_profile == LINUX_RUNTIME_PROFILE:
+            self._read_remote_memory()
         await self._register_worker()
         redis_client = await self._get_redis()
         await cast(
@@ -833,7 +836,8 @@ class ThinRemoteProcessPool(ProcessPoolManager):
             raise CredentialRouteChanged("Opaque dispatch requires a credential route generation")
         dispatch_started_at = datetime.now(UTC) if opaque else None
         await self._write_context_to_redis(execution_id, context)
-        self._ensure_remote_capacity()
+        if not opaque:
+            self._ensure_remote_capacity()
         route_id = self._workflow_route_id(execution_id)
         timeout = int(context.get("timeout_seconds", self.execution_timeout_seconds))
 
@@ -881,14 +885,16 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                         "route_id": route_id,
                         "execution_id": execution_id,
                         "context": context,
-                        "memory_kill_growth_bytes": self.memory_kill_growth_bytes,
                         "active_execution": dict(active_execution),
                         "started_at": started_at.isoformat(),
                         "timeout_seconds": timeout,
                         "memory_request_bytes": (
                             handle.process.memory_request_bytes if opaque else self._request_bytes(execution_id)
                         ),
-                        **({"workflow_deadline": context["workflow_deadline"]} if opaque else {}),
+                        **(
+                            {"workflow_deadline": context["workflow_deadline"]}
+                            if opaque else {"memory_kill_growth_bytes": self.memory_kill_growth_bytes}
+                        ),
                     },
                     expected_generation=generation,
                 )
@@ -1267,7 +1273,7 @@ class ThinRemoteProcessPool(ProcessPoolManager):
     async def handle_event(self, event: dict[str, Any]) -> None:
         """Accept launcher events after their control-channel authentication."""
         event_type = event.get("event")
-        if event_type == "sample":
+        if event_type == "sample" and self.runtime_profile == LINUX_RUNTIME_PROFILE:
             self._remote_memory_current = int(event.get("current", -1))
             self._remote_memory_limit = int(event.get("limit", -1))
             runs = event.get("runs", {})
@@ -1348,13 +1354,20 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                     await self.on_service_result(self._service_envelope(handle, result))
             elif handle.current_execution is not None:
                 result = handle.current_execution.attach_transport_metadata(result)
-                self._attach_resource_peaks(handle, result)
+                if self.runtime_profile == LINUX_RUNTIME_PROFILE:
+                    self._attach_resource_peaks(handle, result)
+                else:
+                    # Opaque launchers have no process measurement. The
+                    # result callback also uses growth to teach request sizing.
+                    result.pop("metrics", None)
                 if self.on_result is not None:
                     await self.on_result(result)
             if not await self._owns_session():
                 raise ConnectionError("Remote API ownership was replaced before ACK")
             if self.runtime_profile != LINUX_RUNTIME_PROFILE:
                 self._cancel_opaque_stop_task(handle)
+                if self.transport.admission is not None and handle.current_execution is not None:
+                    self.transport.admission.release(handle.current_execution.execution_id)
             handle.result_reported = True
             handle.process.exitcode = 0
             handle.current_execution = None
@@ -1368,7 +1381,7 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         self._result_locks.pop(handle.id, None)
 
     def _build_heartbeat(self) -> dict[str, Any]:
-        """Publish remote cgroup usage without inspecting the API host."""
+        """Publish the remote runtime's own capacity and usage."""
         processes = [
             {
                 "pid": handle.process.remote_pid,
@@ -1419,9 +1432,9 @@ class ThinRemoteProcessPool(ProcessPoolManager):
             **({
                 "requirements_installed": self._requirements_installed,
                 "requirements_total": self._requirements_total,
+                "memory_current_bytes": self._remote_memory_current,
+                "memory_max_bytes": self._remote_memory_limit,
             } if self.runtime_profile == LINUX_RUNTIME_PROFILE else {}),
-            "memory_current_bytes": self._remote_memory_current,
-            "memory_max_bytes": self._remote_memory_limit,
         }
         if self.runtime_profile != LINUX_RUNTIME_PROFILE:
             # OS-process diagnostics retain their existing integer-PID contract.
@@ -1432,9 +1445,17 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                 "route_id": handle.id,
                 "execution_id": handle.current_execution.execution_id,
                 "state": handle.state.value,
-                "memory_bytes": self._route_metrics.get(handle.id, {}).get("rss_bytes"),
-                "cpu_seconds": self._route_metrics.get(handle.id, {}).get("cpu_seconds"),
+                "memory_request_bytes": handle.process.memory_request_bytes,
             } for handle in self.processes.values() if handle.current_execution is not None]
             heartbeat["runtime_invocations"] = invocations
             heartbeat["pool_size"] = heartbeat["busy_count"] = len(invocations)
+            heartbeat["runtime_profile"] = self.runtime_profile
+            admission = self.transport.admission
+            if admission is not None:
+                heartbeat["declared_capacity"] = {
+                    "slots": admission.declared_slots,
+                    "held_slots": admission.held_slots(),
+                    "budget_bytes": admission.budget_bytes,
+                    "reserved_bytes": admission.held_bytes(),
+                }
         return heartbeat

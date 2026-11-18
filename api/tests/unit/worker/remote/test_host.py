@@ -19,10 +19,12 @@ from src.worker.remote.host import ApiExecutor, Bridge, RemoteControlHost, Remot
 from src.worker.remote.ownership import RemoteOwnerLease
 from src.worker.remote.protocol import (
     AuthenticationError,
+    CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
     ControlEnvelope,
     FragmentAssembler,
     Hello,
     LINUX_RUNTIME_PROFILE,
+    ProtocolError,
     sign_hello,
 )
 from src.worker.pool_main import PoolWorker
@@ -82,6 +84,51 @@ async def test_admission_stale_telemetry_still_renews_the_connected_owner() -> N
 
     renew.assert_awaited_once_with(LEASE)
     session.lose_ownership.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cloudflare_admission_requires_fresh_liveness_without_usage_samples() -> None:
+    clock = SimpleNamespace(now=100)
+    with patch("src.worker.remote.host.time.monotonic", side_effect=lambda: clock.now):
+        bridge = Bridge(Mock(), {"hostname": "opaque", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE}, LEASE)
+        worker = ApiExecutor(bridge, LEASE.worker_id)
+        assert worker.admission is not None
+        bridge.reconciliation_ready.set()
+        clock.now = 104
+        with pytest.raises(ProtocolError, match="must send liveness heartbeats"):
+            await bridge.receive({"event": "sample", "current": 0, "limit": 2**30})
+        async with worker.admission.claiming() as fits:
+            assert fits is None
+        assert not worker.admission.pressured()
+
+        await bridge.receive({"event": "heartbeat"})
+        async with worker.admission.claiming() as fits:
+            assert fits == 128 * 2**20
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("age", [4, 20], ids=["claims-paused", "lease-expired"])
+async def test_cloudflare_owner_renewal_uses_heartbeat_age(age) -> None:
+    bridge = Bridge(Mock(), {"hostname": "opaque", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE}, LEASE)
+    bridge.heartbeat_at = 100 - age
+    session = object.__new__(RemoteSession)
+    session.bridge, session.lease, session.owned_until = bridge, LEASE, 120
+    session.lose_ownership = AsyncMock()
+
+    with (
+        patch("src.worker.remote.host.time.monotonic", return_value=100),
+        patch("src.worker.remote.host.asyncio.sleep", new=AsyncMock(side_effect=[None, asyncio.CancelledError()])),
+        patch("src.worker.remote.host.renew_remote_owner", new=AsyncMock(return_value=True)) as renew,
+    ):
+        if age == 4:
+            with pytest.raises(asyncio.CancelledError):
+                await session._renew()
+            renew.assert_awaited_once_with(LEASE)
+            session.lose_ownership.assert_not_awaited()
+        else:
+            await session._renew()
+            renew.assert_not_awaited()
+            session.lose_ownership.assert_awaited_once_with("Remote launcher heartbeat expired")
 
 
 @pytest.mark.asyncio

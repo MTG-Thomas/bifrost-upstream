@@ -15,7 +15,7 @@ from src.models.orm.execution_workers import MANAGED_WORKER_FORMS, ExecutionWork
 from src.models.orm.work_dispatches import WorkDispatch
 from src.services.kubernetes_execution import load_kubernetes_policy
 from src.worker.remote.fencing import fence_remote_owner
-from src.worker.remote.protocol import EXECUTION_HANDLERS
+from src.worker.remote.protocol import CLOUDFLARE_PYTHON_RUNTIME_PROFILE, EXECUTION_HANDLERS
 
 # Shared with the capacity controller: launches and idle drains serialize.
 CAPACITY_LOCK = "bifrost:worker-pool:capacity"
@@ -201,9 +201,10 @@ async def claim_next(
     capacity on this worker; it is always a subset of what the build supports.
     Only work whose memory request fits ``fits_bytes`` (the free budget) is
     taken, except that a worker launched for one dispatch takes it first
-    whatever it measured: it exists for that work, and the real-memory gate
-    and the dangerous-memory stop still apply. When older work
-    that fits ``budget_bytes`` (but not the free budget) has waited past
+    whatever a Linux worker measured: it exists for that work, and the
+    real-memory gate and the dangerous-memory stop still apply. Declared
+    capacity always requires a fit, including reserved dispatches. When
+    older work that fits ``budget_bytes`` (but not the free budget) has waited past
     HEAD_OF_LINE_WAIT, nothing newer is taken until it fits. When supplied,
     ``reserve_claim`` runs after the assignment is fenced but before the
     transaction commits; ``release_reservation`` undoes that local hold if
@@ -225,6 +226,10 @@ async def claim_next(
         ExecutionWorker.id == incarnation_id,
         ExecutionWorker.supported_handlers.op("?")(WorkDispatch.handler),
     )
+    declared_capacity = exists().where(
+        ExecutionWorker.id == incarnation_id,
+        ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+    )
     candidate = (
         select(WorkDispatch.id, WorkDispatch.created_at)
         .where(
@@ -234,6 +239,7 @@ async def claim_next(
             | (
                 (WorkDispatch.id == reserved_for)
                 & (WorkDispatch.handler == "workflow.execute")
+                & ~declared_capacity
             ),
         )
         .order_by(

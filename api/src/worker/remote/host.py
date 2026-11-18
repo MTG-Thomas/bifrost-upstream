@@ -33,6 +33,7 @@ from src.services.worker_pool.claims import (
     register_static_worker,
     report_worker_handlers,
 )
+from src.worker.admission import Admission
 from src.worker.pool_main import PoolWorker
 from src.worker.remote.agent_route import AgentRoute, RemoteAgentConsumer
 from src.worker.remote.fencing import LeaseRef, current_remote_lease_ref, fence_remote_owner, remote_owner_context
@@ -46,6 +47,7 @@ from src.worker.remote.ownership import (
 )
 from src.worker.remote.protocol import (
     AuthenticationError,
+    CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
     ControlEnvelope,
     CredentialRouteChanged,
     FragmentAssembler,
@@ -63,6 +65,11 @@ from src.worker.remote.protocol import (
 
 
 RENEW_RETRY_SECONDS = 2.0
+# API-owned capacity for the dev build. Provider enrollment will own this
+# policy when multiple Cloudflare capacity profiles are supported.
+CLOUDFLARE_DEV_SLOTS = 1
+CLOUDFLARE_DEV_BUDGET_BYTES = 128 * 2**20
+ADMISSION_FRESHNESS_SECONDS = 3
 
 
 router = APIRouter()
@@ -104,24 +111,25 @@ class Bridge:
     ) -> None:
         self.socket = socket
         self.connected = True
-        self.current = int(hello["current"])
-        self.limit = int(hello["limit"])
-        self.pressure_ratio = float(hello["pressure_ratio"]) if "pressure_ratio" in hello else (
-            self.current / self.limit if self.limit > 0 else 1.0
-        )
-        self.baseline_bytes = self.current
+        self.runtime_profile = hello.get("runtime_profile", LINUX_RUNTIME_PROFILE)
+        if self.runtime_profile == LINUX_RUNTIME_PROFILE:
+            self.current = int(hello["current"])
+            self.limit = int(hello["limit"])
+            self.pressure_ratio = float(hello["pressure_ratio"]) if "pressure_ratio" in hello else (
+                self.current / self.limit if self.limit > 0 else 1.0
+            )
+            self.baseline_bytes = self.current
         self.hostname = hello["hostname"]
         self.execution_lane = hello.get("execution_lane", "normal")
-        self.runtime_profile = hello.get("runtime_profile", LINUX_RUNTIME_PROFILE)
         self.handlers = hello.get("handlers", LEGACY_EXECUTION_HANDLERS)
-        self.sample_at = time.monotonic()
+        self._reset_freshness()
         self.pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self.jobs: dict[str, RemoteProcess] = {}
         self.platform_routes: dict[tuple[str, str], str] = {}
         self.pool: Any = None
         # Agent runs in launcher children; kept across reconnects like jobs.
         self.agents: RemoteAgentConsumer | None = None
-        self.admission: Any = None
+        self.admission: Admission | None = None
         self.requirements = hello["requirements"] if self.runtime_profile == LINUX_RUNTIME_PROFILE else {}
         self.inventory: dict[str, Any] | None = None
         self.inventory_ready = asyncio.Event()
@@ -135,8 +143,22 @@ class Bridge:
         self.results: set[asyncio.Task[Any]] = set()
         self.lock = asyncio.Lock()
 
+    def _reset_freshness(self) -> None:
+        if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
+            self.heartbeat_at = time.monotonic()
+        else:
+            self.sample_at = time.monotonic()
+
+    def freshness_age(self) -> float:
+        observed_at = (
+            self.heartbeat_at if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE else self.sample_at
+        )
+        return time.monotonic() - observed_at
+
     def memory(self) -> tuple[int, int]:
-        if not self.connected or time.monotonic() - self.sample_at > 3:
+        if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
+            return -1, -1
+        if not self.connected or self.freshness_age() > ADMISSION_FRESHNESS_SECONDS:
             return -1, self.limit
         return self.current, self.limit
 
@@ -171,6 +193,8 @@ class Bridge:
                     if opaque:
                         if not self.connected or not self.reconciliation_ready.is_set():
                             raise CredentialRouteChanged("Opaque launcher inventory is not reconciled")
+                        if action == "workflow" and self.freshness_age() > ADMISSION_FRESHNESS_SECONDS:
+                            raise CredentialRouteChanged("Opaque launcher heartbeat is stale")
                         socket = self.socket
                     message = ControlEnvelope(
                         session_generation=self.lease.session_generation,
@@ -344,7 +368,11 @@ class Bridge:
                     future.set_exception(error(event["error"]))
                 else:
                     future.set_result(event["result"])
+        elif event.get("event") == "heartbeat" and self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
+            self.heartbeat_at = time.monotonic()
         elif event.get("event") == "sample":
+            if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
+                raise ProtocolError("Cloudflare launcher must send liveness heartbeats")
             self.current, self.limit = int(event["current"]), int(event["limit"])
             self.pressure_ratio = float(event["pressure_ratio"]) if "pressure_ratio" in event else (
                 self.current / self.limit if self.limit > 0 else 1.0
@@ -356,19 +384,19 @@ class Bridge:
             inventory = event.get("inventory")
             if not isinstance(inventory, dict):
                 raise ProtocolError("launcher inventory must be an object")
-            baseline_bytes = inventory.get("baseline_bytes")
-            if (
-                isinstance(baseline_bytes, bool)
-                or not isinstance(baseline_bytes, int)
-                or baseline_bytes < 0
-            ):
-                raise ProtocolError("launcher inventory must include its baseline memory")
             if self.runtime_profile != LINUX_RUNTIME_PROFILE:
                 version = inventory.get("version")
                 if self.inventory_ready.is_set() or type(version) is not int or version != 1:
                     raise ProtocolError("expected one opaque inventory v1 per launcher generation")
-            self.baseline_bytes = baseline_bytes
             if self.runtime_profile == LINUX_RUNTIME_PROFILE:
+                baseline_bytes = inventory.get("baseline_bytes")
+                if (
+                    isinstance(baseline_bytes, bool)
+                    or not isinstance(baseline_bytes, int)
+                    or baseline_bytes < 0
+                ):
+                    raise ProtocolError("launcher inventory must include its baseline memory")
+                self.baseline_bytes = baseline_bytes
                 requirements = event.get("requirements")
                 if requirements is not None:
                     if not isinstance(requirements, dict):
@@ -529,7 +557,7 @@ class Bridge:
         self.socket = socket
         self.lease = lease
         self.connected = True
-        self.sample_at = time.monotonic()
+        self._reset_freshness()
         self.inventory = None
         self.inventory_ready.clear()
         self.reconciliation_ready.clear()
@@ -616,6 +644,15 @@ class ApiExecutor(PoolWorker):
         )
         self.incarnation_id = incarnation_id
         self.bridge = bridge
+        if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
+            self.admission = Admission(
+                budget_bytes=CLOUDFLARE_DEV_BUDGET_BYTES,
+                declared_slots=CLOUDFLARE_DEV_SLOTS,
+                under_pressure=lambda: False,
+                running_workflow_ids=set,
+                workflow_growth=dict,
+                claims_open=self._claims_open,
+            )
         self._reconcile_lock = asyncio.Lock()
         self._reconciled_generation = 0
         self._admission_prepared = False
@@ -698,7 +735,9 @@ class ApiExecutor(PoolWorker):
         command, so work launched in between would be missing from it and
         reconciliation would fail its live child. Every claim (workflow and
         agent runs, services, platform jobs) passes ``Admission.claiming``."""
-        if self.runtime_profile != LINUX_RUNTIME_PROFILE and (self._lost or not self.bridge.connected):
+        if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and (
+            self._lost or not self.bridge.connected or self.bridge.freshness_age() > ADMISSION_FRESHNESS_SECONDS
+        ):
             return False
         return self.bridge.reconciliation_ready.is_set()
 
@@ -712,7 +751,6 @@ class ApiExecutor(PoolWorker):
     async def _prepare_admission(self) -> None:
         """Adopt physical routes after memory admission exists, before claims run."""
         assert self.admission is not None
-        self.bridge.admission = self.admission
         if self.runtime_profile != LINUX_RUNTIME_PROFILE:
             while not self._lost:
                 await self.bridge.inventory_ready.wait()
@@ -720,11 +758,13 @@ class ApiExecutor(PoolWorker):
                 snapshot = await self._reconcile_transport_inventory(generation)
                 if snapshot is not None:
                     await self._apply_reconciled_snapshot(snapshot)
+                    self.bridge.admission = self.admission
                     await self.bridge.reconciliation_complete()
                     self.bridge.pool.resume_opaque_stops(snapshot.get("opaque_live_workflows", {}))
                     self._admission_prepared = True
                     return
             return
+        self.bridge.admission = self.admission
         snapshot = await self._reconcile_transport_inventory()
         assert snapshot is not None
         await super()._prepare_admission()
@@ -997,18 +1037,24 @@ class RemoteSession:
                 # expire a healthy launcher's twenty-second owner lease.
                 if (
                     not self.bridge.connected
-                    or self.bridge.current < 0
-                    or self.bridge.limit <= 0
-                    or time.monotonic() - self.bridge.sample_at >= DEFAULT_OWNER_LEASE_SECONDS
+                    or (
+                        self.bridge.runtime_profile == LINUX_RUNTIME_PROFILE
+                        and (self.bridge.current < 0 or self.bridge.limit <= 0)
+                    )
+                    or self.bridge.freshness_age() >= DEFAULT_OWNER_LEASE_SECONDS
                 ):
                     # A WebSocket is only transport. Stop fresh claims as
                     # soon as telemetry is stale, but keep the database lease
                     # until its bounded expiry so a transient reconnect or a
                     # rolling API shutdown can hand the physical children to
                     # a fenced successor without manufacturing failures.
-                    if time.monotonic() - self.bridge.sample_at < DEFAULT_OWNER_LEASE_SECONDS:
+                    if self.bridge.freshness_age() < DEFAULT_OWNER_LEASE_SECONDS:
                         continue
-                    await self.lose_ownership("Remote launcher telemetry expired")
+                    await self.lose_ownership(
+                        "Remote launcher heartbeat expired"
+                        if self.bridge.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+                        else "Remote launcher telemetry expired"
+                    )
                     return
                 lease = self.lease
                 renewing_at = time.monotonic()
@@ -1046,12 +1092,17 @@ class RemoteSession:
     async def may_accept(self, kind: str, payload: dict[str, Any]) -> bool:
         """Defer messages during DB outages; never substitute time for a fence.
 
-        Only telemetry may use the known lease without a DB confirmation. A
-        retry cannot outlive the lease captured at entry, borrow a reconnect's
-        generation, or deliver anything while ownership is unknown.
+        Only liveness or samples may use the known lease without a DB
+        confirmation. A retry cannot outlive the lease captured at entry,
+        borrow a reconnect's generation, or deliver anything while ownership
+        is unknown.
         """
-        if kind == "event" and payload.get("event") == "sample" and time.monotonic() < self.owned_until:
-            return True
+        if kind == "event" and time.monotonic() < self.owned_until:
+            event = payload.get("event")
+            if event == "sample" or (
+                event == "heartbeat" and self.bridge.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+            ):
+                return True
         lease, deadline = self.lease, self.owned_until
         while True:
             if self.lease != lease:

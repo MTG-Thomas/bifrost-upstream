@@ -10,7 +10,9 @@ from src.models.enums import ExecutionStatus
 from src.models.orm.execution_workers import ExecutionWorker
 from src.models.orm.executions import Execution
 from src.services.execution.process_pool import ProcessState
-from src.worker.remote.host import RemoteControlHost
+from src.worker.admission import Admission
+from src.worker.remote.host import Bridge, RemoteControlHost
+from src.worker.remote.ownership import RemoteOwnerLease
 from src.worker.remote.protocol import Hello, ProtocolError, sign_hello
 from src.worker.remote.remote_pool import ThinRemoteProcessPool
 from tests.unit.dev.test_thin_remote_pool import _active, _Transport
@@ -28,8 +30,15 @@ opaque_executor = _opaque_executor
 
 @pytest.fixture
 async def opaque_dispatch(monkeypatch):
-    transport = _Transport()
+    transport = Bridge(
+        Mock(), {"hostname": "opaque", "runtime_profile": PROFILE},
+        RemoteOwnerLease(uuid4(), uuid4(), uuid4(), 1),
+    )
     transport.request = AsyncMock()
+    transport.admission = Admission(
+        budget_bytes=128 * 2**20, declared_slots=1, under_pressure=lambda: False,
+        running_workflow_ids=set, workflow_growth=dict,
+    )
     callback = AsyncMock()
     pool = ThinRemoteProcessPool(transport, runtime_profile=PROFILE, on_result=callback)
     monkeypatch.setattr(pool, "_owns_session", AsyncMock(return_value=True))
@@ -38,6 +47,7 @@ async def opaque_dispatch(monkeypatch):
 
     async def dispatch(ack):
         transport.request.return_value = ack
+        transport.admission.hold("opaque-run", 1024, workflow=True)
         await pool.route_execution(
             'opaque-run', {'timeout_seconds': 30}, _active('opaque-run'),
             credential_route=pool.credential_route(),
@@ -53,7 +63,7 @@ async def opaque_dispatch(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_opaque_ack_is_counted_without_inventing_a_pid_or_measurements(opaque_dispatch):
-    pool, _, callback, route = await opaque_dispatch({'runtime_handle': 'invocation:opaque-1'})
+    pool, transport, callback, route = await opaque_dispatch({'runtime_handle': 'invocation:opaque-1'})
     handle = pool.processes[route]
     assert handle.pid is None and handle.process.remote_pid is None
     assert handle.process.runtime_handle == 'invocation:opaque-1'
@@ -63,15 +73,23 @@ async def test_opaque_ack_is_counted_without_inventing_a_pid_or_measurements(opa
     assert heartbeat['runtime_invocations'] == [{
         'runtime_profile': PROFILE, 'runtime_handle': 'invocation:opaque-1',
         'route_id': route, 'execution_id': 'opaque-run', 'state': 'busy',
-        'memory_bytes': None, 'cpu_seconds': None}]
+        'memory_request_bytes': 1024}]
+    assert heartbeat["declared_capacity"] == {
+        "slots": 1, "held_slots": 1, "budget_bytes": 128 * 2**20, "reserved_bytes": 1024,
+    }
+    assert "memory_current_bytes" not in heartbeat and "memory_max_bytes" not in heartbeat
     event = {'event': 'result', 'route_id': route, 'runtime_handle': 'invocation:opaque-1',
              '_event_id': 'completed-opaque-1', 'attempt_state': 'completed',
-             'result': {'success': True, 'execution_id': 'other-run'}}
+             'result': {'success': True, 'execution_id': 'other-run',
+                        'metrics': {'peak_memory_growth_bytes': 99, 'peak_process_rss_bytes': 100,
+                                    'cpu_total_seconds': 1}}}
     await pool.handle_event(event)
     await pool.handle_event(event)
     callback.assert_awaited_once()
     assert callback.await_args.args[0]['execution_id'] == 'opaque-run'
+    assert "metrics" not in callback.await_args.args[0]
     assert pool._build_heartbeat()['busy_count'] == 0
+    assert transport.admission.held_slots() == transport.admission.held_bytes() == 0
 
 
 @pytest.mark.asyncio

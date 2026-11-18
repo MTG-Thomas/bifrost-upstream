@@ -16,6 +16,7 @@ def _gate(
     running: set[str] | None = None,
     growth: dict[str, int] | None = None,
     pressured: list[bool] | None = None,
+    declared_slots: int | None = None,
 ) -> Admission:
     children = running if running is not None else set()
     grown = growth if growth is not None else {}
@@ -25,6 +26,7 @@ def _gate(
         under_pressure=lambda: pressure[0],
         running_workflow_ids=lambda: set(children),
         workflow_growth=lambda: dict(grown),
+        declared_slots=declared_slots,
     )
 
 
@@ -87,6 +89,38 @@ async def test_claims_are_serialized_so_two_loops_never_spend_the_same_bytes() -
     await asyncio.gather(claim("a"), claim("b"))
 
     assert seen == [100 * MIB, 40 * MIB]
+
+
+async def test_declared_claims_cannot_double_spend_a_slot_even_with_spare_bytes() -> None:
+    gate = _gate(budget=100 * MIB, declared_slots=1)
+    seen: list[int | None] = []
+
+    async def claim(key: str) -> None:
+        async with gate.claiming() as fits:
+            seen.append(fits)
+            if fits is not None:
+                await asyncio.sleep(0)  # the database claim
+                gate.hold(key, MIB, workflow=True)
+
+    await asyncio.gather(claim("first"), claim("second"))
+
+    assert seen == [100 * MIB, None]
+    assert gate.held_slots() == 1
+    assert gate.free_bytes() == 99 * MIB
+
+
+async def test_declared_claims_use_only_request_bytes_even_with_spare_slots() -> None:
+    gate = _gate(
+        budget=100 * MIB, declared_slots=2,
+        running={"run"}, growth={"run": 200 * MIB}, pressured=[True],
+    )
+    gate.hold("run", 80 * MIB, workflow=True)
+    gate.started("run")
+
+    async with gate.claiming() as fits:
+        assert fits == 20 * MIB  # another 80 MiB run cannot fit in the spare slot
+    assert gate.held_slots() == 1
+    assert not gate.pressured()
 
 
 async def test_after_a_few_starts_claims_wait_for_the_last_start_to_land(monkeypatch) -> None:  # type: ignore[no-untyped-def]

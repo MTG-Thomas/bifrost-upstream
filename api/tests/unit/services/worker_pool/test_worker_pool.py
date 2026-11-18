@@ -47,6 +47,8 @@ from src.services.memory_requests import (
 )
 from src.services.worker_pool import calibration, claims, controller, liveness, maintenance, recovery, sizing
 from src.services.worker_pool.manifest import WorkerJobSpec, build_worker_job_manifest
+from src.worker.admission import Admission
+from src.worker.remote.protocol import CLOUDFLARE_PYTHON_RUNTIME_PROFILE
 
 GIB = 1024 * MIB
 
@@ -409,6 +411,69 @@ async def test_claim_reserves_memory_before_its_assignment_commits(db) -> None:
 
     assert claim is not None
     assert reserved == [claim]
+
+
+async def test_cloudflare_reserved_dispatch_must_fit_available_bytes(db) -> None:
+    execution_id = await _accept_pool_run()
+    await _set_request(db.sessions, execution_id, 80 * MIB)
+    async with db.sessions() as session:
+        dispatch_id = await session.scalar(
+            select(WorkDispatch.id).where(WorkDispatch.subject_id == UUID(execution_id))
+        )
+        worker = ExecutionWorker(
+            id=uuid4(), form="external", state="ready", runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+            reserved_for_dispatch_id=dispatch_id,
+        )
+        session.add(worker)
+        await session.commit()
+        worker_id = worker.id
+
+    assert await _claim(worker_id, fits=20 * MIB, budget=100 * MIB) is None
+    claim = await _claim(worker_id, fits=80 * MIB, budget=100 * MIB)
+    assert claim is not None and claim.dispatch_id == dispatch_id
+
+
+async def test_cloudflare_claim_rollback_releases_slot_and_bytes(db, monkeypatch) -> None:
+    execution_id = await _accept_pool_run()
+    await _set_request(db.sessions, execution_id, DEFAULT_WORKFLOW_REQUEST_BYTES)
+    gate = Admission(
+        budget_bytes=128 * MIB, declared_slots=1, under_pressure=lambda: False,
+        running_workflow_ids=set, workflow_growth=dict,
+    )
+    async with db.sessions() as session:
+        worker = ExecutionWorker(
+            id=uuid4(), form="external", state="ready", runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+        )
+        session.add(worker)
+        await session.commit()
+        worker_id = worker.id
+
+    async def fail_commit():
+        assert gate.held_slots() == 1
+        assert gate.held_bytes() == DEFAULT_WORKFLOW_REQUEST_BYTES
+        raise RuntimeError("claim commit failed")
+
+    @asynccontextmanager
+    async def failing_db():
+        async with db.sessions() as session:
+            monkeypatch.setattr(session, "commit", fail_commit)
+            yield session
+
+    monkeypatch.setattr(claims, "get_db_context", failing_db)
+    async with gate.claiming() as fits:
+        assert fits == 128 * MIB
+        with pytest.raises(RuntimeError, match="claim commit failed"):
+            await claims.claim_next(
+                worker_id, fits_bytes=fits, budget_bytes=gate.budget_bytes,
+                reserve_claim=lambda claim: gate.hold(str(claim.subject_id), claim.memory_request_bytes, workflow=True),
+                release_reservation=lambda claim: gate.release(str(claim.subject_id)),
+            )
+
+    assert gate.held_slots() == gate.held_bytes() == 0
+    async with db.sessions() as session:
+        assert (await session.get(Execution, UUID(execution_id))).status == ExecutionStatus.PENDING
+        dispatch = await session.scalar(select(WorkDispatch).where(WorkDispatch.subject_id == UUID(execution_id)))
+        assert dispatch is not None and dispatch.assigned_worker_id is None
 
 
 async def test_a_draining_worker_never_claims(db) -> None:
@@ -1563,6 +1628,34 @@ async def test_a_run_lost_to_an_oom_killed_worker_learns_the_worker_s_budget(db)
         worker = await session.get(ExecutionWorker, worker_id)
     assert learned == 546 * MIB - WORKFLOW_REQUEST_MARGIN_BYTES
     assert (worker.state, worker.end_reason) == ("lost", "out_of_memory")
+
+
+async def test_cloudflare_worker_loss_does_not_learn_oom_peak(db, monkeypatch) -> None:
+    execution_id = await _accept_pool_run()
+    suffix = uuid4().hex
+    workflow = Workflow(
+        id=uuid4(), name=f"declared-budget-{suffix}", function_name="main",
+        path=f"workflows/{suffix}.py", type="workflow", is_active=True,
+    )
+    worker = ExecutionWorker(
+        id=uuid4(), form="external", state="ready", runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+        memory_budget_bytes=128 * MIB,
+    )
+    async with db.sessions() as session:
+        session.add_all([workflow, worker])
+        await session.flush()
+        execution = await session.get(Execution, UUID(execution_id))
+        execution.workflow_id = workflow.id
+        await session.commit()
+
+    assert await _claim(worker.id) is not None
+    peak = AsyncMock()
+    monkeypatch.setattr(recovery, "record_peak_growth", peak)
+    async with db.sessions() as session:
+        lost = await recovery.end_runs_of_lost_worker(session, worker.id, out_of_memory=True)
+        await session.commit()
+    assert lost.workflow_runs == [UUID(execution_id)]
+    peak.assert_not_awaited()
 
 
 async def test_a_run_lost_for_any_other_reason_teaches_nothing(db) -> None:

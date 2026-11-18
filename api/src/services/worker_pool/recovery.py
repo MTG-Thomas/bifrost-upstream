@@ -21,6 +21,7 @@ from src.services.memory_requests import WORKFLOW_REQUEST_MARGIN_BYTES, record_p
 from src.services.execution.summary_dispatch import FAMILY as SUMMARY_FAMILY
 from src.services.execution.summary_dispatch import stage_summary
 from src.services.work_dispatch import WAKE_AGENT_RUN, WAKE_WORKFLOW
+from src.worker.remote.protocol import CLOUDFLARE_PYTHON_RUNTIME_PROFILE
 
 logger = logging.getLogger(__name__)
 
@@ -123,14 +124,16 @@ async def end_runs_of_lost_worker(
         ).all()
         ended = [execution_id for execution_id, _ in rows if execution_id not in uncertain_workflows]
         uncertain = [execution_id for execution_id, _ in rows if execution_id in uncertain_workflows]
-        budget = await db.scalar(
-            select(ExecutionWorker.memory_budget_bytes).where(ExecutionWorker.id == worker_id)
-        )
-        if out_of_memory and budget is not None and budget > WORKFLOW_REQUEST_MARGIN_BYTES:
-            for workflow_id in sorted({wf for _, wf in rows if wf is not None}):
-                await record_peak_growth(
-                    db, workflow_id, budget - WORKFLOW_REQUEST_MARGIN_BYTES, None
-                )
+        if out_of_memory:
+            budget = await db.scalar(select(ExecutionWorker.memory_budget_bytes).where(
+                ExecutionWorker.id == worker_id,
+                ExecutionWorker.runtime_profile != CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+            ))
+            if budget is not None and budget > WORKFLOW_REQUEST_MARGIN_BYTES:
+                for workflow_id in sorted({wf for _, wf in rows if wf is not None}):
+                    await record_peak_growth(
+                        db, workflow_id, budget - WORKFLOW_REQUEST_MARGIN_BYTES, None
+                    )
     if summary_ids:
         interrupted = (
             await db.execute(

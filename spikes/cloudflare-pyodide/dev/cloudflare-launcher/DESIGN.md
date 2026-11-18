@@ -47,21 +47,21 @@ One `CloudflareLauncher` DO per launcher incarnation (`launcher_id`,
    - `runtime_profile: "cloudflare-python-v1"` inside the signed bytes;
    - `handlers: [["workflow.execute", 1]]` only. No agent, summary,
      platform-job or package-tool handlers;
-   - `credential_protocol: 2` (run access token + refresh challenge);
-   - a memory `sample` that states the launcher's own budget (see 4).
+   - `credential_protocol: 2` (run access token + refresh challenge).
 3. Handles commands:
    - `workflow` → validate, then hand `(execution_id, context)` to the
      tenant's `TenantHost` (`run()`), keyed by the context's organization.
      Reply with a route acknowledgement (no PID; see API side).
    - `terminate` → retire that tenant child's generation (best effort; the
      platform offers no physical kill) and emit a terminal for the route.
-   - `configure`, `ready`, `retired`, `recycle` → state transitions.
+   - `ready`, `retired` → state transitions.
    - anything else → error reply (not advertised, so the API never sends it).
 4. Emits `result` events with the engine's result, keeps them in DO storage
    until `ack {event_id}`, and replays unacknowledged terminals after a
    reconnect, exactly like `launcher.py`'s `pending_terminal_inventory`.
 5. Answers `inventory` with its live routes (route id, execution id, started
    at, timeout, memory request) and retained terminals.
+6. Emits a liveness-only `heartbeat` once per second while connected.
 
 The protocol core (canonical hello bytes, HMAC proof, envelope
 encode/parse, fragmentation and reassembly, sequence and generation fencing,
@@ -88,9 +88,9 @@ lands.
 - For that profile, require the advertised handlers to be exactly
   `workflow.execute@1`, and treat the route acknowledgement without a PID as
   valid. No fake PIDs.
-- Resource accounting by **declared request**, not cgroup samples: the
-  launcher's budget is `slots × per-attempt request`; samples report the sum
-  of active requests.
+- Resource accounting by **declared request**. The API assigns each launcher
+  in the dev build one slot and a 128 MiB request budget. Each claim uses one
+  slot and its own request from that budget until settlement.
 - **Eligibility at claim time.** A Cloudflare launcher must only claim
   executions the Pyodide runtime can run (no unpackaged native dependencies,
   within subrequest/CPU limits). The census rule
@@ -112,9 +112,9 @@ lands.
   #1425's `ScopeRegistry`/`WorkerLedger` DOs are the model.
 - **Burst on VM overload** is then the controller's normal behaviour: when
   the VM's workers are full, demand launches Cloudflare incarnations.
-- Within one launcher, attempts for different tenants run in parallel (one
-  `TenantHost` each); one tenant's attempts serialize unless overflow slots
-  exist (fork issue #54).
+- The dev build admits one attempt per launcher. A future multi-slot provider
+  profile can use the tenant hosts' parallelism across tenants. Each tenant's
+  attempts serialize unless overflow slots exist (fork issue #54).
 
 ## Review (GPT-6.2 Sol, 2026-11-18): request changes before enabling claims
 
@@ -249,6 +249,29 @@ run. Findings, checked against the cited code:
 
 ### Phase 3 opaque workflow wire contract
 
+- The Cloudflare hello advertises the signed runtime profile and capabilities
+  above and omits `sample`. The API owns the slot count and request byte
+  budget. This dev build fixes them at one slot and 134217728 bytes per
+  incarnation. When #1424/#1425-style provider enrollment supports multiple
+  profiles, the API selects capacity from the prepared incarnation's
+  provider profile. Capacity does not come from launcher-supplied fields.
+  The API does not send Linux memory-pressure configuration or
+  `memory_kill_growth_bytes` for this profile.
+- Send `{"event":"heartbeat"}` once per second inside a normal sequenced
+  event envelope for the current session generation. Hello and reconnect
+  start the freshness window, while inventory reconciliation independently
+  gates claims. A heartbeat older than three seconds pauses admission and
+  blocks new workflow sends. An expired heartbeat prevents owner renewal
+  at the owner lease window.
+  `sample` is a Linux event and does not refresh Cloudflare liveness.
+- API pool heartbeats publish `runtime_profile` and `declared_capacity`
+  (`slots`, `held_slots`, `budget_bytes`, `reserved_bytes`). Each invocation
+  reports `memory_request_bytes`. Held values come from API claim
+  reservations, including pending dispatches, unresolved launches and
+  retained results until settlement. The byte budget has no baseline,
+  pressure threshold, or growth adjustment. Cloudflare heartbeats omit
+  measured process CPU and memory fields, and result resource metrics are
+  discarded before persistence and peak learning.
 - The workflow command's `route_id` is `workflow:<execution UUID>:<route UUID>`.
   Its `started_at`, `timeout_seconds`, and absolute `workflow_deadline` come
   from the API at dispatch. The deadline is also in the execution context.
@@ -270,11 +293,13 @@ run. Findings, checked against the cited code:
   or report it in a later reply, event, or inventory. The API may already
   have settled the omitted attempt as uncertain.
 - After welcome, send one inventory per control generation. It must contain
-  `version: 1`, a nonnegative integer `baseline_bytes`, and both `routes` and
-  `terminal_routes` arrays. Each entry carries `kind: "workflow"`,
+  `version: 1` and both `routes` and `terminal_routes` arrays. Omit Linux's
+  `baseline_bytes`. Each entry carries `kind: "workflow"`,
   `route_id`, `subject_id` (the execution UUID), `runtime_handle`,
   `active_execution`, `started_at`, `timeout_seconds`, `workflow_deadline`,
-  and `memory_request_bytes`. Terminal entries also carry `event_id` and
+  and the original `memory_request_bytes` from the workflow command. The API
+  restores one slot and these bytes for each matched route before reopening
+  claims. Terminal entries also carry `event_id` and
   `attempt_state`. The API checks the snapshot against live durable claims
   and routes already tracked by that owner. A claim still preparing to
   dispatch can be absent from inventory. An omitted route whose launch was

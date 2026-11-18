@@ -31,7 +31,7 @@ async def test_cloudflare_executor_starts_and_reconnects_with_workflow_only(monk
     socket = Mock()
     handlers = (("workflow.execute", 1),)
     bridge = host.Bridge(socket, {
-        "current": 1, "limit": 256 * 2**20, "hostname": "cloudflare-test",
+        "hostname": "cloudflare-test",
         "handlers": handlers, "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
     }, lease)
     worker = host.ApiExecutor(bridge, lease.worker_id)
@@ -119,7 +119,7 @@ async def test_cloudflare_executor_starts_and_reconnects_with_workflow_only(monk
     monkeypatch.setattr("src.services.worker_pool.calibration.record_memory_calibration", calibration)
 
     inventory = {"event": "inventory", "inventory": {
-        "version": 1, "baseline_bytes": 1, "routes": [], "terminal_routes": [],
+        "version": 1, "routes": [], "terminal_routes": [],
     }}
     session = host.RemoteSession(bridge, worker, lease, owned_until=time.monotonic() + 20)
     try:
@@ -149,12 +149,16 @@ async def test_cloudflare_executor_starts_and_reconnects_with_workflow_only(monk
 
         # Package refresh has an independent entry point on the thin pool.
         await bridge.pool.update_packages()
-        assert commands == ["configure", "ready"]
+        assert commands == ["ready"]
         assert all("packages" not in call.kwargs["mapping"] for call in redis.hset.await_args_list)
         pool_heartbeat = bridge.pool._build_heartbeat()
         assert "requirements_installed" not in pool_heartbeat
         assert "requirements_total" not in pool_heartbeat
-        assert diagnostics.call_args.kwargs["runs_platform_jobs"] is False
+        assert pool_heartbeat["declared_capacity"] == {
+            "slots": 1, "held_slots": 0, "budget_bytes": 128 * 2**20, "reserved_bytes": 0,
+        }
+        assert worker.budget is None
+        diagnostics.assert_not_called()
         assert bridge.agents is worker._package_consumer is worker._service_claim_loop is None
         for target, method in unsupported:
             getattr(target, method).assert_not_called()
@@ -167,4 +171,4 @@ async def test_cloudflare_executor_starts_and_reconnects_with_workflow_only(monk
         else:
             await session.detach()
     assert await session.task == 0
-    assert commands == ["configure", "ready", "retired"]
+    assert commands == ["ready", "retired"]

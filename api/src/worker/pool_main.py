@@ -216,6 +216,8 @@ class PoolWorker:
 
     def _workflow_runs(self) -> int:
         """Runs with a child, plus claimed runs still being routed to one."""
+        if self.admission is not None and self.admission.declared_slots is not None:
+            return self.admission.held_slots()
         pool_runs = (
             self._workflow_consumer._pool.active_execution_count()
             if self._workflow_consumer is not None
@@ -363,15 +365,16 @@ class PoolWorker:
         background = [
             heartbeat,
             asyncio.create_task(self._wake_listener(), name="pool-wake"),
-            asyncio.create_task(
+        ]
+        if self.runtime_profile == LINUX_RUNTIME_PROFILE:
+            background.append(asyncio.create_task(
                 replica_heartbeat_loop(
                     replica_id=str(self.incarnation_id),
                     runs_platform_jobs=runs_platform_jobs,
                     stop_event=self._platform_stop,
                 ),
                 name="pool-diagnostics-heartbeat",
-            ),
-        ]
+            ))
         if self.hosts_remote_work:
             if self.runtime_profile == LINUX_RUNTIME_PROFILE:
                 background.append(asyncio.create_task(self._package_loop(), name="pool-packages"))
@@ -389,7 +392,8 @@ class PoolWorker:
             await asyncio.gather(*background, return_exceptions=True)
             await self._retire()
             try:
-                await remove_scheduler_replica(str(self.incarnation_id))
+                if self.runtime_profile == LINUX_RUNTIME_PROFILE:
+                    await remove_scheduler_replica(str(self.incarnation_id))
             except Exception:
                 logger.exception("Failed to remove the executor's diagnostics heartbeat")
             if self._workflow_consumer is not None:
@@ -426,15 +430,15 @@ class PoolWorker:
                 self._package_consumer = self._make_package_consumer()
         if any(handler == "agent.run" for handler, _version in self._handlers):
             self._agent_consumer = self._make_agent_consumer()
-        # Measured once the parent and fork template are up, before any
-        # service claims: what remains is what work may use. API-resident
-        # agents receive the API host's shared gate at construction time.
-        self.budget = self._measure_budget()
         if self.runtime_profile == LINUX_RUNTIME_PROFILE:
+            # Measure once the parent and fork template are up, before any
+            # service claims. API-resident agents share the host's gate.
+            self.budget = self._measure_budget()
             from src.services.worker_pool.calibration import record_memory_calibration
 
             await record_memory_calibration(self.incarnation_id, self.budget, self.package_generation)
         if self.admission is None:
+            assert self.budget is not None
             if self._workflow_consumer is None:
                 self.admission = Admission(
                     budget_bytes=self.budget.budget_bytes,
@@ -453,17 +457,22 @@ class PoolWorker:
                     claims_open=self._claims_open,
                 )
         if self._workflow_consumer is not None:
-            pool = self._workflow_consumer._pool
-            pool.memory_kill_growth_bytes = max(
-                0, self.budget.budget_bytes - WORKFLOW_REQUEST_MARGIN_BYTES
-            )
+            if self.budget is not None:
+                pool = self._workflow_consumer._pool
+                pool.memory_kill_growth_bytes = max(
+                    0, self.budget.budget_bytes - WORKFLOW_REQUEST_MARGIN_BYTES
+                )
             await self._prepare_admission()
         logger.info(
             "Pool worker ready",
             extra={
                 "incarnation_id": str(self.incarnation_id),
-                "budget_mib": self.budget.budget_bytes // 2**20,
-                "limit_mib": self.budget.limit_bytes // 2**20,
+                **(
+                    {"budget_mib": self.budget.budget_bytes // 2**20,
+                     "limit_mib": self.budget.limit_bytes // 2**20}
+                    if self.budget is not None
+                    else {"declared_budget_mib": self.admission.budget_bytes // 2**20}
+                ),
             },
         )
 
@@ -661,7 +670,17 @@ class PoolWorker:
                 # A routed workflow run stays held until its child ends. A run
                 # handed back may already be claimed again (its own hold).
                 if not handed_back:
-                    self.admission.started(str(claim.subject_id))
+                    key = str(claim.subject_id)
+                    if (
+                        self.admission.declared_slots is not None and not self._lost
+                        and self._workflow_consumer is not None
+                        and key not in self._workflow_consumer._pool.active_execution_ids()
+                    ):
+                        # A discarded or refused launch has no physical route.
+                        # An uncertain launch keeps its route until settlement.
+                        self._release_claim_reservation(claim)
+                    else:
+                        self.admission.started(key)
             else:
                 self.admission.release(str(claim.dispatch_id))
             self.runs_handled += 1
@@ -775,6 +794,11 @@ class PoolWorker:
             # point wakes another pass instead of being missed.
             self._package_wake.clear()
 
+    def _capacity_budget_bytes(self) -> int | None:
+        if self.admission is not None and self.admission.declared_slots is not None:
+            return self.admission.budget_bytes
+        return self.budget.budget_bytes if self.budget is not None else None
+
     async def _heartbeat_loop(self) -> None:
         while True:
             try:
@@ -792,9 +816,7 @@ class PoolWorker:
                         self.admission is not None and self.admission.pressured()
                     ),
                     memory_budget_bytes=(
-                        self.budget.budget_bytes
-                        if self._claim_ready and self.budget is not None
-                        else None
+                        self._capacity_budget_bytes() if self._claim_ready else None
                     ),
                     memory_reserved_bytes=(
                         0 if self.admission is None else self.admission.held_bytes()
