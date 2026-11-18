@@ -155,20 +155,25 @@ def postgres(project, sql):
                    "-v", "ON_ERROR_STOP=1", "-U", "bifrost", "-d", "bifrost", input=sql)
 
 
-def resume_enrollment(project):
+def resume_enrollment(project, reset_route):
     enrollment = json.loads((ROOT / ".phase5b-deploy.json").read_text())
     incarnation, launcher = UUID(enrollment["incarnation"]), UUID(enrollment["launcher"])
+    pending = UUID(reset_route.split(":")[1]) if reset_route else UUID(int=0)
     idle = postgres(project, f"""
         SELECT count(*) FROM execution_workers
         WHERE id='{incarnation}' AND remote_launcher_id='{launcher}' AND state IN ('starting', 'ready')
-          AND runtime_profile='cloudflare-python-v1' AND active_runs=0
+          AND runtime_profile='cloudflare-python-v1'
+          AND active_runs <= {1 if reset_route else 0}
+          AND (active_runs=0 OR EXISTS (
+              SELECT FROM execution_worker_claims WHERE worker_id='{incarnation}' AND subject_id='{pending}'
+          ))
           AND NOT EXISTS (
               SELECT FROM execution_worker_claims c JOIN executions e ON e.id=c.subject_id
-              WHERE c.worker_id='{incarnation}' AND e.completed_at IS NULL
+              WHERE c.worker_id='{incarnation}' AND e.completed_at IS NULL AND e.id <> '{pending}'
           );
     """)
     if idle != "1":
-        raise SystemExit("Only an idle hosted enrollment can resume")
+        raise SystemExit("Expected an idle hosted enrollment or the named interrupted claim")
     if not 1024 <= enrollment["port"] <= 65535:
         raise SystemExit("Invalid hosted relay port")
     value = next(line.partition("=")[2] for line in API_ENV.read_text().splitlines()
@@ -179,7 +184,7 @@ def resume_enrollment(project):
     return workflows, approval, incarnation, launcher, enrollment["port"]
 
 
-def run(runtime, hosted, resume):
+def run(runtime, hosted, resume, reset_route):
     sys.path.insert(0, str(ROOT / "api"))
     from shared.worker_control_auth import external_worker_control_key
 
@@ -189,7 +194,7 @@ def run(runtime, hosted, resume):
     origin, project, admin, send = local_api(hosted)
     port = 0
     if resume:
-        workflows, approval, incarnation, launcher, port = resume_enrollment(project)
+        workflows, approval, incarnation, launcher, port = resume_enrollment(project, reset_route)
     else:
         workflows, approval = seed_workflows(project, admin, send, hosted)
         incarnation, launcher = uuid4(), uuid4()
@@ -220,6 +225,7 @@ def run(runtime, hosted, resume):
         ["node", str(HERE / "run.mjs")], cwd=ROOT, check=True, text=True,
         input=json.dumps({"origin": origin, "project": project, "admin": admin,
                           "workflows": workflows, "runtime": str(runtime), "hosted": hosted, "port": port,
+                          "resetRoute": reset_route,
                           "incarnation": str(incarnation), "launcher": str(launcher),
                           "resource": resource, "build": build, "controlKey": key}),
     )
@@ -233,10 +239,16 @@ if __name__ == "__main__":
     run_parser.add_argument("runtime", type=Path, help="Prepared generated-runtime.mjs")
     run_parser.add_argument("--hosted", action="store_true")
     run_parser.add_argument("--resume-enrollment", action="store_true")
+    run_parser.add_argument("--resume-reset", metavar="WORKFLOW_ROUTE")
     args = parser.parse_args()
     if args.action == "prepare":
         prepare(args.hosted)
     else:
         if args.resume_enrollment and not args.hosted:
             parser.error("--resume-enrollment requires --hosted")
-        run(args.runtime.resolve(strict=True), args.hosted, args.resume_enrollment)
+        if args.resume_reset and (
+            not args.resume_enrollment or
+            not re.fullmatch(r"workflow:[0-9a-f-]{36}:[0-9a-f-]{36}", args.resume_reset)
+        ):
+            parser.error("--resume-reset requires --resume-enrollment and an interrupted workflow route")
+        run(args.runtime.resolve(strict=True), args.hosted, args.resume_enrollment, args.resume_reset)

@@ -345,7 +345,7 @@ async function startRun(scenario, hold = true) {
   return {id, gate, route: dispatch.route, claim: row.claim};
 }
 
-async function settle(scenario, run, status, ackCount = 1) {
+async function settle(scenario, run, status, ackCount = 1, dispatchCount = 1) {
   await until('terminal acknowledgement', () => {
     const ids = new Set(wire.filter((event) => event.kind === 'result' && event.route === run.route)
       .map((event) => event.event));
@@ -363,7 +363,7 @@ async function settle(scenario, run, status, ackCount = 1) {
     assert.deepEqual(row.result, {case: scenario, table_count: 0});
     assert.equal(row.logs, 1);
   }
-  assert.equal(wire.filter((event) => event.kind === 'workflow' && event.id === run.id).length, 1);
+  assert.equal(wire.filter((event) => event.kind === 'workflow' && event.id === run.id).length, dispatchCount);
   evidence('settled', {scenario, id: run.id, row, ...(config.hosted ? {} : {ledger: await control('ledger', 200)})});
   return row;
 }
@@ -378,7 +378,8 @@ async function hostedChecks() {
   evidence('run-credential', {id: happy.id, before: 200, after: 401});
 
   const limits = await startRun('allowance', false);
-  await settle('allowance', limits, 'Failed');
+  const limitRow = await settle('allowance', limits, 'Failed');
+  assert.match(limitRow.error, /Too many subrequests|subrequest allowance exhausted/i);
   const limitReads = hostedReads.get(limits.id);
   assert.ok(limitReads?.length > 0 && limitReads.length <= 4 && limitReads.every((status) => status === 200));
   evidence('allowance', {id: limits.id, allowed: 4, upstreamReads: limitReads.length});
@@ -398,17 +399,24 @@ async function hostedChecks() {
   const reset = await startRun('reset');
   const beforeReset = workerRow();
   evidence('redeploy-requested', {id: reset.id, route: reset.route, before: beforeReset});
+  await verifyHostedReset(reset, beforeReset, 1);
+  reset.gate.release.resolve();
+}
+
+async function verifyHostedReset(reset, beforeReset, dispatchCount) {
   const inventory = await until('deployed launcher recovered the interrupted route', () => wire.find((event) =>
     event.kind === 'inventory' && event.generation > beforeReset.generation && event.terminal.length > 0));
-  const resetRow = await settle('reset', reset, 'Failed');
+  const resetRow = await settle('reset', reset, 'Failed', 1, dispatchCount);
   assert.match(resetRow.error, /may already have taken effect/);
   assert.ok(workerRow().hello > beforeReset.hello);
   const terminal = wire.find((event) => event.kind === 'result' && event.route === reset.route);
   assert.equal(terminal.attempt, 'uncertain');
   assert.equal(terminal.errorType, 'LauncherReset');
   assert.deepEqual(inventory.terminal, [terminal.event]);
-  reset.gate.release.resolve();
+  evidence('launcher-reset', {id: reset.id, before: beforeReset, after: workerRow(), inventory, terminal});
+}
 
+async function hostedCpuCheck() {
   const cpu = await startRun('cpu', false);
   const cpuRow = await settle('cpu', cpu, 'Failed');
   assert.match(cpuRow.error, /may already have taken effect/);
@@ -483,7 +491,17 @@ await new Promise((resolve, reject) => {
   proxy.listen(config.port, '127.0.0.1', resolve);
 });
 try {
-  assert.ok((config.port ? ['starting', 'ready'] : ['starting']).includes(workerRow().state));
+  const prepared = workerRow();
+  assert.ok((config.port ? ['starting', 'ready'] : ['starting']).includes(prepared.state));
+  let interrupted;
+  if (config.resetRoute) {
+    const id = config.resetRoute.split(':')[1];
+    const row = runRow(id);
+    assert.equal(row.status, 'Running');
+    assert.equal(row.claim?.length, 1);
+    assert.equal(row.claim[0].worker, config.incarnation);
+    interrupted = {id, route: config.resetRoute, claim: row.claim};
+  }
   // Both debug launchers advertise workflow.execute on the Normal lane.
   const linuxLaunchers = ['worker', 'scheduler'].map((service) => config.project + '-' + service + '-1');
   execFileSync('docker', ['pause', ...linuxLaunchers]);
@@ -508,8 +526,13 @@ try {
     assert.equal(workerRow().state, 'ready');
     evidence('enrollment', {row: workerRow(), ...(config.hosted ? {} : {ledger: await control('ledger', 200)})});
     await linuxSamplesStale;
-    if (config.hosted) await hostedChecks();
-    else await localChecks();
+    if (config.hosted) {
+      if (interrupted) await verifyHostedReset(interrupted, prepared, 0);
+      else await hostedChecks();
+      await hostedCpuCheck();
+    } else {
+      await localChecks();
+    }
   } finally {
     execFileSync('docker', ['unpause', ...linuxLaunchers]);
   }
