@@ -26,9 +26,7 @@ AUTH_DOMAIN = b"bifrost.remote-control.hello.v1\0"
 # The WebSocket transports bounded frames. Logical workflow contexts/results
 # are fragmented so this transport limit is never an execution payload limit.
 MAX_FRAME_BYTES = 1 << 20
-# Reassembly spills after one transport frame. Logical execution contexts and
-# results keep the same size contract as the local process pipe; the wire
-# bound limits only an individual WebSocket frame, never the logical payload.
+# Linux reassembly spills after one transport frame without a logical size limit.
 FRAGMENT_SPOOL_BYTES = MAX_FRAME_BYTES
 MAX_CLOCK_SKEW_SECONDS = 60
 
@@ -44,6 +42,8 @@ CREDENTIAL_PROTOCOL = 2
 LINUX_RUNTIME_PROFILE = "linux-process-v1"
 # Experimental physical adapter identity with operator-gated control admission.
 CLOUDFLARE_PYTHON_RUNTIME_PROFILE = "cloudflare-python-v1"
+CLOUDFLARE_MAX_LOGICAL_BYTES = 16 * 2**20
+CLOUDFLARE_INCARNATION_ENDED = 4001
 CLOUDFLARE_CREDENTIAL_PROTOCOL = 2
 CLOUDFLARE_DEV_SLOTS = 1
 CLOUDFLARE_DEV_BUDGET_BYTES = 128 * 2**20
@@ -118,7 +118,7 @@ class OpaqueWorkflowNotStarted(CredentialRouteChanged):
 
 
 class CloudflareRevisionRejected(OpaqueWorkflowNotStarted):
-    """The opaque workflow must be handed back with its stale approval cleared."""
+    """The opaque workflow must be handed back with its Cloudflare approval cleared."""
 
 
 class OpaqueDispatchInterrupted(ConnectionError):
@@ -259,6 +259,9 @@ class ControlEnvelope:
             # Values may implement arbitrary __str__/deepcopy hooks. Never echo
             # their exception text (which can contain secrets) onto the wire.
             raise PayloadSerializationError("Control payload could not be serialized") from None
+
+    def encoded_size(self) -> int:
+        return len(self._encode().encode())
 
     def to_json(self) -> str:
         raw = self._encode()

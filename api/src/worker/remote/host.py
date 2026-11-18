@@ -51,9 +51,12 @@ from src.worker.remote.protocol import (
     CLOUDFLARE_CREDENTIAL_PROTOCOL,
     CLOUDFLARE_DEV_BUDGET_BYTES,
     CLOUDFLARE_DEV_SLOTS,
+    CLOUDFLARE_INCARNATION_ENDED,
+    CLOUDFLARE_MAX_LOGICAL_BYTES,
     CLOUDFLARE_WORKFLOW_HANDLER,
     AuthenticationError,
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+    CloudflareRevisionRejected,
     ControlEnvelope,
     CredentialRouteChanged,
     FragmentAssembler,
@@ -206,6 +209,13 @@ class Bridge:
                         kind="command",
                         payload={"id": request_id, "action": action, "payload": payload},
                     )
+                    if (
+                        self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+                        and message.encoded_size() > CLOUDFLARE_MAX_LOGICAL_BYTES
+                    ):
+                        if action == "workflow":
+                            raise CloudflareRevisionRejected("Cloudflare workflow exceeds the control payload limit")
+                        raise ProtocolError("Cloudflare command exceeds the control payload limit")
                     sent = 0
                     send_deadline = loop.time() + _reply_timeout(action)
                     for frame in fragment(message):
@@ -1337,6 +1347,22 @@ class RemoteControlHost:
             cloudflare_enrollment=enrollment,
         )
         if lease is None:
+            if enrollment is not None:
+                # Only a verified, matching enrollment can learn that it ended.
+                async with get_liveness_db_context() as db:
+                    ended = await db.scalar(select(ExecutionWorker.id).where(
+                        ExecutionWorker.id == hello.incarnation_id,
+                        ExecutionWorker.form == "external",
+                        ExecutionWorker.execution_lane == "normal",
+                        ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+                        ExecutionWorker.capacity_resource_uid == enrollment.resource_uid,
+                        ExecutionWorker.version == enrollment.version,
+                        ExecutionWorker.remote_launcher_id == hello.launcher_id,
+                        ExecutionWorker.state.in_(("retired", "lost")),
+                    ))
+                if ended is not None:
+                    await socket.close(code=CLOUDFLARE_INCARNATION_ENDED, reason="incarnation ended")
+                    raise AuthenticationError("launcher incarnation ended")
             await socket.close(code=1008)
             raise AuthenticationError("launcher ownership was refused")
         existing = self.sessions.get(lease.worker_id)

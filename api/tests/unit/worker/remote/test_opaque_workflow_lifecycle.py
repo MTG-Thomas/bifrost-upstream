@@ -28,6 +28,7 @@ from src.worker.remote.fencing import LeaseRef, remote_owner_context
 from src.worker.remote.host import ApiExecutor, Bridge
 from src.worker.remote.ownership import RemoteOwnerLease
 from src.worker.remote.protocol import (
+    CLOUDFLARE_MAX_LOGICAL_BYTES,
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
     MAX_FRAME_BYTES,
     ControlEnvelope,
@@ -462,7 +463,9 @@ async def test_opaque_handback_releases_starting_reservation_on_db_failure(monke
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("refusal", ["reconnect-before-send", "explicit-memory-refusal", "stale-revision"])
+@pytest.mark.parametrize("refusal", [
+    "reconnect-before-send", "explicit-memory-refusal", "stale-revision", "oversize",
+])
 async def test_definitively_unsent_workflow_is_handed_back(
     opaque_executor, async_session_factory, monkeypatch, reviewed_workspace, refusal,
 ):
@@ -478,8 +481,9 @@ async def test_definitively_unsent_workflow_is_handed_back(
     workflow_id = str(uuid4())
     if refusal == "stale-revision":
         reviewed_workspace.return_value = None
+    parameters = {"blob": "é" * (CLOUDFLARE_MAX_LOGICAL_BYTES // 6)} if refusal == "oversize" else {}
     payload = pending_execution_record(
-        execution_id=str(subject), workflow_id=workflow_id, parameters={}, org_id=None,
+        execution_id=str(subject), workflow_id=workflow_id, parameters=parameters, org_id=None,
         user_id=str(uuid4()), user_name="test", user_email="test@example.com", sync=True, lineage=None,
     )
     claim = PoolClaim(
@@ -550,7 +554,7 @@ async def test_definitively_unsent_workflow_is_handed_back(
         dispatch = await db.scalar(select(WorkDispatch).where(WorkDispatch.subject_id == subject))
         assert dispatch.created_at == queued_at
         assert dispatch.memory_request_bytes == RESERVATION
-        assert dispatch.cloudflare_revision == (None if refusal == "stale-revision" else REVISION)
+        assert dispatch.cloudflare_revision == (None if refusal in ("stale-revision", "oversize") else REVISION)
 
 
 @pytest.mark.asyncio

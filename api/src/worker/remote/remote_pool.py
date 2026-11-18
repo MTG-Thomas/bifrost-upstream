@@ -948,7 +948,7 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                     )
                 except Exception:
                     logger.warning("Could not clean failed remote dispatch %s", execution_id)
-                if opaque and isinstance(exc, CredentialRouteChanged):
+                if opaque and isinstance(exc, CredentialRouteChanged) and not isinstance(exc, OpaqueWorkflowNotStarted):
                     raise OpaqueWorkflowNotStarted(str(exc)) from exc
                 raise
             finally:

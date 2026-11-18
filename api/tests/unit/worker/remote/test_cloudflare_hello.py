@@ -17,6 +17,7 @@ from src.services.worker_pool import claims
 from src.worker.remote import host, ownership
 from src.worker.remote.fencing import LeaseRef, fence_remote_owner, remote_owner_context
 from src.worker.remote.protocol import (
+    CLOUDFLARE_INCARNATION_ENDED,
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
     LINUX_RUNTIME_PROFILE,
     AuthenticationError,
@@ -183,15 +184,22 @@ async def enrollment(async_session_factory, hello, enabled_settings, monkeypatch
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mismatch", ["resource", "build", "launcher", "profile"])
+@pytest.mark.parametrize("mismatch", ["resource", "build", "launcher", "profile", "retired-build"])
 async def test_cloudflare_hello_requires_matching_prepared_row(hello, enrollment, mismatch):
     version = BUILD
+    expected_state = "starting"
     if mismatch == "resource":
         hello = replace(hello, resource_uid="another-do")
     elif mismatch == "build":
         version = "other-build"
     elif mismatch == "launcher":
         hello = replace(hello, launcher_id=uuid4())
+    elif mismatch == "retired-build":
+        version = "other-build"
+        expected_state = "retired"
+        async with enrollment() as db:
+            row = await db.get(ExecutionWorker, hello.incarnation_id)
+            row.state = expected_state
     else:
         async with enrollment() as db:
             row = await db.get(ExecutionWorker, hello.incarnation_id)
@@ -204,7 +212,7 @@ async def test_cloudflare_hello_requires_matching_prepared_row(hello, enrollment
     socket.send_text.assert_not_awaited()
     async with enrollment() as db:
         row = await db.get(ExecutionWorker, hello.incarnation_id)
-        assert row.state == "starting"
+        assert row.state == expected_state
         assert row.remote_hello_sequence == 0
 
 
@@ -232,6 +240,10 @@ async def test_cloudflare_hello_checks_enrollment_on_reconnect_and_takeover(hell
 
     successor = host.RemoteControlHost()
     takeover = replace(hello, hello_sequence=3, nonce=new_nonce())
+    blocked = socket_for(takeover)
+    with pytest.raises(AuthenticationError, match="ownership was refused"):
+        await successor.connect(blocked)
+    blocked.close.assert_awaited_once_with(code=1008)
     assert await ownership.release_remote_owner(reconnected.lease)
     with pytest.raises(AuthenticationError, match="ownership was refused"):
         await successor.connect(socket_for(replace(takeover, resource_uid="another-do")))
@@ -290,7 +302,24 @@ async def test_retirement_fences_cloudflare_session_and_reconnect(hello, enrollm
     reconnect = replace(hello, hello_sequence=2, nonce=new_nonce())
     for control_host in (original, host.RemoteControlHost()):
         socket = socket_for(reconnect)
-        with pytest.raises(AuthenticationError, match="ownership was refused"):
+        with pytest.raises(AuthenticationError, match="incarnation ended"):
             await control_host.connect(socket)
-        socket.close.assert_awaited_once_with(code=1008)
+        socket.close.assert_awaited_once_with(code=CLOUDFLARE_INCARNATION_ENDED, reason="incarnation ended")
         socket.send_text.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("valid_proof", [True, False])
+async def test_lost_incarnation_signal_requires_derived_proof(hello, enrollment, valid_proof):
+    async with enrollment() as db:
+        row = await db.get(ExecutionWorker, hello.incarnation_id)
+        row.state = "lost"
+
+    socket = socket_for(hello, key=None if valid_proof else PLATFORM_KEY)
+    with pytest.raises(AuthenticationError):
+        await host.RemoteControlHost().connect(socket)
+    if valid_proof:
+        socket.close.assert_awaited_once_with(code=CLOUDFLARE_INCARNATION_ENDED, reason="incarnation ended")
+    else:
+        socket.close.assert_awaited_once_with(code=1008)
+    socket.send_text.assert_not_awaited()
