@@ -45,7 +45,9 @@ from src.jobs.platform.kubernetes_client import (
     KubernetesJobClient,
     oom_killed,
 )
+from src.models.enums import LIVE_EXECUTION_STATUSES
 from src.models.orm.execution_workers import MANAGED_WORKER_FORMS, ExecutionWorker, ExecutionWorkerClaim
+from src.models.orm.executions import Execution
 from src.models.orm.platform_jobs import PlatformJob
 from src.models.orm.package_changes import PackageChange
 from src.models.orm.services import ServiceDefinition
@@ -58,6 +60,7 @@ from src.services.work_dispatch import (
     DISPATCH_WAKE_FAMILIES,
     WAKE_PLATFORM_JOB,
     WAKE_SERVICE,
+    WAKE_WORKFLOW,
     listen_for_pool_wake,
     wait_for_next_pass,
 )
@@ -472,7 +475,16 @@ class WorkerCapacityController(ABC):
                 select(ExecutionWorker.id).where(
                     ExecutionWorker.id.in_([worker.id for worker in declared]),
                     ExecutionWorker.remote_owner_lease_expires_at > func.now(),
-                    ~exists().where(ExecutionWorkerClaim.worker_id == ExecutionWorker.id),
+                    ~exists().where(
+                        ExecutionWorkerClaim.worker_id == ExecutionWorker.id,
+                        # A claim without a settled workflow is still a hold.
+                        # Completed claims stay in this table for provenance.
+                        ~exists().where(
+                            ExecutionWorkerClaim.family == WAKE_WORKFLOW,
+                            Execution.id == ExecutionWorkerClaim.subject_id,
+                            Execution.status.not_in(LIVE_EXECUTION_STATUSES),
+                        ),
+                    ),
                 )
             )).all()) if declared else set()
             idle_declared = {

@@ -778,24 +778,28 @@ async def test_cloudflare_packing_consumes_a_slot_even_when_bytes_remain(db) -> 
     assert len(await pool.launch_for_demand(POLICY)) == 1
 
 
-@pytest.mark.parametrize("capacity", ["idle", "useful", "durable-claim"])
+@pytest.mark.parametrize("capacity", ["idle", "useful", "durable-claim", "settled-claim"])
 async def test_idle_cloudflare_worker_yields_a_capped_slot_for_linux_demand(db, capacity) -> None:
     worker_id = await _declared_worker(db)
     if capacity == "useful":
         approved = await _accept_pool_run()
         await _set_request(db.sessions, approved, 64 * MIB, approved=True)
-    elif capacity == "durable-claim":
+    elif capacity in ("durable-claim", "settled-claim"):
         # A claim can exist before the heartbeat reflects the new reservation.
+        execution_id = UUID(await _accept_pool_run()) if capacity == "settled-claim" else uuid4()
         async with db.context() as session:
+            if capacity == "settled-claim":
+                execution = await session.get(Execution, execution_id)
+                execution.status = ExecutionStatus.SUCCESS
             session.add(ExecutionWorkerClaim(
-                worker_id=worker_id, family=workflow_dispatch.FAMILY, subject_id=uuid4(),
+                worker_id=worker_id, family=workflow_dispatch.FAMILY, subject_id=execution_id,
             ))
     await _accept_pool_run()
     pool = _controller(FakeCluster(), get_version())
 
     assert await pool.launch_for_demand(replace(POLICY, max_workers=1)) == []
     assert await _state(db.sessions, worker_id) == (
-        ("draining", "capacity_replacement") if capacity == "idle" else ("ready", None)
+        ("draining", "capacity_replacement") if capacity in ("idle", "settled-claim") else ("ready", None)
     )
 
 
