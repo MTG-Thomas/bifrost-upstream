@@ -1351,9 +1351,9 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         handle.process.terminal_receipt = receipt
         if state == "uncertain":
             error_type = result.get("error_type")
-            # The launcher journals the stop reason, so this also works when
-            # a new API owner replays a terminal without an in-memory stop.
-            if error_type not in ("CancelledError", "TimeoutError"):
+            # Preserve known stop and resource-limit reasons on replay, even
+            # when a new API owner has no in-memory stop.
+            if error_type not in ("CancelledError", "TimeoutError", "CpuLimitExceeded", "MemoryLimitExceeded"):
                 error_type = "WorkflowAttemptUncertain"
             result = {
                 **result,

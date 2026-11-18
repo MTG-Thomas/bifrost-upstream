@@ -497,7 +497,11 @@ until the ordinary queue deadline.
   outcome (including a workflow error), or `uncertain` if side effects may
   have occurred without a confirmed engine outcome. Only `completed` may
   carry a success. The API settles a user stop as `Cancelled` and a deadline
-  stop as `Timeout`, with a warning if the attempt was `uncertain`.
+  stop as `Timeout`. A classified Cloudflare CPU or memory kill stays
+  `uncertain` and settles as `Failed` with `CpuLimitExceeded` (including
+  `cpu_budget_ms` in the message) or `MemoryLimitExceeded` (platform limit).
+  These terminals omit platform exception text and resource measurements.
+  All `uncertain` terminals warn that effects may already have occurred.
   Other `uncertain` terminals fail with `WorkflowAttemptUncertain`. The API
   acknowledges terminal delivery under its owner fence. A stop reply alone
   never releases a reservation.

@@ -58,6 +58,14 @@ export async function runLauncherWorkflow(getHost, {route, context, publicUrl, s
     const {phase, attempt_state, error_type} = hosted.terminal;
     if (phase === 'attempt-deadline') return terminal(attempt_state, 'TimeoutError', 'Workflow deadline elapsed');
     if (phase === 'attempt-stopped') return terminal(attempt_state, 'CancelledError', 'Workflow stopped');
+    if (phase === 'cpu_limit') {
+      return terminal(attempt_state, 'CpuLimitExceeded',
+        `Stopped by Cloudflare: the executor exceeded its CPU time limit (cpu_budget_ms=${context.cloudflare_workspace.cpu_budget_ms}).`);
+    }
+    if (phase === 'memory_limit') {
+      return terminal(attempt_state, 'MemoryLimitExceeded',
+        'Stopped by Cloudflare: the executor exceeded the platform memory limit.');
+    }
     return terminal(attempt_state, error_type, 'Workflow output exceeded the retention limit');
   }
   const output = hosted.output;

@@ -955,6 +955,8 @@ async def test_cooperative_stop_waits_for_terminal(
     ("uncertain", "TimeoutError", True, ExecutionStatus.TIMEOUT),
     ("not_started", "LauncherReset", False, ExecutionStatus.FAILED),
     ("uncertain", "LauncherReset", True, ExecutionStatus.FAILED),
+    ("uncertain", "CpuLimitExceeded", False, ExecutionStatus.FAILED),
+    ("uncertain", "MemoryLimitExceeded", False, ExecutionStatus.FAILED),
     ("completed", None, True, ExecutionStatus.SUCCESS),
     ("completed", "ValueError", True, ExecutionStatus.FAILED),
 ])
@@ -984,8 +986,14 @@ async def test_replayed_opaque_terminal_commits_its_outcome(
     monkeypatch.setattr("src.services.events.builtins.emit_workflow_completed_event", AsyncMock())
 
     event = terminal_event(terminal, success=error_type is None)
+    reason = {
+        "CpuLimitExceeded": "Stopped by Cloudflare: the executor exceeded its CPU time limit (cpu_budget_ms=1000).",
+        "MemoryLimitExceeded": "Stopped by Cloudflare: the executor exceeded the platform memory limit.",
+    }.get(error_type or "", "Terminal reason")
     if error_type is not None:
-        event["result"].update(error_type=error_type, error="Terminal reason")
+        event["result"].update(
+            error_type=error_type, error=reason, metrics={"peak_memory_growth_bytes": 100 * 2**20},
+        )
     await worker.bridge.receive(event)
     await worker.bridge.receive(inventory([workflow_entry(sibling)], [terminal]))
     await worker._prepare_admission()
@@ -995,15 +1003,16 @@ async def test_replayed_opaque_terminal_commits_its_outcome(
         execution = await db.get(Execution, subject)
         assert execution.status == expected
         assert execution.completed_at is not None
+        assert execution.peak_memory_growth_bytes is None
         if error_type is None:
             assert execution.result == "output"
         if state == "uncertain":
-            assert execution.error_message.startswith("Workflow may already have taken effect.")
+            assert execution.error_message == f"Workflow may already have taken effect. {reason}"
         assert not await db.scalar(select(WorkDispatch.id).where(WorkDispatch.subject_id == subject))
 
     assert publish.await_args.args[1] == expected.value
     if error_type is not None:
-        if state == "uncertain" and expected == ExecutionStatus.FAILED:
+        if state == "uncertain" and error_type == "LauncherReset":
             error_type = "WorkflowAttemptUncertain"
         assert publish.await_args.args[2]["errorType"] == error_type
         assert consumer._redis_client.push_result.await_args.kwargs["error_type"] == error_type

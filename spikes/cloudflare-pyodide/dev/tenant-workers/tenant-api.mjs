@@ -426,8 +426,14 @@ export class TenantHost extends DurableObject {
           api_calls: this.#calls.get(handle)}};
     } catch (error) {
       if (routeId && dispatched && !this.#current?.stopped) {
-        console.info('launcher_child_outcome_unknown', routeId, runtimeErrorClass(error).error_class);
+        const {error_class} = runtimeErrorClass(error);
+        console.info('launcher_child_outcome_unknown', routeId, error_class);
         await this.#retireChild();
+        // RPC exceptions can lose their classification. Return only the
+        // allowlisted platform class, with no exception text.
+        if (error_class === 'cpu_limit' || error_class === 'memory_limit') {
+          return {terminal: {phase: error_class, attempt_state: 'uncertain'}};
+        }
       }
       throw error;
     } finally {

@@ -167,6 +167,24 @@ test('a lost ack keeps the same result until the matching ack', async () => {
   assert.equal(api.data.has('slot'), false);
 });
 
+test('a CPU limit terminal retains its reason, budget, and uncertainty across reconnect', async () => {
+  const outcome = {attempt_state: 'uncertain', result: {success: false, error_type: 'CpuLimitExceeded',
+    error: 'Stopped by Cloudflare: the executor exceeded its CPU time limit (cpu_budget_ms=10).'}};
+  const api = peer({runHost: async () => outcome});
+  await connect(api);
+  await api.command('workflow', workflow());
+  await api.finish();
+  const terminal = api.frames().at(-1);
+  assert.equal(terminal.event, 'result');
+  assert.equal(terminal.attempt_state, outcome.attempt_state);
+  assert.deepEqual(terminal.result, outcome.result);
+
+  const reset = peer({data: api.data});
+  await connect(reset, 2);
+  assert.deepEqual(reset.frames().at(-1), terminal);
+  assert.equal(reset.calls.length, 0);
+});
+
 test('stale generations cannot acknowledge a retained terminal or welcome a new session', async () => {
   const api = peer();
   await connect(api, 2);

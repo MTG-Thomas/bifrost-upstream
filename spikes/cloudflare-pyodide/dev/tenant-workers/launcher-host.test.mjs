@@ -54,6 +54,21 @@ test('host transport failure stays uncertain and is never retried', async () => 
     run: async () => { calls++; throw new Error('reply lost'); },
   }), {route, context: {}, signal: new AbortController().signal, now: () => START});
   assert.equal(calls, 1);
-  assert.equal(result.attempt_state, 'uncertain');
-  assert.equal(result.result.success, false);
+  assert.deepEqual(result, {attempt_state: 'uncertain', result: {success: false,
+    error_type: 'TenantHostOutcomeUnknown', error: 'TenantHost did not confirm the workflow outcome'}});
 });
+
+for (const [phase, error_type, error] of [
+  ['cpu_limit', 'CpuLimitExceeded',
+    'Stopped by Cloudflare: the executor exceeded its CPU time limit (cpu_budget_ms=1000).'],
+  ['memory_limit', 'MemoryLimitExceeded',
+    'Stopped by Cloudflare: the executor exceeded the platform memory limit.'],
+]) {
+  test(`launcher reports ${phase} with a safe message and uncertain effects`, async () => {
+    const context = {cloudflare_workspace: {cpu_budget_ms: 1000}};
+    const result = await runLauncherWorkflow(() => ({
+      run: async () => ({terminal: {phase, attempt_state: 'uncertain'}}),
+    }), {route, context, signal: new AbortController().signal, now: () => START});
+    assert.deepEqual(result, {attempt_state: 'uncertain', result: {success: false, error_type, error}});
+  });
+}

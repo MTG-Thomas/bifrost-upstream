@@ -29,6 +29,8 @@ function engine() {
       const body = await request.json();
       if (body.action === 'ping') return Response.json({first_request: false, primed: 0});
       const {scenario, engine_token} = body.context;
+      if (scenario === 'cpu-limit') throw new Error('Worker exceeded CPU time limit: private detail');
+      if (scenario === 'memory-limit') throw new Error('Worker exceeded its memory limit: private detail');
       let result;
       if (scenario === 'snapshot') {
         const headers = {Authorization: `Bearer ${engine_token}`};
@@ -318,3 +320,14 @@ test('TenantHost refuses and records an outbound request past the subrequest all
   assert.deepEqual(limited.timings.api_calls.map(({status, denied}) => [status, denied ?? null]),
     [[200, null], [429, 'subrequest allowance exhausted']]);
 });
+
+for (const [scenario, phase] of [['cpu-limit', 'cpu_limit'], ['memory-limit', 'memory_limit']]) {
+  test(`TenantHost forwards only the ${phase} classification across workerd RPC`, async () => {
+    await host(scenario, 'warm');
+    // Inject the platform's error text through the real WorkerLoader/RPC path.
+    const result = await host(scenario, 'run', route(scenario, {scenario}));
+    assert.deepEqual(result, {terminal: {phase, attempt_state: 'uncertain'}});
+    const next = await host(scenario, 'run', route(scenario, {routeId: `${scenario}-next`}));
+    assert.deepEqual(next, {needsWarm: true, attempt_state: 'not_started'});
+  });
+}
