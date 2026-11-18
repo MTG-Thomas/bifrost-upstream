@@ -72,10 +72,6 @@
       "name": "Mapping save results",
       "description": "Works out which organizations failed to link so the screen can name them and their reasons."
     },
-    "client/src/components/integrations/MatchSuggestionBadge.tsx": {
-      "name": "Suggested match",
-      "description": "Shows a suggested match with how confident it is, and lets an admin accept or reject it."
-    },
     "client/src/components/integrations/OrgConfigDialog.tsx": {
       "name": "Organization connection settings",
       "description": "Sets one organization's own settings and account for a shared connection."

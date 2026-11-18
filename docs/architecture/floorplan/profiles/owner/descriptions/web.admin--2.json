@@ -152,10 +152,6 @@
       "name": "Rename identity",
       "description": "Renames a custom identity and explains on the spot when that name is already taken."
     },
-    "client/src/components/integrations/AutoMatchControls.tsx": {
-      "name": "Automatic matching",
-      "description": "Suggests which organization each connected record belongs to and applies the matches in one pass."
-    },
     "client/src/components/integrations/ConfigFieldInput.tsx": {
       "name": "Connection field input",
       "description": "Renders one setup question for a connection in the right control for its type."
