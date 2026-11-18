@@ -27,6 +27,14 @@ references:
       - client/src/lib/app-sdk/*.tsx
     verified_at_sha: b70a55c77024659b69536842335b515f629dd45e
 
+  - file: references/apps-foldkit.md
+    source_globs:
+      - api/bifrost/foldkit_scaffold.py
+      - api/bifrost/commands/app.py
+      - client/src/lib/app-sdk/core.ts
+      - client/src/lib/app-sdk/workflow-run.ts
+    verified_at_sha: b4cca0abe1eab04a3162b37ddf3f0df5133f6e15
+
   - file: references/apps-independent.md
     source_globs:
       - api/bifrost/app_binding.py

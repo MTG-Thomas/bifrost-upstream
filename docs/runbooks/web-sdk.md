@@ -33,6 +33,33 @@ integrity-checked script under `/api/app-sdk/assets/<sha256>.js`. Shared platfor
 storage retains advertised scripts across instance rollouts. Opening an App
 loads static JavaScript; it never starts npm, an App build, or a dev server.
 
+React is an optional peer dependency of the package. React Apps depend on React
+directly, so this changes nothing for them. It lets a locked build of an App
+that does not use React run `npm ci` after the platform grafts the SDK into the
+App's lockfile.
+
+## Framework-Neutral Entry (Experimental)
+
+`bifrost/core` (`client/src/lib/app-sdk/core.ts`) serves Apps that do not use
+React, such as the experimental Foldkit scaffold
+(`bifrost app create --framework foldkit`):
+
+```ts
+import { connect, tables, files } from "bifrost/core";
+```
+
+It reuses the SDK's existing modules: the authenticated fetch (also used by
+`BifrostProvider`), `tables`, `files`, and the workflow run (also used by
+`useWorkflow`). It adds no wire surface. The build fails if anything in its
+graph imports React.
+
+Unlike the binding, `bifrost/core` is compiled into the App. It is not part of
+`sdk_fingerprint`, which identifies the hosted binding; including it would mark
+every React App stale whenever a shared module changed. An App that imports
+`bifrost/core` therefore receives SDK changes on its next build. Its deployment
+is still stamped with the binding major, so the host preloads the hosted
+factory before mounting it.
+
 ## Local Apps
 
 App scaffolds deliberately omit an instance-specific SDK dependency from

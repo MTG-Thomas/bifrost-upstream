@@ -28,13 +28,10 @@ import {
   type ReactNode,
 } from "react";
 
+import { createAuthenticatedFetch } from "./authenticated-fetch";
 import { setDefaultFileScope } from "./files";
 import { setBifrostTransport, setDefaultAppScope } from "./tables";
-import {
-	getPlatformAuth,
-	isRefreshRequiredChallenge,
-	REQUEST_REPLAY_BUDGET,
-} from "./transport";
+import { getPlatformAuth } from "./transport";
 
 export interface BifrostContextValue {
   /** Absolute base URL of the Bifrost API (no trailing slash). */
@@ -128,16 +125,6 @@ function applyThemeClass(theme: Theme): void {
   else root.classList.remove("dark");
 }
 
-function joinUrl(baseUrl: string, input: RequestInfo | URL): RequestInfo | URL {
-  // Only rewrite string, root-relative API paths; leave absolute URLs and
-  // Request objects untouched.
-  if (typeof input !== "string") return input;
-  if (/^https?:\/\//i.test(input)) return input;
-  const base = baseUrl.replace(/\/$/, "");
-  const path = input.startsWith("/") ? input : `/${input}`;
-  return `${base}${path}`;
-}
-
 export function BifrostProvider({
   baseUrl,
   token,
@@ -191,63 +178,17 @@ export function BifrostProvider({
 
 	// Theme controls do not change authentication. Keep data-hook requests
 	// stable when the host or the app switches between light and dark.
-	const authedFetch = useMemo<typeof fetch>(() => {
-		const baseFetch = fetchImpl ?? globalThis.fetch;
-		const authenticatedFetch: typeof fetch = async (input, init) => {
-			const callerHeaders = new Headers(init?.headers);
-			const managesAuthorization = !callerHeaders.has("Authorization");
-			const requestWithToken = (accessToken: string | null) => {
-				const headers = new Headers(callerHeaders);
-				if (managesAuthorization && accessToken) {
-					headers.set("Authorization", `Bearer ${accessToken}`);
-				}
-				if (orgScope && !headers.has("X-Bifrost-Org")) {
-					headers.set("X-Bifrost-Org", orgScope);
-				}
-				// Same context signal the tables/files transport sends: the server's
-				// auth layer resolves it to the install scope (ctx.solution_id), so a
-				// workflow path::fn ref scopes to THIS install without body plumbing.
-				if (appId && !headers.has("X-Bifrost-App")) {
-					headers.set("X-Bifrost-App", appId);
-				}
-				return baseFetch(joinUrl(baseUrl, input), { ...init, headers });
-			};
-
-			let attemptedToken = currentToken();
-			let response = await requestWithToken(attemptedToken);
-			const auth = getPlatformAuth();
-			if (
-				!isRefreshRequiredChallenge(response) ||
-				!managesAuthorization ||
-				!auth?.canRefreshAccessToken()
-			) {
-				return response;
-			}
-
-			let remaining = REQUEST_REPLAY_BUDGET;
-			while (remaining > 0 && isRefreshRequiredChallenge(response)) {
-				remaining -= 1;
-				// The host may already have rotated the token while this request was
-				// in flight. Prefer that value before asking it to rotate again.
-				let freshToken = auth.getAccessToken();
-				if (!freshToken || freshToken === attemptedToken) {
-					const refreshed = await auth.refreshAccessToken();
-					freshToken = refreshed ? auth.getAccessToken() : null;
-				}
-
-				if (!freshToken) {
-					auth.handleAuthenticationFailure();
-					return response;
-				}
-
-				attemptedToken = freshToken;
-				response = await requestWithToken(freshToken);
-			}
-			if (isRefreshRequiredChallenge(response)) auth.handleAuthenticationFailure();
-			return response;
-		};
-		return authenticatedFetch;
-	}, [baseUrl, currentToken, orgScope, appId, fetchImpl]);
+	const authedFetch = useMemo<typeof fetch>(
+		() =>
+			createAuthenticatedFetch({
+				baseUrl,
+				getToken: currentToken,
+				orgScope,
+				appId,
+				fetchImpl,
+			}),
+		[baseUrl, currentToken, orgScope, appId, fetchImpl],
+	);
 
 	const value = useMemo<BifrostContextValue>(() => {
 		const logout = () => onLogout?.();

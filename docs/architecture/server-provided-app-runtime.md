@@ -35,6 +35,13 @@ already interprets server responses; that same code simply runs from the hosted
 artifact. The [preservation inventory](server-provided-app-runtime-contract-v1.md)
 records existing behavior to verify, not a new intermediate API to implement.
 
+An experimental `bifrost/core` entry for non-React Apps (2026-11-18) does not
+reverse this. It is not hosted and adds no protocol layer: it exports the
+existing neutral modules (authenticated fetch, `tables`, `files`, workflow run),
+which the React provider and hooks also use, and it is compiled into the Apps
+that import it. The hosted factory, its peer ABI, the binding, and
+`sdk_fingerprint` are unchanged. See the [web SDK runbook](../runbooks/web-sdk.md).
+
 Relevant existing paths:
 
 - SDK exports and implementation: `client/src/lib/app-sdk/index.v2.ts` and siblings.

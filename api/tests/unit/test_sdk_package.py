@@ -45,6 +45,9 @@ _SRC_FILES = [
     "hosted-binding.tsx",
     "hosted-contract.ts",
     "hosted-loader.ts",
+    "authenticated-fetch.ts",
+    "workflow-run.ts",
+    "core.ts",
 ]
 
 
@@ -86,10 +89,11 @@ def test_build_sdk_tarball_cached_per_version(monkeypatch):
 
     sdkpkg.build_sdk_tarball.cache_clear()
     sdkpkg._built_bundle.cache_clear()
-    calls: list[Path] = []
+    sdkpkg._built_core_bundle.cache_clear()
+    calls: list[str] = []
 
-    def _fake_bundle(workdir: Path) -> bytes:
-        calls.append(workdir)
+    def _fake_bundle(workdir: Path, mode: str = "binding") -> bytes:
+        calls.append(mode)
         return b"//bundle"
 
     def _fake_types(workdir: Path) -> Path:
@@ -107,9 +111,10 @@ def test_build_sdk_tarball_cached_per_version(monkeypatch):
         # Don't leak the fake-bundle tarball into other tests via the cache.
         sdkpkg.build_sdk_tarball.cache_clear()
         sdkpkg._built_bundle.cache_clear()
+        sdkpkg._built_core_bundle.cache_clear()
 
     assert first == second
-    assert len(calls) == 1, "builder ran more than once for the same version"
+    assert sorted(calls) == ["binding", "core"], "builder ran more than once for the same version"
 
 
 def test_sdk_package_version_matches_tarball_package_json(monkeypatch):
@@ -117,7 +122,8 @@ def test_sdk_package_version_matches_tarball_package_json(monkeypatch):
 
     sdkpkg.build_sdk_tarball.cache_clear()
     sdkpkg._built_bundle.cache_clear()
-    monkeypatch.setattr(sdkpkg, "_bundle", lambda workdir: b"//bundle")
+    sdkpkg._built_core_bundle.cache_clear()
+    monkeypatch.setattr(sdkpkg, "_bundle", lambda workdir, mode="binding": b"//bundle")
     monkeypatch.setattr(sdkpkg, "sdk_contract_version", lambda: 7)
     def _types_dir(workdir: Path) -> Path:
         types = workdir / "types"
@@ -133,6 +139,7 @@ def test_sdk_package_version_matches_tarball_package_json(monkeypatch):
     finally:
         sdkpkg.build_sdk_tarball.cache_clear()
         sdkpkg._built_bundle.cache_clear()
+        sdkpkg._built_core_bundle.cache_clear()
 
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
         pkg_file = tar.extractfile("package/package.json")
@@ -168,6 +175,8 @@ def test_build_sdk_tarball_shape_and_exports():
         assert "package/package.json" in names
         assert "package/dist/index.mjs" in names
         assert "package/types/hosted-binding.d.ts" in names
+        assert "package/dist/core.mjs" in names
+        assert "package/types/core.d.ts" in names
 
         pkg_file = tar.extractfile("package/package.json")
         assert pkg_file is not None
@@ -182,6 +191,7 @@ def test_build_sdk_tarball_shape_and_exports():
         assert "lucide-react" not in pkg["peerDependencies"]
         assert pkg["bifrost"]["binding_api_major"] == 1
         assert pkg["types"] == "types/hosted-binding.d.ts"
+        assert pkg["exports"]["./core"] == {"types": "./types/core.d.ts", "import": "./dist/core.mjs"}
 
         bundle_file = tar.extractfile("package/dist/index.mjs")
         assert bundle_file is not None
@@ -194,6 +204,14 @@ def test_build_sdk_tarball_shape_and_exports():
             assert sym in bundle, f"{sym} missing from bundle"
         # React stays external so the binding shares the App's singleton.
         assert 'from "react"' in bundle
+
+        core_file = tar.extractfile("package/dist/core.mjs")
+        assert core_file is not None
+        core_bundle = core_file.read().decode()
+        assert "connect" in core_bundle
+        # bifrost/core is self-contained and React-free (build_sdk.js enforces it).
+        assert 'from "react' not in core_bundle
+        assert 'require("react' not in core_bundle
 
 
 @pytest.mark.e2e
@@ -226,6 +244,7 @@ def test_tarball_preserves_license_bytes(monkeypatch, tmp_path):
     license_path.write_bytes(license_bytes)
     monkeypatch.setattr(sdkpkg, "_LICENSE_PATH", license_path)
     monkeypatch.setattr(sdkpkg, "_built_bundle", lambda version: b"//binding")
+    monkeypatch.setattr(sdkpkg, "_built_core_bundle", lambda version: b"//core")
     monkeypatch.setattr(sdkpkg, "sdk_contract_version", lambda: 3)
     monkeypatch.setattr(sdkpkg, "_build_types", lambda workdir: tmp_path)
     sdkpkg.build_sdk_tarball.cache_clear()
@@ -244,3 +263,32 @@ def test_tarball_preserves_license_bytes(monkeypatch, tmp_path):
         assert package["version"] == "1.2.3"
         assert package["bifrost"]["contract"] == 3
         assert package["bifrost"]["fingerprint"] == sdkpkg.sdk_fingerprint("v1.2.3")
+
+
+def test_react_peers_are_optional(monkeypatch, tmp_path):
+    """A locked build grafts only the SDK's own lock entry.  Required React peers
+    would make npm demand React in a React-free App's lockfile, failing ``npm ci``."""
+    import src.services.sdk_package as sdkpkg
+
+    monkeypatch.setattr(sdkpkg, "_built_bundle", lambda version: b"//binding")
+    monkeypatch.setattr(sdkpkg, "_built_core_bundle", lambda version: b"//core")
+    monkeypatch.setattr(sdkpkg, "sdk_fingerprint", lambda version: "f" * 16)
+    monkeypatch.setattr(sdkpkg, "sdk_contract_version", lambda: 3)
+    monkeypatch.setattr(sdkpkg, "_build_types", lambda workdir: tmp_path)
+    sdkpkg.build_sdk_tarball.cache_clear()
+    try:
+        data = sdkpkg.build_sdk_tarball("v1.2.3")
+    finally:
+        sdkpkg.build_sdk_tarball.cache_clear()
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+        package_file = tar.extractfile("package/package.json")
+        assert package_file is not None
+        package = json.load(package_file)
+        core_file = tar.extractfile("package/dist/core.mjs")
+        assert core_file is not None and core_file.read() == b"//core"
+
+    assert package["peerDependencies"] == {"react": ">=18", "react-dom": ">=18"}
+    assert package["peerDependenciesMeta"] == {
+        "react": {"optional": True},
+        "react-dom": {"optional": True},
+    }

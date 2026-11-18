@@ -132,6 +132,9 @@ COPY client/src/lib/app-sdk/provider.tsx \
      client/src/lib/app-sdk/hosted-binding.tsx \
      client/src/lib/app-sdk/hosted-contract.ts \
      client/src/lib/app-sdk/hosted-loader.ts \
+     client/src/lib/app-sdk/authenticated-fetch.ts \
+     client/src/lib/app-sdk/workflow-run.ts \
+     client/src/lib/app-sdk/core.ts \
      /app/src/services/sdk_package/sdk_src/
 COPY client/src/lib/app-sdk/index.v2.ts /app/src/services/sdk_package/sdk_src/index.v2.ts
 COPY client/src/lib/app-sdk/index.v2.ts /app/src/services/sdk_package/sdk_src/index.ts

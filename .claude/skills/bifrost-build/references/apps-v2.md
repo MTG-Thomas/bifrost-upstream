@@ -2,6 +2,8 @@
 
 A V2 App is a normal React/TypeScript/Vite project. It can be independently deployed from its own repository or owned and deployed as part of a Solution. Choose the ownership model before scaffolding; read `apps-independent.md` for independent App lifecycle and `solutions.md` for Solution lifecycle.
 
+An independent App can instead use Foldkit (experimental) when the user asks for it; read `apps-foldkit.md`.
+
 Read `app-quality.md` before designing user-visible UI and `web-sdk-v2.md` when using Bifrost data or workflows.
 
 ## Scaffold first
