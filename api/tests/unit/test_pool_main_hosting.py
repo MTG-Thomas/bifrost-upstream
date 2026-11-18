@@ -419,9 +419,13 @@ async def test_a_refused_fork_hands_the_run_back(monkeypatch) -> None:  # type: 
     worker = _worker_with_pool()
     worker._workflow_consumer.process_message = AsyncMock(side_effect=MemoryError("pressure"))  # type: ignore[union-attr]
     worker._agent_consumer = object()  # type: ignore[assignment]
-    release = AsyncMock()
-    monkeypatch.setattr(workflow_dispatch, "release_workflow_run", release)
     execution_id = str(uuid4())
+
+    async def hand_back(**_kwargs: object) -> None:
+        assert worker.admission.request_bytes(execution_id) is None
+
+    release = AsyncMock(side_effect=hand_back)
+    monkeypatch.setattr(workflow_dispatch, "release_workflow_run", release)
 
     await _run_to_routed(worker, _workflow_claim(execution_id, 100 * MIB))
 
@@ -431,7 +435,7 @@ async def test_a_refused_fork_hands_the_run_back(monkeypatch) -> None:  # type: 
         payload={"execution_id": execution_id, "sync": False},
         memory_request_bytes=100 * MIB,
         queued_at=QUEUED_AT,
-        release_unsent_reservation=None,
+        release_opaque_reservation=None,
     )
     assert worker.admission.free_bytes() == GIB, "the hold went back with the run"
 

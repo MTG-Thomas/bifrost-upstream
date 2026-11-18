@@ -265,6 +265,10 @@ run. Findings, checked against the cited code:
   the engine for that route. If engine entry may have occurred and the
   outcome is unknown, journal an `uncertain` terminal. An explicit
   `MemoryError` refusal lets the API hand the claim back for redispatch.
+- Once the launcher sends an inventory omitting a workflow route from an
+  earlier control generation, it must never enter the engine for that route
+  or report it in a later reply, event, or inventory. The API may already
+  have settled the omitted attempt as uncertain.
 - After welcome, send one inventory per control generation. It must contain
   `version: 1`, a nonnegative integer `baseline_bytes`, and both `routes` and
   `terminal_routes` arrays. Each entry carries `kind: "workflow"`,

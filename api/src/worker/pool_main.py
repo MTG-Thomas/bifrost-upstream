@@ -619,13 +619,13 @@ class PoolWorker:
                         if claim.claimed is not None
                         else None,
                     )
-                except (MemoryError, OpaqueWorkflowNotStarted) as exc:
-                    # A refused fork or provably unsent opaque command can
-                    # go back to waiting for an executor.
+                except (MemoryError, OpaqueWorkflowNotStarted):
+                    # A refused fork or an opaque dispatch that never started
+                    # can go back to waiting for an executor.
                     from src.services.execution.workflow_dispatch import release_workflow_run
 
-                    unsent = isinstance(exc, OpaqueWorkflowNotStarted)
-                    if not unsent or claim.claimed is None:
+                    opaque = self.runtime_profile != LINUX_RUNTIME_PROFILE
+                    if not opaque or claim.claimed is None:
                         self._release_claim_reservation(claim)
                     handed_back = True
                     if claim.claimed is None:
@@ -640,7 +640,9 @@ class PoolWorker:
                         payload=claim.claimed,
                         memory_request_bytes=claim.memory_request_bytes,
                         queued_at=claim.queued_at,
-                        release_unsent_reservation=(lambda: self._release_claim_reservation(claim)) if unsent else None,
+                        release_opaque_reservation=(
+                            (lambda: self._release_claim_reservation(claim)) if opaque else None
+                        ),
                     )
             elif claim.handler == "agent.run":
                 assert self._agent_consumer is not None

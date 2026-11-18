@@ -405,6 +405,38 @@ async def test_omitted_unclaimed_route_releases_admission(opaque_executor, async
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure_point", ["db-entry", "owner-fence"])
+async def test_opaque_handback_releases_starting_reservation_on_db_failure(monkeypatch, failure_point):
+    release_reservation = Mock()
+    failure = ConnectionError("Hand-back database unavailable")
+
+    @asynccontextmanager
+    async def handback_db():
+        if failure_point == "db-entry":
+            raise failure
+        yield Mock()
+
+    async def fail_fence(_db):
+        release_reservation.assert_not_called()
+        raise failure
+
+    monkeypatch.setattr(workflow_dispatch, "get_db_context", handback_db)
+    monkeypatch.setattr(workflow_dispatch, "fence_remote_owner", fail_fence)
+
+    with pytest.raises(ConnectionError, match="Hand-back database unavailable"):
+        await workflow_dispatch.release_workflow_run(
+            worker_id=uuid4(),
+            message={},
+            payload={"execution_id": str(uuid4()), "sync": True},
+            memory_request_bytes=RESERVATION,
+            queued_at=datetime.now(UTC),
+            release_opaque_reservation=release_reservation,
+        )
+
+    release_reservation.assert_called_once_with()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("pre_send", [True, False], ids=["reconnect-before-send", "explicit-memory-refusal"])
 async def test_definitively_unsent_workflow_is_handed_back(
     opaque_executor, async_session_factory, monkeypatch, pre_send,
@@ -428,11 +460,14 @@ async def test_definitively_unsent_workflow_is_handed_back(
         memory_request_bytes=RESERVATION, queued_at=queued_at,
     )
 
+    async def reconnect():
+        generation = await receive_reconnect(bridge, async_session_factory, inventory([sibling]), socket=socket)
+        lease_ref.lease = bridge.lease
+        await worker.reconcile_transport_inventory(expected_generation=generation)
+
     async def issue_credentials(*args, **kwargs):
         if pre_send:
-            generation = await receive_reconnect(bridge, async_session_factory, inventory([sibling]), socket=socket)
-            lease_ref.lease = bridge.lease
-            await worker.reconcile_transport_inventory(expected_generation=generation)
+            await reconnect()
         return tokens.RunCredentials("test-access", None, datetime.now(UTC), 1)
 
     async def refuse(frame):
@@ -441,6 +476,20 @@ async def test_definitively_unsent_workflow_is_handed_back(
         await bridge.receive({
             "reply": command.payload["id"], "error": "Refused before engine entry", "error_type": "MemoryError",
         })
+        bridge.disconnect(socket)
+
+    if not pre_send:
+        db_context = workflow_dispatch.get_db_context
+
+        @asynccontextmanager
+        async def handback_db():
+            # Inventory omits the refused route after its cleanup and before
+            # the hand-back transaction acquires the owner lock.
+            await reconnect()
+            async with db_context() as db:
+                yield db
+
+        monkeypatch.setattr(workflow_dispatch, "get_db_context", handback_db)
 
     socket.send_text.side_effect = refuse
     monkeypatch.setattr(tokens, "issue_run_credentials", issue_credentials)

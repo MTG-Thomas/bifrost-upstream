@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -203,26 +204,31 @@ async def release_workflow_run(
     payload: dict[str, Any],
     memory_request_bytes: int,
     queued_at: datetime,
-    release_unsent_reservation: Callable[[], None] | None = None,
+    release_opaque_reservation: Callable[[], None] | None = None,
 ) -> None:
     """Hand a claimed run back before it started: RUNNING -> PENDING.
 
     For an executor that claimed a run but could not launch it. The run gets
     a new dispatch, keeping its place in line and its claim deadline, and
-    loses this executor's claim record. For a provably unsent opaque
-    dispatch, keep its starting reservation until the owner fence is
-    locked so a concurrent inventory still recognizes the in-flight claim.
+    loses this executor's claim record. For an opaque dispatch that never
+    started, keep its reservation while acquiring the owner fence so a
+    concurrent inventory still recognizes the in-flight claim.
     """
-    execution_id = UUID(payload["execution_id"])
-    async with get_db_context() as db:
+    async with AsyncExitStack() as stack:
+        try:
+            execution_id = UUID(payload["execution_id"])
+            db = await stack.enter_async_context(get_db_context())
+            owns_session = release_opaque_reservation is None or await fence_remote_owner(db)
+        finally:
+            if release_opaque_reservation is not None:
+                release_opaque_reservation()
+        if not owns_session:
+            return
+
         statement = update(Execution).where(
             Execution.id == execution_id, Execution.status == ExecutionStatus.RUNNING,
         )
-        if release_unsent_reservation is not None:
-            owns_session = await fence_remote_owner(db)
-            release_unsent_reservation()
-            if not owns_session:
-                return
+        if release_opaque_reservation is not None:
             statement = statement.where(
                 select(ExecutionWorkerClaim.subject_id).where(
                     ExecutionWorkerClaim.worker_id == worker_id,
