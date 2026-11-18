@@ -6,10 +6,12 @@ import {mkdir} from 'node:fs/promises';
 import {createServer} from 'node:http';
 import {createRequire} from 'node:module';
 import {posix} from 'node:path';
+import {buffer} from 'node:stream/consumers';
 import {setTimeout as delay} from 'node:timers/promises';
 import {fileURLToPath} from 'node:url';
 import {supervisorModules} from '../tenant-workers/supervisor-digest.mjs';
 import {stageRuntimeLoader} from '../stage-runtime-loader.mjs';
+import {relayHeaders, relayHttp} from './relay-http.mjs';
 
 const root = new URL('../', import.meta.url);
 const require = createRequire(new URL('tenant-workers/package.json', root));
@@ -147,33 +149,26 @@ const proxy = createServer(async (request, response) => {
       response.writeHead(500).end();
       return;
     }
-    const headers = new Headers(request.headers);
-    headers.delete('host');
-    const upstream = await fetch(config.origin + path, {
-      method: request.method, headers, redirect: 'manual',
-      ...(['GET', 'HEAD'].includes(request.method) ? {} : {body: request, duplex: 'half'}),
-      signal: AbortSignal.timeout(10_000),
-    });
-    const body = Buffer.from(await upstream.arrayBuffer());
+    const upstream = await relayHttp(request, config.origin + path);
+    const body = await buffer(upstream);
+    const status = upstream.statusCode;
     if (config.hosted && path === sdkPath) {
-      const token = headers.get('authorization')?.replace(/^Bearer /, '');
+      const token = request.headers.authorization?.replace(/^Bearer /, '');
       const entry = [...tokens].find(([, value]) => value === token);
       if (entry) {
         const [id] = entry;
         const reads = hostedReads.get(id) ?? [];
-        reads.push(upstream.status);
+        reads.push(status);
         hostedReads.set(id, reads);
-        evidence('hosted-sdk-read', {id, status: upstream.status, count: reads.length});
+        evidence('hosted-sdk-read', {id, status, count: reads.length});
         const gate = gates.get(id);
-        if (gate && upstream.ok) {
+        if (gate && status >= 200 && status < 300) {
           gate.entered = true;
           await gate.release.promise;
         }
       }
     }
-    const headersOut = Object.fromEntries(upstream.headers);
-    for (const key of ['connection', 'content-encoding', 'content-length', 'transfer-encoding']) delete headersOut[key];
-    response.writeHead(upstream.status, headersOut);
+    response.writeHead(status, relayHeaders(upstream.headers));
     response.end(body);
   } catch {
     response.writeHead(502).end();
