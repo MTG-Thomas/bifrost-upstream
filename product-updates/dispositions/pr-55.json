@@ -1,0 +1,13 @@
+{
+  "key": "pr:55",
+  "classification": "omit",
+  "entry_ids": [],
+  "reason": "Fork-only evaluation spike: an opt-in Foldkit rendering of the execution logs panel plus a written evaluation recommending React be retained; the default UI is unchanged and there is nothing to announce.",
+  "review": {
+    "status": "draft",
+    "evidence": [
+      "https://github.com/MTG-Thomas/bifrost-upstream/pull/55",
+      "Fork-only research spike; the Foldkit panel renders only behind ?logsRenderer=foldkit and is not intended for upstream as-is."
+    ]
+  }
+}
