@@ -422,27 +422,28 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         return [package for package in packages if isinstance(package, dict)]
 
     async def _register_worker(self) -> None:
-        """Register canonical pool fields using the launcher's package set."""
+        """Register canonical pool fields and Linux package inventory."""
         redis_client = await self._get_redis()
         redis_key = f"bifrost:pool:{self.worker_id}"
-        packages = await self._remote_packages()
+        packages = None
+        if self.runtime_profile == LINUX_RUNTIME_PROFILE:
+            packages = await self._remote_packages()
+        fields = {
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "status": "online",
+            "hostname": self.transport.hostname,
+        }
+        if packages is not None:
+            fields["packages"] = json.dumps(packages)
         await cast(
             Awaitable[int],
-            redis_client.hset(
-                redis_key,
-                mapping={
-                    "started_at": datetime.now(timezone.utc).isoformat(),
-                    "status": "online",
-                    "hostname": self.transport.hostname,
-                    "packages": json.dumps(packages),
-                },
-            ),
+            redis_client.hset(redis_key, mapping=fields),
         )
         await redis_client.expire(redis_key, self.registration_ttl_seconds)
 
     async def update_packages(self) -> None:
         """Refresh Redis from the package owner after a remote install."""
-        if not self._started:
+        if not self._started or self.runtime_profile != LINUX_RUNTIME_PROFILE:
             return
         try:
             redis_client = await self._get_redis()
@@ -982,8 +983,10 @@ class ThinRemoteProcessPool(ProcessPoolManager):
             "busy_count": len(processes),
             "service_count": len(services),
             "service_children": services,
-            "requirements_installed": self._requirements_installed,
-            "requirements_total": self._requirements_total,
+            **({
+                "requirements_installed": self._requirements_installed,
+                "requirements_total": self._requirements_total,
+            } if self.runtime_profile == LINUX_RUNTIME_PROFILE else {}),
             "memory_current_bytes": self._remote_memory_current,
             "memory_max_bytes": self._remote_memory_limit,
         }

@@ -9,6 +9,7 @@ from sqlalchemy import func, or_, select, text, update
 
 from src.core.database import get_liveness_db_context
 from src.models.orm.execution_workers import ExecutionWorker
+from src.worker.remote.protocol import LINUX_RUNTIME_PROFILE
 
 
 DEFAULT_OWNER_LEASE_SECONDS = 20
@@ -33,6 +34,7 @@ async def acquire_remote_owner(
     nonce_digest: str,
     hello_sequence: int,
     credential_protocol: int = 1,
+    runtime_profile: str = LINUX_RUNTIME_PROFILE,
     lease_seconds: int = DEFAULT_OWNER_LEASE_SECONDS,
 ) -> RemoteOwnerLease | None:
     """Acquire one fenced API owner session for an admitted launcher.
@@ -42,9 +44,8 @@ async def acquire_remote_owner(
     accepted hello consumes its nonce, preventing a captured hello from being
     replayed after a replica restart.
 
-    The launcher's credential protocol is written in the same statement that
-    advances the session generation, so a generation always names the
-    protocol its launcher reported.
+    Credential protocol and physical runtime are recorded with the session
+    generation. Reconnects keep the physical runtime of the first session.
     """
     if lease_seconds <= 0:
         raise ValueError("remote owner lease must be positive")
@@ -67,6 +68,10 @@ async def acquire_remote_owner(
                 ),
                 ExecutionWorker.remote_hello_sequence < hello_sequence,
                 or_(
+                    ExecutionWorker.remote_hello_sequence == 0,
+                    ExecutionWorker.runtime_profile == runtime_profile,
+                ),
+                or_(
                     ExecutionWorker.remote_owner_id.is_(None),
                     ExecutionWorker.remote_owner_id == owner_id,
                     ExecutionWorker.remote_owner_lease_expires_at <= func.now(),
@@ -80,6 +85,7 @@ async def acquire_remote_owner(
                 remote_auth_nonce_digest=nonce_digest,
                 remote_hello_sequence=hello_sequence,
                 remote_credential_protocol=credential_protocol,
+                runtime_profile=runtime_profile,
             )
             .returning(ExecutionWorker.remote_session_generation, ExecutionWorker.remote_credential_protocol)
         )

@@ -76,6 +76,7 @@ from src.services.worker_pool.claims import (
 from src.services.worker_pool.recovery import UNSTARTED_CLAIM_WINDOW, release_unstarted_claims
 from src.worker.remote.protocol import (
     HANDLER_CONCURRENCY_LIMITS,
+    LINUX_RUNTIME_PROFILE,
     WORKER_DRAIN_GRACE_SECONDS as DRAIN_GRACE_SECONDS,
 )
 
@@ -122,6 +123,7 @@ class PoolWorker:
         admission: Admission | None = None,
         hosts_remote_work: bool = True,
         execution_lane: str | None = None,
+        runtime_profile: str = LINUX_RUNTIME_PROFILE,
     ) -> None:
         """A job worker passes its incarnation and UIDs; a static one, none.
 
@@ -144,6 +146,7 @@ class PoolWorker:
         # and local platform jobs. The API-resident agent executor owns none
         # of those: it only runs agent consumers in the API process.
         self.hosts_remote_work = hosts_remote_work
+        self.runtime_profile = runtime_profile
         self.runs_handled = 0
         self._stop = asyncio.Event()
         # SIGTERM: the pod is being killed, so a drain's runs get a grace.
@@ -352,25 +355,26 @@ class PoolWorker:
             await mark_static_ready(
                 self.incarnation_id, memory_budget_bytes=self.budget.budget_bytes
             )
+        runs_platform_jobs = (
+            self.hosts_remote_work and self.execution_lane == "normal"
+            and self.runtime_profile == LINUX_RUNTIME_PROFILE
+        )
         background = [
             heartbeat,
             asyncio.create_task(self._wake_listener(), name="pool-wake"),
             asyncio.create_task(
                 replica_heartbeat_loop(
                     replica_id=str(self.incarnation_id),
-                    runs_platform_jobs=(
-                        self.hosts_remote_work and self.execution_lane == "normal"
-                    ),
+                    runs_platform_jobs=runs_platform_jobs,
                     stop_event=self._platform_stop,
                 ),
                 name="pool-diagnostics-heartbeat",
             ),
         ]
         if self.hosts_remote_work:
-            # Runtime package generations apply to every executor. They are
-            # maintenance of its workflow environment, not borrowed work.
-            background.append(asyncio.create_task(self._package_loop(), name="pool-packages"))
-            if self.execution_lane == "normal":
+            if self.runtime_profile == LINUX_RUNTIME_PROFILE:
+                background.append(asyncio.create_task(self._package_loop(), name="pool-packages"))
+            if runs_platform_jobs:
                 background.append(asyncio.create_task(self._platform_job_loop(), name="pool-platform-jobs"))
             background.extend(await self._start_background_control())
         if self._on_ready is not None:
@@ -409,24 +413,26 @@ class PoolWorker:
     async def _start_executor(self) -> None:
         """Start the pool, consumers, memory gate and service supervision."""
         if self.hosts_remote_work:
-            # Read the package generation before the pool installs requirements:
-            # a change committed in between is then applied again (installs are
-            # idempotent) instead of being missed.
-            self.package_generation = await current_package_generation()
+            if self.runtime_profile == LINUX_RUNTIME_PROFILE:
+                # Read the generation before requirements are installed so a
+                # change committed during startup is applied by the package loop.
+                self.package_generation = await current_package_generation()
             self._workflow_consumer = self._make_workflow_consumer()
             self._workflow_consumer.owner_worker_id = self.incarnation_id
             await self._workflow_consumer.start_pool()
-            # Applies recorded package changes; it never consumes the broadcast.
-            self._package_consumer = self._make_package_consumer()
+            if self.runtime_profile == LINUX_RUNTIME_PROFILE:
+                # Applies recorded package changes without consuming the broadcast.
+                self._package_consumer = self._make_package_consumer()
         if any(handler == "agent.run" for handler, _version in self._handlers):
             self._agent_consumer = self._make_agent_consumer()
         # Measured once the parent and fork template are up, before any
         # service claims: what remains is what work may use. API-resident
         # agents receive the API host's shared gate at construction time.
         self.budget = self._measure_budget()
-        from src.services.worker_pool.calibration import record_memory_calibration
+        if self.runtime_profile == LINUX_RUNTIME_PROFILE:
+            from src.services.worker_pool.calibration import record_memory_calibration
 
-        await record_memory_calibration(self.incarnation_id, self.budget, self.package_generation)
+            await record_memory_calibration(self.incarnation_id, self.budget, self.package_generation)
         if self.admission is None:
             if self._workflow_consumer is None:
                 self.admission = Admission(
@@ -773,7 +779,9 @@ class PoolWorker:
                     active_runs=self.active_runs(),
                     active_handler_counts=self.active_handler_counts(),
                     runs_handled=self.runs_handled,
-                    package_generation=self.package_generation,
+                    package_generation=(
+                        self.package_generation if self.runtime_profile == LINUX_RUNTIME_PROFILE else None
+                    ),
                     memory_pressured=(
                         self.admission is not None and self.admission.pressured()
                     ),
@@ -803,7 +811,7 @@ class PoolWorker:
 
     async def _prepare_admission(self) -> None:
         """Prepare shared admission, then start lane-eligible consumers."""
-        if self.execution_lane == "normal":
+        if self.execution_lane == "normal" and self.runtime_profile == LINUX_RUNTIME_PROFILE:
             await self._start_service_claim_loop()
 
     async def _start_service_claim_loop(self) -> None:

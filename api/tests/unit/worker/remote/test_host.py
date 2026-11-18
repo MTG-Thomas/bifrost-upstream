@@ -17,7 +17,14 @@ from sqlalchemy.exc import OperationalError
 from src.services.execution.template_process import TEMPLATE_START_TIMEOUT_SECONDS
 from src.worker.remote.host import ApiExecutor, Bridge, RemoteControlHost, RemoteSession, _reply_timeout
 from src.worker.remote.ownership import RemoteOwnerLease
-from src.worker.remote.protocol import AuthenticationError, ControlEnvelope, FragmentAssembler, Hello, sign_hello
+from src.worker.remote.protocol import (
+    AuthenticationError,
+    ControlEnvelope,
+    FragmentAssembler,
+    Hello,
+    LINUX_RUNTIME_PROFILE,
+    sign_hello,
+)
 from src.worker.pool_main import PoolWorker
 from src.worker.admission import Admission
 from src.worker.remote.agent_route import AgentRoute
@@ -376,7 +383,7 @@ async def test_remote_connect_starts_one_physical_executor() -> None:
     with (
         patch("src.worker.remote.host.get_settings", return_value=Mock(secret_key="secret", memory_pressure_threshold=.85)),
         patch("src.worker.remote.host.admit_worker", new_callable=AsyncMock),
-        patch("src.worker.remote.host.acquire_remote_owner", new_callable=AsyncMock, return_value=LEASE),
+        patch("src.worker.remote.host.acquire_remote_owner", new_callable=AsyncMock, return_value=LEASE) as acquire,
         patch("src.worker.remote.host.ApiExecutor") as executor,
         patch("src.worker.remote.host.RemoteSession", return_value=session),
     ):
@@ -384,6 +391,8 @@ async def test_remote_connect_starts_one_physical_executor() -> None:
         await host.connect(socket)
 
         assert executor.call_count == 1
+        assert executor.call_args.args[0].runtime_profile == LINUX_RUNTIME_PROFILE
+        assert acquire.await_args.kwargs["runtime_profile"] == LINUX_RUNTIME_PROFILE
         await host.stop()
 
 
@@ -856,6 +865,7 @@ async def test_fast_path_hello_requires_lane_aware_handler() -> None:
 async def test_each_lane_reconciles_inventory_before_opening_claims(lane) -> None:
     executor = object.__new__(ApiExecutor)
     executor.execution_lane = lane
+    executor.runtime_profile = LINUX_RUNTIME_PROFILE
     executor.admission = object()
     executor._admission_prepared = False
     executor.bridge = SimpleNamespace(admission=None, reconciliation_complete=AsyncMock())

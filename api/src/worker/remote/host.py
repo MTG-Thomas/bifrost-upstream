@@ -111,6 +111,7 @@ class Bridge:
         self.baseline_bytes = self.current
         self.hostname = hello["hostname"]
         self.execution_lane = hello.get("execution_lane", "normal")
+        self.runtime_profile = hello.get("runtime_profile", LINUX_RUNTIME_PROFILE)
         self.handlers = hello.get("handlers", LEGACY_EXECUTION_HANDLERS)
         self.sample_at = time.monotonic()
         self.pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
@@ -120,7 +121,7 @@ class Bridge:
         # Agent runs in launcher children; kept across reconnects like jobs.
         self.agents: RemoteAgentConsumer | None = None
         self.admission: Any = None
-        self.requirements = hello["requirements"]
+        self.requirements = hello["requirements"] if self.runtime_profile == LINUX_RUNTIME_PROFILE else {}
         self.inventory: dict[str, Any] | None = None
         self.inventory_ready = asyncio.Event()
         self.reconciliation_ready = asyncio.Event()
@@ -318,11 +319,12 @@ class Bridge:
             ):
                 raise ProtocolError("launcher inventory must include its baseline memory")
             self.baseline_bytes = baseline_bytes
-            requirements = event.get("requirements")
-            if requirements is not None:
-                if not isinstance(requirements, dict):
-                    raise ProtocolError("launcher requirements must be an object")
-                self.requirements = requirements
+            if self.runtime_profile == LINUX_RUNTIME_PROFILE:
+                requirements = event.get("requirements")
+                if requirements is not None:
+                    if not isinstance(requirements, dict):
+                        raise ProtocolError("launcher requirements must be an object")
+                    self.requirements = requirements
             self.inventory = inventory
             self.inventory_ready.set()
         elif event.get("event") in {"result", "job_exit", "agent_exit"}:
@@ -526,6 +528,7 @@ class ApiExecutor(PoolWorker):
             on_ready=ready,
             handlers=bridge.handlers,
             execution_lane=bridge.execution_lane,
+            runtime_profile=bridge.runtime_profile,
         )
         self.incarnation_id = incarnation_id
         self.bridge = bridge
@@ -541,11 +544,12 @@ class ApiExecutor(PoolWorker):
     async def _start_executor(self) -> None:
         """Keep the canonical heartbeat alive while the launcher bootstraps."""
         await self.bridge.inventory_ready.wait()
-        from src.services.execution.process_pool import _notify_requirements_failures
-        from src.services.execution.requirements_setup_result import RequirementsInstallResult
+        if self.runtime_profile == LINUX_RUNTIME_PROFILE:
+            from src.services.execution.process_pool import _notify_requirements_failures
+            from src.services.execution.requirements_setup_result import RequirementsInstallResult
 
-        requirements = RequirementsInstallResult.from_json_dict(self.bridge.requirements)
-        await _notify_requirements_failures(requirements)
+            requirements = RequirementsInstallResult.from_json_dict(self.bridge.requirements)
+            await _notify_requirements_failures(requirements)
         await super()._start_executor()
 
     async def _close_runtime(self) -> None:
@@ -560,11 +564,15 @@ class ApiExecutor(PoolWorker):
         from src.worker.remote.remote_pool import ThinRemoteProcessPool
         from src.jobs.consumers.workflow_execution import WorkflowExecutionConsumer
 
-        self.bridge.pool = ThinRemoteProcessPool(self.bridge, worker_id=str(self.incarnation_id))
-        from src.services.execution.requirements_setup_result import RequirementsInstallResult
-        self.bridge.pool._apply_requirements_status(
-            RequirementsInstallResult.from_json_dict(self.bridge.requirements)
+        self.bridge.pool = ThinRemoteProcessPool(
+            self.bridge, worker_id=str(self.incarnation_id), runtime_profile=self.runtime_profile,
         )
+        if self.runtime_profile == LINUX_RUNTIME_PROFILE:
+            from src.services.execution.requirements_setup_result import RequirementsInstallResult
+
+            self.bridge.pool._apply_requirements_status(
+                RequirementsInstallResult.from_json_dict(self.bridge.requirements)
+            )
         return WorkflowExecutionConsumer(pool=self.bridge.pool)
 
     def _make_package_consumer(self) -> PackageProxy:
@@ -657,9 +665,10 @@ class ApiExecutor(PoolWorker):
             snapshot = await self.bridge.pool.reconcile_inventory(self.bridge.inventory)
             if expected_generation is not None and self.bridge.lease.session_generation != generation:
                 return None
-            self.bridge.reject_missing_platform_routes(self.bridge.inventory)
-            assert self.bridge.agents is not None
-            await self.bridge.agents.reject_missing(self.bridge.inventory)
+            if self.runtime_profile == LINUX_RUNTIME_PROFILE:
+                self.bridge.reject_missing_platform_routes(self.bridge.inventory)
+                assert self.bridge.agents is not None
+                await self.bridge.agents.reject_missing(self.bridge.inventory)
             self._reconciled_generation = generation
             return snapshot
 
@@ -669,6 +678,8 @@ class ApiExecutor(PoolWorker):
             self.admission.hold(execution_id, request_bytes, workflow=True)
             self.admission.started(execution_id)
             self._remember_started(execution_id)
+        if self.runtime_profile != LINUX_RUNTIME_PROFILE:
+            return
         agents = self.bridge.agents
         assert agents is not None
         for route_id, (run_id, request_bytes) in snapshot["agent_runs"].items():
@@ -1028,6 +1039,7 @@ class RemoteControlHost:
                 "hostname": hello.hostname,
                 "handlers": hello_execution_handlers(initial),
                 "execution_lane": hello.execution_lane,
+                "runtime_profile": hello.runtime_profile or LINUX_RUNTIME_PROFILE,
             }
             if hello.execution_lane == "fast_path" and ("workflow.execute", 2) not in bootstrap["handlers"]:
                 raise AuthenticationError("Fast Path workers must support workflow.execute version 2")
@@ -1113,6 +1125,7 @@ class RemoteControlHost:
             nonce_digest=nonce_digest(hello.nonce),
             hello_sequence=hello.hello_sequence,
             credential_protocol=credential_protocol,
+            runtime_profile=bootstrap["runtime_profile"],
         )
         if lease is None:
             await socket.close(code=1008)

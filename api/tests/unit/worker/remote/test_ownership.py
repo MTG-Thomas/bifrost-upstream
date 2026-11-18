@@ -10,6 +10,7 @@ from sqlalchemy import delete
 
 from src.models.orm.execution_workers import ExecutionWorker
 from src.worker.remote import ownership
+from src.worker.remote.protocol import CLOUDFLARE_PYTHON_RUNTIME_PROFILE, LINUX_RUNTIME_PROFILE
 
 
 @pytest.mark.asyncio
@@ -54,6 +55,46 @@ async def test_active_owner_blocks_replacement_and_stale_generation_cannot_renew
         async with async_session_factory() as session:
             await session.execute(delete(ExecutionWorker).where(ExecutionWorker.id == worker_id))
             await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_owner_acquisition_persists_runtime_profile_across_reconnect(
+    async_session_factory, monkeypatch
+) -> None:
+    @asynccontextmanager
+    async def context():
+        async with async_session_factory() as session:
+            yield session
+            await session.commit()
+
+    monkeypatch.setattr(ownership, "get_liveness_db_context", context)
+    worker_id, owner_id, launcher_id = uuid4(), uuid4(), uuid4()
+    async with context() as session:
+        session.add(ExecutionWorker(id=worker_id, form="external", state="ready"))
+    identity = {"worker_id": worker_id, "owner_id": owner_id, "launcher_id": launcher_id}
+    try:
+        first = await ownership.acquire_remote_owner(
+            **identity, nonce_digest="a" * 64, hello_sequence=1,
+            runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+        )
+        assert first is not None
+        refused = await ownership.acquire_remote_owner(
+            **identity, nonce_digest="b" * 64, hello_sequence=2, runtime_profile=LINUX_RUNTIME_PROFILE,
+        )
+        assert refused is None
+        current = await ownership.acquire_remote_owner(
+            **identity, nonce_digest="c" * 64, hello_sequence=2,
+            runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+        )
+        assert current is not None
+        assert current.session_generation == first.session_generation + 1
+        async with context() as session:
+            row = await session.get(ExecutionWorker, worker_id)
+            assert row is not None
+            assert row.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+    finally:
+        async with context() as session:
+            await session.execute(delete(ExecutionWorker).where(ExecutionWorker.id == worker_id))
 
 
 @pytest.mark.asyncio

@@ -342,7 +342,7 @@ async def heartbeat_worker(
     *,
     active_runs: int,
     runs_handled: int,
-    package_generation: int,
+    package_generation: int | None,
     memory_pressured: bool,
     memory_budget_bytes: int | None,
     memory_reserved_bytes: int,
