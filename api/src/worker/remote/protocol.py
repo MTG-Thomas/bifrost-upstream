@@ -111,6 +111,10 @@ class CredentialRouteChanged(Exception):
     since been replaced; they are never sent to the new session."""
 
 
+class OpaqueDispatchInterrupted(ConnectionError):
+    """The opaque socket changed or failed while sending a command."""
+
+
 class ProtocolError(ValueError):
     """A peer supplied an invalid or unsafe control frame."""
 

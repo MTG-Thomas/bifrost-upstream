@@ -14,8 +14,9 @@ import logging
 import os
 import re
 import time
+from collections.abc import Awaitable
 from datetime import UTC, datetime, timedelta, timezone
-from typing import Any, Awaitable, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select, update
@@ -37,7 +38,12 @@ from src.worker.remote.protocol import (
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
     LINUX_RUNTIME_PROFILE,
     CredentialRouteChanged,
+    OpaqueDispatchInterrupted,
 )
+
+if TYPE_CHECKING:
+    from src.worker.admission import Admission
+    from src.worker.remote.ownership import RemoteOwnerLease
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +79,12 @@ class ThinRemoteTransport(Protocol):
         """Return the canonical reservation for a running route."""
         raise NotImplementedError
 
+    async def wait_for_opaque_terminals(
+        self, receipts: set[str], lease: RemoteOwnerLease,
+    ) -> dict[str, dict[str, Any]]:
+        """Return retained result events replayed after the inventory."""
+        raise NotImplementedError
+
 
 class _RemoteProcess:
     """PID-less ProcessHandle shim; remote liveness arrives as launcher events."""
@@ -82,7 +94,10 @@ class _RemoteProcess:
         self.remote_pid: int | None = None
         self.runtime_handle: str | None = None
         self.memory_request_bytes: int | None = None
-        self.stop_requested = False
+        self.dispatch_interrupted = False
+        self.stop_generation: int | None = None
+        self.stop_reason: tuple[str, str] | None = None
+        self.stop_confirmed = False
         self.stop_task: asyncio.Task[None] | None = None
         self.terminal_receipt: tuple[str, str] | None = None
 
@@ -122,7 +137,9 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         self._result_locks: dict[str, asyncio.Lock] = {}
         self._opaque_lost = False
 
-    async def reconcile_inventory(self, inventory: dict[str, Any]) -> dict[str, Any] | None:
+    async def reconcile_inventory(
+        self, inventory: dict[str, Any], *, admission: Admission | None = None,
+    ) -> dict[str, Any] | None:
         """Reattach physical children only to their still-authoritative claims.
 
         The launcher journals compact transport metadata until terminal ACK.
@@ -131,7 +148,11 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         as live children so completion can be replayed after an API restart.
         """
         if self.runtime_profile != LINUX_RUNTIME_PROFILE:
-            return await self._reconcile_opaque_inventory(inventory)
+            lease = self.transport.lease
+            async with self._restart_lock:
+                if self.transport.lease != lease or not self.transport.connected:
+                    raise ConnectionError("Opaque inventory session was replaced during dispatch")
+                return await self._reconcile_opaque_inventory(inventory, lease, admission)
 
         from src.core.database import get_db_context
         from src.jobs.platform.catalog import get_platform_job_metadata
@@ -299,7 +320,9 @@ class ThinRemoteProcessPool(ProcessPoolManager):
             "summaries": summaries,
         }
 
-    async def _reconcile_opaque_inventory(self, inventory: dict[str, Any]) -> dict[str, Any] | None:
+    async def _reconcile_opaque_inventory(
+        self, inventory: dict[str, Any], lease: RemoteOwnerLease, admission: Admission | None,
+    ) -> dict[str, Any] | None:
         from src.core.database import get_db_context
         from src.models.enums import ExecutionStatus
         from src.models.orm.execution_workers import (
@@ -329,41 +352,34 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         entries: dict[str, tuple[dict[str, Any], ExecutionInfo, int, tuple[str, str] | None]] = {}
         subjects: set[UUID] = set()
         live_subjects: set[UUID] = set()
+        duplicates: set[UUID] = set()
+        mismatch = False
         for is_terminal, routes in ((False, live), (True, terminals)):
             for entry in routes:
-                if not isinstance(entry, dict) or entry.get("kind") != "workflow":
-                    raise ValueError("Opaque inventory supports workflow routes only")
-                route_id, subject = entry["route_id"], UUID(entry["subject_id"])
-                prefix = f"workflow:{subject}:"
-                if not isinstance(route_id, str) or not route_id.startswith(prefix):
-                    raise ValueError("Opaque route must match its workflow execution")
-                UUID(route_id.removeprefix(prefix))
-                if subject in subjects:
-                    raise ValueError("Duplicate execution in opaque inventory")
-                subjects.add(subject)
-                if not is_terminal:
-                    live_subjects.add(subject)
-                active, reservation = entry["active_execution"], entry["memory_request_bytes"]
-                timeout, started_at = entry["timeout_seconds"], datetime.fromisoformat(entry["started_at"])
-                if (
-                    not isinstance(active, dict) or active.get("execution_id") != str(subject)
-                    or not isinstance(active.get("sync"), bool)
-                    or type(reservation) is not int or reservation < 0
-                    or type(timeout) is not int or timeout < 0 or started_at.utcoffset() is None
-                ):
-                    raise ValueError("Invalid opaque workflow identity, timing or reservation")
-                execution = ExecutionInfo(str(subject), started_at, timeout, cast(ActiveExecution, active))
-                deadline = self._opaque_deadline(execution)
-                if entry["workflow_deadline"] != (deadline.isoformat() if deadline else None):
-                    raise ValueError("Opaque inventory changed the dispatch deadline")
-                # Validate even an already-committed retained terminal.
-                self._opaque_handle_value(entry)
-                receipt = self._opaque_receipt(entry, "event_id") if is_terminal else None
+                try:
+                    if not isinstance(entry, dict) or entry.get("kind") != "workflow":
+                        raise ValueError("Opaque inventory supports workflow routes only")
+                    route_id, subject = entry["route_id"], UUID(str(entry["subject_id"]))
+                    prefix = f"workflow:{subject}:"
+                    if not isinstance(route_id, str) or not route_id.startswith(prefix):
+                        raise ValueError("Opaque route must match its workflow execution")
+                    UUID(route_id.removeprefix(prefix))
+                    if not is_terminal:
+                        live_subjects.add(subject)
+                    if subject in subjects:
+                        duplicates.add(subject)
+                        raise ValueError("Duplicate execution in opaque inventory")
+                    subjects.add(subject)
+                    execution, reservation = self._opaque_inventory_execution(entry, subject)
+                    self._opaque_handle_value(entry)
+                    receipt = self._opaque_receipt(entry, "event_id") if is_terminal else None
+                except (KeyError, TypeError, ValueError, OverflowError, ConnectionError) as exc:
+                    logger.warning("Rejected opaque inventory route metadata (%s)", type(exc).__name__)
+                    mismatch = True
+                    continue
                 entries[route_id] = (entry, execution, reservation, receipt)
 
         worker_id = UUID(self.worker_id)
-        lease = self.transport.lease
-        lost = None
         async with get_db_context() as db:
             with remote_owner_context(LeaseRef(lease)):
                 # Serialize the claim comparison and loss decision with claims,
@@ -377,49 +393,156 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                 ExecutionWorkerClaim.worker_id == worker_id,
                 ExecutionWorkerClaim.family == WAKE_WORKFLOW,
             ))).all())
-            if claims.keys() - subjects or self._routes.keys() - entries.keys() or live_subjects - claims.keys():
+            tracked = {
+                UUID(handle.current_execution.execution_id): handle
+                for handle in self._routes.values() if handle.current_execution is not None
+            }
+            # Claim reservations are installed under the worker row lock.
+            # A starting claim with no route is still preparing or unwinding.
+            pending = {
+                subject for subject in claims.keys() - tracked.keys()
+                if admission is not None and admission.workflow_is_starting(str(subject))
+            }
+            await db.commit()
+
+        interrupted = {
+            subject: handle for subject, handle in tracked.items()
+            if subject in claims and subject not in subjects and handle.process.dispatch_interrupted
+        }
+        mismatch |= bool(claims.keys() - subjects - pending - interrupted.keys() or live_subjects - claims.keys())
+        matched = {}
+        for route_id, (entry, execution, reservation, receipt) in entries.items():
+            subject = UUID(execution.execution_id)
+            if subject not in claims or subject in duplicates:
+                continue  # No canonical claim to settle, or ambiguous route identity.
+            handle = tracked.get(subject)
+            if handle is not None and not self._opaque_inventory_matches(
+                handle, route_id, entry, execution, reservation, receipt,
+            ):
+                mismatch = True
+                continue
+            matched[route_id] = (entry, execution, reservation, receipt)
+        mismatch |= any(
+            subject in claims and subject not in interrupted and handle.id not in matched
+            for subject, handle in tracked.items()
+        )
+
+        if mismatch:
+            # Inventory describes receipts. Payloads arrive separately as replay
+            # events, including when the inconsistency prevents opening claims.
+            receipts = {receipt[0] for _, _, _, receipt in matched.values() if receipt is not None}
+            replay = await self.transport.wait_for_opaque_terminals(receipts, lease) if receipts else {}
+            with remote_owner_context(LeaseRef(lease)):
+                for route_id, (entry, execution, reservation, receipt) in matched.items():
+                    if receipt is None:
+                        continue
+                    event = replay.get(receipt[0])
+                    if (
+                        event is None or event.get("route_id") != route_id
+                        or event.get("runtime_handle") != entry["runtime_handle"]
+                        or event.get("attempt_state") != receipt[1]
+                        or not self._valid_opaque_terminal_result(event.get("result"), receipt[1])
+                    ):
+                        continue
+                    await self._attach_opaque_inventory_route(route_id, entry, execution, reservation, receipt)
+                    await self._handle_opaque_terminal(event)
+
+            async with get_db_context() as db:
+                with remote_owner_context(LeaseRef(lease)):
+                    if not await fence_remote_owner(db, for_update=True):
+                        raise ConnectionError("Remote API ownership was replaced before settling inventory loss")
                 await db.execute(update(ExecutionWorker).where(ExecutionWorker.id == worker_id).values(
                     state="lost", end_reason="opaque_inventory_mismatch",
                     ended_at=func.now(), remote_owner_lease_expires_at=func.now(),
                 ))
-                lost = await end_runs_of_lost_worker(db, worker_id)
-            else:
-                for route_id, handle in self._routes.items():
-                    entry, execution, reservation, receipt = entries[route_id]
-                    previous = handle.process.terminal_receipt
-                    if (
-                        handle.current_execution != execution or handle.process.memory_request_bytes != reservation
-                        or (previous is not None and previous != receipt)
-                    ):
-                        raise ValueError("Opaque inventory changed route metadata")
-                    self._bind_workflow_handle(handle, entry)
-            await db.commit()
-
-        if lost is not None:
+                lost = await end_runs_of_lost_worker(
+                    db, worker_id, uncertain_workflows=frozenset(subjects | interrupted.keys()),
+                )
+                await db.commit()
             await self.ownership_lost("Opaque inventory does not match canonical claims")
             await announce_lost_runs(lost)
             return None
 
+        with remote_owner_context(LeaseRef(lease)):
+            for handle in interrupted.values():
+                # The inventory could race an interrupted send. Settle just
+                # this invocation without redispatching it or losing siblings.
+                await self._handle_result(handle, {
+                    "success": False, "error_type": "WorkflowAttemptUncertain",
+                    "error": "Workflow may already have taken effect. Its command send was interrupted.",
+                })
         workflows = {}
         live_workflows = {}
-        for route_id, (entry, execution, reservation, receipt) in entries.items():
+        for route_id, (entry, execution, reservation, receipt) in matched.items():
             if self._opaque_lost or self.transport.lease != lease:
                 raise ConnectionError("Remote API ownership was replaced during reconciliation")
             subject = UUID(execution.execution_id)
-            if subject not in claims:
-                continue  # Canonical result committed before its journal ACK.
-            handle = self._routes.get(route_id)
-            if handle is None:
-                handle = self._adopt_handle(route_id, entry, execution.started_at)
-                handle.current_execution = execution
-                handle.process.memory_request_bytes = reservation
-                self.processes[route_id] = handle
-            handle.process.terminal_receipt = receipt
+            await self._attach_opaque_inventory_route(route_id, entry, execution, reservation, receipt)
             workflows[execution.execution_id] = reservation
             if receipt is None:
                 live_workflows[route_id] = claims[subject] == ExecutionStatus.CANCELLING
-            await self._write_active_execution_lease(execution)
         return {"workflow_requests": workflows, "opaque_live_workflows": live_workflows}
+
+    @staticmethod
+    def _same_opaque_instant(left: datetime, right: datetime) -> bool:
+        # JS date serialization truncates to whole milliseconds.
+        first, second = sorted((left, right))
+        return first == second or first == second.replace(microsecond=second.microsecond // 1000 * 1000)
+
+    def _opaque_inventory_execution(self, entry: dict[str, Any], subject: UUID) -> tuple[ExecutionInfo, int]:
+        active, reservation = entry["active_execution"], entry["memory_request_bytes"]
+        timeout, started_at = entry["timeout_seconds"], datetime.fromisoformat(entry["started_at"])
+        if (
+            not isinstance(active, dict) or active.get("execution_id") != str(subject)
+            or not isinstance(active.get("sync"), bool)
+            or type(reservation) is not int or reservation < 0
+            or type(timeout) is not int or timeout < 0 or started_at.utcoffset() is None
+        ):
+            raise ValueError("Invalid opaque workflow identity, timing or reservation")
+        execution = ExecutionInfo(str(subject), started_at, timeout, cast(ActiveExecution, active))
+        deadline, reported = self._opaque_deadline(execution), entry["workflow_deadline"]
+        if deadline is None:
+            matches = reported is None
+        else:
+            actual = datetime.fromisoformat(reported)
+            matches = actual.utcoffset() is not None and self._same_opaque_instant(deadline, actual)
+        if not matches:
+            raise ValueError("Opaque inventory changed the dispatch deadline")
+        return execution, reservation
+
+    def _opaque_inventory_matches(
+        self, handle: ProcessHandle, route_id: str, entry: dict[str, Any],
+        execution: ExecutionInfo, reservation: int, receipt: tuple[str, str] | None,
+    ) -> bool:
+        original = handle.current_execution
+        assert original is not None
+        process = handle.process
+        return (
+            handle.id == route_id
+            and original.active_execution == execution.active_execution
+            and original.timeout_seconds == execution.timeout_seconds
+            and self._same_opaque_instant(original.started_at, execution.started_at)
+            and process.memory_request_bytes == reservation
+            and (process.runtime_handle is None or process.runtime_handle == entry["runtime_handle"])
+            and (process.terminal_receipt is None or process.terminal_receipt == receipt)
+        )
+
+    async def _attach_opaque_inventory_route(
+        self, route_id: str, entry: dict[str, Any], execution: ExecutionInfo,
+        reservation: int, receipt: tuple[str, str] | None,
+    ) -> None:
+        handle = self._routes.get(route_id)
+        if handle is None:
+            handle = self._adopt_handle(route_id, entry, execution.started_at)
+            handle.current_execution = execution
+            handle.process.memory_request_bytes = reservation
+            self.processes[route_id] = handle
+        else:
+            self._bind_workflow_handle(handle, entry)
+        handle.process.terminal_receipt = receipt
+        handle.process.dispatch_interrupted = False
+        assert handle.current_execution is not None
+        await self._write_active_execution_lease(handle.current_execution)
 
     def _adopt_handle(self, route_id: str, entry: dict[str, Any], started_at: datetime) -> ProcessHandle:
         handle = ProcessHandle(
@@ -674,8 +797,10 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         """
         validate_execution_context(context)
         opaque = self.runtime_profile != LINUX_RUNTIME_PROFILE
+        generation = credential_route.generation if credential_route is not None else None
+        if opaque and generation is None:
+            raise CredentialRouteChanged("Opaque dispatch requires a credential route generation")
         dispatch_started_at = datetime.now(UTC) if opaque else None
-        generation = self.transport.lease.session_generation if opaque else None
         await self._write_context_to_redis(execution_id, context)
         self._ensure_remote_capacity()
         route_id = self._workflow_route_id(execution_id)
@@ -685,7 +810,7 @@ class ThinRemoteProcessPool(ProcessPoolManager):
             if route_id in self._routes:
                 raise RuntimeError(f"Remote route already exists: {route_id}")
             if opaque and self._opaque_lost:
-                raise ConnectionError("Remote API ownership was lost before dispatch")
+                raise CredentialRouteChanged("Remote API ownership was lost before dispatch")
             started_at = dispatch_started_at or datetime.now(timezone.utc)
             context["workflow_deadline"] = (
                 (started_at + timedelta(seconds=timeout)).isoformat() if timeout > 0 else None
@@ -718,7 +843,6 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                 )
             if opaque:
                 handle.process.memory_request_bytes = self._request_bytes(execution_id)
-                self._schedule_opaque_stop(handle)
             try:
                 response = await self.transport.request(
                     "workflow",
@@ -735,22 +859,20 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                         ),
                         **({"workflow_deadline": context["workflow_deadline"]} if opaque else {}),
                     },
-                    expected_generation=generation if credential_route is None else credential_route.generation,
+                    expected_generation=generation,
                 )
                 self._bind_workflow_handle(handle, response)
+            except OpaqueDispatchInterrupted:
+                handle.process.dispatch_interrupted = True
+                logger.warning("Opaque workflow command send interrupted: %s", route_id)
             except (ConnectionError, TimeoutError):
                 # The child may already exist. Inventory resolves this exact
                 # route after reconnect; reporting failure now could duplicate
                 # side effects while its original process continues.
                 logger.warning("Remote workflow launch ACK uncertain: %s", route_id)
-            except Exception as exc:
-                if opaque and isinstance(exc, (RuntimeError, MemoryError, CredentialRouteChanged)):
-                    # Only a fenced terminal can classify an opaque attempt.
-                    # In particular, MemoryError must never hand back this claim.
-                    logger.warning("Remote workflow launch ACK uncertain: %s", route_id)
-                    return
-                if opaque:
-                    self._cancel_opaque_stop_task(handle)
+            except Exception:
+                # A pre-send fence rejection or explicit launcher refusal is
+                # definitive. Let the consumer fail or hand back the claim.
                 self.processes.pop(handle.id, None)
                 self._routes.pop(route_id, None)
                 self._route_metrics.pop(route_id, None)
@@ -763,6 +885,9 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                 except Exception:
                     logger.warning("Could not clean failed remote dispatch %s", execution_id)
                 raise
+            finally:
+                if opaque and self._routes.get(route_id) is handle:
+                    self._schedule_opaque_stop(handle)
 
     async def route_service(
         self,
@@ -897,12 +1022,19 @@ class ThinRemoteProcessPool(ProcessPoolManager):
     def _schedule_opaque_stop(self, handle: ProcessHandle, *, cancelling: bool = False) -> None:
         assert handle.current_execution is not None
         deadline = self._opaque_deadline(handle.current_execution)
-        if handle.process.stop_requested or (deadline is None and not cancelling):
+        process = handle.process
+        retry = process.stop_reason
+        if (
+            process.stop_confirmed or process.stop_generation == self.transport.lease.session_generation
+            or (retry is None and deadline is None and not cancelling)
+        ):
             return
         self._cancel_opaque_stop_task(handle)
 
         async def stop_due_route() -> None:
-            if cancelling:
+            if retry is not None:
+                await self._request_opaque_stop(handle, error_type=retry[0], error=retry[1])
+            elif cancelling:
                 await self._handle_cancel_request(execution_id)
             elif deadline is not None:
                 await asyncio.sleep(max(0, (deadline - datetime.now(UTC)).total_seconds()))
@@ -916,29 +1048,36 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         handle.process.stop_task = asyncio.create_task(stop_due_route(), name=f"opaque-stop:{execution_id}")
 
     async def _request_opaque_stop(self, handle: ProcessHandle, *, error_type: str, error: str) -> None:
-        if self._opaque_lost or not self.transport.connected or handle.process.stop_requested:
+        if self._opaque_lost or not self.transport.connected or handle.process.stop_confirmed:
             return
         from src.worker.remote.fencing import LeaseRef, remote_owner_context
 
         lease = self.transport.lease
+        process = handle.process
         try:
             async with asyncio.timeout(OPAQUE_STOP_TIMEOUT_SECONDS):
                 with remote_owner_context(LeaseRef(lease)):
                     if not await self._owns_session() or self._routes.get(handle.id) is not handle:
                         return
                     # Keep this route busy and reserved until terminal settlement.
-                    # One bounded request per tracked route; a lost reply is uncertain.
-                    if handle.process.stop_requested:
+                    # One attempt per generation until the stop is confirmed.
+                    if (
+                        self.transport.lease != lease or process.stop_confirmed
+                        or process.stop_generation == lease.session_generation
+                    ):
                         return
-                    handle.process.stop_requested = True
+                    process.stop_generation = lease.session_generation
+                    process.stop_reason = (error_type, error)
                     reply = await self.transport.request(
                         "terminate", {"route_id": handle.id, "error_type": error_type, "error": error},
                         expected_generation=lease.session_generation,
                     )
                     if not isinstance(reply, dict) or reply.get("received") is not True:
                         raise ConnectionError("Opaque stop receipt is missing")
+                    process.stop_confirmed = True
         except CredentialRouteChanged:
-            handle.process.stop_requested = False  # Refused before send.
+            if process.stop_generation == lease.session_generation:
+                process.stop_generation = None  # Refused before send.
         except (ConnectionError, TimeoutError, RuntimeError, MemoryError):
             logger.warning("Remote workflow stop receipt uncertain: %s", handle.id)
 
@@ -1134,10 +1273,7 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         _, state = receipt
         route_id, result = event.get("route_id"), event.get("result")
         self._opaque_handle_value(event)
-        if (
-            not isinstance(route_id, str) or not isinstance(result, dict)
-            or type(result.get("success")) is not bool or (result["success"] and state != "completed")
-        ):
+        if not isinstance(route_id, str) or not self._valid_opaque_terminal_result(result, state):
             raise ValueError("Invalid opaque workflow terminal")
         handle = self._routes.get(route_id)
         if handle is None:
@@ -1154,6 +1290,13 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                 "error": f"Workflow may already have taken effect. {result.get('error') or ''}".strip(),
             }
         await self._handle_result(handle, result)
+
+    @staticmethod
+    def _valid_opaque_terminal_result(result: Any, state: str) -> bool:
+        return (
+            isinstance(result, dict) and type(result.get("success")) is bool
+            and (not result["success"] or state == "completed")
+        )
 
     async def _handle_result(self, handle: ProcessHandle, result: dict[str, Any]) -> None:
         """Release a remote route only after its canonical callback succeeds.

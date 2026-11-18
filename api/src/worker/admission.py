@@ -144,5 +144,9 @@ class Admission:
         """Claimed workflow runs not yet routed to a child."""
         return sum(1 for hold in self._holds.values() if hold.workflow and hold.starting)
 
+    def workflow_is_starting(self, key: str) -> bool:
+        hold = self._holds.get(key)
+        return hold is not None and hold.workflow and hold.starting
+
 
 __all__ = ["Admission", "START_PAUSE_SECONDS", "UNPAUSED_STARTS"]

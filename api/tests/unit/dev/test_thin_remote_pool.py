@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 import pytest
-
 from src.core.redis_client import ActiveExecution
-from src.worker.remote.remote_pool import ThinRemoteProcessPool
 from src.models.contracts.platform import ProcessInfo
+from src.worker.remote.ownership import RemoteOwnerLease
+from src.worker.remote.remote_pool import ThinRemoteProcessPool
 
 
 class _Transport:
@@ -17,6 +18,7 @@ class _Transport:
     hostname = "thin-1"
 
     def __init__(self) -> None:
+        self.lease = RemoteOwnerLease(uuid4(), uuid4(), uuid4(), 1)
         self.requests: list[tuple[str, dict]] = []
         self.inventory: list[dict[str, str]] = []
 

@@ -51,6 +51,7 @@ from src.worker.remote.protocol import (
     FragmentAssembler,
     LEGACY_EXECUTION_HANDLERS,
     LINUX_RUNTIME_PROFILE,
+    OpaqueDispatchInterrupted,
     ProtocolError,
     SignedHello,
     hello_credential_protocol,
@@ -126,6 +127,7 @@ class Bridge:
         self.inventory_ready = asyncio.Event()
         self.reconciliation_ready = asyncio.Event()
         self._deferred_terminal: list[dict[str, Any]] = []
+        self._terminal_replay_changed = asyncio.Event()
         self.lease = lease
         self.handoff = False
         self.lease_ref: LeaseRef | None = None
@@ -148,10 +150,14 @@ class Bridge:
         command is refused with ``CredentialRouteChanged`` before anything is
         sent.
         """
+        opaque = self.runtime_profile != LINUX_RUNTIME_PROFILE and action in ("workflow", "terminate")
         if not self.connected:
+            if opaque:
+                raise CredentialRouteChanged("Opaque launcher disconnected before dispatch")
             raise ConnectionError("Launcher disconnected")
         request_id = str(uuid4())
-        future = asyncio.get_running_loop().create_future()
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
         self.pending[request_id] = future
         socket = None
         try:
@@ -162,7 +168,7 @@ class Bridge:
                             f"launcher session {expected_generation} was replaced by "
                             f"{self.lease.session_generation} before {action} dispatch"
                         )
-                    if self.runtime_profile != LINUX_RUNTIME_PROFILE and action in ("workflow", "terminate"):
+                    if opaque:
                         if not self.connected or not self.reconciliation_ready.is_set():
                             raise CredentialRouteChanged("Opaque launcher inventory is not reconciled")
                         socket = self.socket
@@ -173,25 +179,31 @@ class Bridge:
                         payload={"id": request_id, "action": action, "payload": payload},
                     )
                     sent = 0
+                    send_deadline = loop.time() + _reply_timeout(action)
                     for frame in fragment(message):
                         if socket is None:
                             await self.socket.send_text(frame.to_json())
                         else:
                             if self.socket is not socket:
-                                raise ConnectionError("Opaque launcher socket was replaced during dispatch")
+                                raise OpaqueDispatchInterrupted("Opaque launcher socket was replaced during dispatch")
                             try:
-                                await socket.send_text(frame.to_json())
-                            except (asyncio.CancelledError, WebSocketDisconnect, OSError, RuntimeError):
+                                async with asyncio.timeout_at(send_deadline):
+                                    await socket.send_text(frame.to_json())
+                            except (asyncio.CancelledError, WebSocketDisconnect, OSError, RuntimeError) as exc:
                                 # A partial send leaves the fragment stream ambiguous.
                                 self.pending.pop(request_id, None)
                                 self.disconnect(socket)
                                 close = asyncio.create_task(socket.close(code=1011, reason="interrupted command"))
                                 close.add_done_callback(_observe_task)
-                                raise
+                                if isinstance(exc, asyncio.CancelledError):
+                                    raise
+                                raise OpaqueDispatchInterrupted("Opaque launcher command send was interrupted") from exc
                             if self.socket is not socket:
-                                raise ConnectionError("Opaque launcher socket was replaced during dispatch")
+                                raise OpaqueDispatchInterrupted("Opaque launcher socket was replaced during dispatch")
                         sent += 1
                     self._sequence += sent
+            except OpaqueDispatchInterrupted:
+                raise
             except (WebSocketDisconnect, OSError, RuntimeError) as exc:
                 if socket is None:
                     self.connected = False
@@ -200,7 +212,9 @@ class Bridge:
                 return await asyncio.shield(future)
         finally:
             self.pending.pop(request_id, None)
-            if not future.done():
+            if future.done() and not future.cancelled():
+                future.exception()  # A transport failure may precede awaiting the reply.
+            elif not future.done():
                 future.cancel()
 
     async def acknowledge(self, event_id: str) -> None:
@@ -363,6 +377,7 @@ class Bridge:
             # reconciliation succeeds; an ACK before then would lose it.
             if not self.reconciliation_ready.is_set():
                 self._deferred_terminal.append(event)
+                self._terminal_replay_changed.set()
             else:
                 await self._deliver_terminal(event)
         elif event.get("event") == "draining":
@@ -382,6 +397,29 @@ class Bridge:
             self.results.add(task)
             task.add_done_callback(self.results.discard)
             task.add_done_callback(_observe_task)
+
+    async def wait_for_opaque_terminals(
+        self, receipts: set[str], lease: RemoteOwnerLease,
+    ) -> dict[str, dict[str, Any]]:
+        """Read retained result payloads replayed after the inventory."""
+        socket = self.socket
+        observed: dict[str, dict[str, Any]] = {}
+        try:
+            async with asyncio.timeout(COMMAND_REPLY_SECONDS):
+                while True:
+                    if not self.connected or self.lease != lease or self.socket is not socket:
+                        raise ConnectionError("Opaque terminal replay session was replaced")
+                    self._terminal_replay_changed.clear()
+                    observed = {
+                        event_id: event for event in self._deferred_terminal
+                        if isinstance(event_id := event.get("_event_id"), str) and event_id in receipts
+                    }
+                    if observed.keys() == receipts:
+                        break
+                    await self._terminal_replay_changed.wait()
+        except TimeoutError:
+            logging.getLogger(__name__).warning("Opaque retained terminal replay was incomplete")
+        return observed
 
     async def reconciliation_complete(self) -> None:
         """Permit terminal replay only after canonical routes were restored."""
@@ -478,6 +516,8 @@ class Bridge:
 
     def replace_socket(self, socket: WebSocket, lease: RemoteOwnerLease) -> None:
         """Fence the old socket while preserving the launcher's live routes."""
+        if self.runtime_profile != LINUX_RUNTIME_PROFILE:
+            self.disconnect()
         self.socket = socket
         self.lease = lease
         self.connected = True
@@ -494,6 +534,7 @@ class Bridge:
         self.connected = False
         if self.runtime_profile != LINUX_RUNTIME_PROFILE:
             self.reconciliation_ready.clear()
+            self._terminal_replay_changed.set()
         for future in self.pending.values():
             if not future.done():
                 future.set_exception(ConnectionError("Launcher disconnected"))
@@ -672,7 +713,7 @@ class ApiExecutor(PoolWorker):
                 if snapshot is not None:
                     await self._apply_reconciled_snapshot(snapshot)
                     await self.bridge.reconciliation_complete()
-                    self.bridge.pool.resume_opaque_stops(snapshot["opaque_live_workflows"])
+                    self.bridge.pool.resume_opaque_stops(snapshot.get("opaque_live_workflows", {}))
                     self._admission_prepared = True
                     return
             return
@@ -720,7 +761,12 @@ class ApiExecutor(PoolWorker):
                 return {
                     "workflow_requests": {}, "services": [], "platform_jobs": [], "agent_runs": {},
                 }
-            snapshot = await self.bridge.pool.reconcile_inventory(self.bridge.inventory)
+            if self.runtime_profile != LINUX_RUNTIME_PROFILE:
+                snapshot = await self.bridge.pool.reconcile_inventory(
+                    self.bridge.inventory, admission=self.admission,
+                )
+            else:
+                snapshot = await self.bridge.pool.reconcile_inventory(self.bridge.inventory)
             if self.runtime_profile != LINUX_RUNTIME_PROFILE and snapshot is None:
                 self.bridge.disconnect()
                 self._lost = True

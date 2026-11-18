@@ -7,8 +7,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import case, delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import Case
 
 from src.core.database import get_db_context
 from src.models.enums import ExecutionStatus
@@ -26,6 +27,9 @@ logger = logging.getLogger(__name__)
 EXECUTOR_LOST = (
     "The worker running this stopped before it finished. It was not retried, "
     "because it may already have taken effect."
+)
+WORKFLOW_ATTEMPT_UNCERTAIN = (
+    "Workflow may already have taken effect. The worker lost its authoritative invocation outcome."
 )
 # How far back an executor remembers what it started, and so how far back a
 # claim it never started is looked for.
@@ -45,15 +49,18 @@ class LostRuns:
     # Agent runs it had claimed; announce_lost_runs ends those still live.
     agent_runs: list[UUID] = field(default_factory=list)
     summary_runs: list[UUID] = field(default_factory=list)
+    uncertain_workflow_runs: list[UUID] = field(default_factory=list)
 
     def extend(self, other: LostRuns) -> None:
         self.workflow_runs.extend(other.workflow_runs)
         self.agent_runs.extend(other.agent_runs)
         self.summary_runs.extend(other.summary_runs)
+        self.uncertain_workflow_runs.extend(other.uncertain_workflow_runs)
 
 
 async def end_runs_of_lost_worker(
-    db: AsyncSession, worker_id: UUID, *, out_of_memory: bool = False
+    db: AsyncSession, worker_id: UUID, *, out_of_memory: bool = False,
+    uncertain_workflows: frozenset[UUID] = frozenset(),
 ) -> LostRuns:
     """Fail the lost worker's workflow runs that are still running; return
     those and its agent runs that had started.
@@ -91,7 +98,14 @@ async def end_runs_of_lost_worker(
     summary_ids = [subject for family, subject in claims if family == SUMMARY_FAMILY]
     now = datetime.now(timezone.utc)
     ended: list[UUID] = []
+    uncertain: list[UUID] = []
     if workflow_ids:
+        error: str | Case[str] = EXECUTOR_LOST
+        if uncertain_workflows:
+            error = case(
+                (Execution.id.in_(uncertain_workflows), WORKFLOW_ATTEMPT_UNCERTAIN),
+                else_=EXECUTOR_LOST,
+            )
         rows = (
             await db.execute(
                 update(Execution)
@@ -101,13 +115,14 @@ async def end_runs_of_lost_worker(
                 )
                 .values(
                     status=ExecutionStatus.FAILED,
-                    error_message=EXECUTOR_LOST,
+                    error_message=error,
                     completed_at=now,
                 )
                 .returning(Execution.id, Execution.workflow_id)
             )
         ).all()
-        ended = [execution_id for execution_id, _ in rows]
+        ended = [execution_id for execution_id, _ in rows if execution_id not in uncertain_workflows]
+        uncertain = [execution_id for execution_id, _ in rows if execution_id in uncertain_workflows]
         budget = await db.scalar(
             select(ExecutionWorker.memory_budget_bytes).where(ExecutionWorker.id == worker_id)
         )
@@ -127,21 +142,28 @@ async def end_runs_of_lost_worker(
         ).all()
         for run_id, backfill_job_id in interrupted:
             await stage_summary(db, run_id, backfill=backfill_job_id is not None)
-    if ended or agent_ids:
+    if ended or uncertain or agent_ids:
         logger.warning(
             "Ended runs of a lost executor",
             extra={
                 "worker_id": str(worker_id),
-                "workflow_runs": len(ended),
+                "workflow_runs": len(ended) + len(uncertain),
                 "agent_runs": len(agent_ids),
             },
         )
-    return LostRuns(workflow_runs=ended, agent_runs=agent_ids, summary_runs=summary_ids)
+    return LostRuns(
+        workflow_runs=ended, agent_runs=agent_ids, summary_runs=summary_ids,
+        uncertain_workflow_runs=uncertain,
+    )
 
 
 async def announce_lost_runs(lost: LostRuns) -> None:
     """End a lost executor's live agent runs and wake every caller of its runs."""
     await announce_ended_runs(lost.workflow_runs)
+    if lost.uncertain_workflow_runs:
+        await announce_ended_runs(
+            lost.uncertain_workflow_runs, WORKFLOW_ATTEMPT_UNCERTAIN, error_type="WorkflowAttemptUncertain",
+        )
     from src.services.execution.summary_dispatch import report_unclaimed_summary
 
     for run_id in lost.summary_runs:
@@ -247,7 +269,9 @@ async def release_unstarted_claims(worker_id: UUID, started: set[str]) -> list[U
     return ended
 
 
-async def announce_ended_runs(execution_ids: list[UUID], error: str = EXECUTOR_LOST) -> None:
+async def announce_ended_runs(
+    execution_ids: list[UUID], error: str = EXECUTOR_LOST, *, error_type: str = "ExecutorLost",
+) -> None:
     """Best-effort live update for runs ended after their executor was lost,
     and the result a sync caller is waiting for (it expires unread for the
     others), so no caller waits out its timeout."""
@@ -261,7 +285,7 @@ async def announce_ended_runs(execution_ids: list[UUID], error: str = EXECUTOR_L
                 execution_id=str(execution_id),
                 status="Failed",
                 error=error,
-                error_type="ExecutorLost",
+                error_type=error_type,
                 duration_ms=0,
             )
         except Exception:
