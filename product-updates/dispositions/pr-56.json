@@ -1,0 +1,1 @@
+{"classification":"omit","entry_ids":[],"key":"pr:56","reason":"Routine performance repair: table document equality filters and policy read filters stay generic-plan safe, and per-source event counts gain a composite index. Query results, API and contracts are unchanged.","review":{"evidence":["https://github.com/MTG-Thomas/bifrost-upstream/pull/56"],"status":"approved"}}
