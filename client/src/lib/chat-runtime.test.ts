@@ -760,4 +760,71 @@ describe("chat-runtime reducer", () => {
 			}),
 		);
 	});
+
+	// Counterexample shrunk by the property test in
+	// chat-runtime.property.test.ts (seed 20261117, 12 shrinks). A rejected
+	// envelope used to create its run before the sequence check ran, and the
+	// batch kept that run whenever a sibling envelope in the same frame
+	// succeeded — a phantom non-terminal run competing for the active slot.
+	it("does not materialise a run for an envelope rejected by sequencing", () => {
+		const projection = applyChatStreamEnvelopes(
+			makeEmptyChatProjection("conversation-1"),
+			[
+				{
+					event_id: null,
+					sequence: 0,
+					conversation_id: null,
+					run_id: "run-rejected",
+					occurred_at: "2026-09-02T00:00:00Z",
+					payload: { type: "error", error: "" },
+				},
+				{
+					event_id: null,
+					sequence: null,
+					conversation_id: null,
+					run_id: null,
+					occurred_at: "2026-09-02T00:00:00Z",
+					payload: {
+						type: "message_start",
+						user_message_id: "user-1",
+						assistant_message_id: "assistant-1",
+					},
+				},
+			],
+		);
+
+		expect(projection.runs["run-rejected"]).toBeUndefined();
+		expect(projection.run_order).not.toContain("run-rejected");
+	});
+
+	// Counterexample from the unscoped seed of the same property. The guard at
+	// applyRuntimeConversationGuard rejects a conversation mismatch only once the
+	// projection is bound, so the leak was a premature binding: a rejected
+	// chunkless envelope wrote its conversation id into the clone, and the
+	// batch kept it while the fold discarded it.
+	it("does not bind an unscoped projection from a rejected envelope", () => {
+		const projection = applyChatStreamEnvelopes(
+			makeEmptyChatProjection(),
+			[
+				{
+					event_id: null,
+					sequence: null,
+					conversation_id: "conversation-1",
+					run_id: null,
+					occurred_at: "2026-09-02T00:00:00Z",
+					payload: null,
+				},
+				{
+					event_id: null,
+					sequence: null,
+					conversation_id: null,
+					run_id: "run-0",
+					occurred_at: "2026-09-02T00:00:00Z",
+					payload: { type: "error", error: "" },
+				},
+			],
+		);
+
+		expect(projection.conversation_id).toBeNull();
+	});
 });

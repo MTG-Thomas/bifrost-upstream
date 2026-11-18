@@ -1,0 +1,13 @@
+{
+  "key": "pr:52",
+  "classification": "omit",
+  "entry_ids": [],
+  "reason": "Test-harness groundwork (fast-check property tests) plus an internal chat-projection correctness fix with no demonstrated user-visible symptom; nothing to announce.",
+  "review": {
+    "status": "draft",
+    "evidence": [
+      "https://github.com/MTG-Thomas/bifrost-upstream/pull/52",
+      "Fork-only work: CONTRIBUTING.md does not accept a test suite as a contribution basis, and no end-to-end user-visible consequence of the fixed asymmetry was reproduced."
+    ]
+  }
+}
