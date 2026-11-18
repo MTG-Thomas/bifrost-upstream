@@ -37,6 +37,7 @@ from src.services.memory_requests import (
     job_budget_bytes,
     sized_job_limit_bytes,
 )
+from src.worker.remote.protocol import LINUX_RUNTIME_PROFILE
 
 if TYPE_CHECKING:
     from src.services.kubernetes_execution import KubernetesPolicy
@@ -57,7 +58,9 @@ def job_baseline(workers: Any, standard_limit: int, threshold: float) -> int:
     reported = [
         int(launch_limit(worker, standard_limit) * threshold) - worker.memory_budget_bytes
         for worker in workers
-        if worker.form in MANAGED_WORKER_FORMS and worker.memory_budget_bytes is not None
+        if worker.form in MANAGED_WORKER_FORMS
+        and worker.runtime_profile == LINUX_RUNTIME_PROFILE
+        and worker.memory_budget_bytes is not None
     ]
     return max(reported, default=JOB_BASELINE_ESTIMATE_BYTES)
 

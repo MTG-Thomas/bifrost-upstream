@@ -313,8 +313,8 @@ async def _settle_pool_dispatch(
 async def largest_budget(
     db: AsyncSession, handler: str = "workflow.execute", execution_lane: str = "normal"
 ) -> int | None:
-    """The most memory any executor can hand to one piece of work: the
-    largest budget of an executor live now or within ``RECENTLY_LIVE`` (one
+    """The measured Linux capacity ceiling for one piece of work: the
+    largest budget of a Linux executor live now or within ``RECENTLY_LIVE`` (one
     restarting or rolling over counts), or what the worker controller can
     launch. Only executors supporting this handler count. A physical worker
     launch adds capacity for every advertised remote handler, including live
@@ -325,12 +325,14 @@ async def largest_budget(
     """
     from src.core.cache.redis_client import get_redis
     from src.models.orm.execution_workers import ExecutionWorker
-    from src.services.memory_requests import LAUNCHABLE_GENERATION_KEY, LAUNCHABLE_KEY
     from src.models.orm.package_changes import PackageChange
+    from src.services.memory_requests import LAUNCHABLE_GENERATION_KEY, LAUNCHABLE_KEY
     from src.services.worker_pool.claims import REMOTE_WORKER_HANDLER_NAMES
+    from src.worker.remote.protocol import LINUX_RUNTIME_PROFILE
 
     live = await db.scalar(
         select(func.max(ExecutionWorker.memory_budget_bytes)).where(
+            ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE,
             ExecutionWorker.supported_handlers.contains([handler]),
             ExecutionWorker.execution_lane == execution_lane,
             (

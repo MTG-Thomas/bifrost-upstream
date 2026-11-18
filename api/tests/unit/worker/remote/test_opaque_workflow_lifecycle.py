@@ -931,6 +931,16 @@ async def test_late_terminal_cannot_commit_after_owner_replaced(opaque_executor,
 
 
 @pytest.mark.asyncio
+async def test_opaque_inventory_adopts_routes_without_linux_baseline(opaque_executor):
+    worker, pool, subjects = opaque_executor
+    snapshot = await pool.reconcile_inventory(inventory(map(workflow_entry, subjects))["inventory"])
+
+    assert snapshot is not None
+    assert snapshot["workflow_requests"] == {str(subject): RESERVATION for subject in subjects}
+    assert worker.budget is None
+
+
+@pytest.mark.asyncio
 async def test_opaque_bridge_requires_inventory_v1():
     bridge = Bridge(Mock(), {"hostname": "opaque", "runtime_profile": PROFILE},
                     RemoteOwnerLease(uuid4(), uuid4(), uuid4(), 1))

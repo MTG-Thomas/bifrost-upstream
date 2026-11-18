@@ -81,7 +81,7 @@ from src.services.worker_pool.recovery import (
 )
 from src.services.worker_pool.sizing import LIVE_STATES, JobSizing, job_baseline, launch_limit
 from src.services.worker_pool.calibration import measured_budget
-from src.worker.remote.protocol import HANDLER_CONCURRENCY_LIMITS
+from src.worker.remote.protocol import HANDLER_CONCURRENCY_LIMITS, LINUX_RUNTIME_PROFILE
 
 logger = logging.getLogger(__name__)
 
@@ -334,15 +334,21 @@ class WorkerCapacityController(ABC):
                     .order_by(text("created_at"))
                 )
             ).all()
+            # Declared-runtime capacity requires its own eligibility and slot
+            # rules. Only measured Linux capacity participates in this plan.
             workers = (
                 await db.execute(
-                    select(ExecutionWorker).where(ExecutionWorker.state.in_(LIVE_STATES)).with_for_update()
+                    select(ExecutionWorker).where(
+                        ExecutionWorker.state.in_(LIVE_STATES),
+                        ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE,
+                    ).with_for_update()
                 )
             ).scalars().all()
             generation = int(await db.scalar(select(func.coalesce(func.max(PackageChange.id), 0))) or 0)
             environment = self._memory_environment(generation)
             history = (await db.scalars(select(ExecutionWorker).where(
                 self._managed_scope(),
+                ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE,
                 ExecutionWorker.state.in_((*LIVE_STATES, "retired")),
                 ExecutionWorker.memory_calibration["environment"] == environment,
                 ExecutionWorker.memory_calibration["measurement"].is_not(None),
@@ -470,6 +476,7 @@ class WorkerCapacityController(ABC):
             # size has already calibrated the environment.
             failed_limits = set((await db.scalars(select(ExecutionWorker.memory_limit_bytes).where(
                 self._managed_scope(), ExecutionWorker.state == "lost",
+                ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE,
                 ExecutionWorker.memory_budget_bytes.is_(None),
                 ExecutionWorker.version == self.version,
                 ExecutionWorker.memory_calibration["environment"] == environment,
@@ -626,7 +633,9 @@ class WorkerCapacityController(ABC):
             jobs = (
                 await db.execute(
                     select(ExecutionWorker).where(
-                        ExecutionWorker.form.in_(MANAGED_WORKER_FORMS), ExecutionWorker.state.in_(LIVE_STATES)
+                        ExecutionWorker.form.in_(MANAGED_WORKER_FORMS),
+                        ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE,
+                        ExecutionWorker.state.in_(LIVE_STATES),
                     )
                 )
             ).scalars().all()

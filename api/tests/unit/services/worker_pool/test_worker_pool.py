@@ -40,15 +40,19 @@ from src.services.kubernetes_execution import (
 )
 from src.services.memory_requests import (
     DEFAULT_WORKFLOW_REQUEST_BYTES,
-    LAUNCHABLE_KEY,
+    JOB_BASELINE_ESTIMATE_BYTES,
     LAUNCHABLE_GENERATION_KEY,
+    LAUNCHABLE_KEY,
     MIB,
     WORKFLOW_REQUEST_MARGIN_BYTES,
 )
 from src.services.worker_pool import calibration, claims, controller, liveness, maintenance, recovery, sizing
 from src.services.worker_pool.manifest import WorkerJobSpec, build_worker_job_manifest
 from src.worker.admission import Admission
-from src.worker.remote.protocol import CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+from src.worker.remote.protocol import (
+    CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+    LINUX_RUNTIME_PROFILE,
+)
 
 GIB = 1024 * MIB
 
@@ -621,10 +625,26 @@ async def test_a_worker_launched_for_a_dispatch_takes_it_even_when_smaller_than_
 
 def test_the_job_baseline_learns_from_sized_jobs_too() -> None:
     sized = SimpleNamespace(
-        form="job", memory_limit_bytes=4 * GIB, memory_budget_bytes=2 * GIB
+        form="job", runtime_profile=LINUX_RUNTIME_PROFILE,
+        memory_limit_bytes=4 * GIB, memory_budget_bytes=2 * GIB,
     )
     expected = int(4 * GIB * SETTINGS.memory_pressure_threshold) - 2 * GIB
     assert sizing.job_baseline([sized], 2 * GIB, SETTINGS.memory_pressure_threshold) == expected
+
+
+def test_job_baseline_uses_linux_budget_and_ignores_cloudflare_capacity() -> None:
+    cloudflare = SimpleNamespace(
+        form="external", runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+        memory_limit_bytes=None, memory_budget_bytes=128 * MIB,
+    )
+    linux = SimpleNamespace(
+        form="external", runtime_profile=LINUX_RUNTIME_PROFILE,
+        memory_limit_bytes=None, memory_budget_bytes=GIB,
+    )
+    limit = 2 * GIB
+    threshold = SETTINGS.memory_pressure_threshold
+    assert sizing.job_baseline([cloudflare], limit, threshold) == JOB_BASELINE_ESTIMATE_BYTES
+    assert sizing.job_baseline([cloudflare, linux], limit, threshold) == int(limit * threshold) - GIB
 
 
 async def test_a_sized_job_drains_when_idle_and_is_never_the_warm_minimum(db) -> None:

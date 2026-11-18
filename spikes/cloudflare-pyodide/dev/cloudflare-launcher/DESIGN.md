@@ -140,8 +140,8 @@ run. Findings, checked against the cited code:
      replies* require a positive one, and a missing PID takes the
      hard-error path even if execution started. PID-less routes also drop
      out of heartbeat counts.
-   - Inventory must be v1 with `baseline_bytes` and live *and* terminal
-     route metadata.
+   - Cloudflare inventory must be v1 with live *and* terminal route
+     metadata. The `baseline_bytes` field is required for Linux inventory.
 3. **Samples and admission.**
    - The hello sample is mandatory.
    - Missing periodic samples close admission after 3 s and eventually

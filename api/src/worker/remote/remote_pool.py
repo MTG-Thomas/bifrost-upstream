@@ -348,13 +348,13 @@ class ThinRemoteProcessPool(ProcessPoolManager):
             remote_owner_context,
         )
 
-        version, baseline = inventory.get("version"), inventory.get("baseline_bytes")
+        version = inventory.get("version")
         live, terminals = inventory.get("routes"), inventory.get("terminal_routes")
         if (
-            type(version) is not int or version != 1 or type(baseline) is not int or baseline < 0
+            type(version) is not int or version != 1
             or not isinstance(live, list) or not isinstance(terminals, list)
         ):
-            raise ValueError("Opaque workflow inventory must include v1 routes, terminals and baseline")
+            raise ValueError("Opaque workflow inventory must include v1 routes and terminals")
 
         entries: dict[str, tuple[dict[str, Any], ExecutionInfo, int, tuple[str, str] | None]] = {}
         subjects: set[UUID] = set()

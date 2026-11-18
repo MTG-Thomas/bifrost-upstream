@@ -98,6 +98,37 @@ async def test_owner_acquisition_persists_runtime_profile_across_reconnect(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("form", ["static", "job"])
+async def test_cloudflare_cannot_acquire_non_external_worker(
+    async_session_factory, monkeypatch, form,
+) -> None:
+    @asynccontextmanager
+    async def context():
+        async with async_session_factory() as session:
+            yield session
+            await session.commit()
+
+    monkeypatch.setattr(ownership, "get_liveness_db_context", context)
+    worker_id = uuid4()
+    async with context() as session:
+        session.add(ExecutionWorker(id=worker_id, form=form, state="ready"))
+    try:
+        lease = await ownership.acquire_remote_owner(
+            worker_id=worker_id, owner_id=uuid4(), launcher_id=uuid4(),
+            nonce_digest="a" * 64, hello_sequence=1,
+            runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+        )
+        assert lease is None
+        async with context() as session:
+            row = await session.get(ExecutionWorker, worker_id)
+            assert row is not None and row.remote_owner_id is None
+            assert row.runtime_profile == LINUX_RUNTIME_PROFILE
+    finally:
+        async with context() as session:
+            await session.execute(delete(ExecutionWorker).where(ExecutionWorker.id == worker_id))
+
+
+@pytest.mark.asyncio
 async def test_terminal_ack_holds_owner_lock_until_its_bounded_send_finishes(
     async_session_factory, monkeypatch,
 ) -> None:

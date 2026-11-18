@@ -2,7 +2,7 @@
 
 import asyncio
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from uuid import UUID, uuid4
 
 import pytest
@@ -14,6 +14,7 @@ from src.models.orm.platform_jobs import PlatformJob
 from src.models.orm.work_dispatches import WorkDispatch
 from src.services import work_dispatch
 from src.services.worker_pool import controller
+from src.worker.remote.protocol import CLOUDFLARE_PYTHON_RUNTIME_PROFILE
 from tests.unit.services.worker_pool.test_worker_pool import (
     GIB, MIB, POLICY, SETTINGS, SPEC, FakeCluster,
     _accept_pool_run, _admit, _claim, _clean as _clean, _report_budget,
@@ -124,6 +125,40 @@ async def test_local_platform_job_bootstraps_without_being_marked_too_large(db):
         assert largest is None
         assert await fail_platform_jobs_that_never_fit(session, largest, largest_pod=None) == []
         assert (await session.get(PlatformJob, job.id)).status == "queued"
+
+
+@pytest.mark.parametrize("max_workers", [1, 2])
+async def test_cloudflare_capacity_does_not_cover_local_platform_jobs(db, max_workers):
+    policy = replace(POLICY, max_workers=max_workers)
+    async with db.context() as session:
+        session.add(ExecutionWorker(
+            id=uuid4(), form="external", state="ready", runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+            supported_handlers=["workflow.execute"], active_runs=1, active_handler_counts={"workflow.execute": 1},
+            memory_budget_bytes=128 * MIB, memory_reserved_bytes=32 * MIB,
+        ))
+        session.add(PlatformJob(
+            job_type="files.move", payload={}, memory_required_bytes=64 * MIB,
+            requested_by_user_id=str(uuid4()), requested_by_email="fixture@example.invalid",
+            requested_by_name="Fixture", title="Cold file move",
+        ))
+    pool = controller.WorkerPoolController(FakeCluster(), SETTINGS, SPEC)
+    [worker_id] = await pool.launch_for_demand(policy)
+    async with db.context() as session:
+        worker = await session.get(ExecutionWorker, worker_id)
+        assert worker is not None and worker.form == "job"
+
+
+@pytest.mark.parametrize("state", ["ready", "retired"])
+async def test_cloudflare_budget_does_not_establish_largest_linux_budget(db, state):
+    async with db.context() as session:
+        session.add(ExecutionWorker(
+            id=uuid4(), form="external", state=state, runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+            supported_handlers=["workflow.execute"], memory_budget_bytes=128 * MIB,
+            ended_at=datetime.now(UTC) if state == "retired" else None,
+        ))
+
+    async with db.context() as session:
+        assert await work_dispatch.largest_budget(session) is None
 
 
 

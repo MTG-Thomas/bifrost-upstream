@@ -9,7 +9,10 @@ from sqlalchemy import func, or_, select, text, update
 
 from src.core.database import get_liveness_db_context
 from src.models.orm.execution_workers import ExecutionWorker
-from src.worker.remote.protocol import LINUX_RUNTIME_PROFILE
+from src.worker.remote.protocol import (
+    CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+    LINUX_RUNTIME_PROFILE,
+)
 
 
 DEFAULT_OWNER_LEASE_SECONDS = 20
@@ -46,17 +49,21 @@ async def acquire_remote_owner(
 
     Credential protocol and physical runtime are recorded with the session
     generation. Reconnects keep the physical runtime of the first session.
+    Cloudflare ownership is limited to external worker rows.
     """
     if lease_seconds <= 0:
         raise ValueError("remote owner lease must be positive")
     if hello_sequence < 1:
         raise ValueError("remote hello sequence must be positive")
     interval = f"{lease_seconds} seconds"
+    worker_scope = [ExecutionWorker.id == worker_id]
+    if runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
+        worker_scope.append(ExecutionWorker.form == "external")
     async with get_liveness_db_context() as db:
         row = await db.execute(
             update(ExecutionWorker)
             .where(
-                ExecutionWorker.id == worker_id,
+                *worker_scope,
                 # Static launchers register a fresh canonical row before the
                 # API-side executor has measured its admission budget. Jobs
                 # are already ready after admit_worker; allowing ``starting``
