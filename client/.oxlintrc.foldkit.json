@@ -1,0 +1,7 @@
+{
+	"$schema": "./node_modules/oxlint/configuration_schema.json",
+	"extends": ["./node_modules/@foldkit/oxlint-plugin/recommended.json"],
+	"plugins": ["typescript"],
+	"categories": { "correctness": "off" },
+	"ignorePatterns": ["**/*.test.ts", "**/*.test.tsx"]
+}

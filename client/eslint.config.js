@@ -330,7 +330,9 @@ export default tseslint.config(
 		},
 	},
 	{
-		files: ["src/components/ui/**"],
+		// Design-system sources own their token-based arbitrary values. The
+		// Foldkit port (src/foldkit/ui) mirrors src/components/ui class for class.
+		files: ["src/components/ui/**", "src/foldkit/ui/**"],
 		rules: {
 			"shadcn/no-restyle": "off",
 			"shadcn/no-arbitrary-values": "off",

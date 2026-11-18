@@ -1,0 +1,26 @@
+{
+  "name": "foldkit-runner",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "foldkit": "0.171.0",
+    "@foldkit/ui": "0.171.0",
+    "effect": "4.1.4",
+    "@effect/platform-browser": "4.1.4",
+    "clsx": "^2.1.1"
+  },
+  "devDependencies": {
+    "@foldkit/vite-plugin": "0.29.1",
+    "@foldkit/devtools": "0.171.0",
+    "@tailwindcss/vite": "^4.0.0",
+    "tailwindcss": "^4.0.0",
+    "tw-animate-css": "^1.2.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.8"
+  }
+}

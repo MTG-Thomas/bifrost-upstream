@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 import { bifrostModuleStubs } from "./src/build-plugins/bifrost-module-stubs";
+import { foldkitScoped } from "./src/build-plugins/foldkit-scoped";
 
 function embeddedFormFramePolicy(): Plugin {
 	return {
@@ -55,6 +56,10 @@ export default defineConfig({
 		tailwindcss(),
 		react(),
 		bifrostModuleStubs(),
+		// Evaluation spike: Foldkit view identity, Model-preserving reload, and
+		// the DevTools MCP relay for src/foldkit only. See
+		// docs/spikes/foldkit-design-system-port.md.
+		foldkitScoped({ directory: path.resolve(__dirname, "src/foldkit") }),
 	],
 	resolve: {
 		alias: {
