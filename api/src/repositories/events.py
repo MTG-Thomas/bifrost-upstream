@@ -386,8 +386,15 @@ class EventRepository(BaseRepository[Event]):
         since: datetime | None = None,
         until: datetime | None = None,
     ) -> int:
-        """Count events for an event source."""
-        stmt = select(func.count(Event.id)).where(Event.event_source_id == source_id)
+        """Count events for an event source.
+
+        ``count(*)`` rather than ``count(events.id)``: ``id`` is never null, and
+        not referencing it lets PostgreSQL answer a source/time-window count
+        from ``ix_events_event_source_id_received_at`` alone.
+        """
+        stmt = select(func.count()).select_from(Event).where(
+            Event.event_source_id == source_id
+        )
 
         # Apply filters
         if status:

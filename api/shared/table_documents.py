@@ -11,12 +11,25 @@ first, then call into this module.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import Numeric, String, bindparam, case, cast, false, func, literal_column, select
+from sqlalchemy import (
+    Numeric,
+    String,
+    bindparam,
+    case,
+    cast,
+    false,
+    func,
+    literal,
+    literal_column,
+    select,
+)
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import ColumnElement
 
@@ -122,6 +135,21 @@ def _document_id_prefix_like_pattern(prefix: str) -> str:
     )
 
 
+def _jsonb_scalar_equals(field: str, value: bool | int | float) -> ColumnElement:
+    """Type-aware equality for a scalar JSON value: ``data -> field = 'v'::jsonb``.
+
+    Matches exactly what ``data @> {field: value}`` matches for a scalar (a
+    missing key, a different JSON type, or an array never match; numbers
+    compare numerically) but is not a GIN containment operator. Filters on
+    ``documents.data`` must not use ``@>``: in a generic plan PostgreSQL
+    cannot see how broad the containment is and may BitmapAnd the
+    ``table_id`` index with a GIN scan that reads most of the index (44 s on
+    a production copy for a broad containment). This expression is evaluated
+    as a filter on the table's rows instead.
+    """
+    return Document.data[field] == cast(literal(json.dumps(value)), JSONB)
+
+
 def _build_document_filters(base_query: Any, where: dict[str, Any]) -> Any:
     """Build SQLAlchemy filters from where clause with JSON-native operators.
 
@@ -142,7 +170,7 @@ def _build_document_filters(base_query: Any, where: dict[str, Any]) -> Any:
             for op, op_value in value.items():
                 if op == "eq":
                     if isinstance(op_value, (bool, int, float)):
-                        base_query = base_query.where(Document.data.contains({field: op_value}))
+                        base_query = base_query.where(_jsonb_scalar_equals(field, op_value))
                     else:
                         base_query = base_query.where(json_field.astext == str(op_value))
                 elif op == "ne":
@@ -195,10 +223,10 @@ def _build_document_filters(base_query: Any, where: dict[str, Any]) -> Any:
                     else:
                         base_query = base_query.where(~Document.data.has_key(field))
         else:
-            # Simple equality — use JSONB containment for type-safe comparison
-            # This handles booleans, numbers, and strings correctly
+            # Simple equality: type-aware JSONB compare for scalars, text
+            # compare for everything else.
             if isinstance(value, (bool, int, float)):
-                base_query = base_query.where(Document.data.contains({field: value}))
+                base_query = base_query.where(_jsonb_scalar_equals(field, value))
             else:
                 base_query = base_query.where(json_field.astext == str(value))
 

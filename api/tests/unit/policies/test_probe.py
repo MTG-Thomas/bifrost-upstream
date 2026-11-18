@@ -94,10 +94,14 @@ def test_compile_read_filter_no_read_rules_returns_none():
 
 
 def test_compile_read_filter_combines_with_or():
-    """Two rules grant read → returned filter is their OR."""
+    """Two row-dependent rules grant read → returned filter is their OR."""
     tp = TablePolicies(policies=[
-        _admin_bypass_policy(),
         _own_row_policy(),
+        Policy.model_validate({
+            "name": "public_rows",
+            "actions": ["read"],
+            "when": {"eq": [{"row": "visibility"}, "public"]},
+        }),
     ])
     f = compile_read_filter(tp, user=FakeUser())
     # Compile to SQL string for inspection
@@ -106,6 +110,60 @@ def test_compile_read_filter_combines_with_or():
 
     sql = str(select(Document.id).where(f).compile(compile_kwargs={"literal_binds": True}))
     assert " OR " in sql.upper()
+
+
+def _read_filter_sql(tp: TablePolicies, user: FakeUser) -> tuple[str, list]:
+    from sqlalchemy import select
+    from sqlalchemy.dialects.postgresql import asyncpg as pg_asyncpg
+    from src.models.orm.tables import Document
+
+    f = compile_read_filter(tp, user=user)
+    compiled = (
+        select(Document.id)
+        .where(Document.table_id == uuid4())
+        .where(f)
+        .compile(dialect=pg_asyncpg.dialect())
+    )
+    return str(compiled), list(compiled.params.values())
+
+
+def test_compile_read_filter_folds_user_only_rules_into_constants():
+    """User-only facts never reach SQL as a bound ``$n::BOOLEAN``.
+
+    A bound boolean hides a constant from PostgreSQL's generic plan; the
+    seed admin_bypass rule produced ``AND $9::BOOLEAN`` on every query.
+    """
+    tp = TablePolicies(policies=[_admin_bypass_policy(), _own_row_policy()])
+
+    admin_sql, admin_params = _read_filter_sql(tp, FakeUser(role_ids=[PLATFORM_ADMIN_ROLE_ID]))
+    assert admin_sql.endswith("WHERE documents.table_id = $1::UUID")
+    assert len(admin_params) == 1
+
+    user = FakeUser()
+    user_sql, user_params = _read_filter_sql(tp, user)
+    assert " OR " not in user_sql.upper()
+    assert "documents.created_by = $2::VARCHAR" in user_sql
+    assert str(user.user_id) in user_params
+
+    for sql, params in ((admin_sql, admin_params), (user_sql, user_params)):
+        assert "BOOLEAN" not in sql.upper()
+        assert not any(isinstance(value, bool) for value in params)
+
+
+def test_compile_read_filter_seed_authority_rule_folds_into_constants():
+    """The seed ``{authority: platform_admin}`` rule is a constant too."""
+    tp = TablePolicies.model_validate(make_seed_admin_bypass())
+
+    admin_sql, admin_params = _read_filter_sql(
+        tp, FakeUser(policy_authorities=frozenset({"platform_admin"}))
+    )
+    user_sql, user_params = _read_filter_sql(tp, FakeUser())
+
+    assert admin_sql.endswith("WHERE documents.table_id = $1::UUID")
+    assert user_sql.endswith("WHERE false")
+    for sql, params in ((admin_sql, admin_params), (user_sql, user_params)):
+        assert "BOOLEAN" not in sql.upper()
+        assert not any(isinstance(value, bool) for value in params)
 
 
 def test_compile_read_filter_when_none_compiles_to_true():

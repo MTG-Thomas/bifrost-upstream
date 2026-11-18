@@ -22,6 +22,7 @@ from sqlalchemy import or_ as sa_or
 from sqlalchemy import true as sa_true
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import ColumnElement
+from sqlalchemy.sql.expression import False_, True_
 
 from shared.policies.evaluate import resolve_policy_authority, resolve_user_field
 from shared.policies.functions import FUNCTIONS
@@ -58,7 +59,7 @@ def _compile_node(node: Any, user: Any) -> ColumnElement:
         if keys == {"user"}:
             return _resolve_user_to_literal(user, node["user"])
         if keys == {"authority"}:
-            return literal(resolve_policy_authority(user, node["authority"]))
+            return _bool_constant(resolve_policy_authority(user, node["authority"]))
         if keys == {"row"}:
             return _resolve_row_to_column(node["row"])
         if "call" in keys:
@@ -66,13 +67,54 @@ def _compile_node(node: Any, user: Any) -> ColumnElement:
         if len(keys) == 1:
             op = next(iter(keys))
             return _compile_op(op, node[op], user)
-    if isinstance(node, (str, int, float, bool)) or node is None:
+    if isinstance(node, bool):
+        return _bool_constant(node)
+    if isinstance(node, (str, int, float)) or node is None:
         return literal(node)
     raise ValueError(f"unrendable node: {node!r}")
 
 
+def _bool_constant(value: bool) -> ColumnElement:
+    """Render a compile-time boolean as SQL ``true``/``false``.
+
+    A bound ``$n::BOOLEAN`` hides the constant from PostgreSQL's generic plan
+    (which cached asyncpg prepared statements may switch to after five
+    executions), so the planner cannot drop a ``false`` branch or an
+    ``AND true``. ``fold_and``/``fold_or`` and the ``not`` operator resolve
+    these constants, and ``.where(true())`` adds nothing to a statement.
+    """
+    return sa_true() if value else sa_false()
+
+
+def fold_and(parts: list[ColumnElement]) -> ColumnElement:
+    """AND ``parts``, resolving compile-time ``true``/``false`` operands.
+
+    ``sqlalchemy.and_`` folds constants into a wrapper that a later
+    ``.where()`` still renders (``AND true``); returning the bare constant
+    lets ``.where(true())`` disappear from the statement entirely.
+    """
+    if any(isinstance(part, False_) for part in parts):
+        return sa_false()
+    remaining = [part for part in parts if not isinstance(part, True_)]
+    if not remaining:
+        return sa_true()
+    return remaining[0] if len(remaining) == 1 else sa_and(*remaining)
+
+
+def fold_or(parts: list[ColumnElement]) -> ColumnElement:
+    """OR ``parts``, resolving compile-time ``true``/``false`` operands."""
+    if any(isinstance(part, True_) for part in parts):
+        return sa_true()
+    remaining = [part for part in parts if not isinstance(part, False_)]
+    if not remaining:
+        return sa_false()
+    return remaining[0] if len(remaining) == 1 else sa_or(*remaining)
+
+
 def _resolve_user_to_literal(user: Any, field: str) -> ColumnElement:
     val = resolve_user_field(user, field)
+    if isinstance(val, bool):
+        return _bool_constant(val)
     if isinstance(val, UUID):
         val = str(val)
     return literal(val)
@@ -227,14 +269,17 @@ def _compile_comparison_operands(
 
 def _compile_op(op: str, value: Any, user: Any) -> ColumnElement:
     if op == "and":
-        return sa_and(*(_compile_node(item, user) for item in value))
+        return fold_and([_compile_node(item, user) for item in value])
     if op == "or":
-        return sa_or(*(_compile_node(item, user) for item in value))
+        return fold_or([_compile_node(item, user) for item in value])
     if op == "not":
+        operand = _compile_node(value, user)
+        if isinstance(operand, (True_, False_)):
+            return _bool_constant(isinstance(operand, False_))
         # `.self_group()` prevents SQLAlchemy from collapsing
         # `not_(x == y)` into `x != y`; we want a literal NOT(...) so
         # NULL-as-false semantics survive the negation.
-        return sa_not(_compile_node(value, user).self_group())
+        return sa_not(operand.self_group())
     if op in ("eq", "neq", "lt", "lte", "gt", "gte"):
         left, right = _compile_comparison_operands(value[0], value[1], user)
         if op == "eq":

@@ -341,3 +341,86 @@ def test_claims_rhs_compound_and():
     sql = compile_to_sql(expr, user)
     sql_str = str(sql.compile(compile_kwargs={"literal_binds": True}))
     assert "'c1'" in sql_str and "'d1'" in sql_str
+
+
+# --- Compile-time constants -------------------------------------------------
+#
+# User facts, authorities and literal booleans are known at compile time. They
+# must reach SQL as the constants ``true``/``false`` (folded away where
+# possible), never as a bound ``$n::BOOLEAN``: PostgreSQL's generic plan for a
+# cached asyncpg statement cannot see a bound value.
+
+_ADMIN = {"role_ids": [PLATFORM_ADMIN_ROLE_ID]}
+
+
+def _render_params(d: dict, user) -> tuple[str, list]:
+    from sqlalchemy.dialects.postgresql import asyncpg as pg_asyncpg
+
+    stmt = (
+        select(Document.id)
+        .where(Document.table_id == uuid4())
+        .where(compile_to_sql(Expr.model_validate(d), user))
+    )
+    compiled = stmt.compile(dialect=pg_asyncpg.dialect())
+    return str(compiled), list(compiled.params.values())
+
+
+def _assert_no_bound_boolean(sql: str, params: list) -> None:
+    assert "BOOLEAN" not in sql.upper()
+    assert not any(isinstance(value, bool) for value in params)
+
+
+def test_user_boolean_true_is_dropped_from_where():
+    sql, params = _render_params({"user": "is_platform_admin"}, FakeUser(**_ADMIN))
+    _assert_no_bound_boolean(sql, params)
+    assert sql.endswith("WHERE documents.table_id = $1::UUID")
+
+
+def test_user_boolean_false_makes_where_constant_false():
+    sql, params = _render_params({"user": "is_platform_admin"}, FakeUser())
+    _assert_no_bound_boolean(sql, params)
+    assert sql.endswith("WHERE false")
+
+
+def test_authority_folds_to_constant():
+    rule = {"authority": "platform_admin"}
+    admin_sql, admin_params = _render_params(
+        rule, FakeUser(policy_authorities=frozenset({"platform_admin"}))
+    )
+    user_sql, user_params = _render_params(rule, FakeUser())
+    _assert_no_bound_boolean(admin_sql, admin_params)
+    _assert_no_bound_boolean(user_sql, user_params)
+    assert admin_sql.endswith("WHERE documents.table_id = $1::UUID")
+    assert user_sql.endswith("WHERE false")
+
+
+def test_or_with_true_user_fact_folds_to_no_filter():
+    rule = {"or": [{"user": "is_platform_admin"}, {"eq": [{"row": "status"}, "open"]}]}
+    sql, params = _render_params(rule, FakeUser(**_ADMIN))
+    _assert_no_bound_boolean(sql, params)
+    assert sql.endswith("WHERE documents.table_id = $1::UUID")
+
+
+def test_or_with_false_user_fact_keeps_only_row_branch():
+    rule = {"or": [{"user": "is_platform_admin"}, {"eq": [{"row": "status"}, "open"]}]}
+    sql, params = _render_params(rule, FakeUser())
+    _assert_no_bound_boolean(sql, params)
+    assert " OR " not in sql.upper()
+    assert "(documents.data ->> $2::TEXT) = $3::VARCHAR" in sql
+
+
+def test_and_with_false_literal_folds_to_false():
+    rule = {"and": [False, {"eq": [{"row": "status"}, "open"]}]}
+    sql, params = _render_params(rule, FakeUser())
+    _assert_no_bound_boolean(sql, params)
+    assert sql.endswith("WHERE false")
+
+
+def test_not_of_user_fact_folds_to_constant():
+    rule = {"not": {"user": "is_platform_admin"}}
+    admin_sql, admin_params = _render_params(rule, FakeUser(**_ADMIN))
+    user_sql, user_params = _render_params(rule, FakeUser())
+    _assert_no_bound_boolean(admin_sql, admin_params)
+    _assert_no_bound_boolean(user_sql, user_params)
+    assert admin_sql.endswith("WHERE false")
+    assert user_sql.endswith("WHERE documents.table_id = $1::UUID")
