@@ -6,7 +6,8 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import {
-  CLOUDFLARE_HANDLERS, FragmentAssembler, MAX_FRAME_BYTES, ProtocolError, canonicalHello,
+  CLOUDFLARE_HANDLERS, CLOUDFLARE_INCARNATION_ENDED, CLOUDFLARE_MAX_LOGICAL_BYTES,
+  FragmentAssembler, MAX_FRAME_BYTES, ProtocolError, canonicalHello,
   encodeEnvelope, envelope, externalWorkerControlKey, fragment, parseEnvelope, signHello,
 } from './protocol.mjs';
 
@@ -70,4 +71,27 @@ test('hello refuses identities a Cloudflare launcher must never claim', async ()
 
 test('the launcher advertises workflow execution only', () => {
   assert.deepEqual(CLOUDFLARE_HANDLERS, [['workflow.execute', 1]]);
+});
+
+test('Cloudflare wire limits and retirement code match Python', () => {
+  assert.equal(CLOUDFLARE_MAX_LOGICAL_BYTES, vectors.cloudflare_wire.max_logical_bytes);
+  assert.equal(CLOUDFLARE_INCARNATION_ENDED, vectors.cloudflare_wire.incarnation_ended);
+});
+
+test('reassembly rejects fragments once their decoded total exceeds the logical limit', () => {
+  const assembler = new FragmentAssembler();
+  const bytesPerFrame = Math.floor(((MAX_FRAME_BYTES - 1024) * 3) / 4);
+  const total = Math.floor(CLOUDFLARE_MAX_LOGICAL_BYTES / bytesPerFrame) + 1;
+  const data = Buffer.alloc(bytesPerFrame).toString('base64');
+  const frame = (index) => envelope(1, index + 1, 'fragment', {message_id: 'large', index, total, data});
+  for (let index = 0; index < total - 1; index++) assert.equal(assembler.feed(frame(index)), null);
+  assert.throws(() => assembler.feed(frame(total - 1)), /logical limit/);
+});
+
+test('fragments cannot substitute a different logical generation or sequence', () => {
+  const frames = fragment(envelope(2, 3, 'command', {blob: 'x'.repeat(800_000)}));
+  const assembler = new FragmentAssembler();
+  const outer = frames.map((frame) => ({...frame, session_generation: 3}));
+  assembler.feed(outer[0]);
+  assert.throws(() => assembler.feed(outer[1]), /invalid reassembled control envelope/);
 });

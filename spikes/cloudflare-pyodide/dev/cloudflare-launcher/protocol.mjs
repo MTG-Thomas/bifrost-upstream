@@ -10,6 +10,8 @@
 export const AUTH_DOMAIN = 'bifrost.remote-control.hello.v1\0';
 export const EXTERNAL_CONTROL_DOMAIN = 'bifrost.external-worker.control.v1\0';
 export const MAX_FRAME_BYTES = 1 << 20;
+export const CLOUDFLARE_MAX_LOGICAL_BYTES = 16 * 2 ** 20;
+export const CLOUDFLARE_INCARNATION_ENDED = 4001;
 export const MAX_CLOCK_SKEW_SECONDS = 60;
 export const CREDENTIAL_PROTOCOL = 2;
 export const CLOUDFLARE_PYTHON_RUNTIME_PROFILE = 'cloudflare-python-v1';
@@ -175,6 +177,7 @@ export function parseEnvelope(raw) {
 }
 
 const CHUNK_SIZE = Math.floor(((MAX_FRAME_BYTES - 1024) * 3) / 4);
+const MAX_FRAGMENTS = Math.ceil(CLOUDFLARE_MAX_LOGICAL_BYTES / CHUNK_SIZE);
 
 function base64(bytes) {
   let binary = '';
@@ -188,6 +191,7 @@ function base64(bytes) {
 // Each fragment consumes one sequence number, as in Python.
 export function fragment(value, messageId = newNonce().slice(0, 24)) {
   const raw = encoder.encode(encodeEnvelope(value));
+  if (raw.length > CLOUDFLARE_MAX_LOGICAL_BYTES) throw new ProtocolError('control message exceeds logical limit');
   if (raw.length <= CHUNK_SIZE) return [value];
   const total = Math.ceil(raw.length / CHUNK_SIZE);
   const frames = [];
@@ -204,6 +208,8 @@ export function fragment(value, messageId = newNonce().slice(0, 24)) {
 export class FragmentAssembler {
   #messageId = null;
   #total = 0;
+  #size = 0;
+  #first = null;
   #parts = [];
 
   feed(value) {
@@ -214,7 +220,7 @@ export class FragmentAssembler {
     const {message_id: messageId, index, total, data} = value.payload ?? {};
     let bytes;
     try {
-      if (typeof messageId !== 'string' || typeof data !== 'string' ||
+      if (typeof messageId !== 'string' || typeof data !== 'string' || data.length > 4 * Math.ceil(CHUNK_SIZE / 3) ||
           !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) {
         throw new Error('shape');
       }
@@ -223,7 +229,7 @@ export class FragmentAssembler {
       this.#reset();
       throw new ProtocolError('invalid control fragment');
     }
-    if (!Number.isInteger(total) || !Number.isInteger(index) || total < 2 || total > 2 ** 31 ||
+    if (!Number.isInteger(total) || !Number.isInteger(index) || total < 2 || total > MAX_FRAGMENTS ||
         index < 0 || index >= total) {
       this.#reset();
       throw new ProtocolError('invalid control fragment sequence');
@@ -232,20 +238,28 @@ export class FragmentAssembler {
       if (index !== 0) throw new ProtocolError('fragment sequence must start at zero');
       this.#messageId = messageId;
       this.#total = total;
+      this.#first = {session_generation: value.session_generation, sequence: value.sequence};
     }
-    if (messageId !== this.#messageId || total !== this.#total || index !== this.#parts.length) {
+    if (messageId !== this.#messageId || total !== this.#total || index !== this.#parts.length ||
+        value.session_generation !== this.#first.session_generation ||
+        value.sequence !== this.#first.sequence + index) {
       this.#reset();
       throw new ProtocolError('out-of-order control fragments');
     }
+    this.#size += bytes.length;
+    if (bytes.length === 0 || this.#size > CLOUDFLARE_MAX_LOGICAL_BYTES) {
+      this.#reset();
+      throw new ProtocolError('control message exceeds logical limit');
+    }
     this.#parts.push(bytes);
     if (this.#parts.length !== total) return null;
-    const size = this.#parts.reduce((sum, part) => sum + part.length, 0);
-    const joined = new Uint8Array(size);
+    const joined = new Uint8Array(this.#size);
     let offset = 0;
     for (const part of this.#parts) {
       joined.set(part, offset);
       offset += part.length;
     }
+    const first = this.#first;
     this.#reset();
     let parsed;
     try {
@@ -253,6 +267,8 @@ export class FragmentAssembler {
     } catch {
       throw new ProtocolError('reassembled control message is not JSON');
     }
+    if (parsed?.session_generation !== first.session_generation || parsed?.sequence !== first.sequence ||
+        parsed?.kind === 'fragment') throw new ProtocolError('invalid reassembled control envelope');
     return envelope(Number(parsed.session_generation), Number(parsed.sequence), String(parsed.kind),
       parsed.payload);
   }
@@ -260,6 +276,8 @@ export class FragmentAssembler {
   #reset() {
     this.#messageId = null;
     this.#total = 0;
+    this.#size = 0;
+    this.#first = null;
     this.#parts = [];
   }
 }

@@ -113,6 +113,10 @@ def main() -> int:
     vectors = {
         "sources": {name: subprocess.run(["git", "rev-parse", ref], check=True, capture_output=True,
                                          text=True).stdout.strip() for name, ref in sources.items()},
+        "cloudflare_wire": {
+            "max_logical_bytes": branch_protocol.CLOUDFLARE_MAX_LOGICAL_BYTES,
+            "incarnation_ended": branch_protocol.CLOUDFLARE_INCARNATION_ENDED,
+        },
         "hello_main": hello_vectors(main_protocol, with_profile=False),
         "hello_branch_profile": hello_vectors(branch_protocol, with_profile=True),
         "envelopes": envelope_vectors(main_protocol),
