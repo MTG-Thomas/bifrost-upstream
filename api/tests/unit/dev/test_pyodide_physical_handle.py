@@ -46,7 +46,7 @@ async def opaque_dispatch(monkeypatch, workspace_review):
 
     transport = Bridge(
         Mock(), {"hostname": "opaque", "runtime_profile": PROFILE},
-        RemoteOwnerLease(uuid4(), uuid4(), uuid4(), 1),
+        RemoteOwnerLease(uuid4(), uuid4(), uuid4(), 1, declared_slots=1),
     )
     transport.request = AsyncMock()
     transport.admission = Admission(

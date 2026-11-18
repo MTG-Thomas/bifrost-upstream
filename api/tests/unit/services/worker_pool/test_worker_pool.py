@@ -500,11 +500,76 @@ async def test_cloudflare_claims_distinct_tenants_with_per_slot_limits(db) -> No
     await _set_request(db.sessions, third, 1 * MIB, approved=True)
     second_claim = await _claim(worker_id)
     assert second_claim is not None and second_claim.subject_id == UUID(second)
+    assert second_claim.tenant_id == other_tenants[0]
     assert await _claim(worker_id) is None
+    other_claim = await _claim(other_worker)
+    assert other_claim is not None and other_claim.subject_id == UUID(third)
     assert not await claims.begin_idle_drain(worker_id)
     async with db.context() as session:
         worker = await session.get(ExecutionWorker, worker_id)
         assert (worker.active_runs, worker.memory_reserved_bytes) == (2, 96 * MIB)
+
+
+async def test_cloudflare_claim_lock_leaves_other_tenants_free(db, monkeypatch) -> None:
+    from src.worker.remote.fencing import LeaseRef, remote_owner_context
+    from src.worker.remote.ownership import RemoteOwnerLease
+
+    tenant = uuid4()
+    async with db.context() as session:
+        session.add(Organization(id=tenant, name=str(tenant), created_by="unit"))
+    leases = []
+    for _ in range(2):
+        worker_id = await _declared_worker(db)
+        lease = RemoteOwnerLease(worker_id, uuid4(), uuid4(), 1, declared_slots=1)
+        async with db.context() as session:
+            worker = await session.get(ExecutionWorker, worker_id)
+            worker.remote_owner_id = lease.owner_id
+            worker.remote_launcher_id = lease.launcher_id
+            worker.remote_session_generation = lease.session_generation
+        leases.append(lease)
+
+    first = await _accept_pool_run()
+    await _set_request(db.sessions, first, 32 * MIB, approved=True)
+    second = await _accept_pool_run(org_id=str(tenant))
+    await _set_request(db.sessions, second, 32 * MIB, approved=True)
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = workflow_dispatch.claim_workflow_dispatch
+
+    async def pause_platform_claim(*args, **kwargs):
+        if kwargs["execution_id"] == UUID(first):
+            entered.set()
+            await release.wait()
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(workflow_dispatch, "claim_workflow_dispatch", pause_platform_claim)
+
+    async def claim(lease):
+        with remote_owner_context(LeaseRef(lease)):
+            return await _claim(lease.worker_id)
+
+    task = asyncio.create_task(claim(leases[0]))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        other = await asyncio.wait_for(claim(leases[1]), timeout=10)
+        assert other is not None and other.subject_id == UUID(second)
+    finally:
+        release.set()
+        claimed = await task
+    assert claimed is not None and claimed.subject_id == UUID(first)
+
+
+async def test_missing_claim_counts_only_against_its_launchers_slots(db) -> None:
+    occupied = await _declared_worker(db)
+    free = await _declared_worker(db)
+    async with db.context() as session:
+        session.add(ExecutionWorkerClaim(
+            worker_id=occupied, family=workflow_dispatch.FAMILY, subject_id=uuid4(),
+        ))
+    platform = await _accept_pool_run()
+    await _set_request(db.sessions, platform, 32 * MIB, approved=True)
+    assert await _claim(occupied) is None
+    claim = await _claim(free)
+    assert claim is not None and claim.subject_id == UUID(platform)
 
 
 async def test_cloudflare_claim_rollback_releases_slot_and_bytes(db, monkeypatch) -> None:
@@ -836,6 +901,21 @@ async def test_idle_cloudflare_worker_yields_a_capped_slot_for_linux_demand(db, 
     assert await _state(db.sessions, worker_id) == (
         ("draining", "capacity_replacement") if capacity in ("idle", "settled-claim") else ("ready", None)
     )
+
+
+async def test_idle_cloudflare_yields_when_eligible_demand_belongs_to_a_busy_tenant(db) -> None:
+    idle = await _declared_worker(db)
+    busy = await _declared_worker(db)
+    current = await _accept_pool_run()
+    await _set_request(db.sessions, current, 32 * MIB, approved=True)
+    assert await _claim(busy) is not None
+    queued = await _accept_pool_run()
+    await _set_request(db.sessions, queued, 32 * MIB, approved=True)
+    await _accept_pool_run()  # Linux-only demand at the physical worker cap.
+    pool = _controller(FakeCluster(), get_version())
+    assert await pool.launch_for_demand(replace(POLICY, max_workers=2)) == []
+    assert await _state(db.sessions, idle) == ("draining", "capacity_replacement")
+    assert await _state(db.sessions, busy) == ("ready", None)
 
 
 async def test_cloudflare_capacity_counts_toward_shared_warm_minimum(db) -> None:

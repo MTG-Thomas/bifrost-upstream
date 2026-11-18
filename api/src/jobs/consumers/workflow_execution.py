@@ -41,7 +41,7 @@ from src.core.redis_client import ActiveExecution, PendingExecution, get_redis_c
 from src.models.enums import ExecutionStatus
 from src.models.orm import Execution, User
 from src.repositories.executions import create_execution, update_execution
-from src.worker.remote.protocol import OpaqueWorkflowNotStarted
+from src.worker.remote.protocol import CloudflareRevisionRejected, OpaqueWorkflowNotStarted
 
 if TYPE_CHECKING:
     from bifrost._logging import LogFlushReceipt
@@ -857,6 +857,7 @@ class WorkflowExecutionConsumer(WorkflowResultHandler):
         claimed: PendingExecution | None,
         *,
         cloudflare_revision: str | None = None,
+        cloudflare_tenant_id: UUID | None = None,
     ) -> None:
         """Run a claimed workflow dispatch.
 
@@ -1050,6 +1051,14 @@ class WorkflowExecutionConsumer(WorkflowResultHandler):
                             duration_ms=duration_ms,
                         )
                     return
+            if cloudflare_revision is not None:
+                tenant = str(cloudflare_tenant_id) if cloudflare_tenant_id is not None else None
+                effective_tenant = str(org_id).removeprefix("ORG:").lower() if org_id and org_id != "GLOBAL" else None
+                if effective_tenant != tenant:
+                    raise CloudflareRevisionRejected("Workflow tenant changed after Cloudflare claim")
+                # Route identity and minted credentials use the same tenant the
+                # API locked when it claimed this dispatch.
+                org_id = tenant
             metadata_ready_ms = (time.perf_counter() - dispatch_started) * 1000
 
             # The route is chosen before the credentials are minted: its

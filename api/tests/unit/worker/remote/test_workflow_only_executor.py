@@ -28,7 +28,7 @@ from src.worker.remote.remote_pool import ThinRemoteProcessPool
 
 @pytest.mark.asyncio
 async def test_cloudflare_executor_starts_and_reconnects_with_workflow_only(monkeypatch) -> None:
-    lease = RemoteOwnerLease(uuid4(), uuid4(), uuid4(), 1, credential_protocol=CLOUDFLARE_CREDENTIAL_PROTOCOL)
+    lease = RemoteOwnerLease(uuid4(), uuid4(), uuid4(), 1, credential_protocol=CLOUDFLARE_CREDENTIAL_PROTOCOL, declared_slots=1)
     socket = Mock()
     handlers = (("workflow.execute", 1),)
     bridge = host.Bridge(socket, {

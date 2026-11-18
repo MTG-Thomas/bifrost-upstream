@@ -90,7 +90,7 @@ async def test_admission_stale_telemetry_still_renews_the_connected_owner() -> N
 async def test_cloudflare_admission_requires_fresh_liveness_without_usage_samples() -> None:
     clock = SimpleNamespace(now=100)
     with patch("src.worker.remote.host.time.monotonic", side_effect=lambda: clock.now):
-        bridge = Bridge(Mock(), {"hostname": "opaque", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE}, LEASE)
+        bridge = Bridge(Mock(), {"hostname": "opaque", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE}, replace(LEASE, declared_slots=1))
         worker = ApiExecutor(bridge, LEASE.worker_id)
         assert worker.admission is not None
         bridge.reconciliation_ready.set()
@@ -109,7 +109,7 @@ async def test_cloudflare_admission_requires_fresh_liveness_without_usage_sample
 @pytest.mark.asyncio
 async def test_opaque_worker_stays_busy_until_launcher_reports_its_slot_empty() -> None:
     socket = Mock(send_text=AsyncMock())
-    bridge = Bridge(socket, {"hostname": "opaque", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE}, LEASE)
+    bridge = Bridge(socket, {"hostname": "opaque", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE}, replace(LEASE, declared_slots=1))
     worker = ApiExecutor(bridge, LEASE.worker_id)
     bridge.reconciliation_ready.set()
 
@@ -149,7 +149,7 @@ async def test_two_opaque_slots_merge_holds_with_confirmed_physical_routes() -> 
 
     first, second = "workflow:first:attempt", "workflow:second:attempt"
     await bridge.receive({"event": "inventory", "inventory": {
-        "version": 1, "routes": [], "terminal_routes": [{"route_id": first}],
+        "version": 1, "workflow_slots": 2, "routes": [], "terminal_routes": [{"route_id": first}],
     }})
     await heartbeat([first], 0)
     async with admission.claiming() as fits:
@@ -178,7 +178,7 @@ async def test_two_opaque_slots_merge_holds_with_confirmed_physical_routes() -> 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("age", [4, 20], ids=["claims-paused", "lease-expired"])
 async def test_cloudflare_owner_renewal_uses_heartbeat_age(age) -> None:
-    bridge = Bridge(Mock(), {"hostname": "opaque", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE}, LEASE)
+    bridge = Bridge(Mock(), {"hostname": "opaque", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE}, replace(LEASE, declared_slots=1))
     bridge.heartbeat_at = 100 - age
     session = object.__new__(RemoteSession)
     session.bridge, session.lease, session.owned_until = bridge, LEASE, 120

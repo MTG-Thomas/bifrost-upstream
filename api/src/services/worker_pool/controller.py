@@ -87,7 +87,6 @@ from src.services.worker_pool.sizing import LIVE_STATES, JobSizing, job_baseline
 from src.services.worker_pool.calibration import measured_budget
 from src.worker.remote.protocol import (
     CLOUDFLARE_DEV_BUDGET_BYTES,
-    CLOUDFLARE_DEV_SLOTS,
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
     CLOUDFLARE_WORKFLOW_HANDLER,
     HANDLER_CONCURRENCY_LIMITS,
@@ -475,7 +474,7 @@ class WorkerCapacityController(ABC):
                 cloudflare_active_claims()
             )).all() if cloudflare_workers else []
             active_counts = Counter(row.worker_id for row in active_claims)
-            active_tenants = {row.tenant_id for row in active_claims}
+            active_tenants = {row.tenant_id for row in active_claims if row.execution_id is not None}
             leased = set((await db.scalars(select(ExecutionWorker.id).where(
                 ExecutionWorker.id.in_([worker.id for worker in cloudflare_workers]),
                 ExecutionWorker.remote_owner_lease_expires_at > func.now(),
@@ -684,7 +683,9 @@ class WorkerCapacityController(ABC):
                     # the Linux controller's own scope.
                     if worker_id in owned:
                         continue
-                    if fill_linux_floor or not any(budget.fits(request) for request in needed):
+                    if fill_linux_floor or not any(
+                        request.tenant_id not in active_tenants and budget.fits(request) for request in needed
+                    ):
                         # Capacity demand is global. The fenced launcher owner
                         # observes draining and retires its own resource.
                         await db.execute(update(ExecutionWorker).where(
@@ -1118,7 +1119,7 @@ class FreeBudget:
         return request.bytes <= self.bytes and self.takes(request)
 
 
-def _cloudflare_budget(slots: int = CLOUDFLARE_DEV_SLOTS, *, used: int = 0, reserved_bytes: int = 0) -> FreeBudget:
+def _cloudflare_budget(slots: int, *, used: int = 0, reserved_bytes: int = 0) -> FreeBudget:
     handler = CLOUDFLARE_WORKFLOW_HANDLER[0]
     return FreeBudget(
         max(0, slots * CLOUDFLARE_DEV_BUDGET_BYTES - reserved_bytes), frozenset({handler}),

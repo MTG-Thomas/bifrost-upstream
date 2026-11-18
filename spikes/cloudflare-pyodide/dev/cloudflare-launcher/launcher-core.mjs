@@ -245,7 +245,10 @@ export class LauncherCore {
         routes.push(slot.route);
       }
     }
-    this.#emit(session, {event: 'inventory', inventory: {version: 1, routes, terminal_routes: terminalRoutes}});
+    this.#emit(session, {event: 'inventory', inventory: {
+      version: 1, routes, terminal_routes: terminalRoutes,
+      ...(this.#slots.length > 1 ? {workflow_slots: this.#slots.length} : {}),
+    }});
     for (const slot of this.#slots) {
       if (slot?.state === 'terminal') this.#emit(session, slot.terminal);
     }
@@ -336,6 +339,7 @@ export class LauncherCore {
       return;
     }
     if (this.#slots.some((slot) => slot &&
+        (slot.state !== 'terminal' || slot.terminal.attempt_state === 'uncertain') &&
         (slot.route.active_execution.org_id ?? null) === (route.active_execution.org_id ?? null))) {
       refuse('MemoryError', 'This tenant already holds a Cloudflare workflow slot');
       return;

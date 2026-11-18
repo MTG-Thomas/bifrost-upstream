@@ -359,15 +359,28 @@ run. Findings, checked against the cited code:
   aggregate budget. Each execution still must fit a single 128 MiB slot.
   The provider enrolls the DO from the same immutable reservation. Manual
   dev enrollments retain one slot. Use a new build for a capacity change.
+  Managed enrollment supplies the build string from the reservation, so a
+  matching hello version alone cannot verify the installed launcher's slot
+  support. The provider requires a slot-count receipt at multi-slot prepare.
+  The launcher also confirms that count in its first inventory
+  (`workflow_slots`). An incompatible inventory loses ownership
+  before admission opens. The prepared row remains authoritative for
+  capacity, and the signed hello bytes stay the same.
 - Each tenant keeps its own engine child. Cloudflare claims and forecasts
   account for the execution's tenant (including the platform tenant) so a
-  same-tenant backlog alone does not provision extra launchers. A second
-  route for a tenant already occupying a launcher is refused before engine
-  entry with `MemoryError`. TenantHost retains its absolute dispatch deadline
-  and serialization as a final guard, including after an uncertain prior stop.
-  A launcher serializes cold warm-up RPCs because simultaneous Python boots
-  failed in local workerd. Workflows on ready children overlap. The original
-  dispatch deadline covers the wait for a cold warm-up.
+  same-tenant backlog alone does not provision extra launchers. Claims take a
+  tenant-scoped advisory lock and recheck eligibility after acquiring it.
+  The command carries the claim-time tenant in `active_execution.org_id`.
+  A changed execution scope clears Cloudflare eligibility before dispatch.
+  A live route or an uncertain retained terminal for the same tenant causes
+  a definitive `MemoryError` refusal. Other retained terminals occupy their
+  slots until ACK while allowing another route for the same tenant to start.
+  A claim whose execution row is missing counts toward occupancy only.
+  TenantHost retains its dispatch deadline and per-tenant serialization.
+  Launchers serialize cold Python boots with a 20-second RPC limit and a
+  15-second child ping limit. The bounded origin health check runs separately.
+  Workflows on ready children overlap, and the original dispatch deadline
+  covers the wait for a cold warm-up.
 - Each slot journals its route and terminal independently. Inventory includes
   all live routes and retained terminals before replay. ACK and stop select
   only their target. A reset fences each entering route independently and
@@ -379,8 +392,9 @@ run. Findings, checked against the cited code:
   committed. The planner forecasts an authenticated initial start awaiting
   its first report as pending capacity. Free capacity and yield otherwise
   require reconciled, live reports. Idle drain and yield require every slot
-  empty and no durable claim. The
-  single-slot incarnation keeps its existing heartbeat format.
+  empty and no durable claim. Yield decisions consider only demand from
+  tenants the launcher can claim. The single-slot incarnation keeps its
+  existing heartbeat format.
 
 ### Phase 3 workspace approval and placement
 

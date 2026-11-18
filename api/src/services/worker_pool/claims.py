@@ -17,7 +17,7 @@ from src.models.orm.executions import Execution
 from src.models.orm.work_dispatches import WorkDispatch
 from src.services.kubernetes_execution import load_kubernetes_policy
 from src.services.worker_pool.eligibility import cloudflare_active_claims, cloudflare_dispatch_sql
-from src.worker.remote.fencing import current_remote_lease_ref, fence_remote_owner
+from src.worker.remote.fencing import fence_remote_owner
 from src.worker.remote.protocol import (
     CLOUDFLARE_DEV_BUDGET_BYTES,
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
@@ -55,6 +55,7 @@ class PoolClaim:
     # to claim (agent runs) or when the run had already moved on.
     claimed: dict[str, Any] | None = None
     cloudflare_revision: str | None = None
+    tenant_id: UUID | None = None
 
 
 def _now() -> datetime:
@@ -234,7 +235,10 @@ async def claim_next(
         | (
             (ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE)
             & cloudflare_dispatch_sql()
-            & ~exists().where(active_cloudflare.c.tenant_id.is_not_distinct_from(dispatch_tenant))
+            & ~exists().where(
+                active_cloudflare.c.execution_id.is_not(None),
+                active_cloudflare.c.tenant_id.is_not_distinct_from(dispatch_tenant),
+            )
             & (occupied * CLOUDFLARE_DEV_BUDGET_BYTES < func.coalesce(
                 ExecutionWorker.memory_limit_bytes, CLOUDFLARE_DEV_BUDGET_BYTES,
             ))
@@ -266,7 +270,10 @@ async def claim_next(
         & ~declared_capacity
     )
     candidate = (
-        select(WorkDispatch.id, WorkDispatch.created_at)
+        select(
+            WorkDispatch.id, WorkDispatch.created_at,
+            declared_capacity.label("opaque"), dispatch_tenant.label("tenant_id"),
+        )
         .where(
             *unassigned,
             worker_supports_handler,
@@ -290,16 +297,19 @@ async def claim_next(
         async with get_db_context() as db:
             if not await fence_remote_owner(db, for_update=True):
                 return None
-            ref = current_remote_lease_ref()
-            if ref is not None and ref.lease.declared_slots:
-                # All launchers share each tenant's host. Serialize the tenant
-                # availability check and claim across Cloudflare owners.
-                await db.execute(
-                    text("SELECT pg_advisory_xact_lock(hashtext('bifrost:worker-pool:cloudflare-claim'))")
-                )
             picked = (await db.execute(candidate)).one_or_none()
             if picked is None:
                 return None
+            assignment = [WorkDispatch.id == picked.id, ready, profile_eligible]
+            if picked.opaque:
+                # The dispatch row is locked, but another launcher can pick a
+                # different dispatch for this tenant. Recheck eligibility in
+                # the UPDATE's fresh snapshot after taking the tenant lock.
+                await db.execute(
+                    text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                    {"key": f"bifrost:worker-pool:cloudflare-claim:{picked.tenant_id or 'platform'}"},
+                )
+                assignment.append(dispatch_tenant.is_not_distinct_from(picked.tenant_id))
             blocked = await db.scalar(
                 select(
                     exists().where(
@@ -316,7 +326,7 @@ async def claim_next(
             row = (
                 await db.execute(
                     update(WorkDispatch)
-                    .where(WorkDispatch.id == picked.id, ready, profile_eligible)
+                    .where(*assignment)
                     .values(assigned_worker_id=incarnation_id)
                     .returning(
                         WorkDispatch.id.label("dispatch_id"),
@@ -386,6 +396,7 @@ async def claim_next(
                 queued_at=row.queued_at,
                 claimed=dict(claimed) if claimed is not None else None,
                 cloudflare_revision=row.cloudflare_revision,
+                tenant_id=picked.tenant_id if picked.opaque else None,
             )
             if reserve_claim is not None:
                 reserve_claim(claim)

@@ -75,11 +75,15 @@ export class WorkerLedger {
       },
       runtime: {
         async prepare(row) {
-          await launcher(row).prepareManaged({
+          const slots = await launcher(row).prepareManaged({
             incarnationId: row.worker_id, launcherId: row.worker_id, resourceUid: row.resource_uid,
             version: row.reservation.worker_version, memoryLimitBytes: row.reservation.memory_limit_bytes,
             secret: await externalWorkerControlKey(env.CAPACITY_TOKEN, row.worker_id, row.resource_uid),
           });
+          const expected = row.reservation.memory_limit_bytes / SLOT_BYTES;
+          if (expected > 1 && slots !== expected) {
+            throw new ProtocolError(409, 'Launcher does not confirm the prepared slot count');
+          }
         },
         async start(row) {
           await launcher(row).startManaged(row.resource_uid);

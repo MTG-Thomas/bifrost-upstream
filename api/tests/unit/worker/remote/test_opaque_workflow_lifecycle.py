@@ -133,7 +133,7 @@ def workflow_entry(subject, *, expired=False):
 
 def inventory(live=(), terminals=()):
     return {"event": "inventory", "inventory": {
-        "version": 1, "routes": list(live), "terminal_routes": list(terminals),
+        "version": 1, "workflow_slots": 2, "routes": list(live), "terminal_routes": list(terminals),
     }}
 
 
@@ -471,7 +471,7 @@ async def test_opaque_handback_releases_starting_reservation_on_db_failure(monke
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("refusal", [
-    "reconnect-before-send", "explicit-memory-refusal", "stale-revision", "oversize",
+    "reconnect-before-send", "explicit-memory-refusal", "stale-revision", "oversize", "tenant-changed",
 ])
 async def test_definitively_unsent_workflow_is_handed_back(
     opaque_executor, async_session_factory, monkeypatch, reviewed_workspace, refusal,
@@ -505,6 +505,7 @@ async def test_definitively_unsent_workflow_is_handed_back(
         },
         claimed=dict(payload), memory_request_bytes=RESERVATION, queued_at=queued_at,
         cloudflare_revision=REVISION,
+        tenant_id=uuid4() if refusal == "tenant-changed" else None,
     )
 
     async def reconnect():
@@ -561,7 +562,8 @@ async def test_definitively_unsent_workflow_is_handed_back(
         dispatch = await db.scalar(select(WorkDispatch).where(WorkDispatch.subject_id == subject))
         assert dispatch.created_at == queued_at
         assert dispatch.memory_request_bytes == RESERVATION
-        assert dispatch.cloudflare_revision == (None if refusal in ("stale-revision", "oversize") else REVISION)
+        expected_revision = None if refusal in ("stale-revision", "oversize", "tenant-changed") else REVISION
+        assert dispatch.cloudflare_revision == expected_revision
 
 
 @pytest.mark.asyncio
@@ -570,7 +572,7 @@ async def test_definitively_unsent_workflow_is_handed_back(
 ])
 async def test_opaque_workflow_refusal_cleans_route_with_real_bridge(monkeypatch, reviewed_workspace, refusal):
     socket = Mock(send_text=AsyncMock())
-    bridge = opaque_bridge(socket, RemoteOwnerLease(uuid4(), uuid4(), uuid4(), 1))
+    bridge = opaque_bridge(socket, RemoteOwnerLease(uuid4(), uuid4(), uuid4(), 1, declared_slots=1))
     pool = remote_pool.ThinRemoteProcessPool(bridge, runtime_profile=PROFILE, on_result=AsyncMock())
     redis = Mock(delete=AsyncMock())
     monkeypatch.setattr(pool, "_get_redis", AsyncMock(return_value=redis))
@@ -619,7 +621,7 @@ async def test_opaque_workflow_refusal_cleans_route_with_real_bridge(monkeypatch
 
 @pytest.mark.asyncio
 async def test_opaque_dispatch_requires_credential_route(monkeypatch):
-    bridge = opaque_bridge(Mock(send_text=AsyncMock()), RemoteOwnerLease(uuid4(), uuid4(), uuid4(), 1))
+    bridge = opaque_bridge(Mock(send_text=AsyncMock()), RemoteOwnerLease(uuid4(), uuid4(), uuid4(), 1, declared_slots=1))
     pool = remote_pool.ThinRemoteProcessPool(bridge, runtime_profile=PROFILE)
     monkeypatch.setattr(pool, "_write_context_to_redis", AsyncMock())
     entry = workflow_entry(uuid4())
@@ -643,7 +645,7 @@ async def test_opaque_bridge_closes_interrupted_fragment_stream(monkeypatch, tim
                 await asyncio.Future()
 
         socket.send_text.side_effect = stall_after_first_frame
-    bridge = opaque_bridge(socket, RemoteOwnerLease(uuid4(), uuid4(), uuid4(), 1))
+    bridge = opaque_bridge(socket, RemoteOwnerLease(uuid4(), uuid4(), uuid4(), 1, declared_slots=1))
     bridge.reconciliation_ready.set()
     with pytest.raises(ConnectionError, match="command send was interrupted"):
         await bridge.request(
@@ -661,7 +663,7 @@ async def test_opaque_bridge_closes_interrupted_fragment_stream(monkeypatch, tim
 async def test_opaque_bridge_does_not_continue_fragment_stream_on_replacement():
     old = Mock(send_text=AsyncMock(), close=AsyncMock())
     replacement = Mock(send_text=AsyncMock(), close=AsyncMock())
-    bridge = opaque_bridge(old, RemoteOwnerLease(uuid4(), uuid4(), uuid4(), 1))
+    bridge = opaque_bridge(old, RemoteOwnerLease(uuid4(), uuid4(), uuid4(), 1, declared_slots=1))
     bridge.reconciliation_ready.set()
 
     async def replace_during_send(frame):
@@ -1066,12 +1068,24 @@ async def test_opaque_inventory_adopts_routes_without_linux_baseline(opaque_exec
 @pytest.mark.asyncio
 async def test_opaque_bridge_requires_inventory_v1():
     bridge = Bridge(Mock(), {"hostname": "opaque", "runtime_profile": PROFILE},
-                    RemoteOwnerLease(uuid4(), uuid4(), uuid4(), 1))
+                    RemoteOwnerLease(uuid4(), uuid4(), uuid4(), 1, declared_slots=1))
     message = inventory()
     message["inventory"]["version"] = 2
     with pytest.raises(ProtocolError, match="inventory v1"):
         await bridge.receive(message)
     assert not bridge.inventory_ready.is_set()
+
+
+@pytest.mark.asyncio
+async def test_multislot_incarnation_with_legacy_inventory_loses_ownership(opaque_executor):
+    worker, pool, subjects = opaque_executor
+    message = inventory(map(workflow_entry, subjects))
+    del message["inventory"]["workflow_slots"]
+    await worker.bridge.receive(message)
+    await worker._prepare_admission()
+    assert worker._lost
+    assert not worker._claims_open()
+    assert not pool.processes
 
 
 @pytest.mark.asyncio

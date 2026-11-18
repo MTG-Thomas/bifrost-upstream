@@ -157,6 +157,45 @@ test('distinct tenants run concurrently and ACK releases only its route', async 
   assert.equal(results.at(-1).route_id, b.route_id);
 });
 
+test('completed terminals hold a slot without blocking the next route for that tenant', async () => {
+  const api = peer({slots: 3});
+  const first = tenantWorkflow('1', 'same');
+  const second = tenantWorkflow('2', 'same');
+  await connect(api);
+  await api.command('workflow', first);
+  await api.finish();
+  const terminal = api.frames().at(-1);
+  assert.equal(terminal.attempt_state, 'completed');
+  await api.command('workflow', second);
+  await api.finish();
+  assert.deepEqual(api.calls.map(({route}) => route.route_id), [first.route_id, second.route_id]);
+
+  await api.close();
+  await connect(api, 2);
+  const snapshot = api.frames().at(-3).inventory;
+  assert.equal(snapshot.workflow_slots, 3);
+  assert.deepEqual(snapshot.terminal_routes.map(({route_id}) => route_id), [first.route_id, second.route_id]);
+});
+
+test('an uncertain terminal blocks the same tenant until its ACK', async () => {
+  const finish = deferred();
+  const api = peer({slots: 3, runHost: () => finish.promise});
+  const first = tenantWorkflow('1', 'same');
+  await connect(api);
+  await api.command('workflow', first);
+  await api.entered;
+  await api.command('terminate', {route_id: first.route_id, error_type: 'CancelledError', error: 'cancelled'});
+  const terminal = api.frames().at(-1);
+  assert.equal(terminal.attempt_state, 'uncertain');
+  await api.command('workflow', tenantWorkflow('2', 'same'));
+  assert.equal(api.frames().at(-1).error_type, 'MemoryError');
+  await api.ack(terminal._event_id);
+  await api.command('workflow', tenantWorkflow('3', 'same'));
+  finish.resolve(COMPLETED);
+  await api.finish();
+  assert.equal(api.calls.length, 2);
+});
+
 test('reset fences every entering route and replays independently acknowledged terminals', async () => {
   const held = deferred();
   const api = peer({slots: 2, runHost: () => held.promise});

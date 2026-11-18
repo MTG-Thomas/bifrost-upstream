@@ -364,9 +364,14 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         duplicates: set[UUID] = set()
         # Preserve valid retained outcomes even if the snapshot exceeds the
         # prepared capacity. The reconciliation loss path closes admission.
-        mismatch = (
-            admission is not None and admission.declared_slots is not None
-            and len(live) + len(terminals) > admission.declared_slots
+        slots = admission.declared_slots if admission is not None else None
+        reported_slots = inventory.get("workflow_slots")
+        mismatch = slots is not None and (
+            len(live) + len(terminals) > slots
+            or (
+                (slots > 1 or reported_slots is not None)
+                and (type(reported_slots) is not int or reported_slots != slots)
+            )
         )
         for is_terminal, routes in ((False, live), (True, terminals)):
             for entry in routes:

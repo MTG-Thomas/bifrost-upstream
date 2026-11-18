@@ -630,7 +630,10 @@ class PoolWorker:
                         PendingExecution(**claim.claimed)  # type: ignore[typeddict-item]
                         if claim.claimed is not None
                         else None,
-                        **({"cloudflare_revision": claim.cloudflare_revision} if opaque else {}),
+                        **({
+                            "cloudflare_revision": claim.cloudflare_revision,
+                            "cloudflare_tenant_id": claim.tenant_id,
+                        } if opaque else {}),
                     )
                 except (MemoryError, OpaqueWorkflowNotStarted) as exc:
                     # A refused fork or an opaque dispatch that never started

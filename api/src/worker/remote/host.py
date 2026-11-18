@@ -129,7 +129,7 @@ class Bridge:
         self.hostname = hello["hostname"]
         self.execution_lane = hello.get("execution_lane", "normal")
         self.handlers = hello.get("handlers", LEGACY_EXECUTION_HANDLERS)
-        self.declared_slots = lease.declared_slots or CLOUDFLARE_DEV_SLOTS
+        self.declared_slots = lease.declared_slots
         self._reset_freshness()
         self.pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self.jobs: dict[str, RemoteProcess] = {}

@@ -30,11 +30,14 @@ def cloudflare_dispatch_sql() -> ColumnElement[bool]:
     )
 
 
-def cloudflare_active_claims() -> Select[tuple[UUID, UUID | None]]:
+def cloudflare_active_claims() -> Select[tuple[UUID, UUID | None, UUID | None]]:
     """Live Cloudflare claims, including any claim with a missing execution record."""
     worker = aliased(ExecutionWorker)
     return (
-        select(ExecutionWorkerClaim.worker_id, Execution.organization_id.label("tenant_id"))
+        select(
+            ExecutionWorkerClaim.worker_id, Execution.organization_id.label("tenant_id"),
+            Execution.id.label("execution_id"),
+        )
         .join(worker, worker.id == ExecutionWorkerClaim.worker_id)
         .outerjoin(Execution, Execution.id == ExecutionWorkerClaim.subject_id)
         .where(

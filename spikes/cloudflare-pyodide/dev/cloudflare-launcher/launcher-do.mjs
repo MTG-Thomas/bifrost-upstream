@@ -152,10 +152,11 @@ export class CloudflareLauncher extends DurableObject {
             settings.slots * SLOT_BYTES) {
           throw new Error('Launcher enrollment already bound');
         }
-        return;
+        return settings.slots;
       }
       await this.#saveFact({resourceUid: enrollment.resourceUid, enrollment, state: 'prepared'});
       this.#initialize(settings);
+      return settings.slots;
     });
   }
 
