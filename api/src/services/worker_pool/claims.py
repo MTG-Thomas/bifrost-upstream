@@ -432,7 +432,7 @@ async def begin_idle_drain(incarnation_id: UUID) -> bool:
         # A sized Job always drains once idle: only standard Jobs make up the
         # warm minimum.
         worker = await db.execute(
-            select(ExecutionWorker.resource_class, ExecutionWorker.execution_lane, ExecutionWorker.runtime_profile).where(
+            select(ExecutionWorker.resource_class, ExecutionWorker.execution_lane).where(
                 ExecutionWorker.id == incarnation_id
             )
         )
@@ -445,11 +445,10 @@ async def begin_idle_drain(incarnation_id: UUID) -> bool:
             if worker_row.execution_lane == "fast_path"
             else policy.warm_workers
         )
-        if worker_row.runtime_profile == LINUX_RUNTIME_PROFILE and not sized:
+        if not sized:
             ready_jobs = await db.scalar(
                 select(func.count(ExecutionWorker.id)).where(
                     ExecutionWorker.form.in_(MANAGED_WORKER_FORMS),
-                    ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE,
                     ExecutionWorker.resource_class == "standard",
                     ExecutionWorker.state == "ready",
                     ExecutionWorker.execution_lane == worker_row.execution_lane,

@@ -445,7 +445,7 @@ async def test_cloudflare_reserved_dispatch_must_fit_available_bytes(db) -> None
     assert claim.cloudflare_revision == CLOUDFLARE_REVISION
 
 
-async def _declared_worker(db, *, reserved_for=None, reconciled: bool = True) -> UUID:
+async def _declared_worker(db, *, reconciled: bool = True) -> UUID:
     async with db.context() as session:
         worker = ExecutionWorker(
             id=uuid4(), form="external", state="ready", runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
@@ -453,21 +453,18 @@ async def _declared_worker(db, *, reserved_for=None, reconciled: bool = True) ->
             memory_budget_bytes=CLOUDFLARE_DEV_BUDGET_BYTES if reconciled else None,
             heartbeat_at=datetime.now(UTC),
             remote_owner_lease_expires_at=datetime.now(UTC) + timedelta(minutes=5),
-            reserved_for_dispatch_id=reserved_for,
+            version=get_version(),
         )
         session.add(worker)
         return worker.id
 
 
-@pytest.mark.parametrize("older_mib", [16, 80], ids=["reserved-ineligible", "older-ineligible-head"])
-async def test_cloudflare_claim_ignores_ineligible_work_at_the_head(db, older_mib) -> None:
+async def test_cloudflare_claim_ignores_ineligible_work_at_the_head(db) -> None:
     older = await _accept_pool_run()
-    await _set_request(db.sessions, older, older_mib * MIB, age=claims.HEAD_OF_LINE_WAIT * 2)
+    await _set_request(db.sessions, older, 80 * MIB, age=claims.HEAD_OF_LINE_WAIT * 2)
     younger = await _accept_pool_run()
     await _set_request(db.sessions, younger, 16 * MIB, approved=True)
-    async with db.sessions() as session:
-        older_id = await session.scalar(select(WorkDispatch.id).where(WorkDispatch.subject_id == UUID(older)))
-    worker_id = await _declared_worker(db, reserved_for=older_id)
+    worker_id = await _declared_worker(db)
 
     claim = await _claim(worker_id, fits=32 * MIB, budget=CLOUDFLARE_DEV_BUDGET_BYTES)
     assert claim is not None and claim.subject_id == UUID(younger)
@@ -781,23 +778,6 @@ async def test_cloudflare_packing_consumes_a_slot_even_when_bytes_remain(db) -> 
     assert len(await pool.launch_for_demand(POLICY)) == 1
 
 
-@pytest.mark.parametrize("reservation", ["ineligible", "oversized", "fits"])
-async def test_cloudflare_reservation_covers_only_eligible_work_that_fits(db, reservation) -> None:
-    execution_id = await _accept_pool_run()
-    request = CLOUDFLARE_DEV_BUDGET_BYTES + 1 if reservation == "oversized" else 64 * MIB
-    await _set_request(db.sessions, execution_id, request, approved=reservation != "ineligible")
-    async with db.sessions() as session:
-        dispatch_id = await session.scalar(
-            select(WorkDispatch.id).where(WorkDispatch.subject_id == UUID(execution_id))
-        )
-    await _declared_worker(db, reserved_for=dispatch_id)
-    pool = _controller(FakeCluster(), get_version())
-
-    launches = await pool.launch_for_demand(POLICY)
-
-    assert len(launches) == (0 if reservation == "fits" else 1)
-
-
 @pytest.mark.parametrize("capacity", ["idle", "useful", "durable-claim"])
 async def test_idle_cloudflare_worker_yields_a_capped_slot_for_linux_demand(db, capacity) -> None:
     worker_id = await _declared_worker(db)
@@ -819,23 +799,19 @@ async def test_idle_cloudflare_worker_yields_a_capped_slot_for_linux_demand(db, 
     )
 
 
-async def test_cloudflare_capacity_does_not_count_for_linux_warm_minimum(db) -> None:
+async def test_cloudflare_capacity_counts_toward_shared_warm_minimum(db) -> None:
     await _declared_worker(db)
     pool = _controller(FakeCluster(), get_version())
 
-    [linux] = await pool.launch_for_demand(replace(POLICY, warm_workers=1))
-
-    async with db.sessions() as session:
-        worker = await session.get(ExecutionWorker, linux)
-        assert worker is not None and worker.runtime_profile == LINUX_RUNTIME_PROFILE
+    assert await pool.launch_for_demand(replace(POLICY, warm_workers=1)) == []
 
 
-async def test_cloudflare_is_outside_the_linux_idle_drain_floor(db) -> None:
+async def test_cloudflare_idle_drain_respects_shared_warm_minimum(db) -> None:
     await _store_policy(db.sessions, replace(POLICY, warm_workers=1))
-    linux = await _job_worker(db.sessions, state="ready")
     cloudflare = await _declared_worker(db)
 
-    assert not await claims.begin_idle_drain(linux.id)
+    assert not await claims.begin_idle_drain(cloudflare)
+    await _job_worker(db.sessions, state="ready")
     assert await claims.begin_idle_drain(cloudflare)
 
 
@@ -1793,6 +1769,7 @@ async def test_a_run_lost_to_an_oom_killed_worker_learns_the_worker_s_budget(db)
 
 async def test_cloudflare_worker_loss_does_not_learn_oom_peak(db, monkeypatch) -> None:
     execution_id = await _accept_pool_run()
+    await _set_request(db.sessions, execution_id, 64 * MIB, approved=True)
     suffix = uuid4().hex
     workflow = Workflow(
         id=uuid4(), name=f"declared-budget-{suffix}", function_name="main",
@@ -1809,7 +1786,7 @@ async def test_cloudflare_worker_loss_does_not_learn_oom_peak(db, monkeypatch) -
         execution.workflow_id = workflow.id
         await session.commit()
 
-    assert await _claim(worker.id) is not None
+    assert await _claim(worker.id, fits=128 * MIB, budget=128 * MIB) is not None
     peak = AsyncMock()
     monkeypatch.setattr(recovery, "record_peak_growth", peak)
     async with db.sessions() as session:

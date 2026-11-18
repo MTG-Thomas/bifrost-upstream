@@ -63,8 +63,9 @@ async def _row_identity(
     workflow's organization, others to the caller's.
     """
     caller_org = _organization_id(pending["org_id"])
-    if pending["script_name"]:
-        return pending["script_name"], caller_org, workflow_request_bytes(None), "auto"
+    script_name = pending.get("script_name")
+    if script_name:
+        return script_name, caller_org, workflow_request_bytes(None), "auto"
     workflow_id = pending["workflow_id"]
     if workflow_id is None:
         return "workflow", caller_org, workflow_request_bytes(None), "auto"
@@ -92,7 +93,7 @@ async def _row_identity(
 
 async def _request_for(db: AsyncSession, pending: PendingExecution) -> int:
     """The memory request of a run whose row already exists."""
-    if pending["script_name"] or pending["workflow_id"] is None:
+    if pending.get("script_name") or pending["workflow_id"] is None:
         return workflow_request_bytes(None)
     row = (
         await db.execute(
@@ -180,7 +181,7 @@ async def _cloudflare_revision(
     workflow_id = pending["workflow_id"]
     if (
         workflow_id is None or message.get("workflow_id") != workflow_id
-        or pending["script_name"] or message.get("code") is not None
+        or pending.get("script_name") or message.get("code") is not None
         or pending.get("artifact_workspace_id") is not None
         or not any(
             str(approval.workflow_id) == workflow_id

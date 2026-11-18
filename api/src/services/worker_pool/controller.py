@@ -449,21 +449,15 @@ class WorkerCapacityController(ABC):
                     ~exists().where(ExecutionWorkerClaim.worker_id == ExecutionWorker.id),
                 )
             )).all()) if declared else set()
-            idle_declared: dict[UUID, FreeBudget] = {}
-            for worker in declared:
-                if worker.id not in available_declared:
-                    continue
-                budget = FreeBudget(
+            idle_declared = {
+                worker.id: FreeBudget(
                     CLOUDFLARE_DEV_BUDGET_BYTES,
                     frozenset(worker.supported_handlers),
                     {CLOUDFLARE_WORKFLOW_HANDLER[0]: CLOUDFLARE_DEV_SLOTS},
                     runtime_profile=worker.runtime_profile,
                 )
-                reservation = requests.get(worker.reserved_for_dispatch_id) if worker.reserved_for_dispatch_id else None
-                if reservation is not None and budget.takes(reservation) and reservation.bytes <= budget.bytes:
-                    covered.add(reservation.id)
-                else:
-                    idle_declared[worker.id] = budget
+                for worker in declared if worker.id in available_declared
+            }
             # Prefer the less flexible Cloudflare capacity for eligible work,
             # leaving Linux capacity for requests only Linux can execute.
             free = [*idle_declared.values(), *free]
@@ -482,9 +476,10 @@ class WorkerCapacityController(ABC):
             # self-managed lifetime is excluded here so its handoff can start
             # before it stops claiming. An outdated Job still claims until it
             # drains, so replacements stay within Max workers.
+            # The floor counts managed resources across runtime profiles.
             undrained = sum(
                 1
-                for worker in linux_workers
+                for worker in workers
                 if worker.form in MANAGED_WORKER_FORMS
                 and worker.execution_lane == "normal"
                 and worker.resource_class == "standard"
@@ -499,7 +494,7 @@ class WorkerCapacityController(ABC):
             # demand and therefore cannot be borrowed by it.
             fast_path_undrained = sum(
                 1
-                for worker in linux_workers
+                for worker in workers
                 if worker.form in MANAGED_WORKER_FORMS
                 and worker.execution_lane == "fast_path"
                 and worker.resource_class == "standard"
@@ -593,6 +588,10 @@ class WorkerCapacityController(ABC):
                          and not worker.reserved_for_dispatch_id
                          and worker.memory_budget_bytes is not None]
                 for worker_id, budget in idle_declared.items():
+                    # A provider must not replace its own declared worker with
+                    # a launch the planner assumes will be Linux.
+                    if worker_id in owned:
+                        continue
                     if not any(budget.takes(request) and request.bytes <= budget.bytes for request in needed):
                         # Capacity demand is global. The fenced launcher owner
                         # observes draining and retires its own resource.
@@ -689,22 +688,25 @@ class WorkerCapacityController(ABC):
             ).scalar_one()
             if not locked:
                 return []
-            jobs = (
+            managed = (
                 await db.execute(
-                    select(ExecutionWorker).where(
+                    select(ExecutionWorker, self._managed_scope().label("owned")).where(
                         ExecutionWorker.form.in_(MANAGED_WORKER_FORMS),
                         ExecutionWorker.state.in_(LIVE_STATES),
                     )
                 )
-            ).scalars().all()
-            ready = [
-                worker for worker in jobs
-                if worker.state == "ready" and worker.runtime_profile == LINUX_RUNTIME_PROFILE
-            ]
+            ).all()
+            jobs = [worker for worker, _ in managed]
+            ready = [worker for worker in jobs if worker.state == "ready"]
+            # The floor is shared; a declared-runtime rollout belongs to its
+            # provider scope. Preserve the existing Linux rotation policy.
             outdated = [
                 worker
-                for worker in ready
-                if self.live.outdated(worker) and worker.reserved_for_dispatch_id is None
+                for worker, owned in managed
+                if worker.state == "ready"
+                and (worker.runtime_profile == LINUX_RUNTIME_PROFILE or owned)
+                and self.live.outdated(worker)
+                and worker.reserved_for_dispatch_id is None
             ]
             if not outdated:
                 return []
@@ -737,7 +739,6 @@ class WorkerCapacityController(ABC):
                 # Do not use another lane's ready count for that decision.
                 current_starting = any(
                     worker.execution_lane == lane
-                    and worker.runtime_profile == LINUX_RUNTIME_PROFILE
                     and worker.resource_class == "standard"
                     and worker.state in ("reserved", "starting")
                     and not self.live.outdated(worker)

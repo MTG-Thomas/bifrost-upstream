@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import pytest
 from src.config import CloudflareWorkflowApproval
-from src.core.redis_client import pending_execution_record
+from src.core.redis_client import PendingExecution, pending_execution_record
 from src.services.execution import cloudflare_eligibility, service, workflow_dispatch
 from src.worker.remote.ownership import RemoteOwnerLease
 from src.worker.remote.protocol import (
@@ -75,7 +75,7 @@ async def test_enqueue_computes_revision_only_from_operator_approval(review, mon
     approval, _, settings = review()
     pending = pending_execution_record(
         execution_id=str(uuid4()), workflow_id=str(approval.workflow_id), parameters={}, org_id=None,
-        user_id=str(uuid4()), user_name="Operator", user_email="operator@example.com",
+        user_id=str(uuid4()), user_name="Operator", user_email="operator@example.com", lineage=None,
     )
     if not approved:
         settings.cloudflare_workflow_approvals.clear()
@@ -96,6 +96,48 @@ async def test_enqueue_computes_revision_only_from_operator_approval(review, mon
     else:
         assert dispatch.cloudflare_revision is None
         lookup.assert_not_awaited()
+
+
+async def test_enqueue_legacy_pending_without_script_name_with_empty_approvals(review, monkeypatch):
+    approval, _, settings = review()
+    settings.cloudflare_workflow_approvals.clear()
+    record = dict(pending_execution_record(
+        execution_id=str(uuid4()), workflow_id=str(approval.workflow_id), parameters={}, org_id=None,
+        user_id=str(uuid4()), user_name="Operator", user_email="operator@example.com", lineage=None,
+    ))
+    del record["script_name"]
+    pending = PendingExecution(**record)  # type: ignore[typeddict-item]
+    lookup = AsyncMock()
+    monkeypatch.setattr(service, "get_workflow_for_execution", lookup)
+    db = Mock(scalar=AsyncMock(return_value="normal"), execute=AsyncMock())
+    db.execute.return_value.one_or_none.return_value = None
+
+    await workflow_dispatch.stage_workflow_run(
+        db, pending, {"workflow_id": pending["workflow_id"]}, record_exists=True,
+    )
+
+    assert db.add.call_args.args[0].cloudflare_revision is None
+    lookup.assert_not_awaited()
+
+
+@pytest.mark.parametrize("overrides", [
+    {"manifest_sha256": "a" * 64},
+    {"packages": ["cryptography"]},
+    {"https_hosts": ["https://example.com"]},
+], ids=["manifest", "package", "invalid-host"])
+async def test_invalid_approval_warns_once_without_reading_source(review, monkeypatch, caplog, overrides):
+    approval, _, _ = review(**overrides)
+    storage = Mock()
+    monkeypatch.setattr(cloudflare_eligibility, "RepoStorage", storage)
+
+    assert await _prepare(approval) is None
+    assert await _prepare(approval) is None
+
+    assert len(caplog.records) == 1
+    assert caplog.records[0].levelname == "WARNING"
+    assert "BIFROST_CLOUDFLARE_WORKFLOW_APPROVALS" in caplog.text
+    assert str(approval.workflow_id) in caplog.text
+    storage.assert_not_called()
 
 
 @pytest.mark.parametrize("overrides", [

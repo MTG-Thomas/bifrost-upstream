@@ -22,7 +22,11 @@ from src.services.worker_pool import claims, controller, external_controller
 from src.services.worker_pool.external_client import CapacityProtocolError, ExternalCapacityClient
 from src.services.worker_pool.external_controller import ExternalWorkerPoolController
 from src.worker.remote import ownership
-from src.worker.remote.protocol import CLOUDFLARE_PYTHON_RUNTIME_PROFILE, LINUX_RUNTIME_PROFILE
+from src.worker.remote.protocol import (
+    CLOUDFLARE_DEV_BUDGET_BYTES,
+    CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+    LINUX_RUNTIME_PROFILE,
+)
 from tests.unit.services.worker_pool.test_worker_pool import (
     GIB, POLICY, SETTINGS, _accept_pool_run, _clean as _clean,
     _store_policy, db as db_fixture,
@@ -140,12 +144,15 @@ async def test_cloudflare_hello_preserves_the_external_warm_worker(db, capacity,
     async with db.context() as session:
         worker = await session.get(ExecutionWorker, worker_id)
         assert worker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+        worker.memory_budget_bytes = CLOUDFLARE_DEV_BUDGET_BYTES
 
-    # With headroom, add no idle capacity. At the cap, pending demand must
-    # not launch a second worker even though the Cloudflare budget is excluded.
+    # A hello preserves the warm worker. Even with pending Linux demand at the
+    # cap, this provider cannot free a slot by replacing its own launcher.
     if max_workers == 1:
         await _accept_pool_run()
     assert await capacity.pool.launch_for_demand(policy) == []
+    async with db.context() as session:
+        assert (await session.get(ExecutionWorker, worker_id)).state == "ready"
 
 
 async def test_lost_start_response_is_observed_without_resending_the_start(db, capacity):
@@ -285,6 +292,19 @@ async def test_provider_rollout_rotates_an_admitted_worker_from_the_same_control
         worker = await session.get(ExecutionWorker, worker_id)
         assert (worker.state, worker.end_reason) == ("draining", "rotated")
     assert capacity.provider.resources[str(worker_id)]["state"] == "running"
+
+
+async def test_provider_rollout_leaves_cloudflare_workers_in_other_scopes_ready(db, capacity):
+    worker_id = uuid4()
+    async with db.context() as session:
+        session.add(ExecutionWorker(
+            id=worker_id, form="external", state="ready", capacity_scope="another-provider",
+            runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE, version="old-worker",
+        ))
+
+    assert await capacity.pool.replace_outdated(replace(capacity.policy, warm_workers=0)) == []
+    async with db.context() as session:
+        assert (await session.get(ExecutionWorker, worker_id)).state == "ready"
 
 
 async def test_provider_cannot_replace_an_existing_resource_uid(db, capacity):

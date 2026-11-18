@@ -6,6 +6,7 @@ import ast
 import asyncio
 import hashlib
 import json
+import logging
 import re
 import sys
 from dataclasses import dataclass
@@ -14,7 +15,10 @@ from src.config import CloudflareWorkflowApproval, get_settings
 from src.core.storage.contracts import StorageError
 from src.services.repo_storage import RepoStorage
 
+logger = logging.getLogger(__name__)
+
 _POLICY_VERSION = "cloudflare-workflow-approval-v1"
+_warned_invalid_revisions: set[str] = set()
 _MAX_SOURCE_BYTES = 2 * 1024**2
 _MAX_BUNDLE_BYTES = 4 * 1024**2
 _WORKSPACE_PATH = re.compile(r"(?:[a-zA-Z_][a-zA-Z0-9_]*/)*[a-zA-Z_][a-zA-Z0-9_]*\.py")
@@ -90,10 +94,18 @@ async def prepare_approved_workspace(
         ):
             continue
         revision = _digest([_POLICY_VERSION, approval.model_dump(mode="json")])
-        if expected_revision is not None and revision != expected_revision:
-            continue
         manifest = _approved_manifest(approval)
         if manifest is None:
+            if revision not in _warned_invalid_revisions:
+                _warned_invalid_revisions.add(revision)
+                logger.warning(
+                    "Ignoring invalid BIFROST_CLOUDFLARE_WORKFLOW_APPROVALS entry for workflow %s "
+                    "(approval revision %s). Check manifest pins, packages, HTTPS hosts and budgets.",
+                    approval.workflow_id,
+                    revision,
+                )
+            continue
+        if expected_revision is not None and revision != expected_revision:
             continue
         sources: dict[str, str] = {}
         remaining = _MAX_BUNDLE_BYTES

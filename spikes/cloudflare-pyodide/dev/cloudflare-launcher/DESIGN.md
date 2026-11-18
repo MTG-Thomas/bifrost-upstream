@@ -242,7 +242,13 @@ run. Findings, checked against the cited code:
    - one real claim, committed, logs flushed, credential revoked;
    - then lost welcome and lost ack, API takeover, DO reset, cancellation
      and late egress.
-6. Scale-out through a provider last. Production only with explicit
+6. Scale-out through a provider last. Before enabling it, each managed
+   scope must declare the runtime profile its launches produce. The
+   controller must record that profile on the reserved incarnation and
+   use it for placement and replacement planning, starting before hello.
+   Today the planner models new starts as Linux. A provider that starts
+   Cloudflare launchers would otherwise repeatedly launch workers that
+   cannot claim Linux-only demand. Production only with explicit
    authorization.
 
 ### Phase 3 workspace approval and placement
@@ -272,6 +278,10 @@ marker hashes the policy version and canonical approval. The census
 (`dev/routing/eligibility.mjs`) can later propose declarations and pins for
 review into this same list.
 
+The approved dev enqueue path reads pinned sources from S3 and parses
+their ASTs inside the caller's database transaction. Revisit that
+transaction cost before production use.
+
 Before sending `workflow`, the API repeats verification against the current
 approval and source. The command context carries `cloudflare_workspace`
 with the approved `manifest`, the exact verified UTF-8 `sources` keyed by
@@ -285,12 +295,15 @@ Linux remains eligible for every dispatch it can already claim. Planning
 places eligible work on reconciled Cloudflare slots first, preserving
 Linux capacity for requests only Linux can run. Actual claims retain
 per-worker priority and queue order, with the first eligible claimant
-winning. A Cloudflare reservation covers only an eligible request that
-fits its declared capacity. Linux retains its existing reserved-work
-priority and physical memory gate. An idle, reconciled dev launcher with
-no eligible fitting demand can yield a capped slot to Linux. It contributes
-to the shared worker cap, while warm floors, calibration and measured Linux
-budget ceilings use Linux reports. A live authenticated launcher that
+winning. Linux retains its existing reserved-work priority and physical
+memory gate. Managed launchers of either runtime count toward the shared
+worker cap and lane-specific warm floors, including for idle drain and
+rollout. The owning controller can rotate an outdated Cloudflare launcher.
+Calibration and measured Linux budget ceilings use Linux reports.
+An idle, reconciled dev launcher with no eligible fitting demand can
+yield a capped slot to a controller outside its scope. A controller
+keeps its own launcher out of this demand-driven replacement path while
+the planner assumes new starts are Linux. A live authenticated launcher that
 could hold marked work can defer early rejection by a smaller Linux ceiling
 until the ordinary queue deadline.
 
