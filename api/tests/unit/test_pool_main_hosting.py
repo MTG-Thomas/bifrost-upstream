@@ -326,6 +326,9 @@ async def test_the_process_pool_is_ready_before_any_work_is_claimed(monkeypatch)
         pool_main, "measure_budget",
         lambda threshold: MemoryBudget(limit_bytes=4 * GIB, baseline_bytes=0, threshold=0.5),
     )
+    # Hermetic: the real check reads the host's memory, so a busy test host
+    # (no cgroup limit) refused every claim and this test waited forever.
+    monkeypatch.setattr(pool_main, "under_pressure", lambda threshold: False)
     monkeypatch.setattr(workflow_execution, "WorkflowExecutionConsumer", _Workflows)
     monkeypatch.setattr(agent_run, "AgentRunConsumer", object)
     monkeypatch.setattr(package_install, "PackageInstallConsumer", object)
