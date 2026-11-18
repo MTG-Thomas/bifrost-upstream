@@ -28,7 +28,9 @@ export class AttemptCredentials {
   #refresh;
   #now;
 
-  // refresh(refreshToken) -> {access_token, refresh_token} | null
+  // refresh(refreshToken) -> {access_token, refresh_token} | 'refused' | 'unavailable'.
+  // 'refused' (the API answered 401/403) ends refresh for the attempt;
+  // 'unavailable' (5xx, network) keeps the refresh token for a later try.
   constructor({refresh, now = () => Date.now()}) {
     this.#refresh = refresh;
     this.#now = now;
@@ -60,7 +62,8 @@ export class AttemptCredentials {
   }
 
   // The SDK asked to refresh. 'refreshed' and 'current' both let it replay
-  // with the same handle; 'refused' and 'gone' end its refresh attempts.
+  // with the same handle; 'refused' and 'gone' end its refresh attempts;
+  // 'unavailable' fails this call without poisoning later ones.
   async refresh(handle) {
     const record = this.#live(handle);
     if (!record) return 'gone';
@@ -71,7 +74,9 @@ export class AttemptCredentials {
     record.refreshing = (async () => {
       try {
         const next = await this.#refresh(record.refreshToken);
-        if (!next || typeof next.access_token !== 'string' || typeof next.refresh_token !== 'string') {
+        if (next === 'unavailable') return 'unavailable';
+        if (next === 'refused' || typeof next?.access_token !== 'string' ||
+            typeof next?.refresh_token !== 'string') {
           // A refused refresh is terminal for this generation: never resend it.
           record.refreshToken = null;
           return 'refused';
@@ -137,6 +142,9 @@ export function refreshReply(outcome, handle) {
   if (outcome === 'refreshed' || outcome === 'current') {
     return Response.json({access_token: handle, refresh_token: handle, token_type: 'bearer'});
   }
+  // Not a 401: the SDK only remembers a rejected generation on 401, so a
+  // later call can still refresh once the API is back.
+  if (outcome === 'unavailable') return Response.json({detail: 'Refresh temporarily unavailable'}, {status: 503});
   return Response.json({detail: 'Invalid or expired refresh token'},
     {status: 401, headers: {'WWW-Authenticate': 'Bearer'}});
 }

@@ -44,9 +44,11 @@ export class TenantHost extends DurableObject {
   #current = null;
   #generation;
   #tail = Promise.resolve();
-  // In memory on purpose: a fresh or reset host instance must re-confirm its
-  // child before it accepts an attempt (see run()).
-  #childReady = false;
+  // The generation whose child last answered a ping. In memory on purpose: a
+  // fresh or reset host instance must re-confirm its child before it accepts
+  // an attempt (see run()), and a late answer from a retired generation can
+  // never vouch for its replacement.
+  #readyGeneration = null;
 
   async #engine(tenantId) {
     const engineId = `tenant-eng-${tenantId}-${(await engineDigest(this.env.RUNTIME_SHA256)).slice(0, 16)}`;
@@ -90,7 +92,7 @@ export class TenantHost extends DurableObject {
   async #retireChild() {
     this.#generation = (await this.#currentGeneration()) + 1;
     await this.ctx.storage.put('generation', this.#generation);
-    this.#childReady = false;
+    this.#readyGeneration = null;
   }
 
   async #primeList() {
@@ -109,26 +111,64 @@ export class TenantHost extends DurableObject {
     }
   }
 
+  #childIsReady() {
+    return this.#readyGeneration !== null && this.#readyGeneration === this.#generation;
+  }
+
   async #refreshUpstream(refreshToken) {
-    const response = await fetch(new URL('/auth/refresh', this.env.API_ORIGIN), {
-      method: 'POST', headers: {'content-type': 'application/json'},
-      body: JSON.stringify({refresh_token: refreshToken}), redirect: 'manual',
-    });
-    if (response.status !== 200) {
-      await response.body?.cancel();
-      return null;
+    let response;
+    try {
+      response = await fetch(new URL('/auth/refresh', this.env.API_ORIGIN), {
+        method: 'POST', headers: {'content-type': 'application/json'},
+        body: JSON.stringify({refresh_token: refreshToken}), redirect: 'manual',
+      });
+    } catch {
+      return 'unavailable';
     }
-    return response.json();
+    if (response.status === 200) return response.json();
+    await response.body?.cancel();
+    // Only the API refusing the refresh token ends refresh for the attempt.
+    return response.status === 401 || response.status === 403 ? 'refused' : 'unavailable';
   }
 
-  // Resolves an attempt handle for this tenant's outbound gateway only.
-  token(handle) {
-    return this.#credentials.token(handle);
+  // An SDK call from this tenant's child, sent to the API with the attempt's
+  // real token. The liveness check and the start of the upstream fetch happen
+  // in one synchronous turn of this object, so an attempt that has ended or
+  // expired can never start a new request; one already started may finish.
+  // Sent exactly once: replay after a refresh challenge is the SDK's call.
+  async forward(handle, request, target) {
+    const started = Date.now();
+    const token = this.#credentials.token(handle);
+    if (!token) {
+      this.noteEgress({method: request.method, path: new URL(target).pathname, status: 401,
+        denied: 'unknown handle'});
+      return new Response('unknown handle', {status: 401});
+    }
+    const headers = new Headers(request.headers);
+    headers.set('Authorization', `Bearer ${token}`);
+    headers.delete('cookie');
+    const response = await fetch(new Request(target, {method: request.method, headers,
+      body: request.body, redirect: 'manual'}));
+    const challenged = isRefreshChallenge(response);
+    if (challenged) this.#credentials.noteChallenge(handle, token);
+    this.noteCall(handle, {method: request.method, path: new URL(target).pathname,
+      status: response.status, ms: Date.now() - started, ...(challenged ? {challenged: true} : {})});
+    return response;
   }
 
-  // The API answered `refused` with its refresh challenge.
-  noteChallenge(handle, refused) {
-    this.#credentials.noteChallenge(handle, refused);
+  // The workflow's own third-party HTTPS request, started in the same turn
+  // as its permission check (see forward()).
+  async egress(request, generation) {
+    const url = new URL(request.url);
+    const note = {method: request.method, host: url.hostname, path: url.pathname};
+    if (!this.#egressAllowed(url.hostname, generation)) {
+      this.noteEgress({...note, status: 403, denied: 'egress not declared'});
+      return new Response('egress not declared', {status: 403});
+    }
+    const started = Date.now();
+    const response = await fetch(request);
+    this.noteEgress({...note, status: response.status, ms: Date.now() - started});
+    return response;
   }
 
   // The SDK's own POST /auth/refresh, answered for the handle (see
@@ -148,7 +188,7 @@ export class TenantHost extends DurableObject {
   // so it is attributed to the attempt in flight: attempts are serialized per
   // host, so there is at most one. Allowed only for hosts that attempt
   // declared; nothing is allowed between attempts.
-  egressAllowed(hostname, generation) {
+  #egressAllowed(hostname, generation) {
     const current = this.#current;
     return current !== null && generation === current.generation && Date.now() < current.deadlineAt &&
       current.egress.has(String(hostname).toLowerCase());
@@ -165,7 +205,7 @@ export class TenantHost extends DurableObject {
     // be safely retried. So a host that has not confirmed its child refuses
     // before doing anything; the supervisor warms it (idempotent, retryable)
     // and dispatches once.
-    if (!this.#childReady) return {needsWarm: true, attempt_state: 'not_started'};
+    if (!this.#childIsReady()) return {needsWarm: true, attempt_state: 'not_started'};
     // The deadline runs from the supervisor's dispatch (one value across its
     // warm-up retry), so queueing and warm-up count against it.
     const deadlineMs = Number(this.env.ATTEMPT_DEADLINE_MS) || DEFAULT_ATTEMPT_DEADLINE_MS;
@@ -191,7 +231,7 @@ export class TenantHost extends DurableObject {
       release();
       return expiredInQueue(queueWaitMs);
     }
-    if (!this.#childReady) {
+    if (!this.#childIsReady()) {
       // The predecessor retired the child: this attempt needs a confirmed
       // warm-up like any other, and has done no work.
       release();
@@ -211,6 +251,11 @@ export class TenantHost extends DurableObject {
         egress: new Set(egressHosts.map((h) => h.toLowerCase()))};
       // Survives a host reset: the next instance retires this generation.
       await this.ctx.storage.put('inflight', {generation});
+      if (Date.now() >= deadlineAt) {
+        // The marker write crossed the deadline; the child has seen nothing.
+        this.#current = null;
+        return expiredInQueue(Date.now() - queuedAt);
+      }
       const mark = Date.now();
       let timer;
       const expired = new Promise((resolve) => {
@@ -290,7 +335,7 @@ export class TenantHost extends DurableObject {
   // pre-first-call path hot between real attempts. Callers must hold
   // #exclusive when exercising.
   async #ping(tenantId, {exercise = false} = {}) {
-    const {worker} = await this.#engine(tenantId);
+    const {worker, generation} = await this.#engine(tenantId);
     const modules = await this.#primeList();
     const mark = Date.now();
     const response = await worker.getEntrypoint().fetch(new Request('https://attempt.invalid/', {
@@ -299,7 +344,9 @@ export class TenantHost extends DurableObject {
     }));
     const {first_request: firstRequest, primed, prime_skipped: primeSkipped,
       exercise: exercised} = await response.json();
-    this.#childReady = true;
+    // Only the generation that answered is ready; if it was retired while
+    // this ping was in flight, its answer vouches for nothing.
+    if (generation === this.#generation) this.#readyGeneration = generation;
     // Keep the connection to the API origin warm too: a fresh child's first
     // SDK calls measured ~2x slower (104-126 ms vs ~50 ms). Unauthenticated
     // health check, no tenant data; bounded by the warm window.
@@ -382,25 +429,8 @@ export class TenantApi extends WorkerEntrypoint {
     } catch {
       return deny(403, 'API capability denied');
     }
-    const started = Date.now();
-    const token = await host.token(handle);
-    if (!token) return deny(401, 'unknown handle');
-    const tokenMs = Date.now() - started;
-    // Sent exactly once, body streamed: replay after a refresh challenge is
-    // the SDK's decision, under its own rules.
-    const headers = new Headers(request.headers);
-    headers.set('Authorization', `Bearer ${token}`);
-    headers.delete('cookie');
-    const response = await fetch(new Request(target, {method: request.method, headers,
-      body: request.body, redirect: 'manual'}));
-    const challenged = isRefreshChallenge(response);
-    if (challenged) await host.noteChallenge(handle, token);
-    // Awaited, not waitUntil: the last call's note must land before run()
-    // reports, or the breakdown silently drops it.
-    await host.noteCall(handle, {method: request.method,
-      path: new URL(target).pathname, status: response.status,
-      token_ms: tokenMs, ms: Date.now() - started - tokenMs, ...(challenged ? {challenged: true} : {})});
-    return response;
+    // RPC carries strings, not URL objects.
+    return host.forward(handle, request, String(target));
   }
 
   // The SDK refreshing its "token", i.e. the handle it holds in both slots.
@@ -420,14 +450,10 @@ export class TenantApi extends WorkerEntrypoint {
   // headers, never the run token) when the attempt in flight declared the host.
   async #egress(host, request, url) {
     const note = {method: request.method, host: url.hostname, path: url.pathname};
-    if (url.protocol !== 'https:' || url.username || url.password || url.port ||
-        !(await host.egressAllowed(url.hostname, this.ctx.props?.generation))) {
+    if (url.protocol !== 'https:' || url.username || url.password || url.port) {
       await host.noteEgress({...note, status: 403, denied: 'egress not declared'});
       return new Response('egress not declared', {status: 403});
     }
-    const started = Date.now();
-    const response = await fetch(request);
-    await host.noteEgress({...note, status: response.status, ms: Date.now() - started});
-    return response;
+    return host.egress(request, this.ctx.props?.generation);
   }
 }

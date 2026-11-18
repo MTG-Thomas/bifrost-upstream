@@ -111,3 +111,26 @@ test('the refresh request is read within its bound, and the reply carries only t
   assert.equal(refused.status, 401);
   assert.equal(isRefreshChallenge(refused), false, 'the SDK must not loop on a refused refresh');
 });
+
+test('a temporarily unavailable refresh keeps the refresh token for a later try', async () => {
+  const answers = ['unavailable', {access_token: 'a2', refresh_token: 'r2'}];
+  const sent = [];
+  const creds = new AttemptCredentials({refresh: async (refreshToken) => { sent.push(refreshToken); return answers.shift(); }});
+  creds.open('h', {token: 'a1', refreshToken: 'r1', expiresAt: later()});
+  creds.noteChallenge('h', 'a1');
+  assert.equal(await creds.refresh('h'), 'unavailable');
+  assert.equal(await creds.refresh('h'), 'refreshed', 'still challenged, still refreshable');
+  assert.deepEqual(sent, ['r1', 'r1']);
+  const reply = refreshReply('unavailable', 'h');
+  assert.equal(reply.status, 503, 'not a 401: the SDK must not record the handle as rejected');
+});
+
+test('an explicit refusal ends refresh for the attempt', async () => {
+  let calls = 0;
+  const creds = new AttemptCredentials({refresh: async () => { calls++; return 'refused'; }});
+  creds.open('h', {token: 'a1', refreshToken: 'r1', expiresAt: later()});
+  creds.noteChallenge('h', 'a1');
+  assert.equal(await creds.refresh('h'), 'refused');
+  assert.equal(await creds.refresh('h'), 'refused');
+  assert.equal(calls, 1);
+});
