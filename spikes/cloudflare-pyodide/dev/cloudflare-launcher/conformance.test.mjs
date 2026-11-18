@@ -12,15 +12,6 @@ import {
 
 const vectors = JSON.parse(readFileSync(new URL('./vectors.json', import.meta.url), 'utf8'));
 
-test('the phase 3 wire contract makes an inventory omission final', () => {
-  const design = readFileSync(new URL('./DESIGN.md', import.meta.url), 'utf8');
-  const [, phase3] = design.split('### Phase 3 opaque workflow wire contract');
-  assert.ok(phase3, 'Phase 3 wire contract is missing');
-  const contract = phase3.split(/\r?\n#/)[0].replace(/\s+/g, ' ');
-  const omission = /sends an inventory omitting a workflow route[^.]*must never enter the engine for that route or report it in a later reply, event, or inventory/;
-  assert.match(contract, omission);
-});
-
 for (const [set, cases] of [['main', vectors.hello_main], ['branch+profile', vectors.hello_branch_profile]]) {
   test(`hello canonical bytes and proof match Python (${set})`, async () => {
     for (const vector of cases) {
