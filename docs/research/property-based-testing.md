@@ -1,11 +1,11 @@
 # Property-based testing for the Bifrost TypeScript front-end
 
-**Date:** 2026-11-17 · **Status:** adopted, narrowly — one property live, approved for expansion on evidence · **Scope:** `client/` only (fork-only work; see §9)
+**Date:** 2026-11-17 · **Status:** adopted, narrowly — one property live; expansion is gated on defect yield · **Scope:** `client/` only (fork-only work; see §9)
 
 ## TL;DR
 
 - **Yes, but only at the reducer and pure-function layer.** The front-end already has 659 Vitest files and 139 Playwright specs; the gap is not test *count* but the absence of any statement about *all* inputs to its stateful logic.
-- **One real defect, found by the first property.** `applyChatStreamEnvelopes` applied one render frame against a single shared clone, but rejected envelopes mutated that clone before deciding to reject. When a sibling envelope in the same frame succeeded, the mutations were kept — inventing phantom runs and cross-conversation writes. Fixed in `client/src/lib/chat-runtime.ts`; counterexample pinned as an example test.
+- **One real defect, found by the first property.** `applyChatStreamEnvelopes` applied one render frame against a single shared clone, but rejected envelopes mutated that clone before deciding to reject — inventing phantom runs, and letting a rejected envelope bind an unscoped projection to its conversation. Fixed in `client/src/lib/chat-runtime.ts`; both counterexamples pinned as example tests.
 - **`fast-check` 4.10.2, a dev dependency.** One property file, fixed seed in the normal suite, 100 runs, ~1.5 s of wall time. No new CI job, no change to the `@smoke` gate, no change to `maxWorkers`.
 - **Bombadil is deliberately deferred.** It is pre-1.0, Chrome-only, and its findings need an owner to be dispositioned; none of the current candidate invariants need a browser.
 - **Upstream eligibility is unaffected.** A test suite is not a contribution basis, and this fork is public. The defect becomes upstream-eligible only with a concrete actual-use consequence.
@@ -69,9 +69,9 @@ Shrunk counterexample (seed `20261117`, 12 shrinks, two envelopes):
 
 The first envelope is rejected by sequencing after materialising `run-2`; the second is accepted; the batched result keeps a `run-2` with `status: null`, `last_sequence: 0` and no applied events.
 
-**Reachability, stated honestly.** A trigger needs a *present* sequence at or below the run's last sequence on a run the projection does not know about, mixed into a frame with an accepted envelope. The server normalises a missing sequence to `0` (`api/src/core/pubsub.py:550`, `api/src/services/chat_runs.py:634`), so the shape is producible, but no end-to-end reproduction was captured. The structural asymmetry is proven; the user-visible frequency is not.
+**Reachability, stated honestly.** Two things are proven: the structural asymmetry, and that a rejected envelope can bind an *unscoped* projection to its conversation (a second property seeds `conversation_id: null` and catches exactly that). The guard at `chat-runtime.ts:278-287` rejects any envelope whose conversation differs from an already-scoped projection, so a write that crosses conversations is **not** possible once the projection is bound; an earlier draft of this note overstated the defect that way. The phantom run needs a *present* sequence at or below the run's last sequence on a run the projection does not know about: the chat replay path defaults a missing sequence to `0` (`api/src/core/pubsub.py:550`, `api/src/services/chat_runs.py:634`), but the live chat publisher assigns a Redis `INCR` (`api/src/core/pubsub.py:81`), so the live path is unlikely to emit it. No end-to-end reproduction was captured. The structural asymmetry is proven; the user-visible frequency is not.
 
-**Fix.** `applyEnvelopeToProjection` now decides against the pre-existing state and only then commits: chunk/run-id/sequence/dedupe rejection happens first, using `projection.runs[runId]` for the last-sequence lookup instead of a freshly inserted run. The accepted path is unchanged. The counterexample is pinned as an example test in `chat-runtime.test.ts` so a later generator change cannot silently drop the regression.
+**Fix.** `applyEnvelopeToProjection` now decides against the pre-existing state and only then commits: chunk/run-id/sequence/dedupe rejection happens first, using `projection.runs[runId]` for the last-sequence lookup instead of a freshly inserted run. The accepted path is unchanged. Both counterexamples are pinned as example tests in `chat-runtime.test.ts` — the phantom run and the premature conversation binding — so a later generator change cannot silently drop a regression.
 
 ## 4. Seed policy
 
@@ -87,7 +87,7 @@ The first envelope is rejected by sequencing after materialising `run-2`; the se
 - Do not let a property test touch the DOM, timers, `Math.random` or the network.
 - Do not expand to component-level PBT until the unit tier has produced a defect per unit of effort.
 
-## 6. Approved next slices
+## 6. Next slices under consideration
 
 1. **`executionStreamStore.appendLogs`** — permutations of positive sequences with identical retransmissions against a contiguous-prefix oracle; include the completion flush path. The current contract is narrower than it looks: production callers pass one-element arrays, and a batch that mixes sequenced with unsequenced logs silently drops the unsequenced ones.
 2. **`applyPagedEvent`** — from a sorted, unique window within `pageSize`, events must preserve size, uniqueness and order, and must follow the documented page-edge rules. `sortedIndex` is private, so drive it through the hook's reducer.
@@ -97,13 +97,13 @@ The first envelope is rejected by sequencing after materialising `run-2`; the se
 
 ## 7. Bombadil
 
-Worth a spike, not a schedule. If it is ever scheduled it must come with a replayable trace, a named owner, and a disposition path — otherwise it violates the testing skill's first hard rule, and `continue-on-error` just hides the violation. Auth is not the blocker (`--header`/`--cookie` plus custom actions can drive a login form); duplicated fixture setup and pre-1.0 churn are. Best first target if it happens: the live execution log surface, where convergence after reconnect is the property that matters.
+Not evaluated. Deferred for three reasons — pre-1.0 and Chrome-only, it needs a named owner for its findings, and none of the current candidate invariants require a browser. A future evaluation should not be scheduled as a required check until it can produce a replayable trace that someone dispositions.
 
 ## 8. Acceptance criteria met
 
 - Property file runs inside the existing suite; no new CI job, no gate change.
-- 100 runs in ~1.5 s wall; three-file run (property + runtime + store) 4.1 s total, dominated by happy-dom environment creation.
-- `npm test` determinism preserved: fixed seed, no retries, no timers.
+- 100 generated cases execute in under 2 s of test time; total run time is dominated by happy-dom environment creation, which happens per test file.
+- `npm test` determinism preserved: fixed seed, no retries, no timers. The cost of a fixed seed is that the same 100 cases repeat forever; a rotating seed would need its own scheduled job, which does not exist.
 - Fix verified against both the property and the pre-existing `chat-runtime.test.ts` and `chatStore.test.ts` suites.
 
 ## 9. Upstream position

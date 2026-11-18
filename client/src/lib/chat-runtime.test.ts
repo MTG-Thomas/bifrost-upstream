@@ -796,4 +796,35 @@ describe("chat-runtime reducer", () => {
 		expect(projection.runs["run-rejected"]).toBeUndefined();
 		expect(projection.run_order).not.toContain("run-rejected");
 	});
+
+	// Counterexample from the unscoped seed of the same property. The guard at
+	// applyRuntimeConversationGuard rejects a conversation mismatch only once the
+	// projection is bound, so the leak was a premature binding: a rejected
+	// chunkless envelope wrote its conversation id into the clone, and the
+	// batch kept it while the fold discarded it.
+	it("does not bind an unscoped projection from a rejected envelope", () => {
+		const projection = applyChatStreamEnvelopes(
+			makeEmptyChatProjection(),
+			[
+				{
+					event_id: null,
+					sequence: null,
+					conversation_id: "conversation-1",
+					run_id: null,
+					occurred_at: "2026-09-02T00:00:00Z",
+					payload: null,
+				},
+				{
+					event_id: null,
+					sequence: null,
+					conversation_id: null,
+					run_id: "run-0",
+					occurred_at: "2026-09-02T00:00:00Z",
+					payload: { type: "error", error: "" },
+				},
+			],
+		);
+
+		expect(projection.conversation_id).toBeNull();
+	});
 });
