@@ -53,6 +53,7 @@ class Admission:
         workflow_growth: Callable[[], dict[str, int]],
         claims_open: Callable[[], bool] = lambda: True,
         declared_slots: int | None = None,
+        occupied_slots: Callable[[], int] | None = None,
     ) -> None:
         """``running_workflow_ids`` and ``workflow_growth`` come from the
         process pool: the runs whose children are alive, and how much each
@@ -64,6 +65,7 @@ class Admission:
             raise ValueError("Declared capacity requires a positive slot count and byte budget")
         self.budget_bytes = budget_bytes
         self.declared_slots = declared_slots
+        self._occupied_slots = occupied_slots or self.held_slots
         self._under_pressure = under_pressure
         self._claims_open = claims_open
         self._running_workflow_ids = running_workflow_ids
@@ -120,7 +122,7 @@ class Admission:
             if self.declared_slots is not None:
                 yield (
                     self.free_bytes()
-                    if self._claims_open() and self.held_slots() < self.declared_slots
+                    if self._claims_open() and self._occupied_slots() < self.declared_slots
                     else None
                 )
                 return

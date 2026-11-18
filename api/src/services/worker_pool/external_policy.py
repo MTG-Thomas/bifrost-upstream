@@ -4,9 +4,9 @@ from typing import TYPE_CHECKING
 
 from shared.models import WorkerCapacityProfile
 from src.worker.remote.protocol import (
-    CLOUDFLARE_DEV_BUDGET_BYTES,
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
     LINUX_RUNTIME_PROFILE,
+    cloudflare_slots,
 )
 
 if TYPE_CHECKING:
@@ -20,8 +20,7 @@ def validate_external_policy(
 ) -> None:
     """Reject an incompatible policy without changing it or provisioning work."""
     if profile.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
-        if profile.memory_limit_bytes != CLOUDFLARE_DEV_BUDGET_BYTES:
-            raise ValueError("Cloudflare capacity must advertise a fixed 128 MiB declared slot")
+        cloudflare_slots(profile.memory_limit_bytes)
     else:
         for field in ("worker_memory_mib", "largest_worker_mib"):
             if getattr(policy, field) * 2**20 != profile.memory_limit_bytes:

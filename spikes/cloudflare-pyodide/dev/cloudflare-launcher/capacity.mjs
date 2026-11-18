@@ -1,6 +1,6 @@
 // Workers capacity provider. Run in a separate Worker from CloudflareLauncher.
 import {createEngine, ProtocolError, STATE} from './capacity-core.mjs';
-import {externalWorkerControlKey} from './protocol.mjs';
+import {externalWorkerControlKey, MAX_WORKFLOW_SLOTS, SLOT_BYTES} from './protocol.mjs';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SCOPE_HEADER = 'X-Bifrost-Capacity-Scope';
@@ -10,17 +10,19 @@ const json = (status, body) => Response.json(body, {status});
 function profileFor(env) {
   const maxWorkers = Number(env.MAX_WORKERS);
   const maxLifetime = Number(env.MAX_LIFETIME_SECONDS);
+  const slots = Number(env.WORKFLOW_SLOTS ?? 1);
   if (!/^[a-zA-Z0-9._:-]{1,128}$/.test(env.SCOPE ?? '') ||
       !/^.{1,100}$/.test(env.WORKER_VERSION ?? '') ||
       !/^[!-~]{32,512}$/.test(env.CAPACITY_TOKEN ?? '') ||
       !Number.isInteger(maxWorkers) || maxWorkers < 1 || maxWorkers > 1000 ||
       !Number.isInteger(maxLifetime) || maxLifetime < 60 || maxLifetime > 604800 ||
+      !Number.isInteger(slots) || slots < 1 || slots > MAX_WORKFLOW_SLOTS ||
       !env.CLOUDFLARE_LAUNCHER) {
     throw new Error('Invalid Workers capacity settings');
   }
   return {
     protocol_version: 1, scope: env.SCOPE, worker_version: env.WORKER_VERSION,
-    runtime_profile: 'cloudflare-python-v1', memory_limit_bytes: 128 * 1024 ** 2,
+    runtime_profile: 'cloudflare-python-v1', memory_limit_bytes: slots * SLOT_BYTES,
     max_workers: maxWorkers, max_lifetime_seconds: maxLifetime,
   };
 }
@@ -75,7 +77,7 @@ export class WorkerLedger {
         async prepare(row) {
           await launcher(row).prepareManaged({
             incarnationId: row.worker_id, launcherId: row.worker_id, resourceUid: row.resource_uid,
-            version: row.reservation.worker_version,
+            version: row.reservation.worker_version, memoryLimitBytes: row.reservation.memory_limit_bytes,
             secret: await externalWorkerControlKey(env.CAPACITY_TOKEN, row.worker_id, row.resource_uid),
           });
         },

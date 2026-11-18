@@ -327,7 +327,8 @@ async def test_linux_can_reclaim_an_idle_cloudflare_slot(db, capacity, warm):
         session.add(ExecutionWorker(
             id=worker_id, form="external", state="ready", resource_class="standard",
             capacity_scope=pool.peer_profile.scope, runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
-            memory_budget_bytes=CLOUDFLARE_DEV_BUDGET_BYTES, supported_handlers=["workflow.execute"],
+            memory_limit_bytes=2 * CLOUDFLARE_DEV_BUDGET_BYTES,
+            memory_budget_bytes=2 * CLOUDFLARE_DEV_BUDGET_BYTES, supported_handlers=["workflow.execute"],
             remote_owner_lease_expires_at=controller._now() + timedelta(minutes=1),
             version=pool.peer_profile.worker_version,
         ))
@@ -469,6 +470,7 @@ async def test_cloudflare_hello_preserves_the_external_warm_worker(db, capacity,
         worker = await session.get(ExecutionWorker, worker_id)
         assert worker.state == "starting"
         worker.runtime_profile = CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+        worker.memory_limit_bytes = 2 * CLOUDFLARE_DEV_BUDGET_BYTES
         worker.remote_launcher_id = launcher_id
         worker.supported_handlers = ["workflow.execute"]
 
@@ -479,12 +481,12 @@ async def test_cloudflare_hello_preserves_the_external_warm_worker(db, capacity,
         credential_protocol=2,
         cloudflare_enrollment=ownership.CloudflareEnrollment(uid, version, "cloudflare-worker"),
     )
-    assert lease is not None
+    assert lease is not None and lease.declared_slots == 2
     async with db.context() as session:
         worker = await session.get(ExecutionWorker, worker_id)
         assert worker.state == "ready"
         assert worker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
-        worker.memory_budget_bytes = CLOUDFLARE_DEV_BUDGET_BYTES
+        worker.memory_budget_bytes = 2 * CLOUDFLARE_DEV_BUDGET_BYTES
 
     # A hello preserves the warm worker. Even with pending Linux demand at the
     # cap, this provider cannot free a slot by replacing its own launcher.

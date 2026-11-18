@@ -65,13 +65,14 @@ function workerRow() {
 function managedRows() {
   return sql(`SELECT coalesce(json_agg(json_build_object('id',id,'state',state,'uid',capacity_resource_uid,
     'launcher',remote_launcher_id,'profile',runtime_profile,'hello',remote_hello_sequence,
+    'budget',memory_limit_bytes,'active',active_runs,
     'deleted',capacity_resource_deleted_at IS NOT NULL,'end',end_reason)), '[]'::json)
     FROM execution_workers WHERE capacity_scope = 'phase6-local'`);
 }
 
 function runRow(id) {
   return sql(`SELECT json_build_object('status',status,'result',result,'error',error_message,
-    'completed',completed_at,'credential',credential_version,
+    'completed',completed_at,'credential',credential_version,'tenant',organization_id,
     'claim',(SELECT json_agg(json_build_object('id',id,'worker',worker_id))
       FROM execution_worker_claims WHERE subject_id=e.id),
     'queued',(SELECT count(*) FROM work_dispatches WHERE subject_id=e.id),
@@ -222,7 +223,7 @@ const harnessEntry = `
     reset() { this.ctx.abort('injected launcher reset'); }
     ledger() {
       const rows = this.ctx.storage.sql.exec(
-        "SELECT key, data FROM ledger WHERE key IN ('control', 'slot') ORDER BY key, part").toArray();
+        "SELECT key, data FROM ledger WHERE key = 'control' OR key = 'slot' OR key LIKE 'slot:%' ORDER BY key, part").toArray();
       const values = {};
       for (const {key, data} of rows) {
         const value = (values[key] ??= {decoder: new TextDecoder(), text: ''});
@@ -230,9 +231,12 @@ const harnessEntry = `
       }
       const read = (value) => value && JSON.parse(value.text + value.decoder.decode());
       const control = read(values.control);
-      const slot = read(values.slot);
-      return {control, slot: slot && {state: slot.state, route: slot.route.route_id,
-        event: slot.terminal?._event_id, attempt: slot.terminal?.attempt_state}};
+      const slots = Object.keys(values).filter((key) => key !== 'control').map((key) => {
+        const slot = read(values[key]);
+        return {state: slot.state, route: slot.route.route_id,
+          event: slot.terminal?._event_id, attempt: slot.terminal?.attempt_state};
+      });
+      return {control, ...(slots.length ? {slots} : {})};
     }
   }
   export class TenantHost extends Host {
@@ -328,13 +332,15 @@ function reloadApi() {
   utimesSync(file, now, now);
 }
 
-async function startRun(scenario, hold = true) {
+async function startRun(scenario, hold = true, tenant) {
   const gate = {release: Promise.withResolvers(), entered: false};
   gates.set(scenario, gate);
   if (config.hosted && hold) nextHostedGate = gate;
+  const fixture = tenant ? scenario : (config.hosted ? 'hosted' : 'local');
   const submitted = await api('/api/workflows/execute', {
-    workflow_id: config.workflows[scenario === 'allowance' ? 'allowance' : config.hosted ? 'hosted' : 'local'],
+    workflow_id: config.workflows[scenario === 'allowance' ? 'allowance' : fixture],
     input_data: {case: scenario}, sync: false,
+    ...(tenant ? {org_id: tenant} : {}),
   });
   assert.equal(submitted.status, 200);
   const id = submitted.data.execution_id;
@@ -367,7 +373,8 @@ async function settle(scenario, run, status, ackCount = 1, dispatchCount = 1) {
       .map((event) => event.event));
     return wire.filter((event) => event.kind === 'ack' && ids.has(event.event)).length >= ackCount;
   });
-  if (!config.hosted) await until('launcher slot cleared', async () => !(await control('ledger', 200)).slot);
+  if (!config.hosted) await until('launcher slot cleared', async () =>
+    !(await control('ledger', 200)).slots?.some(({route}) => route === run.route));
   const terminals = wire.filter((event) => event.kind === 'result' && event.route === run.route);
   assert.equal(terminals.length, ackCount);
   assert.equal(new Set(terminals.map((event) => event.event)).size, 1);
@@ -398,6 +405,7 @@ async function startCapacityEndpoint() {
         assert.equal(row.launcher, row.id);
         assert.equal(row.profile, 'cloudflare-python-v1');
         assert.equal(row.hello, 0);
+        assert.equal(row.budget, config.phase6.slots * 128 * 2 ** 20);
         config.incarnation = row.id;
         evidence('provider-start-bound', {row});
       }
@@ -443,12 +451,28 @@ async function phase6Checks() {
     assert.deepEqual(managedRows(), []);
     assert.equal(runRow(linux).claim, null);
     evidence('linux-only-zero-launches', {id: linux, row: runRow(linux)});
-    const run = await startRun('phase6');
-    const credential = tokens.get(run.id);
-    assert.equal((await api(sdkPath, {}, credential)).status, 200);
-    run.gate.release.resolve();
-    await settle('phase6', run, 'Success');
-    assert.equal((await api(sdkPath, {}, credential)).status, 401);
+    const scenarios = ['phase6-a', 'phase6-b'];
+    const runs = await Promise.all(scenarios.map((scenario, index) =>
+      startRun(scenario, true, config.phase6.tenants[index])));
+    const [row] = managedRows();
+    const ledger = await control('ledger', 200);
+    assert.deepEqual(new Set(ledger.slots.map(({route}) => route)), new Set(runs.map(({route}) => route)));
+    assert.ok(ledger.slots.every(({state}) => state === 'entering'));
+    assert.deepEqual(runs.map(({id}) => {
+      const run = runRow(id);
+      assert.equal(run.status, 'Running');
+      return run.tenant;
+    }), config.phase6.tenants);
+    assert.equal(managedRows().length, 1);
+    await until('API reports two occupied slots', () => managedRows()[0].active === 2);
+    evidence('phase6-two-tenants-overlap', {worker: row.id, runs: runs.map(({id}) => id), ledger});
+    for (const [index, run] of runs.entries()) {
+      const credential = tokens.get(run.id);
+      assert.equal((await api(sdkPath, {}, credential)).status, 200);
+      run.gate.release.resolve();
+      await settle(scenarios[index], run, 'Success');
+      assert.equal((await api(sdkPath, {}, credential)).status, 401);
+    }
     const released = await until('idle worker retired and provider deletion confirmed', () => {
       const [row] = managedRows();
       return row?.state === 'retired' && row.deleted && row;
@@ -460,7 +484,7 @@ async function phase6Checks() {
     assert.equal(wire.filter((event) => event.kind === 'hello').length, hellos);
     assert.equal(managedRows().length, 1);
     assert.equal(runRow(linux).claim, null);
-    evidence('phase6-idle-release', {row: released, hellos, linuxOnly: linux, completed: run.id});
+    evidence('phase6-idle-release', {row: released, hellos, linuxOnly: linux, completed: runs.map(({id}) => id)});
   } finally {
     execFileSync('docker', ['unpause', ...linuxLaunchers]);
   }
@@ -564,7 +588,7 @@ async function localChecks() {
   await settle('takeover', takeover, 'Success');
 
   const reset = await startRun('reset');
-  assert.equal((await control('ledger', 200)).slot.state, 'entering');
+  assert.equal((await control('ledger', 200)).slots[0].state, 'entering');
   await control('reset');
   const resetRow = await settle('reset', reset, 'Failed');
   assert.match(resetRow.error, /may already have taken effect/);

@@ -121,20 +121,32 @@ def local_api(hosted):
     return origin, project, admin, send
 
 
-def seed_workflows(project, admin, send, hosted):
+def seed_workflows(project, admin, send, hosted, *, tenant_fixtures=()):
     fixtures = (
-        ("hosted", "phase5b_fixture", "fixture-hosted.py", 10, 1000),
-        ("allowance", "phase5b_allowance", "fixture-hosted.py", 4, 1000),
-    ) if hosted else (("local", FUNCTION, "fixture.py", 10, 1000),)
+        ("hosted", "phase5b_fixture", "fixture-hosted.py", 10, 1000, None),
+        ("allowance", "phase5b_allowance", "fixture-hosted.py", 4, 1000, None),
+    ) if hosted else (("local", FUNCTION, "fixture.py", 10, 1000, None),)
+    if tenant_fixtures:
+        fixtures = tuple(
+            (kind, kind.replace("-", "_"), "fixture.py", 10, 1000, tenant)
+            for kind, tenant in tenant_fixtures
+        )
     approval = []
     workflows = {}
-    for kind, function, filename, allowance, cpu in fixtures:
-        entry = f"workflows/{function}.py" if hosted else ENTRY
+    for kind, function, filename, allowance, cpu, tenant in fixtures:
+        entry = ENTRY if kind == "local" else f"workflows/{function}.py"
         content = (HERE / filename).read_bytes()
         if kind == "allowance":
             content = content.replace(b"phase5b_fixture", b"phase5b_allowance")
+        if tenant:
+            content = content.replace(FUNCTION.encode(), function.encode())
         send("/api/files/write", {"path": entry, "content": content.decode(), "location": "workspace"}, admin)
-        workflow = send("/api/workflows/register", {"path": entry, "function_name": function}, admin)
+        registration = {"path": entry, "function_name": function}
+        if tenant:
+            registration["organization_id"] = tenant
+        workflow = send("/api/workflows/register", registration, admin)
+        if tenant and workflow["organization_id"] != tenant:
+            raise SystemExit("Fixture workflow was registered in the wrong tenant")
         workflow_id = workflows[kind] = workflow["id"]
         send(f"/api/workflows/{workflow_id}", {"timeout_seconds": 60}, admin, method="PATCH")
         operator = [

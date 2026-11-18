@@ -14,6 +14,8 @@ export const CLOUDFLARE_MAX_LOGICAL_BYTES = 16 * 2 ** 20;
 export const CLOUDFLARE_INCARNATION_ENDED = 4001;
 export const MAX_CLOCK_SKEW_SECONDS = 60;
 export const CREDENTIAL_PROTOCOL = 2;
+export const SLOT_BYTES = 128 * 2 ** 20;
+export const MAX_WORKFLOW_SLOTS = 4;
 export const CLOUDFLARE_PYTHON_RUNTIME_PROFILE = 'cloudflare-python-v1';
 // The only handler this launcher executes. Advertising anything else would let
 // the API route agent runs, summaries or platform jobs here.

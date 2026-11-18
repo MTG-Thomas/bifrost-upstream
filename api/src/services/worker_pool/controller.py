@@ -28,13 +28,14 @@ import asyncio
 import json
 import logging
 import time
+from collections import Counter
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, exists, func, literal, select, text, update
+from sqlalchemy import and_, func, literal, select, text, update
 
 from shared.models import WorkerCapacityProfile
 from shared.version import get_version
@@ -45,8 +46,7 @@ from src.jobs.platform.kubernetes_client import (
     KubernetesJobClient,
     oom_killed,
 )
-from src.models.enums import LIVE_EXECUTION_STATUSES
-from src.models.orm.execution_workers import MANAGED_WORKER_FORMS, ExecutionWorker, ExecutionWorkerClaim
+from src.models.orm.execution_workers import MANAGED_WORKER_FORMS, ExecutionWorker
 from src.models.orm.executions import Execution
 from src.models.orm.platform_jobs import PlatformJob
 from src.models.orm.package_changes import PackageChange
@@ -60,13 +60,12 @@ from src.services.work_dispatch import (
     DISPATCH_WAKE_FAMILIES,
     WAKE_PLATFORM_JOB,
     WAKE_SERVICE,
-    WAKE_WORKFLOW,
     listen_for_pool_wake,
     wait_for_next_pass,
 )
 from src.services.worker_pool.claims import CAPACITY_LOCK, REMOTE_WORKER_HANDLER_NAMES
 from src.services.worker_pool.demand import pending_local_platform_job_ids
-from src.services.worker_pool.eligibility import profile_matches
+from src.services.worker_pool.eligibility import cloudflare_active_claims, profile_matches
 from src.services.worker_pool.manifest import (
     SAFE_TO_EVICT,
     WorkerJobSpec,
@@ -93,6 +92,7 @@ from src.worker.remote.protocol import (
     CLOUDFLARE_WORKFLOW_HANDLER,
     HANDLER_CONCURRENCY_LIMITS,
     LINUX_RUNTIME_PROFILE,
+    cloudflare_slots,
 )
 
 logger = logging.getLogger(__name__)
@@ -339,7 +339,9 @@ class WorkerCapacityController(ABC):
                         WorkDispatch.handler.label("handler"),
                         WorkDispatch.handler_version,
                         WorkDispatch.cloudflare_revision,
+                        Execution.organization_id.label("tenant_id"),
                     )
+                    .outerjoin(Execution, Execution.id == WorkDispatch.subject_id)
                     .where(
                         WorkDispatch.assigned_worker_id.is_(None),
                         WorkDispatch.execution_lane == "normal",
@@ -356,6 +358,7 @@ class WorkerCapacityController(ABC):
                             literal(None),
                             literal(None),
                             literal(None),
+                            literal(None),
                         ).where(
                             PlatformJob.id.in_(platform_job_ids),
                             PlatformJob.status == "queued",
@@ -367,6 +370,7 @@ class WorkerCapacityController(ABC):
                             workflow_request_sql(Workflow),
                             ServiceDefinition.updated_at,
                             # Every physical executor supervises services.
+                            literal(None),
                             literal(None),
                             literal(None),
                             literal(None),
@@ -413,7 +417,10 @@ class WorkerCapacityController(ABC):
                 await _publish_launchable(confirmed_largest, generation)
 
             waiting_requests = [
-                Request(row.id, row.memory_request_bytes, row.handler, row.handler_version, row.cloudflare_revision)
+                Request(
+                    row.id, row.memory_request_bytes, row.handler, row.handler_version,
+                    row.cloudflare_revision, row.tenant_id,
+                )
                 for row in waiting
             ]
             requests = {request.id: request for request in waiting_requests}
@@ -459,64 +466,66 @@ class WorkerCapacityController(ABC):
                         max(0, worker.memory_budget_bytes - worker.memory_reserved_bytes - held),
                         handlers, handler_slots,
                     ))
-            # Only reconciled and live declared reports count. A durable claim
-            # can already exist even if its hold missed the last heartbeat.
-            declared = [
+            cloudflare_workers = [
                 worker for worker in workers
                 if worker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
-                and worker.form == "external" and worker.state == "ready"
-                and worker.execution_lane == "normal" and not worker.memory_pressured
-                and (
-                    worker.memory_budget_bytes == CLOUDFLARE_DEV_BUDGET_BYTES
-                    or (worker.memory_budget_bytes is None and worker.capacity_scope is not None)
-                )
-                # The owner reports declared active_runs from Admission holds,
-                # including routes that have not started or settled yet.
-                and worker.active_runs == 0 and worker.memory_reserved_bytes == 0
+                and worker.form == "external" and worker.execution_lane == "normal"
             ]
-            available_declared = set((await db.scalars(
-                select(ExecutionWorker.id).where(
-                    ExecutionWorker.id.in_([worker.id for worker in declared]),
-                    ExecutionWorker.remote_owner_lease_expires_at > func.now(),
-                    ~exists().where(
-                        ExecutionWorkerClaim.worker_id == ExecutionWorker.id,
-                        # A claim without a settled workflow is still a hold.
-                        # Completed claims stay in this table for provenance.
-                        ~exists().where(
-                            ExecutionWorkerClaim.family == WAKE_WORKFLOW,
-                            Execution.id == ExecutionWorkerClaim.subject_id,
-                            Execution.status.not_in(LIVE_EXECUTION_STATUSES),
-                        ),
-                    ),
-                )
-            )).all()) if declared else set()
-            idle_declared = {
-                worker.id: FreeBudget(
-                    CLOUDFLARE_DEV_BUDGET_BYTES,
-                    frozenset(worker.supported_handlers),
-                    {CLOUDFLARE_WORKFLOW_HANDLER[0]: CLOUDFLARE_DEV_SLOTS},
-                    runtime_profile=worker.runtime_profile,
-                )
-                for worker in declared if worker.id in available_declared
-            }
-            # Prefer the less flexible Cloudflare capacity for eligible work,
-            # leaving Linux capacity for requests only Linux can execute.
-            pending_declared = [
-                _cloudflare_budget()
-                for worker in workers
-                if worker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
-                and worker.form == "external" and worker.state in ("reserved", "starting")
-                and worker.capacity_scope is not None
-            ]
-            free = [*idle_declared.values(), *pending_declared, *free]
+            active_claims = (await db.execute(
+                cloudflare_active_claims()
+            )).all() if cloudflare_workers else []
+            active_counts = Counter(row.worker_id for row in active_claims)
+            active_tenants = {row.tenant_id for row in active_claims}
+            leased = set((await db.scalars(select(ExecutionWorker.id).where(
+                ExecutionWorker.id.in_([worker.id for worker in cloudflare_workers]),
+                ExecutionWorker.remote_owner_lease_expires_at > func.now(),
+            ))).all()) if cloudflare_workers else set()
+            idle_declared: dict[UUID, FreeBudget] = {}
+            available_declared = []
+            for worker in cloudflare_workers:
+                try:
+                    slots = cloudflare_slots(worker.memory_limit_bytes)
+                except ValueError:
+                    continue
+                if worker.state in ("reserved", "starting") and worker.capacity_scope is not None:
+                    available_declared.append(_cloudflare_budget(slots))
+                    continue
+                if (
+                    worker.state != "ready" or worker.id not in leased or worker.memory_pressured
+                    or CLOUDFLARE_WORKFLOW_HANDLER[0] not in worker.supported_handlers
+                ):
+                    continue
+                used = max(worker.active_runs, active_counts[worker.id])
+                if worker.memory_budget_bytes is None:
+                    # Hello can promote a fresh start before its first report.
+                    # Forecast that pending capacity without offering it for yield.
+                    if (
+                        worker.capacity_scope is not None and worker.remote_session_generation <= 1
+                        and used == 0 and worker.memory_reserved_bytes == 0
+                    ):
+                        available_declared.append(_cloudflare_budget(slots))
+                    continue
+                if worker.memory_budget_bytes != slots * CLOUDFLARE_DEV_BUDGET_BYTES:
+                    continue
+                budget = _cloudflare_budget(slots, used=used, reserved_bytes=worker.memory_reserved_bytes)
+                available_declared.append(budget)
+                if used == 0 and worker.memory_reserved_bytes == 0:
+                    idle_declared[worker.id] = budget
+            # Prefer Cloudflare slots for eligible work, leaving Linux capacity
+            # for requests only Linux can execute.
+            free = [*available_declared, *free]
             needed = [request for request in waiting_requests if request.id not in covered]
+            profile, peer = self.capacity_profile, self.peer_profile
+            new_declared = None
             if cloudflare:
+                assert profile is not None
+                new_declared = _cloudflare_budget(cloudflare_slots(profile.memory_limit_bytes))
+            if new_declared is not None:
                 # Give Linux-only work first use of any remaining Linux budget.
-                needed.sort(key=_cloudflare_budget().fits)
+                needed.sort(key=new_declared.fits)
             jobs = sum(1 for worker in workers if worker.form in MANAGED_WORKER_FORMS)
             room = max(0, policy.max_workers - jobs)
             scope_room = room
-            profile, peer = self.capacity_profile, self.peer_profile
             if profile is not None and (cloudflare or self.dual_capacity):
                 scope_counts = await self._external_scope_counts(db, profile, peer)
                 live_in_scopes = sum(
@@ -539,7 +548,8 @@ class WorkerCapacityController(ABC):
                 standard_budget=standard_reports[-1] if standard_reports else sizing.standard_budget_bytes,
                 largest_budget=confirmed_largest if confirmed_largest is not None else sizing.largest_budget_bytes,
                 cold=not measurements, probe_largest=confirmed_largest is None,
-                runtime_profile=self.runtime_profile,
+                new_declared=new_declared,
+                active_tenants=active_tenants,
             )
             now = _now()
             # Only standard Jobs make up the warm minimum; a sized Job exists
@@ -559,10 +569,10 @@ class WorkerCapacityController(ABC):
                 and not self._lifetime_handoff_imminent(worker, now)
             )
             warm = max(0, policy.warm_workers - undrained - plan.standard - len(plan.sized))
-            if cloudflare:
+            if new_declared is not None:
                 launched = [
                     self._reserve(
-                        db, resource_class="standard", memory_limit_bytes=CLOUDFLARE_DEV_BUDGET_BYTES,
+                        db, resource_class="standard", memory_limit_bytes=new_declared.bytes,
                         environment=environment,
                     )
                     for _ in range(min(room, scope_room, plan.standard + (0 if self.dual_capacity else warm)))
@@ -679,6 +689,7 @@ class WorkerCapacityController(ABC):
                         # observes draining and retires its own resource.
                         await db.execute(update(ExecutionWorker).where(
                             ExecutionWorker.id == worker_id, ExecutionWorker.state == "ready",
+                            ExecutionWorker.active_runs == 0, ExecutionWorker.memory_reserved_bytes == 0,
                         ).values(state="draining", end_reason="capacity_replacement"))
                         await db.commit()
                         return []
@@ -1084,6 +1095,7 @@ class Request:
     handler: str | None = None
     handler_version: int | None = None
     cloudflare_revision: str | None = None
+    tenant_id: UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -1096,6 +1108,8 @@ class FreeBudget:
     runtime_profile: str = LINUX_RUNTIME_PROFILE
 
     def takes(self, request: Request) -> bool:
+        if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and request.bytes > CLOUDFLARE_DEV_BUDGET_BYTES:
+            return False
         return (request.handler is None or request.handler in self.handlers) and profile_matches(
             self.runtime_profile, request.handler, request.handler_version, request.cloudflare_revision,
         )
@@ -1104,11 +1118,11 @@ class FreeBudget:
         return request.bytes <= self.bytes and self.takes(request)
 
 
-def _cloudflare_budget() -> FreeBudget:
+def _cloudflare_budget(slots: int = CLOUDFLARE_DEV_SLOTS, *, used: int = 0, reserved_bytes: int = 0) -> FreeBudget:
     handler = CLOUDFLARE_WORKFLOW_HANDLER[0]
     return FreeBudget(
-        CLOUDFLARE_DEV_BUDGET_BYTES, frozenset({handler}),
-        {handler: CLOUDFLARE_DEV_SLOTS}, CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+        max(0, slots * CLOUDFLARE_DEV_BUDGET_BYTES - reserved_bytes), frozenset({handler}),
+        {handler: max(0, slots - used)}, CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
     )
 
 
@@ -1120,7 +1134,8 @@ def _plan_launches(
     largest_budget: int,
     cold: bool = False,
     probe_largest: bool = False,
-    runtime_profile: str = LINUX_RUNTIME_PROFILE,
+    new_declared: FreeBudget | None = None,
+    active_tenants: set[UUID | None] | None = None,
 ) -> LaunchPlan:
     """Place requests (oldest first) into free budgets, then into new Jobs.
 
@@ -1129,18 +1144,21 @@ def _plan_launches(
     gets its own sized Job; one larger than the largest launchable budget is
     left for the reconciler to fail only after the largest size was measured.
     Linux cold planning chooses one initial resource. Cloudflare starts have
-    exactly one declared workflow slot and no measured-memory probes.
+    declared workflow slots and no measured-memory probes.
     """
     bins = list(free)
     rooms = [budget.bytes for budget in bins]
     slots = [dict(budget.handler_slots) for budget in bins]
     limited = dict(HANDLER_CONCURRENCY_LIMITS)
-    declared = _cloudflare_budget() if runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE else None
+    busy_tenants = set(active_tenants or ())
     sized: list[tuple[UUID, int]] = []
     for item in waiting:
         dispatch_id, request = item.id, item.bytes
         placed = False
         for index, budget in enumerate(bins):
+            opaque = budget.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+            if opaque and item.tenant_id in busy_tenants:
+                continue
             remaining_slots = slots[index]
             handler = item.handler
             available_slots = (
@@ -1153,16 +1171,19 @@ def _plan_launches(
                 rooms[index] -= request
                 if handler is not None and available_slots is not None:
                     remaining_slots[handler] = available_slots - 1
+                if opaque:
+                    busy_tenants.add(item.tenant_id)
                 placed = True
                 break
         if placed:
             continue
-        if declared is not None:
-            if declared.fits(item):
-                # A new Cloudflare worker's only slot is used by this item.
-                bins.append(declared)
-                rooms.append(0)
-                slots.append({CLOUDFLARE_WORKFLOW_HANDLER[0]: 0})
+        if new_declared is not None:
+            if item.tenant_id not in busy_tenants and new_declared.fits(item):
+                busy_tenants.add(item.tenant_id)
+                bins.append(new_declared)
+                rooms.append(new_declared.bytes - request)
+                handler = CLOUDFLARE_WORKFLOW_HANDLER[0]
+                slots.append({handler: new_declared.handler_slots[handler] - 1})
             continue
         if cold:
             return (LaunchPlan(standard=1, sized=[]) if request <= standard_budget

@@ -82,12 +82,15 @@ nohup setsid python3 spikes/cloudflare-pyodide/dev/e2e/phase6.py run /absolute/p
 BIFROST_FORCE_PORT=1 ./debug.sh down
 ```
 
-The harness pauses both Linux launchers. It checks that the Linux-only
+The harness pauses both Linux launchers before reloading the API once with
+the approvals and provider settings. It checks that the Linux-only
 dispatch queues with zero managed incarnations, then submits an approved
 revision and checks that the real API commits the profile and enrollment
-binding before provider start. The Python child claims and completes that
-dispatch, writes one log, and loses its run credential after settlement.
-The harness waits for idle retirement and confirmed provider deletion,
+binding before provider start. Two approved dispatches run under distinct organizations in one prepared
+two-slot incarnation. Both Python children must enter their held response
+before either is released. Each run has one claim and one durable log, and
+its credential is revoked after settlement. The harness waits for idle
+retirement and confirmed provider deletion,
 then checks that the launcher does not reconnect across one alarm watchdog
 window. It unpauses the Linux launchers when it exits.
 

@@ -26,6 +26,7 @@ from src.models.enums import ExecutionStatus
 from src.models.orm.config import SystemConfig
 from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
 from src.models.orm.executions import Execution
+from src.models.orm.organizations import Organization
 from src.models.orm.work_dispatches import WorkDispatch
 from src.models.orm.workflows import Workflow
 from src.services import work_dispatch
@@ -223,10 +224,10 @@ async def _clean(async_session_factory):
     await _clear_pool_state(async_session_factory)
 
 
-async def _accept_pool_run() -> str:
+async def _accept_pool_run(*, org_id: str | None = None) -> str:
     execution_id = str(uuid4())
     await _publish_pending(
-        execution_id=execution_id, workflow_id=None, parameters={}, org_id=None,
+        execution_id=execution_id, workflow_id=None, parameters={}, org_id=org_id,
         user_id="00000000-0000-0000-0000-000000000001", user_name="Dev", user_email="",
         form_id=None, startup=None, form_inputs={}, embed={}, api_key_id=None,
         sync=False, is_platform_admin=True, file_path=None, lineage=None,
@@ -444,12 +445,13 @@ async def test_cloudflare_reserved_dispatch_must_fit_available_bytes(db) -> None
     assert claim.cloudflare_revision == CLOUDFLARE_REVISION
 
 
-async def _declared_worker(db, *, reconciled: bool = True) -> UUID:
+async def _declared_worker(db, *, reconciled: bool = True, slots: int = 1) -> UUID:
     async with db.context() as session:
         worker = ExecutionWorker(
             id=uuid4(), form="external", state="ready", runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
             supported_handlers=["workflow.execute"],
-            memory_budget_bytes=CLOUDFLARE_DEV_BUDGET_BYTES if reconciled else None,
+            memory_limit_bytes=slots * CLOUDFLARE_DEV_BUDGET_BYTES,
+            memory_budget_bytes=slots * CLOUDFLARE_DEV_BUDGET_BYTES if reconciled else None,
             heartbeat_at=datetime.now(UTC),
             remote_owner_lease_expires_at=datetime.now(UTC) + timedelta(minutes=5),
             version=get_version(),
@@ -474,6 +476,35 @@ async def test_cloudflare_claim_ignores_ineligible_work_at_the_head(db) -> None:
     linux = await _static_executor("linux")
     claim = await _claim(linux)
     assert claim is not None and claim.subject_id == UUID(older)
+
+
+async def test_cloudflare_claims_distinct_tenants_with_per_slot_limits(db) -> None:
+    other_tenants = [uuid4(), uuid4()]
+    async with db.context() as session:
+        session.add_all([Organization(id=org, name=str(org), created_by="unit") for org in other_tenants])
+    worker_id = await _declared_worker(db, slots=2)
+    other_worker = await _declared_worker(db, slots=2)
+    first = await _accept_pool_run()
+    same = await _accept_pool_run()
+    large = await _accept_pool_run(org_id=str(other_tenants[0]))
+    await _set_request(db.sessions, first, 32 * MIB, approved=True)
+    await _set_request(db.sessions, same, 32 * MIB, approved=True)
+    await _set_request(db.sessions, large, 129 * MIB, approved=True, age=claims.HEAD_OF_LINE_WAIT * 2)
+    first_claim = await _claim(worker_id)
+    assert first_claim is not None and first_claim.subject_id == UUID(first)
+    assert await _claim(other_worker) is None
+
+    second = await _accept_pool_run(org_id=str(other_tenants[0]))
+    third = await _accept_pool_run(org_id=str(other_tenants[1]))
+    await _set_request(db.sessions, second, 64 * MIB, approved=True)
+    await _set_request(db.sessions, third, 1 * MIB, approved=True)
+    second_claim = await _claim(worker_id)
+    assert second_claim is not None and second_claim.subject_id == UUID(second)
+    assert await _claim(worker_id) is None
+    assert not await claims.begin_idle_drain(worker_id)
+    async with db.context() as session:
+        worker = await session.get(ExecutionWorker, worker_id)
+        assert (worker.active_runs, worker.memory_reserved_bytes) == (2, 96 * MIB)
 
 
 async def test_cloudflare_claim_rollback_releases_slot_and_bytes(db, monkeypatch) -> None:
@@ -2037,6 +2068,23 @@ def test_waiting_work_that_fits_free_budgets_launches_nothing() -> None:
 
 def test_overflow_is_packed_first_fit_into_new_standard_workers() -> None:
     assert _plan([600, 600, 300, 100], []) == controller.LaunchPlan(standard=2, sized=[])
+
+
+def test_cloudflare_forecast_packs_distinct_tenants_into_declared_slots() -> None:
+    a, b, c = uuid4(), uuid4(), uuid4()
+
+    def request(tenant: UUID, mib: int = 128) -> controller.Request:
+        return controller.Request(uuid4(), mib * MIB, "workflow.execute", 1, CLOUDFLARE_REVISION, tenant)
+
+    waiting = [request(a), request(a), request(b, 129), request(b)]
+    budget = controller._cloudflare_budget(2)
+    plan = controller._plan_launches(waiting, [], standard_budget=GIB, largest_budget=GIB, new_declared=budget)
+    assert plan == controller.LaunchPlan(standard=1, sized=[])
+    plan = controller._plan_launches(
+        [*waiting, request(c)], [controller._cloudflare_budget(2, used=1, reserved_bytes=128 * MIB)],
+        standard_budget=GIB, largest_budget=GIB, new_declared=budget, active_tenants={a},
+    )
+    assert plan == controller.LaunchPlan(standard=1, sized=[])
 
 
 def test_work_a_standard_worker_cannot_hold_gets_a_sized_worker() -> None:

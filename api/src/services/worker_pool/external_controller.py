@@ -134,7 +134,13 @@ class ExternalWorkerPoolController(WorkerCapacityController):
                 reason = "prepare_timeout" if state == "reserved" else "start_timeout"
                 await self._record_loss(worker_id, uid, reason, False)
                 return
-        if state == "reserved" and (version != self.profile.worker_version or runtime_profile != self.runtime_profile):
+        if state == "reserved" and (
+            version != self.profile.worker_version or runtime_profile != self.runtime_profile
+            or (
+                runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+                and limit != self.profile.memory_limit_bytes
+            )
+        ):
             # A provider rollout cannot relabel an already reserved incarnation.
             # Fence it before cleanup; queued demand may reserve a fresh UUID.
             await self._record_loss(worker_id, uid, "provider_version_changed", False)

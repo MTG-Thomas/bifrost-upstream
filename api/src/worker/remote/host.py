@@ -129,6 +129,7 @@ class Bridge:
         self.hostname = hello["hostname"]
         self.execution_lane = hello.get("execution_lane", "normal")
         self.handlers = hello.get("handlers", LEGACY_EXECUTION_HANDLERS)
+        self.declared_slots = lease.declared_slots or CLOUDFLARE_DEV_SLOTS
         self._reset_freshness()
         self.pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self.jobs: dict[str, RemoteProcess] = {}
@@ -153,19 +154,56 @@ class Bridge:
     def _reset_freshness(self) -> None:
         if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
             self.heartbeat_at = time.monotonic()
-            self._opaque_empty_after: int | None = None
-            self._opaque_work_sequence = 0
+            self._opaque_received: int | None = None
+            self._opaque_routes: dict[str, int] = {}
+            self._opaque_legacy_busy = False
         else:
             self.sample_at = time.monotonic()
 
     def opaque_slot_idle(self) -> bool:
-        """A current launcher heartbeat saw an empty slot after the last send."""
+        """A current launcher heartbeat confirmed every physical slot empty."""
         return (
             self.connected and self.reconciliation_ready.is_set()
             and self.freshness_age() <= ADMISSION_FRESHNESS_SECONDS
-            and self._opaque_empty_after is not None
-            and self._opaque_empty_after >= self._opaque_work_sequence
+            and self._opaque_received is not None
+            and not self._opaque_routes and not self._opaque_legacy_busy
         )
+
+    def opaque_slots_used(self, admission: Admission) -> int:
+        # A route only adds occupancy beyond the holds if it has already been
+        # settled (or was a send refused but not yet seen in a heartbeat).
+        occupied = admission.held_slots() + sum(
+            admission.request_bytes(route.split(":")[1]) is None for route in self._opaque_routes
+        )
+        return max(occupied, int(self._opaque_legacy_busy))
+
+    def _receive_opaque_heartbeat(self, event: dict[str, Any]) -> None:
+        received = event.get("received_sequence")
+        if self.declared_slots == CLOUDFLARE_DEV_SLOTS:
+            occupied = event.get("slot_occupied")
+            if type(occupied) is not bool or type(received) is not int or received < 0:
+                # Older single-slot launchers can send liveness without occupancy.
+                self._opaque_received = None
+                self.heartbeat_at = time.monotonic()
+                return
+            self._opaque_legacy_busy = occupied
+            routes = set(self._opaque_routes) if occupied else set()
+        else:
+            listed = event.get("occupied_routes")
+            if (
+                type(received) is not int or received < (self._opaque_received or 0)
+                or not isinstance(listed, list) or len(listed) > self.declared_slots
+                or any(not isinstance(route, str) or route not in self._opaque_routes for route in listed)
+                or len(set(listed)) != len(listed)
+            ):
+                raise ProtocolError("Invalid Cloudflare slot occupancy heartbeat")
+            routes = set(listed)
+        self._opaque_routes = {
+            route: sent for route, sent in self._opaque_routes.items()
+            if sent > received or route in routes
+        }
+        self._opaque_received = received
+        self.heartbeat_at = time.monotonic()
 
     def freshness_age(self) -> float:
         observed_at = (
@@ -231,7 +269,7 @@ class Bridge:
                     send_deadline = loop.time() + _reply_timeout(action)
                     for frame in fragment(message):
                         if opaque and action == "workflow":
-                            self._opaque_work_sequence = message.sequence + (
+                            self._opaque_routes[payload["route_id"]] = message.sequence + (
                                 frame.payload["total"] - 1 if frame.kind == "fragment" else 0
                             )
                         if socket is None:
@@ -398,12 +436,7 @@ class Bridge:
                 else:
                     future.set_result(event["result"])
         elif event.get("event") == "heartbeat" and self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
-            self.heartbeat_at = time.monotonic()
-            received = event.get("received_sequence")
-            self._opaque_empty_after = (
-                received if event.get("slot_occupied") is False
-                and type(received) is int and received >= 0 else None
-            )
+            self._receive_opaque_heartbeat(event)
         elif event.get("event") == "sample":
             if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
                 raise ProtocolError("Cloudflare launcher must send liveness heartbeats")
@@ -422,6 +455,15 @@ class Bridge:
                 version = inventory.get("version")
                 if self.inventory_ready.is_set() or type(version) is not int or version != 1:
                     raise ProtocolError("expected one opaque inventory v1 per launcher generation")
+                if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
+                    live, terminals = inventory.get("routes"), inventory.get("terminal_routes")
+                    if not isinstance(live, list) or not isinstance(terminals, list):
+                        raise ProtocolError("Opaque inventory must include routes and terminals")
+                    self._opaque_routes = {
+                        entry["route_id"]: 0 for entry in live + terminals
+                        if isinstance(entry, dict) and isinstance(entry.get("route_id"), str)
+                        and entry["route_id"].startswith("workflow:")
+                    }
             if self.runtime_profile == LINUX_RUNTIME_PROFILE:
                 baseline_bytes = inventory.get("baseline_bytes")
                 if (
@@ -680,8 +722,9 @@ class ApiExecutor(PoolWorker):
         self.bridge = bridge
         if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
             self.admission = Admission(
-                budget_bytes=CLOUDFLARE_DEV_BUDGET_BYTES,
-                declared_slots=CLOUDFLARE_DEV_SLOTS,
+                budget_bytes=bridge.declared_slots * CLOUDFLARE_DEV_BUDGET_BYTES,
+                declared_slots=bridge.declared_slots,
+                occupied_slots=self._opaque_slots_used,
                 under_pressure=lambda: False,
                 running_workflow_ids=set,
                 workflow_growth=dict,
@@ -691,11 +734,14 @@ class ApiExecutor(PoolWorker):
         self._reconciled_generation = 0
         self._admission_prepared = False
 
+    def _opaque_slots_used(self) -> int:
+        assert self.admission is not None
+        return self.bridge.opaque_slots_used(self.admission)
+
     def _workflow_runs(self) -> int:
-        active = super()._workflow_runs()
-        if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and not self.bridge.opaque_slot_idle():
-            return max(1, active)
-        return active
+        if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
+            return max(self._opaque_slots_used(), int(not self.bridge.opaque_slot_idle()))
+        return super()._workflow_runs()
 
     async def _initialize_runtime(self) -> bool:
         return await report_worker_handlers(

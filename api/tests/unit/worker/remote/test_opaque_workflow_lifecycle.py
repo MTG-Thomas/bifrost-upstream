@@ -64,7 +64,7 @@ def opaque_bridge(socket, lease):
 
 @pytest.fixture
 async def opaque_executor(async_session_factory, monkeypatch, reviewed_workspace):
-    lease = RemoteOwnerLease(uuid4(), uuid4(), uuid4(), 2)
+    lease = RemoteOwnerLease(uuid4(), uuid4(), uuid4(), 2, declared_slots=2)
     bridge = opaque_bridge(Mock(close=AsyncMock()), lease)
     worker = ApiExecutor(bridge, lease.worker_id)
     worker._workflow_consumer = worker._make_workflow_consumer()
@@ -92,6 +92,7 @@ async def opaque_executor(async_session_factory, monkeypatch, reviewed_workspace
     async with async_session_factory() as db:
         db.add(ExecutionWorker(
             id=lease.worker_id, form="external", state="ready", runtime_profile=PROFILE,
+            memory_limit_bytes=2 * 128 * 2**20,
             remote_launcher_id=lease.launcher_id, remote_owner_id=lease.owner_id,
             remote_session_generation=lease.session_generation,
             remote_owner_lease_expires_at=datetime.now(UTC) + timedelta(minutes=10),
@@ -235,7 +236,7 @@ async def test_takeover_adopts_live_and_replays_retained_terminal(opaque_executo
     assert worker.admission.held_slots() == 1
     assert worker.admission.held_bytes() == RESERVATION
     async with worker.admission.claiming() as fits:
-        assert fits is None  # spare bytes, but the adopted route holds the only slot
+        assert fits is None  # The replayed terminal still occupies a physical slot.
     assert list(pool.processes) == [live["route_id"]]
     handle = pool.processes[live["route_id"]]
     assert pool._opaque_deadline(handle.current_execution).isoformat() == live["workflow_deadline"]
@@ -244,6 +245,12 @@ async def test_takeover_adopts_live_and_replays_retained_terminal(opaque_executo
     })
     worker.bridge.acknowledge.assert_awaited_once_with(terminal["event_id"])
     worker.bridge.request.assert_not_awaited()
+
+    await worker.bridge.receive({
+        "event": "heartbeat", "received_sequence": 0, "occupied_routes": [live["route_id"]],
+    })
+    async with worker.admission.claiming() as fits:
+        assert fits == worker.admission.budget_bytes - RESERVATION
 
 
 @pytest.mark.asyncio
@@ -639,7 +646,10 @@ async def test_opaque_bridge_closes_interrupted_fragment_stream(monkeypatch, tim
     bridge = opaque_bridge(socket, RemoteOwnerLease(uuid4(), uuid4(), uuid4(), 1))
     bridge.reconciliation_ready.set()
     with pytest.raises(ConnectionError, match="command send was interrupted"):
-        await bridge.request("workflow", {"context": "x" * MAX_FRAME_BYTES}, expected_generation=1)
+        await bridge.request(
+            "workflow", {"route_id": "workflow:execution:attempt", "context": "x" * MAX_FRAME_BYTES},
+            expected_generation=1,
+        )
     await closed.wait()
     assert socket.send_text.await_count == 2
     assert ControlEnvelope.from_json(socket.send_text.await_args_list[0].args[0]).kind == "fragment"
@@ -660,7 +670,10 @@ async def test_opaque_bridge_does_not_continue_fragment_stream_on_replacement():
 
     old.send_text.side_effect = replace_during_send
     with pytest.raises(ConnectionError, match="socket was replaced during dispatch"):
-        await bridge.request("workflow", {"context": "x" * MAX_FRAME_BYTES}, expected_generation=1)
+        await bridge.request(
+            "workflow", {"route_id": "workflow:execution:attempt", "context": "x" * MAX_FRAME_BYTES},
+            expected_generation=1,
+        )
     old.send_text.assert_awaited_once()
     replacement.send_text.assert_not_awaited()
     replacement.close.assert_not_awaited()

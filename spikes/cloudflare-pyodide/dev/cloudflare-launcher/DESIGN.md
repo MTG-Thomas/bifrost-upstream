@@ -90,8 +90,8 @@ lands.
   `workflow.execute@1`, and treat the route acknowledgement without a PID as
   valid. No fake PIDs.
 - Resource accounting by **declared request**. The API assigns each launcher
-  in the dev build one slot and a 128 MiB request budget. Each claim uses one
-  slot and its own request from that budget until settlement.
+  one to four slots from its prepared capacity reservation. Each claim holds
+  one slot and its request (up to 128 MiB) until settlement.
 - **Eligibility at claim time.** A Cloudflare launcher must only claim
   executions the Pyodide runtime can run (no unpackaged native dependencies,
   within subrequest/CPU limits). The fenced claim uses the API's durable
@@ -111,9 +111,10 @@ lands.
   #1425's `ScopeRegistry`/`WorkerLedger` DOs are the model.
 - **Burst on VM overload** is then the controller's normal behaviour: when
   the VM's workers are full, demand launches Cloudflare incarnations.
-- The dev build admits one attempt per launcher. A future multi-slot provider
-  profile can use the tenant hosts' parallelism across tenants. Each tenant's
-  attempts serialize unless overflow slots exist (fork issue #54).
+- Pack different tenants onto one launcher to reduce the number of resident
+  control sockets. Each tenant still has one TenantHost and engine child. Fork
+  issue #54 proposes overflow children for same-tenant bursts. This change
+  leaves that child lifecycle for separate work.
 
 ## Review (GPT-6.2 Sol, 2026-11-18): request changes before enabling claims
 
@@ -350,6 +351,37 @@ run. Findings, checked against the cited code:
   and unconfirmed stops retain the record and its slot. A tombstone prevents
   resurrection after retry or reset.
 
+### Multi-slot managed launchers
+
+- The authenticated provider profile declares `memory_limit_bytes` as one to
+  four times 128 MiB (`WORKFLOW_SLOTS`, default one). The API persists that
+  value in the prepared incarnation and uses it to derive both slot count and
+  aggregate budget. Each execution still must fit a single 128 MiB slot.
+  The provider enrolls the DO from the same immutable reservation. Manual
+  dev enrollments retain one slot. Use a new build for a capacity change.
+- Each tenant keeps its own engine child. Cloudflare claims and forecasts
+  account for the execution's tenant (including the platform tenant) so a
+  same-tenant backlog alone does not provision extra launchers. A second
+  route for a tenant already occupying a launcher is refused before engine
+  entry with `MemoryError`. TenantHost retains its absolute dispatch deadline
+  and serialization as a final guard, including after an uncertain prior stop.
+  A launcher serializes cold warm-up RPCs because simultaneous Python boots
+  failed in local workerd. Workflows on ready children overlap. The original
+  dispatch deadline covers the wait for a cold warm-up.
+- Each slot journals its route and terminal independently. Inventory includes
+  all live routes and retained terminals before replay. ACK and stop select
+  only their target. A reset fences each entering route independently and
+  replays its uncertain terminal. A retained terminal occupies its slot until
+  its ACK is processed.
+- A multi-slot heartbeat lists occupied route IDs and the highest API frame
+  received. The owner combines that snapshot with sends beyond the watermark
+  and admission holds. A slot cannot be reused solely because its result
+  committed. The planner forecasts an authenticated initial start awaiting
+  its first report as pending capacity. Free capacity and yield otherwise
+  require reconciled, live reports. Idle drain and yield require every slot
+  empty and no durable claim. The
+  single-slot incarnation keeps its existing heartbeat format.
+
 ### Phase 3 workspace approval and placement
 
 A server operator runs these commands inside the API container, from `/app`:
@@ -479,21 +511,18 @@ until the ordinary queue deadline.
   Re-enrollment requires a new incarnation and derived key. The capacity
   provider is future work.
 - The Cloudflare hello advertises the signed runtime profile and capabilities
-  above and omits `sample`. The API owns the slot count and request byte
-  budget. This dev build fixes them at one slot and 134217728 bytes per
-  incarnation. When #1424/#1425-style provider enrollment supports multiple
-  profiles, the API selects capacity from the prepared incarnation's
-  provider profile. Capacity does not come from launcher-supplied fields.
+  above and omits `sample`. The API derives the slot count and request byte
+  budget from the prepared incarnation (134217728 bytes per declared slot).
+  Capacity does not come from launcher-supplied fields.
   The API does not send Linux memory-pressure configuration or
   `memory_kill_growth_bytes` for this profile.
 - Send a `heartbeat` once per second inside a normal sequenced event
-  envelope for the current session generation. Include `slot_occupied`
-  and `received_sequence`, the last API frame received in that generation
-  (zero before any frames). A retained terminal occupies the slot until
-  its ACK has been processed. The API writes a busy slot in the claim
-  transaction and only reports it free after the admission hold clears
-  and the launcher reports an empty slot at or beyond the final workflow
-  frame. Hello and reconnect
+  envelope for the current session generation. Include `occupied_routes`
+  (route IDs, including retained terminals) for multi-slot incarnations, or
+  `slot_occupied` for single-slot incarnations, and `received_sequence`, the
+  last API frame received in that generation (zero before any frames).
+  The API writes a busy slot in the claim transaction and only reports it
+  free after both its hold and physical occupancy clear. Hello and reconnect
   start the freshness window, while inventory reconciliation independently
   gates claims. A heartbeat older than three seconds pauses admission and
   blocks new workflow sends. An expired heartbeat prevents owner renewal

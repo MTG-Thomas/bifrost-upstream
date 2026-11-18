@@ -30,7 +30,7 @@ function workflow(suffix = '1') {
   };
 }
 
-function peer({data = new Map(), runHost, beforePut, onSend} = {}) {
+function peer({data = new Map(), runHost, beforePut, onSend, slots = 1} = {}) {
   let now = START;
   let order = 0;
   let session;
@@ -43,7 +43,7 @@ function peer({data = new Map(), runHost, beforePut, onSend} = {}) {
   const entered = deferred();
   const assembler = new FragmentAssembler();
   const core = new LauncherCore({
-    identity: IDENTITY, secret: SECRET, clock: () => now,
+    identity: IDENTITY, secret: SECRET, clock: () => now, slots,
     newId: () => `id-${String(++order).padStart(24, '0')}`,
     storage: {
       get: async (key) => structuredClone(data.get(key)),
@@ -64,7 +64,8 @@ function peer({data = new Map(), runHost, beforePut, onSend} = {}) {
       }
     },
     runHost: async (route, context, signal) => {
-      assert.equal(data.get('slot').state, 'entering');
+      assert.ok([...data.values()].some((entry) => entry.state === 'entering' &&
+        entry.route.route_id === route.route_id));
       calls.push({route, context, signal});
       entered.resolve();
       return runHost ? runHost(route, context, signal) : COMPLETED;
@@ -106,6 +107,82 @@ async function connect(api, generation = 1) {
   await api.dial();
   await api.welcome(generation);
 }
+
+function tenantWorkflow(suffix, tenant) {
+  const attempt = workflow(suffix);
+  const subject = SUBJECT.slice(0, -1) + suffix;
+  attempt.route_id = attempt.route_id.replace(SUBJECT, subject);
+  attempt.execution_id = attempt.active_execution.execution_id = subject;
+  attempt.active_execution.org_id = tenant;
+  return attempt;
+}
+
+test('distinct tenants run concurrently and ACK releases only its route', async () => {
+  const first = deferred();
+  const second = deferred();
+  const api = peer({slots: 2, runHost: (route) =>
+    route.active_execution.org_id === 'first' ? first.promise : second.promise});
+  const a = tenantWorkflow('1', 'first');
+  const b = tenantWorkflow('2', 'second');
+  await connect(api);
+  await api.command('workflow', a);
+  await api.command('workflow', tenantWorkflow('3', 'first'));
+  assert.equal(api.frames().at(-1).error_type, 'MemoryError');
+  await api.command('workflow', b);
+  await api.command('workflow', tenantWorkflow('4', 'third'));
+  assert.equal(api.frames().at(-1).error_type, 'MemoryError');
+  assert.deepEqual(api.calls.map(({route}) => route.route_id), [a.route_id, b.route_id]);
+
+  await api.command('terminate', {route_id: a.route_id, error_type: 'CancelledError', error: 'cancelled'});
+  const terminal = api.frames().at(-1);
+  assert.equal(terminal.route_id, a.route_id);
+  assert.equal(api.calls[0].signal.aborted, true);
+  assert.equal(api.calls[1].signal.aborted, false);
+  await api.close();
+  await connect(api, 2);
+  const inventory = api.frames().at(-2).inventory;
+  assert.deepEqual(inventory.routes.map(({route_id}) => route_id), [b.route_id]);
+  assert.deepEqual(inventory.terminal_routes.map(({event_id}) => event_id), [terminal._event_id]);
+  assert.deepEqual(api.frames().at(-1), terminal);
+
+  await api.ack(terminal._event_id);
+  api.setClock(START + 1001);
+  await api.tick();
+  assert.deepEqual(api.frames().at(-1), {event: 'heartbeat', occupied_routes: [b.route_id], received_sequence: 1});
+  first.resolve(COMPLETED);
+  second.resolve(COMPLETED);
+  await api.finish();
+  const results = api.frames().filter(({event}) => event === 'result');
+  assert.equal(results.length, 3); // Original terminal, replay, second route.
+  assert.equal(results.at(-1).route_id, b.route_id);
+});
+
+test('reset fences every entering route and replays independently acknowledged terminals', async () => {
+  const held = deferred();
+  const api = peer({slots: 2, runHost: () => held.promise});
+  const a = tenantWorkflow('1', 'first');
+  const b = tenantWorkflow('2', 'second');
+  await connect(api);
+  await api.command('workflow', a);
+  await api.command('workflow', b);
+  await api.close();
+
+  const reset = peer({slots: 2, data: new Map(api.data)});
+  await connect(reset, 2);
+  assert.deepEqual(reset.stopped, [a.route_id, b.route_id]);
+  const [snapshot, ...replayed] = reset.frames();
+  assert.deepEqual(snapshot.inventory.routes, []);
+  assert.deepEqual(snapshot.inventory.terminal_routes.map(({attempt_state}) => attempt_state),
+    ['uncertain', 'uncertain']);
+  assert.deepEqual(replayed.map(({route_id}) => route_id), [a.route_id, b.route_id]);
+  assert.notEqual(replayed[0]._event_id, replayed[1]._event_id);
+  await reset.ack(replayed[1]._event_id);
+  await reset.close();
+  await connect(reset, 3);
+  assert.deepEqual(reset.frames().at(-1), replayed[0]);
+  held.resolve(COMPLETED);
+  await api.finish();
+});
 
 test('terminal release stops the active route and fences late results after the ledger is cleared', async () => {
   const finish = deferred();

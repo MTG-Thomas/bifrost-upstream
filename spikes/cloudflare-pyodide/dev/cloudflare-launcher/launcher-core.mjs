@@ -1,11 +1,11 @@
 import {
   CLOUDFLARE_HANDLERS, CLOUDFLARE_INCARNATION_ENDED, CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
   CREDENTIAL_PROTOCOL, FragmentAssembler, ProtocolError, encodeEnvelope, envelope, fragment,
-  newNonce, parseEnvelope, signHello,
+  newNonce, parseEnvelope, signHello, SLOT_BYTES,
 } from './protocol.mjs';
 
 const CONTROL = 'control';
-const SLOT = 'slot';
+const slotKey = (index) => index === 0 ? 'slot' : `slot:${index}`;
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const ROUTE = new RegExp(`^workflow:(${UUID}):${UUID}$`);
 const INSTANT = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?(?:Z|[+-]\d\d:\d\d)$/;
@@ -40,7 +40,7 @@ function workflowRoute(payload, runtimeHandle) {
       typeof active_execution.sync !== 'boolean' ||
       (active_execution.org_id != null && typeof active_execution.org_id !== 'string') ||
       !instant(started_at) || !integer(timeout_seconds) ||
-      !integer(memory_request_bytes) || memory_request_bytes > 128 * 2 ** 20 ||
+      !integer(memory_request_bytes) || memory_request_bytes > SLOT_BYTES ||
       (timeout_seconds === 0 ? workflow_deadline !== null :
         !instant(workflow_deadline) || Date.parse(workflow_deadline) - Date.parse(started_at) !== timeout_seconds * 1000) ||
       !record(context) || context.workflow_deadline !== workflow_deadline ||
@@ -60,18 +60,18 @@ function timeout() {
   return failure('not_started', 'TimeoutError', 'Workflow deadline elapsed before engine entry');
 }
 
-// Storage writes resolve only after confirmation. The slot holds either an
-// accepted route or that route and its terminal. The latter is one write and
-// stays in the slot until the API acknowledges that exact event.
+// Each slot holds one confirmed route record. A terminal and its metadata
+// are written together and held until the API acknowledges that exact event.
 export class LauncherCore {
   #control;
-  #slot;
+  #slots;
   #session = null;
   #tail = Promise.resolve();
-  #abort = null;
+  #aborts = new Map();
   #released = false;
 
-  constructor({identity, secret, clock, storage, send, runHost, stopHost, background, newId = newNonce}) {
+  constructor({identity, secret, clock, storage, send, runHost, stopHost, background, slots = 1, newId = newNonce}) {
+    this.#slots = Array(slots).fill(null);
     this.identity = identity;
     this.secret = secret;
     this.clock = clock;
@@ -105,11 +105,14 @@ export class LauncherCore {
   release() {
     return this.#serialize(async () => {
       if (this.#released) return;
-      const slot = this.#slot ?? await this.storage.get(SLOT);
+      const slots = this.#control ? this.#slots :
+        await Promise.all(this.#slots.map((_, index) => this.storage.get(slotKey(index))));
       this.#released = true;
       this.#session = null;
-      this.#slot = null;
-      if (slot?.state === 'entering') this.#stop(slot.route);
+      for (const slot of slots) {
+        if (slot?.state === 'entering') this.#stop(slot.route);
+      }
+      this.#slots.fill(null);
     });
   }
 
@@ -124,21 +127,22 @@ export class LauncherCore {
     this.#control = control;
   }
 
-  async #saveSlot(slot) {
-    await this.storage.put(SLOT, slot);
-    this.#slot = slot;
+  async #saveSlot(index, slot) {
+    await this.storage.put(slotKey(index), slot);
+    this.#slots[index] = slot;
   }
 
   async #load() {
     if (this.#control) return;
     const control = await this.storage.get(CONTROL);
-    this.#slot = await this.storage.get(SLOT);
-    if (this.#slot && this.#slot.state !== 'terminal') {
-      const entering = this.#slot.state === 'entering';
-      if (entering) this.#stop(this.#slot.route);
-      const outcome = this.#expired(this.#slot.route) && !entering ? timeout() :
+    for (let index = 0; index < this.#slots.length; index++) {
+      const slot = this.#slots[index] = await this.storage.get(slotKey(index));
+      if (!slot || slot.state === 'terminal') continue;
+      const entering = slot.state === 'entering';
+      if (entering) this.#stop(slot.route);
+      const outcome = this.#expired(slot.route) && !entering ? timeout() :
         failure(entering ? 'uncertain' : 'not_started', 'LauncherReset', 'Launcher reset before a terminal was recorded');
-      await this.#settle(this.#slot.route, outcome);
+      await this.#settle(index, slot.route, outcome);
     }
     this.#control = control ?? {helloSequence: 0, generation: 0, state: 'starting'};
   }
@@ -172,10 +176,10 @@ export class LauncherCore {
       if (this.#released) return;
       if (code === CLOUDFLARE_INCARNATION_ENDED) {
         await this.#saveControl({...this.#control, state: 'retired'});
-        const slot = this.#slot;
-        if (slot?.state === 'entering') {
+        for (const [index, slot] of this.#slots.entries()) {
+          if (slot?.state !== 'entering') continue;
           this.#stop(slot.route);
-          await this.#settle(slot.route, failure('uncertain', 'LauncherRetired', 'The incarnation ended'));
+          await this.#settle(index, slot.route, failure('uncertain', 'LauncherRetired', 'The incarnation ended'));
         }
       }
     });
@@ -204,9 +208,11 @@ export class LauncherCore {
     const message = session.assembler.feed(frame);
     if (!message) return;
     if (message.kind === 'ack') {
-      if (this.#slot?.state === 'terminal' && this.#slot.terminal._event_id === message.payload.event_id) {
-        await this.storage.delete(SLOT);
-        this.#slot = null;
+      const index = this.#slots.findIndex((slot) =>
+        slot?.state === 'terminal' && slot.terminal._event_id === message.payload.event_id);
+      if (index !== -1) {
+        await this.storage.delete(slotKey(index));
+        this.#slots[index] = null;
       }
       return;
     }
@@ -228,23 +234,30 @@ export class LauncherCore {
     await this.#saveControl({...this.#control, generation});
     if (this.#session !== session) return;
     session.generation = generation;
-    const slot = this.#slot;
-    const terminal = slot?.terminal;
-    this.#emit(session, {event: 'inventory', inventory: {
-      version: 1, routes: slot && !terminal ? [slot.route] : [],
-      terminal_routes: terminal ? [{...slot.route, event_id: terminal._event_id,
-        attempt_state: terminal.attempt_state}] : [],
-    }});
-    if (terminal) this.#emit(session, terminal);
+    const routes = [];
+    const terminalRoutes = [];
+    for (const slot of this.#slots) {
+      if (!slot) continue;
+      if (slot.state === 'terminal') {
+        terminalRoutes.push({...slot.route, event_id: slot.terminal._event_id,
+          attempt_state: slot.terminal.attempt_state});
+      } else {
+        routes.push(slot.route);
+      }
+    }
+    this.#emit(session, {event: 'inventory', inventory: {version: 1, routes, terminal_routes: terminalRoutes}});
+    for (const slot of this.#slots) {
+      if (slot?.state === 'terminal') this.#emit(session, slot.terminal);
+    }
     session.nextHeartbeat = this.clock() + 1000;
   }
 
   tick(session) {
     return this.#serialize(() => {
       if (this.#session !== session || !session.generation || this.clock() < session.nextHeartbeat) return;
-      this.#emit(session, {
-        event: 'heartbeat', slot_occupied: Boolean(this.#slot), received_sequence: session.received,
-      });
+      const occupancy = this.#slots.length === 1 ? {slot_occupied: Boolean(this.#slots[0])} :
+        {occupied_routes: this.#slots.filter(Boolean).map(({route}) => route.route_id)};
+      this.#emit(session, {event: 'heartbeat', ...occupancy, received_sequence: session.received});
       session.nextHeartbeat += 1000;
       if (session.nextHeartbeat <= this.clock()) session.nextHeartbeat = this.clock() + 1000;
     });
@@ -274,13 +287,14 @@ export class LauncherCore {
         accept({});
         return;
       case 'terminate': {
-        const slot = this.#slot;
         if (typeof payload.route_id !== 'string' || !ROUTE.test(payload.route_id) ||
             typeof payload.error_type !== 'string' || typeof payload.error !== 'string') {
           refuse('ValueError', 'Invalid terminate command');
           return;
         }
-        if (slot?.route.route_id !== payload.route_id || slot.state === 'terminal') {
+        const index = this.#slots.findIndex((slot) => slot?.route.route_id === payload.route_id);
+        const slot = this.#slots[index];
+        if (!slot || slot.state === 'terminal') {
           accept({received: true});
           return;
         }
@@ -289,7 +303,7 @@ export class LauncherCore {
         try {
           accept({received: true});
         } finally {
-          await this.#settle(slot.route, failure(entering ? 'uncertain' : 'not_started',
+          await this.#settle(index, slot.route, failure(entering ? 'uncertain' : 'not_started',
             payload.error_type, payload.error));
         }
         return;
@@ -316,20 +330,26 @@ export class LauncherCore {
       refuse('ValueError', 'Invalid Cloudflare workflow dispatch');
       return;
     }
-    if (this.#slot) {
+    const index = this.#slots.findIndex((slot) => !slot);
+    if (index === -1) {
       refuse('MemoryError', 'No Cloudflare workflow slot available');
       return;
     }
+    if (this.#slots.some((slot) => slot &&
+        (slot.route.active_execution.org_id ?? null) === (route.active_execution.org_id ?? null))) {
+      refuse('MemoryError', 'This tenant already holds a Cloudflare workflow slot');
+      return;
+    }
     if (this.#session !== session) return;
-    await this.#saveSlot({route, state: 'accepted'});
+    await this.#saveSlot(index, {route, state: 'accepted'});
     let replied = false;
     try {
       replied = accept({runtime_handle: route.runtime_handle});
     } finally {
       if (replied) {
-        this.background(this.#execute(route, payload.context));
+        this.background(this.#execute(index, route, payload.context));
       } else {
-        await this.#settle(route, failure('not_started', 'ControlDisconnected', 'Workflow reply was not sent'));
+        await this.#settle(index, route, failure('not_started', 'ControlDisconnected', 'Workflow reply was not sent'));
       }
     }
   }
@@ -338,34 +358,36 @@ export class LauncherCore {
     return route.workflow_deadline !== null && this.clock() >= Date.parse(route.workflow_deadline);
   }
 
-  async #execute(route, context) {
+  async #execute(index, route, context) {
     const work = await this.#serialize(async () => {
-      if (this.#slot?.route !== route || this.#slot.state !== 'accepted') return null;
+      const slot = this.#slots[index];
+      if (slot?.route !== route || slot.state !== 'accepted') return null;
       if (this.#expired(route)) {
-        await this.#settle(route, timeout());
+        await this.#settle(index, route, timeout());
         return null;
       }
       if (this.retired) {
-        await this.#settle(route, failure('not_started', 'LauncherRetired', 'The incarnation ended'));
+        await this.#settle(index, route, failure('not_started', 'LauncherRetired', 'The incarnation ended'));
         return null;
       }
-      await this.#saveSlot({route, state: 'entering'});
+      await this.#saveSlot(index, {route, state: 'entering'});
       if (this.#expired(route)) {
-        await this.#settle(route, timeout());
+        await this.#settle(index, route, timeout());
         return null;
       }
       const controller = new AbortController();
-      this.#abort = controller;
+      this.#aborts.set(route.route_id, controller);
       // Start the RPC in this turn, but leave the control queue available for
       // heartbeat, terminate and acknowledgement while the host is busy.
-      return {controller, outcome: this.#hostOutcome(route, context, controller.signal)};
+      return {outcome: this.#hostOutcome(route, context, controller.signal)};
     });
     if (!work) return;
     const outcome = await work.outcome;
     await this.#serialize(async () => {
-      if (this.#abort === work.controller) this.#abort = null;
-      if (!this.#released && this.#slot?.route === route && this.#slot.state === 'entering') {
-        await this.#settle(route, outcome);
+      this.#aborts.delete(route.route_id);
+      const slot = this.#slots[index];
+      if (!this.#released && slot?.route === route && slot.state === 'entering') {
+        await this.#settle(index, route, outcome);
       }
     });
   }
@@ -382,16 +404,16 @@ export class LauncherCore {
   }
 
   #stop(route) {
-    this.#abort?.abort();
+    this.#aborts.get(route.route_id)?.abort();
     this.background(this.stopHost(route).catch(() => {
       // API fencing and the retained uncertain terminal cover a lost stop.
     }));
   }
 
-  async #settle(route, {attempt_state, result}) {
+  async #settle(index, route, {attempt_state, result}) {
     const terminal = {event: 'result', route_id: route.route_id, runtime_handle: route.runtime_handle,
       _event_id: this.newId(), attempt_state, result};
-    await this.#saveSlot({route, state: 'terminal', terminal});
+    await this.#saveSlot(index, {route, state: 'terminal', terminal});
     this.#emitCurrent(terminal);
   }
 }

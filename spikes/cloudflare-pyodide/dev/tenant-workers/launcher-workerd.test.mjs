@@ -15,7 +15,7 @@ const secret = 'a'.repeat(64);
 const incarnation = '0e9d8c7b-6a59-4847-b6a5-948372615041';
 const launcher = '6f1c2d3e-4a5b-4c6d-8e7f-0a1b2c3d4e5f';
 const path = (name) => fileURLToPath(new URL(name, import.meta.url));
-const cases = new Map(['queued-block', 'active-block'].map((name) =>
+const cases = new Map(['queued-block', 'active-block', 'first-tenant', 'second-tenant'].map((name) =>
   [`/${name}`, {entered: Promise.withResolvers(), release: Promise.withResolvers()}]));
 const origins = [];
 let mf;
@@ -245,6 +245,22 @@ test('workerd launcher alarm exchanges hello and inventory over an outbound Upgr
   assert.deepEqual(await signHello(secret, hello.hello), hello.hello);
   assert.deepEqual(inventory, {kind: 'event', sequence: 1, session_generation: 1,
     payload: {event: 'inventory', inventory: {version: 1, routes: [], terminal_routes: []}}});
+});
+
+test('workerd runs distinct tenants on their own children at the same time', {timeout: 10_000}, async (t) => {
+  const tenants = ['first-tenant', 'second-tenant'];
+  await Promise.all(tenants.map((tenant) => host(tenant, 'warm')));
+  const runs = tenants.map((tenant) => host(tenant, 'run', route(tenant, {scenario: tenant}), t.signal));
+  try {
+    await Promise.all(tenants.map(async (tenant) => {
+      const aborted = new Promise((_, reject) =>
+        t.signal.addEventListener('abort', () => reject(t.signal.reason), {once: true}));
+      await Promise.race([cases.get('/' + tenant).entered.promise, aborted]);
+    }));
+  } finally {
+    for (const tenant of tenants) cases.get('/' + tenant).release.resolve();
+  }
+  assert.deepEqual((await Promise.all(runs)).map(({attempt_state}) => attempt_state), ['completed', 'completed']);
 });
 
 test('TenantHost serves the pinned module and keeps missing modules inside the snapshot', async () => {

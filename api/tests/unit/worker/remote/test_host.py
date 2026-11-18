@@ -119,7 +119,7 @@ async def test_opaque_worker_stays_busy_until_launcher_reports_its_slot_empty() 
     assert worker.active_runs() == 1
     await heartbeat(False, 0)
     assert worker.active_runs() == 0
-    request = asyncio.create_task(bridge.request("workflow", {}))
+    request = asyncio.create_task(bridge.request("workflow", {"route_id": "workflow:execution:attempt"}))
     await asyncio.sleep(0)
     reply_id = next(iter(bridge.pending))
     await bridge.receive({"reply": reply_id, "result": {}})
@@ -130,6 +130,49 @@ async def test_opaque_worker_stays_busy_until_launcher_reports_its_slot_empty() 
     assert worker.active_runs() == 1
     await heartbeat(False, 2)  # The launcher subsequently processed the ACK.
     assert worker.active_runs() == 0
+
+
+@pytest.mark.asyncio
+async def test_two_opaque_slots_merge_holds_with_confirmed_physical_routes() -> None:
+    bridge = Bridge(
+        Mock(send_text=AsyncMock()), {"hostname": "opaque", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE},
+        replace(LEASE, declared_slots=2),
+    )
+    worker = ApiExecutor(bridge, LEASE.worker_id)
+    admission = worker.admission
+    assert admission is not None
+    assert admission.budget_bytes == 256 * 2**20
+    bridge.reconciliation_ready.set()
+
+    async def heartbeat(routes, received):
+        await bridge.receive({"event": "heartbeat", "occupied_routes": routes, "received_sequence": received})
+
+    first, second = "workflow:first:attempt", "workflow:second:attempt"
+    await bridge.receive({"event": "inventory", "inventory": {
+        "version": 1, "routes": [], "terminal_routes": [{"route_id": first}],
+    }})
+    await heartbeat([first], 0)
+    async with admission.claiming() as fits:
+        assert fits == admission.budget_bytes
+        admission.hold("second", 80 * 2**20, workflow=True)
+    send = asyncio.create_task(bridge.request("workflow", {"route_id": second}))
+    await asyncio.sleep(0)
+    await bridge.receive({"reply": next(iter(bridge.pending)), "result": {}})
+    await send
+
+    await heartbeat([first], 0)  # The second send is newer than this sample.
+    assert worker.active_runs() == 2
+    async with admission.claiming() as fits:
+        assert fits is None
+    await heartbeat([second], 1)
+    assert worker.active_runs() == 1
+    assert not bridge.opaque_slot_idle()
+
+    admission.release("second")
+    assert worker.active_runs() == 1  # The terminal still occupies the slot.
+    await heartbeat([], 2)
+    assert worker.active_runs() == 0
+    assert bridge.opaque_slot_idle()
 
 
 @pytest.mark.asyncio

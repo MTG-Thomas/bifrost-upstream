@@ -47,6 +47,7 @@ CLOUDFLARE_INCARNATION_ENDED = 4001
 CLOUDFLARE_CREDENTIAL_PROTOCOL = 2
 CLOUDFLARE_DEV_SLOTS = 1
 CLOUDFLARE_DEV_BUDGET_BYTES = 128 * 2**20
+CLOUDFLARE_MAX_SLOTS = 4
 CLOUDFLARE_WORKFLOW_HANDLER = ("workflow.execute", 1)
 
 # Exact handler versions a physical launcher can execute. Older launchers
@@ -62,6 +63,16 @@ EXECUTION_HANDLERS = (
     ("agent.summarize_backfill", 1),
 )
 SUMMARY_CLAIM_PROTOCOL = 1
+def cloudflare_slots(memory_limit_bytes: int | None) -> int:
+    """Interpret the immutable capacity limit of a Cloudflare incarnation."""
+    if memory_limit_bytes is None:
+        return CLOUDFLARE_DEV_SLOTS  # Manual dev enrollment.
+    slots, remainder = divmod(memory_limit_bytes, CLOUDFLARE_DEV_BUDGET_BYTES)
+    if remainder or not 1 <= slots <= CLOUDFLARE_MAX_SLOTS:
+        raise ValueError("Cloudflare capacity must declare one to four 128 MiB slots")
+    return slots
+
+
 # Shared execution and capacity policy: live summaries never wait behind a
 # backfill, and adding physical workers adds one slot for each handler.
 HANDLER_CONCURRENCY_LIMITS = (("agent.summarize", 1), ("agent.summarize_backfill", 1))

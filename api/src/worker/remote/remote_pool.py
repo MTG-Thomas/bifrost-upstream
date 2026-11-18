@@ -35,6 +35,7 @@ from src.services.execution.process_pool import (
     ServiceInfo,
 )
 from src.worker.remote.protocol import (
+    CLOUDFLARE_DEV_BUDGET_BYTES,
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
     CloudflareRevisionRejected,
     LINUX_RUNTIME_PROFILE,
@@ -361,7 +362,12 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         subjects: set[UUID] = set()
         live_subjects: set[UUID] = set()
         duplicates: set[UUID] = set()
-        mismatch = False
+        # Preserve valid retained outcomes even if the snapshot exceeds the
+        # prepared capacity. The reconciliation loss path closes admission.
+        mismatch = (
+            admission is not None and admission.declared_slots is not None
+            and len(live) + len(terminals) > admission.declared_slots
+        )
         for is_terminal, routes in ((False, live), (True, terminals)):
             for entry in routes:
                 try:
@@ -529,7 +535,7 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         if (
             not isinstance(active, dict) or active.get("execution_id") != str(subject)
             or not isinstance(active.get("sync"), bool)
-            or type(reservation) is not int or reservation < 0
+            or type(reservation) is not int or not 0 <= reservation <= CLOUDFLARE_DEV_BUDGET_BYTES
             or type(timeout) is not int or timeout < 0 or started_at.utcoffset() is None
         ):
             raise ValueError("Invalid opaque workflow identity, timing or reservation")

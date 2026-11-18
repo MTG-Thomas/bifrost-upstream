@@ -14,6 +14,7 @@ from src.worker.remote.protocol import (
     CLOUDFLARE_CREDENTIAL_PROTOCOL,
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
     LINUX_RUNTIME_PROFILE,
+    cloudflare_slots,
 )
 
 
@@ -29,6 +30,7 @@ class RemoteOwnerLease:
     # The runtime credential protocol the launcher reported for this
     # session, persisted with the generation (1: legacy tokens only).
     credential_protocol: int = 1
+    declared_slots: int = 0
 
 
 @dataclass(frozen=True)
@@ -102,6 +104,17 @@ async def acquire_remote_owner(
         # A legacy hello cannot take over even a never-connected Cloudflare row.
         worker_scope.append(ExecutionWorker.runtime_profile != CLOUDFLARE_PYTHON_RUNTIME_PROFILE)
     async with get_liveness_db_context() as db:
+        declared_slots = 0
+        if runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
+            prepared = (await db.execute(
+                select(ExecutionWorker.memory_limit_bytes).where(*worker_scope).with_for_update()
+            )).one_or_none()
+            if prepared is None:
+                return None
+            try:
+                declared_slots = cloudflare_slots(prepared.memory_limit_bytes)
+            except ValueError:
+                return None
         row = await db.execute(
             update(ExecutionWorker)
             .where(
@@ -142,7 +155,7 @@ async def acquire_remote_owner(
     if acquired is None:
         return None
     generation, protocol = acquired
-    return RemoteOwnerLease(worker_id, owner_id, launcher_id, generation, protocol)
+    return RemoteOwnerLease(worker_id, owner_id, launcher_id, generation, protocol, declared_slots)
 
 
 async def renew_remote_owner(

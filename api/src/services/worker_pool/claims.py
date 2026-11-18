@@ -13,11 +13,17 @@ from sqlalchemy import case, exists, func, select, text, tuple_, update
 from src.config import get_settings
 from src.core.database import get_db_context, get_liveness_db_context
 from src.models.orm.execution_workers import MANAGED_WORKER_FORMS, ExecutionWorker, ExecutionWorkerClaim
+from src.models.orm.executions import Execution
 from src.models.orm.work_dispatches import WorkDispatch
 from src.services.kubernetes_execution import load_kubernetes_policy
-from src.services.worker_pool.eligibility import cloudflare_dispatch_sql
-from src.worker.remote.fencing import fence_remote_owner
-from src.worker.remote.protocol import CLOUDFLARE_PYTHON_RUNTIME_PROFILE, EXECUTION_HANDLERS, LINUX_RUNTIME_PROFILE
+from src.services.worker_pool.eligibility import cloudflare_active_claims, cloudflare_dispatch_sql
+from src.worker.remote.fencing import current_remote_lease_ref, fence_remote_owner
+from src.worker.remote.protocol import (
+    CLOUDFLARE_DEV_BUDGET_BYTES,
+    CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+    EXECUTION_HANDLERS,
+    LINUX_RUNTIME_PROFILE,
+)
 
 # Shared with the capacity controller: launches and idle drains serialize.
 CAPACITY_LOCK = "bifrost:worker-pool:capacity"
@@ -215,12 +221,23 @@ async def claim_next(
     the transaction fails.
     """
     pairs = [pair for pair in handlers if pair in SUPPORTED_HANDLERS]
+    active_cloudflare = cloudflare_active_claims().subquery()
+    dispatch_tenant = select(Execution.organization_id).where(
+        Execution.id == WorkDispatch.subject_id,
+    ).correlate(WorkDispatch).scalar_subquery()
+    occupied = select(func.count()).select_from(active_cloudflare).where(
+        active_cloudflare.c.worker_id == incarnation_id,
+    ).scalar_subquery()
     profile_eligible = exists().where(
         ExecutionWorker.id == incarnation_id,
         (ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE)
         | (
             (ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE)
             & cloudflare_dispatch_sql()
+            & ~exists().where(active_cloudflare.c.tenant_id.is_not_distinct_from(dispatch_tenant))
+            & (occupied * CLOUDFLARE_DEV_BUDGET_BYTES < func.coalesce(
+                ExecutionWorker.memory_limit_bytes, CLOUDFLARE_DEV_BUDGET_BYTES,
+            ))
         ),
     )
     unassigned = (
@@ -273,6 +290,13 @@ async def claim_next(
         async with get_db_context() as db:
             if not await fence_remote_owner(db, for_update=True):
                 return None
+            ref = current_remote_lease_ref()
+            if ref is not None and ref.lease.declared_slots:
+                # All launchers share each tenant's host. Serialize the tenant
+                # availability check and claim across Cloudflare owners.
+                await db.execute(
+                    text("SELECT pg_advisory_xact_lock(hashtext('bifrost:worker-pool:cloudflare-claim'))")
+                )
             picked = (await db.execute(candidate)).one_or_none()
             if picked is None:
                 return None
@@ -335,8 +359,18 @@ async def claim_next(
                     # Opaque settlement can beat the next heartbeat. Publish
                     # the busy slot atomically with its durable claim.
                     active_runs=case(
-                        (ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE, 1),
+                        (
+                            ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+                            ExecutionWorker.active_runs + 1,
+                        ),
                         else_=ExecutionWorker.active_runs,
+                    ),
+                    memory_reserved_bytes=case(
+                        (
+                            ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+                            ExecutionWorker.memory_reserved_bytes + row.memory_request_bytes,
+                        ),
+                        else_=ExecutionWorker.memory_reserved_bytes,
                     ),
                 )
             )
@@ -374,7 +408,7 @@ async def heartbeat_worker(
     package_generation: int | None,
     memory_pressured: bool,
     memory_budget_bytes: int | None,
-    memory_reserved_bytes: int,
+    memory_reserved_bytes: int | Callable[[], int],
     active_handler_counts: dict[str, int] | None = None,
 ) -> str | None:
     """Renew liveness; return the state the controller sees (None if gone).
@@ -403,7 +437,9 @@ async def heartbeat_worker(
                 package_generation=package_generation,
                 memory_pressured=memory_pressured,
                 memory_budget_bytes=memory_budget_bytes,
-                memory_reserved_bytes=memory_reserved_bytes,
+                memory_reserved_bytes=(
+                    memory_reserved_bytes() if callable(memory_reserved_bytes) else memory_reserved_bytes
+                ),
             )
             .returning(ExecutionWorker.state)
         )
@@ -443,12 +479,19 @@ async def begin_idle_drain(incarnation_id: UUID) -> bool:
         # A sized Job always drains once idle: only standard Jobs make up the
         # warm minimum.
         worker = await db.execute(
-            select(ExecutionWorker.resource_class, ExecutionWorker.execution_lane, ExecutionWorker.runtime_profile).where(
-                ExecutionWorker.id == incarnation_id
-            )
+            select(
+                ExecutionWorker.resource_class, ExecutionWorker.execution_lane, ExecutionWorker.runtime_profile,
+                ExecutionWorker.active_runs, ExecutionWorker.memory_reserved_bytes,
+            ).where(ExecutionWorker.id == incarnation_id)
         )
         worker_row = worker.one_or_none()
         if worker_row is None:
+            return False
+        if worker_row.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and (
+            worker_row.active_runs or worker_row.memory_reserved_bytes or await db.scalar(
+                cloudflare_active_claims().where(ExecutionWorkerClaim.worker_id == incarnation_id).exists().select()
+            )
+        ):
             return False
         sized = worker_row.resource_class == "sized"
         keep_ready = (

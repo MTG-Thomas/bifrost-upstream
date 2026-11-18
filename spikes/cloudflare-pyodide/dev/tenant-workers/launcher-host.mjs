@@ -5,10 +5,11 @@ function terminal(attempt_state, error_type, error) {
   return {attempt_state, result: {success: false, error_type, error}};
 }
 
-async function boundedWarm(getHost, tenantId, {deadline, signal, beforeRun, now}) {
+async function boundedWarm(getHost, tenantId, {deadline, signal, beforeRun, now, queueWarm}) {
   const check = () => {
     if (beforeRun()) throw new Error('Attempt ended before warm-up');
   };
+  check();
   let timer;
   let cancel;
   const abort = new Promise((_, reject) => {
@@ -17,7 +18,7 @@ async function boundedWarm(getHost, tenantId, {deadline, signal, beforeRun, now}
     if (deadline !== Infinity) timer = setTimeout(cancel, Math.max(0, deadline - now()));
   });
   try {
-    return await Promise.race([warmHost(getHost, tenantId, {check}), abort]);
+    return await Promise.race([queueWarm(() => warmHost(getHost, tenantId, {check})), abort]);
   } finally {
     clearTimeout(timer);
     signal.removeEventListener('abort', cancel);
@@ -29,9 +30,22 @@ export async function launcherTenantId(route) {
   return tenantWorkerId(org == null ? 'launcher:platform' : `launcher:org:${org}`);
 }
 
+export function createLauncherWorkflowRunner(getHost) {
+  // The local workerd Python loader can fail when two children cold-start
+  // together. Serialize only the confirmed warm RPCs. Cancellation can end
+  // the caller's wait without freeing the queue while a boot is in flight.
+  let warmTail = Promise.resolve();
+  const queueWarm = (task) => {
+    const next = warmTail.then(task);
+    warmTail = next.catch(() => {});
+    return next;
+  };
+  return (input) => runLauncherWorkflow(getHost, queueWarm, input);
+}
+
 // Warm-up may be retried, but a run RPC is repeated only after an explicit
 // needsWarm refusal. Every call carries the same absolute wire deadline.
-export async function runLauncherWorkflow(getHost, {route, context, publicUrl, signal, now = Date.now}) {
+async function runLauncherWorkflow(getHost, queueWarm, {route, context, publicUrl, signal, now = Date.now}) {
   const deadline = route.workflow_deadline === null ? Infinity : Date.parse(route.workflow_deadline);
   const beforeRun = () => {
     if (now() >= deadline) return {terminal: {phase: 'attempt-deadline', attempt_state: 'not_started'}};
@@ -45,7 +59,7 @@ export async function runLauncherWorkflow(getHost, {route, context, publicUrl, s
   try {
     hosted = await hostAttempt(() => getHost(tenantId), attempt, {
       beforeRun,
-      warm: (get, tenant) => boundedWarm(get, tenant, {deadline, signal, beforeRun, now}),
+      warm: (get, tenant) => boundedWarm(get, tenant, {deadline, signal, beforeRun, now, queueWarm}),
     });
   } catch (error) {
     if (error?.attemptState !== 'not_started') {

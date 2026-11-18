@@ -1,6 +1,7 @@
 import {DurableObject} from 'cloudflare:workers';
-import {launcherTenantId, runLauncherWorkflow} from '../tenant-workers/launcher-host.mjs';
+import {createLauncherWorkflowRunner, launcherTenantId} from '../tenant-workers/launcher-host.mjs';
 import {LauncherCore} from './launcher-core.mjs';
+import {MAX_WORKFLOW_SLOTS, SLOT_BYTES} from './protocol.mjs';
 
 const DIAL_TIMEOUT_MS = 10_000;
 const ALARM_WATCHDOG_MS = 15_000;
@@ -18,14 +19,17 @@ function readSettings(env) {
   return enrollmentSettings({incarnationId, launcherId, resourceUid, version, secret}, env);
 }
 
-function enrollmentSettings({incarnationId, launcherId, resourceUid, version, secret}, env) {
+function enrollmentSettings({incarnationId, launcherId, resourceUid, version, secret,
+  memoryLimitBytes = SLOT_BYTES}, env) {
+  const slots = memoryLimitBytes / SLOT_BYTES;
   if (!/^[0-9a-f]{64}$/.test(secret ?? '') || !UUID.test(incarnationId ?? '') ||
       !UUID.test(launcherId ?? '') || !/^[A-Za-z0-9._:-]{1,255}$/.test(resourceUid ?? '') ||
+      !Number.isInteger(slots) || slots < 1 || slots > MAX_WORKFLOW_SLOTS ||
       typeof version !== 'string' || !version) throw new Error('Invalid launcher enrollment');
   const origin = new URL(env.API_ORIGIN);
   if (origin.protocol !== 'https:' || origin.pathname !== '/' || origin.username || origin.password ||
       origin.search || origin.hash) throw new Error('Cloudflare launcher requires a fixed HTTPS API origin');
-  return {identity: {incarnationId, launcherId, resourceUid, version, hostname: `cf-${launcherId}`}, secret,
+  return {identity: {incarnationId, launcherId, resourceUid, version, hostname: `cf-${launcherId}`}, secret, slots,
     controlUrl: new URL('/api/worker-control', origin).href, publicUrl: origin.origin};
 }
 
@@ -101,6 +105,7 @@ export class CloudflareLauncher extends DurableObject {
   #initialize(settings) {
     this.#settings = settings;
     const getHost = (id) => this.ctx.exports.TenantHost.getByName(id);
+    const runWorkflow = createLauncherWorkflowRunner(getHost);
     this.#core = new LauncherCore({
       ...settings, clock: Date.now, storage: this.#storage,
       send: (session, frame) => {
@@ -110,7 +115,7 @@ export class CloudflareLauncher extends DurableObject {
         }
         connection.socket.send(frame);
       },
-      runHost: (route, context, signal) => runLauncherWorkflow(getHost, {
+      runHost: (route, context, signal) => runWorkflow({
         route, context, publicUrl: this.#settings.publicUrl, signal,
       }),
       stopHost: async (route) => getHost(await launcherTenantId(route)).stopWorkflow(route.route_id),
@@ -142,7 +147,9 @@ export class CloudflareLauncher extends DurableObject {
       if (enrollment.launcherId !== enrollment.incarnationId) throw new Error('Invalid managed enrollment');
       const fact = this.#binding(enrollment.resourceUid);
       if (fact) {
-        if (!fact.enrollment || Object.keys(enrollment).some((key) => enrollment[key] !== fact.enrollment[key])) {
+        if (!fact.enrollment || Object.keys(enrollment).some((key) => key !== 'memoryLimitBytes' &&
+            enrollment[key] !== fact.enrollment[key]) || (fact.enrollment.memoryLimitBytes ?? SLOT_BYTES) !==
+            settings.slots * SLOT_BYTES) {
           throw new Error('Launcher enrollment already bound');
         }
         return;

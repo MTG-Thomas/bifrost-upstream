@@ -828,7 +828,10 @@ class PoolWorker:
                         self._capacity_budget_bytes() if self._claim_ready else None
                     ),
                     memory_reserved_bytes=(
-                        0 if self.admission is None else self.admission.held_bytes()
+                        0 if self.admission is None else (
+                            self.admission.held_bytes if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+                            else self.admission.held_bytes()
+                        )
                     ),
                 ), timeout=HEARTBEAT_SECONDS)
                 if state is None and not self._lost:

@@ -1,10 +1,17 @@
 """Runtime eligibility for dispatch claims and capacity planning."""
 
-from sqlalchemy import exists, func
+from uuid import UUID
+
+from sqlalchemy import exists, func, select
+from sqlalchemy.orm import aliased
+from sqlalchemy.sql import Select
 from sqlalchemy.sql.elements import ColumnElement
 
-from src.models.orm.execution_workers import ExecutionWorker
+from src.models.enums import LIVE_EXECUTION_STATUSES
+from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
+from src.models.orm.executions import Execution
 from src.models.orm.work_dispatches import WorkDispatch
+from src.services.work_dispatch import WAKE_WORKFLOW
 from src.worker.remote.protocol import (
     CLOUDFLARE_DEV_BUDGET_BYTES,
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
@@ -19,6 +26,23 @@ def cloudflare_dispatch_sql() -> ColumnElement[bool]:
         & (WorkDispatch.handler_version == CLOUDFLARE_WORKFLOW_HANDLER[1])
         & (WorkDispatch.execution_lane == "normal")
         & WorkDispatch.cloudflare_revision.is_not(None)
+        & (WorkDispatch.memory_request_bytes <= CLOUDFLARE_DEV_BUDGET_BYTES)
+    )
+
+
+def cloudflare_active_claims() -> Select[tuple[UUID, UUID | None]]:
+    """Live Cloudflare claims, including any claim with a missing execution record."""
+    worker = aliased(ExecutionWorker)
+    return (
+        select(ExecutionWorkerClaim.worker_id, Execution.organization_id.label("tenant_id"))
+        .join(worker, worker.id == ExecutionWorkerClaim.worker_id)
+        .outerjoin(Execution, Execution.id == ExecutionWorkerClaim.subject_id)
+        .where(
+            worker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+            worker.state.in_(("ready", "draining")),
+            ExecutionWorkerClaim.family == WAKE_WORKFLOW,
+            Execution.id.is_(None) | Execution.status.in_(LIVE_EXECUTION_STATUSES),
+        )
     )
 
 
@@ -35,7 +59,6 @@ def declared_alternative_sql() -> ColumnElement[bool]:
     """An authenticated launcher might execute work above Linux's ceiling."""
     return (
         cloudflare_dispatch_sql()
-        & (WorkDispatch.memory_request_bytes <= CLOUDFLARE_DEV_BUDGET_BYTES)
         & exists().where(
             ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
             ExecutionWorker.form == "external",
