@@ -530,7 +530,7 @@ def _handle_fork_request(
         })
     else:
         # ----- Child -----
-        from src.core.telemetry import flush_telemetry_in_child, init_telemetry_in_child
+        from src.core.telemetry import init_telemetry_in_child
         from src.services.execution.oom_priority import volunteer_for_oom_kill
 
         volunteer_for_oom_kill()
@@ -541,8 +541,9 @@ def _handle_fork_request(
             # Already closed in parent post-fork — ignore
             logger.debug(f"child: pipe.close ignored: {e}")
 
-        # Fork carries no exporter threads, so the child installs its own
-        # telemetry before any workflow code runs. No-op when disabled.
+        # Fork carries no threads, so the child installs its own in-memory
+        # span buffer before any workflow code runs; spans return with the
+        # result. No-op when disabled.
         init_telemetry_in_child()
 
         # Run the worker function (this blocks until the child exits)
@@ -553,7 +554,6 @@ def _handle_fork_request(
                 _run_agent_child(work_recv, result_send, worker_id)
                 exit_code = 0
             finally:
-                flush_telemetry_in_child()
                 os._exit(exit_code)
         else:
             exit_code = 1
@@ -564,7 +564,6 @@ def _handle_fork_request(
                 )
                 exit_code = 0
             finally:
-                flush_telemetry_in_child()
                 os._exit(exit_code)
         os._exit(0)
 
@@ -608,6 +607,12 @@ def _run_forked_child(
         level=logging.INFO,
         format=f"[{worker_id}] %(levelname)s - %(message)s",
         force=True,
+    )
+    from src.core.telemetry import (
+        CHILD_SPANS_KEY,
+        child_run_span,
+        mark_child_run,
+        take_child_spans,
     )
 
     # Mark this post-fork child before any user code runs. The scoped SDK
@@ -658,19 +663,21 @@ def _run_forked_child(
             # the cross-solution eviction blind and could let a prior install's
             # same-name module survive, breaking multi-install isolation (Codex #9).
 
-            # Execute
-            try:
-                from src.services.execution.simple_worker import _execute_sync
-                result = _execute_sync(execution_id, worker_id, context)
-            except ImportError:
-                result = {
-                    "execution_id": execution_id,
-                    "success": False,
-                    "error": "Execution infrastructure not available",
-                    "error_type": "ImportError",
-                    "duration_ms": 0,
-                    "worker_id": worker_id,
-                }
+            # Execute under the run span so outbound calls nest beneath it.
+            with child_run_span(execution_id, context) as run_span:
+                try:
+                    from src.services.execution.simple_worker import _execute_sync
+                    result = _execute_sync(execution_id, worker_id, context)
+                except ImportError:
+                    result = {
+                        "execution_id": execution_id,
+                        "success": False,
+                        "error": "Execution infrastructure not available",
+                        "error_type": "ImportError",
+                        "duration_ms": 0,
+                        "worker_id": worker_id,
+                    }
+                mark_child_run(run_span, result)
 
             # Clean up per-execution state
             try:
@@ -695,6 +702,9 @@ def _run_forked_child(
                 # be missing on macOS; result may be a non-dict — all best-effort metrics
                 logger.debug(f"could not record RSS for execution {execution_id}: {e}")
 
+            spans = take_child_spans()
+            if spans:
+                result[CHILD_SPANS_KEY] = spans
             result_send.send(result)
 
             logger.info(
@@ -778,6 +788,11 @@ def _run_agent_child(
     except (Exception, SystemExit, asyncio.CancelledError) as e:
         logger.exception(f"Agent child {worker_id} run failed: {e}")
         reply = {"ok": False, "error_type": type(e).__name__, "error": str(e)}
+    from src.core.telemetry import CHILD_SPANS_KEY, take_child_spans
+
+    spans = take_child_spans()
+    if spans:
+        reply[CHILD_SPANS_KEY] = spans
     result_send.send(reply)
 
 

@@ -611,6 +611,11 @@ class Launcher:
                 "duration_ms": int((time.monotonic() - child.started) * 1000)}
 
     async def finish(self, child: Child, result: dict[str, Any]) -> None:
+        # A traced child returns its spans with the result. Export them here
+        # so they never cross the route socket.
+        from src.core.telemetry import CHILD_SPANS_KEY, relay_child_spans
+
+        relay_child_spans(result.pop(CHILD_SPANS_KEY, None))
         if self.children.pop(child.route_id, None) is None:
             return
         if child.terminal_reason is not None:

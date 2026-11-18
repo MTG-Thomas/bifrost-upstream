@@ -173,24 +173,31 @@ logs (unchanged path) → Loki, now carrying trace_id/span_id
   and the `run.<handler>` span is its child. One trace therefore reads
   request → publish → process → run. Covered by
   `api/tests/unit/test_otel_messaging.py`.
-- Execution children re-initialize telemetry after `os.fork`, with an
-  HTTP-client instrumentor only and no metric reader (runtime metrics stay
-  with the owning process):
-  `init_telemetry_in_child` discards the inherited providers and installs
-  fresh ones on a thread-free `SimpleSpanProcessor` (fork carries memory
-  but no exporter threads, so an inherited batch queue would never drain),
-  and the child flushes with a bounded wait before exiting. Spans for work
-  inside the child (its engine SDK HTTP calls) are therefore exported and
-  scrubbed like any other span. Covered by
-  `api/tests/unit/test_telemetry_fork.py`.
-- **Remaining gap:** those child-side spans are roots. The work pipe
-  carries `(execution_id, context)` only, so the `traceparent` in the
-  dispatch message does not reach the child and it cannot attach to the
-  executor's `run.<handler>` span. Closing it means widening the work
-  payload and its senders — a contained change, deliberately not bundled
-  with this one. Those child spans also carry no `bifrost.execution.id`,
-  so they cannot be attributed to a run yet; they are unattributed child
-  traces, not merely disconnected ones.
+- Execution children re-initialize tracing after `os.fork` and export
+  nothing themselves. `init_telemetry_in_child` discards the inherited
+  providers (fork carries memory but no threads, so an inherited batch
+  queue would never drain) and installs a provider whose only processor is
+  a bounded in-memory buffer (512 spans), plus the HTTP-client
+  instrumentor. There is no metric reader, so runtime metrics stay with the
+  owning process. Spans are scrubbed as they end.
+- The workflow consumer stamps the active dispatch span's `traceparent`
+  into the execution context it routes, so local and remote children
+  receive it with their work item. The child wraps module load and
+  execution in a `workflow.run` span (`bifrost.execution.id`,
+  `bifrost.workflow.id`) parented on that context, and marks it `ERROR`
+  with the exception type only when the run reports failure. Its outbound
+  HTTP and engine SDK calls nest beneath it.
+- The child returns its finished spans with the run result
+  (`_otel_spans`). The process that reads the result (the pool, or the
+  remote launcher before anything crosses the route socket) strips them
+  and hands them to its own long-lived `BatchSpanProcessor`. A one-shot
+  child therefore opens no collector connection and never waits on an exit
+  flush, so a slow or unreachable collector cannot hold a run process.
+  Agent children return their spans the same way. Covered by
+  `api/tests/unit/test_telemetry_fork.py`, the pool and launcher result
+  tests, and the consumer routing test.
+  One trace therefore reads request → publish → process →
+  `run.workflow.execute` → `workflow.run` → outbound calls.
 - `ScrubbingSpanExporter` enforces the export privacy boundary in-process
   before OTLP: SQL text and parameters, Redis `FT.SEARCH` queries and
   returned document fields, HTTP query strings, **all span events**, and

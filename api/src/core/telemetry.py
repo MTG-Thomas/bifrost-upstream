@@ -29,7 +29,7 @@ import time
 from typing import Any, Iterator
 
 from opentelemetry import metrics, trace
-from opentelemetry.sdk.trace import ReadableSpan
+from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 from opentelemetry.trace import SpanKind, Status, StatusCode
 from opentelemetry.trace.propagation.tracecontext import (
@@ -218,7 +218,7 @@ def init_telemetry(role: str = "api") -> bool:
     active, False when disabled (no endpoint) or when setup failed. Never
     raises: observability must not break startup.
     """
-    global _initialized
+    global _initialized, _relay_processor
     if _initialized:
         return True
     if not is_enabled():
@@ -239,9 +239,9 @@ def init_telemetry(role: str = "api") -> bool:
         trace.set_tracer_provider(
             TracerProvider(resource=resource, sampler=_sampler())
         )
-        trace.get_tracer_provider().add_span_processor(
-            BatchSpanProcessor(ScrubbingSpanExporter(OTLPSpanExporter()))
-        )
+        processor = BatchSpanProcessor(ScrubbingSpanExporter(OTLPSpanExporter()))
+        trace.get_tracer_provider().add_span_processor(processor)
+        _relay_processor = processor
         metrics.set_meter_provider(
             MeterProvider(
                 resource=resource,
@@ -353,72 +353,193 @@ def _discard_inherited_providers() -> None:
     _meter = _run_started = _run_duration = _run_failed = None
 
 
-def init_telemetry_in_child() -> bool:
-    """Install child-local providers in a process forked from the launcher.
+# Spans a forked run child records travel back to its parent with the run
+# result instead of being exported from the child: the child is one-shot, so
+# an exporter there would mean a collector connection per run and an exit
+# flush that holds the process when the collector is slow. The parent
+# already owns a long-lived batch exporter.
+CHILD_SPANS_KEY = "_otel_spans"
+_CHILD_SPAN_LIMIT = 512
+_child_buffer: _ChildSpanBuffer | None = None
+# The long-lived process's batch processor; relayed child spans enter here.
+_relay_processor: Any = None
 
-    ``os.fork`` copies memory but no threads, so an inherited
-    ``BatchSpanProcessor`` has no worker left to drain its queue: spans
-    the child creates would never leave the process. The child installs
-    only what it uses — an HTTP-client instrumentor and a thread-free
-    ``SimpleSpanProcessor`` — and no metric reader, so a one-shot run
-    cannot duplicate the owning process's runtime metrics.
+
+def _span_to_wire(span: ReadableSpan) -> dict[str, Any]:
+    """Plain, picklable and already scrubbed form of a finished span."""
+    ctx = span.context
+    parent = span.parent
+    status = _scrub_status(span.status)
+    scope = span.instrumentation_scope
+    return {
+        "name": span.name,
+        "trace_id": ctx.trace_id,
+        "span_id": ctx.span_id,
+        "trace_flags": int(ctx.trace_flags),
+        "parent": None if parent is None else (parent.trace_id, parent.span_id, parent.is_remote),
+        "kind": span.kind.value,
+        "start": span.start_time,
+        "end": span.end_time,
+        "attributes": dict(_scrub_attributes(span.attributes) or {}),
+        "status": (status.status_code.value, status.description),
+        "resource": dict(span.resource.attributes),
+        "scope": None if scope is None else (scope.name, scope.version),
+    }
+
+
+def _span_from_wire(wire: dict[str, Any]) -> ReadableSpan:
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.util.instrumentation import InstrumentationScope
+    from opentelemetry.trace import SpanContext, TraceFlags
+
+    parent = wire["parent"]
+    scope = wire["scope"]
+    return ReadableSpan(
+        name=str(wire["name"]),
+        context=SpanContext(
+            trace_id=int(wire["trace_id"]),
+            span_id=int(wire["span_id"]),
+            is_remote=False,
+            trace_flags=TraceFlags(int(wire["trace_flags"])),
+        ),
+        parent=None if parent is None else SpanContext(
+            trace_id=int(parent[0]), span_id=int(parent[1]), is_remote=bool(parent[2]),
+            trace_flags=TraceFlags(int(wire["trace_flags"])),
+        ),
+        resource=Resource(dict(wire["resource"])),
+        attributes=dict(wire["attributes"]),
+        events=[],
+        links=[],
+        kind=SpanKind(int(wire["kind"])),
+        status=Status(StatusCode(int(wire["status"][0])), wire["status"][1]),
+        instrumentation_scope=None if scope is None else InstrumentationScope(scope[0], scope[1]),
+        start_time=wire["start"],
+        end_time=wire["end"],
+    )
+
+
+class _ChildSpanBuffer(SpanProcessor):
+    """Span processor that keeps a forked child's finished spans in memory.
+
+    Thread-free and bounded: spans past the limit are counted and dropped.
+    Spans are scrubbed as they end, so raw content never reaches the pipe.
+    """
+
+    def __init__(self, limit: int = _CHILD_SPAN_LIMIT) -> None:
+        self._limit = limit
+        self._lock = threading.Lock()
+        self._spans: list[dict[str, Any]] = []
+        self.dropped = 0
+
+    def on_end(self, span: ReadableSpan) -> None:
+        if not span.context.trace_flags.sampled:
+            return
+        with self._lock:
+            if len(self._spans) >= self._limit:
+                self.dropped += 1
+                return
+            self._spans.append(_span_to_wire(span))
+
+    def take(self) -> list[dict[str, Any]]:
+        with self._lock:
+            spans, self._spans = self._spans, []
+        return spans
+
+
+def init_telemetry_in_child() -> bool:
+    """Install child-local tracing in a process forked from the launcher.
+
+    ``os.fork`` copies memory but no threads, so inherited providers are
+    discarded. The child records spans into a bounded in-memory buffer that
+    :func:`take_child_spans` drains into the run result; it starts no
+    exporter thread, opens no collector connection and installs no metric
+    reader (a one-shot run must not duplicate the owning process's runtime
+    metrics). Only the HTTP client is instrumented.
 
     Idempotent, never raises, and a no-op when telemetry is disabled.
     """
-    global _child_initialized, _initialized
+    global _child_initialized, _initialized, _child_buffer
     if _child_initialized:
         return True
     if not is_enabled():
         return False
     try:
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
-            OTLPSpanExporter,
-        )
         from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
         _discard_inherited_providers()
-        trace.set_tracer_provider(
-            TracerProvider(resource=_resource("run"), sampler=_sampler())
-        )
-        # A batch processor is safe here because its thread is created in
-        # the child, after fork, and the caller flushes with a bounded wait
-        # before exit. It keeps collector latency out of workflow execution:
-        # a synchronous processor would make every SDK HTTP call wait.
-        trace.get_tracer_provider().add_span_processor(
-            BatchSpanProcessor(
-                ScrubbingSpanExporter(OTLPSpanExporter()),
-                schedule_delay_millis=2000,
-                max_export_batch_size=256,
-            )
-        )
+        buffer = _ChildSpanBuffer()
+        provider = TracerProvider(resource=_resource("run"), sampler=_sampler())
+        provider.add_span_processor(buffer)
+        trace.set_tracer_provider(provider)
         _instrument_http_client()
     except Exception as e:  # noqa: BLE001 — telemetry must never break a run
         logger.warning("OpenTelemetry child setup failed, continuing untraced: %s", e)
         _initialized = False
         return False
+    _child_buffer = buffer
     _child_initialized = True
     _initialized = True
-    logger.info("OpenTelemetry enabled in forked child (pid=%s)", os.getpid())
+    logger.debug("OpenTelemetry enabled in forked child (pid=%s)", os.getpid())
     return True
 
 
-def flush_telemetry_in_child(timeout_s: float = 5.0) -> None:
-    """Flush a forked child's telemetry before it exits. Never raises.
+def take_child_spans() -> list[dict[str, Any]]:
+    """Drain the forked child's finished spans for the run result."""
+    buffer = _child_buffer
+    if buffer is None:
+        return []
+    spans = buffer.take()
+    if buffer.dropped:
+        logger.debug("OpenTelemetry child dropped %d span(s) past the limit", buffer.dropped)
+        buffer.dropped = 0
+    return spans
 
-    Spans already exported synchronously as they ended; this closes the
-    exporter. A slow or unreachable collector must not delay the child's
-    exit, so the flush runs in a daemon thread that is abandoned if it
-    outlives ``timeout_s``.
-    """
-    if not _child_initialized or not _initialized:
+
+def relay_child_spans(wire_spans: Any) -> None:
+    """Export spans a forked child returned, through this process's batch
+    processor. Never raises; malformed entries are skipped."""
+    processor = _relay_processor
+    if processor is None or not isinstance(wire_spans, list):
         return
-    try:
-        flusher = threading.Thread(target=shutdown_telemetry, daemon=True)
-        flusher.start()
-        flusher.join(timeout_s)
-    except Exception as e:  # noqa: BLE001 — exit must not be blocked
-        logger.debug("OpenTelemetry child flush failed: %s", e)
+    for wire in wire_spans[:_CHILD_SPAN_LIMIT]:
+        try:
+            processor.on_end(_span_from_wire(wire))
+        except Exception as e:  # noqa: BLE001 — a bad span must not break result handling
+            logger.debug("OpenTelemetry dropped a relayed child span: %s", e)
+
+
+@contextlib.contextmanager
+def child_run_span(execution_id: str, context: dict[str, Any]) -> Iterator[Any]:
+    """Span for a forked child's run, parented by the dispatching run span.
+
+    Covers the child's whole execution (module load and workflow code), so
+    outbound calls nest under it. Call :func:`mark_child_run` with the result.
+    """
+    tracer = trace.get_tracer(__name__)
+    attributes: dict[str, Any] = {"bifrost.execution.id": execution_id}
+    workflow_id = context.get("workflow_id")
+    if workflow_id:
+        attributes["bifrost.workflow.id"] = str(workflow_id)
+    with tracer.start_as_current_span(
+        "workflow.run",
+        context=extract_context(context),
+        kind=SpanKind.INTERNAL,
+        attributes=attributes,
+        record_exception=False,
+        set_status_on_exception=False,
+    ) as span:
+        yield span
+
+
+def mark_child_run(span: Any, result: Any) -> None:
+    """ERROR status (exception type only) when the run did not succeed."""
+    if not isinstance(result, dict) or result.get("success", False):
+        return
+    error_type = result.get("error_type")
+    span.set_status(
+        StatusCode.ERROR,
+        error_type if isinstance(error_type, str) and _TYPE_ONLY_RE.match(error_type) else None,
+    )
 
 
 def shutdown_telemetry(timeout_s: float = 10.0) -> None:
