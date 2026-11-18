@@ -19,6 +19,8 @@ import {defineConfig, exports, triggers} from 'cf/config';
 // Kill switch: redeploy with SPIKE_EXPIRES_AT=0, or rotate SPIKE_AUTH.
 const workerName = process.env.WORKER_NAME ?? 'bifrost-pyodide-tenant-ddf316c1';
 const launcherEnabled = process.env.BIFROST_CLOUDFLARE_LAUNCHER_ENABLED === 'true';
+const managedLauncher = process.env.BIFROST_CLOUDFLARE_MANAGED === 'true';
+if (managedLauncher && !launcherEnabled) throw new Error('Managed capacity requires the launcher entrypoint');
 if (launcherEnabled && (!process.env.WORKER_NAME ||
     ['bifrost-pyodide-tenant-ddf316c1', 'bifrost-pyodide-canary-ddf316c1'].includes(workerName))) {
   throw new Error('Use a distinct WORKER_NAME for the Cloudflare launcher');
@@ -56,7 +58,7 @@ export default defineConfig({
         {CloudflareLauncher: exports.durableObject({storage: 'sqlite'})} :
         {RunTokenBroker: {type: 'durable-object' as const, state: 'deleted' as const}}),
     },
-    ...(launcherEnabled ? {triggers: [triggers.scheduled({schedule: '* * * * *'})]} : {}),
+    ...(launcherEnabled && !managedLauncher ? {triggers: [triggers.scheduled({schedule: '* * * * *'})]} : {}),
     env: {
       LOADER: {type: 'worker-loader'},
       SPIKE_EXPIRES_AT: {type: 'text', value: process.env.SPIKE_EXPIRES_AT ?? '0'},
@@ -67,7 +69,8 @@ export default defineConfig({
       // Staging only: when set, the supervisor fetches modules from this real
       // Bifrost API instead of an attempt-supplied store.
       API_ORIGIN: {type: 'text', value: process.env.STAGING_API_ORIGIN ?? ''},
-      ...(launcherEnabled ? Object.fromEntries([
+      ...(managedLauncher ? {BIFROST_CLOUDFLARE_MANAGED: {type: 'text' as const, value: 'true'}} :
+        launcherEnabled ? Object.fromEntries([
         'BIFROST_CLOUDFLARE_LAUNCHER_ENABLED', 'BIFROST_WORKER_INCARNATION_ID', 'BIFROST_WORKER_LAUNCHER_ID',
         'BIFROST_WORKER_RESOURCE_UID', 'BIFROST_WORKER_VERSION',
       ].map((key) => [key, {type: 'text' as const, value: process.env[key] ?? ''}])) : {}),

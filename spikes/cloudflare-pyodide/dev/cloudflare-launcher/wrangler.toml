@@ -1,0 +1,30 @@
+# Template only. The launcher must be a separate Worker using managed enrollment.
+name = "bifrost-workers-capacity-dev"
+main = "capacity.mjs"
+compatibility_date = "2026-10-30"
+workers_dev = false
+preview_urls = false
+
+[[durable_objects.bindings]]
+name = "SCOPE_REGISTRY"
+class_name = "ScopeRegistry"
+
+[[durable_objects.bindings]]
+name = "WORKER_LEDGER"
+class_name = "WorkerLedger"
+
+[[durable_objects.bindings]]
+name = "CLOUDFLARE_LAUNCHER"
+class_name = "CloudflareLauncher"
+script_name = "bifrost-workers-launcher-dev"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ScopeRegistry", "WorkerLedger"]
+
+[vars]
+SCOPE = "workers-dev"
+WORKER_VERSION = "CHANGEME"
+MAX_WORKERS = "4"
+MAX_LIFETIME_SECONDS = "21600"
+# CAPACITY_TOKEN belongs to the provider Worker alone.

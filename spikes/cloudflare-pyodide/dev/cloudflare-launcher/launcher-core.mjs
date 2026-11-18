@@ -97,6 +97,25 @@ export class LauncherCore {
     });
   }
 
+  drain(deadline) {
+    return this.#serialize(async () => {
+      await this.#load();
+      if (!this.retired && this.#control.state !== 'draining') {
+        await this.#saveControl({...this.#control, state: 'draining'});
+        this.#emitCurrent({event: 'draining'});
+      }
+      if (this.#slot && this.clock() < deadline && !this.retired) return false;
+      if (this.#slot?.state === 'entering') {
+        this.#abort?.abort();
+        // A forced release must confirm the cooperative stop request before
+        // the provider discards the incarnation's key and alarm.
+        await this.stopHost(this.#slot.route);
+      }
+      await this.#saveControl({...this.#control, state: 'retired'});
+      return true;
+    });
+  }
+
   #serialize(fn) {
     const task = this.#tail.then(fn);
     this.#tail = task.catch(() => {});
@@ -218,6 +237,7 @@ export class LauncherCore {
         attempt_state: terminal.attempt_state}] : [],
     }});
     if (terminal) this.#emit(session, terminal);
+    if (this.#control.state === 'draining') this.#emit(session, {event: 'draining'});
     session.nextHeartbeat = this.clock() + 1000;
   }
 
@@ -275,6 +295,10 @@ export class LauncherCore {
         return;
       }
       case 'workflow':
+        if (this.#control.state === 'draining' || this.retired) {
+          refuse('MemoryError', 'Cloudflare launcher is draining');
+          return;
+        }
         return this.#workflow(session, payload, accept, refuse);
       default:
         refuse('ValueError', 'Unknown launcher command');

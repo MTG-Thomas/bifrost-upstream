@@ -107,6 +107,26 @@ async function connect(api, generation = 1) {
   await api.welcome(generation);
 }
 
+test('drain closes admission and keeps the active route and terminal until acknowledgement', async () => {
+  const finish = deferred();
+  const api = peer({runHost: () => finish.promise});
+  await connect(api);
+  await api.command('workflow', workflow());
+  await api.entered;
+  assert.equal(await api.core.drain(START + 5000), false);
+  assert.deepEqual(api.frames().at(-1), {event: 'draining'});
+  await api.command('workflow', workflow('2'));
+  assert.equal(api.frames().at(-1).error_type, 'MemoryError');
+  assert.equal(api.calls.length, 1);
+  finish.resolve(COMPLETED);
+  await api.finish();
+  const terminal = api.frames().at(-1);
+  assert.equal(await api.core.drain(START + 5000), false);
+  await api.ack(terminal._event_id);
+  assert.equal(await api.core.drain(START + 5000), true);
+  assert.equal(await api.core.canReconnect(), false);
+});
+
 test('hello sequence is confirmed before every dial, including after a lost welcome', async () => {
   const first = peer();
   const initial = await first.dial();
