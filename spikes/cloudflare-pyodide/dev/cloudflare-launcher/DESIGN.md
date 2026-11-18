@@ -232,7 +232,8 @@ run. Findings, checked against the cited code:
    - profile admission, with key derivation and enrollment as in #1424;
    - capability gates (no `package_tool`, service or platform loops for
      this profile);
-   - PID-less spawn replies and heartbeat accounting;
+   - PID-less spawn replies, heartbeat accounting and fenced route settlement
+     (wire contract below);
    - slot and byte reservations with labelled declared telemetry;
    - the eligibility marker in the fenced claim and the planner.
 4. **Launcher DO** speaking the full protocol, including inventory-first,
@@ -246,10 +247,47 @@ run. Findings, checked against the cited code:
 6. Scale-out through a provider last. Production only with explicit
    authorization.
 
+### Phase 3 opaque workflow wire contract
+
+- The workflow command's `route_id` is `workflow:<execution UUID>:<route UUID>`.
+  Its `started_at`, `timeout_seconds`, and absolute `workflow_deadline` come
+  from the API at dispatch. The deadline is also in the execution context.
+  Preserve those fields unchanged for inventory after reconnect. A zero
+  timeout carries a null deadline. The launcher must use the same deadline
+  through queueing, warm-up retries, and child dispatch. If it expires
+  before entry, journal a timeout terminal with `attempt_state: "not_started"`.
+- Reply to workflow dispatch with `{runtime_handle}`. The handle is an
+  opaque 1–255 character token using letters, digits, `.`, `_`, `:`, and
+  `-`. Use the same handle for the route's lifetime and omit `pid`. A lost
+  or ambiguous reply leaves the route reserved.
+- After welcome, send one inventory per control generation. It must contain
+  `version: 1`, a nonnegative integer `baseline_bytes`, and both `routes` and
+  `terminal_routes` arrays. Each entry carries `kind: "workflow"`,
+  `route_id`, `subject_id` (the execution UUID), `runtime_handle`,
+  `active_execution`, `started_at`, `timeout_seconds`, `workflow_deadline`,
+  and `memory_request_bytes`. Terminal entries also carry `event_id` and
+  `attempt_state`. The API checks the snapshot against live durable claims
+  and routes already tracked by that owner. A missing claim or route, or
+  an unclaimed live route, loses the worker and settles its outstanding runs
+  under the ownership fence. Those runs are never redispatched.
+- A `terminate` command carries `route_id`, `error_type`, and `error` in the
+  current control generation. `{received: true}` acknowledges the stop
+  request only. The API bounds this request, retains the route if the reply
+  is lost or ambiguous, and waits for terminal settlement. A replacement
+  owner can issue a route stop for a still-live cancelled or expired claim,
+  so the launcher must treat stop as idempotent by route.
+- Journal `result` events with `route_id`, `runtime_handle`, `_event_id`,
+  `attempt_state`, and the usual `result` object. Replay the same event
+  after inventory with the same ID and attempt state. Use `not_started`
+  if the engine was never entered, `completed` for an observed engine
+  outcome (including a workflow error), or `uncertain` if side effects may
+  have occurred without a confirmed engine outcome. Only `completed` may
+  carry a success. The API records `uncertain` as a failed execution with
+  `WorkflowAttemptUncertain` and acknowledges terminal delivery under its
+  owner fence. A stop reply alone never releases a reservation.
+
 ## Open questions
 
-- Does the API's ack/inventory reconciliation require a PID anywhere besides
-  spawn replies (e.g. adoption after API takeover)? To be read before phase 3.
 - Is the outbound WebSocket from a DO to the API stable across API restarts
   and Cloudflare DO relocation? The protocol already reconnects with
   `hello_sequence` and fencing; needs a deployed test.

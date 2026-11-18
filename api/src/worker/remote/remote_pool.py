@@ -14,11 +14,11 @@ import logging
 import os
 import re
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, Awaitable, Protocol, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from shared.execution_context import validate_execution_context
 from src.config import get_settings
@@ -33,7 +33,11 @@ from src.services.execution.process_pool import (
     ProcessState,
     ServiceInfo,
 )
-from src.worker.remote.protocol import CLOUDFLARE_PYTHON_RUNTIME_PROFILE, LINUX_RUNTIME_PROFILE
+from src.worker.remote.protocol import (
+    CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+    LINUX_RUNTIME_PROFILE,
+    CredentialRouteChanged,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +45,8 @@ logger = logging.getLogger(__name__)
 # children end their runs with the same reason (``RemoteAgentConsumer``).
 DRAIN_DEADLINE_ERROR_TYPE = "WorkerShutdown"
 DRAIN_DEADLINE_ERROR = "Remote pool drain deadline exceeded"
+OPAQUE_STOP_TIMEOUT_SECONDS = 5
+OPAQUE_ATTEMPT_STATES = frozenset({"not_started", "completed", "uncertain"})
 
 
 class ThinRemoteTransport(Protocol):
@@ -75,6 +81,10 @@ class _RemoteProcess:
         self.exitcode: int | None = None
         self.remote_pid: int | None = None
         self.runtime_handle: str | None = None
+        self.memory_request_bytes: int | None = None
+        self.stop_requested = False
+        self.stop_task: asyncio.Task[None] | None = None
+        self.terminal_receipt: tuple[str, str] | None = None
 
     def is_alive(self) -> bool:
         return self.exitcode is None
@@ -110,8 +120,9 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         self._remote_memory_limit = -1
         self._lease_refresh_task: asyncio.Task[None] | None = None
         self._result_locks: dict[str, asyncio.Lock] = {}
+        self._opaque_lost = False
 
-    async def reconcile_inventory(self, inventory: dict[str, Any]) -> dict[str, Any]:
+    async def reconcile_inventory(self, inventory: dict[str, Any]) -> dict[str, Any] | None:
         """Reattach physical children only to their still-authoritative claims.
 
         The launcher journals compact transport metadata until terminal ACK.
@@ -119,6 +130,9 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         claim. Finished but unacknowledged routes need the same reconstruction
         as live children so completion can be replayed after an API restart.
         """
+        if self.runtime_profile != LINUX_RUNTIME_PROFILE:
+            return await self._reconcile_opaque_inventory(inventory)
+
         from src.core.database import get_db_context
         from src.jobs.platform.catalog import get_platform_job_metadata
         from src.jobs.schedulers.platform_jobs import ClaimedPlatformJob
@@ -146,17 +160,8 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         async with get_db_context() as db:
             if not await fence_remote_owner(db):
                 raise ConnectionError("Remote API ownership was replaced")
-            if self.runtime_profile != LINUX_RUNTIME_PROFILE:
-                present = {entry.get("route_id") for entry in entries if isinstance(entry.get("route_id"), str)}
-                if any(route_id not in present for route_id in self._routes):
-                    # Missing process inventory is meaningful for Linux, but a
-                    # lost invocation handle is not a settlement receipt. Fence
-                    # the owner first; release no obligation or result here.
-                    raise RuntimeError("Opaque inventory omission is not settlement; reconciliation required")
             for entry in entries:
                 route_id, kind = entry.get("route_id"), entry.get("kind")
-                if self.runtime_profile != LINUX_RUNTIME_PROFILE and kind != "workflow":
-                    raise ValueError("Physical runtime supports workflow inventory only")
                 if not isinstance(route_id, str) or route_id in observed:
                     continue
                 observed.add(route_id)
@@ -191,12 +196,6 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                         handle = self._adopt_handle(route_id, entry, started_at)
                         handle.current_execution = execution
                         self.processes[route_id] = handle
-                    elif self.runtime_profile != LINUX_RUNTIME_PROFILE:
-                        existing = handle.current_execution
-                        if (existing is None or existing.execution_id != execution.execution_id
-                            or existing.started_at != started_at or existing.timeout_seconds != execution.timeout_seconds):
-                            raise ValueError("Inventory changed immutable workflow timing or identity")
-                        self._bind_workflow_handle(handle, entry)
                     await self._write_active_execution_lease(execution)
                     workflows[str(subject)] = request_bytes
                 elif kind == "service":
@@ -278,18 +277,7 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                 else:
                     raise ValueError("Unknown launcher route kind")
             await db.commit()
-        if rejected and self.runtime_profile != LINUX_RUNTIME_PROFILE:
-            # Canonical rejection forbids further authorized work, but cannot
-            # invent a Linux terminate command or certify provider resource stop.
-            live = {entry.get("route_id") for entry in inventory.get("routes", [])
-                    if isinstance(entry.get("route_id"), str)}
-            if any(route_id in live for route_id, _kind in rejected):
-                raise RuntimeError("Opaque rejected inventory requires physical reconciliation")
         for route_id, kind in rejected:
-            if self.runtime_profile != LINUX_RUNTIME_PROFILE:
-                # A retained terminal event may replay after canonical commit
-                # lost its ACK. Leave ACK/route cleanup to the result path.
-                continue
             await self.transport.request(
                 "terminate_job" if kind == "platform_job" else "terminate",
                 {"route_id": route_id, "error_type": "OwnerLost", "error": "Claim no longer belongs to this launcher"},
@@ -310,6 +298,128 @@ class ThinRemoteProcessPool(ProcessPoolManager):
             "agent_runs": agent_runs,
             "summaries": summaries,
         }
+
+    async def _reconcile_opaque_inventory(self, inventory: dict[str, Any]) -> dict[str, Any] | None:
+        from src.core.database import get_db_context
+        from src.models.enums import ExecutionStatus
+        from src.models.orm.execution_workers import (
+            ExecutionWorker,
+            ExecutionWorkerClaim,
+        )
+        from src.models.orm.executions import Execution
+        from src.services.work_dispatch import WAKE_WORKFLOW
+        from src.services.worker_pool.recovery import (
+            announce_lost_runs,
+            end_runs_of_lost_worker,
+        )
+        from src.worker.remote.fencing import (
+            LeaseRef,
+            fence_remote_owner,
+            remote_owner_context,
+        )
+
+        version, baseline = inventory.get("version"), inventory.get("baseline_bytes")
+        live, terminals = inventory.get("routes"), inventory.get("terminal_routes")
+        if (
+            type(version) is not int or version != 1 or type(baseline) is not int or baseline < 0
+            or not isinstance(live, list) or not isinstance(terminals, list)
+        ):
+            raise ValueError("Opaque workflow inventory must include v1 routes, terminals and baseline")
+
+        entries: dict[str, tuple[dict[str, Any], ExecutionInfo, int, tuple[str, str] | None]] = {}
+        subjects: set[UUID] = set()
+        live_subjects: set[UUID] = set()
+        for is_terminal, routes in ((False, live), (True, terminals)):
+            for entry in routes:
+                if not isinstance(entry, dict) or entry.get("kind") != "workflow":
+                    raise ValueError("Opaque inventory supports workflow routes only")
+                route_id, subject = entry["route_id"], UUID(entry["subject_id"])
+                prefix = f"workflow:{subject}:"
+                if not isinstance(route_id, str) or not route_id.startswith(prefix):
+                    raise ValueError("Opaque route must match its workflow execution")
+                UUID(route_id.removeprefix(prefix))
+                if subject in subjects:
+                    raise ValueError("Duplicate execution in opaque inventory")
+                subjects.add(subject)
+                if not is_terminal:
+                    live_subjects.add(subject)
+                active, reservation = entry["active_execution"], entry["memory_request_bytes"]
+                timeout, started_at = entry["timeout_seconds"], datetime.fromisoformat(entry["started_at"])
+                if (
+                    not isinstance(active, dict) or active.get("execution_id") != str(subject)
+                    or not isinstance(active.get("sync"), bool)
+                    or type(reservation) is not int or reservation < 0
+                    or type(timeout) is not int or timeout < 0 or started_at.utcoffset() is None
+                ):
+                    raise ValueError("Invalid opaque workflow identity, timing or reservation")
+                execution = ExecutionInfo(str(subject), started_at, timeout, cast(ActiveExecution, active))
+                deadline = self._opaque_deadline(execution)
+                if entry["workflow_deadline"] != (deadline.isoformat() if deadline else None):
+                    raise ValueError("Opaque inventory changed the dispatch deadline")
+                # Validate even an already-committed retained terminal.
+                self._opaque_handle_value(entry)
+                receipt = self._opaque_receipt(entry, "event_id") if is_terminal else None
+                entries[route_id] = (entry, execution, reservation, receipt)
+
+        worker_id = UUID(self.worker_id)
+        lease = self.transport.lease
+        lost = None
+        async with get_db_context() as db:
+            with remote_owner_context(LeaseRef(lease)):
+                # Serialize the claim comparison and loss decision with claims,
+                # terminal commits and replacement of this API owner's fence.
+                if not await fence_remote_owner(db, for_update=True):
+                    raise ConnectionError("Remote API ownership was replaced")
+            claims = dict((await db.execute(select(Execution.id, Execution.status).join(
+                ExecutionWorkerClaim, ExecutionWorkerClaim.subject_id == Execution.id,
+            ).where(
+                Execution.status.in_((ExecutionStatus.RUNNING, ExecutionStatus.CANCELLING)),
+                ExecutionWorkerClaim.worker_id == worker_id,
+                ExecutionWorkerClaim.family == WAKE_WORKFLOW,
+            ))).all())
+            if claims.keys() - subjects or self._routes.keys() - entries.keys() or live_subjects - claims.keys():
+                await db.execute(update(ExecutionWorker).where(ExecutionWorker.id == worker_id).values(
+                    state="lost", end_reason="opaque_inventory_mismatch",
+                    ended_at=func.now(), remote_owner_lease_expires_at=func.now(),
+                ))
+                lost = await end_runs_of_lost_worker(db, worker_id)
+            else:
+                for route_id, handle in self._routes.items():
+                    entry, execution, reservation, receipt = entries[route_id]
+                    previous = handle.process.terminal_receipt
+                    if (
+                        handle.current_execution != execution or handle.process.memory_request_bytes != reservation
+                        or (previous is not None and previous != receipt)
+                    ):
+                        raise ValueError("Opaque inventory changed route metadata")
+                    self._bind_workflow_handle(handle, entry)
+            await db.commit()
+
+        if lost is not None:
+            await self.ownership_lost("Opaque inventory does not match canonical claims")
+            await announce_lost_runs(lost)
+            return None
+
+        workflows = {}
+        live_workflows = {}
+        for route_id, (entry, execution, reservation, receipt) in entries.items():
+            if self._opaque_lost or self.transport.lease != lease:
+                raise ConnectionError("Remote API ownership was replaced during reconciliation")
+            subject = UUID(execution.execution_id)
+            if subject not in claims:
+                continue  # Canonical result committed before its journal ACK.
+            handle = self._routes.get(route_id)
+            if handle is None:
+                handle = self._adopt_handle(route_id, entry, execution.started_at)
+                handle.current_execution = execution
+                handle.process.memory_request_bytes = reservation
+                self.processes[route_id] = handle
+            handle.process.terminal_receipt = receipt
+            workflows[execution.execution_id] = reservation
+            if receipt is None:
+                live_workflows[route_id] = claims[subject] == ExecutionStatus.CANCELLING
+            await self._write_active_execution_lease(execution)
+        return {"workflow_requests": workflows, "opaque_live_workflows": live_workflows}
 
     def _adopt_handle(self, route_id: str, entry: dict[str, Any], started_at: datetime) -> ProcessHandle:
         handle = ProcessHandle(
@@ -408,9 +518,10 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         self._cancel_task = asyncio.create_task(
             self._cancel_listener_loop(), name="thin-remote-pool-cancel"
         )
-        self._command_task = asyncio.create_task(
-            self._command_listener_loop(), name="thin-remote-pool-command"
-        )
+        if self.runtime_profile == LINUX_RUNTIME_PROFILE:
+            self._command_task = asyncio.create_task(
+                self._command_listener_loop(), name="thin-remote-pool-command"
+            )
 
     async def _remote_packages(self) -> list[dict[str, Any]]:
         response = await self.transport.request(
@@ -435,6 +546,8 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         }
         if packages is not None:
             fields["packages"] = json.dumps(packages)
+        if self.runtime_profile != LINUX_RUNTIME_PROFILE:
+            fields["runtime_profile"] = self.runtime_profile
         await cast(
             Awaitable[int],
             redis_client.hset(redis_key, mapping=fields),
@@ -496,6 +609,9 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                 ),
                 return_exceptions=True,
             )
+        if self.runtime_profile != LINUX_RUNTIME_PROFILE:
+            for handle in self._routes.values():
+                self._cancel_opaque_stop_task(handle)
         if owns_session:
             await self._unregister_worker()
         if self._redis is not None:
@@ -507,6 +623,10 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         """Detach a replaced owner without mutating the surviving children."""
         logger.info("Remote pool detaching: %s", reason)
         self._shutdown = True
+        if self.runtime_profile != LINUX_RUNTIME_PROFILE:
+            self._opaque_lost = True
+            for handle in self._routes.values():
+                self._cancel_opaque_stop_task(handle)
         self.processes.clear()
         self.service_processes.clear()
         self._routes.clear()
@@ -517,10 +637,11 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         from src.worker.remote.ownership import owns_remote_session
 
         ref = current_remote_lease_ref()
-        if ref is None:
+        if ref is None and self.runtime_profile == LINUX_RUNTIME_PROFILE:
             return True
+        lease = ref.lease if ref is not None else self.transport.lease
         try:
-            return await owns_remote_session(ref.lease)
+            return await owns_remote_session(lease)
         except Exception:
             # Fail closed: result commits and shutdown side effects stay
             # fenced until a read succeeds.
@@ -552,6 +673,9 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         that launcher session; they are never sent to a replacement session.
         """
         validate_execution_context(context)
+        opaque = self.runtime_profile != LINUX_RUNTIME_PROFILE
+        dispatch_started_at = datetime.now(UTC) if opaque else None
+        generation = self.transport.lease.session_generation if opaque else None
         await self._write_context_to_redis(execution_id, context)
         self._ensure_remote_capacity()
         route_id = self._workflow_route_id(execution_id)
@@ -560,7 +684,9 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         async with self._restart_lock:
             if route_id in self._routes:
                 raise RuntimeError(f"Remote route already exists: {route_id}")
-            started_at = datetime.now(timezone.utc)
+            if opaque and self._opaque_lost:
+                raise ConnectionError("Remote API ownership was lost before dispatch")
+            started_at = dispatch_started_at or datetime.now(timezone.utc)
             context["workflow_deadline"] = (
                 (started_at + timedelta(seconds=timeout)).isoformat() if timeout > 0 else None
             )
@@ -590,6 +716,9 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                     execution_id,
                     exc,
                 )
+            if opaque:
+                handle.process.memory_request_bytes = self._request_bytes(execution_id)
+                self._schedule_opaque_stop(handle)
             try:
                 response = await self.transport.request(
                     "workflow",
@@ -601,9 +730,12 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                         "active_execution": dict(active_execution),
                         "started_at": started_at.isoformat(),
                         "timeout_seconds": timeout,
-                        "memory_request_bytes": self._request_bytes(execution_id),
+                        "memory_request_bytes": (
+                            handle.process.memory_request_bytes if opaque else self._request_bytes(execution_id)
+                        ),
+                        **({"workflow_deadline": context["workflow_deadline"]} if opaque else {}),
                     },
-                    expected_generation=None if credential_route is None else credential_route.generation,
+                    expected_generation=generation if credential_route is None else credential_route.generation,
                 )
                 self._bind_workflow_handle(handle, response)
             except (ConnectionError, TimeoutError):
@@ -611,7 +743,14 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                 # route after reconnect; reporting failure now could duplicate
                 # side effects while its original process continues.
                 logger.warning("Remote workflow launch ACK uncertain: %s", route_id)
-            except Exception:
+            except Exception as exc:
+                if opaque and isinstance(exc, (RuntimeError, MemoryError, CredentialRouteChanged)):
+                    # Only a fenced terminal can classify an opaque attempt.
+                    # In particular, MemoryError must never hand back this claim.
+                    logger.warning("Remote workflow launch ACK uncertain: %s", route_id)
+                    return
+                if opaque:
+                    self._cancel_opaque_stop_task(handle)
                 self.processes.pop(handle.id, None)
                 self._routes.pop(route_id, None)
                 self._route_metrics.pop(route_id, None)
@@ -711,16 +850,97 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         if self.runtime_profile == LINUX_RUNTIME_PROFILE:
             handle.process.remote_pid = self._remote_pid_from_ack(response)
             return
-        if not isinstance(response, dict):
-            raise ConnectionError("Opaque workflow handle missing; launch state unknown")
-        value = response.get("runtime_handle")
-        if (not isinstance(value, str) or re.fullmatch(r"[A-Za-z0-9._:-]{1,255}", value) is None
-            or "pid" in response):
-            raise ConnectionError("Opaque workflow handle missing or invalid; launch state unknown")
+        value = self._opaque_handle_value(response)
         previous = handle.process.runtime_handle
         if previous is not None and previous != value:
             raise ConnectionError("Physical workflow handle changed; reconciliation required")
         handle.process.runtime_handle = value
+
+    @staticmethod
+    def _opaque_handle_value(response: object) -> str:
+        value = response.get("runtime_handle") if isinstance(response, dict) else None
+        if (
+            not isinstance(response, dict) or "pid" in response
+            or not isinstance(value, str) or re.fullmatch(r"[A-Za-z0-9._:-]{1,255}", value) is None
+        ):
+            raise ConnectionError("Opaque workflow handle missing or invalid; launch state unknown")
+        return value
+
+    @staticmethod
+    def _opaque_receipt(event: dict[str, Any], event_id_key: str) -> tuple[str, str]:
+        event_id, state = event.get(event_id_key), event.get("attempt_state")
+        if (
+            not isinstance(event_id, str) or not event_id
+            or not isinstance(state, str) or state not in OPAQUE_ATTEMPT_STATES
+        ):
+            raise ValueError("Opaque terminal requires an event ID and attempt state")
+        return event_id, state
+
+    @staticmethod
+    def _opaque_deadline(execution: ExecutionInfo) -> datetime | None:
+        if execution.timeout_seconds > 0:
+            return execution.started_at + timedelta(seconds=execution.timeout_seconds)
+        return None
+
+    @staticmethod
+    def _cancel_opaque_stop_task(handle: ProcessHandle) -> None:
+        task = handle.process.stop_task
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+
+    def resume_opaque_stops(self, live_workflows: dict[str, bool]) -> None:
+        for route_id, cancelling in live_workflows.items():
+            handle = self._routes.get(route_id)
+            if handle is not None:
+                self._schedule_opaque_stop(handle, cancelling=cancelling)
+
+    def _schedule_opaque_stop(self, handle: ProcessHandle, *, cancelling: bool = False) -> None:
+        assert handle.current_execution is not None
+        deadline = self._opaque_deadline(handle.current_execution)
+        if handle.process.stop_requested or (deadline is None and not cancelling):
+            return
+        self._cancel_opaque_stop_task(handle)
+
+        async def stop_due_route() -> None:
+            if cancelling:
+                await self._handle_cancel_request(execution_id)
+            elif deadline is not None:
+                await asyncio.sleep(max(0, (deadline - datetime.now(UTC)).total_seconds()))
+                await self._request_terminate(
+                    handle.id, error_type="TimeoutError", error="Workflow dispatch deadline exceeded",
+                    grace_seconds=self.graceful_shutdown_seconds,
+                )
+
+        # Capture the execution ID before a terminal clears the handle.
+        execution_id = handle.current_execution.execution_id
+        handle.process.stop_task = asyncio.create_task(stop_due_route(), name=f"opaque-stop:{execution_id}")
+
+    async def _request_opaque_stop(self, handle: ProcessHandle, *, error_type: str, error: str) -> None:
+        if self._opaque_lost or not self.transport.connected or handle.process.stop_requested:
+            return
+        from src.worker.remote.fencing import LeaseRef, remote_owner_context
+
+        lease = self.transport.lease
+        try:
+            async with asyncio.timeout(OPAQUE_STOP_TIMEOUT_SECONDS):
+                with remote_owner_context(LeaseRef(lease)):
+                    if not await self._owns_session() or self._routes.get(handle.id) is not handle:
+                        return
+                    # Keep this route busy and reserved until terminal settlement.
+                    # One bounded request per tracked route; a lost reply is uncertain.
+                    if handle.process.stop_requested:
+                        return
+                    handle.process.stop_requested = True
+                    reply = await self.transport.request(
+                        "terminate", {"route_id": handle.id, "error_type": error_type, "error": error},
+                        expected_generation=lease.session_generation,
+                    )
+                    if not isinstance(reply, dict) or reply.get("received") is not True:
+                        raise ConnectionError("Opaque stop receipt is missing")
+        except CredentialRouteChanged:
+            handle.process.stop_requested = False  # Refused before send.
+        except (ConnectionError, TimeoutError, RuntimeError, MemoryError):
+            logger.warning("Remote workflow stop receipt uncertain: %s", handle.id)
 
     async def _request_terminate(
         self,
@@ -734,7 +954,8 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         if handle is None:
             return
         if self.runtime_profile != LINUX_RUNTIME_PROFILE:
-            raise RuntimeError("Physical cancellation is not qualified for this runtime")
+            await self._request_opaque_stop(handle, error_type=error_type, error=error)
+            return
         handle.state = ProcessState.KILLED
         handle.killed_at = datetime.now(timezone.utc)
         await self.transport.request(
@@ -892,6 +1113,9 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         if event_type != "result":
             logger.debug("Ignoring thin remote launcher event %r", event_type)
             return
+        if self.runtime_profile != LINUX_RUNTIME_PROFILE:
+            await self._handle_opaque_terminal(event)
+            return
         route_id = event.get("route_id")
         result = event.get("result")
         if not isinstance(route_id, str) or not isinstance(result, dict):
@@ -901,6 +1125,34 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         if handle is None:
             logger.info("Ignoring late thin remote result for %s", route_id)
             return
+        await self._handle_result(handle, result)
+
+    async def _handle_opaque_terminal(self, event: dict[str, Any]) -> None:
+        if not await self._owns_session() or self._opaque_lost:
+            raise ConnectionError("Remote API ownership was replaced")
+        receipt = self._opaque_receipt(event, "_event_id")
+        _, state = receipt
+        route_id, result = event.get("route_id"), event.get("result")
+        self._opaque_handle_value(event)
+        if (
+            not isinstance(route_id, str) or not isinstance(result, dict)
+            or type(result.get("success")) is not bool or (result["success"] and state != "completed")
+        ):
+            raise ValueError("Invalid opaque workflow terminal")
+        handle = self._routes.get(route_id)
+        if handle is None:
+            return  # The fenced result may have already committed before ACK.
+        previous = handle.process.terminal_receipt
+        if previous is not None and previous != receipt:
+            raise ValueError("Opaque terminal does not match its retained receipt")
+        self._bind_workflow_handle(handle, event)
+        handle.process.terminal_receipt = receipt
+        if state == "uncertain":
+            result = {
+                **result,
+                "error_type": "WorkflowAttemptUncertain",
+                "error": f"Workflow may already have taken effect. {result.get('error') or ''}".strip(),
+            }
         await self._handle_result(handle, result)
 
     async def _handle_result(self, handle: ProcessHandle, result: dict[str, Any]) -> None:
@@ -925,6 +1177,8 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                     await self.on_result(result)
             if not await self._owns_session():
                 raise ConnectionError("Remote API ownership was replaced before ACK")
+            if self.runtime_profile != LINUX_RUNTIME_PROFILE:
+                self._cancel_opaque_stop_task(handle)
             handle.result_reported = True
             handle.process.exitcode = 0
             handle.current_execution = None

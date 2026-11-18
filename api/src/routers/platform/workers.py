@@ -43,6 +43,7 @@ from src.models.contracts.platform import (
 )
 from src.services.authorization.enforce import authorize_operation
 from src.services.authorization.evaluator import GLOBAL
+from src.worker.remote.protocol import CLOUDFLARE_PYTHON_RUNTIME_PROFILE
 
 logger = logging.getLogger(__name__)
 
@@ -433,6 +434,12 @@ async def recycle_process(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Pool {worker_id} not found",
+        )
+
+    if await r.hget(pool_key, "runtime_profile") == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Pool {worker_id} has no OS processes",
         )
 
     # Publish recycle command via Redis pub/sub

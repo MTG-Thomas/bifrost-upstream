@@ -60,7 +60,11 @@ async def test_cloudflare_executor_starts_and_reconnects_with_workflow_only(monk
         await asyncio.Future()
 
     socket.send_text = AsyncMock(side_effect=send)
-    database = Mock(commit=AsyncMock(), scalar=AsyncMock(return_value=lease.worker_id))
+    database = Mock(
+        commit=AsyncMock(),
+        scalar=AsyncMock(return_value=lease.worker_id),
+        execute=AsyncMock(return_value=Mock(all=Mock(return_value=[]))),
+    )
 
     @asynccontextmanager
     async def db_context():
