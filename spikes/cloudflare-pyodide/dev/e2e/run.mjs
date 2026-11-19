@@ -454,7 +454,7 @@ async function startRun(scenario, hold = true, tenant) {
   const row = runRow(id);
   assert.equal(row.claim?.length, 1);
   assert.equal(row.credential, 2);
-  if (config.qualification?.placement) {
+  if (config.qualification?.placement || config.qualification?.workersOnly) {
     const workers = managedRows();
     assert.equal(workers.length, 1, 'one managed Workers incarnation for the placement trial');
     assert.equal(workers[0].state, 'ready');
@@ -889,8 +889,44 @@ async function hostedCpuCheck() {
   assert.match(cpuRow.error, /may already have taken effect/);
   const cpuTerminal = wire.find((event) => event.kind === 'result' && event.route === cpu.route);
   assert.equal(cpuTerminal.attempt, 'uncertain');
+  if (config.qualification?.workersOnly) assert.equal(cpuTerminal.errorType, 'CpuLimitExceeded');
   assert.deepEqual(hostedReads.get(cpu.id), [200]);
   evidence('cpu', {id: cpu.id, budgetMs: 1000, terminal: cpuTerminal});
+}
+
+async function hostedWorkersQualification() {
+  const linux = ['worker', 'scheduler'].map((name) => config.project + '-' + name + '-1');
+  execFileSync('docker', ['pause', ...linux]);
+  try {
+    appendFileSync('.phase5-api.env', [
+      '', `BIFROST_WORKER_CAPACITY_URL=${config.qualification.workersOnly}`,
+      `BIFROST_WORKER_CAPACITY_TOKEN=${config.phase6.token}`, '',
+    ].join('\n'));
+    evidence('hosted-relay-ready', {port: proxy.address().port});
+    reloadApi();
+    const launcher = await until('managed Workers ready and static workers fenced', () => {
+      if (sql(`SELECT to_json(EXISTS (SELECT FROM execution_workers
+        WHERE form='static' AND state IN ('starting','ready','draining')))`)) return null;
+      return managedRows().find(({state}) => state === 'ready');
+    }, 90_000);
+    config.incarnation = launcher.id;
+    assert.equal(launcher.budget, 256 * 2 ** 20);
+    evidence('hosted-managed-ready', {launcher});
+    const loose = await startRun('phase6-a', true, config.phase6.tenants[0]);
+    const solution = await startRun('phase6-b', true, config.phase6.tenants[1]);
+    assert.equal(loose.claim[0].worker, solution.claim[0].worker);
+    assert.equal(runRow(loose.id).status, 'Running');
+    assert.equal(runRow(solution.id).status, 'Running');
+    evidence('hosted-two-slot-overlap', {worker: launcher.id, loose: loose.id, solution: solution.id});
+    loose.gate.release.resolve();
+    solution.gate.release.resolve();
+    await settle('phase6-a', loose, 'Success');
+    await settle('phase6-b', solution, 'Success');
+    await hostedCpuCheck();
+    await hostedResetCheck();
+  } finally {
+    execFileSync('docker', ['unpause', ...linux]);
+  }
 }
 
 async function localChecks() {
@@ -1366,7 +1402,8 @@ await new Promise((resolve, reject) => {
   proxy.listen(config.port, '127.0.0.1', resolve);
 });
 try {
-  if (config.qualification?.placement) await containersChecks();
+  if (config.qualification?.workersOnly) await hostedWorkersQualification();
+  else if (config.qualification?.placement) await containersChecks();
   else if (config.qualification) await hostedAgentAndRuntimeChecks();
   else if (config.agent) await agentChecks();
   else if (config.summary) await summaryChecks();
