@@ -4,7 +4,8 @@
 // run token parent-side while callers present only DUMMY_CREDENTIAL.
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {createTenantGateway, isStoragePath, basePathForName} from './tenant-gateway.mjs';
+import {createTenantGateway, basePathForName} from './tenant-gateway.mjs';
+import {isStoragePath} from './storage-path.mjs';
 import {DUMMY_CREDENTIAL} from '../executor/gateway-injection.mjs';
 
 const WF = 'workflows/wf.py';

@@ -18,21 +18,12 @@
 import {DUMMY_CREDENTIAL} from '../executor/gateway-injection.mjs';
 import {verifyModuleResponse} from '../../backend/module-response.mjs';
 import {verifyResolutionResponse} from '../../backend/resolution-response.mjs';
+import {isStoragePath} from './storage-path.mjs';
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*(?:[./][A-Za-z_][A-Za-z0-9_]*)*$/;
 
 const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
-
-export function isStoragePath(path) {
-  return typeof path === 'string' &&
-    path.length >= 4 &&
-    path.endsWith('.py') &&
-    !path.startsWith('/') &&
-    !path.includes('\\') &&
-    !path.includes('\0') &&
-    !path.split('/').some((part) => part === '' || part === '.' || part === '..' || part === '.git');
-}
 
 async function sha256Hex(text) {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));

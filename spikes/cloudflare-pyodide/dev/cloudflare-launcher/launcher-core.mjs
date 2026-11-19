@@ -1,4 +1,4 @@
-import {isStoragePath} from '../tenant-workers/tenant-gateway.mjs';
+import {isStoragePath} from '../tenant-workers/storage-path.mjs';
 import {
   CLOUDFLARE_HANDLERS, CLOUDFLARE_INCARNATION_ENDED, CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
   CREDENTIAL_PROTOCOL, FragmentAssembler, ProtocolError, encodeEnvelope, envelope, fragment,

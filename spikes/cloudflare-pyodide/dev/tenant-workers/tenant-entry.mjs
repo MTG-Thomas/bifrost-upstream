@@ -27,7 +27,8 @@
 //   imports map to a terminal (effects may already exist, same as executor).
 import {bootProbeCode, genericWorkerCode, genericCodeDigest, engineDigest} from './generic-worker-code.mjs';
 import {tenantWorkerId} from './tenant-registry.mjs';
-import {createTenantGateway, createRemoteTenantGateway, isStoragePath} from './tenant-gateway.mjs';
+import {createTenantGateway, createRemoteTenantGateway} from './tenant-gateway.mjs';
+import {isStoragePath} from './storage-path.mjs';
 import {capabilityRejection} from '../executor/capability-requirements.mjs';
 import {egressRejection, isUrlAllowed} from '../executor/egress-allowlist.mjs';
 import {reconcileImports, deniedTerminal} from '../executor/import-audit.mjs';

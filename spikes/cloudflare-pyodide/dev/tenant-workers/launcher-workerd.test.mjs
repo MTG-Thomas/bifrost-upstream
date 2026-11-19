@@ -114,7 +114,7 @@ const main = `
 
 before(async () => {
   const deps = [
-    'dev/tenant-workers/tenant-api.mjs', 'dev/tenant-workers/tenant-gateway.mjs',
+    'dev/tenant-workers/tenant-api.mjs', 'dev/tenant-workers/tenant-gateway.mjs', 'dev/tenant-workers/storage-path.mjs',
     'dev/tenant-workers/tenant-dispatch.mjs',
     'dev/tenant-workers/attempt-credentials.mjs', 'dev/executor/policy.mjs',
     'dev/executor/output-budget.mjs', 'dev/executor/gateway-injection.mjs',
@@ -137,7 +137,7 @@ before(async () => {
       `},
         ...Object.fromEntries(['cloudflare-launcher/launcher-do.mjs', 'cloudflare-launcher/launcher-core.mjs',
           'cloudflare-launcher/protocol.mjs', 'tenant-workers/launcher-host.mjs', 'tenant-workers/tenant-dispatch.mjs',
-          'tenant-workers/tenant-registry.mjs'].map((name) =>
+          'tenant-workers/tenant-registry.mjs', 'tenant-workers/storage-path.mjs'].map((name) =>
           [name, {type: 'esm', contents: readFileSync(path(`../${name}`), 'utf8')}])),
       }},
       env: Object.fromEntries(Object.entries({
