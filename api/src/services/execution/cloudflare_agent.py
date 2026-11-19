@@ -18,6 +18,7 @@ from src.models.orm.agent_runs import AgentRun, AgentRunStep, CloudflareAgentAtt
 from src.models.orm.execution_workers import ExecutionWorkerClaim
 from src.models.orm.executions import Execution
 from src.models.orm.work_dispatches import WorkDispatch
+from src.services.authorization.callers import CallerUnavailable
 from src.services.authorization.enforce import load_caller
 from src.services.authorization.runtime_auth import load_runtime_principal
 from src.services.durable_impersonation import principal_durable_impersonation
@@ -35,6 +36,7 @@ from src.services.worker_pool.claims import PoolClaim
 from src.worker.remote.fencing import current_remote_lease_ref, fence_remote_owner
 
 ATTEMPT_SECONDS = 60
+PROVIDER_REQUEST_BYTES = 256 * 1024
 UNCERTAIN = "The model or workflow tool may already have run. Check the recorded agent steps before running again."
 
 
@@ -150,9 +152,10 @@ async def grant_turn(
         remaining = int((datetime.fromisoformat(data["deadline"]) - datetime.now(UTC)).total_seconds() * 1000)
         if (
             run.status != "running" or remaining <= 0 or turn not in (1, 2)
-            or turn > data["max_requests"] or run.tokens_used >= data["max_tokens"]
         ):
             return {"granted": False}
+        if turn > data["max_requests"] or run.tokens_used >= data["max_tokens"]:
+            return {"granted": False, "error_type": "AgentBudgetExceeded"}
         requests = dict(data["requests"])
         previous = requests.get(str(turn))
         if previous is not None and previous != request_id:
@@ -163,6 +166,12 @@ async def grant_turn(
         if turn == 2:
             if not data.get("tool_result") or execution_id != data["tool_receipt"]["execution_id"]:
                 raise ValueError("Workflow tool has no canonical result")
+            principal = await load_runtime_principal(db, {"credential_kind": "agent_run", "sub": str(run_id)})
+            if run.agent_id is None or principal is None:
+                raise CallerUnavailable("Cloudflare agent authority is unavailable")
+            await authorize_bound_workflow_tool(
+                db, run.agent_id, UUID(data["tool"]["workflow_id"]), await load_caller(db, principal),
+            )
             call = data["model_tool"]
             messages += [
                 {"role": "assistant", "content": data["tool_text"] or None, "tool_calls": [{
@@ -181,6 +190,9 @@ async def grant_turn(
                 k: data["tool"][k] for k in ("name", "description", "parameters")
             }}]
             body["parallel_tool_calls"] = False
+        body_bytes = json.dumps(body, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
+        if len(body_bytes) > PROVIDER_REQUEST_BYTES:
+            return {"granted": False, "error_type": "AgentProviderRequestTooLarge"}
         if previous is None:
             requests[str(turn)] = request_id
             data["requests"] = requests
@@ -348,6 +360,8 @@ async def commit_event(run_id: UUID, claim_id: UUID, event: dict[str, Any]) -> d
             sequence, _, replay = _event_receipt(data, event)
             if replay:
                 return {"sequence": sequence, "execution_id": data["tool_receipt"]["execution_id"]}
+            if "tool_result" in data:
+                raise ValueError("Workflow tool result was already committed")
             if run.status != "running" or event.get("turn") != 1 or data.get("model_tool") is None:
                 raise ValueError("No workflow tool turn is pending")
             call = event["toolCall"]
@@ -380,6 +394,8 @@ async def commit_event(run_id: UUID, claim_id: UUID, event: dict[str, Any]) -> d
         reply: dict[str, Any] = {"sequence": sequence}
         kind = event.get("kind")
         if child is not None:
+            if "tool_result" in data:
+                raise ValueError("Workflow tool result was already committed")
             execution_id, text, is_error, duration = child
             result, truncated = _capture_tool_result_for_timeout_evidence(text)
             data["tool_result"] = text
@@ -477,17 +493,38 @@ async def settle_run(
 
         summary = None
         if run.status != "cancelled":
+            final_response_committed = (
+                data.get("finish_reason") in {"stop", "length"}
+                and data.get("finished_turn") == len(data["requests"])
+            )
             success = (
                 state == "completed" and result.get("success") is True
-                and data.get("finish_reason") in {"stop", "length"}
-                and result.get("through_sequence") == len(data["events"])
+                and final_response_committed and result.get("through_sequence") == len(data["events"])
             )
             cancelled = run.status == "cancelling"
-            run.status = "cancelled" if cancelled else "completed" if success else "failed"
-            run.error = None if success and not cancelled else (
-                "Cancelled by user" if cancelled and not data.get("requests") else
-                UNCERTAIN if state != "completed" or result.get("success") else "Cloudflare model request failed"
-            )
+            error_type = result.get("error_type") if isinstance(result.get("error_type"), str) else None
+            if cancelled:
+                if final_response_committed:
+                    state = "completed"
+                run.status = "cancelled"
+                run.error = "Cancelled by user" if state != "uncertain" else UNCERTAIN
+            elif success:
+                run.status = "completed"
+                run.error = None
+            elif state == "completed" and error_type == "AgentBudgetExceeded":
+                run.status = "budget_exceeded"
+                run.error = "The autonomous agent reached its model budget"
+            else:
+                run.status = "failed"
+                refusal = {
+                    "AgentTurnRefused": "The next model turn was refused",
+                    "AgentRequestRefused": "The agent request was refused",
+                    "AgentProviderRequestTooLarge": "The next model request exceeds the provider size limit",
+                }
+                run.error = (
+                    UNCERTAIN if state != "completed" or result.get("success")
+                    else refusal.get(error_type, "Cloudflare model request failed")
+                )
             run.output = {"text": data.get("text") or None}
             run.llm_model = data.get("model")
             now = datetime.now(UTC)

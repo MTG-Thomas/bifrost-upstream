@@ -144,6 +144,31 @@ test('an autonomous broker call replays across a lost reply without rerunning th
   assert.equal(api.frames().filter((row) => row.event === 'cloudflare_agent_result').length, 1);
 });
 
+test('a negative authorization reply reaches the agent loop as a refusal', async () => {
+  const waiting = deferred();
+  const api = peer({
+    onSend: (event) => {
+      if (event.event === 'cloudflare_agent_request') waiting.resolve(event);
+    },
+    async runAgent(_route, request, signal) {
+      assert.deepEqual(await request('commit', {sequence: 1, kind: 'workflow_tool'}, signal), {refused: true});
+      return {attempt_state: 'completed', result: {success: false, error_type: 'AgentRequestRefused'}};
+    },
+  });
+  await connect(api);
+  const route_id = `agent:${SUBJECT}:${LAUNCHER}`;
+  await api.command('cloudflare_agent', {
+    route_id, run_id: SUBJECT, claim_id: LAUNCHER,
+    deadline: new Date(START + 3000).toISOString(), memory_request_bytes: 8192,
+  });
+  const {request_id} = await waiting.promise;
+  await api.command('cloudflare_agent_reply', {route_id, request_id, ok: false, result: {refused: true}});
+  await api.finish();
+  const terminal = api.frames().find((row) => row.event === 'cloudflare_agent_result');
+  assert.equal(terminal.attempt_state, 'completed');
+  assert.equal(terminal.result.error_type, 'AgentRequestRefused');
+});
+
 function tenantWorkflow(suffix, tenant) {
   const attempt = workflow(suffix);
   const subject = SUBJECT.slice(0, -1) + suffix;

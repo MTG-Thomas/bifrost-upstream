@@ -3,21 +3,28 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from uuid import UUID
 
+from fastapi import HTTPException
 from sqlalchemy import select
 
 from src.core.database import get_db_context
 from src.models.orm.agent_runs import AgentRun, CloudflareAgentAttempt
 from src.models.orm.execution_workers import ExecutionWorkerClaim
+from src.models.orm.work_dispatches import WorkDispatch
+from src.services.authorization.callers import CallerUnavailable
+from src.services.authorization.enforce import PermissionDenied
 from src.services.execution import cloudflare_agent
 from src.services.memory_requests import AGENT_RUN_REQUEST_BYTES
 from src.services.worker_pool.claims import PoolClaim
 from src.worker.remote.agent_route import run_timeout_seconds
 from src.worker.remote.protocol import CredentialRouteChanged
+
+logger = logging.getLogger(__name__)
 
 
 class AgentTransport(Protocol):
@@ -48,17 +55,19 @@ class CloudflareAgentRoutes:
         self.routes: dict[str, CloudflareAgentRoute] = {}
 
     async def run(self, claim: PoolClaim, generation: int) -> None:
-        seconds = min(cloudflare_agent.ATTEMPT_SECONDS, await run_timeout_seconds(claim.subject_id))
         route = CloudflareAgentRoute(
             claim.subject_id, UUID(claim.message["claim_id"]),
-            datetime.now(UTC) + timedelta(seconds=seconds), asyncio.Event(),
+            datetime.now(UTC), asyncio.Event(),
             str(claim.dispatch_id),
         )
         self.routes[route.id] = route
         try:
             try:
+                seconds = min(cloudflare_agent.ATTEMPT_SECONDS, await run_timeout_seconds(claim.subject_id))
+                route.deadline += timedelta(seconds=seconds)
                 prepared = await cloudflare_agent.prepare_run(claim, route.deadline, self.endpoint)
-            except (ValueError, PermissionError):
+            except Exception:  # noqa: BLE001 - No launch command was sent.
+                logger.warning("Cloudflare agent preparation failed for run %s", route.run_id)
                 prepared = False
             if not prepared:
                 await cloudflare_agent.settle_run(
@@ -74,17 +83,20 @@ class CloudflareAgentRoutes:
                 await cloudflare_agent.settle_run(route.run_id, route.claim_id, "not_started", {})
                 return
             except (ConnectionError, TimeoutError):
-                # The command may have reached the launcher.
                 pass
             else:
-                self._check_handle(route, reply)
+                try:
+                    self._check_handle(route, reply)
+                except ValueError:
+                    # A broker request, inventory or terminal can still identify the route.
+                    logger.warning("Invalid Cloudflare agent launch reply for run %s", route.run_id)
             await self.supervise(route)
         finally:
             self.routes.pop(route.id, None)
 
     @staticmethod
     def _check_handle(route: CloudflareAgentRoute, event: dict[str, Any]) -> None:
-        handle = event.get("runtime_handle")
+        handle = event.get("runtime_handle") if isinstance(event, dict) else None
         if not isinstance(handle, str) or not 0 < len(handle) <= 255 or route.handle not in (None, handle):
             raise ValueError("Invalid opaque agent handle")
         route.handle = handle
@@ -92,12 +104,14 @@ class CloudflareAgentRoutes:
     async def handle_request(self, event: dict[str, Any], generation: int) -> None:
         route = self.routes.get(str(event.get("route_id")))
         data, request_id = event.get("data"), event.get("request_id")
-        if route is None or not isinstance(data, dict) or not isinstance(request_id, str) or len(request_id) > 255:
-            raise ValueError("Invalid Cloudflare agent request")
-        self._check_handle(route, event)
-        result = {}
+        if route is None or route.finished.is_set() or not isinstance(request_id, str) or not 0 < len(request_id) <= 255:
+            return
+        result: dict[str, Any] = {}
         ok = False
         try:
+            if not isinstance(data, dict):
+                raise TypeError("Invalid Cloudflare agent request")
+            self._check_handle(route, event)
             if event["operation"] == "grant":
                 turn = data.get("turn")
                 if type(turn) is not int:
@@ -110,7 +124,9 @@ class CloudflareAgentRoutes:
             else:
                 raise ValueError("Unknown Cloudflare agent request")
             ok = True
-        except (ValueError, PermissionError, TypeError, KeyError, TimeoutError):
+        except (HTTPException, PermissionDenied, CallerUnavailable):
+            result = {"refused": True}
+        except (ValueError, PermissionError, TypeError, KeyError, TimeoutError, ConnectionError):
             pass
         await self.transport.request("cloudflare_agent_reply", {
             "request_id": request_id, "route_id": route.id, "ok": ok, "result": result,
@@ -162,6 +178,17 @@ class CloudflareAgentRoutes:
     async def reconcile(self, entries: list[dict[str, Any]]) -> list[CloudflareAgentRoute]:
         """Restore routes from the intersection of inventory and active journals."""
         async with get_db_context() as db:
+            unprepared = (await db.execute(select(
+                ExecutionWorkerClaim.subject_id, ExecutionWorkerClaim.id, WorkDispatch.id,
+            ).join(AgentRun, AgentRun.id == ExecutionWorkerClaim.subject_id).join(
+                WorkDispatch, WorkDispatch.subject_id == AgentRun.id,
+            ).where(
+                ExecutionWorkerClaim.worker_id == self.worker_id,
+                ExecutionWorkerClaim.family == "agent_run",
+                WorkDispatch.family == "agent_run",
+                WorkDispatch.assigned_worker_id == self.worker_id,
+                AgentRun.status == "queued",
+            ))).all()
             owned = (await db.execute(select(
                 CloudflareAgentAttempt.run_id, CloudflareAgentAttempt.claim_id, CloudflareAgentAttempt.data,
             ).join(ExecutionWorkerClaim, ExecutionWorkerClaim.id == CloudflareAgentAttempt.claim_id).join(
@@ -174,6 +201,9 @@ class CloudflareAgentRoutes:
         inventory = {entry["route_id"]: entry for entry in entries}
         if len(inventory) != len(entries):
             raise ValueError("Duplicate Cloudflare agent inventory")
+        for run_id, claim_id, dispatch_id in unprepared:
+            if f"agent:{run_id}:{claim_id}" not in self.routes:
+                await cloudflare_agent.settle_run(run_id, claim_id, "not_started", {}, dispatch_id=dispatch_id)
         adopted = []
         for run_id, claim_id, data in owned:
             key = f"agent:{run_id}:{claim_id}"

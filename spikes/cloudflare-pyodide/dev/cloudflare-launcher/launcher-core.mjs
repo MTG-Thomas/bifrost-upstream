@@ -371,7 +371,7 @@ export class LauncherCore {
       case 'cloudflare_agent_reply': {
         const request = this.#agentRequests.get(payload.request_id);
         if (request?.event.route_id === payload.route_id) {
-          if (payload.ok === true) request.resolve(payload.result);
+          if (payload.ok === true || payload.result?.refused === true) request.resolve(payload.result);
           else request.reject(new Error('Cloudflare agent request refused'));
         }
         accept({});

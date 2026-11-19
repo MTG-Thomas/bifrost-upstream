@@ -4,6 +4,8 @@ const MAX_EVENTS = 1024;
 const MAX_TURN_BYTES = 64 * 1024;
 const encoder = new TextEncoder();
 
+class AgentRequestRefused extends Error {}
+
 function failed(attempt_state, through_sequence, error_type) {
   return {attempt_state, result: {success: false, through_sequence, error_type}};
 }
@@ -18,6 +20,7 @@ export async function runAgentLoop({grantTurn, streamTurn, commit}, signal) {
     if (throughSequence >= MAX_EVENTS) throw new Error('Agent event budget exhausted');
     const sequence = throughSequence + 1;
     const receipt = await commit({sequence, ...event}, signal);
+    if (receipt?.refused === true) throw new AgentRequestRefused();
     if (receipt?.sequence !== sequence) throw new Error('Invalid agent event acknowledgement');
     throughSequence = sequence;
     return receipt;
@@ -30,8 +33,9 @@ export async function runAgentLoop({grantTurn, streamTurn, commit}, signal) {
       // before any grant can prove that the first turn did not start.
       effectPossible = true;
       const grant = await grantTurn(turn, toolReceipt, signal);
-      if (grant?.granted === false) {
-        return failed(turn === 1 ? 'not_started' : 'uncertain', throughSequence, 'AgentTurnRefused');
+      if (grant?.granted === false || grant?.refused === true) {
+        return failed(turn === 1 ? 'not_started' : 'completed', throughSequence,
+          grant?.error_type ?? 'AgentTurnRefused');
       }
       if (grant?.granted !== true) throw new Error('Invalid provider grant');
 
@@ -74,7 +78,10 @@ export async function runAgentLoop({grantTurn, streamTurn, commit}, signal) {
       }
       if (toolReceipt === null) throw new Error('Incomplete provider stream');
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof AgentRequestRefused) {
+      return failed('completed', throughSequence, 'AgentRequestRefused');
+    }
     return failed(effectPossible ? 'uncertain' : 'not_started', throughSequence,
       signal.aborted ? 'AgentInterrupted' : 'AgentOutcomeUnknown');
   }

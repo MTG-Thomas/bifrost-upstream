@@ -113,6 +113,33 @@ test('an ambiguous workflow acceptance never causes a second tool attempt', asyn
   assert.deepEqual(calls, [[1, null]]);
 });
 
+test('an authorization refusal settles without an uncertain tool dispatch', async () => {
+  const {ports, calls, controller} = fixture([[{...finish, reason: 'tool_calls', toolCall}]]);
+  const commit = ports.commit;
+  ports.commit = async (event) => event.kind === 'workflow_tool' ? {refused: true} : commit(event);
+  assert.deepEqual(await runAgentLoop(ports, controller.signal), {
+    attempt_state: 'completed',
+    result: {success: false, through_sequence: 1, error_type: 'AgentRequestRefused'},
+  });
+  assert.deepEqual(calls, [[1, null]]);
+});
+
+for (const [refusal, errorType] of [
+  [{refused: true}, 'AgentTurnRefused'],
+  [{granted: false, error_type: 'AgentBudgetExceeded'}, 'AgentBudgetExceeded'],
+  [{granted: false, error_type: 'AgentProviderRequestTooLarge'}, 'AgentProviderRequestTooLarge'],
+]) {
+  test(`a continuation refused with ${errorType} has a known outcome`, async () => {
+    const {ports, controller} = fixture([[{...finish, reason: 'tool_calls', toolCall}]]);
+    const grant = ports.grantTurn;
+    ports.grantTurn = async (turn, receipt) => turn === 1 ? grant(turn, receipt) : refusal;
+    assert.deepEqual(await runAgentLoop(ports, controller.signal), {
+      attempt_state: 'completed',
+      result: {success: false, through_sequence: 2, error_type: errorType},
+    });
+  });
+}
+
 test('workerd runs the same loop with a streamed turn and a workflow receipt', async () => {
   const mf = new Miniflare({cf: false, workers: [{
     config: {name: 'agent-loop-test', compatibilityDate: '2026-10-23',
