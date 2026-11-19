@@ -957,12 +957,19 @@ class TestGetSdkAgentRun:
 
         assert exc_info.value.status_code == 404
 
-    async def test_in_progress_run_reads_steps_from_redis(self, db_session):
+    @pytest.mark.parametrize("cloudflare_attempt", [False, True])
+    async def test_in_progress_run_uses_its_runtime_step_source(self, db_session, cloudflare_attempt):
+        from src.models.orm.agent_runs import CloudflareAgentAttempt
+
         principal = _principal()
         agent = await _seed_agent(db_session, "Running Agent")
         run = await _seed_run(
             db_session, agent.id, status="running", caller_user_id=str(principal.user_id)
         )
+        committed = await _seed_step(db_session, run.id, 1)
+        if cloudflare_attempt:
+            db_session.add(CloudflareAgentAttempt(claim_id=uuid4(), run_id=run.id, data={}))
+        await db_session.refresh(run, attribute_names=["steps"])
         step_id = uuid4()
 
         entries = [
@@ -984,13 +991,17 @@ class TestGetSdkAgentRun:
         with patch(
             "shared.sdk_agent_runs.get_redis",
             return_value=_redis_stream_context(entries),
-        ):
+        ) as redis:
             detail = await get_sdk_agent_run(
                 db_session, principal, run_id=run.id
             )
 
         assert len(detail.steps) == 1
-        assert detail.steps[0].id == step_id
+        if cloudflare_attempt:
+            redis.assert_not_called()
+        else:
+            redis.assert_called_once()
+        assert detail.steps[0].id == (committed.id if cloudflare_attempt else step_id)
         assert detail.steps[0].content == {"tool": "lookup"}
         assert detail.steps[0].tokens_used == 10
 

@@ -339,7 +339,7 @@ async def get_sdk_agent_run(
         SdkAgentRunError: 404 when the run is missing or not visible to
             the principal.
     """
-    from src.models.orm.agent_runs import AgentRun
+    from src.models.orm.agent_runs import AgentRun, CloudflareAgentAttempt
     from src.models.orm.ai_usage import AIUsage
 
     query = (
@@ -447,7 +447,10 @@ async def get_sdk_agent_run(
     steps_response: list[AgentRunStepResponse] = []
     is_in_progress = run.status in ("queued", "running", "cancelling")
 
-    if is_in_progress and not run.steps:
+    has_committed_worker_steps = is_in_progress and bool(run.steps) and await session.scalar(
+        select(CloudflareAgentAttempt.claim_id).where(CloudflareAgentAttempt.run_id == run_id).limit(1)
+    ) is not None
+    if is_in_progress and not has_committed_worker_steps:
         # Read from Redis Stream (steps are uncommitted in DB during execution)
         try:
             async with get_redis() as r:
