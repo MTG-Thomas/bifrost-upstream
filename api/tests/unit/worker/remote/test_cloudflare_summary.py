@@ -49,7 +49,7 @@ async def test_cloudflare_summary_uses_current_managed_connection(async_session_
                 cloud = await cloudflare_summary.prepare_completion(db, run, endpoint)
                 assert cloud["api_key"] == linux.config.api_key == key
                 assert cloud["body"]["max_tokens"] == 8000
-            connection.encrypted_api_key = ""
+            connection.encrypted_api_key = service._get_fernet().encrypt(b"").decode()
             await db.flush()
             with pytest.raises(RuntimeError):
                 await cloudflare_summary.get_summarization_client(db)

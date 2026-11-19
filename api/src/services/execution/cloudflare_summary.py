@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.orm.agent_runs import AgentRun
 from src.models.orm.agents import Agent
-from src.services.agent_runtime.model_factory import provider_name_for_config
 from src.services.execution.model_selection import get_summarization_client
 from src.services.execution.run_summarizer import (
     _broadcast_run,
@@ -18,7 +17,6 @@ from src.services.execution.run_summarizer import (
     write_summary,
 )
 from src.services.llm.base import LLMResponse, is_deepseek_family, request_max_tokens
-from src.services.llm.pydantic_client import PydanticAIClient
 
 REQUEST_BYTES = 256 * 1024
 RESPONSE_BYTES = 64 * 1024
@@ -39,6 +37,9 @@ def summary_endpoint(value: str | None) -> str | None:
 
 
 async def prepare_completion(db: AsyncSession, run: AgentRun, endpoint: str) -> dict[str, Any]:
+    from src.services.agent_runtime.model_factory import provider_name_for_config
+    from src.services.llm.pydantic_client import PydanticAIClient
+
     try:
         client, model = await get_summarization_client(db)
     except RuntimeError:
