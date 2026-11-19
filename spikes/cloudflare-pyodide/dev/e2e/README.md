@@ -62,6 +62,22 @@ The verified run used archive `7e1f7c846` on CT128, project
 `/opt/bifrost-tests/phase5-7e1f7c846/.phase5-run.log`. The runtime digest was
 `fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5`.
 
+## Autonomous agent qualification
+
+Use a fresh `agentrun-<sha>` archive and the same loopback debug stack as
+Phase 5a. Run `phase5a.py prepare --agent` before booting the stack and
+`phase5a.py run <generated-runtime.mjs> --agent` after it is ready. Keep Linux
+workflow capacity available. The harness restricts the disposable Linux pool
+rows so the agent and summary claims cannot race the Workers fixture.
+
+The local stub exercises tool-less completion, ordinary workflow dispatch,
+replay of a dropped terminal or tool ACK, cancellation during an open
+provider stream, and uncertain settlement after a Durable Object reset.
+Then the Linux consumer replays the two successful inputs against a
+transport-local fixture. The comparison covers terminal output, model and
+tool steps, usage, child execution status, and lineage. It excludes timings,
+generated IDs and framework-specific request composition diagnostics.
+
 ## Phase 6 managed Workers capacity
 
 Use a fresh, private `/opt/bifrost-tests/phase6-<sha>` archive with an

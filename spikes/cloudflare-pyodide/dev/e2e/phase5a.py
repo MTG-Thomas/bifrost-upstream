@@ -242,12 +242,15 @@ def seed_agents(project, admin, send):
                    cwd=ROOT, check=True, text=True, input='''
 import asyncio
 import json
+import logging
 import sys
 from uuid import UUID
 
 from src.core.database import get_db_context
 from src.models.orm.agents import Agent, AgentTool
 from src.services.ai_model_service import AIModelService
+
+logging.disable(logging.INFO)
 
 async def seed():
     ids = [UUID(value) for value in json.loads(sys.argv[1])]

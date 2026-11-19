@@ -816,6 +816,7 @@ async function agentChecks() {
   await until('agent launcher ready', () => wire.some((event) => event.kind === 'ready'));
   assert.deepEqual(sql(`SELECT supported_handlers FROM execution_workers WHERE id='${config.incarnation}'`),
     ['workflow.execute', 'agent.run']);
+  const completed = [];
   for (const scenario of ['text', 'tool', 'cancel', 'reset']) {
     await until('free agent slot', async () => {
       const ledger = await control('ledger', 200);
@@ -870,7 +871,12 @@ async function agentChecks() {
     }
     evidence('autonomous-agent', {scenario, id, status: terminal.status, providerCalls: turns,
       usage: terminal.usage, steps: terminal.steps, attemptState: terminal.journal.attempt_state});
+    if (expected === 'completed') completed.push(id);
   }
+  execFileSync('docker', ['exec', '-i', config.project + '-api-1', 'python', '-', ...completed], {
+    input: readFileSync(new URL('./agent-parity.py', import.meta.url)), stdio: ['pipe', 'inherit', 'inherit'],
+    timeout: 30_000,
+  });
 }
 
 await new Promise((resolve, reject) => {
