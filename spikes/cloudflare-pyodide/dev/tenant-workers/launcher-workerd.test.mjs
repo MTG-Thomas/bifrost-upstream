@@ -48,6 +48,12 @@ function engine() {
         const pinned = await fetch('https://test-api.invalid/api/sdk/modules/wf.py', {headers});
         const absent = await fetch('https://test-api.invalid/api/sdk/modules/missing.py', {headers});
         result = {content: (await pinned.json()).content, missing: absent.status};
+      } else if (scenario === 'model-catalog') {
+        const headers = new Headers();
+        if (body.context.catalog_etag) headers.set('If-None-Match', body.context.catalog_etag);
+        const response = await fetch('https://models.dev/api.json', {headers});
+        result = {status: response.status, etag: response.headers.get('etag'),
+          catalog: response.status === 200 ? await response.json() : null};
       } else if (scenario === 'budget') {
         const statuses = [];
         for (let index = 0; index < 2; index++) {
@@ -217,6 +223,15 @@ before(async () => {
     dev: {outboundService: {type: 'fetcher', handler: async (request) => {
       const url = new URL(request.url);
       origins.push(url.href);
+      if (url.href === 'https://models.dev/api.json') {
+        assert.equal(request.method, 'GET');
+        assert.equal(request.headers.get('Authorization'), null);
+        const etag = '"model-catalog-fixture"';
+        const headers = {ETag: etag};
+        return request.headers.get('If-None-Match') === etag
+          ? new Response(null, {status: 304, headers})
+          : Response.json({fixture: {models: {sample: {name: 'Sample'}}}}, {headers});
+      }
       if (url.pathname === '/health/ready' && nextOrigin) {
         const origin = nextOrigin;
         nextOrigin = undefined;
@@ -283,6 +298,30 @@ test('workerd launcher alarm exchanges hello and inventory over an outbound Upgr
   assert.deepEqual(await signHello(secret, hello.hello), hello.hello);
   assert.deepEqual(inventory, {kind: 'event', sequence: 1, session_generation: 1,
     payload: {event: 'inventory', inventory: {version: 1, routes: [], terminal_routes: []}}});
+});
+
+test('opaque route can carry a credential-free conditional model catalog read', async () => {
+  const tenant = 'model-catalog';
+  const url = 'https://models.dev/api.json';
+  const etag = '"model-catalog-fixture"';
+  const callsBefore = origins.filter((origin) => origin === url).length;
+  await host(tenant, 'warm', {engineOnly: true});
+
+  const read = (routeId, catalogEtag) => {
+    const input = route(tenant, {routeId, scenario: 'model-catalog',
+      httpsHosts: ['models.dev'], allowance: 1});
+    input.context.catalog_etag = catalogEtag;
+    return host(tenant, 'run', input);
+  };
+
+  const fresh = await read('catalog-read', null);
+  assert.equal(fresh.attempt_state, 'completed');
+  assert.deepEqual(fresh.output.result, {status: 200, etag,
+    catalog: {fixture: {models: {sample: {name: 'Sample'}}}}});
+  const unchanged = await read('catalog-revalidate', etag);
+  assert.equal(unchanged.attempt_state, 'completed');
+  assert.deepEqual(unchanged.output.result, {status: 304, etag, catalog: null});
+  assert.equal(origins.filter((origin) => origin === url).length - callsBefore, 2);
 });
 
 test('workerd runs distinct tenants on their own children at the same time', {timeout: 10_000}, async (t) => {

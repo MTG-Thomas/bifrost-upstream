@@ -686,6 +686,10 @@ until the ordinary queue deadline.
 
 ## Open questions
 
+- [Pool-worker viability](POOL-WORKER-VIABILITY.md) inventories PlatformJobs,
+  service supervision, and package tooling and proposes a first opaque
+  PlatformJob adapter.
+
 - Phase 5b verified outbound WebSocket recovery across an API process restart
   and a forced Cloudflare DO version change. Long-duration behavior and
   spontaneous relocation remain unmeasured.
