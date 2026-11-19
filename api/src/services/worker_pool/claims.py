@@ -244,7 +244,7 @@ async def claim_next(
                 | (
                     (WorkDispatch.handler == CLOUDFLARE_SUMMARY_HANDLER[0])
                     & (WorkDispatch.handler_version == CLOUDFLARE_SUMMARY_HANDLER[1])
-                    & ~WorkDispatch.payload.contains(LINUX_ONLY_SUMMARY)
+                    & ~WorkDispatch.payload.contains({LINUX_ONLY_SUMMARY: True})
                     & (WorkDispatch.memory_request_bytes <= CLOUDFLARE_DEV_BUDGET_BYTES)
                     & ExecutionWorker.capacity_scope.is_(None)
                 )

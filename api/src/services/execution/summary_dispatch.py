@@ -41,7 +41,7 @@ FAMILY = WAKE_AGENT_SUMMARY
 HANDLER = "agent.summarize"
 BACKFILL_HANDLER = "agent.summarize_backfill"
 HANDLER_VERSION = 1
-LINUX_ONLY_SUMMARY = {"linux_only": True}
+LINUX_ONLY_SUMMARY = "linux_only"
 
 
 class SummaryOwnershipLost(RuntimeError):
@@ -92,7 +92,7 @@ async def stage_summary(
         handler=BACKFILL_HANDLER if backfill else HANDLER,
         handler_version=HANDLER_VERSION,
         message={"run_id": str(run_id)},
-        payload=LINUX_ONLY_SUMMARY if linux_only else {},
+        payload={LINUX_ONLY_SUMMARY: True} if linux_only else {},
         queued_at=queued_at,
         memory_request_bytes=SUMMARY_REQUEST_BYTES,
     )
@@ -220,7 +220,7 @@ async def release_summary(
                     ExecutionWorkerClaim.subject_id == run_id,
                 ),
             )
-            .values(assigned_worker_id=None, **({"payload": LINUX_ONLY_SUMMARY} if linux_only else {}))
+            .values(assigned_worker_id=None, **({"payload": WorkDispatch.payload.op("||")({LINUX_ONLY_SUMMARY: True})} if linux_only else {}))
             .returning(WorkDispatch.id)
         )
         if released is not None:

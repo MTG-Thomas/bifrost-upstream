@@ -9,7 +9,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
 
 # ==================== AI MODEL PRICING MODELS ====================
@@ -118,11 +118,6 @@ class AIUsagePublic(AIUsageBase):
     sequence: int
     organization_id: UUID | None = None
     user_id: UUID | None = None
-
-    @field_validator("cache_read_tokens", mode="before")
-    @classmethod
-    def default_unreported_cache_reads(cls, value: int | None) -> int:
-        return 0 if value is None else value
 
     @field_serializer("timestamp")
     def serialize_dt(self, dt: datetime) -> str:

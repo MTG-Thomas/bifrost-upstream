@@ -49,9 +49,9 @@ async def record_ai_usage(
     model: str,
     input_tokens: int,
     output_tokens: int,
-    cache_read_tokens: int | None = 0,
+    cache_read_tokens: int = 0,
     cache_write_tokens: int = 0,
-    reasoning_tokens: int | None = 0,
+    reasoning_tokens: int = 0,
     provider_cost: Decimal | None = None,
     sequence: int = 1,
     duration_ms: int | None = None,
@@ -117,7 +117,7 @@ async def record_ai_usage(
             output_tokens,
             pricing[0],
             pricing[1],
-            cache_read_tokens=cache_read_tokens or 0,
+            cache_read_tokens=cache_read_tokens,
             cache_write_tokens=cache_write_tokens,
             cache_read_price_per_million=pricing[2],
             cache_write_price_per_million=pricing[3],
@@ -674,9 +674,9 @@ async def backfill_model_costs(
         regular_input_tokens = AIUsage.input_tokens
         input_cost = Decimal(0)
         if cache_read_price_per_million is not None:
-            regular_input_tokens = regular_input_tokens - func.coalesce(AIUsage.cache_read_tokens, 0)
+            regular_input_tokens = regular_input_tokens - AIUsage.cache_read_tokens
             input_cost = input_cost + (
-                func.coalesce(AIUsage.cache_read_tokens, 0)
+                AIUsage.cache_read_tokens
                 * cache_read_price_per_million
                 / Decimal(1_000_000)
             )

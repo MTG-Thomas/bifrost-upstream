@@ -84,14 +84,6 @@ class TestAIModelPricingPublic:
 class TestAIUsagePublic:
     """Tests for AIUsagePublic model."""
 
-    def test_unreported_cache_reads_keep_the_existing_public_shape(self):
-        usage = AIUsagePublic.model_validate({
-            "id": 1, "provider": "openai", "model": "stub",
-            "input_tokens": 3, "output_tokens": 1, "cache_read_tokens": None,
-            "timestamp": datetime.now(), "sequence": 1,
-        })
-        assert usage.cache_read_tokens == 0
-
     def test_tokens_must_be_non_negative(self):
         """Test token counts must be >= 0."""
         with pytest.raises(ValidationError):

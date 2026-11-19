@@ -14,6 +14,7 @@ from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerCla
 from src.models.orm.work_dispatches import WorkDispatch
 from src.services.ai_model_service import AIModelService
 from src.services.execution import cloudflare_summary
+from src.services.execution.model_selection import get_summarization_client
 from src.services.memory_requests import SUMMARY_REQUEST_BYTES
 from src.services.worker_pool.claims import PoolClaim
 from src.worker.remote import cloudflare_summary as routes_module
@@ -24,7 +25,7 @@ def test_summary_endpoint_refuses_unpinned_addresses(endpoint):
     assert cloudflare_summary.summary_endpoint(endpoint) is None
 
 
-async def test_cloudflare_summary_uses_current_managed_connection(async_session_factory):
+async def test_cloudflare_summary_uses_current_managed_connection_without_probing(async_session_factory, monkeypatch):
     async with async_session_factory() as db:
         service = AIModelService(db)
         endpoint = "https://stub.invalid/v1"
@@ -45,22 +46,37 @@ async def test_cloudflare_summary_uses_current_managed_connection(async_session_
             for key in ("first-stub-key", "rotated-stub-key"):
                 connection.encrypted_api_key = service.encrypt_api_key(key)
                 await db.flush()
-                linux, _ = await cloudflare_summary.get_summarization_client(db)
-                cloud = await cloudflare_summary.prepare_completion(db, run, endpoint)
+                linux, _ = await get_summarization_client(db)
+                cloud, provider = await cloudflare_summary.prepare_completion(db, run, endpoint)
+                assert provider == linux.provider_name
                 assert cloud["api_key"] == linux.config.api_key == key
                 assert cloud["body"]["max_tokens"] == 8000
+            probe = AsyncMock(side_effect=AssertionError("Cloudflare attempted a transport probe"))
+            monkeypatch.setattr("src.services.openai_transport_detection.detect_openai_transport", probe)
+            monkeypatch.setattr("src.services.opencode_go_detection.detect_opencode_go_wire_api", probe)
+            with monkeypatch.context() as m:
+                decrypt = AsyncMock()
+                m.setattr(AIModelService, "decrypt_api_key", decrypt)
+                profile.openai_transport = None
+                await db.flush()
+                with pytest.raises(ValueError, match="outside the Cloudflare"):
+                    await cloudflare_summary.prepare_completion(db, run, endpoint)
+                decrypt.assert_not_called()
+                profile.openai_transport = "chat_completions"
+                await db.flush()
+            probe.assert_not_awaited()
             connection.encrypted_api_key = service._get_fernet().encrypt(b"").decode()
             await db.flush()
             with pytest.raises(RuntimeError):
-                await cloudflare_summary.get_summarization_client(db)
+                await get_summarization_client(db)
             with pytest.raises(ValueError, match="could not be resolved"):
                 await cloudflare_summary.prepare_completion(db, run, endpoint)
             await db.execute(delete(AIModelAssignment).where(
                 AIModelAssignment.assignment_key == "summarization",
             ))
             with pytest.raises(RuntimeError):
-                await cloudflare_summary.get_summarization_client(db)
-            with pytest.raises(ValueError, match="could not be resolved"):
+                await get_summarization_client(db)
+            with pytest.raises(ValueError, match="outside the Cloudflare"):
                 await cloudflare_summary.prepare_completion(db, run, endpoint)
         finally:
             await db.rollback()
@@ -73,14 +89,14 @@ async def test_cloudflare_completion_uses_linux_summary_writer(monkeypatch):
     assert await cloudflare_summary._persist_completion(db, run, {
         "content": '{"asked":"example"}', "model": "stub", "provider": "fixture-provider",
         "input_tokens": 3, "output_tokens": 1,
-    }) is None
+    }, "api-resolved-provider") is None
     call = writer.await_args
     assert call is not None
     args, kwargs = call
     assert args[:3] == (db, run, {"asked": "example"})
-    assert args[3].cache_read_tokens is None
-    assert args[3].reasoning_tokens is None
-    assert kwargs["provider"] == "fixture-provider"
+    assert args[3].cache_read_tokens == 0
+    assert args[3].reasoning_tokens == 0
+    assert kwargs["provider"] == "api-resolved-provider"
 
 
 async def test_success_cannot_settle_an_uncertain_attempt():
@@ -100,7 +116,7 @@ async def test_success_cannot_settle_an_uncertain_attempt():
     assert not route.finished.done()
 
 
-async def test_summary_preparation_locks_only_its_agent_run(async_session_factory, monkeypatch):
+async def test_summary_preparation_holds_no_run_or_lease_lock(async_session_factory, monkeypatch):
     worker_id, run_id, claim_id, dispatch_id = uuid4(), uuid4(), uuid4(), uuid4()
 
     @asynccontextmanager
@@ -109,15 +125,18 @@ async def test_summary_preparation_locks_only_its_agent_run(async_session_factor
             yield db
 
     monkeypatch.setattr(routes_module, "get_db_context", context)
-    monkeypatch.setattr(routes_module, "fence_remote_owner", AsyncMock(return_value=True))
+    fence = AsyncMock(return_value=True)
+    monkeypatch.setattr(routes_module, "fence_remote_owner", fence)
+
     async def check_lock(db, _run, endpoint):
         locked = set((await db.scalars(text("""
             SELECT relation::regclass::text FROM pg_locks
             WHERE pid = pg_backend_pid() AND mode = 'RowShareLock'
         """))).all())
-        assert "agent_runs" in locked
-        assert "agents" not in locked
-        return {"endpoint": endpoint, "body": {}}
+        fence.assert_not_awaited()
+        assert "agent_runs" not in locked
+        assert "execution_workers" not in locked
+        return {"endpoint": endpoint, "body": {}}, "openai"
 
     prepare = AsyncMock(side_effect=check_lock)
     monkeypatch.setattr(cloudflare_summary, "prepare_completion", prepare)
@@ -147,6 +166,7 @@ async def test_summary_preparation_locks_only_its_agent_run(async_session_factor
             assert (await db.get(AgentRun, run_id)).summary_status == "pending"
             retry = await db.scalar(select(WorkDispatch).where(WorkDispatch.subject_id == run_id))
             assert retry is not None and retry.id != dispatch_id and retry.assigned_worker_id is None
+            assert retry.payload == {"linux_only": True}
         assert not consumer.routes
     finally:
         async with context() as db:
