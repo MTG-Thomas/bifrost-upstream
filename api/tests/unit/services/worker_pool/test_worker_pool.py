@@ -57,6 +57,7 @@ from src.services.memory_requests import (
 from src.services.worker_pool import calibration, claims, controller, liveness, maintenance, recovery, sizing
 from src.services.worker_pool.manifest import WorkerJobSpec, build_worker_job_manifest
 from src.worker.admission import Admission
+from src.worker.remote import cloudflare_agent as cloudflare_agent_routes
 from src.worker.remote.fencing import LeaseRef, remote_owner_context
 from src.worker.remote.ownership import RemoteOwnerLease
 from src.worker.remote.protocol import (
@@ -531,7 +532,7 @@ async def cloudflare_tool_attempt(db, monkeypatch):
         world = World(session)
         home, other = await world.organization(), await world.organization()
         user = await world.person(home)
-        role = await world.role("agents.readbasic", "agents.execute", "workflows.execute")
+        role = await world.role("agents.read", "agents.execute", "workflows.execute")
         user.base_role_id = role.id
         agent = await world.agent(home)
         workflow = await world.workflow(home, type="tool")
@@ -704,6 +705,32 @@ async def test_cloudflare_cancellation_uses_the_committed_terminal_evidence(
         assert run.status == "cancelled"
         assert run.error == ("Cancelled by user" if finished else cloudflare_agent.UNCERTAIN)
         assert journal.data["attempt_state"] == ("completed" if finished else "uncertain")
+
+
+async def test_cloudflare_takeover_hands_back_a_claim_without_a_prepared_attempt(
+    db, cloudflare_tool_attempt, monkeypatch,
+) -> None:
+    attempt = cloudflare_tool_attempt
+    monkeypatch.setattr(cloudflare_agent_routes, "get_db_context", db.context)
+    owner = replace(attempt.lease, session_generation=attempt.lease.session_generation + 1)
+    async with db.context() as session:
+        worker = await session.get(ExecutionWorker, owner.worker_id)
+        worker.remote_session_generation = owner.session_generation
+        (await session.get(AgentRun, attempt.run_id)).status = "queued"
+        await session.delete(await session.get(CloudflareAgentAttempt, attempt.claim_id))
+
+    with remote_owner_context(LeaseRef(attempt.lease)), pytest.raises(ConnectionError, match="owner is no longer current"):
+        await cloudflare_agent.settle_run(attempt.run_id, attempt.claim_id, "not_started", {}, dispatch_id=attempt.dispatch_id)
+    control = cloudflare_agent_routes.CloudflareAgentRoutes(AsyncMock(), owner.worker_id, "https://model.example.test")
+    with remote_owner_context(LeaseRef(owner)):
+        assert await control.reconcile([]) == []
+    async with db.context() as session:
+        dispatch = await session.get(WorkDispatch, attempt.dispatch_id)
+        assert dispatch.assigned_worker_id is None
+        assert dispatch.payload["cloudflare_agent_linux_only"] is True
+        assert await session.get(ExecutionWorkerClaim, attempt.claim_id) is None
+        assert (await session.get(AgentRun, attempt.run_id)).status == "queued"
+    db.wake.assert_awaited_once()
 
 
 async def test_cloudflare_claims_distinct_tenants_with_per_slot_limits(db) -> None:
