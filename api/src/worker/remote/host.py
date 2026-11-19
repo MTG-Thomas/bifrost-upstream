@@ -37,6 +37,7 @@ from src.services.worker_pool.claims import (
 from src.worker.admission import Admission
 from src.worker.pool_main import PoolWorker
 from src.worker.remote.agent_route import AgentRoute, RemoteAgentConsumer
+from src.worker.remote.cloudflare_agent import CloudflareAgentRoutes
 from src.worker.remote.cloudflare_summary import CloudflareSummaryRoutes, SummaryRoute
 from src.worker.remote.fencing import LeaseRef, current_remote_lease_ref, fence_remote_owner, remote_owner_context
 from src.worker.remote.ownership import (
@@ -143,6 +144,7 @@ class Bridge:
         # Agent runs in launcher children; kept across reconnects like jobs.
         self.agents: RemoteAgentConsumer | None = None
         self.summaries: CloudflareSummaryRoutes | None = None
+        self.autonomous: CloudflareAgentRoutes | None = None
         self.admission: Admission | None = None
         self.requirements = hello["requirements"] if self.runtime_profile == LINUX_RUNTIME_PROFILE else {}
         self.inventory: dict[str, Any] | None = None
@@ -184,6 +186,9 @@ class Bridge:
         return max(occupied, int(self._opaque_legacy_busy))
 
     def _opaque_reservation_key(self, route_id: str) -> str:
+        if route_id.startswith("agent:") and self.autonomous is not None:
+            agent = self.autonomous.routes.get(route_id)
+            return agent.reservation_key if agent is not None else route_id
         if route_id.startswith("summary:") and self.summaries is not None:
             route = self.summaries.routes.get(route_id)
             return route.reservation_key if route is not None else route_id
@@ -240,7 +245,7 @@ class Bridge:
         command is refused with ``CredentialRouteChanged`` before anything is
         sent.
         """
-        dispatch = action in ("workflow", "cloudflare_summary")
+        dispatch = action in ("workflow", "cloudflare_summary", "cloudflare_agent")
         opaque = self.runtime_profile != LINUX_RUNTIME_PROFILE and (dispatch or action == "terminate")
         if not self.connected:
             if opaque:
@@ -480,7 +485,7 @@ class Bridge:
                     self._opaque_routes = {
                         entry["route_id"]: 0 for entry in live + terminals
                         if isinstance(entry, dict) and isinstance(entry.get("route_id"), str)
-                        and entry["route_id"].startswith(("workflow:", "summary:"))
+                        and entry["route_id"].startswith(("workflow:", "summary:", "agent:"))
                     }
             if self.runtime_profile == LINUX_RUNTIME_PROFILE:
                 baseline_bytes = inventory.get("baseline_bytes")
@@ -498,10 +503,14 @@ class Bridge:
                     self.requirements = requirements
             self.inventory = inventory
             self.inventory_ready.set()
-        elif event.get("event") in {"result", "job_exit", "agent_exit", "summary_result"}:
+        elif event.get("event") in {
+            "result", "job_exit", "agent_exit", "summary_result", "cloudflare_agent_result", "cloudflare_agent_request",
+        }:
             if event["event"] == "summary_result" and self.summaries is None:
                 raise ProtocolError("Launcher did not negotiate Cloudflare summaries")
-            if self.runtime_profile != LINUX_RUNTIME_PROFILE and event["event"] not in {"result", "summary_result"}:
+            if event["event"].startswith("cloudflare_agent_") and self.autonomous is None:
+                raise ProtocolError("Launcher did not negotiate Cloudflare autonomous agents")
+            if self.runtime_profile != LINUX_RUNTIME_PROFILE and event["event"] in {"job_exit", "agent_exit"}:
                 raise ProtocolError("Unexpected opaque launcher result")
             # Inventory is authoritative when an API takes over. In
             # particular, a terminal replay can arrive before the old route
@@ -596,6 +605,17 @@ class Bridge:
         if event.get("event") == "summary_result":
             assert self.summaries is not None
             deliver = self.summaries.handle_result
+        elif event.get("event") == "cloudflare_agent_result":
+            assert self.autonomous is not None
+            deliver = self.autonomous.handle_result
+        elif event.get("event") == "cloudflare_agent_request":
+            agents = self.autonomous
+            assert agents is not None
+            generation = self.lease.session_generation
+
+            async def handle_agent_request(event: dict[str, Any]) -> None:
+                await agents.handle_request(event, generation)
+            deliver = handle_agent_request
         elif event.get("event") == "agent_exit":
             agents = self.agents
             if agents is None or not agents.tracks(event.get("route_id")):
@@ -749,6 +769,12 @@ class ApiExecutor(PoolWorker):
             endpoint = summary_endpoint(self.settings.cloudflare_summary_endpoint)
             assert endpoint is not None  # Hello validates the opt-in endpoint.
             bridge.summaries = CloudflareSummaryRoutes(bridge, incarnation_id, endpoint)
+        if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and CLOUDFLARE_AGENT_HANDLER in bridge.handlers:
+            from src.services.execution.cloudflare_summary import summary_endpoint
+
+            endpoint = summary_endpoint(self.settings.cloudflare_agent_endpoint)
+            assert endpoint is not None
+            bridge.autonomous = CloudflareAgentRoutes(bridge, incarnation_id, endpoint)
         if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
             self.admission = Admission(
                 budget_bytes=bridge.declared_slots * CLOUDFLARE_DEV_BUDGET_BYTES,
@@ -768,7 +794,7 @@ class ApiExecutor(PoolWorker):
         return self.bridge.opaque_slots_used(self.admission)
 
     def active_runs(self) -> int:
-        if self.bridge.summaries is not None:
+        if self.bridge.summaries is not None or self.bridge.autonomous is not None:
             return self._workflow_runs()  # Declared occupancy includes summary holds and terminals.
         return super().active_runs()
 
@@ -836,6 +862,12 @@ class ApiExecutor(PoolWorker):
             await self.bridge.summaries.run(claim, self.bridge.lease.session_generation)
         else:
             await self._make_agent_consumer().process_message(claim.message, handler=claim.handler)
+
+    async def _execute_agent(self, claim: PoolClaim) -> None:
+        if self.bridge.autonomous is not None:
+            await self.bridge.autonomous.run(claim, self.bridge.lease.session_generation)
+        else:
+            await super()._execute_agent(claim)
 
     def _measure_budget(self) -> MemoryBudget:
         current, limit = self.bridge.memory()
@@ -934,6 +966,24 @@ class ApiExecutor(PoolWorker):
                 }
             if self.runtime_profile != LINUX_RUNTIME_PROFILE:
                 inventory = self.bridge.inventory
+                if autonomous := self.bridge.autonomous:
+                    live, terminals = inventory["routes"], inventory["terminal_routes"]
+                    if len(live) + len(terminals) > self.bridge.declared_slots:
+                        raise ProtocolError("Opaque inventory exceeds the prepared capacity")
+
+                    def is_autonomous(entry: Any) -> bool:
+                        return isinstance(entry, dict) and entry.get("kind") == "agent_run"
+
+                    for route in await autonomous.reconcile([entry for entry in live + terminals if is_autonomous(entry)]):
+                        task = asyncio.create_task(autonomous.supervise_adopted(route))
+                        tasks = self._tasks[CLOUDFLARE_AGENT_HANDLER[0]]
+                        tasks.add(task)
+                        task.add_done_callback(tasks.discard)
+                        task.add_done_callback(_observe_task)
+                    inventory = {
+                        **inventory, "routes": [entry for entry in live if not is_autonomous(entry)],
+                        "terminal_routes": [entry for entry in terminals if not is_autonomous(entry)],
+                    }
                 summaries = self.bridge.summaries
                 if summaries is not None:
                     def is_summary(entry: Any) -> bool:

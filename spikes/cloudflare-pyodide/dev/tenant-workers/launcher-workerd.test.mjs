@@ -151,6 +151,7 @@ before(async () => {
         };
       `},
         ...Object.fromEntries(['cloudflare-launcher/launcher-do.mjs', 'cloudflare-launcher/launcher-core.mjs',
+          'cloudflare-launcher/agent-loop.mjs', 'cloudflare-launcher/agent-provider.mjs',
           'cloudflare-launcher/protocol.mjs', 'tenant-workers/launcher-host.mjs', 'tenant-workers/tenant-dispatch.mjs',
           'tenant-workers/tenant-registry.mjs', 'tenant-workers/storage-path.mjs',
           'executor/egress-hosts.mjs', 'executor/egress-psl.generated.mjs'].map((name) =>

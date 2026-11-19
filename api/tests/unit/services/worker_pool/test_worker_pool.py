@@ -526,7 +526,7 @@ async def test_cloudflare_tool_replays_one_atomically_accepted_execution(db, mon
         session.add(AgentRun(id=run_id, agent_id=agent_id, trigger_type="manual", status="running"))
         await session.flush()
         session.add(CloudflareAgentAttempt(claim_id=claim_id, run_id=run_id, data={
-            "tool": {"name": "lookup", "workflow_id": str(workflow_id)},
+            "tool": {"name": "lookup", "workflow_id": str(workflow_id)}, "step": 0,
         }))
     async def lock_run(session, subject, _claim):
         return await session.get(AgentRun, subject, with_for_update={"of": AgentRun})

@@ -33,6 +33,8 @@ let nextHostedGate;
 let provider;
 let providerServer;
 let summaryCalls = 0;
+const agentCalls = new Map();
+const agentAborts = new Set();
 
 function evidence(label, data) {
   console.log(JSON.stringify({label, ...data}));
@@ -107,6 +109,12 @@ function observe(direction, raw) {
     assert.ok(config.summary);
     assert.ok(payload.payload.context.api_key === config.summary.databaseKey);
     event = {kind: 'cloudflare_summary', route: payload.payload.route_id};
+  } else if (frame.kind === 'command' && payload.action === 'cloudflare_agent') {
+    event = {kind: 'cloudflare_agent', route: payload.payload.route_id};
+  } else if (frame.kind === 'command' && payload.action === 'cloudflare_agent_reply' &&
+      payload.payload.result?.execution_id) {
+    event = {kind: 'agent-tool-ack', route: payload.payload.route_id,
+      execution: payload.payload.result.execution_id};
   } else if (frame.kind === 'command' && payload.action === 'workflow') {
     const command = payload.payload;
     tokens.set(command.execution_id, command.context.engine_token);
@@ -122,7 +130,7 @@ function observe(direction, raw) {
     event = {kind: 'inventory', generation: frame.session_generation,
       active: payload.inventory.routes.map((route) => route.route_id),
       terminal: payload.inventory.terminal_routes.map((route) => route.event_id)};
-  } else if (['result', 'summary_result'].includes(payload?.event)) {
+  } else if (['result', 'summary_result', 'cloudflare_agent_result'].includes(payload?.event)) {
     event = {kind: payload.event, generation: frame.session_generation, route: payload.route_id,
       event: payload._event_id, attempt: payload.attempt_state, success: payload.result.success,
       errorType: payload.result.error_type};
@@ -158,6 +166,33 @@ const proxy = createServer(async (request, response) => {
         })}}],
         usage: {prompt_tokens: 88, completion_tokens: 11},
       }));
+      return;
+    }
+    if (config.agent && path === '/__fixture/v1/chat/completions') {
+      assert.equal(request.headers.authorization, 'Bearer ' + config.agent.databaseKey);
+      const body = JSON.parse((await buffer(request)).toString());
+      assert.equal(body.model, 'gpt-4o-mini');
+      assert.equal(body.stream, true);
+      const {scenario} = JSON.parse(body.messages[1].content);
+      assert.ok(['text', 'tool', 'cancel', 'reset'].includes(scenario));
+      agentCalls.set(scenario, (agentCalls.get(scenario) ?? 0) + 1);
+      response.writeHead(200, {'Content-Type': 'text/event-stream'});
+      const sse = (value) => response.write('data: ' + JSON.stringify(value) + '\n\n');
+      if (scenario === 'tool' && body.messages.length === 2) {
+        const tool = body.tools[0].function.name;
+        sse({choices: [{delta: {tool_calls: [{index: 0, id: 'fixture-call',
+          function: {name: tool, arguments: '{}'}}]}, finish_reason: 'tool_calls'}]});
+      } else {
+        if (scenario === 'tool') assert.match(body.messages.at(-1).content, /lookup result/);
+        sse({choices: [{delta: {content: 'fixture ' + scenario}, finish_reason: null}]});
+        if (scenario === 'cancel' || scenario === 'reset') {
+          response.once('close', () => agentAborts.add(scenario));
+          return;
+        }
+        sse({choices: [{delta: {}, finish_reason: 'stop'}]});
+      }
+      sse({choices: [], usage: {prompt_tokens: 9, completion_tokens: 3}});
+      response.end('data: [DONE]\n\n');
       return;
     }
     if (path.startsWith('/__fixture/hold/')) {
@@ -322,6 +357,7 @@ async function launch(port) {
     dev: {outboundService: {type: 'worker', worker: 'relay'}},
     config: {name: 'launcher', compatibilityDate: '2026-10-30', exports,
       env: {...env, LOADER: {type: 'worker-loader'},
+        ...(config.agent ? {AGENT_PROVIDER: {type: 'worker', worker: 'agent', exportName: 'AgentProvider'}} : {}),
         ...(config.summary ? {SUMMARY_PROVIDER: {type: 'worker', worker: 'summary', exportName: 'SummaryProvider'}} : {})},
       manifest: {mainModule: 'dev/phase5-harness.mjs', modulesRoot: fileURLToPath(new URL('../', root)), modules}},
   }, {
@@ -343,6 +379,15 @@ async function launch(port) {
       manifest: {mainModule: 'summary-worker/entry.mjs', modules: {
         'summary-worker/entry.mjs': module(readFileSync(new URL('cloudflare-launcher/summary-worker/entry.mjs', root), 'utf8')),
         'summary-provider.mjs': module(readFileSync(new URL('cloudflare-launcher/summary-provider.mjs', root), 'utf8')),
+      }},
+    },
+  }] : []), ...(config.agent ? [{
+    dev: {outboundService: {type: 'worker', worker: 'relay'}},
+    config: {name: 'agent', exports: {AgentProvider: {type: 'worker'}}, compatibilityDate: '2026-11-19',
+      env: {BIFROST_CLOUDFLARE_AGENT_ENDPOINT: {type: 'text', value: config.agent.endpoint}},
+      manifest: {mainModule: 'agent-worker/entry.mjs', modules: {
+        'agent-worker/entry.mjs': module(readFileSync(new URL('cloudflare-launcher/agent-worker/entry.mjs', root), 'utf8')),
+        'agent-provider.mjs': module(readFileSync(new URL('cloudflare-launcher/agent-provider.mjs', root), 'utf8')),
       }},
     },
   }] : []), ...(config.phase6 ? [capacityWorker({...config.phase6, version: config.build, maxWorkers: 1})] : [])]});
@@ -749,12 +794,92 @@ async function summaryChecks() {
   }
 }
 
+function agentRow(id) {
+  return sql(`SELECT json_build_object(
+    'status',r.status,'output',r.output,'error',r.error,'iterations',r.iterations_used,
+    'tokens',r.tokens_used,'model',r.llm_model,'runUser',r.run_user_id,
+    'worker',(SELECT worker_id FROM execution_worker_claims WHERE subject_id=r.id AND family='agent_run'),
+    'steps',(SELECT json_agg(type ORDER BY step_number) FROM agent_run_steps WHERE run_id=r.id),
+    'usage',(SELECT count(*) FROM ai_usage WHERE agent_run_id=r.id),
+    'journal',(SELECT data - 'messages' FROM cloudflare_agent_attempts WHERE run_id=r.id)
+  ) FROM agent_runs r WHERE id='${id}'`);
+}
+
+async function agentChecks() {
+  await launch(proxy.address().port);
+  // Preserve Linux workflow placement. Suppress races for agent/summary
+  // dispatches only in this disposable stack's seeded Linux pool rows.
+  sql(`UPDATE execution_workers SET supported_handlers=supported_handlers
+    - 'agent.run' - 'agent.summarize' - 'agent.summarize_backfill'
+    WHERE runtime_profile='linux-process-v1'`);
+  await control('start');
+  await until('agent launcher ready', () => wire.some((event) => event.kind === 'ready'));
+  assert.deepEqual(sql(`SELECT supported_handlers FROM execution_workers WHERE id='${config.incarnation}'`),
+    ['workflow.execute', 'agent.run']);
+  for (const scenario of ['text', 'tool', 'cancel', 'reset']) {
+    await until('free agent slot', async () => {
+      const ledger = await control('ledger', 200);
+      return !ledger.slots?.length;
+    });
+    if (scenario === 'text') fault = 'ack';
+    if (scenario === 'tool') fault = 'agent-tool-ack';
+    const queued = await api('/api/agent-runs/enqueue', {
+      agent_name: config.agent.names[scenario === 'tool' ? 1 : 0], input: {scenario},
+    });
+    assert.equal(queued.status, 202);
+    const id = queued.data.run_id;
+    assert.match(id, /^[0-9a-f-]{36}$/);
+    if (scenario === 'cancel' || scenario === 'reset') {
+      await until('durable partial agent text', () => agentRow(id)?.journal?.text === 'fixture ' + scenario);
+      if (scenario === 'cancel') {
+        assert.equal((await api('/api/agent-runs/' + id + '/cancel', {})).status, 200);
+        await until('provider abort', () => agentAborts.has(scenario));
+      } else {
+        await control('reset');
+      }
+    }
+    const terminal = await until('agent terminal', () => {
+      const row = agentRow(id);
+      return row?.journal?.settled && row;
+    });
+    const expected = scenario === 'cancel' ? 'cancelled' : scenario === 'reset' ? 'failed' : 'completed';
+    assert.equal(terminal.status, expected);
+    assert.equal(terminal.worker, config.incarnation);
+    assert.deepEqual(terminal.output, {text: 'fixture ' + scenario});
+    assert.equal(terminal.journal.attempt_state, expected === 'completed' ? 'completed' : 'uncertain');
+    const turns = scenario === 'tool' ? 2 : 1;
+    assert.equal(agentCalls.get(scenario), turns);
+    assert.equal(terminal.iterations, turns);
+    assert.equal(terminal.tokens, expected === 'completed' ? turns * 12 : 0);
+    assert.equal(terminal.usage, expected === 'completed' ? turns : 0);
+    if (scenario === 'text') {
+      const dropped = await until('terminal ACK loss', () => wire.find((row) => row.kind === 'ack' && row.dropped));
+      await until('terminal ACK replay', () => wire.some((row) => row.event === dropped.event && row.kind === 'ack' && !row.dropped));
+      assert.deepEqual(agentRow(id).steps, ['llm_request', 'llm_response']);
+      assert.equal(agentRow(id).usage, 1);
+    }
+    if (scenario === 'tool') {
+      const replies = wire.filter((row) => row.kind === 'agent-tool-ack');
+      assert.equal(replies.length, 2);
+      assert.equal(replies[0].dropped, true);
+      assert.equal(replies[0].execution, replies[1].execution);
+      assert.deepEqual(terminal.steps, ['llm_request', 'llm_response', 'tool_call', 'tool_result', 'llm_request', 'llm_response']);
+      const execution = sql(`SELECT json_build_object('count',count(*),'status',min(status::text),
+        'actor',min(run_user_id::text)) FROM executions WHERE workflow_id='${config.agent.workflow}'`);
+      assert.deepEqual(execution, {count: 1, status: 'Success', actor: terminal.runUser});
+    }
+    evidence('autonomous-agent', {scenario, id, status: terminal.status, providerCalls: turns,
+      usage: terminal.usage, steps: terminal.steps, attemptState: terminal.journal.attempt_state});
+  }
+}
+
 await new Promise((resolve, reject) => {
   proxy.once('error', reject);
   proxy.listen(config.port, '127.0.0.1', resolve);
 });
 try {
-  if (config.summary) await summaryChecks();
+  if (config.agent) await agentChecks();
+  else if (config.summary) await summaryChecks();
   else if (config.phase6) await phase6Checks();
   else await phase5Checks();
 } finally {

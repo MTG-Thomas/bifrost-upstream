@@ -31,8 +31,8 @@ def sha256(value):
     return hashlib.sha256(value).hexdigest()
 
 
-def prepare(hosted=False, phase6=False, summary=False):
-    prefix = "explore-agent-" if summary else "phase6-" if phase6 else "phase5b-" if hosted else "phase5-"
+def prepare(hosted=False, phase6=False, summary=False, agent=False):
+    prefix = "agentrun-" if agent else "explore-agent-" if summary else "phase6-" if phase6 else "phase5b-" if hosted else "phase5-"
     valid_prefix = (prefix, "explore-sol-") if phase6 else prefix
     if not ROOT.name.startswith(valid_prefix) or command("git", "remote") or command(
         "git", "status", "--porcelain"
@@ -48,6 +48,10 @@ def prepare(hosted=False, phase6=False, summary=False):
         env.write("BIFROST_CLOUDFLARE_WORKER_HELLO_ENABLED=true\n")
         if summary:
             env.write(f"BIFROST_CLOUDFLARE_SUMMARY_ENDPOINT={SUMMARY_ENDPOINT}\n")
+        if agent:
+            fixtures = [str(uuid4()), str(uuid4())]
+            env.write(f"BIFROST_CLOUDFLARE_AGENT_ENDPOINT={SUMMARY_ENDPOINT}\n")
+            env.write(f"BIFROST_CLOUDFLARE_AGENT_FIXTURE_IDS={json.dumps(fixtures, separators=(',', ':'))}\n")
         if not phase6:
             env.write(f"BIFROST_WORKER_CAPACITY_TOKEN={secrets.token_hex(32)}\n")
     for directory in ("node_modules", "sdk_src"):
@@ -224,17 +228,64 @@ def resume_enrollment(project, reset_route):
     return workflows, approval, incarnation, launcher, enrollment["port"]
 
 
-def run(runtime, hosted, resume, reset_route, from_reset, summary=False):
+def seed_agents(project, admin, send):
+    fixtures = json.loads(next(line.partition("=")[2] for line in API_ENV.read_text().splitlines()
+                              if line.startswith("BIFROST_CLOUDFLARE_AGENT_FIXTURE_IDS=")))
+    entry = "workflows/autonomous_fixture.py"
+    source = 'from bifrost import tool\n\n@tool\nasync def fixture_lookup() -> dict:\n    return {"fixture": "lookup result"}\n'
+    send("/api/files/write", {"path": entry, "content": source, "location": "workspace"}, admin)
+    workflow = send("/api/workflows/register", {"path": entry, "function_name": "fixture_lookup"}, admin)
+    database_key = "agent-fixture-only-" + secrets.token_hex(16)
+    names = ["workers-agent-text", "workers-agent-tool"]
+    subprocess.run(["docker", "exec", "-i", f"{project}-api-1", "python", "-",
+                    json.dumps(fixtures), json.dumps(names), str(UUID(workflow["id"])), SUMMARY_ENDPOINT, database_key],
+                   cwd=ROOT, check=True, text=True, input='''
+import asyncio
+import json
+import sys
+from uuid import UUID
+
+from src.core.database import get_db_context
+from src.models.orm.agents import Agent, AgentTool
+from src.services.ai_model_service import AIModelService
+
+async def seed():
+    ids = [UUID(value) for value in json.loads(sys.argv[1])]
+    async with get_db_context() as db:
+        ai = AIModelService(db)
+        connection = await ai.create_connection(name="Agent test stub", provider="openai_compatible",
+                                                api_key=sys.argv[5], endpoint=sys.argv[4])
+        profile = await ai.create_profile(name="Autonomous fixture", connection_id=connection.id,
+                                          model="gpt-4o-mini", capabilities=None, enabled_for_chat=False)
+        await ai.set_assignment("primary", profile.id)
+        profile.openai_transport = "chat_completions"
+        for agent_id, name in zip(ids, json.loads(sys.argv[2]), strict=True):
+            db.add(Agent(id=agent_id, name=name, system_prompt="Complete the fixture.",
+                         created_by="dev@gobifrost.com", llm_profile_id=profile.id, max_iterations=2))
+        await db.flush()
+        db.add(AgentTool(agent_id=ids[1], workflow_id=UUID(sys.argv[3])))
+
+asyncio.run(seed())
+''')
+    return {"ids": fixtures, "names": names, "workflow": str(UUID(workflow["id"])),
+            "endpoint": SUMMARY_ENDPOINT, "databaseKey": database_key}
+
+
+def run(runtime, hosted, resume, reset_route, from_reset, summary=False, agent=False):
     sys.path.insert(0, str(ROOT / "api"))
     from shared.worker_control_auth import external_worker_control_key
 
-    prefix = "explore-agent-" if summary else "phase5b-" if hosted else "phase5-"
+    prefix = "agentrun-" if agent else "explore-agent-" if summary else "phase5b-" if hosted else "phase5-"
     if not API_ENV.is_file() or not ROOT.name.startswith(prefix):
         raise SystemExit("Run prepare and start this disposable archive's debug stack first")
     origin, project, admin, send = local_api(hosted)
     port = 0
     summary_config = None
-    if summary:
+    agent_config = None
+    if agent:
+        agent_config = seed_agents(project, admin, send)
+        workflows, approval, incarnation, launcher = {}, [], uuid4(), uuid4()
+    elif summary:
         run_id = uuid4()
         database_key = "api-fixture-only-" + secrets.token_hex(16)
         summary_config = {"run": str(run_id), "endpoint": SUMMARY_ENDPOINT,
@@ -298,7 +349,7 @@ asyncio.run(seed())
         input=json.dumps({"origin": origin, "project": project, "admin": admin,
                           "workflows": workflows, "runtime": str(runtime), "hosted": hosted, "port": port,
                           "resetRoute": reset_route,
-                          "fromReset": from_reset, "summary": summary_config,
+                          "fromReset": from_reset, "summary": summary_config, "agent": agent_config,
                           "incarnation": str(incarnation), "launcher": str(launcher),
                           "resource": resource, "build": build, "controlKey": key}),
     )
@@ -310,18 +361,20 @@ if __name__ == "__main__":
     prepare_modes = sub.add_parser("prepare").add_mutually_exclusive_group()
     prepare_modes.add_argument("--hosted", action="store_true")
     prepare_modes.add_argument("--summary", action="store_true")
+    prepare_modes.add_argument("--agent", action="store_true")
     run_parser = sub.add_parser("run")
     run_parser.add_argument("runtime", type=Path, help="Prepared generated-runtime.mjs")
     run_modes = run_parser.add_mutually_exclusive_group()
     run_modes.add_argument("--hosted", action="store_true")
     run_modes.add_argument("--summary", action="store_true")
+    run_modes.add_argument("--agent", action="store_true")
     run_parser.add_argument("--resume-enrollment", action="store_true")
     reset = run_parser.add_mutually_exclusive_group()
     reset.add_argument("--resume-reset", metavar="WORKFLOW_ROUTE")
     reset.add_argument("--from-reset", action="store_true")
     args = parser.parse_args()
     if args.action == "prepare":
-        prepare(args.hosted, summary=args.summary)
+        prepare(args.hosted, summary=args.summary, agent=args.agent)
     else:
         if args.resume_enrollment and not args.hosted:
             parser.error("--resume-enrollment requires --hosted")
@@ -333,4 +386,4 @@ if __name__ == "__main__":
         ):
             parser.error("--resume-reset requires --resume-enrollment and an interrupted workflow route")
         run(args.runtime.resolve(strict=True), args.hosted, args.resume_enrollment,
-            args.resume_reset, args.from_reset, summary=args.summary)
+            args.resume_reset, args.from_reset, summary=args.summary, agent=args.agent)

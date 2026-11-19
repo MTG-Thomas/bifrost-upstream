@@ -562,6 +562,9 @@ class PoolWorker:
                 budget_bytes=self.admission.budget_bytes,
                 reserve_claim=self._reserve_claim,
                 release_reservation=self._release_claim_reservation,
+                **({
+                    "cloudflare_autonomous_agents": self.settings.cloudflare_agent_fixture_ids,
+                } if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and self.settings.cloudflare_agent_endpoint else {}),
             )
             if claim is not None:
                 self._start(claim)
@@ -663,8 +666,7 @@ class PoolWorker:
                         ),
                     )
             elif claim.handler == "agent.run":
-                assert self._agent_consumer is not None
-                await self._agent_consumer.process_message(claim.message)
+                await self._execute_agent(claim)
             else:
                 await self._execute_summary(claim)
         except AssertionError:
@@ -693,6 +695,10 @@ class PoolWorker:
             else:
                 self.admission.release(str(claim.dispatch_id))
             self.runs_handled += 1
+
+    async def _execute_agent(self, claim: PoolClaim) -> None:
+        assert self._agent_consumer is not None
+        await self._agent_consumer.process_message(claim.message)
 
     async def _execute_summary(self, claim: PoolClaim) -> None:
         """Execute a summary on this executor's physical runtime."""

@@ -1154,13 +1154,11 @@ read the canonical execution outcome and use the existing tool result
 shape. The launcher receives the receipt and bounded result, with no
 workflow credential. A child can finish after its agent stops.
 
-The current `execute_agent_workflow_tool` commits through a separate
-dispatch session by way of `execute_tool` and `enqueue_workflow_execution`.
-It cannot atomically bind an attempt's owner fence, cancellation check and
-receipt to that acceptance. A transactional acceptance seam must share
-canonical authorization and staging before the tool case can be enabled.
-`stage_workflow_run` already accepts a caller transaction. Keep its
-transaction separate from waiting for the child result.
+The Workers path shares bound-workflow authorization with
+`execute_agent_workflow_tool` and calls `stage_workflow_run` in the
+transaction that stores the receipt. A replay reads that receipt before
+waiting for the result and checks the arguments against its stored digest.
+Linux keeps its existing dispatch and result wait.
 
 Cancellation uses the canonical AgentRun transition. Serialize it with
 granting a turn, accepting a tool and settling the terminal. Reject later
@@ -1178,14 +1176,11 @@ effects. An abort or a stop reply does not establish either outcome.
 
 #### Persistence and qualification
 
-The API writes ordinary AgentRun status, timestamps, duration, model, token
-and iteration counts, transcript messages and tool records, and AIUsage with
-Linux attribution. Use existing chat event envelopes, run updates, sync
-result shape and post-completion summary eligibility. Only the protocol
-journal and tool deduplication receipt are Workers-specific. A later
-autonomous slice must preserve AgentRunStep records and its different
-terminal/output contract. Title generation, model fallback and compaction
-need their own qualification before admitting runs that require them.
+The autonomous path uses AgentRunStep for model and tool records, AIUsage for
+completed model turns, and the existing AgentRun terminal, run update, sync
+result and summary dispatch contracts. In-progress text and the replay
+watermark live in the attempt journal. Chat transcript projection, title
+generation, model fallback and compaction require separate qualification.
 
 Verify a tool-less run first. In the local Miniflare and CT128 harness, drop
 an ACK after commit and compare the stored trace and provider call count
@@ -1196,7 +1191,9 @@ then verify its result reaches the second model turn. Check Linux records
 against the same scripted provider inputs. Treat this as local runtime
 evidence for that fixture and pinned workerd build.
 
-`agent-loop.test.mjs` currently exercises the portable loop with in-memory
-broker ports in Node and workerd. It has no real execution receipt, provider
-stream, API claim or replay cursor. Keep the handler excluded from launcher
-advertisement and managed-capacity planning until those seams are wired.
+`agent-loop.test.mjs` exercises the portable loop with in-memory broker
+ports. `phase5a.py prepare --agent` and `phase5a.py run <runtime> --agent`
+exercise the opt-in launcher, real API, and private provider Worker with
+a local stub. Keep the handler out of managed-capacity planning. The
+manual path needs a separate Linux workflow slot for the inherited
+artifact workspace on workflow tools.

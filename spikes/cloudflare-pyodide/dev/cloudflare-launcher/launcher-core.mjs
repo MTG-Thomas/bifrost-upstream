@@ -12,6 +12,7 @@ const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const UUID_RE = new RegExp(`^${UUID}$`);
 const WORKFLOW_ROUTE = new RegExp(`^workflow:(${UUID}):${UUID}$`);
 const SUMMARY_ROUTE = new RegExp(`^summary:(${UUID}):(${UUID})$`);
+const AGENT_ROUTE = new RegExp(`^agent:(${UUID}):(${UUID})$`);
 const INSTANT = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?(?:Z|[+-]\d\d:\d\d)$/;
 const HEX64 = /^[0-9a-f]{64}$/;
 const STATES = new Set(['not_started', 'completed', 'uncertain']);
@@ -76,6 +77,15 @@ function failure(attemptState, errorType, error) {
   return {attempt_state: attemptState, result: {success: false, error_type: errorType, error}};
 }
 
+function agentRoute(payload, runtimeHandle) {
+  const {route_id, run_id, claim_id, deadline, memory_request_bytes} = payload;
+  const identity = AGENT_ROUTE.exec(route_id);
+  if (!identity || identity[1] !== run_id || identity[2] !== claim_id || !instant(deadline) ||
+      !integer(memory_request_bytes) || !memory_request_bytes || memory_request_bytes > SLOT_BYTES) return null;
+  return {kind: 'agent_run', route_id, subject_id: run_id, claim_id, deadline,
+    runtime_handle: runtimeHandle, memory_request_bytes};
+}
+
 function timeout(route) {
   const detail = route.kind === 'workflow' ? 'Workflow deadline elapsed before engine entry' :
     'Summary deadline elapsed before provider dispatch';
@@ -90,9 +100,10 @@ export class LauncherCore {
   #session = null;
   #tail = Promise.resolve();
   #aborts = new Map();
+  #agentRequests = new Map();
   #released = false;
 
-  constructor({identity, secret, clock, storage, send, runHost, stopHost, runSummary, background, slots = 1, newId = newNonce}) {
+  constructor({identity, secret, clock, storage, send, runHost, stopHost, runSummary, runAgent, background, slots = 1, newId = newNonce}) {
     this.#slots = Array(slots).fill(null);
     this.identity = identity;
     this.secret = secret;
@@ -101,6 +112,7 @@ export class LauncherCore {
     this.send = send;
     this.runHost = runHost;
     this.runSummary = runSummary;
+    this.runAgent = runAgent;
     this.stopHost = stopHost;
     this.background = background;
     this.newId = newId;
@@ -187,9 +199,12 @@ export class LauncherCore {
       const session = {generation: 0, sent: 0, received: 0, nextHeartbeat: 0,
         assembler: new FragmentAssembler()};
       this.#session = session;
-      const handlers = this.runSummary ? [...CLOUDFLARE_HANDLERS, ['agent.summarize', 1]] : CLOUDFLARE_HANDLERS;
+      const handlers = [...CLOUDFLARE_HANDLERS];
+      if (this.runSummary) handlers.push(['agent.summarize', 1]);
+      if (this.runAgent) handlers.push(['agent.run', 1]);
       return {session, hello: JSON.stringify({event: 'hello', hello, handlers,
         ...(this.runSummary ? {summary_claim_protocol: 1} : {}),
+        ...(this.runAgent ? {agent_claim_protocol: 'autonomous-v1'} : {}),
         credential_protocol: CREDENTIAL_PROTOCOL, version: this.identity.version})};
     });
   }
@@ -277,6 +292,7 @@ export class LauncherCore {
     for (const slot of this.#slots) {
       if (slot?.state === 'terminal') this.#emit(session, slot.terminal);
     }
+    for (const request of this.#agentRequests.values()) this.#emit(session, request.event);
     session.nextHeartbeat = this.clock() + 1000;
   }
 
@@ -316,7 +332,8 @@ export class LauncherCore {
         return;
       case 'terminate': {
         if (typeof payload.route_id !== 'string' ||
-            !(WORKFLOW_ROUTE.test(payload.route_id) || SUMMARY_ROUTE.test(payload.route_id)) ||
+            !(WORKFLOW_ROUTE.test(payload.route_id) || SUMMARY_ROUTE.test(payload.route_id) ||
+              AGENT_ROUTE.test(payload.route_id)) ||
             typeof payload.error_type !== 'string' || typeof payload.error !== 'string') {
           refuse('ValueError', 'Invalid terminate command');
           return;
@@ -345,6 +362,21 @@ export class LauncherCore {
           return;
         }
         return this.#dispatch(session, payload, accept, refuse, SUMMARY_ROUTE, summaryRoute);
+      case 'cloudflare_agent':
+        if (!this.runAgent) {
+          refuse('ValueError', 'Cloudflare autonomous agents are disabled');
+          return;
+        }
+        return this.#dispatch(session, payload, accept, refuse, AGENT_ROUTE, agentRoute);
+      case 'cloudflare_agent_reply': {
+        const request = this.#agentRequests.get(payload.request_id);
+        if (request?.event.route_id === payload.route_id) {
+          if (payload.ok === true) request.resolve(payload.result);
+          else request.reject(new Error('Cloudflare agent request refused'));
+        }
+        accept({});
+        return;
+      }
       default:
         refuse('ValueError', 'Unknown launcher command');
     }
@@ -432,7 +464,9 @@ export class LauncherCore {
   async #hostOutcome(route, context, signal) {
     try {
       const outcome = route.kind === 'workflow' ? await this.runHost(route, context, signal) :
-        await this.runSummary(route, context, signal);
+        route.kind === 'agent_run' ? await this.runAgent(route,
+          (operation, data, active) => this.#requestAgent(route, operation, data, active), signal) :
+          await this.runSummary(route, context, signal);
       if (STATES.has(outcome?.attempt_state) && typeof outcome.result?.success === 'boolean' &&
           (!outcome.result.success || outcome.attempt_state === 'completed')) return outcome;
     } catch {
@@ -441,21 +475,45 @@ export class LauncherCore {
     if (route.kind === 'agent_summary') {
       return failure('uncertain', 'SummaryOutcomeUnknown', 'The provider call did not confirm an outcome');
     }
+    if (route.kind === 'agent_run') {
+      return failure('uncertain', 'AgentOutcomeUnknown', 'The agent did not confirm an outcome');
+    }
     return failure('uncertain', 'TenantHostOutcomeUnknown', 'TenantHost did not confirm the workflow outcome');
   }
 
   #stop(route) {
     this.#aborts.get(route.route_id)?.abort();
-    if (route.kind === 'agent_summary') return;
+    if (route.kind !== 'workflow') return;
     this.background(this.stopHost(route).catch(() => {
       // API fencing and the retained uncertain terminal cover a lost stop.
     }));
   }
 
   async #settle(index, route, {attempt_state, result}) {
-    const terminal = {event: route.kind === 'workflow' ? 'result' : 'summary_result', route_id: route.route_id, runtime_handle: route.runtime_handle,
+    const event = route.kind === 'workflow' ? 'result' : route.kind === 'agent_run' ? 'cloudflare_agent_result' : 'summary_result';
+    const terminal = {event, route_id: route.route_id, runtime_handle: route.runtime_handle,
       _event_id: this.newId(), attempt_state, result};
     await this.#saveSlot(index, {route, state: 'terminal', terminal});
     this.#emitCurrent(terminal);
+  }
+
+  async #requestAgent(route, operation, data, signal) {
+    signal.throwIfAborted();
+    const id = this.newId();
+    const event = {event: 'cloudflare_agent_request', request_id: id,
+      route_id: route.route_id, runtime_handle: route.runtime_handle, operation, data};
+    const reply = Promise.withResolvers();
+    const abort = () => reply.reject(signal.reason);
+    this.#agentRequests.set(id, {event, ...reply});
+    signal.addEventListener('abort', abort, {once: true});
+    try {
+      this.background(this.#serialize(() => {
+        if (this.#agentRequests.has(id)) this.#emitCurrent(event);
+      }));
+      return await reply.promise;
+    } finally {
+      signal.removeEventListener('abort', abort);
+      this.#agentRequests.delete(id);
+    }
   }
 }

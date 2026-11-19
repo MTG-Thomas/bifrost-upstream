@@ -13,7 +13,7 @@ from src.models.orm.agent_runs import AgentRun
 from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
 from src.models.orm.executions import Execution
 from src.models.orm.work_dispatches import WorkDispatch
-from src.services.work_dispatch import WAKE_AGENT_SUMMARY, WAKE_WORKFLOW
+from src.services.work_dispatch import WAKE_AGENT_RUN, WAKE_AGENT_SUMMARY, WAKE_WORKFLOW
 from src.worker.remote.protocol import (
     CLOUDFLARE_DEV_BUDGET_BYTES,
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
@@ -47,7 +47,8 @@ def cloudflare_active_claims() -> Select[tuple[UUID, UUID | None, UUID | None]]:
             Execution.id == ExecutionWorkerClaim.subject_id, ExecutionWorkerClaim.family == WAKE_WORKFLOW,
         ))
         .outerjoin(AgentRun, and_(
-            AgentRun.id == ExecutionWorkerClaim.subject_id, ExecutionWorkerClaim.family == WAKE_AGENT_SUMMARY,
+            AgentRun.id == ExecutionWorkerClaim.subject_id,
+            ExecutionWorkerClaim.family.in_((WAKE_AGENT_SUMMARY, WAKE_AGENT_RUN)),
         ))
         .where(
             worker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
@@ -57,6 +58,8 @@ def cloudflare_active_claims() -> Select[tuple[UUID, UUID | None, UUID | None]]:
                      Execution.id.is_(None) | Execution.status.in_(LIVE_EXECUTION_STATUSES)),
                 and_(ExecutionWorkerClaim.family == WAKE_AGENT_SUMMARY,
                      AgentRun.summary_status.in_(("pending", "generating"))),
+                and_(ExecutionWorkerClaim.family == WAKE_AGENT_RUN,
+                     AgentRun.status.in_(("queued", "running", "cancelling"))),
             ),
         )
     )

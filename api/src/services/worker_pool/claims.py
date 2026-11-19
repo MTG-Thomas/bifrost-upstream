@@ -240,6 +240,7 @@ async def claim_next(
             AgentRun.trigger_type != "chat",
             AgentRun.conversation_id.is_(None),
             AgentRun.parent_run_id.is_(None),
+            AgentRun.event_delivery_id.is_(None),
             func.coalesce(func.jsonb_typeof(AgentRun.output_schema), "null") == "null",
             AgentRun.status == "queued",
         ).correlate(WorkDispatch).exists()

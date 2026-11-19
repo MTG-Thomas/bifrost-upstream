@@ -38,8 +38,8 @@ def summary_endpoint(value: str | None) -> str | None:
     return value.rstrip("/")
 
 
-def _summary_profile():
-    return (
+def _profile_query(assignment_key: str, profile_id=None):
+    query = (
         select(
             AIModelProfile.id, AIModelProfile.model, AIModelProfile.default_max_tokens,
             AIModelProfile.openai_transport, AIModelProfile.failover_profile_id,
@@ -48,17 +48,20 @@ def _summary_profile():
             AIProviderConnection.endpoint, AIProviderConnection.catalog_provider_id,
             AIProviderConnection.updated_at.label("connection_updated_at"),
         )
-        .select_from(AIModelAssignment)
-        .join(AIModelProfile, AIModelProfile.id == AIModelAssignment.profile_id)
+        .select_from(AIModelProfile)
         .join(AIProviderConnection, AIProviderConnection.id == AIModelProfile.connection_id)
-        .where(AIModelAssignment.assignment_key == "summarization")
+    )
+    if profile_id is not None:
+        return query.where(AIModelProfile.id == profile_id)
+    return query.join(AIModelAssignment, AIModelAssignment.profile_id == AIModelProfile.id).where(
+        AIModelAssignment.assignment_key == assignment_key,
     )
 
 
-async def _eligible_profile(db: AsyncSession, endpoint: str):
+async def _eligible_profile(db: AsyncSession, endpoint: str, *, assignment_key: str = "summarization", profile_id=None):
     from src.services.agent_runtime.model_factory import provider_name_for_config
 
-    profile = (await db.execute(_summary_profile())).one_or_none()
+    profile = (await db.execute(_profile_query(assignment_key, profile_id))).one_or_none()
     if (
         profile is None or profile.failover_profile_id is not None
         or profile.openai_transport != "chat_completions"
@@ -86,21 +89,7 @@ async def summary_provider(db: AsyncSession, endpoint: str) -> str:
 async def prepare_completion(db: AsyncSession, run: AgentRun, endpoint: str) -> tuple[dict[str, Any], str]:
     """Read the primary configuration without row locks or transport discovery."""
     profile, config, provider = await _eligible_profile(db, endpoint)
-    credential = (await db.execute(_summary_profile().add_columns(
-        AIProviderConnection.encrypted_api_key,
-    ).where(
-        AIModelProfile.id == profile.id, AIModelProfile.updated_at == profile.updated_at,
-        AIProviderConnection.id == profile.connection_id,
-        AIProviderConnection.updated_at == profile.connection_updated_at,
-    ))).one_or_none()
-    if credential is None or tuple(credential[:-1]) != tuple(profile):
-        raise ValueError("The summary connection changed during preparation")
-    try:
-        key = AIModelService(db).decrypt_api_key(credential.encrypted_api_key)
-    except InvalidToken:
-        raise ValueError("The summary connection could not be resolved") from None
-    if not key:
-        raise ValueError("The summary connection could not be resolved")
+    key = await resolve_provider_key(db, profile, assignment_key="summarization")
     agent = (await db.execute(select(Agent.name, Agent.system_prompt).where(
         Agent.id == run.agent_id,
     ))).one_or_none()
@@ -121,6 +110,25 @@ async def prepare_completion(db: AsyncSession, run: AgentRun, endpoint: str) -> 
     if len(json.dumps(body).encode()) > REQUEST_BYTES:
         raise ValueError("Cloudflare summary exceeds the request size limit")
     return {"endpoint": endpoint, "body": body, "api_key": key}, provider
+
+
+async def resolve_provider_key(db: AsyncSession, profile, *, assignment_key: str, profile_id=None) -> str:
+    credential = (await db.execute(_profile_query(assignment_key, profile_id).add_columns(
+        AIProviderConnection.encrypted_api_key,
+    ).where(
+        AIModelProfile.id == profile.id, AIModelProfile.updated_at == profile.updated_at,
+        AIProviderConnection.id == profile.connection_id,
+        AIProviderConnection.updated_at == profile.connection_updated_at,
+    ))).one_or_none()
+    if credential is None or tuple(credential[:-1]) != tuple(profile):
+        raise ValueError("The summary connection changed during preparation")
+    try:
+        key = AIModelService(db).decrypt_api_key(credential.encrypted_api_key)
+    except InvalidToken:
+        raise ValueError("The summary connection could not be resolved") from None
+    if not key:
+        raise ValueError("The summary connection could not be resolved")
+    return key
 
 
 async def settle_completion(db: AsyncSession, run: AgentRun, result: dict[str, Any], state: str, provider: str | None) -> None:

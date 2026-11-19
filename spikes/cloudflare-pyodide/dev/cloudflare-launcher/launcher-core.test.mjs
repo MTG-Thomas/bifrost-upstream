@@ -30,7 +30,7 @@ function workflow(suffix = '1') {
   };
 }
 
-function peer({data = new Map(), runHost, runSummary, beforePut, onSend, slots = 1} = {}) {
+function peer({data = new Map(), runHost, runSummary, runAgent, beforePut, onSend, slots = 1} = {}) {
   let now = START;
   let order = 0;
   let session;
@@ -70,7 +70,7 @@ function peer({data = new Map(), runHost, runSummary, beforePut, onSend, slots =
       entered.resolve();
       return runHost ? runHost(route, context, signal) : COMPLETED;
     },
-    runSummary,
+    runSummary, runAgent,
     stopHost: async (route) => stopped.push(route.route_id),
     background: (promise) => background.push(promise),
   });
@@ -108,6 +108,41 @@ async function connect(api, generation = 1) {
   await api.dial();
   await api.welcome(generation);
 }
+
+test('an autonomous broker call replays across a lost reply without rerunning the loop', async () => {
+  let runs = 0;
+  const waiting = deferred();
+  const api = peer({
+    onSend: (event) => {
+      if (event.event === 'cloudflare_agent_request') waiting.resolve(event);
+    },
+    async runAgent(_route, request, signal) {
+      runs++;
+      const receipt = await request('commit', {sequence: 1, kind: 'workflow_tool'}, signal);
+      assert.equal(receipt.execution_id, SUBJECT);
+      return COMPLETED;
+    },
+  });
+  const hello = await api.dial();
+  assert.equal(hello.agent_claim_protocol, 'autonomous-v1');
+  assert.deepEqual(hello.handlers, [['workflow.execute', 1], ['agent.run', 1]]);
+  await api.welcome(1);
+  const route_id = `agent:${SUBJECT}:${LAUNCHER}`;
+  await api.command('cloudflare_agent', {
+    route_id, run_id: SUBJECT, claim_id: LAUNCHER,
+    deadline: new Date(START + 3000).toISOString(), memory_request_bytes: 8192,
+  });
+  const first = await waiting.promise;
+  await api.close();
+  await connect(api, 2);
+  assert.deepEqual(api.frames().filter((row) => row.event === first.event), [first, first]);
+  await api.command('cloudflare_agent_reply', {
+    route_id, request_id: first.request_id, ok: true, result: {execution_id: SUBJECT},
+  });
+  await api.finish();
+  assert.equal(runs, 1);
+  assert.equal(api.frames().filter((row) => row.event === 'cloudflare_agent_result').length, 1);
+});
 
 function tenantWorkflow(suffix, tenant) {
   const attempt = workflow(suffix);

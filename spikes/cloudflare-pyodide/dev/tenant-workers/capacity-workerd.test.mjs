@@ -21,6 +21,7 @@ const auth = {Authorization: `Bearer ${settings.token}`, 'X-Bifrost-Capacity-Sco
 const root = new URL('../', import.meta.url);
 const modules = Object.fromEntries([
   'cloudflare-launcher/launcher-do.mjs', 'cloudflare-launcher/launcher-core.mjs',
+  'cloudflare-launcher/agent-loop.mjs', 'cloudflare-launcher/agent-provider.mjs',
   'cloudflare-launcher/protocol.mjs', 'tenant-workers/launcher-host.mjs',
   'tenant-workers/tenant-dispatch.mjs', 'tenant-workers/tenant-registry.mjs',
   'tenant-workers/storage-path.mjs',

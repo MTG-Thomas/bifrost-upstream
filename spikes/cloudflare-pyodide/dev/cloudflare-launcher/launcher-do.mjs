@@ -1,6 +1,8 @@
 import {DurableObject} from 'cloudflare:workers';
 import {createLauncherWorkflowRunner, launcherTenantId} from '../tenant-workers/launcher-host.mjs';
 import {LauncherCore} from './launcher-core.mjs';
+import {runAgentLoop} from './agent-loop.mjs';
+import {agentStreamEvents} from './agent-provider.mjs';
 import {MAX_WORKFLOW_SLOTS, SLOT_BYTES} from './protocol.mjs';
 
 const DIAL_TIMEOUT_MS = 10_000;
@@ -107,6 +109,35 @@ export class CloudflareLauncher extends DurableObject {
     const getHost = (id) => this.ctx.exports.TenantHost.getByName(id);
     const runWorkflow = createLauncherWorkflowRunner(getHost);
     const summary = this.env.SUMMARY_PROVIDER;
+    const agentProvider = this.env.AGENT_PROVIDER;
+    const runAgent = !this.#managed && typeof agentProvider?.stream === 'function' ?
+      async (route, request, signal) => {
+        const deadline = AbortSignal.timeout(Math.max(0, Date.parse(route.deadline) - Date.now()));
+        const active = AbortSignal.any([signal, deadline]);
+        return runAgentLoop({
+          grantTurn: (turn, execution_id) => request('grant', {turn, execution_id}, active),
+          commit: (event) => request('commit', event, active),
+          async *streamTurn(grant) {
+            let close;
+            const cancellation = new ReadableStream({
+              type: 'bytes',
+              start(controller) { close = () => controller.close(); },
+              cancel() { close = undefined; },
+            });
+            const abort = () => close?.();
+            active.addEventListener('abort', abort, {once: true});
+            try {
+              active.throwIfAborted();
+              const stream = await agentProvider.stream(grant, cancellation);
+              delete grant.api_key;
+              yield* agentStreamEvents(stream);
+            } finally {
+              delete grant.api_key;
+              active.removeEventListener('abort', abort);
+            }
+          },
+        }, active);
+      } : undefined;
     const runSummary = !this.#managed && typeof summary?.complete === 'function' ?
       async (route, context, signal) => {
         let close;
@@ -133,7 +164,7 @@ export class CloudflareLauncher extends DurableObject {
       } : undefined;
     this.#core = new LauncherCore({
       ...settings, clock: Date.now, storage: this.#storage,
-      runSummary,
+      runSummary, runAgent,
       send: (session, frame) => {
         const connection = this.#connection;
         if (connection?.session !== session || connection.socket.readyState !== WebSocket.OPEN) {

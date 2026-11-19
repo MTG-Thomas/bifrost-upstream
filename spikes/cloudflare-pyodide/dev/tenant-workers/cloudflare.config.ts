@@ -26,6 +26,7 @@ if (launcherEnabled && (!process.env.WORKER_NAME ||
   throw new Error('Use a distinct WORKER_NAME for the Cloudflare launcher');
 }
 const summaryWorker = process.env.BIFROST_CLOUDFLARE_SUMMARY_WORKER;
+const agentWorker = process.env.BIFROST_CLOUDFLARE_AGENT_WORKER;
 const entrypoint = launcherEnabled ? './launcher-entry.mjs' : './tenant-entry.mjs';
 
 // Identity of the packaged Python runtime the engine child loads. Hashed here,
@@ -64,6 +65,8 @@ export default defineConfig({
       LOADER: {type: 'worker-loader'},
       ...(launcherEnabled && !managedLauncher && summaryWorker ?
         {SUMMARY_PROVIDER: {type: 'worker' as const, worker: summaryWorker, exportName: 'SummaryProvider'}} : {}),
+      ...(launcherEnabled && !managedLauncher && agentWorker ?
+        {AGENT_PROVIDER: {type: 'worker' as const, worker: agentWorker, exportName: 'AgentProvider'}} : {}),
       SPIKE_EXPIRES_AT: {type: 'text', value: process.env.SPIKE_EXPIRES_AT ?? '0'},
       RUNTIME_SHA256: {type: 'text', value: runtimeSha256},
       SUPERVISOR_SHA256: {type: 'text', value: supervisorSha256},
