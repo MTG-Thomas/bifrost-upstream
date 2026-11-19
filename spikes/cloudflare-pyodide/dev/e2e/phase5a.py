@@ -33,7 +33,7 @@ def sha256(value):
 
 def prepare(hosted=False, phase6=False, summary=False, agent=False, chat=False):
     prefix = "chat-" if chat else "agentrun-" if agent else "explore-agent-" if summary else "phase6-" if phase6 else "phase5b-" if hosted else "phase5-"
-    valid_prefix = (prefix, "explore-sol-", "containers-") if phase6 else prefix
+    valid_prefix = (prefix, "explore-sol-", "containers-", "containers2-") if phase6 else prefix
     if not ROOT.name.startswith(valid_prefix) or command("git", "remote") or command(
         "git", "status", "--porcelain"
     ):
