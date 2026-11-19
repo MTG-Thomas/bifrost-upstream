@@ -55,6 +55,8 @@ def review(monkeypatch):
     )
 
     async def read(path, *, max_bytes):
+        if path not in sources:
+            raise StorageError("not_found", provider_code="NoSuchKey")
         assert len(sources[path]) <= max_bytes
         return sources[path]
 
@@ -106,6 +108,10 @@ async def installed_review(review, db_session, monkeypatch):
     )
     approval.organization_id = owner.id
     approval.declaration["solution"] = scope.model_dump(mode="json")
+    approval.revision = digest(str(workflow.id))
+    approval.accepted_by = "fixture operator"
+    db_session.add(approval)
+    await db_session.flush()
     storage = cloudflare_eligibility.RepoStorage()
     solution_storage = Mock(return_value=storage)
     monkeypatch.setattr(cloudflare_eligibility, "SolutionStorage", solution_storage)
