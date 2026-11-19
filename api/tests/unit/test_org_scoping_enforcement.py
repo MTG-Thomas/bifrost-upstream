@@ -238,6 +238,9 @@ IDENTITY_MODELS: set[str] = {
     # looked up by id with requester/admin authorization, never name-resolved
     # through the org-to-global execution cascade.
     "PlatformJob",
+    # Approval-time owner is retained as a witness. Approval lookup uses a
+    # workflow UUID or revision, without the org-to-global name cascade.
+    "CloudflareApproval",
     # Artifacts are opaque file identities authorized by creator/org and
     # workspace membership. They are never resolved through the name cascade.
     "Artifact",
