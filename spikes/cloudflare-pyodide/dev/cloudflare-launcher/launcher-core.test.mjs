@@ -132,6 +132,22 @@ test('workspace entry supports hyphenated storage directories', async () => {
   assert.equal(h.calls[0].context.file_path, file);
 });
 
+test('launcher accepts an operator wildcard and refuses a shared-hosting wildcard before entry', async () => {
+  const api = peer();
+  await connect(api);
+  const denied = workflow('1');
+  denied.context.cloudflare_workspace.https_hosts = ['*.github.io'];
+  await api.command('workflow', denied);
+  assert.equal(api.frames().at(-1).error_type, 'ValueError');
+  assert.equal(api.calls.length, 0);
+
+  const approved = workflow('2');
+  approved.context.cloudflare_workspace.https_hosts = ['*.halopsa.com'];
+  await api.command('workflow', approved);
+  await api.finish();
+  assert.deepEqual(api.calls[0].context.cloudflare_workspace.https_hosts, ['*.halopsa.com']);
+});
+
 test('distinct tenants run concurrently and ACK releases only its route', async () => {
   const first = deferred();
   const second = deferred();

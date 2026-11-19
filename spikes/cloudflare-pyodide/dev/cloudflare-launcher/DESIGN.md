@@ -404,15 +404,15 @@ run. Findings, checked against the cited code:
 A server operator runs these commands inside the API container, from `/app`:
 
 ```sh
-python -m scripts.cloudflare_workflow_approval propose WORKFLOW_UUID --subrequest-allowance 10 --cpu-budget-ms 1000 --https-host tenant.example.com
-python -m scripts.cloudflare_workflow_approval accept WORKFLOW_UUID --subrequest-allowance 10 --cpu-budget-ms 1000 --https-host tenant.example.com --review-sha256 REVIEW_SHA256 --operator OPERATOR_LABEL
+python -m scripts.cloudflare_workflow_approval propose WORKFLOW_UUID --subrequest-allowance 10 --cpu-budget-ms 1000 --https-host '*.halopsa.com'
+python -m scripts.cloudflare_workflow_approval accept WORKFLOW_UUID --subrequest-allowance 10 --cpu-budget-ms 1000 --https-host '*.halopsa.com' --review-sha256 REVIEW_SHA256 --operator OPERATOR_LABEL
 python -m scripts.cloudflare_workflow_approval revoke WORKFLOW_UUID
 ```
 
 Review the complete proposal and the pinned source against the expected inputs,
 dependencies, HTTPS destinations, and resource usage. The digest covers the policy
 version, workflow and owning organization, prior approval, entry and module
-SHA-256 pins, canonical manifest digest, packages, exact HTTPS hosts, and both
+SHA-256 pins, canonical manifest digest, packages, HTTPS allowlist, and both
 estimates and limits. Accept regenerates the proposal and checks the reviewed
 digest. PostgreSQL stores the accepted revision and operator label. The command
 requires trusted server access and has no HTTP or tenant-facing surface.
@@ -435,10 +435,28 @@ fetch functions. It proposes exact hosts from HTTP call URLs and client base
 URLs, and reports `unresolved_url_calls` when static analysis cannot establish
 a destination. Returned links, documentation strings, and schema identifiers
 do not become egress permissions. For per-tenant hosts or server-provided URLs,
-repeat `--https-host` with the exact destinations during proposal and acceptance.
-Those additions are covered by the review digest. Carry-forward preserves the
-parent's allowlist and TenantHost enforces it on each request. Each new tenant
-host therefore requires explicit review.
+an operator can repeat `--https-host` at proposal and acceptance with exact
+destinations or a quoted `*.` pattern. The review output lists wildcard entries
+first and the digest binds them as part of `https_hosts`. The analyzer only
+proposes exact hosts and reports templated destinations as unresolved.
+
+`*.halopsa.com` allows `acme.halopsa.com`. The base and deeper hosts such as
+`a.b.halopsa.com` require separate entries. Use DNS hostnames in ASCII (IDN
+A-labels), without trailing dots or ports. TenantHost accepts HTTPS on the
+default port and counts matching fetches against the attempt's subrequest
+allowance. A wildcard trusts every tenant subdomain of that vendor, so compromise
+of another tenant's subdomain at that vendor is in scope. Exact entries can
+limit this exposure.
+
+A wildcard base must be under a recognized ICANN suffix and contain a
+registrable domain. Shared-hosting zones are excluded using the registrable
+roots of all private PSL rules, including their descendants. This also excludes
+provider roots such as `amazonaws.com` that list shared zones at deeper labels.
+The API and Worker ship generated data from PSL `2026-11-17_16-14-34_UTC`
+(`09c1b150f33c6145a73afcf7db0fb872fc54b4d1`). To refresh, download the
+[official PSL](https://publicsuffix.org/list/public_suffix_list.dat), then run
+`node spikes/cloudflare-pyodide/dev/executor/generate-egress-psl.mjs public_suffix_list.dat`
+from the repo root, update this pin, and run the shared matcher vectors.
 Before parsing, analysis limits raw source buffers
 to 128 KiB per file and 512 KiB per bundle, with a single module AST processed
 at a time and at most 100,000 visited nodes across the bundle. Python object
@@ -452,10 +470,11 @@ against the current approval without reading or parsing source.
 The first Normal dispatch to observe changed entry or module pins stays
 Linux-only and queues a deduplicated `workflow.cloudflare_reapproval` PlatformJob.
 The job loads the transitive sources outside the enqueue transaction. It may
-replace the current approval when packages match exactly, hosts are a subset,
-and both estimates fit the current limits. It retains the parent HTTPS allowlist
-and limits and records
-the parent approval and each added, changed, or removed pin. The job fences
+replace the current approval when packages match exactly, each discovered host
+matches an existing allowlist entry, and both estimates fit the current limits.
+It retains the parent's limits and HTTPS allowlist, including any reviewed
+wildcards. It records the parent approval and each added, changed, or removed
+pin. The job fences
 publication on its lease, the current approval, the workflow owner, and indexed
 source digests. Later dispatches may use the derived approval. A deterministic refusal keeps that observation Linux-only until an analysed
 path, including a dependency discovered by this analysis, changes in the file

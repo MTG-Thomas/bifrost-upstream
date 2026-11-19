@@ -24,6 +24,7 @@ const modules = Object.fromEntries([
   'cloudflare-launcher/protocol.mjs', 'tenant-workers/launcher-host.mjs',
   'tenant-workers/tenant-dispatch.mjs', 'tenant-workers/tenant-registry.mjs',
   'tenant-workers/storage-path.mjs',
+  'executor/egress-hosts.mjs', 'executor/egress-psl.generated.mjs',
 ].map((path) => [path, {type: 'esm', contents: readFileSync(new URL(path, root), 'utf8')}]));
 modules['entry.mjs'] = {type: 'esm', contents: `
   export {CloudflareLauncher} from './cloudflare-launcher/launcher-do.mjs';

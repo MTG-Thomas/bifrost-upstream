@@ -35,7 +35,11 @@ async def run(args: argparse.Namespace) -> None:
         async with get_db_context() as db:
             await accept_proposal(db, proposal, accepted_by=args.operator.strip())
 
-    print(json.dumps({**proposal.review_document(), "review_sha256": proposal.revision}, indent=2))
+    print(json.dumps({
+        "wildcard_https_hosts": [host for host in proposal.declaration.https_hosts if host.startswith("*.")],
+        **proposal.review_document(),
+        "review_sha256": proposal.revision,
+    }, indent=2))
 
 
 def main() -> None:
@@ -47,7 +51,8 @@ def main() -> None:
         command.add_argument("workflow_id", type=UUID)
         command.add_argument("--subrequest-allowance", type=int, required=True)
         command.add_argument("--cpu-budget-ms", type=int, required=True)
-        command.add_argument("--https-host", action="append", default=[], help="Exact additional HTTPS hostname")
+        command.add_argument("--https-host", action="append", default=[],
+                             help="Additional exact hostname or single-label wildcard (quote '*.example.com')")
         if name == "accept":
             command.add_argument("--review-sha256", required=True)
             command.add_argument("--operator", required=True)

@@ -21,6 +21,7 @@ import {apiTarget} from '../executor/policy.mjs';
 import {engineDigest, mergePrimeList, tenantEngineCode} from './generic-worker-code.mjs';
 import {readBudgetedJson} from '../executor/output-budget.mjs';
 import {DUMMY_CREDENTIAL} from '../executor/gateway-injection.mjs';
+import {egressHostAllowed, isHttpsEgressUrl} from '../executor/egress-hosts.mjs';
 import {AttemptCredentials, isRefreshChallenge, refreshReply, refreshRequestHandle} from './attempt-credentials.mjs';
 import {createTenantGateway} from './tenant-gateway.mjs';
 import {ENGINE_BOOT_TIMEOUT_MS, runtimeErrorClass} from './tenant-dispatch.mjs';
@@ -192,7 +193,7 @@ export class TenantHost extends DurableObject {
   async egress(request, generation) {
     const url = new URL(request.url);
     const note = {method: request.method, host: url.hostname, path: url.pathname};
-    if (!this.#egressAllowed(url.hostname, generation)) {
+    if (!isHttpsEgressUrl(url) || !this.#egressAllowed(url.hostname, generation)) {
       this.noteEgress({...note, status: 403, denied: 'egress not declared'});
       return new Response('egress not declared', {status: 403});
     }
@@ -238,7 +239,7 @@ export class TenantHost extends DurableObject {
   #egressAllowed(hostname, generation) {
     const current = this.#current;
     return current !== null && !current.stopped && generation === current.generation && Date.now() < current.deadlineAt &&
-      current.egress.has(String(hostname).toLowerCase());
+      egressHostAllowed(hostname, current.egress);
   }
 
   noteEgress(call) {
@@ -572,7 +573,9 @@ export class TenantApi extends WorkerEntrypoint {
     }
     const host = this.ctx.exports.TenantHost.getByName(tenantId);
     const url = new URL(request.url);
-    if (url.origin !== VIRTUAL_API_ORIGIN) return this.#egress(host, request, url);
+    // The host checks the current attempt's HTTPS allowlist and forwards the
+    // workflow's own headers, without the run token.
+    if (url.origin !== VIRTUAL_API_ORIGIN) return host.egress(request, this.ctx.props?.generation);
     if (request.method === 'POST' && url.pathname === '/auth/refresh') return this.#refresh(host, request);
 
     // Every refusal is noted against the attempt in flight, so a call the
@@ -605,16 +608,5 @@ export class TenantApi extends WorkerEntrypoint {
       await host.noteCall(handle, {method: 'POST', path: '/auth/refresh', status: reply.status, refresh: outcome});
     }
     return reply;
-  }
-
-  // The workflow's own third-party HTTPS request: forwarded as-is (its own
-  // headers, never the run token) when the attempt in flight declared the host.
-  async #egress(host, request, url) {
-    const note = {method: request.method, host: url.hostname, path: url.pathname};
-    if (url.protocol !== 'https:' || url.username || url.password || url.port) {
-      await host.noteEgress({...note, status: 403, denied: 'egress not declared'});
-      return new Response('egress not declared', {status: 403});
-    }
-    return host.egress(request, this.ctx.props?.generation);
   }
 }

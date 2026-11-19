@@ -37,6 +37,7 @@ from src.services.execution.cloudflare_eligibility import (
     indexed_pins,
     propose_approval,
 )
+from src.services.execution.cloudflare_hosts import egress_host_allowed
 from src.services.platform_job_lease import LeaseLost, hold_lease
 from src.services.platform_jobs import enqueue_platform_job
 
@@ -63,10 +64,11 @@ class ReapprovalRequest:
 def _carry_forward(
     parent: ApprovalDeclaration, candidate: ApprovalDeclaration,
 ) -> bool:
+    parent_hosts = set(parent.https_hosts)
     return (
         (parent.entry_path, parent.function_name) == (candidate.entry_path, candidate.function_name)
         and set(candidate.packages) == set(parent.packages)
-        and set(candidate.https_hosts) <= set(parent.https_hosts)
+        and all(egress_host_allowed(host, parent_hosts) for host in candidate.https_hosts)
     )
 
 

@@ -1,3 +1,4 @@
+import {normalizeEgressPattern} from '../executor/egress-hosts.mjs';
 import {isStoragePath} from '../tenant-workers/storage-path.mjs';
 import {
   CLOUDFLARE_HANDLERS, CLOUDFLARE_INCARNATION_ENDED, CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
@@ -10,7 +11,6 @@ const slotKey = (index) => index === 0 ? 'slot' : `slot:${index}`;
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const ROUTE = new RegExp(`^workflow:(${UUID}):${UUID}$`);
 const INSTANT = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?(?:Z|[+-]\d\d:\d\d)$/;
-const HOSTNAME = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const HEX64 = /^[0-9a-f]{64}$/;
 const STATES = new Set(['not_started', 'completed', 'uncertain']);
 const record = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -22,7 +22,7 @@ function validWorkspace(workspace, entry) {
       !Object.hasOwn(workspace.manifest, entry) || !Array.isArray(workspace.packages) ||
       !workspace.packages.every((name) => typeof name === 'string') ||
       !Array.isArray(workspace.https_hosts) ||
-      !workspace.https_hosts.every((host) => typeof host === 'string' && host.length <= 253 && HOSTNAME.test(host)) ||
+      !workspace.https_hosts.every((host) => typeof host === 'string' && normalizeEgressPattern(host) === host) ||
       !integer(workspace.subrequest_allowance) || workspace.subrequest_allowance > 50 ||
       !integer(workspace.cpu_budget_ms) || workspace.cpu_budget_ms === 0) return false;
 

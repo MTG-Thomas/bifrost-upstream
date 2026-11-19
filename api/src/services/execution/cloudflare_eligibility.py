@@ -26,8 +26,8 @@ from src.services.execution.cloudflare_analysis import (
     SourceUnresolved,
     analyze,
     digest,
-    reviewed_https_hosts,
 )
+from src.services.execution.cloudflare_hosts import reviewed_https_allowlist
 from src.services.repo_storage import RepoStorage
 
 _SourceDigest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -175,7 +175,7 @@ async def propose_approval(
         read, entry_path, function_name, subrequest_allowance=subrequest_allowance, cpu_budget_ms=cpu_budget_ms,
     )
     declaration = ApprovalDeclaration.model_validate(result)
-    merged_hosts = sorted(set(declaration.required_https_hosts) | set(reviewed_https_hosts(https_hosts or [])))
+    merged_hosts = sorted(set(declaration.required_https_hosts) | set(reviewed_https_allowlist(https_hosts or [])))
     if len(merged_hosts) > 32:
         raise AnalysisRejected("The reviewed HTTPS allowlist exceeds 32 hosts")
     declaration = declaration.model_copy(update={"https_hosts": merged_hosts})

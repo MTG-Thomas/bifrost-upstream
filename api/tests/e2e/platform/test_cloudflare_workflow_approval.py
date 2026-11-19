@@ -1,6 +1,8 @@
 """Durable approval review and exact-snapshot verification with PostgreSQL and S3."""
 
 import asyncio
+import json
+from argparse import Namespace
 from uuid import uuid4
 
 import pytest
@@ -21,6 +23,54 @@ from src.services.execution.cloudflare_eligibility import (
 )
 from src.services.file_index_service import FileIndexService
 from src.services.repo_storage import RepoStorage
+
+from scripts import cloudflare_workflow_approval as approval_cli
+
+
+@pytest.mark.e2e
+async def test_operator_cli_reviews_wildcard_and_binds_it_to_the_accepted_digest(db_session, capsys):
+    workflow_id = uuid4()
+    path = f"workflows/wildcard_{workflow_id.hex}.py"
+    db_session.add(Workflow(id=workflow_id, name="Wildcard review fixture", path=path, function_name="run"))
+    index = FileIndexService(db_session)
+    args = Namespace(command="propose", workflow_id=workflow_id, subrequest_allowance=5,
+                     cpu_budget_ms=100, https_host=[], operator="test operator")
+
+    try:
+        await index.write(path, b"from js import fetch\nasync def run(tenant):\n"
+                                b"    return await fetch(f'https://{tenant}.halopsa.com/api')\n")
+        await db_session.commit()
+        await approval_cli.run(args)
+        unreviewed = json.loads(capsys.readouterr().out)
+        assert unreviewed["unresolved_url_calls"] == 1
+        assert unreviewed["https_hosts"] == []
+
+        args.https_host = ["*.github.io"]
+        with pytest.raises(AnalysisRejected, match="registrable domain outside the PSL private roots"):
+            await approval_cli.run(args)
+
+        args.https_host = ["*.halopsa.com"]
+        await approval_cli.run(args)
+        reviewed = json.loads(capsys.readouterr().out)
+        assert next(iter(reviewed)) == "wildcard_https_hosts"
+        assert reviewed["wildcard_https_hosts"] == reviewed["https_hosts"] == ["*.halopsa.com"]
+
+        args.command = "accept"
+        args.review_sha256 = unreviewed["review_sha256"]
+        with pytest.raises(AnalysisRejected, match="generated proposal has changed"):
+            await approval_cli.run(args)
+        assert await current_approval(db_session, workflow_id) is None
+
+        args.review_sha256 = reviewed["review_sha256"]
+        await approval_cli.run(args)
+        accepted = await current_approval(db_session, workflow_id)
+        assert accepted is not None and accepted.revision == args.review_sha256
+        assert accepted.declaration["https_hosts"] == ["*.halopsa.com"]
+    finally:
+        await db_session.rollback()
+        await db_session.execute(delete(Workflow).where(Workflow.id == workflow_id))
+        await index.delete(path)
+        await db_session.commit()
 
 
 @pytest.mark.e2e
@@ -134,7 +184,9 @@ async def test_changed_module_carries_forward_through_live_platform_job(
         )
 
     original = b"from js import fetch\nasync def value(url): return await fetch('https://example.com/test')\n"
-    changed = b"from js import fetch\nasync def value(url): return await fetch(url)\n"
+    changed = (b"from js import fetch\nasync def value(url):\n"
+               b"    if url: return await fetch(url)\n"
+               b"    return await fetch('https://new-tenant.halopsa.com/test')\n")
 
     try:
         entry_sha = await index.write(path, f"from {module} import value\nasync def run(url): return await value(url)\n".encode())
@@ -142,7 +194,7 @@ async def test_changed_module_carries_forward_through_live_platform_job(
         await db_session.commit()
         discovered = await propose_approval(workflow_id, subrequest_allowance=5, cpu_budget_ms=100)
         proposal = await propose_approval(
-            workflow_id, subrequest_allowance=5, cpu_budget_ms=100, https_hosts=["tenant.example.com"],
+            workflow_id, subrequest_allowance=5, cpu_budget_ms=100, https_hosts=["*.halopsa.com"],
         )
         assert proposal.revision != discovered.revision
         assert proposal.declaration.required_https_hosts == ["example.com"]
@@ -175,9 +227,9 @@ async def test_changed_module_carries_forward_through_live_platform_job(
         assert result == {"outcome": "approved", "revision": derived.revision}
         assert derived.derived_from == proposal.revision
         assert derived.pin_diff == {module_path: {"before": old_sha, "after": new_sha}}
-        assert derived.declaration["https_hosts"] == ["example.com", "tenant.example.com"]
+        assert derived.declaration["https_hosts"] == ["*.halopsa.com", "example.com"]
         assert derived.declaration["unresolved_url_calls"] == 1
-        assert derived.declaration["required_https_hosts"] == []
+        assert derived.declaration["required_https_hosts"] == ["new-tenant.halopsa.com"]
         assert await marker() == derived.revision
         assert await prepare(proposal.revision, entry_sha) is None
         workspace = await prepare(derived.revision, entry_sha)

@@ -84,6 +84,19 @@ async def test_new_egress_or_package_needs_review(scenario, worker, changed):
     reapproval.accept_proposal.assert_not_awaited()
 
 
+@pytest.mark.parametrize("candidate_host, allowed", [
+    ("acme.halopsa.com", True),
+    ("halopsa.com", False),
+    ("a.b.halopsa.com", False),
+    ("*.other.example.com", False),
+])
+def test_carry_forward_requires_concrete_hosts_covered_by_parent(scenario, candidate_host, allowed):
+    _, parent, _, _ = scenario
+    parent = parent.model_copy(update={"https_hosts": ["*.halopsa.com", "example.com"]})
+    candidate = parent.model_copy(update={"https_hosts": [candidate_host]})
+    assert reapproval._carry_forward(parent, candidate) is allowed
+
+
 @pytest.mark.parametrize("change", ["edit", "owner"])
 async def test_competing_edit_or_owner_change_supersedes_job(scenario, worker, change):
     _, _, payload, context = scenario

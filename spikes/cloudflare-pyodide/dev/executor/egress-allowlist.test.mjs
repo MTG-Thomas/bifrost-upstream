@@ -69,6 +69,7 @@ test('invalid egress shape fails closed without echo', async () => {
     [{hosts: ['a'.repeat(254)]}, 'hostname'],
     [{hosts: Array(9).fill('a.example')}, 'hosts'],
     [{hosts: ['evil.example:443']}, 'hostname'],
+    [{hosts: ['*.halopsa.com']}, 'hostname'],
     [{hosts: ['user:pass@evil.example']}, 'hostname'],
     [{hosts: ['evil.example/path']}, 'hostname'],
     [{hosts: ['evil.example?x=1']}, 'hostname'],

@@ -56,6 +56,14 @@ function engine() {
           await response.body?.cancel();
         }
         result = statuses;
+      } else if (scenario === 'wildcard') {
+        result = [];
+        for (const origin of ['halopsa.com', 'a.b.halopsa.com', 'acme.halopsa.com.',
+          'acme.halopsa.com:8443', 'acme.halopsa.com:443', 'second.halopsa.com']) {
+          const response = await fetch(`https://${origin}/wildcard`);
+          result.push(response.status);
+          await response.body?.cancel();
+        }
       } else {
         const response = await fetch(`https://approved.invalid/${scenario}`);
         result = response.status;
@@ -118,7 +126,8 @@ before(async () => {
     'dev/tenant-workers/tenant-dispatch.mjs',
     'dev/tenant-workers/attempt-credentials.mjs', 'dev/executor/policy.mjs',
     'dev/executor/output-budget.mjs', 'dev/executor/gateway-injection.mjs',
-    'dev/executor/egress-allowlist.mjs', 'backend/module-response.mjs',
+    'dev/executor/egress-allowlist.mjs', 'dev/executor/egress-hosts.mjs', 'dev/executor/egress-psl.generated.mjs',
+    'backend/module-response.mjs',
     'backend/resolution-response.mjs', 'probe-io.mjs',
   ];
   mf = new Miniflare({workers: [{
@@ -137,7 +146,8 @@ before(async () => {
       `},
         ...Object.fromEntries(['cloudflare-launcher/launcher-do.mjs', 'cloudflare-launcher/launcher-core.mjs',
           'cloudflare-launcher/protocol.mjs', 'tenant-workers/launcher-host.mjs', 'tenant-workers/tenant-dispatch.mjs',
-          'tenant-workers/tenant-registry.mjs', 'tenant-workers/storage-path.mjs'].map((name) =>
+          'tenant-workers/tenant-registry.mjs', 'tenant-workers/storage-path.mjs',
+          'executor/egress-hosts.mjs', 'executor/egress-psl.generated.mjs'].map((name) =>
           [name, {type: 'esm', contents: readFileSync(path(`../${name}`), 'utf8')}])),
       }},
       env: Object.fromEntries(Object.entries({
@@ -239,13 +249,14 @@ async function host(tenantId, action, input, signal) {
 }
 
 function route(tenantId, {routeId = tenantId, scenario = 'count', allowance = 8,
+  httpsHosts = ['approved.invalid'],
   workflowDeadline = new Date(Date.now() + 20_000).toISOString()} = {}) {
   const content = 'pinned = True\n';
   return {tenantId, executionId: routeId, routeId, workflowDeadline, dispatchedAt: 1, context: {
     scenario, engine_token: 'test-access', cloudflare_workspace: {
       sources: {'wf.py': content},
       manifest: {'wf.py': createHash('sha256').update(content).digest('hex')},
-      https_hosts: ['approved.invalid'], cpu_budget_ms: 200, subrequest_allowance: allowance,
+      https_hosts: httpsHosts, cpu_budget_ms: 200, subrequest_allowance: allowance,
     },
   }};
 }
@@ -352,6 +363,15 @@ test('TenantHost refuses a redirect to an undeclared egress host', async () => {
   assert.equal(result.output.result, 403);
   assert.ok(origins.includes('https://approved.invalid/redirect'));
   assert.ok(!origins.includes('https://undeclared.invalid/target'));
+});
+
+test('workerd egress spends the allowance only on matching one-label HTTPS destinations', async () => {
+  await host('wildcard', 'warm');
+  const result = await host('wildcard', 'run', route('wildcard', {
+    scenario: 'wildcard', allowance: 1, httpsHosts: ['*.halopsa.com'],
+  }));
+  assert.deepEqual(result.output.result, [403, 403, 403, 403, 200, 429]);
+  assert.deepEqual(origins.filter((url) => url.endsWith('/wildcard')), ['https://acme.halopsa.com/wildcard']);
 });
 
 test('a null workflow deadline permits the attempt without an expiry timer', async () => {
