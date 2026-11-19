@@ -178,3 +178,15 @@ test('the code digest names the engine and the supervisor', async () => {
   assert.equal(digest.engine_code_sha256, await engineDigest(runtimeSha256));
   assert.equal(digest.supervisor_code_sha256, supervisorSha256);
 });
+
+test('the packaged workflow runtime cannot initialize the Linux agent database driver', async () => {
+  const probe = (imports) => post({tenant_id: tenant('agent-import'), action: 'boot_probe', imports});
+  const control = await probe(['httpx']);
+  assert.equal(control.status, 200, JSON.stringify(control.body));
+  assert.equal(control.body.report.ok, true);
+
+  const agent = await probe(['asyncpg']);
+  assert.equal(agent.status, 502, JSON.stringify(agent.body));
+  assert.equal(agent.body.phase, 'dynamic-runtime');
+  assert.match(agent.body.probe_error, /ModuleNotFoundError: No module named ['"]asyncpg['"]/);
+});

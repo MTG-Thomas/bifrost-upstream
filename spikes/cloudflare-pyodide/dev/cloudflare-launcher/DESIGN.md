@@ -825,3 +825,30 @@ starting the isolated debug stack. Then run `phase5a.py run --summary
 [local harness instructions](../e2e/README.md) for stack ownership and cleanup.
 The harness submits regeneration via the API, drops the first terminal ACK,
 and requires one stub call and one persisted usage row across replay.
+
+### Agent-run prototype
+
+The workerd boot probe in `tenant-isolation.test.mjs` loads the packaged
+Python worker twice on fresh children. HTTPX imports successfully as the
+control. The same bundle raises `ModuleNotFoundError: No module named
+'asyncpg'` when it imports the PostgreSQL driver required by
+`agent_run_child.run_agent_message`. The Linux child opens that driver
+before entering the agent loop, so removing tools cannot make the same
+entrypoint runnable. The probe uses the compiled runtime artifact with
+SHA-256 `fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5`.
+It establishes the missing driver in this bundle. A mediated agent loop
+would need its own runtime and protocol qualification.
+
+The first mediated slice should resolve the authorized model, prompt,
+history, run mode and budgets under the API's claim. Hand the isolate an
+immutable snapshot and a route-bound broker handle. Send model requests
+through a trusted broker that pins provider and model, limits body and
+stream sizes, and carries no API key in child state. Emit monotonically
+sequenced chunks using the run and claim UUIDs. The API persists each
+accepted chunk and cursor before publishing chat events or acknowledging
+the write. On cancellation or replacement, the API revokes the handle and
+closes the stream. A lost isolate after a streamed chunk or accepted tool
+request settles as uncertain and retains the existing conversation and
+receipts. A workflow tool can then use the same control channel to obtain
+the canonical workflow execution ID through a deduplicated, authorized API
+submission. Durable execution remains with the workflow pool.
