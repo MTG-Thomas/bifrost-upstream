@@ -11,19 +11,24 @@ import contextlib
 import json
 import logging
 import time
+from contextlib import AbstractAsyncContextManager, nullcontext
 from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from shared.worker_control_auth import external_worker_control_key
 from sqlalchemy import func, select
-from sqlalchemy.exc import DBAPIError, TimeoutError as SQLAlchemyTimeoutError
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from starlette.websockets import WebSocketState
 
-from shared.worker_control_auth import external_worker_control_key
 from src.config import get_settings
 from src.core.database import get_db_context, get_liveness_db_context
 from src.jobs.consumers.package_install import PackageInstallConsumer
-from src.jobs.schedulers.platform_jobs import claim_platform_job, run_claimed_platform_job
+from src.jobs.schedulers.platform_jobs import (
+    claim_platform_job,
+    run_claimed_platform_job,
+)
 from src.models.orm.execution_workers import ExecutionWorker
 from src.services.execution.template_process import TEMPLATE_START_TIMEOUT_SECONDS
 from src.services.memory_requests import AGENT_RUN_REQUEST_BYTES, MemoryBudget
@@ -37,9 +42,17 @@ from src.services.worker_pool.claims import (
 from src.worker.admission import Admission
 from src.worker.pool_main import PoolWorker
 from src.worker.remote.agent_route import AgentRoute, RemoteAgentConsumer
-from src.worker.remote.cloudflare_agent import CloudflareAgentRoute, CloudflareAgentRoutes
+from src.worker.remote.cloudflare_agent import (
+    CloudflareAgentRoute,
+    CloudflareAgentRoutes,
+)
 from src.worker.remote.cloudflare_summary import CloudflareSummaryRoutes, SummaryRoute
-from src.worker.remote.fencing import LeaseRef, current_remote_lease_ref, fence_remote_owner, remote_owner_context
+from src.worker.remote.fencing import (
+    LeaseRef,
+    current_remote_lease_ref,
+    fence_remote_owner,
+    remote_owner_context,
+)
 from src.worker.remote.ownership import (
     DEFAULT_OWNER_LEASE_SECONDS,
     CloudflareEnrollment,
@@ -50,34 +63,33 @@ from src.worker.remote.ownership import (
     renew_remote_owner,
 )
 from src.worker.remote.protocol import (
+    CLOUDFLARE_AGENT_HANDLER,
+    CLOUDFLARE_AGENT_PROTOCOL,
     CLOUDFLARE_CREDENTIAL_PROTOCOL,
     CLOUDFLARE_DEV_BUDGET_BYTES,
     CLOUDFLARE_DEV_SLOTS,
     CLOUDFLARE_INCARNATION_ENDED,
     CLOUDFLARE_MAX_LOGICAL_BYTES,
-    CLOUDFLARE_WORKFLOW_HANDLER,
-    CLOUDFLARE_AGENT_HANDLER,
-    CLOUDFLARE_AGENT_PROTOCOL,
-    CLOUDFLARE_SUMMARY_HANDLER,
-    AuthenticationError,
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+    CLOUDFLARE_SUMMARY_HANDLER,
+    CLOUDFLARE_WORKFLOW_HANDLER,
+    LEGACY_EXECUTION_HANDLERS,
+    LINUX_RUNTIME_PROFILE,
+    SUMMARY_CLAIM_PROTOCOL,
+    AuthenticationError,
     CloudflareRevisionRejected,
     ControlEnvelope,
     CredentialRouteChanged,
     FragmentAssembler,
-    LEGACY_EXECUTION_HANDLERS,
-    LINUX_RUNTIME_PROFILE,
     OpaqueDispatchInterrupted,
     ProtocolError,
-    SUMMARY_CLAIM_PROTOCOL,
     SignedHello,
+    fragment,
     hello_credential_protocol,
     hello_execution_handlers,
     nonce_digest,
-    fragment,
     verify_hello,
 )
-
 
 RENEW_RETRY_SECONDS = 2.0
 # API-owned capacity for the dev build. Provider enrollment will own this
@@ -239,7 +251,8 @@ class Bridge:
         return self.current, self.limit
 
     async def request(
-        self, action: str, payload: dict[str, Any], *, expected_generation: int | None = None
+        self, action: str, payload: dict[str, Any], *, expected_generation: int | None = None,
+        authorization: AbstractAsyncContextManager[None] | None = None,
     ) -> dict[str, Any]:
         """Send one acknowledged command to the launcher.
 
@@ -278,47 +291,48 @@ class Bridge:
                         if dispatch and self.freshness_age() > ADMISSION_FRESHNESS_SECONDS:
                             raise CredentialRouteChanged("Opaque launcher heartbeat is stale")
                         socket = self.socket
-                    message = ControlEnvelope(
-                        session_generation=self.lease.session_generation,
-                        sequence=self._sequence + 1,
-                        kind="command",
-                        payload={"id": request_id, "action": action, "payload": payload},
-                    )
-                    if (
-                        self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
-                        and message.encoded_size() > CLOUDFLARE_MAX_LOGICAL_BYTES
-                    ):
-                        if action == "workflow":
-                            raise CloudflareRevisionRejected("Cloudflare workflow exceeds the control payload limit")
-                        raise ProtocolError("Cloudflare command exceeds the control payload limit")
-                    sent = 0
-                    send_deadline = loop.time() + _reply_timeout(action)
-                    for frame in fragment(message):
-                        if opaque and dispatch:
-                            self._opaque_routes[payload["route_id"]] = message.sequence + (
-                                frame.payload["total"] - 1 if frame.kind == "fragment" else 0
-                            )
-                        if socket is None:
-                            await self.socket.send_text(frame.to_json())
-                        else:
-                            if self.socket is not socket:
-                                raise OpaqueDispatchInterrupted("Opaque launcher socket was replaced during dispatch")
-                            try:
-                                async with asyncio.timeout_at(send_deadline):
-                                    await socket.send_text(frame.to_json())
-                            except (asyncio.CancelledError, WebSocketDisconnect, OSError, RuntimeError) as exc:
-                                # A partial send leaves the fragment stream ambiguous.
-                                self.pending.pop(request_id, None)
-                                self.disconnect(socket)
-                                close = asyncio.create_task(socket.close(code=1011, reason="interrupted command"))
-                                close.add_done_callback(_observe_task)
-                                if isinstance(exc, asyncio.CancelledError):
-                                    raise
-                                raise OpaqueDispatchInterrupted("Opaque launcher command send was interrupted") from exc
-                            if self.socket is not socket:
-                                raise OpaqueDispatchInterrupted("Opaque launcher socket was replaced during dispatch")
-                        sent += 1
-                    self._sequence += sent
+                    async with authorization if authorization is not None else nullcontext():
+                        message = ControlEnvelope(
+                            session_generation=self.lease.session_generation,
+                            sequence=self._sequence + 1,
+                            kind="command",
+                            payload={"id": request_id, "action": action, "payload": payload},
+                        )
+                        if (
+                            self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+                            and message.encoded_size() > CLOUDFLARE_MAX_LOGICAL_BYTES
+                        ):
+                            if action == "workflow":
+                                raise CloudflareRevisionRejected("Cloudflare workflow exceeds the control payload limit")
+                            raise ProtocolError("Cloudflare command exceeds the control payload limit")
+                        sent = 0
+                        send_deadline = loop.time() + _reply_timeout(action)
+                        for frame in fragment(message):
+                            if opaque and dispatch:
+                                self._opaque_routes[payload["route_id"]] = message.sequence + (
+                                    frame.payload["total"] - 1 if frame.kind == "fragment" else 0
+                                )
+                            if socket is None:
+                                await self.socket.send_text(frame.to_json())
+                            else:
+                                if self.socket is not socket:
+                                    raise OpaqueDispatchInterrupted("Opaque launcher socket was replaced during dispatch")
+                                try:
+                                    async with asyncio.timeout_at(send_deadline):
+                                        await socket.send_text(frame.to_json())
+                                except (asyncio.CancelledError, WebSocketDisconnect, OSError, RuntimeError) as exc:
+                                    # A partial send leaves the fragment stream ambiguous.
+                                    self.pending.pop(request_id, None)
+                                    self.disconnect(socket)
+                                    close = asyncio.create_task(socket.close(code=1011, reason="interrupted command"))
+                                    close.add_done_callback(_observe_task)
+                                    if isinstance(exc, asyncio.CancelledError):
+                                        raise
+                                    raise OpaqueDispatchInterrupted("Opaque launcher command send was interrupted") from exc
+                                if self.socket is not socket:
+                                    raise OpaqueDispatchInterrupted("Opaque launcher socket was replaced during dispatch")
+                            sent += 1
+                        self._sequence += sent
             except OpaqueDispatchInterrupted:
                 raise
             except (WebSocketDisconnect, OSError, RuntimeError) as exc:
@@ -824,8 +838,12 @@ class ApiExecutor(PoolWorker):
         """Keep the canonical heartbeat alive while the launcher bootstraps."""
         await self.bridge.inventory_ready.wait()
         if self.runtime_profile == LINUX_RUNTIME_PROFILE:
-            from src.services.execution.process_pool import _notify_requirements_failures
-            from src.services.execution.requirements_setup_result import RequirementsInstallResult
+            from src.services.execution.process_pool import (
+                _notify_requirements_failures,
+            )
+            from src.services.execution.requirements_setup_result import (
+                RequirementsInstallResult,
+            )
 
             requirements = RequirementsInstallResult.from_json_dict(self.bridge.requirements)
             await _notify_requirements_failures(requirements)
@@ -847,14 +865,16 @@ class ApiExecutor(PoolWorker):
         return []
 
     def _make_workflow_consumer(self) -> Any:
-        from src.worker.remote.remote_pool import ThinRemoteProcessPool
         from src.jobs.consumers.workflow_execution import WorkflowExecutionConsumer
+        from src.worker.remote.remote_pool import ThinRemoteProcessPool
 
         self.bridge.pool = ThinRemoteProcessPool(
             self.bridge, worker_id=str(self.incarnation_id), runtime_profile=self.runtime_profile,
         )
         if self.runtime_profile == LINUX_RUNTIME_PROFILE:
-            from src.services.execution.requirements_setup_result import RequirementsInstallResult
+            from src.services.execution.requirements_setup_result import (
+                RequirementsInstallResult,
+            )
 
             self.bridge.pool._apply_requirements_status(
                 RequirementsInstallResult.from_json_dict(self.bridge.requirements)
@@ -1148,7 +1168,10 @@ class ApiExecutor(PoolWorker):
         exit report). An owner that lost the launcher or is handing it over
         leaves its children alone: the next owner adopts or ends them.
         """
-        from src.worker.remote.remote_pool import DRAIN_DEADLINE_ERROR, DRAIN_DEADLINE_ERROR_TYPE
+        from src.worker.remote.remote_pool import (
+            DRAIN_DEADLINE_ERROR,
+            DRAIN_DEADLINE_ERROR_TYPE,
+        )
 
         await super()._drain()
         agents = self.bridge.agents

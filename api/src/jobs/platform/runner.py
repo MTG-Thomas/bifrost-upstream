@@ -5,30 +5,48 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from functools import partial
 from uuid import UUID
 
 from pydantic import ValidationError
+from shared.app_build_errors import APP_BUILD_JOB_TYPES, app_build_memory_message
 from sqlalchemy import select
 
-from shared.app_build_errors import APP_BUILD_JOB_TYPES, app_build_memory_message
 from src.core.database import close_db, get_db_context, init_db
 from src.jobs.platform.base import (
     PlatformJobCancelled,
     PlatformJobContext,
     PlatformJobDeferred,
     PlatformJobFailure,
+    PlatformJobHandler,
     PlatformJobRequiresAction,
 )
 from src.jobs.platform.registry import get_platform_job_definition
 from src.models.orm.platform_jobs import PlatformJob
 from src.services.audit_context import ActorContext, clear_actor, set_actor
-from src.services.platform_jobs import defer_platform_job, finish_platform_job, retry_platform_job_failure
+from src.services.platform_jobs import (
+    defer_platform_job,
+    finish_platform_job,
+    retry_platform_job_failure,
+)
 
 logger = logging.getLogger(__name__)
 
 
-async def run_claimed_platform_job(job_id: UUID, lease_token: UUID) -> bool:
+async def run_claimed_platform_job(
+    job_id: UUID, lease_token: UUID, *, stage_handler: PlatformJobHandler | None = None,
+) -> bool:
+    finish = finish_platform_job
+    if stage_handler is not None:
+        finish = partial(finish_platform_job, stage_owned=True)
     async with get_db_context() as db:
+        if stage_handler is not None:
+            from src.worker.remote.platform_stage_host import lock_stage_job
+
+            try:
+                await lock_stage_job(db, job_id, lease_token)
+            except PlatformJobCancelled:
+                return False
         job = (
             await db.execute(
                 select(PlatformJob).where(
@@ -42,7 +60,9 @@ async def run_claimed_platform_job(job_id: UUID, lease_token: UUID) -> bool:
             return False
         definition = get_platform_job_definition(job.job_type)
         if definition is None:
-            await finish_platform_job(
+            if stage_handler is not None:
+                await db.rollback()
+            await finish(
                 job_id,
                 lease_token,
                 status="failed",
@@ -52,7 +72,9 @@ async def run_claimed_platform_job(job_id: UUID, lease_token: UUID) -> bool:
             return False
         payload_model = definition.payload_model_for_version(job.payload_version)
         if payload_model is None:
-            await finish_platform_job(
+            if stage_handler is not None:
+                await db.rollback()
+            await finish(
                 job_id,
                 lease_token,
                 status="failed",
@@ -104,20 +126,28 @@ async def run_claimed_platform_job(job_id: UUID, lease_token: UUID) -> bool:
             if job.encrypted_payload is not None
             else payload_model.model_validate(payload_data)
         )
-        result = await definition.handler(context, payload)
-        return await finish_platform_job(
+        handler = definition.handler if stage_handler is None else stage_handler
+        result = await handler(context, payload)
+        return await finish(
             job_id,
             lease_token,
             status="succeeded",
             result=result or {},
         )
     except PlatformJobCancelled:
-        return await finish_platform_job(
+        if stage_handler is not None:
+            return False
+        return await finish(
             job_id,
             lease_token,
             status="cancelled",
         )
     except PlatformJobDeferred as exc:
+        if stage_handler is not None:
+            return await finish(
+                job_id, lease_token, status="failed", error_code="unsupported_stage_deferral",
+                error_message="A Container stage must settle or release its current PlatformJob attempt.",
+            )
         return await defer_platform_job(
             job_id,
             lease_token,
@@ -125,9 +155,14 @@ async def run_claimed_platform_job(job_id: UUID, lease_token: UUID) -> bool:
             result=exc.result,
         )
     except PlatformJobFailure as exc:
+        if stage_handler is not None:
+            return await finish(
+                job_id, lease_token, status="failed", error_code=exc.code,
+                error_message=exc.message, result=exc.result,
+            )
         return await retry_platform_job_failure(job_id, lease_token, exc, enabled=definition.policy.retry_on_failure)
     except PlatformJobRequiresAction as exc:
-        return await finish_platform_job(
+        return await finish(
             job_id,
             lease_token,
             status="requires_action",
@@ -135,7 +170,7 @@ async def run_claimed_platform_job(job_id: UUID, lease_token: UUID) -> bool:
             result=exc.result,
         )
     except ValidationError as exc:
-        return await finish_platform_job(
+        return await finish(
             job_id,
             lease_token,
             status="failed",
@@ -147,7 +182,7 @@ async def run_claimed_platform_job(job_id: UUID, lease_token: UUID) -> bool:
             "Unhandled platform-job handler failure", extra={"job_id": str(job_id)}
         )
         build_oom = isinstance(exc, MemoryError) and job.job_type in APP_BUILD_JOB_TYPES
-        return await finish_platform_job(
+        return await finish(
             job_id,
             lease_token,
             status="failed",

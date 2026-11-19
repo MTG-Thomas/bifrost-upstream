@@ -198,6 +198,7 @@ async def claim_platform_job(
     fits_bytes: int | None = None,
     isolated: IsolatedPods | None = None,
     memory_sample: tuple[int, int] | None = None,
+    job_types: frozenset[str] | None = None,
 ) -> ClaimedPlatformJob | None:
     """Claim one admissible queued job using row locking and a fenced lease.
 
@@ -220,6 +221,7 @@ async def claim_platform_job(
 
         if not await fence_remote_owner(db):
             return None
+        eligible = () if job_types is None else (PlatformJob.job_type.in_(job_types),)
         candidate_ids = (
             (
                 await db.execute(
@@ -228,6 +230,7 @@ async def claim_platform_job(
                         PlatformJob.execution_backend == backend,
                         PlatformJob.status == "queued",
                         PlatformJob.available_at <= _now(),
+                        *eligible,
                     )
                     .order_by(PlatformJob.priority.desc(), PlatformJob.created_at.asc())
                 )
@@ -244,6 +247,7 @@ async def claim_platform_job(
                         PlatformJob.execution_backend == backend,
                         PlatformJob.status == "queued",
                         PlatformJob.available_at <= _now(),
+                        *eligible,
                     )
                     .with_for_update(skip_locked=True)
                 )

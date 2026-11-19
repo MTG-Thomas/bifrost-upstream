@@ -415,11 +415,20 @@ async def finish_platform_job(
     error_message: str | None = None,
     error_retryable: bool = False,
     phase: str | None = None,
+    stage_owned: bool = False,
 ) -> bool:
     """Finalize only the currently leased attempt; stale runners are fenced out."""
     if status not in TERMINAL_PLATFORM_JOB_STATUSES:
         raise ValueError(f"Invalid terminal platform-job status: {status}")
     async with get_db_context() as db:
+        if stage_owned:
+            from src.jobs.platform.base import PlatformJobCancelled
+            from src.worker.remote.platform_stage_host import lock_stage_job
+
+            try:
+                await lock_stage_job(db, job_id, lease_token)
+            except PlatformJobCancelled:
+                return False
         job = (
             await db.execute(
                 select(PlatformJob)

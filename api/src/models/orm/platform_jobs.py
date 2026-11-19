@@ -75,6 +75,8 @@ class PlatformJob(Base):
     runner_started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Last remote compute assignment, including the attempt that produced it.
+    remote_stage: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     status: Mapped[str] = mapped_column(
         String(30), nullable=False, default="queued", index=True
