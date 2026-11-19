@@ -248,7 +248,8 @@ def _literal_helper_selectors(syntax: ast.Module, entry_function: str) -> set[in
     helpers = [
         node for node in syntax.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name.startswith("_") and node.name != entry_function and not node.decorator_list
+        and node.name.startswith("_") and not node.name.startswith("__")
+        and node.name != entry_function and not node.decorator_list
     ]
     if not helpers:
         return set()
@@ -291,7 +292,8 @@ def _literal_helper_selectors(syntax: ast.Module, entry_function: str) -> set[in
             ]
             if not selectors or parameter.arg in rebound:
                 continue
-            values = [_argument(call, index, parameter.arg) for call in calls]
+            keywords = () if index < len(helper.args.posonlyargs) else (parameter.arg,)
+            values = [_argument(call, index, *keywords) for call in calls]
             if all(
                 isinstance(value, ast.Constant) and isinstance(value.value, str)
                 and value.value.isidentifier() and not value.value.startswith("_")
@@ -371,7 +373,7 @@ class _Analysis:
     exports: dict[str, _Client] = field(default_factory=dict)
     call_hints: list[_CallHint] = field(default_factory=list)
     local_helpers_entry: str | None = None
-    literal_selectors: set[int] = field(default_factory=set)
+    literal_selectors: dict[int, str] = field(default_factory=dict)
 
     async def load(self, path: str, entry_function: str | None = None) -> bool:
         if path in self.found:
@@ -455,9 +457,7 @@ class _Analysis:
             if self.nodes > _MAX_NODES:
                 raise AnalysisRejected("Workspace sources exceed the analysis complexity budget")
         if entry_function:
-            self.literal_selectors = _literal_helper_selectors(syntax, entry_function)
-            if self.literal_selectors:
-                self.local_helpers_entry = path
+            self.literal_selectors = dict.fromkeys(_literal_helper_selectors(syntax, entry_function), path)
         imports: list[ast.Import | ast.ImportFrom] = []
         clients = self.inspect_scope(syntax.body, {}, {}, {}, {}, imports, path)
         self.literal_selectors.clear()
@@ -628,12 +628,14 @@ class _Analysis:
         if qualified == "builtins.getattr":
             attr = node.args[1] if len(node.args) > 1 else None
             if not isinstance(attr, ast.Constant) or not isinstance(attr.value, str):
+                helper_module = self.literal_selectors.get(id(node))
                 if (
-                    id(node) in direct_calls and id(node) in self.literal_selectors
+                    helper_module is not None and id(node) in direct_calls
                     and _qualified(node.args[0], aliases) != "builtins"
                 ):
                     # The selector is bounded, but the receiver may make an HTTP
                     # request. Require review without proposing an inferred host.
+                    self.local_helpers_entry = helper_module
                     self.record_call(None)
                     return
                 if node.args and (_qualified(node.args[0], aliases) == "builtins" or id(node) in direct_calls):

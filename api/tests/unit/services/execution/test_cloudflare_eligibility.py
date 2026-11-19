@@ -287,6 +287,17 @@ async def other_entry(obj):
     assert result["required_https_hosts"] == []
 
 
+async def test_positional_only_selector_is_not_bound_by_keyword():
+    source = b"""
+def _dispatch(obj, method=unknown, /, **kwargs):
+    return getattr(obj, method)()
+def run(obj):
+    return _dispatch(obj, method="list")
+"""
+    with pytest.raises(AnalysisRejected, match="dynamic attribute"):
+        await _analyze({ENTRY: source})
+
+
 async def test_imported_entry_cannot_use_entry_local_selector_analysis():
     source = b"""
 import helpers
@@ -297,6 +308,18 @@ def run(obj):
 """
     with pytest.raises(AnalysisRejected, match="Entry-local attribute selectors"):
         await _analyze({ENTRY: source, HELPER: b"from workflows.fixture import _dispatch\n"})
+
+
+async def test_unused_selector_analysis_preserves_allowed_circular_import():
+    source = b"""
+import helpers
+def _read(obj, field):
+    return getattr(obj, field)
+def run(obj):
+    return _read(obj, "name")
+"""
+    proposal = await _analyze({ENTRY: source, HELPER: b"from workflows.fixture import _read\n"})
+    assert proposal["unresolved_url_calls"] == 0
 
 
 async def test_parse_rejects_oversized_source_before_parsing(monkeypatch):
