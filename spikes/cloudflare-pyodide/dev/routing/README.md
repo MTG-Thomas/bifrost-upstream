@@ -91,5 +91,5 @@ or artifact names are private.
 | CF_FAST_PATH | Warning | Validate, preflight, report | Use Normal where its scheduling fits. |
 | CF_OUTBOUND | Warning | Preflight, report | Keep Linux or vendor dependencies and review install-local access. |
 | CF_ARTIFACT_WORKSPACE | Warning | Validate with artifact workspace context | Keep Linux or remove the artifact workspace dependency. |
-| CF_EXECUTABLE_TYPE | Warning | Validate, preflight, report | Use an independently approved Normal workflow for the Workers step. |
+| CF_EXECUTABLE_TYPE | Warning | Preflight, report | Use an independently approved Normal workflow for the Workers step. |
 | CF_AGENT | Info | Preflight, report | Keep agent runs on Bifrost. Summaries can use Workers when enabled. |
