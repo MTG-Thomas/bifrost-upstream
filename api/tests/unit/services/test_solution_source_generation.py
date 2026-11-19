@@ -1,5 +1,6 @@
 """Solution runtime source is eligible only after successful finalization."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 

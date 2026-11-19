@@ -354,7 +354,9 @@ class DeployResult:
     # global, empty roles (grant nothing until assigned). Surfaced so the
     # operator sees them — and so a typo'd manifest role name is visible.
     roles_created: list[str] = field(default_factory=list)
-    cloudflare_diagnostics: list[dict] | None = None
+    collect_cloudflare_diagnostics: Callable[[], Awaitable[list[dict] | None]] | None = field(
+        default=None, compare=False, repr=False,
+    )
     finalize_s3: Callable[[], Awaitable[None]] = field(
         default=_noop_finalize, compare=False, repr=False
     )
@@ -428,6 +430,8 @@ class SolutionDeployer:
         bundle: SolutionBundle,
         force: bool = False,
         file_mode: str = "replace",
+        *,
+        include_cloudflare_diagnostics: bool = False,
     ) -> DeployResult:
         """Full-replace this install from ``bundle`` — DB phase + app COMPILE.
 
@@ -510,15 +514,6 @@ class SolutionDeployer:
         name_errors = preflight_workflows(rb.workflows)
         if name_errors:
             raise SolutionWorkflowNameMismatch("\n".join(name_errors))
-
-        from src.config import get_settings
-
-        cloudflare_diagnostics = None
-        if get_settings().cloudflare_diagnostics_enabled:
-            reports = await cloudflare_preflight(
-                rb.workflows, rb.python_files, rb.agents, outbound=bool(solution.allow_outbound_access),
-            )
-            cloudflare_diagnostics = [report.to_dict() for report in reports]
 
         # ── DB-only phase (validates + reconciles; rolls back cleanly) ───────
         await self._upsert_workflows(solution, rb.workflows, rb.python_files)
@@ -646,6 +641,27 @@ class SolutionDeployer:
                 )
             solution.runtime_source_generation = uuid4()
 
+        collect_cloudflare_diagnostics = None
+        if include_cloudflare_diagnostics:
+            from src.config import get_settings
+
+            if get_settings().cloudflare_diagnostics_enabled:
+                outbound = bool(solution.allow_outbound_access)
+
+                async def collect() -> list[dict] | None:
+                    import asyncio
+
+                    try:
+                        reports = await asyncio.to_thread(lambda: asyncio.run(cloudflare_preflight(
+                            rb.workflows, rb.python_files, rb.agents, outbound=outbound,
+                        )))
+                        return [report.to_dict() for report in reports]
+                    except Exception:  # noqa: BLE001 - diagnostics are advisory
+                        logger.exception("Cloudflare diagnostics failed for Solution %s", sid)
+                        return None
+
+                collect_cloudflare_diagnostics = collect
+
         return DeployResult(
             workflows_upserted=len(rb.workflows),
             workflows_deleted=wf_deleted,
@@ -663,7 +679,7 @@ class SolutionDeployer:
             claims_deleted=claim_deleted,
             integrations_shell_created=shells_created,
             roles_created=sorted(self._created_roles),
-            cloudflare_diagnostics=cloudflare_diagnostics,
+            collect_cloudflare_diagnostics=collect_cloudflare_diagnostics,
             finalize_s3=_finalize_s3,
         )
 

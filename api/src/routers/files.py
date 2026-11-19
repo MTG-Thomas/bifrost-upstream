@@ -1622,17 +1622,25 @@ async def put_file_content_editor(
 
         from src.config import get_settings
 
-        if get_settings().cloudflare_diagnostics_enabled and request.path.endswith(".py"):
+        if get_settings().cloudflare_diagnostics_enabled:
             from bifrost.cloudflare_analysis import diagnose_file
+            from src.services.editor.file_filter import normalize_workspace_file_path
 
-            for finding in await diagnose_file(request.path, write_result.final_content):
-                diagnostics.append(FileDiagnostic(
-                    severity=finding.severity,
-                    message=finding.text,
-                    line=finding.line,
-                    column=finding.column,
-                    source="cloudflare",
-                ))
+            try:
+                path = normalize_workspace_file_path(request.path)
+                if path.endswith(".py"):
+                    findings = await asyncio.to_thread(
+                        lambda: asyncio.run(diagnose_file(path, write_result.final_content))
+                    )
+                    diagnostics.extend(
+                        FileDiagnostic(
+                            severity=finding.severity, message=finding.text,
+                            line=finding.line, column=finding.column, source="cloudflare",
+                        )
+                        for finding in findings
+                    )
+            except Exception:  # noqa: BLE001 - the save has already succeeded
+                logger.exception("Cloudflare editor diagnostics failed for %s", log_safe(request.path))
 
         return FileContentResponse(
             path=request.path,

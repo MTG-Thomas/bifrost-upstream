@@ -163,7 +163,7 @@ async def validate_workflow(
 
     output_result(result, ctx=ctx, human=display)
     if not result["valid"]:
-        ctx.exit(1)
+        raise SystemExit(1)
 
 
 @workflows_group.command("cloudflare-report")
@@ -183,9 +183,9 @@ async def cloudflare_report(
     try:
         reports = await workspace_reports(workspace, allowance=allowance, cpu_budget_ms=cpu_budget_ms)
     except (OSError, ValueError, click.ClickException) as exc:
-        if aggregate_only:
-            raise click.ClickException(f"Could not read the workspace ({type(exc).__name__}).") from None
-        raise
+        message = f"Could not read the workspace ({type(exc).__name__})." if aggregate_only else str(exc)
+        click.ClickException(message).show()
+        raise SystemExit(1) from None
 
     counts = count_rules(reports)
     if aggregate_only:

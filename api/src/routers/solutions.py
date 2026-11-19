@@ -155,6 +155,7 @@ from src.services.platform_job_memory_profiles import (
 from src.services.solutions.deploy_job_storage import SolutionDeployJobStorage
 from shared.solution_deploy_status import project_solution_deploy_job_status
 from src.services.solutions.deploy import (
+    DeployResult,
     SolutionDeployConflict,
     SolutionDeployInstrumentation,
     SolutionDowngradeBlocked,
@@ -2562,7 +2563,7 @@ async def _run_deploy_job(
         return
     deploy_result: dict | None = None
 
-    async def _execute() -> None:
+    async def _execute() -> DeployResult:
         nonlocal deploy_result
         async with get_db_context() as db:
             async with solution_write_lock(solution_id):
@@ -2609,10 +2610,10 @@ async def _run_deploy_job(
                     "integrations_shell_created": result.integrations_shell_created,
                     "roles_created": list(result.roles_created),
                 }
-                if result.cloudflare_diagnostics is not None:
-                    deploy_result["cloudflare_diagnostics"] = result.cloudflare_diagnostics
+        return result
+
     try:
-        await asyncio.wait_for(
+        completed = await asyncio.wait_for(
             _execute(),
             timeout=DEPLOY_JOB_TIMEOUT_SECONDS,
         )
@@ -2646,6 +2647,10 @@ async def _run_deploy_job(
         logger.exception("Solution deploy job %s failed", job_id)
         await _set_status("failed", "Deploy failed unexpectedly; see server logs.")
     else:
+        if deploy_result is not None and completed.collect_cloudflare_diagnostics is not None:
+            diagnostics = await completed.collect_cloudflare_diagnostics()
+            if diagnostics is not None:
+                deploy_result["cloudflare_diagnostics"] = diagnostics
         await _set_status("succeeded", result=deploy_result)
     finally:
         _cleanup_file(zip_path)

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
 import httpx
+import pytest
 from click.testing import CliRunner
 
 from bifrost import cli
@@ -31,13 +32,15 @@ def test_workspace_report_error_omits_private_names(tmp_path, capsys):
     manifest = tmp_path / ".bifrost"
     manifest.mkdir()
     (manifest / "workflows.yaml").write_text("private_invalid: 123", encoding="utf-8")
-    assert cli.main(["workflows", "cloudflare-report", str(tmp_path), "--aggregate-only"]) == 1
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["workflows", "cloudflare-report", str(tmp_path), "--aggregate-only"])
+    assert exit_info.value.code == 1
     output = capsys.readouterr()
     assert "Could not read the workspace" in output.err
     assert "private_invalid" not in output.out + output.err
 
 
-async def test_validate_cli_and_mcp_preserve_advisories_and_context(tmp_path):
+async def test_validate_cli_preserves_advisories_and_context(tmp_path):
     source = tmp_path / "draft.py"
     source.write_text("source", encoding="utf-8")
     body = {
@@ -61,6 +64,13 @@ async def test_validate_cli_and_mcp_preserve_advisories_and_context(tmp_path):
     assert "CF_FAST_PATH" in result.output and "Use the Normal lane." in result.output
     rest.assert_awaited_once_with(route, json=body)
 
+async def test_validate_mcp_preserves_advisories_and_context():
+    route = "/api/workflows/validate"
+    body = {
+        "path": "draft.py", "content": "source", "execution_lane": "fast_path",
+        "inline": True, "artifact_workspace": True,
+    }
+    payload = {"valid": True, "issues": [{"rule_id": "CF_FAST_PATH", "source": "cloudflare"}]}
     bridge = AsyncMock(return_value=(200, payload))
     with patch.object(workflow, "call_rest", bridge):
         result = await workflow.bifrost_workflow_validate(

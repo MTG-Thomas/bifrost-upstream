@@ -3,7 +3,7 @@
 `census.mjs` discovers workflow entries in `.bifrost/workflows.yaml` or scans for
 workflow-shaped Python files. `analyze-file.py` calls the server's
 `cloudflare_analysis.py` over local source. `census-gate.mjs` compares the report
-with a threshold and baseline. Use Node and Python 3.11 or newer.
+with a threshold and baseline. Use Node and Python 3.10 or newer.
 
 ```sh
 node --test
@@ -36,14 +36,18 @@ validation and deployment valid whenever the existing platform checks pass.
   reviewable HTTP destinations, and source parse limits. It does not read
   dependencies or estimate the bundle cost.
 - **Workflow validation** checks submitted or stored source and reports
-  file, line, column, rule ID and fix hint when known. The enabled path
-  inspects decorators and parameters statically. Resolving imports from
-  the loose workspace requires platform repository read permission. Use
+  file, line, column, rule ID and fix hint when known. The Cloudflare pass
+  analyzes the whole module once and appends advice to the existing Linux
+  validation result. Data providers and services in the same module do
+  not add executable-type warnings to workflow validation. With diagnostics
+  enabled, path-only requests and loose workspace dependency reads require
+  platform repository read permission. Use
   `bifrost workflows validate PATH --from-file LOCAL_FILE` for proposed
   content. The CLI and MCP accept execution lane, inline and artifact workspace
   details for a placement check.
-- **Solution deploy preflight** evaluates the actual install-local Python
-  bundle and outbound setting, including vendored source. Read the per-workflow
+- **Solution deploy preflight** evaluates the validated install-local Python
+  bundle and outbound setting after commit and finalization, outside the
+  write lock. Entries in the same module share one analysis. Read the per-workflow
   status and findings in `result.cloudflare_diagnostics` on the deploy job.
   Agent artifacts receive one note about agent execution and summaries.
   Apps and Forms use their existing UI paths and may invoke separately

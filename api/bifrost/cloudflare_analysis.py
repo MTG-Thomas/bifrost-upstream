@@ -332,13 +332,13 @@ def _bound_names(node: ast.AST) -> set[str]:
     return set()
 
 
-def _literal_helper_selectors(syntax: ast.Module, entry_function: str) -> set[int]:
+def _literal_helper_selectors(syntax: ast.Module, entry_functions: tuple[str, ...]) -> set[int]:
     """Recognize a private entry-local helper called only with literal selectors."""
     helpers = [
         node for node in syntax.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and node.name.startswith("_") and not node.name.startswith("__")
-        and node.name != entry_function and not node.decorator_list
+        and node.name not in entry_functions and not node.decorator_list
     ]
     if not helpers:
         return set()
@@ -475,19 +475,20 @@ class _Analysis:
             refusal.locate(path, node)
             self.findings.append(Finding.from_refusal(refusal))
 
-    async def load(self, path: str, entry_function: str | None = None) -> bool:
+    async def load(self, path: str, entry_functions: tuple[str, ...] = ()) -> bool:
         try:
-            return await self._load(path, entry_function)
+            return await self._load(path, entry_functions)
         except AnalysisRejected as exc:
             exc.locate(path)
             raise
-        except SyntaxError as exc:
+        except (SyntaxError, UnicodeError, RecursionError) as exc:
             refusal = AnalysisRejected("Workspace source could not be analyzed as Python")
             refusal.locate(path)
-            refusal.line, refusal.column = exc.lineno, exc.offset
+            if isinstance(exc, SyntaxError):
+                refusal.line, refusal.column = exc.lineno, exc.offset
             raise refusal from exc
 
-    async def _load(self, path: str, entry_function: str | None) -> bool:
+    async def _load(self, path: str, entry_functions: tuple[str, ...]) -> bool:
         if path in self.found:
             if path == self.local_helpers_entry:
                 raise AnalysisRejected("Entry-local attribute selectors cannot be used in an imported module")
@@ -514,13 +515,14 @@ class _Analysis:
         self.remaining -= len(content)
         self.pins[path] = hashlib.sha256(content).hexdigest()
         syntax = ast.parse(content.decode("utf-8"), filename=path)
-        if entry_function and not any(
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == entry_function
-            for node in syntax.body
-        ):
-            raise AnalysisRejected("Workflow entry function was not found")
+        if entry_functions:
+            defined = {
+                node.name for node in syntax.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            }
+            if any(name not in defined for name in entry_functions):
+                raise AnalysisRejected("Workflow entry function was not found")
 
-        imports = self.inspect_module(syntax, path, entry_function)
+        imports = self.inspect_module(syntax, path, entry_functions)
         del syntax, content
         for node in imports:
             try:
@@ -600,14 +602,14 @@ class _Analysis:
         return AnalysisRejected(f"Unresolved import: {module}", rule)
 
     def inspect_module(
-        self, syntax: ast.Module, path: str, entry_function: str | None,
+        self, syntax: ast.Module, path: str, entry_functions: tuple[str, ...],
     ) -> list[ast.Import | ast.ImportFrom]:
         for _ in ast.walk(syntax):
             self.nodes += 1
             if self.nodes > _MAX_NODES:
                 raise AnalysisRejected("Workspace sources exceed the analysis complexity budget", "CF_PARSE_BUDGET")
-        if entry_function:
-            self.literal_selectors = dict.fromkeys(_literal_helper_selectors(syntax, entry_function), path)
+        if entry_functions:
+            self.literal_selectors = dict.fromkeys(_literal_helper_selectors(syntax, entry_functions), path)
         imports: list[ast.Import | ast.ImportFrom] = []
         clients = self.inspect_scope(syntax.body, {}, {}, {}, {}, imports, path)
         self.literal_selectors.clear()
@@ -891,17 +893,14 @@ async def analyze(
 
 
 async def _analyze(
-    analysis: _Analysis, entry_path: str, function_name: str | None,
+    analysis: _Analysis, entry_path: str, function_name: str | tuple[str, ...] | None,
     subrequest_allowance: int, cpu_budget_ms: int,
 ) -> dict[str, object]:
     if not (0 <= subrequest_allowance <= MAX_SUBREQUESTS and 1 <= cpu_budget_ms <= MAX_CPU_MS):
         raise AnalysisRejected("Invalid Cloudflare subrequest allowance or CPU budget")
-    try:
-        async with asyncio.timeout(20):
-            if not await analysis.load(entry_path, function_name):
-                raise AnalysisRejected("Workflow source is missing")
-    except (SyntaxError, UnicodeError, RecursionError) as exc:
-        raise AnalysisRejected("Workspace source could not be analyzed as Python") from exc
+    entries = (function_name,) if isinstance(function_name, str) else function_name or ()
+    if not await asyncio.wait_for(analysis.load(entry_path, entries), timeout=20):
+        raise AnalysisRejected("Workflow source is missing")
     analysis.finish_call_hints()
     if analysis.findings is not None and analysis.url_review_positions:
         positions = analysis.url_review_positions
@@ -941,7 +940,7 @@ async def _analyze(
 
 
 async def diagnose(
-    read: SourceReader, path: str, function_name: str | None = None,
+    read: SourceReader, path: str, function_name: str | tuple[str, ...] | None = None,
     *, single_file: bool = False, subrequest_allowance: int = MAX_SUBREQUESTS, cpu_budget_ms: int = 1000,
 ) -> list[Finding]:
     """Expose the first canonical refusal and any observed advisory findings."""
@@ -949,7 +948,7 @@ async def diagnose(
     try:
         await _analyze(_Analysis(read, single_file=single_file, findings=findings),
                        path, function_name, subrequest_allowance, cpu_budget_ms)
-    except (AnalysisRejected, TimeoutError) as exc:
+    except (AnalysisRejected, asyncio.TimeoutError) as exc:
         refusal = exc if isinstance(exc, AnalysisRejected) else AnalysisRejected(
             "Source analysis timed out", "CF_PARSE_BUDGET",
         )

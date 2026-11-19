@@ -1,7 +1,7 @@
 """Cloudflare source diagnostics for an isolated workspace or Solution bundle."""
 
-from collections import Counter
-from dataclasses import asdict, dataclass
+from collections import Counter, defaultdict
+from dataclasses import asdict, dataclass, replace
 from typing import Literal
 
 from bifrost.cloudflare_analysis import (
@@ -46,6 +46,7 @@ async def inspect_bundle(
 ) -> list[ArtifactReport]:
     """Use the caller's workspace-isolated source reader for every artifact."""
     reports = []
+    eligible_entries: dict[str, list[int]] = defaultdict(list)
     for workflow in workflows:
         path, function = workflow["path"], workflow["function_name"]
         kind = workflow.get("type", "workflow")
@@ -56,10 +57,16 @@ async def inspect_bundle(
             path=path,
         )
         if not findings:
-            findings = await diagnose(
-                read, path, function, subrequest_allowance=subrequest_allowance, cpu_budget_ms=cpu_budget_ms,
-            )
+            eligible_entries[path].append(len(reports))
         reports.append(ArtifactReport(kind, workflow.get("name") or function, findings, path, function))
+
+    for path, entries in eligible_entries.items():
+        names = tuple(workflows[index]["function_name"] for index in entries)
+        findings = await diagnose(
+            read, path, names, subrequest_allowance=subrequest_allowance, cpu_budget_ms=cpu_budget_ms,
+        )
+        for index in entries:
+            reports[index] = replace(reports[index], findings=findings)
     for agent in agents:
         reports.append(ArtifactReport("agent", agent["name"], [agent_finding()]))
     return reports

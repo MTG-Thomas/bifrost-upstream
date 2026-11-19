@@ -605,7 +605,7 @@ async def validate_workflow(
 ) -> WorkflowValidationResponse:
     """Validate a workflow file for errors."""
     from src.config import get_settings
-    from src.services.workflow_validation import validate_static_workflow, validate_workflow_file
+    from src.services.workflow_validation import cloudflare_validation_issues, validate_workflow_file
 
     caller = await load_caller(db, user)
     runtime = caller.principal.runtime_authority
@@ -615,16 +615,19 @@ async def validate_workflow(
         else (caller.ctx.home_organization_id if caller.ctx is not None else None)
     )
     require_permission(caller, "workflows.read", target_org_id)
-    if request.content is None:
+    diagnostics_enabled = get_settings().cloudflare_diagnostics_enabled
+    if diagnostics_enabled and request.content is None:
         require_permission(caller, "repository.read", None)
 
     try:
-        if get_settings().cloudflare_diagnostics_enabled:
-            result = await validate_static_workflow(
-                request, db, can_read_workspace=allows_permission(caller, "repository.read", None),
-            )
-        else:
-            result = await validate_workflow_file(path=request.path, content=request.content)
+        result = await validate_workflow_file(path=request.path, content=request.content)
+        if diagnostics_enabled:
+            try:
+                result.issues.extend(await cloudflare_validation_issues(
+                    request, can_read_workspace=allows_permission(caller, "repository.read", None),
+                ))
+            except Exception:  # noqa: BLE001 - diagnostics are advisory
+                logger.exception("Cloudflare validation diagnostics failed for %s", log_safe(request.path))
 
         logger.info(f"Validation result for {log_safe(request.path)}: valid={result.valid}, issues={len(result.issues)}")
         return result

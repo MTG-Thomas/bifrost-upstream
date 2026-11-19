@@ -10,11 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from bifrost.cloudflare_analysis import valid_source_path
 from src.models import WorkflowMetadata as WorkflowMetadataModel
-from src.models.contracts.workflows import WorkflowValidationRequest, WorkflowValidationResponse
+from src.models.contracts.workflows import ValidationIssue, WorkflowValidationRequest
 from src.services.workflow_permissions import DEFAULT_WORKFLOW_PERMISSION_MODE
 
 logger = logging.getLogger(__name__)
@@ -331,146 +328,43 @@ async def validate_workflow_file(path: str, content: str | None = None):
 
 
 
-async def validate_static_workflow(
-    request: WorkflowValidationRequest, db: AsyncSession, *, can_read_workspace: bool,
-) -> WorkflowValidationResponse:
-    """Validate the submitted source and expose Workers advice without importing it."""
-    import ast
-    import re
-
-    from pydantic import ValidationError
+async def cloudflare_validation_issues(
+    request: WorkflowValidationRequest, *, can_read_workspace: bool,
+) -> list[ValidationIssue]:
+    """Append file-level placement advice independently of Linux validation."""
     from bifrost.cloudflare_analysis import AnalysisRejected, diagnose, placement_findings
-    from bifrost.decorator_validation import inspect_python_decorators
-    from bifrost.definition_validation import DefinitionValidationError
     from src.core.storage.contracts import StorageError
-    from src.models import ValidationIssue
-    from src.models.contracts.workflows import ExecutableType
-    from src.services.file_storage.indexers.workflow import WorkflowIndexer
+    from src.services.editor.file_filter import normalize_workspace_file_path
     from src.services.repo_storage import RepoStorage
 
-    path = request.path
+    path = normalize_workspace_file_path(request.path)
     findings = placement_findings(
         execution_lane=request.execution_lane, inline=bool(request.inline),
         artifact_workspace=bool(request.artifact_workspace), path=path,
     )
-    issues: list[ValidationIssue] = []
-    metadata = None
+    if not findings:
+        storage = RepoStorage() if can_read_workspace else None
+        draft = request.content.encode() if request.content is not None else None
 
-    storage = RepoStorage() if can_read_workspace else None
-    if request.content is not None:
-        content = request.content.encode()
-    elif storage is not None:
-        if not valid_source_path(path):
-            return WorkflowValidationResponse(valid=False, issues=[
-                ValidationIssue(message="Use a workspace-relative Python path.", severity="error"),
-            ])
-        try:
-            content = await storage.read(path)
-        except StorageError as exc:
-            if exc.kind != "not_found":
-                raise
-            return WorkflowValidationResponse(valid=False, issues=[
-                ValidationIssue(message="Workspace file was not found.", severity="error"),
-            ])
-    else:
-        raise ValueError("File content is required without workspace read permission")
-
-    async def read(source_path: str, maximum: int) -> bytes | None:
-        if source_path == path:
-            return content
-        if storage is None:
-            return None
-        try:
-            return await storage.read(source_path, max_bytes=maximum)
-        except ValueError as exc:
-            raise AnalysisRejected("Workspace source exceeds its analysis read budget", "CF_PARSE_BUDGET") from exc
-        except StorageError as exc:
-            if exc.kind != "not_found":
-                raise AnalysisRejected("Workspace dependency source could not be read") from exc
-            return None
-
-    source = content.decode("utf-8", errors="replace")
-    try:
-        executables = inspect_python_decorators(source, path=path)
-    except DefinitionValidationError as exc:
-        executables = []
-        issues.extend(
-            ValidationIssue(line=issue.line, message=issue.message, severity="error")
-            for issue in exc.issues
-        )
-
-    if not findings and not issues:
-        for node, kind, call in executables:
-            if kind == "workflow" and call is not None and any(
-                kw.arg == "is_tool" and isinstance(kw.value, ast.Constant) and kw.value.value is True
-                for kw in call.keywords
-            ):
-                kind = "tool"
-            excluded = placement_findings(executable_type=kind, path=path)
-            findings.extend(excluded or await diagnose(read, path, node.name, single_file=storage is None))
-
-    selected = next(((node, kind, call) for node, kind, call in executables if kind in {"workflow", "tool"}), None)
-    if selected is None and not issues:
-        issues.append(ValidationIssue(message="No @workflow decorator found.", severity="error"))
-    if selected is not None:
-        node, kind, call = selected
-        options: dict[str, Any] = {}
-        if call is not None:
-            for kw in call.keywords:
-                if kw.arg in {"name", "description", "category", "tags", "is_tool"}:
-                    try:
-                        options[kw.arg] = ast.literal_eval(kw.value)
-                    except (ValueError, TypeError, SyntaxError, RecursionError):
-                        issues.append(ValidationIssue(
-                            line=kw.lineno, message=f"Use a literal value for the {kw.arg} decorator option.",
-                            severity="warning",
-                        ))
-        name = options.get("name") or node.name
-        description = options.get("description")
-        if description is None:
-            description = (ast.get_docstring(node) or "").partition("\n")[0]
-        if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9_]+", name):
-            issues.append(ValidationIssue(
-                line=node.lineno, message="Workflow name must be lowercase snake_case.", severity="error",
-            ))
-        if not isinstance(description, str) or not description.strip():
-            issues.append(ValidationIssue(
-                line=node.lineno, message="Workflow description is required and cannot be empty.", severity="error",
-            ))
-        if not any(issue.severity == "error" for issue in issues):
-            parameters = WorkflowIndexer(db).extract_parameters_from_source(source, node.name, path=path) or []
+        async def read(source_path: str, maximum: int) -> bytes | None:
+            if source_path == path and draft is not None:
+                return draft
+            if storage is None:
+                return None
             try:
-                metadata = WorkflowMetadataModel(
-                    id=f"pending-{name}", name=name, function_name=node.name, description=description,
-                    type=ExecutableType.TOOL if kind == "tool" or options.get("is_tool") else ExecutableType.WORKFLOW,
-                    category=options.get("category", "General"), tags=options.get("tags") or [],
-                    parameters=parameters, execution_mode="async" if isinstance(node, ast.AsyncFunctionDef) else "sync",
-                    permission_mode=DEFAULT_WORKFLOW_PERMISSION_MODE, source_file_path=path,
-                    relative_file_path=path, created_at=datetime.now(timezone.utc),
-                )
-            except ValidationError:
-                issues.append(ValidationIssue(
-                    line=node.lineno, message="Workflow metadata contains invalid values.", severity="error",
-                ))
-    if metadata is not None:
-        if metadata.category == "General":
-            issues.append(ValidationIssue(
-                message="Consider specifying a category other than 'General' for better organization.",
-                severity="warning",
-            ))
-        if not metadata.tags:
-            issues.append(ValidationIssue(
-                message="Consider adding tags to make your workflow more discoverable.",
-                severity="warning",
-            ))
+                return await storage.read(source_path, max_bytes=maximum)
+            except ValueError as exc:
+                raise AnalysisRejected("Workspace source exceeds its analysis read budget", "CF_PARSE_BUDGET") from exc
+            except StorageError as exc:
+                if exc.kind != "not_found":
+                    raise AnalysisRejected("Workspace source could not be read") from exc
+                return None
 
-    issues.extend(
+        findings = await diagnose(read, path, single_file=storage is None)
+    return [
         ValidationIssue(
             severity=finding.severity, message=finding.message, line=finding.line, column=finding.column,
             path=finding.path, rule_id=finding.rule_id, hint=finding.hint, source="cloudflare",
         )
-        for finding in dict.fromkeys(findings)
-    )
-    return WorkflowValidationResponse(
-        valid=not any(issue.severity == "error" for issue in issues), issues=issues, metadata=metadata,
-    )
+        for finding in findings
+    ]

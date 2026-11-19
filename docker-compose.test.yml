@@ -137,7 +137,6 @@ services:
       BIFROST_API_URL: http://api:8000
       BIFROST_SECRET_KEY: test-secret-key-for-e2e-testing-must-be-32-chars
       BIFROST_ENVIRONMENT: testing
-      BIFROST_CLOUDFLARE_DIAGNOSTICS_ENABLED: ${BIFROST_CLOUDFLARE_DIAGNOSTICS_ENABLED:-false}
       # Browser-facing callbacks use the Playwright loopback client proxy.
       BIFROST_PUBLIC_URL: http://localhost:3000
       # The full E2E suite intentionally reuses session-scoped users. Keep its
@@ -227,7 +226,6 @@ services:
       BIFROST_API_URL: http://api:8000
       BIFROST_SECRET_KEY: test-secret-key-for-e2e-testing-must-be-32-chars
       BIFROST_ENVIRONMENT: testing
-      BIFROST_CLOUDFLARE_DIAGNOSTICS_ENABLED: ${BIFROST_CLOUDFLARE_DIAGNOSTICS_ENABLED:-false}
       # Exercise the same claim/beat transitions without production idle intervals.
       BIFROST_SERVICE_CLAIM_INTERVAL_SECONDS: "1"
       BIFROST_SERVICE_HEARTBEAT_INTERVAL_SECONDS: "2"
@@ -413,7 +411,6 @@ services:
       BIFROST_REDIS_URL: redis://redis:6379/0
       BIFROST_SECRET_KEY: test-secret-key-for-e2e-testing-must-be-32-chars
       BIFROST_ENVIRONMENT: testing
-      BIFROST_CLOUDFLARE_DIAGNOSTICS_ENABLED: ${BIFROST_CLOUDFLARE_DIAGNOSTICS_ENABLED:-false}
       BIFROST_ALLOW_REGISTRATION: "true"
       # S3-compatible object storage
       BIFROST_OBJECT_STORAGE_PROVIDER: ${BIFROST_TEST_OBJECT_STORAGE_PROVIDER:-s3}

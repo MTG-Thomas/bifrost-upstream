@@ -915,10 +915,7 @@ async def deploy_zip_to_solution_path(
     with tempfile.TemporaryDirectory(prefix="bifrost-zip-deploy-") as tmp:
         _safe_extract_path(zip_path, tmp)
         return await _deploy_workspace_to_solution(
-            db,
-            solution,
-            Path(tmp),
-            force=force,
+            db, solution, Path(tmp), force=force, include_cloudflare_diagnostics=True,
         )
 
 
@@ -928,6 +925,7 @@ async def _deploy_workspace_to_solution(
     workspace: Path,
     *,
     force: bool,
+    include_cloudflare_diagnostics: bool = False,
 ) -> DeployResult:
     preview = _parse_workspace(workspace)
     if not preview.slug or not preview.name:
@@ -948,7 +946,9 @@ async def _deploy_workspace_to_solution(
         )
         raise UnmetDependency(f"Solution has unmet dependencies: {items}")
 
-    return await SolutionDeployer(db).deploy(bundle, force=force)
+    return await SolutionDeployer(db).deploy(
+        bundle, force=force, include_cloudflare_diagnostics=include_cloudflare_diagnostics,
+    )
 
 
 async def _assert_no_unforced_collisions(

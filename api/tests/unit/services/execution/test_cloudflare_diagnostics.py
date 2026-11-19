@@ -36,6 +36,14 @@ async def test_diagnostics_rules(snippet, rule, line, hint):
     assert finding.message.startswith("Won't burst to Cloudflare")
 
 
+async def test_imported_unicode_failure_names_the_imported_module():
+    async def read(path, _maximum):
+        return {"entry.py": b"import helper", "helper.py": b"\xff"}.get(path)
+
+    [issue] = await diagnose(read, "entry.py")
+    assert (issue.rule_id, issue.path, issue.line) == ("CF_SOURCE", "helper.py", None)
+
+
 async def test_transitive_source_and_single_file_boundary():
     async def read(path, _maximum):
         return {"entry.py": b"import helper", "helper.py": b"import subprocess"}.get(path)

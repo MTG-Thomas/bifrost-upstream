@@ -6,7 +6,6 @@ Tests workflow listing, discovery, and data providers.
 
 import pytest
 
-from src.config import get_settings
 from tests.e2e.conftest import write_and_register
 
 
@@ -93,44 +92,23 @@ async def e2e_test_validation(name: str, count: int = 1) -> dict:
         # Should have parameters extracted from function signature
         assert len(data["metadata"]["parameters"]) == 2
 
-    def test_editor_and_validate_show_cloudflare_advice(self, e2e_client, platform_admin):
-        from uuid import uuid4
-
-        path = f"workflows/cloudflare_lint_{uuid4().hex}.py"
-        source = """from bifrost import workflow
-import subprocess
-
-@workflow(description="Placement diagnostic fixture.")
-def run():
-    return None
-"""
-        headers = platform_admin.headers
-        editor = "/api/files/editor/content"
-        try:
-            saved = e2e_client.put(editor, headers=headers, json={"path": path, "content": source})
-            assert saved.status_code == 200, saved.text
-            validate_source = source
-            if get_settings().cloudflare_diagnostics_enabled:
-                # Top-level code would fail validation if the API imported this file.
-                validate_source += "raise RuntimeError('must not execute during lint')\n"
-            validated = e2e_client.post(
-                "/api/workflows/validate", headers=headers, json={"path": path, "content": validate_source},
-            )
-            assert validated.status_code == 200, validated.text
-            assert validated.json()["valid"] is True
-            markers = [item for item in saved.json()["diagnostics"] if item["source"] == "cloudflare"]
-            issues = [item for item in validated.json()["issues"] if item["source"] == "cloudflare"]
-            if get_settings().cloudflare_diagnostics_enabled:
-                [marker] = markers
-                assert marker["line"] == 2
-                assert "[CF_PROCESS]" in marker["message"]
-                [issue] = issues
-                assert (issue["rule_id"], issue["severity"], issue["line"], issue["column"]) == ("CF_PROCESS", "warning", 2, 1)
-                assert "Linux" in issue["hint"]
-            else:
-                assert markers == issues == []
-        finally:
-            e2e_client.delete("/api/files/editor", headers=headers, params={"path": path})
+    def test_validate_omits_cloudflare_advice_by_default(self, e2e_client, platform_admin):
+        response = e2e_client.post(
+            "/api/workflows/validate",
+            headers=platform_admin.headers,
+            json={
+                "path": "workflows/placement_fixture.py",
+                "content": (
+                    "from bifrost import workflow\n"
+                    "import subprocess\n"
+                    "@workflow(description='Placement diagnostic fixture.')\n"
+                    "def run(): pass\n"
+                ),
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["valid"] is True
+        assert all(issue["source"] != "cloudflare" for issue in response.json()["issues"])
 
     def test_validate_workflow_requires_platform_admin(self, e2e_client, org1_user):
         """Validation imports the submitted module, so only platform admins may call it."""
