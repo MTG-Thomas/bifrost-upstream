@@ -509,9 +509,62 @@ Agree on the Git input and bounds before integrating a new stage. Preserve
 private and subdirectory semantics and the current sweep's per-repo failure
 handling.
 
-The Git stage is the next job-kind contract. The first implementation
-qualifies Linux workflow overflow and leaves platform-job dispatch disabled
-for Containers.
+The fork enables `platform.solution_update_check.v1` on authenticated Normal
+Containers. The planner fits only the matching job kind to the stage slot.
+The API records the worker, attempt, stage UUID and input digest before
+dispatch. The command and result bind that identity to the job lease.
+An uncertain start is resolved through status. The launcher retains the
+result until release, then retains an identity-only tombstone. On reconnect
+the API validates the active binding or releases orphan compute before
+reopening admission. A matching durable assignment uses the existing
+runner-loss policy.
+
+The child shallow-clones a single branch or tag over credential-free HTTPS
+with checkout and redirects disabled, then reads the regular descriptor blob
+at the selected subpath. Git files have a 64 MiB individual limit, descriptors
+have a 32 KiB limit, and the child has a 45-second deadline. For private GitHub
+App sources and legacy transports, the API clones and sends only the selected
+descriptor over protected stdin. This keeps the token on the API and qualifies
+Container parsing for those sources. The API rechecks the job lease,
+Solution coordinates, installed version and private source generation before
+comparing versions. Failed repositories preserve the last known signal.
+
+#### Second stage decision
+
+`application.publish` is the smallest next candidate. It has a distinct
+compute boundary in `ApplicationRepository.publish` and
+`app_bundler.build_with_migrate`. `workspace.reimport` interleaves manifest
+reconciliation, DB writes and preview builds across a workspace.
+`solution.git_sync` spans a Git checkout, install reconciliation and isolated
+App builds.
+
+Publishing needs a file-backed transfer like #1424's manifests and chunks.
+Run source migration on the API and snapshot file hashes, dependencies, App
+identity and compiler recipe. Run Tailwind and esbuild in Container scratch
+and return an output manifest and hashed files. Verify the output on the API
+and upload to an attempt-owned staging prefix. Recheck source and lease before
+promoting that exact generation, recording the snapshot and notifying
+consumers. Recovery has to preserve live assets if the job stops during
+promotion. The bundler currently writes preview objects inline and publish
+copies the mutable preview prefix. Compiler extraction and fenced promotion
+exceed the bounded stage scope, so the job stays on its current runner.
+
+#### Service attempt decision
+
+Reuse the API-side `ServiceClaimLoop` for claims, renewal, startup grace,
+token rotation and log flush. The child already uses `service-control` for
+readiness, stop intent and token updates. Add a Containers-only capability
+for placement and claims, bind a physical process group to the attempt and
+lease, and adopt it through generation-fenced inventory. On drain, stop
+claims, request cooperative stop, terminate the whole group after grace,
+prove the group is gone, then flush final logs and settle or expire the
+attempt before releasing capacity.
+
+The existing launcher signals a single PID and can report terminal before
+the service's descendants have exited. Process-group ownership and confirmed
+termination are the blockers. Qualify startup grace, real stop with
+a subprocess, lease loss, reconnect adoption, token renewal, final log replay
+and provider lifetime before enabling the capability.
 
 #### Linux workflow path
 
@@ -557,9 +610,10 @@ Enable the third scope with `BIFROST_CLOUDFLARE_CONTAINERS_SCOPE`,
 the configured Linux scope and use a distinct endpoint and token. VM and
 Workers configuration remains in the existing settings. Both overflow
 scopes wait for the reconciled VM to reach its live ceiling. Containers
-advertise only Normal `workflow.execute@1`. The planner and fenced
-dispatch predicates exclude Workers-eligible work from Containers, and
-the API skips their platform-job and service supervisors. Existing VM
+advertise Normal `workflow.execute@1` and the update-check stage. The planner
+and fenced dispatch predicates exclude Workers-eligible workflows from
+Containers. The API supervises only negotiated PlatformJob stages and skips
+service claims for that scope. Existing VM
 claimants can still take a dispatch if their slot opens during overflow.
 The planner packs compatible VM capacity before Containers capacity.
 Fenced claims retain queue order and whichever eligible owner claims first
@@ -571,8 +625,8 @@ The provider under `deploy/cloudflare/worker` comes from `bdbe07f93` in
 and Wrangler template carry over. The environment parser is stricter on
 this fork. It allows only documented API URLs and runtime paths, rejecting
 credential aliases and any caller-supplied control secret. The provider
-adds the derived key and incarnation identity itself. No generic job
-stage is registered.
+adds the derived key and incarnation identity itself. PlatformJob
+capabilities are negotiated with the authenticated launcher.
 
 **Hosted qualification.** After local conformance and explicit hosted
 approval, qualify a dev-only endpoint with a reachable HTTPS/WebSocket
