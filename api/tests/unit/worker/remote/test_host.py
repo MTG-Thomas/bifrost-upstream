@@ -69,18 +69,19 @@ async def test_external_fast_path_hello_is_refused_before_admission() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("scope", "uid", "profile", "use_derived_key", "accepted"),
+    ("scope", "uid", "profile", "use_derived_key", "accepted", "requirements_fail"),
     [
-        ("containers", "resource-1", LINUX_RUNTIME_PROFILE, True, True),
-        ("containers", "resource-1", LINUX_RUNTIME_PROFILE, False, False),
-        ("containers", "resource-2", LINUX_RUNTIME_PROFILE, True, False),
-        ("containers", "resource-1", None, False, False),
-        ("vm", "resource-1", None, False, True),
-        ("vm", "resource-1", LINUX_RUNTIME_PROFILE, True, False),
+        ("containers", "resource-1", LINUX_RUNTIME_PROFILE, True, True, False),
+        ("containers", "resource-1", LINUX_RUNTIME_PROFILE, True, False, True),
+        ("containers", "resource-1", LINUX_RUNTIME_PROFILE, False, False, False),
+        ("containers", "resource-2", LINUX_RUNTIME_PROFILE, True, False, False),
+        ("containers", "resource-1", None, False, False, False),
+        ("vm", "resource-1", None, False, True, False),
+        ("vm", "resource-1", LINUX_RUNTIME_PROFILE, True, False, False),
     ],
 )
 async def test_containers_hello_uses_only_the_reserved_scope_key(
-    scope: str, uid: str, profile: str | None, use_derived_key: bool, accepted: bool,
+    scope: str, uid: str, profile: str | None, use_derived_key: bool, accepted: bool, requirements_fail: bool,
 ) -> None:
     token = "containers-capacity-token"
     legacy_key = "legacy-platform-signing-key"
@@ -116,11 +117,17 @@ async def test_containers_hello_uses_only_the_reserved_scope_key(
         patch("src.worker.remote.host.get_settings", return_value=settings),
         patch("src.worker.remote.host.get_liveness_db_context", database),
         patch("src.worker.remote.host.admit_external_worker", new=AsyncMock(return_value=LEASE.worker_id)) as admit,
-        patch("src.worker.remote.host.acquire_remote_owner", new=AsyncMock(return_value=None)),
-        pytest.raises(AuthenticationError),
+        patch("src.worker.remote.host.acquire_remote_owner", new=AsyncMock(return_value=None)) as acquire,
+        patch("src.core.requirements_cache.get_requirements", new=AsyncMock(
+            return_value=None, side_effect=RuntimeError("requirements unavailable") if requirements_fail else None,
+        )),
+        pytest.raises(RuntimeError if requirements_fail else AuthenticationError),
     ):
         await RemoteControlHost().connect(socket)
     assert admit.await_count == int(accepted)
+    assert acquire.await_count == int(accepted)
+    if requirements_fail:
+        socket.close.assert_awaited_once_with(code=1011, reason="launcher requirements unavailable")
 
 
 @pytest.mark.asyncio
@@ -131,8 +138,7 @@ async def test_containers_bootstrap_round_trips_fragmented_requirements() -> Non
         LEASE,
     )
     content = "# " + "x" * MAX_FRAME_BYTES
-    with patch("src.core.requirements_cache.get_requirements", new=AsyncMock(return_value={"content": content})):
-        await RemoteControlHost()._welcome(bridge)
+    await RemoteControlHost()._welcome(bridge, content)
 
     frames = [call.args[0] for call in api_socket.send_text.await_args_list]
     assert len(frames) > 2

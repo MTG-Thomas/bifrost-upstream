@@ -1413,18 +1413,15 @@ class RemoteControlHost:
             for session in self.sessions.values()
         ), return_exceptions=True)
 
-    async def _welcome(self, bridge: Bridge) -> None:
+    async def _welcome(self, bridge: Bridge, requirements_content: str | None) -> None:
         """Send Containers startup inputs before any ordinary launcher commands."""
         startup = None
         if bridge.containers:
-            from src.core.requirements_cache import get_requirements
-
-            cached = await get_requirements()
             startup = ControlEnvelope(
                 session_generation=bridge.lease.session_generation,
                 sequence=bridge._sequence + 1,
                 kind="bootstrap",
-                payload={"requirements_content": cached["content"] if cached else None},
+                payload={"requirements_content": requirements_content},
             )
         await bridge.socket.send_text(json.dumps({
             "event": "welcome", "session_generation": bridge.lease.session_generation,
@@ -1549,6 +1546,17 @@ class RemoteControlHost:
             await socket.close(code=1008)
             raise
 
+        requirements_content = None
+        if containers:
+            from src.core.requirements_cache import get_requirements
+
+            try:
+                cached = await get_requirements()
+                requirements_content = cached["content"] if cached else None
+            except Exception:
+                await socket.close(code=1011, reason="launcher requirements unavailable")
+                raise
+
         # Authentication precedes canonical admission. Reconnects naturally
         # get None here because their pod was already admitted.
         if hello.form == "job":
@@ -1658,14 +1666,14 @@ class RemoteControlHost:
             if existing.bridge.containers:
                 async with existing.bridge.lock:
                     existing.bridge.replace_socket(socket, lease)
-                    await self._welcome(existing.bridge)
+                    await self._welcome(existing.bridge, requirements_content)
             else:
                 existing.bridge.replace_socket(socket, lease)
-                await self._welcome(existing.bridge)
+                await self._welcome(existing.bridge, requirements_content)
             return existing, FragmentAssembler()
         bridge = Bridge(socket, bootstrap, lease)
         worker = ApiExecutor(bridge, lease.worker_id, remote_static=hello.form == "static")
-        await self._welcome(bridge)
+        await self._welcome(bridge, requirements_content)
         session = RemoteSession(
             bridge, worker, lease, owned_until=acquiring_at + DEFAULT_OWNER_LEASE_SECONDS
         )
