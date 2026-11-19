@@ -519,16 +519,19 @@ async def test_containers_overflow_uses_vm_ceiling_and_keeps_workers_dispatches_
     containers.peer_profile, containers.additional_profile = primary.profile, burst.profile
     policy = replace(capacity.policy, max_workers=3, warm_workers=1)
 
-    approved, linux_only = await _accept_pool_run(), await _accept_pool_run()
+    approved = await _accept_pool_run()
     await _set_request(db.sessions, approved, CLOUDFLARE_DEV_BUDGET_BYTES, approved=True)
-    await _set_request(db.sessions, linux_only, CLOUDFLARE_DEV_BUDGET_BYTES)
     assert await containers.launch_for_demand(policy) == []
     [vm_id] = await primary.launch_for_demand(policy)
     async with db.context() as session:
         vm = await session.get(ExecutionWorker, vm_id)
         vm.state = "ready"
         vm.memory_pressured = True
+    # The VM is full and the shared cap still has two free slots.
+    assert await containers.launch_for_demand(policy) == []
     [workers_id] = await burst.launch_for_demand(policy)
+    linux_only = await _accept_pool_run()
+    await _set_request(db.sessions, linux_only, CLOUDFLARE_DEV_BUDGET_BYTES)
     [container_id] = await containers.launch_for_demand(policy)
     async with db.context() as session:
         worker = await session.get(ExecutionWorker, container_id)

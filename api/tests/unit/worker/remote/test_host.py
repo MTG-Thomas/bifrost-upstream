@@ -171,7 +171,7 @@ async def test_containers_launcher_refuses_non_workflow_commands(action: str) ->
 
 
 @pytest.mark.asyncio
-async def test_containers_host_skips_platform_job_and_service_claims() -> None:
+async def test_containers_run_omits_background_job_and_service_supervisors() -> None:
     bridge = Bridge(
         AsyncMock(), {
             "current": 1, "limit": 100, "requirements": {}, "hostname": "runner",
@@ -180,14 +180,30 @@ async def test_containers_host_skips_platform_job_and_service_claims() -> None:
         LEASE,
     )
     worker = ApiExecutor(bridge, LEASE.worker_id)
-    with (
-        patch("src.worker.remote.host.claim_platform_job", new=AsyncMock()) as claim,
-        patch.object(worker, "_start_service_claim_loop", new=AsyncMock()) as start_services,
-    ):
-        assert await worker._claim_platform_job(100) is None
+
+    async def start_executor() -> None:
         await PoolWorker._prepare_admission(worker)
-    claim.assert_not_awaited()
+
+    with (
+        patch.object(worker, "_initialize_runtime", new=AsyncMock(return_value=True)),
+        patch.object(worker, "_start_executor", new=start_executor),
+        patch.object(worker, "_heartbeat_loop", new=AsyncMock()),
+        patch.object(worker, "_wake_listener", new=AsyncMock()),
+        patch.object(worker, "_package_loop", new=AsyncMock()),
+        patch.object(worker, "_claim_loop", new=AsyncMock()),
+        patch.object(worker, "_drain", new=AsyncMock()),
+        patch.object(worker, "_retire", new=AsyncMock()),
+        patch.object(worker, "_platform_job_loop", new=AsyncMock()) as run_jobs,
+        patch.object(worker, "_start_service_claim_loop", new=AsyncMock()) as start_services,
+        patch("src.worker.pool_main.replica_heartbeat_loop", new=AsyncMock()) as diagnostics,
+        patch("src.worker.pool_main.remove_scheduler_replica", new=AsyncMock()),
+    ):
+        assert await worker.run() == 0
+    run_jobs.assert_not_called()
     start_services.assert_not_awaited()
+    diagnostics.assert_called_once_with(
+        replica_id=str(worker.incarnation_id), runs_platform_jobs=False, stop_event=worker._platform_stop,
+    )
 
 
 @pytest.mark.asyncio
