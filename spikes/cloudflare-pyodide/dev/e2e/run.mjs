@@ -623,12 +623,22 @@ async function containersChecks() {
   const privateToken = randomBytes(24).toString('hex');
   const privateAuth = 'Basic ' + Buffer.from('x-access-token:' + privateToken).toString('base64');
   let privateFetches = 0;
+  let vmProfileRead = false;
   execFileSync('docker', ['pause', ...launchers]);
   try {
     if (!hosted) await launch(proxy.address().port);
     if (hosted) evidence('hosted-relay-ready', {port: proxy.address().port});
     providerServer = await serveContainersProviders(config.phase6.providerHost, {
-      vm, ...(hosted ? {} : {containers,
+      vm: {
+        async fetch(request) {
+          const response = await vm.fetch(request);
+          if (response.ok && request.method === 'GET' && new URL(request.url).pathname === '/v1/capabilities') {
+            vmProfileRead = true;
+          }
+          return response;
+        },
+      },
+      ...(hosted ? {} : {containers,
       git: {
         fetch(request) {
           assert.equal(request.headers.has('authorization'), false);
@@ -676,6 +686,11 @@ async function containersChecks() {
     execFileSync('docker', ['exec', config.project + '-redis-1', 'redis-cli', 'SET', 'bifrost:requirements:content',
       JSON.stringify({content, hash: createHash('sha256').update(content).digest('hex')})]);
     reloadApi();
+    if (hosted) {
+      await until('reloaded API discovers the VM capacity provider', () => vmProfileRead);
+      const response = await api('/api/admin/kubernetes/policy', hosted.policy, config.admin, 'PUT');
+      assert.equal(response.status, 200);
+    }
     await until('paused debug launchers leave placement', () => sql(`
       SELECT to_json(NOT EXISTS (
         SELECT FROM execution_workers WHERE form = 'static'
@@ -1276,11 +1291,18 @@ async function hostedAgentAndRuntimeChecks() {
     incarnation, launcher, resource, build, controlKey,
   }), {flag: 'wx', mode: 0o600});
   evidence('hosted-relay-ready', {port: proxy.address().port});
-  const linux = ['worker', 'scheduler'].map((name) => config.project + '-' + name + '-1');
-  execFileSync('docker', ['pause', ...linux]);
+  await until('hosted agent launcher ready', () => workerRow().state === 'ready', 180_000);
+  const staticHandlers = sql(`
+    WITH original AS (
+      SELECT id, supported_handlers FROM execution_workers
+      WHERE form='static' AND state='ready' AND runtime_profile='linux-process-v1' FOR UPDATE
+    ), suppressed AS (
+      UPDATE execution_workers w SET supported_handlers=w.supported_handlers
+        - 'workflow.execute' - 'agent.run' - 'agent.summarize'
+      FROM original WHERE w.id=original.id RETURNING w.id
+    )
+    SELECT coalesce(json_agg(original), '[]'::json) FROM original JOIN suppressed USING (id)`);
   try {
-    await until('hosted agent launcher ready', () => workerRow().state === 'ready', 180_000);
-    await delay(3100); // Close the paused Linux launchers' admission windows.
     const handlers = sql(`SELECT supported_handlers FROM execution_workers WHERE id='${incarnation}'`);
     assert.deepEqual(new Set(handlers), new Set(['workflow.execute', 'agent.run', 'agent.summarize']));
 
@@ -1322,7 +1344,10 @@ async function hostedAgentAndRuntimeChecks() {
     await until('retired hosted launcher fenced', () => wire.some((event) => event.kind === 'api-close' && event.code === 4001));
     evidence('retired', {row: workerRow()});
   } finally {
-    execFileSync('docker', ['unpause', ...linux]);
+    sql(`UPDATE execution_workers w SET supported_handlers=original.supported_handlers
+      FROM jsonb_to_recordset($fixtures$${JSON.stringify(staticHandlers)}$fixtures$::jsonb)
+        AS original(id uuid, supported_handlers jsonb)
+      WHERE w.id=original.id`);
   }
 }
 
