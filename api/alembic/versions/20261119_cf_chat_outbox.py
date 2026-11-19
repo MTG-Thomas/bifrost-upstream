@@ -6,7 +6,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision = "20261119_cf_chat_outbox"
-down_revision = "20261119_cf_agent_attempt"
+down_revision = "20261119_pjob_remote_stage"
 branch_labels = None
 depends_on = None
 
