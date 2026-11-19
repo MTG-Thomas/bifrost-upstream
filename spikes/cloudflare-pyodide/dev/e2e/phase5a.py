@@ -31,8 +31,8 @@ def sha256(value):
     return hashlib.sha256(value).hexdigest()
 
 
-def prepare(hosted=False, phase6=False, summary=False, agent=False):
-    prefix = "agentrun-" if agent else "explore-agent-" if summary else "phase6-" if phase6 else "phase5b-" if hosted else "phase5-"
+def prepare(hosted=False, phase6=False, summary=False, agent=False, chat=False):
+    prefix = "chat-" if chat else "agentrun-" if agent else "explore-agent-" if summary else "phase6-" if phase6 else "phase5b-" if hosted else "phase5-"
     valid_prefix = (prefix, "explore-sol-", "containers-") if phase6 else prefix
     if not ROOT.name.startswith(valid_prefix) or command("git", "remote") or command(
         "git", "status", "--porcelain"
@@ -52,6 +52,8 @@ def prepare(hosted=False, phase6=False, summary=False, agent=False):
             fixtures = [str(uuid4()), str(uuid4())]
             env.write(f"BIFROST_CLOUDFLARE_AGENT_ENDPOINT={SUMMARY_ENDPOINT}\n")
             env.write(f"BIFROST_CLOUDFLARE_AGENT_FIXTURE_IDS={json.dumps(fixtures, separators=(',', ':'))}\n")
+        if chat:
+            env.write("BIFROST_CLOUDFLARE_CHAT_ENABLED=true\n")
         if not phase6:
             env.write(f"BIFROST_WORKER_CAPACITY_TOKEN={secrets.token_hex(32)}\n")
     for directory in ("node_modules", "sdk_src"):
@@ -228,7 +230,7 @@ def resume_enrollment(project, reset_route):
     return workflows, approval, incarnation, launcher, enrollment["port"]
 
 
-def seed_agents(project, admin, send):
+def seed_agents(project, admin, send, *, chat=False):
     fixtures = json.loads(next(line.partition("=")[2] for line in API_ENV.read_text().splitlines()
                               if line.startswith("BIFROST_CLOUDFLARE_AGENT_FIXTURE_IDS=")))
     entry = "workflows/autonomous_fixture.py"
@@ -238,7 +240,8 @@ def seed_agents(project, admin, send):
     database_key = "agent-fixture-only-" + secrets.token_hex(16)
     names = ["workers-agent-text", "workers-agent-tool"]
     subprocess.run(["docker", "exec", "-i", f"{project}-api-1", "python", "-",
-                    json.dumps(fixtures), json.dumps(names), str(UUID(workflow["id"])), SUMMARY_ENDPOINT, database_key],
+                    json.dumps(fixtures), json.dumps(names), str(UUID(workflow["id"])), SUMMARY_ENDPOINT, database_key,
+                    "chat" if chat else "autonomous"],
                    cwd=ROOT, check=True, text=True, input='''
 import asyncio
 import json
@@ -247,23 +250,34 @@ import sys
 from uuid import UUID
 
 from src.core.database import get_db_context
+from src.models.contracts.artifacts import ModelCapabilities
 from src.models.orm.agents import Agent, AgentTool
 from src.services.ai_model_service import AIModelService
+from src.services.model_capabilities import model_fingerprint
 
 logging.disable(logging.INFO)
 
 async def seed():
     ids = [UUID(value) for value in json.loads(sys.argv[1])]
+    chat = sys.argv[6] == "chat"
     async with get_db_context() as db:
         ai = AIModelService(db)
         connection = await ai.create_connection(name="Agent test stub", provider="openai_compatible",
                                                 api_key=sys.argv[5], endpoint=sys.argv[4])
+        capabilities = ModelCapabilities(source="manual", fingerprint=model_fingerprint(
+            provider=connection.provider, model="gpt-4o-mini", endpoint=connection.endpoint,
+        )) if chat else None
         profile = await ai.create_profile(name="Autonomous fixture", connection_id=connection.id,
-                                          model="gpt-4o-mini", capabilities=None, enabled_for_chat=False)
+                                          model="gpt-4o-mini", capabilities=capabilities, enabled_for_chat=chat)
         await ai.set_assignment("primary", profile.id)
+        if chat:
+            await ai.set_assignment("chat_default", profile.id)
         profile.openai_transport = "chat_completions"
         for agent_id, name in zip(ids, json.loads(sys.argv[2]), strict=True):
             db.add(Agent(id=agent_id, name=name, system_prompt="Complete the fixture.",
+                         created_by="dev@gobifrost.com", llm_profile_id=profile.id, max_iterations=2))
+        if chat:
+            db.add(Agent(name="linux-chat-parity", system_prompt="Complete the fixture.",
                          created_by="dev@gobifrost.com", llm_profile_id=profile.id, max_iterations=2))
         await db.flush()
         db.add(AgentTool(agent_id=ids[1], workflow_id=UUID(sys.argv[3])))
@@ -274,11 +288,11 @@ asyncio.run(seed())
             "endpoint": SUMMARY_ENDPOINT, "databaseKey": database_key}
 
 
-def run(runtime, hosted, resume, reset_route, from_reset, summary=False, agent=False):
+def run(runtime, hosted, resume, reset_route, from_reset, summary=False, agent=False, chat=False):
     sys.path.insert(0, str(ROOT / "api"))
     from shared.worker_control_auth import external_worker_control_key
 
-    prefix = "agentrun-" if agent else "explore-agent-" if summary else "phase5b-" if hosted else "phase5-"
+    prefix = "chat-" if chat else "agentrun-" if agent else "explore-agent-" if summary else "phase5b-" if hosted else "phase5-"
     if not API_ENV.is_file() or not ROOT.name.startswith(prefix):
         raise SystemExit("Run prepare and start this disposable archive's debug stack first")
     origin, project, admin, send = local_api(hosted)
@@ -286,7 +300,7 @@ def run(runtime, hosted, resume, reset_route, from_reset, summary=False, agent=F
     summary_config = None
     agent_config = None
     if agent:
-        agent_config = seed_agents(project, admin, send)
+        agent_config = seed_agents(project, admin, send, chat=chat)
         workflows, approval, incarnation, launcher = {}, [], uuid4(), uuid4()
     elif summary:
         run_id = uuid4()
@@ -352,7 +366,7 @@ asyncio.run(seed())
         input=json.dumps({"origin": origin, "project": project, "admin": admin,
                           "workflows": workflows, "runtime": str(runtime), "hosted": hosted, "port": port,
                           "resetRoute": reset_route,
-                          "fromReset": from_reset, "summary": summary_config, "agent": agent_config,
+                          "fromReset": from_reset, "summary": summary_config, "agent": agent_config, "chat": chat,
                           "incarnation": str(incarnation), "launcher": str(launcher),
                           "resource": resource, "build": build, "controlKey": key}),
     )
@@ -365,19 +379,21 @@ if __name__ == "__main__":
     prepare_modes.add_argument("--hosted", action="store_true")
     prepare_modes.add_argument("--summary", action="store_true")
     prepare_modes.add_argument("--agent", action="store_true")
+    prepare_modes.add_argument("--chat", action="store_true")
     run_parser = sub.add_parser("run")
     run_parser.add_argument("runtime", type=Path, help="Prepared generated-runtime.mjs")
     run_modes = run_parser.add_mutually_exclusive_group()
     run_modes.add_argument("--hosted", action="store_true")
     run_modes.add_argument("--summary", action="store_true")
     run_modes.add_argument("--agent", action="store_true")
+    run_modes.add_argument("--chat", action="store_true")
     run_parser.add_argument("--resume-enrollment", action="store_true")
     reset = run_parser.add_mutually_exclusive_group()
     reset.add_argument("--resume-reset", metavar="WORKFLOW_ROUTE")
     reset.add_argument("--from-reset", action="store_true")
     args = parser.parse_args()
     if args.action == "prepare":
-        prepare(args.hosted, summary=args.summary, agent=args.agent)
+        prepare(args.hosted, summary=args.summary, agent=args.agent or args.chat, chat=args.chat)
     else:
         if args.resume_enrollment and not args.hosted:
             parser.error("--resume-enrollment requires --hosted")
@@ -389,4 +405,4 @@ if __name__ == "__main__":
         ):
             parser.error("--resume-reset requires --resume-enrollment and an interrupted workflow route")
         run(args.runtime.resolve(strict=True), args.hosted, args.resume_enrollment,
-            args.resume_reset, args.from_reset, summary=args.summary, agent=args.agent)
+            args.resume_reset, args.from_reset, summary=args.summary, agent=args.agent or args.chat, chat=args.chat)

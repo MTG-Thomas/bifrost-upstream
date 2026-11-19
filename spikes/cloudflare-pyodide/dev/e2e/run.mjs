@@ -116,6 +116,10 @@ function observe(direction, raw) {
       payload.payload.result?.execution_id) {
     event = {kind: 'agent-tool-ack', route: payload.payload.route_id,
       execution: payload.payload.result.execution_id};
+  } else if (config.chat && frame.kind === 'command' && payload.action === 'cloudflare_agent_reply' &&
+      Number.isInteger(payload.payload.result?.sequence)) {
+    event = {kind: 'agent-chunk-ack', route: payload.payload.route_id,
+      request: payload.payload.request_id, sequence: payload.payload.result.sequence};
   } else if (frame.kind === 'command' && payload.action === 'workflow') {
     const command = payload.payload;
     tokens.set(command.execution_id, command.context.engine_token);
@@ -174,8 +178,13 @@ const proxy = createServer(async (request, response) => {
       const body = JSON.parse((await buffer(request)).toString());
       assert.equal(body.model, 'gpt-4o-mini');
       assert.equal(body.stream, true);
-      const {scenario} = JSON.parse(body.messages[1].content);
-      assert.ok(['text', 'tool', 'cancel', 'reset'].includes(scenario));
+      const {scenario} = JSON.parse(body.messages.findLast(({role}) => role === 'user').content);
+      assert.ok(['text', 'tool', 'cancel', 'reset', 'chat-text', 'chat-next', 'chat-cancel', 'chat-reset'].includes(scenario));
+      if (scenario === 'chat-next') {
+        assert.deepEqual(body.messages.slice(1, -1).map(({role, content}) => [role, content]),
+          [['user', '{"scenario":"chat-text"}'], ['assistant', 'fixture chat-text']]);
+      }
+      if (scenario.startsWith('chat-')) assert.equal(body.tools, undefined);
       agentCalls.set(scenario, (agentCalls.get(scenario) ?? 0) + 1);
       response.writeHead(200, {'Content-Type': 'text/event-stream'});
       const sse = (value) => response.write('data: ' + JSON.stringify(value) + '\n\n');
@@ -185,8 +194,9 @@ const proxy = createServer(async (request, response) => {
           function: {name: tool, arguments: '{}'}}]}, finish_reason: 'tool_calls'}]});
       } else {
         if (scenario === 'tool') assert.match(body.messages.at(-1).content, /lookup result/);
-        sse({choices: [{delta: {content: 'fixture ' + scenario}, finish_reason: null}]});
-        if (scenario === 'cancel' || scenario === 'reset') {
+        const parts = scenario === 'chat-text' ? ['fixture ', scenario] : ['fixture ' + scenario];
+        for (const content of parts) sse({choices: [{delta: {content}, finish_reason: null}]});
+        if (['cancel', 'reset', 'chat-cancel', 'chat-reset'].includes(scenario)) {
           response.once('close', () => agentAborts.add(scenario));
           return;
         }
@@ -1033,6 +1043,135 @@ async function agentChecks() {
     input: readFileSync(new URL('./agent-parity.py', import.meta.url)), stdio: ['pipe', 'inherit', 'inherit'],
     timeout: 30_000,
   });
+  if (config.chat) await chatChecks();
+}
+
+async function subscribeChat(conversation) {
+  const socket = new WebSocket(config.origin.replace(/^http/, 'ws') + '/ws/connect', {
+    headers: {Authorization: 'Bearer ' + config.admin},
+  });
+  const channel = 'chat:' + conversation;
+  const events = [];
+  let subscribed = false;
+  let failure;
+  socket.on('open', () => socket.send(JSON.stringify({type: 'subscribe', channels: [channel]})));
+  socket.on('error', (error) => { failure = error; });
+  socket.on('message', (raw) => {
+    const message = JSON.parse(raw);
+    if (message.type === 'subscribed' && message.channel === channel) subscribed = true;
+    if (message.type === 'chat_run_event' && message.conversation_id === conversation) events.push(message);
+  });
+  try {
+    await until('authorized chat subscription', () => {
+      if (failure) throw failure;
+      return subscribed;
+    });
+    return {socket, events};
+  } catch (error) {
+    socket.terminate();
+    throw error;
+  }
+}
+
+function chatRecords(id) {
+  return sql(`SELECT json_build_object(
+    'status',r.status,'output',r.output,'tokens',r.tokens_used,'iterations',r.iterations_used,'model',r.llm_model,
+    'messages',(SELECT json_agg(json_build_array(sequence,role,content,token_count_input,token_count_output,model)
+      ORDER BY sequence) FROM messages WHERE conversation_id=r.conversation_id),
+    'usage',(SELECT json_agg(json_build_array(provider,model,input_tokens,output_tokens,
+      cache_read_tokens,cache_write_tokens,reasoning_tokens) ORDER BY id)
+      FROM ai_usage WHERE conversation_id=r.conversation_id),
+    'steps',(SELECT count(*) FROM agent_run_steps WHERE run_id=r.id)
+  ) FROM agent_runs r WHERE r.id='${id}'`);
+}
+
+async function chatConversation(agent) {
+  const response = await api('/api/chat/conversations', {agent_id: agent, title: 'Chat fixture'});
+  assert.equal(response.status, 201);
+  return response.data.id;
+}
+
+async function submitChat(conversation, scenario) {
+  const response = await api('/api/chat/runs', {
+    conversation_id: conversation, content: JSON.stringify({scenario}),
+  });
+  assert.equal(response.status, 201);
+  assert.match(response.data.run_id, /^[0-9a-f-]{36}$/);
+  return response.data.run_id;
+}
+
+const chatSignature = (events) => events.map(({sequence, kind, status, payload}) => [
+  sequence, kind, status, payload.content ?? null, payload.run_status ?? null,
+  payload.finish_reason ?? null, payload.incomplete ?? null,
+]);
+
+async function chatChecks() {
+  const workersConversation = await chatConversation(config.agent.ids[0]);
+  const linuxAgent = sql("SELECT to_json(id) FROM agents WHERE name='linux-chat-parity'");
+  const linuxConversation = await chatConversation(linuxAgent);
+  const {socket, events} = await subscribeChat(workersConversation);
+  const linux = await subscribeChat(linuxConversation);
+  try {
+    fault = 'agent-chunk-ack';
+    const workersId = await submitChat(workersConversation, 'chat-text');
+    const dropped = await until('Workers chunk ACK withheld', () => wire.find((row) =>
+      row.kind === 'agent-chunk-ack' && row.route.includes(workersId) && row.dropped));
+    await until('committed chunk visible before replay', () => events.some(({kind}) => kind === 'delta'));
+    for (const controlSocket of sockets.clients) controlSocket.close(1012, 'retry chat chunk ACK');
+    await until('identical chat chunk ACK replay', () => wire.some((row) =>
+      row.request === dropped.request && row.sequence === dropped.sequence && !row.dropped));
+    await until('streamed chat done', () => events.some(({kind}) => kind === 'done'));
+    const workersRow = await until('chat persisted', () => {
+      const row = chatRecords(workersId);
+      return row?.status === 'completed' && row;
+    });
+    const expected = events.filter(({run_id}) => run_id === workersId);
+    assert.equal(new Set(expected.map(({event_id}) => event_id)).size, expected.length);
+    const replay = await api('/api/chat/conversations/' + workersConversation + '/state');
+    assert.deepEqual(replay.data.events.map(({event_id}) => event_id), expected.map(({event_id}) => event_id));
+    assert.equal(agentCalls.get('chat-text'), 1);
+    assert.equal(agentRow(workersId).worker, config.incarnation);
+
+    const linuxId = await submitChat(linuxConversation, 'chat-text');
+    execFileSync('docker', ['exec', '-i', config.project + '-api-1', 'python', '-', linuxId], {
+      input: readFileSync(new URL('./chat-parity.py', import.meta.url)), stdio: ['pipe', 'inherit', 'inherit'],
+      timeout: 30_000,
+    });
+    await until('Linux chat done on the same subscription contract', () => linux.events.some(({kind}) => kind === 'done'));
+    assert.deepEqual(chatRecords(linuxId), workersRow);
+    assert.deepEqual(chatSignature(expected), chatSignature(linux.events));
+    evidence('chat-linux-parity', {workersId, linuxId, events: chatSignature(expected), records: workersRow});
+
+    const next = await submitChat(workersConversation, 'chat-next');
+    await until('second Workers chat used conversation history', () =>
+      events.some(({run_id, kind}) => run_id === next && kind === 'done'));
+    for (const scenario of ['chat-cancel', 'chat-reset']) {
+      const id = await submitChat(workersConversation, scenario);
+      await until('live partial chat delta', () =>
+        events.some(({run_id, kind}) => run_id === id && kind === 'delta'));
+      if (scenario === 'chat-cancel') {
+        assert.equal((await api('/api/chat/runs/' + id + '/cancel', {})).status, 200);
+        await until('chat provider aborted', () => agentAborts.has(scenario));
+      } else {
+        await control('reset');
+      }
+      const cancelled = scenario === 'chat-cancel';
+      await until('terminal chat event', () => events.some(({run_id, kind}) =>
+        run_id === id && kind === (cancelled ? 'cancelled' : 'error')));
+      const record = chatRecords(id);
+      assert.equal(record.status, cancelled ? 'cancelled' : 'failed');
+      assert.deepEqual(record.output, {text: 'fixture ' + scenario, partial: true});
+      assert.equal(record.messages.at(-1)[2], 'fixture ' + scenario);
+      assert.equal(agentRow(id).journal.attempt_state, 'uncertain');
+      assert.equal(agentCalls.get(scenario), 1);
+      evidence('chat-interrupted', {scenario, id, status: record.status,
+        events: chatSignature(events.filter(({run_id}) => run_id === id))});
+    }
+    assert.deepEqual(events.map(({sequence}) => sequence), events.map((_, index) => index + 1));
+  } finally {
+    socket.terminate();
+    linux.socket.terminate();
+  }
 }
 
 await new Promise((resolve, reject) => {
