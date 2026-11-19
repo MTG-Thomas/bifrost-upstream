@@ -13,15 +13,6 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.database import get_db_context
-from src.core.storage.contracts import StorageError
-from src.models.orm import (
-    CloudflareApproval,
-    FileIndex,
-    Solution,
-    SolutionFileIndex,
-    Workflow,
-)
 from bifrost.cloudflare_analysis import (
     MAX_BUNDLE_BYTES,
     MAX_CPU_MS,
@@ -33,6 +24,15 @@ from bifrost.cloudflare_analysis import (
     SourceUnresolved,
     analyze,
     digest,
+)
+from src.core.database import get_db_context
+from src.core.storage.contracts import StorageError
+from src.models.orm import (
+    CloudflareApproval,
+    FileIndex,
+    Solution,
+    SolutionFileIndex,
+    Workflow,
 )
 from src.services.execution.cloudflare_hosts import reviewed_https_allowlist
 from src.services.repo_storage import RepoStorage
@@ -203,7 +203,7 @@ async def propose_approval(
                 # A bounded read cannot hash an oversized object. Confirm
                 # the full pin by streaming before recording a refusal.
                 await check_pin(path, await storage.content_hash(path))
-            raise AnalysisRejected("Workspace source exceeds its analysis read budget") from None
+            raise AnalysisRejected("Workspace source exceeds its analysis read budget", "CF_PARSE_BUDGET") from None
         except StorageError as error:
             if error.kind != "not_found":
                 raise

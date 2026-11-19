@@ -5,11 +5,14 @@ from __future__ import annotations
 import ast
 import asyncio
 import hashlib
+import io
 import json
 import re
+import tokenize
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
+from itertools import islice
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -17,8 +20,12 @@ POLICY_VERSION = "cloudflare-workflow-approval-v2"
 MAX_SOURCE_BYTES = 2 * 1024**2
 MAX_BUNDLE_BYTES = 4 * 1024**2
 MAX_MODULES = 32
-_MAX_PARSE_FILE_BYTES = 128 * 1024
-_MAX_PARSE_BUNDLE_BYTES = 512 * 1024
+_MAX_PARSE_FILE_BYTES = 384 * 1024
+_MAX_PARSE_BUNDLE_BYTES = 1024 * 1024
+# Dense Python can allocate a large parser arena before the AST node check.
+# Tokenize larger files incrementally before constructing their AST.
+_TOKEN_CHECK_BYTES = 128 * 1024
+_MAX_LARGE_FILE_TOKENS = 75_000
 MAX_SUBREQUESTS = 50
 MAX_CPU_MS = 2**53 - 1  # Integer range of the launcher wire.
 _MAX_NODES = 100_000
@@ -481,7 +488,7 @@ class _Analysis:
         except AnalysisRejected as exc:
             exc.locate(path)
             raise
-        except (SyntaxError, UnicodeError, RecursionError) as exc:
+        except (SyntaxError, UnicodeError, RecursionError, tokenize.TokenError) as exc:
             refusal = AnalysisRejected("Workspace source could not be analyzed as Python")
             refusal.locate(path)
             if isinstance(exc, SyntaxError):
@@ -514,7 +521,14 @@ class _Analysis:
             raise AnalysisRejected("Workspace sources exceed the bundle budget", "CF_PARSE_BUDGET", detail=reason)
         self.remaining -= len(content)
         self.pins[path] = hashlib.sha256(content).hexdigest()
-        syntax = ast.parse(content.decode("utf-8"), filename=path)
+        source = content.decode("utf-8")
+        if len(content) > _TOKEN_CHECK_BYTES:
+            tokens = tokenize.generate_tokens(io.StringIO(source, newline=None).readline)
+            if sum(1 for _ in islice(tokens, _MAX_LARGE_FILE_TOKENS + 1)) > _MAX_LARGE_FILE_TOKENS:
+                raise AnalysisRejected("Python file exceeds the analysis token budget", "CF_PARSE_BUDGET")
+            del tokens
+        syntax = ast.parse(source, filename=path)
+        del source, content
         if entry_functions:
             defined = {
                 node.name for node in syntax.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -523,7 +537,7 @@ class _Analysis:
                 raise AnalysisRejected("Workflow entry function was not found")
 
         imports = self.inspect_module(syntax, path, entry_functions)
-        del syntax, content
+        del syntax
         for node in imports:
             try:
                 if isinstance(node, ast.Import):

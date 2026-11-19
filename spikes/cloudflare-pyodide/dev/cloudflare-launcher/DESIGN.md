@@ -700,10 +700,12 @@ in the entry module when every reference is a direct call and supplies a
 public literal selector. It counts the operation as an unresolved URL call,
 without granting any host. Imported modules and unproven selectors retain
 the existing refusal.
-Before parsing, analysis limits raw source buffers
-to 128 KiB per file and 512 KiB per bundle, with a single module AST processed
-at a time and at most 100,000 visited nodes across the bundle. Python object
-overhead is additional and the worker admission and memory limits apply.
+Before parsing, analysis limits source to 384 KiB per file and 1 MiB per
+bundle. Files above 128 KiB pass a streaming 75,000-token ceiling before AST
+construction, since dense source can allocate substantial memory before the
+AST node check. Each imported path is loaded once per bundle and a single
+module AST is processed at a time. The 100,000-node ceiling across the
+bundle still applies, as do the CPU estimate and analysis I/O timeout.
 The estimates are static sizing signals. A call site may execute
 many times and CPU varies with inputs. TenantHost and the platform apply the
 actual limits. Inline code, Fast Path and artifact-workspace dispatches are

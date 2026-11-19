@@ -21,7 +21,7 @@ from bifrost.cloudflare_report import count_rules, inspect_bundle
     ("from importlib import import_module", "CF_DYNAMIC", 1, "explicit imports"),
     ("from bifrost import roles\nroles.list()", "CF_SDK_GATEWAY", 2, "Linux"),
     ("from bifrost import users\nusers.list()", "CF_SDK_GATEWAY", 2, "Linux"),
-    ("#" * (128 * 1024 + 1), "CF_PARSE_BUDGET", None, "smaller modules"),
+    ("#" * (384 * 1024 + 1), "CF_PARSE_BUDGET", None, "smaller modules"),
 ], ids=lambda value: "oversized Python file" if isinstance(value, str) and len(value) > 1000 else None)
 async def test_diagnostics_rules(snippet, rule, line, hint):
     async def read(path, _maximum):

@@ -9,6 +9,14 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+
+from bifrost.cloudflare_analysis import (
+    POLICY_VERSION,
+    AnalysisRejected,
+    SourceUnresolved,
+    analyze,
+    digest,
+)
 from src.core.redis_client import PendingExecution, pending_execution_record
 from src.core.storage.contracts import StorageError
 from src.jobs.platform import cloudflare_reapproval
@@ -20,13 +28,6 @@ from src.models.orm import (
     Workflow,
 )
 from src.services.execution import cloudflare_eligibility, service, workflow_dispatch
-from bifrost.cloudflare_analysis import (
-    POLICY_VERSION,
-    AnalysisRejected,
-    SourceUnresolved,
-    analyze,
-    digest,
-)
 from src.worker.remote.ownership import RemoteOwnerLease
 from src.worker.remote.protocol import (
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
@@ -494,7 +495,7 @@ async def test_parse_rejects_oversized_source_before_parsing(monkeypatch):
     parse = Mock(side_effect=AssertionError("oversized source reached parser"))
     monkeypatch.setattr(cloudflare_analysis.ast, "parse", parse)
     with pytest.raises(AnalysisRejected, match="bundle budget"):
-        await _analyze({ENTRY: b" " * (128 * 1024 + 1)})
+        await _analyze({ENTRY: b" " * (384 * 1024 + 1)})
     parse.assert_not_called()
 
 
@@ -503,13 +504,30 @@ async def test_total_parse_budget_is_enforced_before_fifth_module(monkeypatch):
 
     parse = Mock(wraps=cloudflare_analysis.ast.parse)
     monkeypatch.setattr(cloudflare_analysis.ast, "parse", parse)
-    # Four 128 KiB files use the budget. Loading a fifth must stop before parsing.
+    # Four 256 KiB files use the budget. Loading a fifth must stop before parsing.
     entry = b"import a, b, c, d\ndef run(): pass\n"
-    size = 128 * 1024
+    size = 256 * 1024
     sources = {ENTRY: entry.ljust(size), **{f"{name}.py": b"x=1\n".ljust(size) for name in "abcd"}}
     with pytest.raises(AnalysisRejected, match="bundle budget"):
         await _analyze(sources)
     assert parse.call_count == 4
+
+
+async def test_parse_admits_large_sparse_source():
+    source = b"def run(): pass\n#" + b"x" * (256 * 1024)
+    proposal = await _analyze({ENTRY: source})
+    assert proposal["estimated_subrequests"] == 1
+
+
+async def test_large_dense_source_is_rejected_before_parsing(monkeypatch):
+    from bifrost import cloudflare_analysis
+
+    parse = Mock(side_effect=AssertionError("dense source reached parser"))
+    monkeypatch.setattr(cloudflare_analysis.ast, "parse", parse)
+    source = b"def run(): pass\n" + b"item = 1\n" * 20_000
+    with pytest.raises(AnalysisRejected, match="token budget"):
+        await _analyze({ENTRY: source})
+    parse.assert_not_called()
 
 
 @pytest.mark.parametrize("indexed", [False, True])
