@@ -1,0 +1,98 @@
+"""Workers advice shares the approval analyzer and remains advisory."""
+
+import pytest
+
+from bifrost.cloudflare_analysis import diagnose, diagnose_file, placement_findings
+from bifrost.cloudflare_report import count_rules, inspect_bundle
+
+
+@pytest.mark.parametrize(("snippet", "rule", "line", "hint"), [
+    ("import subprocess", "CF_PROCESS", 1, "Python code"),
+    ("from os import system as launch\nlaunch('fixture')", "CF_PROCESS", 2, "Linux"),
+    ("import socket", "CF_TRANSPORT", 1, "httpx"),
+    ("import requests", "CF_TRANSPORT", 1, "HTTPS"),
+    ("import httpx\nhttpx.get('http://example.test')", "CF_TRANSPORT", 2, "HTTPS"),
+    ("from croniter import croniter", "CF_PACKAGE", 1, "Pyodide build"),
+    ("import awscrt", "CF_NATIVE", 1, "WebAssembly"),
+    ("exec('pass')", "CF_DYNAMIC", 1, "static dispatch"),
+    ("eval('1')", "CF_DYNAMIC", 1, "static dispatch"),
+    ("getattr(obj, name)()", "CF_DYNAMIC", 1, "static dispatch"),
+    ("def broken(", "CF_SOURCE", 1, "entry function"),
+    ("from importlib import import_module", "CF_DYNAMIC", 1, "explicit imports"),
+    ("from bifrost import roles\nroles.list()", "CF_SDK_GATEWAY", 2, "Linux"),
+    ("from bifrost import users\nusers.list()", "CF_SDK_GATEWAY", 2, "Linux"),
+    ("#" * (128 * 1024 + 1), "CF_PARSE_BUDGET", None, "smaller modules"),
+], ids=lambda value: "oversized Python file" if isinstance(value, str) and len(value) > 1000 else None)
+async def test_diagnostics_rules(snippet, rule, line, hint):
+    async def read(path, _maximum):
+        return snippet.encode() if path == "entry.py" else None
+
+    findings = await diagnose(read, "entry.py")
+    finding = next(item for item in findings if item.rule_id == rule)
+    assert (finding.severity, finding.path, finding.line) == ("warning", "entry.py", line)
+    if line is not None:
+        assert finding.column is not None and finding.column > 0
+    assert hint in finding.hint
+    assert finding.message.startswith("Won't burst to Cloudflare")
+
+
+async def test_transitive_source_and_single_file_boundary():
+    async def read(path, _maximum):
+        return {"entry.py": b"import helper", "helper.py": b"import subprocess"}.get(path)
+
+    [issue] = await diagnose(read, "entry.py")
+    assert (issue.rule_id, issue.path, issue.line) == ("CF_PROCESS", "helper.py", 1)
+    assert await diagnose_file("entry.py", b"import helper") == []
+
+
+@pytest.mark.parametrize(("kwargs", "rule", "hint"), [
+    ({"inline": True}, "CF_INLINE", "register"),
+    ({"artifact_workspace": True}, "CF_ARTIFACT_WORKSPACE", "dependency"),
+    ({"execution_lane": "fast_path"}, "CF_FAST_PATH", "Normal"),
+    ({"outbound": True}, "CF_OUTBOUND", "vendor"),
+    ({"executable_type": "tool"}, "CF_EXECUTABLE_TYPE", "Normal workflow"),
+])
+def test_placement_rules(kwargs, rule, hint):
+    [issue] = placement_findings(**kwargs)
+    assert (issue.rule_id, issue.severity) == (rule, "warning")
+    assert hint in issue.hint
+
+
+async def test_unresolved_url_is_info_and_subrequest_budget_is_bundle_only():
+    source = b"import httpx\nhttpx.get(url)"
+    async def read(_path, _maximum):
+        return source
+
+    [info] = await diagnose_file("entry.py", source)
+    assert (info.rule_id, info.severity, info.path, info.line, info.column) == ("CF_URL_REVIEW", "info", "entry.py", 2, 1)
+    assert "approve" in info.hint
+    findings = await diagnose(read, "entry.py", subrequest_allowance=1)
+    assert [item.rule_id for item in findings] == ["CF_URL_REVIEW", "CF_SUBREQUESTS"]
+    assert "Batch" in findings[1].hint
+
+
+@pytest.mark.parametrize(("snippet", "budget", "rule"), [
+    ("x = 1\n" * 20, 1, "CF_CPU"),
+    ("import httpx\n" + "".join(f"httpx.get('https://h{i}.example.test')\n" for i in range(33)), 1000, "CF_HOST_BUDGET"),
+], ids=["cpu budget", "host budget"])
+async def test_bundle_budget_rule(snippet, budget, rule):
+    async def read(_path, _maximum):
+        return snippet.encode()
+
+    [finding] = await diagnose(read, "entry.py", cpu_budget_ms=budget)
+    assert (finding.rule_id, finding.severity, finding.path) == (rule, "warning", "entry.py")
+    assert finding.hint
+
+
+async def test_report_counts_rules_once_per_artifact_and_notes_agents():
+    async def read(path, _maximum):
+        return {"entry.py": b"from bifrost import roles\ndef run(): roles.list(); roles.list()"}.get(path)
+
+    reports = await inspect_bundle(
+        read,
+        [{"path": "entry.py", "function_name": "run"}],
+        [{"name": "assistant"}],
+    )
+    assert [report.status for report in reports] == ["linux", "info"]
+    assert count_rules(reports) == {"CF_AGENT": 1, "CF_SDK_GATEWAY": 1}
+    assert "summaries" in reports[1].findings[0].hint

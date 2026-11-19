@@ -16,7 +16,7 @@ from src.jobs.platform.base import (
 )
 from src.models.orm import CloudflareApproval, FileIndex, PlatformJob
 from src.services import platform_jobs
-from src.services.execution.cloudflare_analysis import (
+from bifrost.cloudflare_analysis import (
     POLICY_VERSION,
     AnalysisRejected,
     SourceUnresolved,

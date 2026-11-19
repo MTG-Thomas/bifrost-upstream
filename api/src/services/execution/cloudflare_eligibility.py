@@ -22,7 +22,7 @@ from src.models.orm import (
     SolutionFileIndex,
     Workflow,
 )
-from src.services.execution.cloudflare_analysis import (
+from bifrost.cloudflare_analysis import (
     MAX_BUNDLE_BYTES,
     MAX_CPU_MS,
     MAX_MODULES,

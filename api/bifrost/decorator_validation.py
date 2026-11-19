@@ -26,6 +26,12 @@ _REMOVED_KEYS = {
 
 
 def validate_python_decorators(source: str, *, path: str) -> None:
+    inspect_python_decorators(source, path=path)
+
+
+def inspect_python_decorators(
+    source: str, *, path: str,
+) -> list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str, ast.Call | None]]:
     """Reject unsupported Bifrost decorator settings without importing source.
 
     Only decorators whose bindings can be proven to originate from ``bifrost``
@@ -46,17 +52,21 @@ def validate_python_decorators(source: str, *, path: str) -> None:
         ]) from None
 
     validator = _DecoratorValidator(path)
-    validator.visit_body(tree.body, {})
+    validator.visit_body(tree.body, {}, collect=True)
     if validator.issues:
         raise DefinitionValidationError(validator.issues)
+    return validator.executables
 
 
 class _DecoratorValidator:
     def __init__(self, path: str):
         self.path = path
         self.issues: list[DefinitionIssue] = []
+        self.executables: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str, ast.Call | None]] = []
 
-    def visit_body(self, statements: Iterable[ast.stmt], bindings: dict[str, str | None]) -> None:
+    def visit_body(
+        self, statements: Iterable[ast.stmt], bindings: dict[str, str | None], *, collect: bool = False,
+    ) -> None:
         scope = dict(bindings)
         for statement in statements:
             if isinstance(statement, ast.Import):
@@ -75,7 +85,9 @@ class _DecoratorValidator:
                 continue
 
             if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                self._validate_decorators(statement.decorator_list, scope)
+                decorators = self._validate_decorators(statement.decorator_list, scope)
+                if collect:
+                    self.executables.extend((statement, name, call) for name, call in decorators)
                 self._visit_definition_body(statement, scope)
                 scope[statement.name] = None
                 continue
@@ -207,14 +219,20 @@ class _DecoratorValidator:
             if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
                 scope[node.id] = None
 
-    def _validate_decorators(self, decorators: list[ast.expr], bindings: dict[str, str | None]) -> None:
+    def _validate_decorators(
+        self, decorators: list[ast.expr], bindings: dict[str, str | None],
+    ) -> list[tuple[str, ast.Call | None]]:
+        matches = []
         for decorator in decorators:
             call = decorator if isinstance(decorator, ast.Call) else None
             target = call.func if call is not None else decorator
             decorator_name = self._decorator_name(target, bindings)
-            if decorator_name is None or call is None:
+            if decorator_name is None:
                 continue
-            self._validate_call(decorator_name, call)
+            if call is not None:
+                self._validate_call(decorator_name, call)
+            matches.append((decorator_name, call))
+        return matches
 
     @staticmethod
     def _decorator_name(node: ast.expr, bindings: dict[str, str | None]) -> str | None:

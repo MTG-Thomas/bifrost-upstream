@@ -22,7 +22,7 @@ from src.jobs.platform.base import (
     define_platform_job,
 )
 from src.models.orm import FileIndex, PlatformJob, SolutionFileIndex
-from src.services.execution.cloudflare_analysis import (
+from bifrost.cloudflare_analysis import (
     MAX_MODULES,
     POLICY_VERSION,
     AnalysisRejected,

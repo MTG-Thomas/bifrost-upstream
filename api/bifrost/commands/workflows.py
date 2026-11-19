@@ -46,6 +46,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
 import click
@@ -119,6 +120,95 @@ async def get_workflow(
     response = await client.get(f"/api/workflows/{workflow_uuid}")
     response.raise_for_status()
     output_result(response.json(), ctx=ctx)
+
+
+@workflows_group.command("validate")
+@click.argument("path")
+@click.option("--from-file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--execution-lane", type=click.Choice(["auto", "normal", "fast_path"]))
+@click.option("--inline", is_flag=True, help="Check placement for an inline execution.")
+@click.option("--artifact-workspace", is_flag=True, help="Check placement for a run with an artifact workspace.")
+@click.pass_context
+@run_async
+async def validate_workflow(
+    ctx: click.Context, path: str, from_file: Path | None, execution_lane: str | None,
+    inline: bool, artifact_workspace: bool,
+) -> None:
+    """Validate workspace PATH or proposed content from a local file."""
+    body: dict[str, object] = {"path": path}
+    if from_file is not None:
+        body["content"] = from_file.read_text(encoding="utf-8")
+    if execution_lane is not None:
+        body["execution_lane"] = execution_lane
+    if inline:
+        body["inline"] = True
+    if artifact_workspace:
+        body["artifact_workspace"] = True
+    client = BifrostClient.get_instance(require_auth=True)
+    response = await client.post("/api/workflows/validate", json=body)
+    response.raise_for_status()
+    result = response.json()
+
+    def display(data: dict) -> None:
+        click.echo("Workflow is valid." if data["valid"] else "Workflow has validation errors.")
+        for issue in data["issues"]:
+            location = issue.get("path") or path
+            if issue.get("line") is not None:
+                location = f"{location}:{issue['line']}"
+            if issue.get("column") is not None:
+                location = f"{location}:{issue['column']}"
+            rule = f" [{issue['rule_id']}]" if issue.get("rule_id") else ""
+            hint = f" {issue['hint']}" if issue.get("hint") else ""
+            click.echo(f"{location} {issue['severity']}{rule} {issue['message']}{hint}")
+
+    output_result(result, ctx=ctx, human=display)
+    if not result["valid"]:
+        ctx.exit(1)
+
+
+@workflows_group.command("cloudflare-report")
+@click.argument("workspace", type=click.Path(exists=True, file_okay=False, path_type=Path), default=".")
+@click.option("--allowance", type=click.IntRange(0, 50), default=50, show_default=True)
+@click.option("--cpu", "cpu_budget_ms", type=click.IntRange(1, 2**53 - 1), default=1000, show_default=True)
+@click.option("--aggregate-only", is_flag=True, help="Print rule IDs and affected artifact counts only.")
+@click.pass_context
+@run_async
+async def cloudflare_report(
+    ctx: click.Context, workspace: Path, allowance: int, cpu_budget_ms: int, aggregate_only: bool,
+) -> None:
+    """Opt in to an offline Workers report for a workspace or a tree of Solutions."""
+    from bifrost.cloudflare_census import workspace_reports
+    from bifrost.cloudflare_report import count_rules
+
+    try:
+        reports = await workspace_reports(workspace, allowance=allowance, cpu_budget_ms=cpu_budget_ms)
+    except (OSError, ValueError, click.ClickException) as exc:
+        if aggregate_only:
+            raise click.ClickException(f"Could not read the workspace ({type(exc).__name__}).") from None
+        raise
+
+    counts = count_rules(reports)
+    if aggregate_only:
+        output_result(counts, ctx=ctx)
+        return
+
+    def display(_data: dict) -> None:
+        for report in reports:
+            identity = f"{report.path}::{report.function_name}" if report.path else report.name
+            scope = f"{report.workspace}/" if report.workspace not in {None, "."} else ""
+            click.echo(f"{report.kind} {scope}{identity}: {report.status}")
+            for finding in report.findings:
+                location = finding.path or ""
+                if finding.line is not None:
+                    location += f":{finding.line}"
+                if finding.column is not None:
+                    location += f":{finding.column}"
+                click.echo(f"  {location} {finding.text}".strip())
+        click.echo("Affected Artifacts by Rule")
+        for rule, count in counts.items():
+            click.echo(f"{rule}: {count}")
+
+    output_result({"by_rule": counts, "artifacts": [report.to_dict() for report in reports]}, ctx=ctx, human=display)
 
 
 @workflows_group.command("register")

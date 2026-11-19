@@ -129,7 +129,9 @@ async def bifrost_workflow_get(context: Any, workflow_ref: str) -> ToolResult:
 
 
 async def bifrost_workflow_validate(
-    context: Any, path: str, content: str | None = None
+    context: Any, path: str, content: str | None = None,
+    execution_lane: str | None = None,
+    inline: bool = False, artifact_workspace: bool = False,
 ) -> ToolResult:
     """Validate a workflow Python file — thin wrapper over ``POST /api/workflows/validate``."""
     if not path:
@@ -139,13 +141,24 @@ async def bifrost_workflow_validate(
     if content is not None:
         body["content"] = content
 
+    if execution_lane is not None:
+        body["execution_lane"] = execution_lane
+    if inline:
+        body["inline"] = True
+    if artifact_workspace:
+        body["artifact_workspace"] = True
+
     status_code, resp = await call_rest(context, "POST", "/api/workflows/validate", json_body=body)
     if status_code != 200:
         return _rest_error("Validate Workflow", status_code, resp)
     payload = resp if isinstance(resp, dict) else {"body": resp}
-    if payload.get("valid"):
-        return success_result(f"Workflow '{path}' is valid", payload)
     issues = payload.get("issues") or []
+    if payload.get("valid"):
+        count = sum(issue.get("source") == "cloudflare" for issue in issues)
+        summary = f"Workflow '{path}' is valid"
+        if count:
+            summary += f" with {count} Cloudflare advisory issue(s)"
+        return success_result(summary, payload)
     issue_msgs = "; ".join(str(i.get("message", i)) for i in issues) if issues else "unknown error"
     return error_result(f"Workflow '{path}' has errors: {issue_msgs}", payload)
 

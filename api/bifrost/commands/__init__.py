@@ -80,11 +80,11 @@ def dispatch_entity_subgroup(name: str, args: list[str]) -> int:
         print(f"Unknown entity subgroup: {name}", file=sys.stderr)
         return 1
     try:
-        group.main(args=args, standalone_mode=False, prog_name=f"bifrost {name}")
-        return 0
+        result = group.main(args=args, standalone_mode=False, prog_name=f"bifrost {name}")
+        return result if isinstance(result, int) else 0
     except click.exceptions.Exit as exc:
         return exc.exit_code
-    except click.exceptions.UsageError as exc:
+    except click.ClickException as exc:
         exc.show()
         return exc.exit_code
 

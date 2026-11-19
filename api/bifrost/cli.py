@@ -690,7 +690,10 @@ def main(args: list[str] | None = None) -> int:
     # An incompatible CLI must still be able to replace itself. Running the
     # compatibility gate before `update` would block the recovery command in
     # exactly the state where it is needed most.
-    if not help_requested and command != "update":
+    # Local Cloudflare reports read an on-disk workspace and have no server contract.
+    subgroup = next((arg for arg in args[1:] if arg != "--json"), None)
+    offline_report = command == "workflows" and subgroup == "cloudflare-report"
+    if not help_requested and command != "update" and not offline_report:
         _check_cli_version()
 
     try:

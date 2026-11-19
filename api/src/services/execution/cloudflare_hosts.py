@@ -4,7 +4,7 @@ import json
 from collections.abc import Collection
 from pathlib import Path
 
-from src.services.execution.cloudflare_analysis import (
+from bifrost.cloudflare_analysis import (
     AnalysisRejected,
     _exact_host,
     reviewed_https_hosts,

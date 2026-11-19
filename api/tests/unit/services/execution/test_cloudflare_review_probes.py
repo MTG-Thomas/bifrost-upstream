@@ -3,7 +3,7 @@
 from textwrap import dedent
 
 import pytest
-from src.services.execution.cloudflare_analysis import analyze
+from bifrost.cloudflare_analysis import analyze
 
 
 @pytest.mark.parametrize("sources, hosts, calls, unresolved", [

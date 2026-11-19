@@ -2844,7 +2844,7 @@
             "workflows",
             "validate"
           ],
-          "status": "missing_surface"
+          "status": "exact_parity"
         },
         "manifest": {
           "entity": null,
@@ -10744,7 +10744,7 @@
     }
   ],
   "counts": {
-    "cli": 180,
+    "cli": 182,
     "manifest": 16,
     "mcp": 101,
     "rest": 724,
@@ -11602,6 +11602,15 @@
         "kind": "lifecycle",
         "path": [
           "watch"
+        ],
+        "reason": "Local authentication, source-control, or lifecycle command.",
+        "status": "transport_only"
+      },
+      {
+        "kind": "lifecycle",
+        "path": [
+          "workflows",
+          "cloudflare-report"
         ],
         "reason": "Local authentication, source-control, or lifecycle command.",
         "status": "transport_only"

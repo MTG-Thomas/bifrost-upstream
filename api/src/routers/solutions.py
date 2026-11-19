@@ -2609,6 +2609,8 @@ async def _run_deploy_job(
                     "integrations_shell_created": result.integrations_shell_created,
                     "roles_created": list(result.roles_created),
                 }
+                if result.cloudflare_diagnostics is not None:
+                    deploy_result["cloudflare_diagnostics"] = result.cloudflare_diagnostics
     try:
         await asyncio.wait_for(
             _execute(),

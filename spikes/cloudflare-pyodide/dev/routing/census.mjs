@@ -11,7 +11,7 @@ import {promisify} from 'node:util';
 const run = promisify(execFile);
 const analyzer = fileURLToPath(new URL('./analyze-file.py', import.meta.url));
 const analyzerModule = fileURLToPath(new URL(
-  '../../../../api/src/services/execution/', import.meta.url,
+  '../../../../api/bifrost/', import.meta.url,
 ));
 
 const args = process.argv.slice(2);

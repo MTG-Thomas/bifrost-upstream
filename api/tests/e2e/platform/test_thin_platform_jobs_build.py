@@ -262,7 +262,8 @@ async def test_thin_worker_executes_solution_artifact_jobs(
     )
     workflow_name = f"Thin Solution Workflow {suffix}"
     workflow_source = (
-        "from bifrost import workflow\n\n"
+        "from bifrost import workflow\n"
+        "import subprocess\n\n"
         f"@workflow(name={workflow_name!r})\n"
         "async def thin_solution_workflow():\n"
         "    return 'deployed'\n"
@@ -302,6 +303,17 @@ async def test_thin_worker_executes_solution_artifact_jobs(
         "solution.deploy",
     )
     assert solution_deploy["result"]["workflows_upserted"] == 1
+    from src.config import get_settings
+
+    diagnostics = solution_deploy["result"].get("cloudflare_diagnostics")
+    if get_settings().cloudflare_diagnostics_enabled:
+        [report] = diagnostics
+        assert report["function_name"] == "thin_solution_workflow"
+        assert report["status"] == "linux"
+        [finding] = report["findings"]
+        assert (finding["rule_id"], finding["severity"], finding["line"]) == ("CF_PROCESS", "warning", 2)
+    else:
+        assert diagnostics is None
 
     export_response = e2e_client.post(
         f"/api/solutions/{solution_id}/export-jobs",

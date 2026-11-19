@@ -18,6 +18,7 @@ load-bearing workflow path.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
 import dataclasses
 import io
 import json
@@ -1209,8 +1210,18 @@ def _collect_python_files(workspace: pathlib.Path, *, definition=None) -> dict[s
     where the scaffold writes / where ``solution start`` resolves, else a workflow
     deploys with a row but no code (shakeout HIGH).
     """
-    app_dirs = _app_source_dirs(workspace, definition=definition)
     files: dict[str, str] = {}
+    for rel, source_path in _iter_python_paths(workspace, definition=definition):
+        source = source_path.read_text(encoding="utf-8")
+        # Reject unsupported decorators before constructing a deploy candidate.
+        _validate_solution_python_files({rel: source})
+        files[rel] = source
+    return files
+
+
+def _iter_python_paths(workspace: pathlib.Path, *, definition=None) -> Iterator[tuple[str, pathlib.Path]]:
+    """Use the deployment source layout for both packaging and offline diagnostics."""
+    app_dirs = _app_source_dirs(workspace, definition=definition)
     ws_root = os.path.realpath(workspace)
     for dirpath, _dirnames, filenames in os.walk(ws_root):
         for fname in filenames:
@@ -1229,13 +1240,7 @@ def _collect_python_files(workspace: pathlib.Path, *, definition=None) -> dict[s
             rel_posix = pathlib.PurePath(rel).as_posix()
             if any(rel_posix == d or rel_posix.startswith(d + "/") for d in app_dirs):
                 continue
-            source = pathlib.Path(py_real).read_text(encoding="utf-8")
-            # Validate before putting source into the candidate map so every
-            # publisher using this canonical collector refuses it before any
-            # remote write or deploy mutation.
-            _validate_solution_python_files({rel_posix: source})
-            files[rel_posix] = source
-    return files
+            yield rel_posix, pathlib.Path(py_real)
 
 
 def _collect_workflows(workspace: pathlib.Path, *, definition=None) -> list[dict]:
@@ -2272,6 +2277,12 @@ async def _poll_deploy_job(
                 click.echo(f"{action} complete: solution {sid}{slug_note}.")
             else:
                 click.echo(f"{action} complete.")
+            for artifact in result.get("cloudflare_diagnostics") or []:
+                for issue in artifact["findings"]:
+                    click.echo(
+                        f"{artifact['name']} [{issue['rule_id']}] {issue['message']} {issue['hint']}",
+                        err=True,
+                    )
             return 0
         if status == "failed":
             error = body.get("error") or "unknown error"

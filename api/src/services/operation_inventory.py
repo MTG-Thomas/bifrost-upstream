@@ -44,6 +44,7 @@ _CLI_LIFECYCLE_PATHS: tuple[tuple[str, ...], ...] = (
     ("sync",),
     ("update",),
     ("watch",),
+    ("workflows", "cloudflare-report"),
 )
 
 _SDK_HTTP_RE = re.compile(r'^\s*"(?P<method>[A-Z]+) (?P<path>/api/[^" ]+)"')

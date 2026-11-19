@@ -22,7 +22,7 @@ def test_every_observed_surface_is_classified_with_a_reason() -> None:
     # MCP thin-wrapper rewrite and tool-name migration, closing that parity
     # domain by domain.
     assert inventory["counts"] == {
-        "cli": 180,  # Includes solution git sources.
+        "cli": 182,  # Includes workflow validation and the offline Cloudflare report.
         "manifest": 16,
         "mcp": 101,  # Includes inline Execute Code.
         "rest": 724,  # Includes App setup, four Solution-source routes, and bulk Organization tags.

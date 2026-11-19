@@ -15,6 +15,21 @@ from __future__ import annotations
 
 import ast
 
+from bifrost.cloudflare_report import ArtifactReport, inspect_bundle
+
+
+async def cloudflare_preflight(
+    workflows: list[dict], python_files: dict[str, str], agents: list[dict], *, outbound: bool,
+) -> list[ArtifactReport]:
+    """Report Workers placement without adding any deploy acceptance condition."""
+    async def read(path: str, limit: int) -> bytes | None:
+        source = python_files.get(path)
+        # A Unicode character encodes to at least one byte. Preserve the
+        # analyzer's byte cap without converting an entire oversized source.
+        return source[:limit + 1].encode() if source is not None else None
+
+    return await inspect_bundle(read, workflows, agents, outbound=outbound)
+
 
 def _source_defines_function(source: str, function_name: str) -> bool:
     """True if ``function_name`` is defined as a (sync/async) function in source."""

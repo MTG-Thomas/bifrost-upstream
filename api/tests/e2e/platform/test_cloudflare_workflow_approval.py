@@ -12,7 +12,7 @@ from src.core.redis_client import pending_execution_record
 from src.jobs.platform.cloudflare_reapproval import CLOUDFLARE_REAPPROVAL_DEFINITION
 from src.models.orm import CloudflareApproval, Organization, PlatformJob, Workflow
 from src.services.execution import workflow_dispatch
-from src.services.execution.cloudflare_analysis import AnalysisRejected
+from bifrost.cloudflare_analysis import AnalysisRejected
 from src.services.execution.cloudflare_eligibility import (
     POLICY_VERSION,
     accept_proposal,

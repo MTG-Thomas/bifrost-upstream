@@ -55,7 +55,7 @@ from src.models.orm.solutions import Solution
 from src.models.orm.tables import Table
 from src.models.orm.workflow_roles import WorkflowRole
 from src.models.orm.workflows import Workflow
-from src.services.solution_deploy_preflight import preflight_workflows
+from src.services.solution_deploy_preflight import cloudflare_preflight, preflight_workflows
 from src.services.solutions.storage import SolutionStorage
 from src.services.sync_ops import Upsert
 from src.services.webhooks.signing_secret import carry_signing_secret
@@ -354,6 +354,7 @@ class DeployResult:
     # global, empty roles (grant nothing until assigned). Surfaced so the
     # operator sees them — and so a typo'd manifest role name is visible.
     roles_created: list[str] = field(default_factory=list)
+    cloudflare_diagnostics: list[dict] | None = None
     finalize_s3: Callable[[], Awaitable[None]] = field(
         default=_noop_finalize, compare=False, repr=False
     )
@@ -510,6 +511,15 @@ class SolutionDeployer:
         if name_errors:
             raise SolutionWorkflowNameMismatch("\n".join(name_errors))
 
+        from src.config import get_settings
+
+        cloudflare_diagnostics = None
+        if get_settings().cloudflare_diagnostics_enabled:
+            reports = await cloudflare_preflight(
+                rb.workflows, rb.python_files, rb.agents, outbound=bool(solution.allow_outbound_access),
+            )
+            cloudflare_diagnostics = [report.to_dict() for report in reports]
+
         # ── DB-only phase (validates + reconciles; rolls back cleanly) ───────
         await self._upsert_workflows(solution, rb.workflows, rb.python_files)
         await self._upsert_claims(solution, rb.claims)
@@ -653,6 +663,7 @@ class SolutionDeployer:
             claims_deleted=claim_deleted,
             integrations_shell_created=shells_created,
             roles_created=sorted(self._created_roles),
+            cloudflare_diagnostics=cloudflare_diagnostics,
             finalize_s3=_finalize_s3,
         )
 

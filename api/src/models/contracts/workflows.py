@@ -222,16 +222,24 @@ class RegisterWorkflowResponse(BaseModel):
 
 
 class ValidationIssue(BaseModel):
-    """A single validation error or warning"""
+    """A single validation issue."""
     line: int | None = Field(default=None, description="Line number where issue occurs (if applicable)")
-    message: str = Field(..., description="Human-readable error or warning message")
-    severity: Literal["error", "warning"] = Field(..., description="Severity level")
+    message: str = Field(..., description="Human-readable issue description")
+    severity: Literal["error", "warning", "info"] = Field(..., description="Severity level")
+    column: int | None = None
+    path: str | None = None
+    source: str | None = None
+    rule_id: str | None = None
+    hint: str | None = None
 
 
 class WorkflowValidationRequest(BaseModel):
     """Request model for workflow validation endpoint"""
     path: str = Field(..., description="Relative workspace path to the workflow file")
-    content: str | None = Field(default=None, description="File content to validate (if not provided, reads from disk)")
+    content: str | None = Field(default=None, description="File content to validate, or omit to read the workspace file")
+    execution_lane: Literal["auto", "normal", "fast_path"] | None = None
+    inline: bool | None = None
+    artifact_workspace: bool | None = None
 
 
 class WorkflowValidationResponse(BaseModel):

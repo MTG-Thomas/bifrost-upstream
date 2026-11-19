@@ -31252,7 +31252,7 @@ export interface components {
         };
         /**
          * ValidationIssue
-         * @description A single validation error or warning
+         * @description A single validation issue.
          */
         ValidationIssue: {
             /**
@@ -31262,7 +31262,7 @@ export interface components {
             line?: number | null;
             /**
              * Message
-             * @description Human-readable error or warning message
+             * @description Human-readable issue description
              */
             message: string;
             /**
@@ -31270,7 +31270,17 @@ export interface components {
              * @description Severity level
              * @enum {string}
              */
-            severity: "error" | "warning";
+            severity: "error" | "warning" | "info";
+            /** Column */
+            column?: number | null;
+            /** Path */
+            path?: string | null;
+            /** Source */
+            source?: string | null;
+            /** Rule Id */
+            rule_id?: string | null;
+            /** Hint */
+            hint?: string | null;
         };
         /** VerdictRequest */
         VerdictRequest: {
@@ -32802,9 +32812,15 @@ export interface components {
             path: string;
             /**
              * Content
-             * @description File content to validate (if not provided, reads from disk)
+             * @description File content to validate, or omit to read the workspace file
              */
             content?: string | null;
+            /** Execution Lane */
+            execution_lane?: ("auto" | "normal" | "fast_path") | null;
+            /** Inline */
+            inline?: boolean | null;
+            /** Artifact Workspace */
+            artifact_workspace?: boolean | null;
         };
         /**
          * WorkflowValidationResponse

@@ -10,6 +10,7 @@ import re
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
+from typing import Literal
 from urllib.parse import urlsplit
 
 POLICY_VERSION = "cloudflare-workflow-approval-v2"
@@ -92,16 +93,104 @@ SourceReader = Callable[[str, int], Awaitable[bytes | None]]
 class AnalysisRejected(ValueError):
     """Sources or requested bounds cannot be approved by this analyzer."""
 
+    def __init__(self, message: str, rule: str = "CF_SOURCE", *, detail: str | None = None):
+        super().__init__(message)
+        self.rule = rule
+        self.detail = detail
+        self.path: str | None = None
+        self.line: int | None = None
+        self.column: int | None = None
+
+    def locate(self, path: str, node: ast.AST | None = None) -> None:
+        if self.path is None:
+            self.path = path
+            self.line = getattr(node, "lineno", None)
+            offset = getattr(node, "col_offset", None)
+            self.column = offset + 1 if offset is not None else None
+
 
 class SourceUnresolved(AnalysisRejected):
     """An indexed source could not be read from storage."""
+
+
+_HINTS = {
+    "CF_PROCESS": "Replace process creation with Python code or keep this step on Linux.",
+    "CF_TRANSPORT": "Use httpx with an HTTPS URL and a hostname allowed by the operator.",
+    "CF_PACKAGE": "Replace the import with an available package, bundle compatible Python source, or ask the operator to qualify a Pyodide build.",
+    "CF_NATIVE": "Keep the operation on its native runner, or replace it with a WebAssembly-compatible implementation.",
+    "CF_DYNAMIC": "Use explicit imports, direct method calls, and a static dispatch table.",
+    "CF_PARSE_BUDGET": "Reduce the file size, split the entry into smaller modules, or trim modules from the imported bundle.",
+    "CF_SUBREQUESTS": "Batch or remove API and HTTP calls, or review the subrequest allowance with the operator.",
+    "CF_CPU": "Reduce the imported code or review the CPU budget with the operator.",
+    "CF_HOST_BUDGET": "Reduce the number of distinct outbound HTTPS hosts.",
+    "CF_SOURCE": "Check the Python source, entry function, and imports in the approved workspace or install.",
+    "CF_SDK_GATEWAY": "Move the SDK operation to a Linux workflow or use a supported SDK area.",
+    "CF_URL_REVIEW": "Use a statically identifiable HTTPS origin or have the operator review and approve the possible hostnames.",
+    "CF_INLINE": "Save and register the code as a Normal workflow, then request source approval.",
+    "CF_FAST_PATH": "Use the Normal lane if its scheduling semantics fit this workflow.",
+    "CF_OUTBOUND": "Keep the install on Linux, or vendor its dependencies and review whether it can use install-local access only.",
+    "CF_ARTIFACT_WORKSPACE": "Keep this run on Linux or remove its dependency on an artifact workspace.",
+    "CF_EXECUTABLE_TYPE": "Keep this executable on its current runtime. Use a Normal workflow for an independently approved Workers step.",
+    "CF_AGENT": "Keep agent runs on Bifrost. Agent summaries can use Workers when the operator enables the summary handler.",
+}
+
+
+@dataclass(frozen=True)
+class Finding:
+    rule_id: str
+    severity: Literal["warning", "info"]
+    message: str
+    hint: str
+    path: str | None = None
+    line: int | None = None
+    column: int | None = None
+
+    @classmethod
+    def from_refusal(cls, error: AnalysisRejected) -> Finding:
+        severity: Literal["warning", "info"] = "info" if error.rule == "CF_URL_REVIEW" else "warning"
+        prefix = "Cloudflare host review" if severity == "info" else "Won't burst to Cloudflare"
+        message = error.detail or str(error)
+        return cls(error.rule, severity, f"{prefix}: {message}.", _HINTS[error.rule], error.path, error.line, error.column)
+
+    @property
+    def text(self) -> str:
+        return f"[{self.rule_id}] {self.message} {self.hint}"
+
+
+def placement_findings(
+    *, executable_type: str = "workflow", execution_lane: str | None = None,
+    inline: bool = False, artifact_workspace: bool = False, outbound: bool = False,
+    path: str | None = None,
+) -> list[Finding]:
+    reasons = []
+    if inline:
+        reasons.append(("CF_INLINE", "Inline code has no approved, pinned workspace entry"))
+    if artifact_workspace:
+        reasons.append(("CF_ARTIFACT_WORKSPACE", "Runs with an artifact workspace require the Linux execution path"))
+    if execution_lane == "fast_path":
+        reasons.append(("CF_FAST_PATH", "Cloudflare supplies Normal capacity only"))
+    if outbound:
+        reasons.append(("CF_OUTBOUND", "The Solution install allows outbound access beyond its pinned source namespace"))
+    if executable_type != "workflow":
+        reasons.append(("CF_EXECUTABLE_TYPE", f"The {executable_type} executable type has no Workers placement"))
+    findings = []
+    for rule, reason in reasons:
+        refusal = AnalysisRejected(reason, rule)
+        if path is not None:
+            refusal.locate(path)
+        findings.append(Finding.from_refusal(refusal))
+    return findings
+
+
+def agent_finding() -> Finding:
+    return Finding("CF_AGENT", "info", "Agent runs stay on Bifrost.", _HINTS["CF_AGENT"])
 
 
 def digest(value: object) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def _valid_path(path: str) -> bool:
+def valid_source_path(path: str) -> bool:
     parts = path.split("/")
     root = parts[0].removesuffix(".py")
     return (
@@ -347,6 +436,8 @@ def _http_target(
 class _CallHint:
     receiver: str
     url: _URL | None
+    path: str
+    node: ast.Call
 
 
 def _import_module(path: str, node: ast.ImportFrom) -> str:
@@ -370,25 +461,56 @@ class _Analysis:
     nodes: int = 0
     calls: int = 0
     unresolved_url_calls: int = 0
+    url_review_positions: list[tuple[str, int | None, int | None]] = field(default_factory=list)
     exports: dict[str, _Client] = field(default_factory=dict)
     call_hints: list[_CallHint] = field(default_factory=list)
+    single_file: bool = False
+    findings: list[Finding] | None = None
     local_helpers_entry: str | None = None
     literal_selectors: dict[int, str] = field(default_factory=dict)
 
+    def observe(self, rule: str, message: str, path: str, node: ast.AST) -> None:
+        if self.findings is not None:
+            refusal = AnalysisRejected(message, rule)
+            refusal.locate(path, node)
+            self.findings.append(Finding.from_refusal(refusal))
+
     async def load(self, path: str, entry_function: str | None = None) -> bool:
+        try:
+            return await self._load(path, entry_function)
+        except AnalysisRejected as exc:
+            exc.locate(path)
+            raise
+        except SyntaxError as exc:
+            refusal = AnalysisRejected("Workspace source could not be analyzed as Python")
+            refusal.locate(path)
+            refusal.line, refusal.column = exc.lineno, exc.offset
+            raise refusal from exc
+
+    async def _load(self, path: str, entry_function: str | None) -> bool:
         if path in self.found:
             if path == self.local_helpers_entry:
                 raise AnalysisRejected("Entry-local attribute selectors cannot be used in an imported module")
             return self.found[path]
-        if not _valid_path(path) or len(self.found) >= 128:
+        if not valid_source_path(path) or len(self.found) >= 128:
             raise AnalysisRejected("Workspace import paths exceed the analysis policy")
         read_limit = min(self.remaining, _MAX_PARSE_FILE_BYTES)
         content = await self.read(path, read_limit)
         self.found[path] = content is not None
         if content is None:
             return False
-        if len(self.pins) >= MAX_MODULES or len(content) > read_limit:
-            raise AnalysisRejected("Workspace sources exceed the bundle budget")
+        if len(self.pins) >= MAX_MODULES:
+            raise AnalysisRejected(
+                "Workspace sources exceed the bundle budget", "CF_PARSE_BUDGET",
+                detail=f"Workspace bundle contains more than {MAX_MODULES} Python modules",
+            )
+        if len(content) > read_limit:
+            reason = (
+                f"Imported sources exceed the {_MAX_PARSE_BUNDLE_BYTES // 1024} KiB parse budget"
+                if read_limit < _MAX_PARSE_FILE_BYTES
+                else f"Python file exceeds the {_MAX_PARSE_FILE_BYTES // 1024} KiB parse budget"
+            )
+            raise AnalysisRejected("Workspace sources exceed the bundle budget", "CF_PARSE_BUDGET", detail=reason)
         self.remaining -= len(content)
         self.pins[path] = hashlib.sha256(content).hexdigest()
         syntax = ast.parse(content.decode("utf-8"), filename=path)
@@ -401,23 +523,39 @@ class _Analysis:
         imports = self.inspect_module(syntax, path, entry_function)
         del syntax, content
         for node in imports:
-            if isinstance(node, ast.Import):
-                for item in node.names:
-                    await self.resolve(item.name)
-            else:
-                await self.import_from(path, node)
+            try:
+                if isinstance(node, ast.Import):
+                    for item in node.names:
+                        await self.resolve(item.name)
+                else:
+                    await self.import_from(path, node)
+            except AnalysisRejected as exc:
+                exc.locate(path, node)
+                raise
         return True
 
     async def resolve(self, dotted: str, *, optional: bool = False) -> bool:
         parts = dotted.split(".")
         root = parts[0]
         if root in _UNSUPPORTED and dotted != "importlib.metadata":
-            raise AnalysisRejected(f"Unsupported Pyodide import: {root}")
+            rule = "CF_DYNAMIC"
+            if root in {"subprocess", "multiprocessing"}:
+                rule = "CF_PROCESS"
+            elif root == "socket":
+                rule = "CF_TRANSPORT"
+            elif root in {"ctypes", "fcntl", "resource", "signal"}:
+                rule = "CF_NATIVE"
+            raise AnalysisRejected(f"Unsupported Pyodide import: {root}", rule)
         if root in _PACKAGES:
             self.packages.add(_PACKAGES[root])
             return True
         if root in _RESERVED:
             return True
+
+        if self.single_file:
+            if root == "requests":
+                raise self.unresolved_import(dotted)
+            return True  # Unfamiliar imports may live in another workspace file.
 
         for index in range(1, len(parts)):
             await self.load("/".join(parts[:index]) + "/__init__.py")
@@ -427,7 +565,7 @@ class _Analysis:
         if package and module:
             raise AnalysisRejected(f"Ambiguous workspace import: {dotted}")
         if not (package or module or optional):
-            raise AnalysisRejected(f"Unresolved import: {dotted}")
+            raise self.unresolved_import(dotted)
         return package or module
 
     async def import_from(self, path: str, node: ast.ImportFrom) -> None:
@@ -439,15 +577,27 @@ class _Analysis:
                 or (module == "builtins" and alias.name in _DYNAMIC - {"vars"})
                 for alias in node.names
             ):
-                raise AnalysisRejected("Unsupported dynamic import or Pyodide runtime operation")
+                raise AnalysisRejected("Unsupported dynamic import or Pyodide runtime operation", "CF_DYNAMIC")
             return
         found = await self.resolve(module, optional=True)
         for alias in node.names:
             if alias.name == "*":
-                raise AnalysisRejected("Wildcard workspace imports require manual refactoring")
+                raise AnalysisRejected("Wildcard workspace imports require manual refactoring", "CF_DYNAMIC")
             child = await self.resolve(f"{module}.{alias.name}", optional=True)
             if not (found or child):
-                raise AnalysisRejected(f"Unresolved import: {module}.{alias.name}")
+                refusal = self.unresolved_import(module)
+                raise AnalysisRejected(f"Unresolved import: {module}.{alias.name}", refusal.rule)
+
+    @staticmethod
+    def unresolved_import(module: str) -> AnalysisRejected:
+        root = module.partition(".")[0]
+        if root == "requests":
+            rule = "CF_TRANSPORT"
+        elif root in {"awscrt", "win32api", "win32com", "pywin32"}:
+            rule = "CF_NATIVE"
+        else:
+            rule = "CF_PACKAGE"
+        return AnalysisRejected(f"Unresolved import: {module}", rule)
 
     def inspect_module(
         self, syntax: ast.Module, path: str, entry_function: str | None,
@@ -455,7 +605,7 @@ class _Analysis:
         for _ in ast.walk(syntax):
             self.nodes += 1
             if self.nodes > _MAX_NODES:
-                raise AnalysisRejected("Workspace sources exceed the analysis complexity budget")
+                raise AnalysisRejected("Workspace sources exceed the analysis complexity budget", "CF_PARSE_BUDGET")
         if entry_function:
             self.literal_selectors = dict.fromkeys(_literal_helper_selectors(syntax, entry_function), path)
         imports: list[ast.Import | ast.ImportFrom] = []
@@ -531,7 +681,11 @@ class _Analysis:
         if class_clients is not None:
             nodes.sort(key=lambda node: not isinstance(node, ast.FunctionDef) or node.name != "__init__")
         for node in nodes:
-            self.inspect(node, aliases, constants, clients, factories, requests, direct_calls, callback_args, mappings)
+            try:
+                self.inspect(node, aliases, constants, clients, factories, requests, direct_calls, callback_args, mappings, path)
+            except AnalysisRejected as exc:
+                exc.locate(path, node)
+                raise
             if isinstance(node, _SCOPES):
                 shared = {} if isinstance(node, ast.ClassDef) else class_clients
                 if isinstance(node, ast.ClassDef):
@@ -584,18 +738,24 @@ class _Analysis:
         host = literal.host(target[1].host if target else None) if literal else None
         return _URL(f"https://{host}") if host is not None else _URL("", False)
 
-    def record_call(self, literal: _URL | None, host: str | None = None) -> None:
+    def record_call(
+        self, literal: _URL | None, host: str | None = None, *,
+        path: str, node: ast.AST, check_scheme: bool = False,
+    ) -> None:
         self.calls += 1
         proposed = literal.host(host) if literal else None
         if proposed is None:
             self.unresolved_url_calls += 1
+            if self.findings is not None and not (check_scheme and self.observe_transport(literal, path, node)):
+                offset = getattr(node, "col_offset", None)
+                self.url_review_positions.append((path, getattr(node, "lineno", None), offset + 1 if offset is not None else None))
         else:
             self.hosts.add(proposed)
 
     def inspect(
         self, node: ast.AST, aliases: dict[str, str], constants: dict[str, str], clients: dict[str, _Client],
         factories: dict[str, _Client], requests: dict[str, _URL | None], direct_calls: set[int],
-        callback_args: set[int], mappings: set[str],
+        callback_args: set[int], mappings: set[str], path: str,
     ) -> None:
         if isinstance(node, ast.Attribute) and (
             node.attr in _BLOCKED_ATTRIBUTES
@@ -604,19 +764,25 @@ class _Analysis:
                 not isinstance(node.ctx, ast.Load) or _qualified(node.value, aliases) == "builtins"
             )
         ):
-            raise AnalysisRejected("Unsupported dynamic or Pyodide runtime operation")
+            raise AnalysisRejected("Unsupported dynamic or Pyodide runtime operation", "CF_DYNAMIC")
         if isinstance(node, (ast.Name, ast.Attribute)) and isinstance(node.ctx, ast.Load):
             qualified = _qualified(node, aliases)
+            if qualified in {"os.system", "os.popen"} or qualified.startswith(("os.spawn", "os.exec", "os.posix_spawn")):
+                self.observe("CF_PROCESS", f"{qualified} requires a native process", path, node)
             if (
                 qualified in _REFLECTION or qualified.removeprefix("builtins.") in _DYNAMIC | {"__builtins__"}
                 and not (qualified == "builtins.vars" and id(node) in direct_calls)
                 or qualified.rsplit(".", 1)[-1] in _TRAPS
             ):
-                raise AnalysisRejected("Unsupported dynamic or Pyodide runtime operation")
+                rule = "CF_PROCESS" if qualified in {"os.fork", "os.forkpty"} else "CF_DYNAMIC"
+                raise AnalysisRejected(
+                    "Unsupported dynamic or Pyodide runtime operation", rule,
+                    detail=f"Unsupported dynamic or Pyodide runtime operation: {qualified}",
+                )
             if id(node) not in direct_calls and qualified == "builtins.getattr":
-                raise AnalysisRejected("Unsupported indirect reference to a dynamic operation")
+                raise AnalysisRejected("Unsupported indirect reference to a dynamic operation", "CF_DYNAMIC")
             if id(node) not in direct_calls and id(node) not in callback_args and _http_target(node, aliases, constants, clients, factories):
-                self.record_call(None)
+                self.record_call(None, path=path, node=node)
         if not isinstance(node, ast.Call):
             return
         qualified = _qualified(node.func, aliases)
@@ -624,7 +790,7 @@ class _Analysis:
             len(node.args) != 1 or node.keywords or isinstance(node.args[0], ast.Starred)
             or _qualified(node.args[0], aliases) == "builtins"
         ):
-            raise AnalysisRejected("Unsupported dynamic namespace lookup")
+            raise AnalysisRejected("Unsupported dynamic namespace lookup", "CF_DYNAMIC")
         if qualified == "builtins.getattr":
             attr = node.args[1] if len(node.args) > 1 else None
             if not isinstance(attr, ast.Constant) or not isinstance(attr.value, str):
@@ -636,45 +802,61 @@ class _Analysis:
                     # The selector is bounded, but the receiver may make an HTTP
                     # request. Require review without proposing an inferred host.
                     self.local_helpers_entry = helper_module
-                    self.record_call(None)
+                    self.record_call(None, path=path, node=node)
                     return
                 if node.args and (_qualified(node.args[0], aliases) == "builtins" or id(node) in direct_calls):
-                    raise AnalysisRejected("Unsupported dynamic attribute lookup")
+                    raise AnalysisRejected("Unsupported dynamic attribute lookup", "CF_DYNAMIC")
                 return
             if (
                 attr.value in _REFLECTIVE_SELECTORS
                 or attr.value == "__dict__" and _qualified(node.args[0], aliases) == "builtins"
             ):
-                raise AnalysisRejected("Unsupported dynamic attribute lookup")
+                raise AnalysisRejected("Unsupported dynamic attribute lookup", "CF_DYNAMIC")
             if _http_target(ast.Attribute(value=node.args[0], attr=attr.value, ctx=ast.Load()),
                             aliases, constants, clients, factories):
-                self.record_call(None)
+                self.record_call(None, path=path, node=node)
             return
+        if qualified in _REQUEST_BUILDERS and self.findings is not None:
+            url = _argument(node, 0 if qualified == "urllib.request.Request" else 1, "url", "fullurl")
+            self.observe_transport(_url_literal(url, constants) if url is not None else None, path, node)
         if qualified in _HTTP_CLIENTS:
+            base = _argument(node, len(node.args), "base_url")
+            self.observe_transport(_url_literal(base, constants) if base is not None else None, path, node)
             client = _client(node, aliases, constants, clients, factories)
             if client and client.host is not None:
                 self.hosts.add(client.host)
         namespace, _, method = qualified.rpartition(".")
         if namespace.startswith("bifrost.") and namespace.split(".")[1] != "types":
+            area = namespace.split(".")[1]
+            # These SDK calls require routes outside qualification-gateway.mjs.
+            if area in {"roles", "users"} or qualified == "bifrost.workflows.execute":
+                self.observe("CF_SDK_GATEWAY", f"The gateway does not forward {qualified}", path, node)
             self.calls += 1
             return
         target = _http_target(node.func, aliases, constants, clients, factories)
         if target is not None:
             method, client = target
             if method != "build_request":
-                self.record_call(self.call_url(node, method, aliases, constants, clients, factories, requests), client.host)
+                literal = self.call_url(node, method, aliases, constants, clients, factories, requests)
+                self.record_call(literal, client.host, path=path, node=node, check_scheme=True)
             return
         for index, callback in enumerate(node.args):
             cb = _http_target(callback, aliases, constants, clients, factories)
             if cb is not None:
                 argument = _argument(node, index + 1, "url")
                 literal = _url_literal(argument, constants) if argument is not None else None
-                self.record_call(literal, cb[1].host)
+                self.record_call(literal, cb[1].host, path=path, node=node, check_scheme=True)
         if method in _HTTP_METHODS and (
             not isinstance(node.func, ast.Attribute) or _dotted(node.func.value) not in mappings
         ):
             literal = self.call_url(node, method, aliases, constants, clients, factories, requests)
-            self.call_hints.append(_CallHint(namespace, literal))
+            self.call_hints.append(_CallHint(namespace, literal, path, node))
+
+    def observe_transport(self, literal: _URL | None, path: str, node: ast.AST) -> bool:
+        if literal is None or "://" not in literal.prefix or literal.prefix.lower().startswith("https://"):
+            return False
+        self.observe("CF_TRANSPORT", "The HTTP call uses a non-HTTPS URL", path, node)
+        return True
 
     def call_url(
         self, node: ast.Call, method: str, aliases: dict[str, str], constants: dict[str, str],
@@ -695,9 +877,9 @@ class _Analysis:
         for hint in self.call_hints:
             client = self.exports.get(hint.receiver)
             if client is not None:
-                self.record_call(hint.url, client.host)
+                self.record_call(hint.url, client.host, path=hint.path, node=hint.node, check_scheme=True)
             elif hint.url and hint.url.prefix.startswith(("http://", "https://")):
-                self.record_call(None)
+                self.record_call(None, path=hint.path, node=hint.node)
 
 
 async def analyze(
@@ -705,9 +887,15 @@ async def analyze(
     *, subrequest_allowance: int, cpu_budget_ms: int,
 ) -> dict[str, object]:
     """Build the canonical pins and bounded routing proposal without executing code."""
+    return await _analyze(_Analysis(read), entry_path, function_name, subrequest_allowance, cpu_budget_ms)
+
+
+async def _analyze(
+    analysis: _Analysis, entry_path: str, function_name: str | None,
+    subrequest_allowance: int, cpu_budget_ms: int,
+) -> dict[str, object]:
     if not (0 <= subrequest_allowance <= MAX_SUBREQUESTS and 1 <= cpu_budget_ms <= MAX_CPU_MS):
         raise AnalysisRejected("Invalid Cloudflare subrequest allowance or CPU budget")
-    analysis = _Analysis(read)
     try:
         async with asyncio.timeout(20):
             if not await analysis.load(entry_path, function_name):
@@ -715,16 +903,30 @@ async def analyze(
     except (SyntaxError, UnicodeError, RecursionError) as exc:
         raise AnalysisRejected("Workspace source could not be analyzed as Python") from exc
     analysis.finish_call_hints()
+    if analysis.findings is not None and analysis.url_review_positions:
+        positions = analysis.url_review_positions
+        path, line, column = positions[0] if len(positions) == 1 else (entry_path, None, None)
+        analysis.findings.append(Finding(
+            "CF_URL_REVIEW", "info",
+            f"{len(positions)} HTTP call(s) need operator review of the destination host.",
+            _HINTS["CF_URL_REVIEW"], path, line, column,
+        ))
     # Static sizing signals. Repeated calls, input-dependent work and library
     # work are constrained by the runtime allowance and budget.
     estimated_subrequests = analysis.calls + len(analysis.pins)
     estimated_cpu_ms = max(1, (analysis.nodes + 24) // 25)
-    if estimated_subrequests > subrequest_allowance:
-        raise AnalysisRejected(f"Estimated subrequests ({estimated_subrequests}) exceed the allowance")
-    if estimated_cpu_ms > cpu_budget_ms:
-        raise AnalysisRejected(f"Estimated CPU ({estimated_cpu_ms} ms) exceeds the budget")
+    if not analysis.single_file and estimated_subrequests > subrequest_allowance:
+        raise AnalysisRejected(
+            f"Estimated subrequests ({estimated_subrequests}) exceed the allowance", "CF_SUBREQUESTS",
+            detail=f"Estimated subrequests ({estimated_subrequests}) exceed the allowance ({subrequest_allowance})",
+        )
+    if not analysis.single_file and estimated_cpu_ms > cpu_budget_ms:
+        raise AnalysisRejected(
+            f"Estimated CPU ({estimated_cpu_ms} ms) exceeds the budget", "CF_CPU",
+            detail=f"Estimated CPU ({estimated_cpu_ms} ms) exceeds the budget ({cpu_budget_ms} ms)",
+        )
     if len(analysis.hosts) > 32:
-        raise AnalysisRejected("Workspace sources exceed the HTTPS host budget")
+        raise AnalysisRejected("Workspace sources exceed the HTTPS host budget", "CF_HOST_BUDGET")
     hosts = sorted(analysis.hosts)
     return {
         "entry_path": entry_path, "function_name": function_name,
@@ -735,3 +937,29 @@ async def analyze(
         "estimated_subrequests": estimated_subrequests, "subrequest_allowance": subrequest_allowance,
         "estimated_cpu_ms": estimated_cpu_ms, "cpu_budget_ms": cpu_budget_ms,
     }
+
+
+
+async def diagnose(
+    read: SourceReader, path: str, function_name: str | None = None,
+    *, single_file: bool = False, subrequest_allowance: int = MAX_SUBREQUESTS, cpu_budget_ms: int = 1000,
+) -> list[Finding]:
+    """Expose the first canonical refusal and any observed advisory findings."""
+    findings: list[Finding] = []
+    try:
+        await _analyze(_Analysis(read, single_file=single_file, findings=findings),
+                       path, function_name, subrequest_allowance, cpu_budget_ms)
+    except (AnalysisRejected, TimeoutError) as exc:
+        refusal = exc if isinstance(exc, AnalysisRejected) else AnalysisRejected(
+            "Source analysis timed out", "CF_PARSE_BUDGET",
+        )
+        refusal.locate(path)
+        findings.append(Finding.from_refusal(refusal))
+    return list(dict.fromkeys(findings))
+
+
+async def diagnose_file(path: str, source: bytes) -> list[Finding]:
+    async def read(_path: str, _maximum: int) -> bytes:
+        return source
+
+    return await diagnose(read, path, single_file=True)

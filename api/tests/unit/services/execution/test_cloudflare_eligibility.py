@@ -20,7 +20,7 @@ from src.models.orm import (
     Workflow,
 )
 from src.services.execution import cloudflare_eligibility, service, workflow_dispatch
-from src.services.execution.cloudflare_analysis import (
+from bifrost.cloudflare_analysis import (
     POLICY_VERSION,
     AnalysisRejected,
     SourceUnresolved,
@@ -489,7 +489,7 @@ def run(obj):
 
 
 async def test_parse_rejects_oversized_source_before_parsing(monkeypatch):
-    from src.services.execution import cloudflare_analysis
+    from bifrost import cloudflare_analysis
 
     parse = Mock(side_effect=AssertionError("oversized source reached parser"))
     monkeypatch.setattr(cloudflare_analysis.ast, "parse", parse)
@@ -499,7 +499,7 @@ async def test_parse_rejects_oversized_source_before_parsing(monkeypatch):
 
 
 async def test_total_parse_budget_is_enforced_before_fifth_module(monkeypatch):
-    from src.services.execution import cloudflare_analysis
+    from bifrost import cloudflare_analysis
 
     parse = Mock(wraps=cloudflare_analysis.ast.parse)
     monkeypatch.setattr(cloudflare_analysis.ast, "parse", parse)

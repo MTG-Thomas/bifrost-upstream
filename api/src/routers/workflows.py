@@ -73,6 +73,7 @@ from src.models.contracts.identities import IdentityPublic
 from src.models.contracts.recommended_access import RecommendedAccess
 from src.models.contracts.workflow_permissions import WorkflowPermissionMode
 from src.services.authorization.enforce import (
+    allows_permission,
     load_caller,
     require_permission,
     user_reach,
@@ -603,7 +604,8 @@ async def validate_workflow(
     db: DbSession,
 ) -> WorkflowValidationResponse:
     """Validate a workflow file for errors."""
-    from src.services.workflow_validation import validate_workflow_file
+    from src.config import get_settings
+    from src.services.workflow_validation import validate_static_workflow, validate_workflow_file
 
     caller = await load_caller(db, user)
     runtime = caller.principal.runtime_authority
@@ -613,12 +615,16 @@ async def validate_workflow(
         else (caller.ctx.home_organization_id if caller.ctx is not None else None)
     )
     require_permission(caller, "workflows.read", target_org_id)
+    if request.content is None:
+        require_permission(caller, "repository.read", None)
 
     try:
-        result = await validate_workflow_file(
-            path=request.path,
-            content=request.content,
-        )
+        if get_settings().cloudflare_diagnostics_enabled:
+            result = await validate_static_workflow(
+                request, db, can_read_workspace=allows_permission(caller, "repository.read", None),
+            )
+        else:
+            result = await validate_workflow_file(path=request.path, content=request.content)
 
         logger.info(f"Validation result for {log_safe(request.path)}: valid={result.valid}, issues={len(result.issues)}")
         return result

@@ -3385,20 +3385,37 @@ Options:
   --help  Show this message and exit.
 
 Commands:
-  convert          Analyze, review and convert workflow permissions.
-  delete           Delete a workflow by removing its function from the...
-  execute          Execute a registered workflow remotely and stream logs...
-  get              Get a single workflow by UUID, name, or ``path::func``...
-  grant            Grant the identity a workflow runs as what Recommended...
-  grant-role       Grant a role access to a workflow.
-  list             List all workflows visible to the caller.
-  list-orphaned    List all orphaned workflows (backing file deleted or...
-  recommendations  Show what the identity a workflow runs as would also...
-  register         Register a decorated function from an existing...
-  remap            Move references from one workflow ID to another active...
-  replace          Repoint an orphaned workflow to a new file location.
-  revoke-role      Revoke a role's access from a workflow.
-  update           Update a workflow's editable properties.
+  cloudflare-report  Opt in to an offline Workers report for a workspace...
+  convert            Analyze, review and convert workflow permissions.
+  delete             Delete a workflow by removing its function from the...
+  execute            Execute a registered workflow remotely and stream...
+  get                Get a single workflow by UUID, name, or...
+  grant              Grant the identity a workflow runs as what...
+  grant-role         Grant a role access to a workflow.
+  list               List all workflows visible to the caller.
+  list-orphaned      List all orphaned workflows (backing file deleted or...
+  recommendations    Show what the identity a workflow runs as would also...
+  register           Register a decorated function from an existing...
+  remap              Move references from one workflow ID to another...
+  replace            Repoint an orphaned workflow to a new file location.
+  revoke-role        Revoke a role's access from a workflow.
+  update             Update a workflow's editable properties.
+  validate           Validate workspace PATH or proposed content from a...
+```
+
+### `workflows cloudflare-report`
+
+```
+Usage: workflows cloudflare-report [OPTIONS] [WORKSPACE]
+
+  Opt in to an offline Workers report for a workspace or a tree of Solutions.
+
+Options:
+  --allowance INTEGER RANGE  [default: 50; 0<=x<=50]
+  --cpu INTEGER RANGE        [default: 1000; 1<=x<=9007199254740991]
+  --aggregate-only           Print rule IDs and affected artifact counts only.
+  --json                     Emit JSON instead of human-readable output.
+  --help                     Show this message and exit.
 ```
 
 ### `workflows convert`
@@ -3769,6 +3786,23 @@ Options:
   --public-endpoint / --no-public-endpoint
                                   public_endpoint (tri-state; omit to leave
                                   unchanged).
+  --json                          Emit JSON instead of human-readable output.
+  --help                          Show this message and exit.
+```
+
+### `workflows validate`
+
+```
+Usage: workflows validate [OPTIONS] PATH
+
+  Validate workspace PATH or proposed content from a local file.
+
+Options:
+  --from-file FILE
+  --execution-lane [auto|normal|fast_path]
+  --inline                        Check placement for an inline execution.
+  --artifact-workspace            Check placement for a run with an artifact
+                                  workspace.
   --json                          Emit JSON instead of human-readable output.
   --help                          Show this message and exit.
 ```

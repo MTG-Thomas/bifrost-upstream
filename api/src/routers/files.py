@@ -1620,6 +1620,20 @@ async def put_file_content_editor(
                     source=d.source,
                 ))
 
+        from src.config import get_settings
+
+        if get_settings().cloudflare_diagnostics_enabled and request.path.endswith(".py"):
+            from bifrost.cloudflare_analysis import diagnose_file
+
+            for finding in await diagnose_file(request.path, write_result.final_content):
+                diagnostics.append(FileDiagnostic(
+                    severity=finding.severity,
+                    message=finding.text,
+                    line=finding.line,
+                    column=finding.column,
+                    source="cloudflare",
+                ))
+
         return FileContentResponse(
             path=request.path,
             content=response_content,

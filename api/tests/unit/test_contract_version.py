@@ -94,7 +94,11 @@ from src.models.contracts.services import ServicePolicyUpdate  # noqa: E402
 from src.models.contracts.tables import TableCreate, TableUpdate  # noqa: E402
 from src.models.contracts.recommended_access import RecommendedAccess  # noqa: E402
 from src.models.contracts.users import RoleCreate, RoleUpdate  # noqa: E402
-from src.models.contracts.workflows import WorkflowUpdateRequest  # noqa: E402
+from src.models.contracts.workflows import (  # noqa: E402
+    WorkflowUpdateRequest,
+    WorkflowValidationRequest,
+    WorkflowValidationResponse,
+)
 
 import inspect  # noqa: E402
 
@@ -115,6 +119,8 @@ _COMMAND_DTOS: list[type] = [
     RoleCreate,
     RoleUpdate,
     WorkflowUpdateRequest,
+    WorkflowValidationRequest,
+    WorkflowValidationResponse,
     WorkflowExecutionRequest,
     WorkflowExecutionResponse,
     FormCreate,
@@ -434,7 +440,9 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # CLI shapes and MIN_CLI_VERSION remain unchanged.
     # WorkerCapacityProfile.runtime_profile is additive and defaults to the
     # Linux runtime, so existing CLI shapes and the minimum stay unchanged.
-    "9fdd97e7141336e1e407c16a6981c97b14fc9e1d2c2506884833a50e23a020ce"
+    # Workflow validation is now fingerprinted for CLI and MCP. Request fields
+    # are optional and Cloudflare issue metadata and info severity are additive.
+    "436ba7d1f2aaf5a842c11c2c88962b465fdc83a2dbaed8a828bb9b289f4593c8"
 )
 
 

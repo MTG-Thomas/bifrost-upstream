@@ -46,6 +46,10 @@ class Settings(BaseSettings):
         description="Operator opt-in for dev Cloudflare external worker control sessions",
     )
 
+    cloudflare_diagnostics_enabled: bool = Field(
+        default=False, exclude=True,
+        description="Show advisory Cloudflare Workers diagnostics in workspace and Solution authoring",
+    )
     cloudflare_summary_endpoint: str | None = Field(
         default=None, exclude=True,
         description="Opt-in fixed HTTPS base URL for Cloudflare chat-completion summaries",
