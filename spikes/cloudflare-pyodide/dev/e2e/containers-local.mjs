@@ -158,9 +158,9 @@ export function localSolutionGit() {
     for (const version of ['1.0.0', '2.0.0']) {
       writeFileSync(descriptor, `slug: container-update\nname: Container Update\nversion: "${version}"\n`);
       git('add', 'solutions/demo/bifrost.solution.yaml');
-      git('commit', '-m', version);
+      git('-c', 'commit.gpgSign=false', 'commit', '-m', version);
     }
-    git('tag', 'update');
+    git('-c', 'tag.gpgSign=false', 'tag', '-a', 'update', '-m', 'Fixture update');
     git('reset', '--hard', 'HEAD^');
     return {
       fetches: 0,

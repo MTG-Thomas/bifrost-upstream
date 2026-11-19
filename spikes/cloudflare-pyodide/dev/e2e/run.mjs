@@ -665,7 +665,9 @@ asyncio.run(run())
     assert.match(jobId, /^[0-9a-f-]{36}$/);
     const update = await until('Container Git update check settles', () => {
       const row = sql(`SELECT json_build_object('status',j.status,'result',j.result,'error',j.error_code,
-        'stage',j.remote_stage,'update_available',s.update_available_version,'scope',w.capacity_scope)
+        'stage',j.remote_stage,'update_available',s.update_available_version,'scope',w.capacity_scope,
+        'events',(SELECT count(*) FROM events WHERE event_type = 'solution.update_available'
+          AND data->'solution'->>'id' = s.id::text AND data->'solution'->>'available_version' = '2.0.0'))
         FROM platform_jobs j CROSS JOIN solutions s
         LEFT JOIN execution_workers w ON w.id = (j.remote_stage->>'worker_id')::uuid
         WHERE j.id = '${jobId}' AND s.id = '${solutionId}'`);
@@ -677,6 +679,7 @@ asyncio.run(run())
     assert.equal(update.update_available, '2.0.0');
     assert.equal(update.result.updates_found, 1);
     assert.equal(update.result.check_failures, 0);
+    assert.equal(update.events, 1);
     assert.ok(git.fetches > 0);
     evidence('containers-platform-stage', {jobId, solutionId, ...update, gitFetches: git.fetches});
     const approved = await startRun('phase6-a', true, config.phase6.tenants[0]);
