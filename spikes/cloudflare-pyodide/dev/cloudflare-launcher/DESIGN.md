@@ -1,8 +1,9 @@
 # Cloudflare launcher: Workers as an external worker in the upstream pool
 
 Status: phases 5a and 5b passed on the fork, 2026-11-18. Phase 7 verified
-hosted provisioning and provider discovery. CT128 occupancy blocked
-its workload pass on 2026-11-19. Targets upstream
+hosted agent and summary settlement, three-scope claim placement, and Linux
+workflow execution and idle release on Containers. See the resumed run for
+Workers workflow and hosted runtime results. Targets upstream
 `main` (Jack's merged
 capacity core, #1423) and stays compatible with the direction of #1424
 (API-owned compute, derived worker keys) and #1425 (Cloudflare Containers
@@ -683,6 +684,80 @@ invoice was unavailable at teardown. The CT128 Docker CLI used the legacy
 builder, so the private archive supplied the tracked LICENSE at mode 0644
 in place of Dockerfile `COPY --chmod=644`. No runtime source fix was
 identified in this preflight.
+
+#### Resumed hosted run, 2026-11-19
+
+The harness was rebased onto `cb2b3dceb`, including the local Containers Git
+stage. Three `dev/e2e` Node tests passed after conflict resolution. The trial
+used `bifrost-hq-cb2b3dceb` in Midtown Technology Group, with private
+`-summary`, `-agent`, `-manual` and `-launcher` Workers, plus the authenticated
+`-workers` and `-containers` capacity providers. The one-instance `basic`
+application `bifrost-hq-cb2b3dceb-container` had ID
+`a03f1761-7779-4f02-9b17-abba5604d299`. Its image was
+`bifrost-hq-cb2b3dceb:e9acacb83` at digest
+`sha256:788e976a585e6a5074fc87f0c88d9e05329d3dcefb71219946dce3e27eec9681`.
+Tunnel `9449d689-aa3e-4bc5-b62e-748b0b628d82` and proxied DNS record
+`5a47d2b633331c573267f77948cf732b` served the anchored ingress rules. Login
+and OpenAPI returned 404. The unauthenticated tables POST returned 401.
+
+The first CT128 launch admitted one concurrent project with 16 GiB available
+on `pve-t340`. The recovery archive `hosted-30cb36a44` also cleared that
+gate. The main evidence comes from its project `bifrost-debug-91c75ece`.
+The compiled runtime was the Phase 5b artifact, with SHA-256
+`fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5`.
+
+| Check | Execution or run | Evidence |
+|---|---|---|
+| Opt-in summary | `79081b73-bdbc-45a0-92d5-89f00d742be9` | Manual incarnation `b005d8d3-6453-4e27-85c5-3045ec81c85f`, one database claim, one stub call, completed summary and usage 88 input / 11 output tokens. |
+| Autonomous agent | `0fd9066a-7011-4392-9721-7c887e255ae0` | Same manual incarnation, one stub call, `llm_request` then `llm_response`, one usage record and completed output `fixture text`. Its automatic follow-on summary was refused by the narrower stub fixture. |
+| VM primary | `6ceae7ee-39ed-4d6d-b895-01a51ca804fa` | VM incarnation `ce04068f-0428-4d40-a8e5-b82ef7a13848` held the primary claim while both overflow scopes admitted work. |
+| Approved loose workflow | `ccf5c4ef-3434-41cc-8157-3ca85bd87aa1` | One claim `fe8c45b3-9fe8-4be5-8c98-0c95449b7d83` on the two-slot Workers incarnation `dd484a48-e2d1-4d16-bb0b-584283728e28`. It failed before engine entry with `TenantHostNotReady`, then retired idle. The approved Solution fixture was installed and pinned. The overlap check did not dispatch it because the loose fixture did not enter its hold. |
+| Linux subprocess | `67be76b1-a472-4147-9cab-ca8e8aeda2b6` | One claim `d94ccb68-f140-457d-b561-48bdcb5dd94a` on Containers incarnation `91f54b5e-532f-4a7f-b2eb-0c5a380d5245`, with protocol-2 credentials and accepted derived hello 1. The workflow returned `stdout=containers` and reported denied access to the supervisor environment. Its assertions required non-root UID and absence of control and platform secrets. The requirements heartbeat reported 1/1. |
+| Container start and release | Same Linux run | Reservation to ready was 4.52 s, and enqueue to workflow start was 44.10 s including placement. Idle retirement occurred 15.32 s after settlement and the deletion receipt 2.06 s later. Cloudflare instance `8e95c56402f04d63ad6e2f003623ed12be15a66f03253dcf16d2893e3276ab97` read back `inactive` at 17:08:00 UTC. Natural Cloudflare inactivity expiry was outside this release proof. |
+
+Managed Workers reservation to ready was 1.64 s, and the loose run spent
+8.33 s from enqueue to claim. The first manual readiness window elapsed
+before Cron fired. Later Workers Logs showed Cron and the DO alarms dialing
+the preserved identity. The relaunched relay recorded hello 63 and ready in
+9.89 s after it began listening.
+
+The harness fixes move scaling policy validation after VM provider discovery,
+keep the static launchers running during the manual wait, and expose the
+public CA bundle to the unprivileged API process at mode 0644. An existing
+approved fixture was resumed after the CA fix, keeping the same installed
+Solution and approved workflow revisions. No workflow was dispatched before
+these setup repairs.
+
+Workers Logs for manual diagnostic execution
+`9b2ed966-cb81-401b-8af6-acb6a219ebd1` recorded a successful
+`phase7_warm_ping_http 200` followed by a code-update reset inside
+`TenantHost.#rememberWarm` (trace `63cb56b1a2630c74f64314e89f20e49e`).
+The hosted workflow failed before entry. Engine-only warm had detached
+the storage write from the readiness response. The fix awaits the warm
+state write and keeps origin warming asynchronous. The focused workerd test
+passed with the origin response held, and verified the tenant and alarm
+state after warm returned. Cloudflare deployed the fix as manual Worker
+version `fd4364a9-dedb-4fcf-96a5-7ced00b68cea`. The final observer failed
+to re-admit the launcher before the hosted window closed, so there is no
+successful hosted workflow on the fixed version in this run.
+
+The CPU fixture `e9689dce-6b23-4667-9941-3be32052f5b2` also received one
+`not_started` / `TenantHostNotReady` terminal and ACK. It did not exercise
+the CPU quota. On reconnect, the manual DO resumed the same incarnation
+with hello 145, session generation 2 and empty inventory. A second
+reconnection reached generation 3. The held workflow never entered its
+SDK call, so the immediate replacement was not activated and in-flight
+DO recovery was unverified.
+
+The trial tunnel read back no connectors and a deletion timestamp of
+17:18:58 UTC. Cloudflare returned zero matching Workers, Durable Object
+namespaces, Container apps, registry images, live tunnels and DNS records.
+Docker returned zero matching containers, networks, volumes, and images
+for both debug projects. CT128 had no trial connector processes. Both
+archives' private handoffs, token files and raw debug logs were removed.
+Estimated incremental cost was about $0.01. The Container reservation
+lasted about 31 seconds, all model requests used the stub, and the invoice
+was unavailable. The production canary was outside the trial resource set.
 
 ### Multi-slot managed launchers
 

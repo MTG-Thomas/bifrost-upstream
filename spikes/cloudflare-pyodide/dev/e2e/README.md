@@ -276,7 +276,9 @@ zero containers, networks, volumes and task images for both trial projects.
 
 Use a private, newly initialized `/opt/bifrost-tests/hosted-<sha>` archive.
 Run `phase7.py prepare <trial-host>` before starting the debug stack. Start
-the stack only when CT128 has no running Bifrost test or debug stack. Use
+only with at most one other Bifrost test or debug stack on CT128 and at least
+8 GiB available in `free -g` on `pve-t340`. Count the chat reservation as one
+stack. Use short SSH checks a few minutes apart if the gate is busy. Use
 `BIFROST_FORCE_PORT=1 ./debug.sh up` with a detached owner and a private log.
 Use Node 26, the pinned packaged runtime, and the staged runtime loader files
 from Phase 5b.
