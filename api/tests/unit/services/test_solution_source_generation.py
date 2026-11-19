@@ -46,3 +46,51 @@ async def test_deploy_publishes_source_generation_only_after_finalize(db_session
         await result.finalize_s3()
         assert solution.runtime_source_generation not in {None, previous_generation}
     publish_source.assert_awaited_once_with(solution.id, {})
+
+
+
+@pytest.mark.parametrize("mode", ["report", "failure", "discard"])
+async def test_deploy_defers_advisory_diagnostics_and_scans_shared_module_once(
+    db_session, monkeypatch, caplog, mode,
+):
+    from bifrost import cloudflare_report
+    from src import config
+
+    monkeypatch.setattr(config, "get_settings", lambda: SimpleNamespace(cloudflare_diagnostics_enabled=True))
+    scan = AsyncMock(wraps=cloudflare_report.diagnose)
+    if mode == "failure":
+        scan.side_effect = RuntimeError("fixture diagnostic failure")
+    monkeypatch.setattr(cloudflare_report, "diagnose", scan)
+
+    solution = Solution(id=uuid4(), slug=f"diagnostics-{uuid4().hex}", name="Diagnostics fixture")
+    db_session.add(solution)
+    await db_session.flush()
+    path = "workflows/example.py"
+    bundle = SolutionBundle(
+        solution=solution,
+        workflows=[
+            {"id": str(uuid4()), "path": path, "function_name": name, "name": name}
+            for name in ("first", "second")
+        ],
+        python_files={path: "import subprocess\ndef first(): pass\ndef second(): pass\n"},
+    )
+    result = await SolutionDeployer(db_session).deploy(
+        bundle, include_cloudflare_diagnostics=mode != "discard",
+    )
+    assert result.workflows_upserted == 2
+    scan.assert_not_awaited()
+
+    if mode == "discard":
+        assert result.collect_cloudflare_diagnostics is None
+        return
+
+    assert result.collect_cloudflare_diagnostics is not None
+    diagnostics = await result.collect_cloudflare_diagnostics()
+    scan.assert_awaited_once()
+    if mode == "failure":
+        assert diagnostics is None
+        assert "Cloudflare diagnostics failed" in caplog.text
+    else:
+        assert diagnostics is not None
+        assert [report["function_name"] for report in diagnostics] == ["first", "second"]
+        assert [report["findings"][0]["rule_id"] for report in diagnostics] == ["CF_PROCESS"] * 2
