@@ -536,9 +536,9 @@ export class TenantHost extends DurableObject {
       }
       return {...boot, ...await this.#warmOrigin()};
     } finally {
-      const remember = this.#rememberWarm(tenantId);
-      if (engineOnly) this.ctx.waitUntil(remember);
-      else await remember;
+      // A hosted child boot can reset this object before its next storage
+      // operation. Surface that reset to the caller before reporting readiness.
+      await this.#rememberWarm(tenantId);
     }
   }
 
