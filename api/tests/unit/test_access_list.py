@@ -2227,7 +2227,9 @@ _REDIS_PLAIN_READS: dict[str, tuple[int, str]] = {
     "src.routers.platform.workers.get_pool_stats": (1, "Worker pool diagnostics."),
     "src.routers.platform.workers.list_pools": (2, "Worker pool diagnostics."),
     "src.routers.platform.workers.recycle_all_processes": (2, "Checks a pool exists before asking it to recycle."),
-    "src.routers.platform.workers.recycle_process": (1, "Checks a pool exists before asking it to recycle."),
+    "src.routers.platform.workers.recycle_process": (
+        2, "Pool existence and runtime kind before requesting Linux process recycle.",
+    ),
     "src.services.access_check_writer._Writer.settle": (
         2, "Checks audit-write claim ownership before retaining or releasing a diagnostic deduplication marker.",
     ),
@@ -2249,6 +2251,9 @@ _REDIS_PLAIN_READS: dict[str, tuple[int, str]] = {
     "src.services.execution.autonomous_agent_executor.AutonomousAgentExecutor._check_cancelled": (
         1,
         "Cancel flag; only stops a run.",
+    ),
+    "src.services.execution.cloudflare_chat_outbox.project": (
+        1, "Conversation replay projection and its receipt; agent authority is fenced in PostgreSQL.",
     ),
     "src.services.execution.install_progress.report_phase": (1, "Package install progress."),
     "src.services.notification_service.NotificationService.find_admin_notification_by_title": (
