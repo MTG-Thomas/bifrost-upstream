@@ -313,16 +313,23 @@ def _url_literal(node: ast.expr, constants: dict[str, str]) -> _URL | None:
 def _check_tokens(source: str) -> None:
     """Account for dense syntax before allocating the parser arena."""
     remaining = _MAX_TOKEN_WEIGHT
-    for token in tokenize.generate_tokens(io.StringIO(source, newline=None).readline):
-        remaining -= 1
-        # Before PEP 701 a whole f-string, including its expressions, is
-        # emitted as one STRING token. Charge its characters conservatively.
-        if sys.version_info < (3, 12) and token.type == tokenize.STRING:
-            prefix = token.string[:2].lower()
-            if prefix.startswith(("f", "rf")):
-                remaining -= len(token.string)
-        if remaining < 0:
-            raise AnalysisRejected("Python file exceeds the analysis token budget", "CF_PARSE_BUDGET")
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(source, newline=None).readline):
+            remaining -= 1
+            # Before PEP 701 a whole f-string, including its expressions, is
+            # emitted as one STRING token. Charge its characters conservatively.
+            if sys.version_info < (3, 12) and token.type == tokenize.STRING:
+                prefix = token.string[:2].lower()
+                if prefix.startswith(("f", "rf")):
+                    remaining -= len(token.string)
+            if remaining < 0:
+                raise AnalysisRejected("Python file exceeds the analysis token budget", "CF_PARSE_BUDGET")
+    except tokenize.TokenError as exc:
+        message, (line, column) = exc.args
+        # EOF failures can refer to a synthetic line beyond the file.
+        content = source.rstrip("\r\n")
+        last_line = 1 + content.count("\n") + content.count("\r") - content.count("\r\n")
+        raise SyntaxError(message, (None, min(line, last_line), column + 1, None)) from exc
 
 
 def _api_path_allowed(method: str, path: str) -> bool:
@@ -592,7 +599,7 @@ class _Analysis:
         except AnalysisRejected as exc:
             exc.locate(path)
             raise
-        except (SyntaxError, UnicodeError, RecursionError, tokenize.TokenError) as exc:
+        except (SyntaxError, UnicodeError, RecursionError) as exc:
             refusal = AnalysisRejected("Workspace source could not be analyzed as Python")
             refusal.locate(path)
             if isinstance(exc, SyntaxError):

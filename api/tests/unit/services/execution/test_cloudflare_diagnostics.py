@@ -23,6 +23,7 @@ from bifrost.cloudflare_report import count_rules, inspect_bundle
     ("eval('1')", "CF_DYNAMIC", 1, "static dispatch"),
     ("getattr(obj, name)()", "CF_DYNAMIC", 1, "static dispatch"),
     ("def broken(", "CF_SOURCE", 1, "entry function"),
+    ("def broken(\r\n", "CF_SOURCE", 1, "entry function"),
     ("from importlib import import_module", "CF_DYNAMIC", 1, "explicit imports"),
     ("from bifrost import workflows\nworkflows.execute('example')", "CF_SDK_GATEWAY", 2, "Linux"),
     ("from bifrost import executions\nexecutions.get(execution_id)", "CF_SDK_GATEWAY", 2, "Linux"),
