@@ -684,6 +684,15 @@ until the ordinary queue deadline.
   with its Cloudflare revision cleared. The launcher enforces the same
   bound during reassembly.
 
+## Workload viability at `1bd47b0c8`
+
+| Workload | Current Cloudflare blocker | Linux execution contract | Approval scope and verdict |
+|---|---|---|---|
+| Solution-installed workflow | Enqueue, approval, send and launcher admit only loose workspace source. | Linux reads the active install's `_solutions/{id}/` tree through the scoped module loader, with optional shared-repo lookup. The run's credential carries server-derived install and organization authority for SDK calls. Retained portable source is an input to rebuilds. The published runtime tree is the source of executed Python. | **Viable with a finalized, install-local snapshot.** Bind the approval to workflow, install, version, published source generation and owner org, including explicit global ownership. Carry forward within the same install and owner under the existing package, host and budget envelope. Shared-repo import resolution needs a separate design for tier precedence and shadowing. |
+| Inline code / script | Inline acceptance has no workflow row or indexed source revision. The opaque launcher expects a workflow entry and function. | Linux executes per-run base64 source through the script entry point, with caller/org context, SDK credentials and script output semantics. Normal admission and deadlines still apply. | **Viable with a distinct approval contract.** Approve immutable source, execution form, dependency pins and limits for a named org scope. A script name or a queued payload is insufficient authority. Arbitrary SDK- or agent-generated scripts stay on Linux. |
+| Artifact-workspace dispatch | Enqueue and send exclude `artifact_workspace_id`. | Linux passes the workspace ID to SDK context. Artifact operations run on the platform using execution/workspace authorization and protected storage or provider credentials. The artifact ID does not select Python source. | **Viable with server-verified workspace binding.** Use the underlying workflow approval and independently validate its execution's workspace membership and caller/org authority. Keep storage credentials on the platform. |
+| Fast Path | The external Cloudflare profile advertises Normal `workflow.execute@1`. Fast Path requires its own reserved lane and `workflow.execute@2`. | Linux has exclusive reserved managed slots or explicitly configured static workers, lane-preserving handback, and its normal source and SDK surface. Dedicated admission protects the queue. Startup and SDK/network latency still affect response time. | **Linux-only in this spike.** A Worker implementation needs signed Fast Path capability, provider reservation and warm readiness, exclusive placement, and measured queue-to-entry latency under load. Per-source approval would still apply and grants no entitlement to the reserved lane. |
+
 ## Open questions
 
 - [Pool-worker viability](POOL-WORKER-VIABILITY.md) inventories PlatformJobs,
