@@ -48,7 +48,7 @@ class FakeLease:
 
 
 def _settings() -> SimpleNamespace:
-    return SimpleNamespace()
+    return SimpleNamespace(cloudflare_agent_endpoint=None)
 
 
 def _control(lease: FakeLease, **kwargs) -> ControlPlane:

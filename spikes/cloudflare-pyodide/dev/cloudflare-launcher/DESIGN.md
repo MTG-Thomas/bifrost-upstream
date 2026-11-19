@@ -1372,3 +1372,11 @@ state for all chat writers and qualify a shared recovery contract.
 `chat-outbox-protocol.test.mjs` models the crash windows in memory. The
 PostgreSQL and Redis tests exercise transaction rollback, retry after Redis
 publication, interleaving with the Linux publisher, and receipt loss.
+
+CT128 qualified chat and autonomous regression on `0c29eefa2` using
+local Miniflare and the existing pinned runtime artifact. A real Chat
+WebSocket subscription received seven ordered events for the completed
+turn, matching the Linux writer's sequence, message content, usage and
+terminal output. The same harness checked a second turn with history,
+replayed a committed chunk after the ACK was dropped, and observed the
+persisted partial answer after both cancellation and a launcher reset.
