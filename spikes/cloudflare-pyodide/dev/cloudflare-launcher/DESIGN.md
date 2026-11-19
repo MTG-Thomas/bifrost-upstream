@@ -751,3 +751,41 @@ settlement.
 - Memory semantics: Workers do not expose isolate memory. Declared-request
   accounting is the honest substitute; it must not pretend to be a cgroup
   sample.
+
+## Agent-handler viability
+
+| Handler | Linux dependencies and state | Tools and credentials | Workers budget and contract | Verdict |
+| --- | --- | --- | --- | --- |
+| `agent.run@1` | The agent consumer and executor use SQLAlchemy/asyncpg for claim, agent and caller resolution, conversation and run history, authorizations, usage and terminal persistence. Redis carries cancellation, chat events, synchronous results and execution context. Pydantic AI streams normalized provider events. Agent attachments and knowledge can require storage/API calls. The model factory uses OpenAI (including compatible endpoints and OpenRouter), Anthropic and Google SDKs over HTTPX. Their Pyodide closure, including the pinned native `pydantic-core` and `jiter` wheels, SSE/retry transport and adapter behavior, needs qualification. The server's asyncpg/socket stack and Redis client are outside the spike's packaged HTTP-only runtime. | Local tool handlers cover system, knowledge and MCP operations. Workflow-backed tools authorize under a refreshed caller and submit a separate Bifrost workflow execution through the execution service, with parent/provenance context. Delegation adds child agent runs. Keep tool and provider secrets in API-side brokers. Give the child attempt-scoped handles limited to authorized tools, models and budgets. | Multiple streamed turns plus retries, tools and delegated waits make cost dependent on turn, token, byte and fan-out limits. JSON/SSE parsing, context assembly and package boot use CPU and memory even when provider waits are idle. Needs a separate approved eligibility rule, opaque attempt identity and sequenced, durable stream and tool receipts. Once a chunk or tool request escapes, a lost result is uncertain. | No direct port. Probe the Linux runtime boundary before advertising even a tool-less slice. |
+| `agent.summarize@1` | Linux snapshots the completed run's input/output and bounded agent instructions in PostgreSQL, calls the configured Pydantic AI adapter once without streaming, then persists parsed fields, prompt version and AIUsage. Redis supplies usage caching/pubsub. No filesystem or tool dependency. A trusted JS Worker can implement the HTTP completion without the Python provider package closure. | No tools. Use a fixed provider endpoint and independently provisioned secret in the trusted Worker. Keep provider config and keys out of TenantHost and dynamic children. Bind the endpoint and model to the API's selected summary provider and refuse unqualified providers. | One provider request, bounded prompt/response and JSON parse. Use a finite deadline covering dispatch and fetch, an opaque route with claim identity, and the existing journal and ACK. Use `not_started` only before fetch can have begun, `completed` for an observed outcome, and `uncertain` on interruption after entry. The API validates the current claim before committing summary and usage. | First candidate. Scope the spike to one OpenAI-compatible completion transport and manual dev enrollment. |
+| `agent.summarize_backfill@1` | Uses the same single-run compute for each dispatch. PostgreSQL stages and reconciles backfill membership and outcome counters. Redis publishes the same status and usage updates. No files or stream. | Same mediation as live summaries. | Same per-invocation shape. Aggregate requests, cost and rate limiting grow with backfill size. Preserve distinct handler concurrency and live-summary capacity priority. Count terminal outcomes only under the current claim and reconcile backfill totals through the API. | Viable after qualifying live summaries. Keep bulk admission disabled in this spike. |
+
+The provider call should run in trusted Worker code outside TenantHost. A provider
+secret must be unavailable to workflow children, including through the
+generic egress path. The provider adapter must use a fixed origin and path,
+reject redirects, cap request and response bytes, and avoid logging prompts,
+authorization headers or raw provider errors. A stopped request may already
+have reached the provider, and retrying it can incur duplicate spend. An
+uncertain terminal therefore requires explicit regeneration, not automatic
+redispatch.
+
+For an agent prototype beyond this spike, factor an API-owned execution
+snapshot and fenced write surface first. Start with a bounded model-only
+runner. Sequence output under the current claim and persist the watermark
+before acknowledging. For a workflow tool, submit through an API endpoint
+that rechecks the caller and tool binding and deduplicates by run, attempt
+and tool-call ID. Preserve the workflow execution ID as the receipt, even
+if the model isolates or the output stream disconnects. Cancellation
+revokes new model/tool calls, closes the model stream and records any
+issued child execution receipts. Qualify replay and cancellation before
+enabling a second tool kind.
+
+The [Workers limits](https://developers.cloudflare.com/workers/platform/limits/)
+list 128 MB memory, six simultaneous outgoing connections waiting for
+headers, 50 subrequests on Free and 10,000 by default on Paid. CPU limits
+are 10 ms on Free and configurable up to five minutes on Paid. Those are
+platform ceilings. The existing spike applies tighter workflow approvals
+and budgets. Pin and probe the exact [Python package runtime](https://developers.cloudflare.com/workers/languages/python/packages/)
+before admitting an agent package closure. Local workerd establishes
+behavior at the pinned runtime, with hosted resource limits still requiring
+separate qualification.
