@@ -467,10 +467,17 @@ async function phase6Checks() {
   const linuxLaunchers = ['worker', 'scheduler'].map((service) => config.project + '-' + service + '-1');
   execFileSync('docker', ['pause', ...linuxLaunchers]);
   try {
-    await delay(3100); // Wait for the existing Linux samples to go stale.
     await launch(proxy.address().port);
     await startCapacityEndpoint();
     await until('API selected the capacity provider', () => config.phase6.discovered);
+    // A paused launcher stops claiming before its reported capacity expires.
+    // Wait for the API's 30-second liveness fence and reconciliation sweep.
+    await until('paused Linux launchers leave placement', () => sql(`
+      SELECT to_json(NOT EXISTS (
+        SELECT FROM execution_workers WHERE form = 'static'
+          AND runtime_profile = 'linux-process-v1' AND state IN ('starting', 'ready', 'draining')
+      ))
+    `), 45_000);
     const submitted = await api('/api/workflows/execute', {
       workflow_id: config.workflows.linux, input_data: {}, sync: false,
     });
