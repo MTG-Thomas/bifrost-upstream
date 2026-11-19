@@ -13,7 +13,9 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.run_lineage import principal_lineage
+from src.config import get_settings
 from src.core.database import get_db_context
+from src.models.contracts.agents import ChatStreamChunk
 from src.models.orm.agent_runs import AgentRun, AgentRunStep, CloudflareAgentAttempt
 from src.models.orm.execution_workers import ExecutionWorkerClaim
 from src.models.orm.executions import Execution
@@ -24,6 +26,14 @@ from src.services.authorization.runtime_auth import load_runtime_principal
 from src.services.durable_impersonation import principal_durable_impersonation
 from src.services.execution.agent_workflow_tools import authorize_bound_workflow_tool
 from src.services.execution.async_executor import _pending_run
+from src.services.execution.cloudflare_chat import (
+    load_chat_input,
+    stage_chat_start,
+    stage_chat_terminal,
+    stage_chat_usage,
+    stage_chunk,
+)
+from src.services.execution.cloudflare_chat_outbox import has_projection_loss
 from src.services.execution.workflow_dispatch import (
     hand_off_workflow_run,
     stage_workflow_run,
@@ -57,12 +67,17 @@ async def prepare_run(claim: PoolClaim, deadline: datetime, endpoint: str) -> bo
         dispatch = await db.get(WorkDispatch, claim.dispatch_id)
         if run.status != "queued" or run.agent_id is None or dispatch is None:
             return False
+        chat = run.trigger_type == "chat"
+        queued_sequence = dispatch.payload.get("cloudflare_chat_queued_sequence")
         if (
-            run.trigger_type == "chat" or run.conversation_id is not None or run.output_schema is not None
+            chat != (run.conversation_id is not None) or run.output_schema is not None
             or run.parent_run_id is not None or run.event_delivery_id is not None
-            or dispatch.payload.get("trigger_type") == "chat"
+            or chat != (dispatch.payload.get("trigger_type") == "chat")
             or dispatch.payload.get("attachments")
-            or await AIBehaviorService(db).get_agent_execution_mode() != "delegated"
+            or (chat and (not get_settings().cloudflare_chat_enabled or not queued_sequence))
+            or (
+                not chat and await AIBehaviorService(db).get_agent_execution_mode() != "delegated"
+            )
         ):
             return False
         run.status = "running"
@@ -74,23 +89,32 @@ async def prepare_run(claim: PoolClaim, deadline: datetime, endpoint: str) -> bo
         caller, agent = await authorize_agent_execution(db, await load_caller(db, principal), run.agent_id)
         if agent.system_tools or agent.knowledge_sources or agent.delegated_agents or agent.mcp_connections:
             raise ValueError("Unsupported autonomous agent capability")
-        definitions, tool_ids = await resolve_agent_tools(agent, db, caller_user_id=caller.principal.user_id)
-        if len(agent.tools) != len(definitions) or len(definitions) > 1:
-            raise ValueError("Unsupported workflow tool set")
         tool = None
-        if definitions:
-            definition = definitions[0]
-            tool = {
-                "name": definition.name, "description": definition.description, "parameters": definition.parameters,
-                "workflow_id": str(tool_ids[definition.name]),
-            }
+        chat_input = await load_chat_input(db, run, agent, endpoint) if chat else None
+        if chat_input and (
+            caller.ctx is None
+            or chat_input.conversation.user_id != caller.ctx.user_id
+            or chat_input.conversation.user_id != caller.principal.user_id
+        ):
+            raise ValueError("Cloudflare chat caller is not the conversation owner")
+        if not chat:
+            definitions, tool_ids = await resolve_agent_tools(agent, db, caller_user_id=caller.principal.user_id)
+            if len(agent.tools) != len(definitions) or len(definitions) > 1:
+                raise ValueError("Unsupported workflow tool set")
+            if definitions:
+                definition = definitions[0]
+                tool = {
+                    "name": definition.name, "description": definition.description, "parameters": definition.parameters,
+                    "workflow_id": str(tool_ids[definition.name]),
+                }
+        profile_id = chat_input.profile_id if chat_input else agent.llm_profile_id
         profile, config, provider = await _eligible_profile(
-            db, endpoint, assignment_key="primary", profile_id=agent.llm_profile_id,
+            db, endpoint, assignment_key="primary", profile_id=profile_id,
         )
         snapshot = {
             "dispatch_id": str(claim.dispatch_id),
             "deadline": deadline.isoformat(),
-            "profile_id": str(agent.llm_profile_id) if agent.llm_profile_id else None,
+            "profile_id": str(profile_id) if profile_id else None,
             "profile_pin": list(map(str, profile)),
             "provider": provider,
             "model": config.model,
@@ -98,7 +122,7 @@ async def prepare_run(claim: PoolClaim, deadline: datetime, endpoint: str) -> bo
             "max_requests": min(agent.max_iterations or 2, 2),
             "max_tokens": agent.max_token_budget or 16_384,
             "tool": tool,
-            "messages": [
+            "messages": chat_input.messages if chat_input else [
                 {"role": "system", "content": build_agent_system_prompt(agent, execution_context={"mode": "autonomous"})},
                 {"role": "user", "content": json.dumps(run.input) if run.input else "Run your task."},
             ],
@@ -107,6 +131,14 @@ async def prepare_run(claim: PoolClaim, deadline: datetime, endpoint: str) -> bo
             "text": "",
             "step": 0,
         }
+        if chat_input:
+            await AIBehaviorService(db).resolve_agent_run_execution_mode(run)
+            snapshot["chat"] = {
+                "sequence": 0, "queued_sequence": queued_sequence,
+                "user_message_id": str(chat_input.user_message.id),
+                "user_id": str(chat_input.conversation.user_id), "context_window": chat_input.context_window,
+                "explicit_profile": bool((run.input or {}).get("model_profile_id")),
+            }
         if len(json.dumps(snapshot).encode()) > 128 * 1024:
             raise ValueError("Cloudflare autonomous run exceeds snapshot limit")
         run.budget_max_iterations = agent.max_iterations
@@ -141,10 +173,14 @@ async def grant_turn(
         attempt = _require_attempt(await db.get(CloudflareAgentAttempt, claim_id), run_id)
         snapshot = attempt.data
         profile_id = UUID(snapshot["profile_id"]) if snapshot["profile_id"] else None
-        profile, _config, _provider = await _eligible_profile(db, endpoint, assignment_key="primary", profile_id=profile_id)
+        chat = snapshot.get("chat")
+        assignment_key = "chat_default" if chat else "primary"
+        if chat and not chat["explicit_profile"]:
+            profile_id = None
+        profile, _config, _provider = await _eligible_profile(db, endpoint, assignment_key=assignment_key, profile_id=profile_id)
         if list(map(str, profile)) != snapshot["profile_pin"]:
             return {"granted": False}
-        key = await resolve_provider_key(db, profile, assignment_key="primary", profile_id=profile_id)
+        key = await resolve_provider_key(db, profile, assignment_key=assignment_key, profile_id=profile_id)
     async with get_db_context() as db:
         run = await lock_attempt_run(db, run_id, claim_id)
         attempt = _require_attempt(await db.get(CloudflareAgentAttempt, claim_id), run_id)
@@ -152,6 +188,7 @@ async def grant_turn(
         remaining = int((datetime.fromisoformat(data["deadline"]) - datetime.now(UTC)).total_seconds() * 1000)
         if (
             run.status != "running" or remaining <= 0 or turn not in (1, 2)
+            or (data.get("chat") and await has_projection_loss(db, claim_id))
         ):
             return {"granted": False}
         if turn > data["max_requests"] or run.tokens_used >= data["max_tokens"]:
@@ -197,10 +234,13 @@ async def grant_turn(
             requests[str(turn)] = request_id
             data["requests"] = requests
             data["text"] = ""
-            _step(db, run, data, "llm_request", {
-                "messages_count": len(messages), "tools_count": len(body.get("tools", [])),
-                "model": data["model"], "context_breakdown": None,
-            })
+            if data.get("chat"):
+                stage_chat_start(db, run, claim_id, data)
+            else:
+                _step(db, run, data, "llm_request", {
+                    "messages_count": len(messages), "tools_count": len(body.get("tools", [])),
+                    "model": data["model"], "context_breakdown": None,
+                })
             run.iterations_used += 1
             attempt.data = data
         return {"granted": True, "endpoint": endpoint, "api_key": key, "body": body, "remaining_ms": remaining}
@@ -389,6 +429,7 @@ async def commit_event(run_id: UUID, claim_id: UUID, event: dict[str, Any]) -> d
         if (
             run.status != "running" or type(turn) is not int or turn != len(data["requests"])
             or turn not in (1, 2)
+            or (data.get("chat") and await has_projection_loss(db, claim_id))
         ):
             raise ValueError("Cloudflare agent turn is no longer active")
         reply: dict[str, Any] = {"sequence": sequence}
@@ -412,6 +453,8 @@ async def commit_event(run_id: UUID, claim_id: UUID, event: dict[str, Any]) -> d
             data["text"] += text
             if len(data["text"].encode()) > 64 * 1024:
                 raise ValueError("Agent output exceeds byte budget")
+            if data.get("chat"):
+                stage_chunk(db, run, claim_id, data, "running", ChatStreamChunk(type="delta", content=text))
         elif kind == "finish" and data.get("finished_turn") != turn:
             reason = event.get("reason")
             if reason not in {"error", "length", "stop", "tool_calls"}:
@@ -419,12 +462,20 @@ async def commit_event(run_id: UUID, claim_id: UUID, event: dict[str, Any]) -> d
             data["finished_turn"] = turn
             data["finish_reason"] = reason
             if reason == "error":
-                _step(db, run, data, "error", {"error": "Model request failed", "phase": "llm_call"})
+                if not data.get("chat"):
+                    _step(db, run, data, "error", {"error": "Model request failed", "phase": "llm_call"})
             else:
                 fields = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
                 usage = {key: event.get("usage", {}).get(key) for key in fields}
                 if any(type(value) is not int or not 0 <= value <= 1_000_000 for value in usage.values()):
                     raise ValueError("Invalid agent provider usage")
+                if data.get("chat"):
+                    if reason == "tool_calls":
+                        raise ValueError("Cloudflare chat cannot accept tool calls")
+                    run.tokens_used = usage["input_tokens"] + usage["output_tokens"]
+                    await stage_chat_usage(db, run, claim_id, data, usage)
+                    attempt.data = {**data, "events": [*data["events"], digest]}
+                    return reply
                 call = event.get("toolCall")
                 tool_calls: list[dict[str, Any]] = []
                 if reason == "tool_calls":
@@ -493,6 +544,10 @@ async def settle_run(
 
         summary = None
         if run.status != "cancelled":
+            chat = data.get("chat")
+            projection_lost = bool(chat and await has_projection_loss(db, claim_id))
+            if projection_lost:
+                state = "uncertain"
             final_response_committed = (
                 data.get("finish_reason") in {"stop", "length"}
                 and data.get("finished_turn") == len(data["requests"])
@@ -531,9 +586,13 @@ async def settle_run(
             run.completed_at = now
             start = run.started_at or now
             run.duration_ms = int((now - start).total_seconds() * 1000)
-            if cancelled and attempt is not None:
+            if chat:
+                await stage_chat_terminal(
+                    db, run, claim_id, data, lost=projection_lost, uncertain=state == "uncertain",
+                )
+            elif cancelled and attempt is not None:
                 _step(db, run, data, "cancelled", {"reason": run.error, "iterations_used": run.iterations_used})
-            if run.status == "completed":
+            if run.status == "completed" and not chat:
                 summary = await stage_summary(db, run.id)
         sync = dispatch.payload.get("sync")
         await db.delete(dispatch)

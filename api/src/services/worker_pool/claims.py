@@ -209,6 +209,7 @@ async def claim_next(
     reserve_claim: Callable[[PoolClaim], None] | None = None,
     release_reservation: Callable[[PoolClaim], None] | None = None,
     cloudflare_autonomous_agents: frozenset[UUID] = frozenset(),
+    cloudflare_chat_endpoint: str | None = None,
 ) -> PoolClaim | None:
     """Assign the oldest unassigned dispatch this worker can take now.
 
@@ -233,12 +234,17 @@ async def claim_next(
     occupied = select(func.count()).select_from(active_cloudflare).where(
         active_cloudflare.c.worker_id == incarnation_id,
     ).scalar_subquery()
-    autonomous_run = (
+    autonomous = (AgentRun.trigger_type != "chat") & AgentRun.conversation_id.is_(None) & ~WorkDispatch.payload.contains(
+        {"trigger_type": "chat"},
+    )
+    chat = (AgentRun.trigger_type == "chat") & AgentRun.conversation_id.is_not(None) & (
+        WorkDispatch.payload["cloudflare_chat_queued_sequence"].as_integer() > 0
+    )
+    eligible_agent_run = (
         select(AgentRun.id).where(
             AgentRun.id == WorkDispatch.subject_id,
             AgentRun.agent_id.in_(cloudflare_autonomous_agents),
-            AgentRun.trigger_type != "chat",
-            AgentRun.conversation_id.is_(None),
+            autonomous | chat if cloudflare_chat_endpoint else autonomous,
             AgentRun.parent_run_id.is_(None),
             AgentRun.event_delivery_id.is_(None),
             func.coalesce(func.jsonb_typeof(AgentRun.output_schema), "null") == "null",
@@ -272,10 +278,9 @@ async def claim_next(
                     (WorkDispatch.handler == "agent.run")
                     & (WorkDispatch.handler_version == 1)
                     & ~WorkDispatch.payload.contains({"cloudflare_agent_linux_only": True})
-                    & ~WorkDispatch.payload.contains({"trigger_type": "chat"})
                     & (WorkDispatch.memory_request_bytes <= CLOUDFLARE_DEV_BUDGET_BYTES)
                     & ExecutionWorker.capacity_scope.is_(None)
-                    & autonomous_run
+                    & eligible_agent_run
                 )
             )
             & (occupied * CLOUDFLARE_DEV_BUDGET_BYTES < func.coalesce(
@@ -312,6 +317,7 @@ async def claim_next(
         select(
             WorkDispatch.id, WorkDispatch.created_at,
             declared_capacity.label("opaque"), dispatch_tenant.label("tenant_id"),
+            WorkDispatch.subject_id, WorkDispatch.payload["trigger_type"].as_string().label("trigger_type"),
         )
         .where(
             *unassigned,
@@ -340,6 +346,21 @@ async def claim_next(
                 picked = (await db.execute(candidate)).one_or_none()
                 if picked is None:
                     return None
+                if picked.opaque and picked.trigger_type == "chat" and cloudflare_chat_endpoint is not None:
+                    from src.models.orm.agents import Agent
+                    from src.services.execution.cloudflare_chat import load_chat_input
+
+                    run = await db.get(AgentRun, picked.subject_id)
+                    agent = await db.get(Agent, run.agent_id) if run is not None and run.agent_id is not None else None
+                    try:
+                        if run is None or agent is None:
+                            raise ValueError("Workers chat requires a configured agent")
+                        await load_chat_input(db, run, agent, cloudflare_chat_endpoint)
+                    except ValueError:
+                        await db.execute(update(WorkDispatch).where(WorkDispatch.id == picked.id).values(
+                            payload=WorkDispatch.payload.op("||")({"cloudflare_agent_linux_only": True}),
+                        ))
+                        return None
                 assignment = [WorkDispatch.id == picked.id, ready, profile_eligible]
                 if picked.opaque:
                     # The dispatch row is locked, but another launcher can pick a

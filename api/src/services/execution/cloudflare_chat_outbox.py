@@ -7,16 +7,15 @@ import json
 import logging
 from uuid import UUID, uuid4
 
-from redis.exceptions import RedisError
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.cache.keys import chat_run_events_stream_key, chat_run_events_version_key
-from src.core.cache.redis_client import get_redis
+from src.core.cache.redis_client import CacheError, get_redis
 from src.core.database import get_db_context
-from src.core.pubsub import chat_run_event_envelope
+from src.core.pubsub import chat_run_event_envelope, publish_agent_run_update
 from src.models.contracts.agents import ChatStreamChunk
-from src.models.orm.agent_runs import CloudflareChatEvent
+from src.models.orm.agent_runs import AgentRun, CloudflareAgentAttempt, CloudflareChatEvent
 from src.models.orm.agents import Conversation
 
 logger = logging.getLogger(__name__)
@@ -37,7 +36,7 @@ end
 local raw_counter = redis.call('GET', KEYS[2])
 local counter = tonumber(raw_counter or '0')
 local floor = tonumber(ARGV[2])
-if not counter or (raw_counter and not string.match(raw_counter, '^%d+$')) or
+if not counter or (raw_counter and raw_counter ~= '0' and not string.match(raw_counter, '^[1-9]%d*$')) or
    counter < floor or counter >= 9007199254740991 then
     return -1
 end
@@ -134,7 +133,10 @@ async def publish_one(db: AsyncSession) -> bool:
     high_water = await db.scalar(select(func.max(CloudflareChatEvent.redis_sequence)).where(
         CloudflareChatEvent.conversation_id == conversation_id,
     ))
-    result = await project(row, max(high_water or 0, row.redis_floor or 0))
+    queued = await db.scalar(select(CloudflareAgentAttempt.data["chat"]["queued_sequence"].as_integer()).where(
+        CloudflareAgentAttempt.claim_id == row.claim_id,
+    ))
+    result = await project(row, max(high_water or 0, queued or 0, row.redis_floor or 0))
     if result < 0:
         await db.execute(update(CloudflareChatEvent).where(
             CloudflareChatEvent.claim_id == row.claim_id, *pending,
@@ -145,6 +147,12 @@ async def publish_one(db: AsyncSession) -> bool:
     else:
         row.redis_sequence = result
     return True
+
+
+async def has_projection_loss(db: AsyncSession, claim_id: UUID) -> bool:
+    return bool(await db.scalar(select(CloudflareChatEvent.id).where(
+        CloudflareChatEvent.claim_id == claim_id, CloudflareChatEvent.projection_lost.is_(True),
+    ).limit(1)))
 
 
 async def discard_receipts(db: AsyncSession) -> None:
@@ -161,17 +169,46 @@ async def discard_receipts(db: AsyncSession) -> None:
         row.redis_floor = None
 
 
+async def fail_settled_runs_with_projection_loss() -> None:
+    """Catch loss detected after the terminal and its outbox row committed."""
+    async with get_db_context() as db:
+        runs = (await db.scalars(
+            select(AgentRun).join(CloudflareAgentAttempt, CloudflareAgentAttempt.run_id == AgentRun.id)
+            .where(AgentRun.status == "completed", select(CloudflareChatEvent.id).where(
+                CloudflareChatEvent.claim_id == CloudflareAgentAttempt.claim_id,
+                CloudflareChatEvent.projection_lost.is_(True),
+            ).exists())
+            .limit(20).with_for_update(of=AgentRun, skip_locked=True)
+        )).all()
+        updates = []
+        for run in runs:
+            attempt = (await db.scalars(select(CloudflareAgentAttempt).where(
+                CloudflareAgentAttempt.run_id == run.id,
+            ))).one()
+            attempt.data = {**attempt.data, "attempt_state": "uncertain"}
+            run.status = "failed"
+            run.error = "The Cloudflare chat event projection was lost. The saved messages may be incomplete."
+            run.output = {"text": (run.output or {}).get("text"), "partial": True}
+            updates.append((run, run.agent.name if run.agent else "Chat"))
+    for run, name in updates:
+        await publish_agent_run_update(run, name)
+
+
 async def run_publisher(stop: asyncio.Event) -> None:
     from src.scheduler.control import wait_or_stop
 
     while not stop.is_set():
         try:
+            published = False
             for _ in range(100):
                 async with get_db_context() as db:
                     if not await publish_one(db):
                         break
+                    published = True
+            # A preceding publisher may have crashed after marking loss.
+            await fail_settled_runs_with_projection_loss()
             async with get_db_context() as db:
                 await discard_receipts(db)
-        except (TimeoutError, RedisError):
+        except (TimeoutError, CacheError):
             logger.warning("Cloudflare chat event publishing will retry", exc_info=True)
-        await wait_or_stop(stop, 0.2)
+        await wait_or_stop(stop, 0.2 if published else 0.5)

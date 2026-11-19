@@ -260,6 +260,7 @@ class CancelRequest:
     status: str
     #: False when the run had already ended, so nothing was changed.
     accepted: bool
+    chat_outbox: bool = False
 
 
 async def request_agent_run_cancel(db: AsyncSession, run_id: UUID) -> CancelRequest:
@@ -288,13 +289,36 @@ async def request_agent_run_cancel(db: AsyncSession, run_id: UUID) -> CancelRequ
         .returning(AgentRun.id)
     )
     if cancelling is not None:
+        chat_outbox = await _stage_cloudflare_chat_cancel(db, run_id)
         await db.commit()
-        return CancelRequest(status="cancelling", accepted=True)
+        return CancelRequest(status="cancelling", accepted=True, chat_outbox=chat_outbox)
     current = (
         await db.execute(select(AgentRun.status).where(AgentRun.id == run_id))
     ).scalar_one()
     await db.commit()
     return CancelRequest(status=current, accepted=current == "cancelling")
+
+
+async def _stage_cloudflare_chat_cancel(db: AsyncSession, run_id: UUID) -> bool:
+    from src.models.orm.agent_runs import CloudflareAgentAttempt
+    from src.services.execution.cloudflare_chat import stage_chunk
+    from src.services.execution.cloudflare_chat_outbox import has_projection_loss
+
+    run = await db.get(AgentRun, run_id)
+    if run is None or run.conversation_id is None:
+        return False
+    attempt = await db.scalar(select(CloudflareAgentAttempt).where(
+        CloudflareAgentAttempt.run_id == run_id,
+    ))
+    if attempt is None or not attempt.data.get("chat"):
+        return False
+    if not await has_projection_loss(db, attempt.claim_id):
+        data = dict(attempt.data)
+        stage_chunk(db, run, attempt.claim_id, data, "cancelling", ChatStreamChunk(
+            type="run_status", conversation_id=str(run.conversation_id), run_status="cancelling",
+        ))
+        attempt.data = data
+    return True
 
 
 async def announce_ended_agent_run(run_id: UUID, error: str) -> bool:

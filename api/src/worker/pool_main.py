@@ -566,6 +566,9 @@ class PoolWorker:
                 release_reservation=self._release_claim_reservation,
                 **({
                     "cloudflare_autonomous_agents": self.settings.cloudflare_agent_fixture_ids,
+                    "cloudflare_chat_endpoint": (
+                        self.settings.cloudflare_agent_endpoint if self.settings.cloudflare_chat_enabled else None
+                    ),
                 } if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and self.settings.cloudflare_agent_endpoint else {}),
             )
             if claim is not None:

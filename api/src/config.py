@@ -66,6 +66,10 @@ class Settings(BaseSettings):
         default_factory=frozenset, exclude=True,
         description="Agent IDs approved for the Cloudflare autonomous agent spike",
     )
+    cloudflare_chat_enabled: bool = Field(
+        default=False, exclude=True,
+        description="Admit reviewed text-only chat fixtures on the Cloudflare agent launcher",
+    )
 
     # ==========================================================================
     # Environment

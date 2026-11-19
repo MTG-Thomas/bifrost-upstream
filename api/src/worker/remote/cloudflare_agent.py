@@ -19,6 +19,7 @@ from src.models.orm.work_dispatches import WorkDispatch
 from src.services.authorization.callers import CallerUnavailable
 from src.services.authorization.enforce import PermissionDenied
 from src.services.execution import cloudflare_agent
+from src.services.execution.cloudflare_chat_outbox import has_projection_loss
 from src.services.memory_requests import AGENT_RUN_REQUEST_BYTES
 from src.services.worker_pool.claims import PoolClaim
 from src.worker.remote.agent_route import run_timeout_seconds
@@ -148,14 +149,19 @@ class CloudflareAgentRoutes:
         while not route.finished.is_set():
             async with get_db_context() as db:
                 status = await db.scalar(select(AgentRun.status).where(AgentRun.id == route.run_id))
+                projection_lost = await has_projection_loss(db, route.claim_id)
             if status not in {"running", "cancelling"}:
                 return
             now = datetime.now(UTC)
-            if not stop_sent and (status == "cancelling" or now >= route.deadline):
+            if not stop_sent and (status == "cancelling" or projection_lost or now >= route.deadline):
                 try:
                     await self.transport.request("terminate", {
-                        "route_id": route.id, "error_type": "Cancelled" if status == "cancelling" else "Timeout",
-                        "error": "Autonomous agent stopped",
+                        "route_id": route.id,
+                        "error_type": (
+                            "Cancelled" if status == "cancelling"
+                            else "ChatProjectionLost" if projection_lost else "Timeout"
+                        ),
+                        "error": "Cloudflare agent stopped",
                     })
                 except (TimeoutError, ConnectionError, CredentialRouteChanged, RuntimeError):
                     pass

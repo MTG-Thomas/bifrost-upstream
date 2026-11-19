@@ -307,7 +307,7 @@ async def create_chat_run(
     await db.commit()
 
     async def publish_queued(run_id: str) -> None:
-        await publish_chat_run_event(
+        event = await publish_chat_run_event(
             conversation_id=conversation.id,
             run_id=run_id,
             kind="run_status",
@@ -320,6 +320,13 @@ async def create_chat_run(
                 run_status="queued",
             ),
         )
+        from src.config import get_settings
+
+        settings = get_settings()
+        if settings.cloudflare_chat_enabled and conversation.agent_id in settings.cloudflare_agent_fixture_ids:
+            from src.services.execution.cloudflare_chat import mark_chat_queued
+
+            await mark_chat_queued(UUID(run_id), event["sequence"])
 
     try:
         run_id = await enqueue_agent_run(
@@ -554,23 +561,24 @@ async def cancel_chat_run(
     new_status: Literal["cancelled", "cancelling"] = (
         "cancelling" if cancel.status == "cancelling" else "cancelled"
     )
-    if new_status == "cancelling":
+    if new_status == "cancelling" and not cancel.chat_outbox:
         await _signal_chat_run_cancel(run.id)
 
     if run.conversation_id is None:
         raise RuntimeError("Chat run has no conversation")
 
-    await publish_chat_run_event(
-        conversation_id=run.conversation_id,
-        run_id=run.id,
-        kind="run_status",
-        status=new_status,
-        payload=ChatStreamChunk(
-            type="run_status",
-            conversation_id=str(run.conversation_id),
-            run_status=new_status,
-        ),
-    )
+    if not cancel.chat_outbox:
+        await publish_chat_run_event(
+            conversation_id=run.conversation_id,
+            run_id=run.id,
+            kind="run_status",
+            status=new_status,
+            payload=ChatStreamChunk(
+                type="run_status",
+                conversation_id=str(run.conversation_id),
+                run_status=new_status,
+            ),
+        )
 
     return ChatRunCancelResponse(run_id=run.id, status=new_status)
 
