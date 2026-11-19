@@ -62,7 +62,8 @@ def test_bridge_defaults_only_legacy_linux_handlers(profile, expected) -> None:
 
 
 async def test_adopted_autonomous_route_reserves_memory_and_one_physical_slot() -> None:
-    bridge = Bridge(Mock(), {"hostname": "runner", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE}, LEASE)
+    lease = replace(LEASE, declared_slots=2)
+    bridge = Bridge(Mock(), {"hostname": "runner", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE}, lease)
     autonomous = bridge.autonomous = CloudflareAgentRoutes(bridge, LEASE.worker_id, "https://model.example.test")
     worker = ApiExecutor(bridge, LEASE.worker_id)
     admission = worker.admission = Admission(
