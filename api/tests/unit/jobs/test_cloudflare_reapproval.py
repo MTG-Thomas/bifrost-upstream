@@ -157,6 +157,7 @@ async def test_analysis_failure_outcomes(scenario, worker, error, outcome):
         assert result["outcome"] == outcome
         if outcome == "review_required":
             assert result["analysed_pins"] == payload.observed_pins
+            assert result["rule_id"] == "CF_SOURCE"
 
 
 async def test_stage_failure_is_advisory(scenario, db_session, caplog):

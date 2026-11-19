@@ -116,13 +116,16 @@ async def _run_reapproval(context: PlatformJobContext, payload: ReapprovalPayloa
 
     analysed_pins = dict(payload.observed_pins)
 
-    async def review_required(reason: str) -> dict[str, Any]:
+    async def review_required(reason: str, *, rule_id: str | None = None) -> dict[str, Any]:
         # The generation in the dedupe key scopes this refusal to one Solution publication.
         async with get_db_context() as db:
             indexed = await indexed_pins(db, set(analysed_pins), install_id=payload.install_id)
         if any(indexed.get(path) != pin for path, pin in analysed_pins.items()):
             return {"outcome": "superseded"}
-        return {"outcome": "review_required", "reason": reason, "analysed_pins": analysed_pins}
+        result = {"outcome": "review_required", "reason": reason, "analysed_pins": analysed_pins}
+        if rule_id is not None:
+            result["rule_id"] = rule_id
+        return result
 
     await context.report("Analyzing workspace revision", percent=25)
     try:
@@ -137,7 +140,7 @@ async def _run_reapproval(context: PlatformJobContext, payload: ReapprovalPayloa
             "cloudflare_source_unavailable", "Could not resolve workspace sources", retryable=True,
         ) from exc
     except AnalysisRejected as exc:
-        return await review_required(str(exc))
+        return await review_required(str(exc), rule_id=exc.rule)
 
     if candidate.previous_revision != payload.parent_revision or candidate.organization_id != context.organization_id:
         return {"outcome": "superseded"}

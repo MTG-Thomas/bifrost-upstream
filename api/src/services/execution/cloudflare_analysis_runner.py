@@ -97,7 +97,7 @@ async def _run(read: SourceReader, **options: Any) -> Any:
     except TimeoutError as exc:
         if not deadline.expired():
             raise
-        raise AnalysisRejected("Source analysis timed out", "CF_PARSE_BUDGET") from exc
+        raise TimeoutError("Source analysis timed out") from exc
 
 
 async def analyze(
@@ -122,6 +122,10 @@ async def diagnose(
     except AnalysisRejected as exc:
         exc.locate(path)
         return [Finding.from_refusal(exc)]
+    except TimeoutError:
+        refusal = AnalysisRejected("Source analysis timed out", "CF_PARSE_BUDGET")
+        refusal.locate(path)
+        return [Finding.from_refusal(refusal)]
     return [Finding(**finding) for finding in result]
 
 
