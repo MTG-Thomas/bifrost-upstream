@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {execFileSync, spawnSync} from 'node:child_process';
+import {execFileSync, spawn, spawnSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {appendFileSync, readFileSync, utimesSync, writeFileSync} from 'node:fs';
 import {mkdir} from 'node:fs/promises';
@@ -1048,10 +1048,7 @@ async function agentChecks() {
       usage: terminal.usage, steps: terminal.steps, attemptState: terminal.journal.attempt_state});
     if (expected === 'completed') completed.push(id);
   }
-  execFileSync('docker', ['exec', '-i', config.project + '-api-1', 'python', '-', ...completed], {
-    input: readFileSync(new URL('./agent-parity.py', import.meta.url)), stdio: ['pipe', 'inherit', 'inherit'],
-    timeout: 30_000,
-  });
+  await runLinuxFixture('agent-parity.py', completed);
   if (chats) await chatChecks(chats);
 }
 
@@ -1114,10 +1111,19 @@ const chatSignature = (events) => events.map(({sequence, kind, status, payload})
   payload.finish_reason ?? null, payload.incomplete ?? null,
 ]);
 
-function runLinuxChat(id) {
-  execFileSync('docker', ['exec', '-i', config.project + '-api-1', 'python', '-', id], {
-    input: readFileSync(new URL('./chat-parity.py', import.meta.url)), stdio: ['pipe', 'inherit', 'inherit'],
-    timeout: 30_000,
+function runLinuxFixture(script, ids) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('docker', ['exec', '-i', config.project + '-api-1', 'python', '-', ...ids], {
+      stdio: ['pipe', 'inherit', 'inherit'],
+      signal: AbortSignal.timeout(30_000),
+    });
+    child.once('error', reject);
+    child.stdin.once('error', reject);
+    child.once('exit', (code, signal) => {
+      if (code === 0) resolve();
+      else reject(new Error(`${script} exited with ${code ?? signal}`));
+    });
+    child.stdin.end(readFileSync(new URL(script, import.meta.url)));
   });
 }
 
@@ -1127,7 +1133,7 @@ async function seedChatHistory() {
   const linuxConversation = await chatConversation(linuxAgent);
   for (const conversation of [workersConversation, linuxConversation]) {
     const id = await submitChat(conversation, 'chat-prior');
-    runLinuxChat(id);
+    await runLinuxFixture('./chat-parity.py', [id]);
     assert.equal(chatRecords(id).status, 'completed');
     for (const suffix of ['events', 'sequence']) {
       const result = execFileSync('docker', ['exec', config.project + '-redis-1', 'redis-cli',
@@ -1163,7 +1169,7 @@ async function chatChecks({workersConversation, linuxConversation}) {
     assert.equal(agentRow(workersId).worker, config.incarnation);
 
     const linuxId = await submitChat(linuxConversation, 'chat-text');
-    runLinuxChat(linuxId);
+    await runLinuxFixture('./chat-parity.py', [linuxId]);
     await until('Linux chat done on the same subscription contract', () => linux.events.some(({kind}) => kind === 'done'));
     assert.deepEqual(chatRecords(linuxId), workersRow);
     assert.deepEqual(chatSignature(expected), chatSignature(linux.events));
