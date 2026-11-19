@@ -36,11 +36,11 @@ def _requirement_name(line: str) -> str:
     return canonicalize_name(Requirement(line).name)
 
 
-def _update_requirements_status(result: RequirementsInstallResult) -> None:
-    from src.core.requirements_cache import get_requirements_sync
+def _update_requirements_status_from_content(
+    result: RequirementsInstallResult, content: str | None,
+) -> None:
     from src.services.execution.simple_worker import _parse_requirement_lines
 
-    content = get_requirements_sync()
     if not content:
         result.requirements_total = 0
         result.requirements_installed = 0
@@ -72,11 +72,24 @@ def _update_requirements_status(result: RequirementsInstallResult) -> None:
 
 
 def run_requirements_setup() -> RequirementsInstallResult:
+    from src.core.requirements_cache import get_requirements_sync
     from src.services.execution.simple_worker import install_requirements
 
     result = install_requirements()
     try:
-        _update_requirements_status(result)
+        _update_requirements_status_from_content(result, get_requirements_sync())
+    except Exception as e:  # noqa: BLE001 - status counts are heartbeat-only
+        logger.warning(f"Failed to check requirements status: {e}")
+    return result
+
+
+def run_requirements_setup_for_content(content: str | None) -> RequirementsInstallResult:
+    """Install and inventory explicitly supplied content without backend IO."""
+    from src.services.execution.simple_worker import install_requirements_from_content
+
+    result = install_requirements_from_content(content)
+    try:
+        _update_requirements_status_from_content(result, content)
     except Exception as e:  # noqa: BLE001 - status counts are heartbeat-only
         logger.warning(f"Failed to check requirements status: {e}")
     return result
@@ -84,7 +97,16 @@ def run_requirements_setup() -> RequirementsInstallResult:
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
-    result = run_requirements_setup()
+    if sys.argv[1:] == ["--bootstrap"]:
+        payload = json.load(sys.stdin)
+        if not isinstance(payload, dict) or "content" not in payload:
+            raise ValueError("requirements setup input must be an object with content")
+        content = payload["content"]
+        if content is not None and not isinstance(content, str):
+            raise ValueError("requirements setup input content must be a string or null")
+        result = run_requirements_setup_for_content(content)
+    else:
+        result = run_requirements_setup()
     sys.stdout.write(json.dumps(result.to_json_dict(), separators=(",", ":")))
     sys.stdout.write("\n")
     sys.stdout.flush()

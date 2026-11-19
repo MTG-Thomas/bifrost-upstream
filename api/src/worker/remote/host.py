@@ -125,6 +125,7 @@ class Bridge:
         self.socket = socket
         self.connected = True
         self.runtime_profile = hello.get("runtime_profile", LINUX_RUNTIME_PROFILE)
+        self.containers = hello.get("containers", False)
         if self.runtime_profile == LINUX_RUNTIME_PROFILE:
             self.current = int(hello["current"])
             self.limit = int(hello["limit"])
@@ -724,6 +725,11 @@ class PackageProxy(PackageInstallConsumer):
         return await self._package_tool("uninstall", package=package)
 
     async def _pip_install_requirements(self) -> str | None:
+        if self.bridge.containers:
+            from src.core.requirements_cache import get_requirements
+
+            cached = await get_requirements()
+            return await self._package_tool("requirements", content=cached["content"] if cached else None)
         return await self._package_tool("requirements")
 
     async def _recycle_workers(self) -> None:
@@ -1394,6 +1400,27 @@ class RemoteControlHost:
             for session in self.sessions.values()
         ), return_exceptions=True)
 
+    async def _welcome(self, bridge: Bridge) -> None:
+        """Send Containers startup inputs before any ordinary launcher commands."""
+        startup = None
+        if bridge.containers:
+            from src.core.requirements_cache import get_requirements
+
+            cached = await get_requirements()
+            startup = ControlEnvelope(
+                session_generation=bridge.lease.session_generation,
+                sequence=bridge._sequence + 1,
+                kind="bootstrap",
+                payload={"requirements_content": cached["content"] if cached else None},
+            )
+        await bridge.socket.send_text(json.dumps({
+            "event": "welcome", "session_generation": bridge.lease.session_generation,
+        }))
+        if startup is not None:
+            for frame in fragment(startup):
+                await bridge.socket.send_text(frame.to_json())
+                bridge._sequence += 1
+
     async def connect(self, socket: WebSocket) -> tuple[RemoteSession, FragmentAssembler]:
         await socket.accept()
         try:
@@ -1404,6 +1431,7 @@ class RemoteControlHost:
             signed = SignedHello.from_dict(initial.get("hello", {}))
             settings = get_settings()
             cloudflare = signed.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+            containers = False
             enrollment = None
             if cloudflare:
                 if not settings.cloudflare_worker_hello_enabled:
@@ -1430,6 +1458,7 @@ class RemoteControlHost:
                             ExecutionWorker.form == "external",
                         ))).one_or_none()
                     if reservation is not None and reservation.capacity_scope == containers_scope:
+                        containers = True
                         token = settings.cloudflare_containers_token
                         if (
                             not token or signed.resource_uid is None
@@ -1466,6 +1495,7 @@ class RemoteControlHost:
                 handlers=hello_execution_handlers(initial),
                 execution_lane=hello.execution_lane,
                 runtime_profile=hello.runtime_profile or LINUX_RUNTIME_PROFILE,
+                containers=containers,
             )
             if hello.execution_lane == "fast_path" and ("workflow.execute", 2) not in bootstrap["handlers"]:
                 raise AuthenticationError("Fast Path workers must support workflow.execute version 2")
@@ -1610,12 +1640,17 @@ class RemoteControlHost:
             existing.lease_ref.lease = lease
             existing.owned_until = acquiring_at + DEFAULT_OWNER_LEASE_SECONDS
             existing.last_sequence = 0
-            existing.bridge.replace_socket(socket, lease)
-            await socket.send_text(json.dumps({"event": "welcome", "session_generation": lease.session_generation}))
+            if existing.bridge.containers:
+                async with existing.bridge.lock:
+                    existing.bridge.replace_socket(socket, lease)
+                    await self._welcome(existing.bridge)
+            else:
+                existing.bridge.replace_socket(socket, lease)
+                await self._welcome(existing.bridge)
             return existing, FragmentAssembler()
         bridge = Bridge(socket, bootstrap, lease)
         worker = ApiExecutor(bridge, lease.worker_id, remote_static=hello.form == "static")
-        await socket.send_text(json.dumps({"event": "welcome", "session_generation": lease.session_generation}))
+        await self._welcome(bridge)
         session = RemoteSession(
             bridge, worker, lease, owned_until=acquiring_at + DEFAULT_OWNER_LEASE_SECONDS
         )

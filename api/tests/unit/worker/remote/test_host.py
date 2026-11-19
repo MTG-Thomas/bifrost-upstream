@@ -18,6 +18,8 @@ from sqlalchemy.exc import OperationalError
 from shared.worker_control_auth import external_worker_control_key
 from src.services.execution.template_process import TEMPLATE_START_TIMEOUT_SECONDS
 from src.worker.remote.host import ApiExecutor, Bridge, RemoteControlHost, RemoteSession, _reply_timeout
+from src.worker.remote.identity import LauncherIdentity
+from src.worker.remote.launcher import Launcher
 from src.worker.remote.ownership import RemoteOwnerLease
 from src.worker.remote.protocol import (
     AuthenticationError,
@@ -26,6 +28,7 @@ from src.worker.remote.protocol import (
     FragmentAssembler,
     Hello,
     LINUX_RUNTIME_PROFILE,
+    MAX_FRAME_BYTES,
     ProtocolError,
     sign_hello,
 )
@@ -118,6 +121,32 @@ async def test_containers_hello_uses_only_the_reserved_scope_key(
         with pytest.raises(AuthenticationError):
             await RemoteControlHost().connect(socket)
     assert admit.await_count == int(accepted)
+
+
+@pytest.mark.asyncio
+async def test_containers_bootstrap_round_trips_fragmented_requirements() -> None:
+    api_socket = AsyncMock()
+    bridge = Bridge(
+        api_socket, {"current": 1, "limit": 100, "requirements": {}, "hostname": "runner", "containers": True},
+        LEASE,
+    )
+    content = "# " + "x" * MAX_FRAME_BYTES
+    with patch("src.core.requirements_cache.get_requirements", new=AsyncMock(return_value={"content": content})):
+        await RemoteControlHost()._welcome(bridge)
+
+    frames = [call.args[0] for call in api_socket.send_text.await_args_list]
+    assert len(frames) > 2
+    launcher_socket = AsyncMock()
+    launcher_socket.recv.side_effect = frames
+    identity = LauncherIdentity(
+        launcher_id=LEASE.launcher_id, incarnation_id=LEASE.worker_id, job_uid=None, pod_uid=None,
+        hostname="runner", form="external", resource_uid="resource-1",
+    )
+    launcher = Launcher(launcher_socket, identity=identity, secret="derived-key", containers=True)
+    await launcher.hello({})
+    assert launcher.requirements_content == content
+    assert launcher._last_command_sequence == bridge._sequence == len(frames) - 1
+    assert launcher.agent_template is None
 
 
 @pytest.mark.asyncio

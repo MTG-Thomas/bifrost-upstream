@@ -506,10 +506,9 @@ Agree on the Git input and bounds before integrating a new stage. Preserve
 private and subdirectory semantics and the current sweep's per-repo failure
 handling.
 
-This is the stop point for the minimal port. The first-job acceptance
-requires a new compute contract and Git input design, beyond the #1424
-pieces identified above. Neither the auth/bootstrap candidate nor a
-partial stage is wired into the fork at this checkpoint.
+The Git stage is the next job-kind contract. The first implementation
+qualifies Linux workflow overflow and leaves platform-job dispatch disabled
+for Containers.
 
 #### Linux workflow path
 
@@ -524,10 +523,20 @@ the run's existing HTTP authorization. #1424 does not change the Linux
 workflow engine, remote pool or module transport. The contained candidate
 is therefore the derived-key/bootstrap port, suppression of privileged
 startup and claim paths, and Containers-scope routing through that Linux
-command. Prove it with a subprocess workflow after the first job stage is
-resolved. Inspect the launcher environment and child access, and prove
+command. Qualify it with a subprocess workflow before adding the first
+job stage. Inspect the launcher environment and child access, and prove
 that both the API-scoped workflow source fetch and its result commit work
 with platform credentials absent from the Container.
+
+The Containers bootstrap retains #1424's explicit-content install and
+fragmented control frame. The API chooses this handshake from the
+authenticated reservation. Its reconnect takes the command lock while
+replacing the socket and sending bootstrap. Legacy launchers retain
+the existing welcome, helper arguments and cache-backed installation.
+Containers opt into the helpers' stdin mode, including package-generation
+updates, and start only the workflow template. The launcher consumes its
+derived control environment variable before starting helpers and rejects
+service, agent and generic platform-job commands.
 
 **Hosted qualification.** After local conformance and explicit hosted
 approval, qualify a dev-only endpoint with a reachable HTTPS/WebSocket

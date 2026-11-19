@@ -8,7 +8,10 @@ import logging
 import sys
 from typing import Any
 
-from src.services.execution.requirements_setup_helper import _get_installed_packages
+from src.services.execution.requirements_setup_helper import (
+    _get_installed_packages,
+    run_requirements_setup_for_content,
+)
 
 
 async def dispatch(command: dict[str, Any]) -> dict[str, Any]:
@@ -16,6 +19,15 @@ async def dispatch(command: dict[str, Any]) -> dict[str, Any]:
     operation = command["operation"]
     if operation == "inventory":
         return {"packages": await asyncio.to_thread(_get_installed_packages)}
+
+    if operation == "requirements" and "content" in command:
+        content = command["content"]
+        if content is not None and not isinstance(content, str):
+            raise ValueError("requirements content must be a string or null")
+        result = await asyncio.to_thread(run_requirements_setup_for_content, content)
+        return {
+            "error": "; ".join(f"{failed.package}: {failed.error}" for failed in result.failed) or None,
+        }
 
     from src.jobs.consumers.package_install import PackageInstallConsumer
 
@@ -34,7 +46,7 @@ async def dispatch(command: dict[str, Any]) -> dict[str, Any]:
 
 async def main() -> None:
     logging.basicConfig(stream=sys.stderr, force=True)
-    result = await dispatch(json.loads(sys.argv[1]))
+    result = await dispatch(json.load(sys.stdin) if sys.argv[1:] == ["--bootstrap"] else json.loads(sys.argv[1]))
     print(json.dumps(result), flush=True)
 
 

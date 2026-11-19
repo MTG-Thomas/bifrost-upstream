@@ -176,11 +176,25 @@ def test_failed_nested_batch_never_relaxes_sibling_hash_policy():
 
 def test_status_counts_distribution_names_without_counting_source_directives(monkeypatch):
     from src.services.execution import requirements_setup_helper as helper
-    monkeypatch.setattr("src.core.requirements_cache.get_requirements_sync", lambda: 'some_pkg[extra]==1\n-e /tmp/source\n-r nested.txt\n')
     monkeypatch.setattr(helper, "_get_installed_packages", lambda: [{"name": "Some-Pkg"}])
     result = RequirementsInstallResult()
-    helper._update_requirements_status(result)
+    helper._update_requirements_status_from_content(result, 'some_pkg[extra]==1\n-e /tmp/source\n-r nested.txt\n')
     assert result.requirements_total == result.requirements_installed == 1
+
+
+def test_explicit_requirements_use_supplied_content_without_cache_access(monkeypatch):
+    from src.services.execution import requirements_setup_helper as helper
+
+    def reject_cache():
+        raise AssertionError("remote bootstrap must not read the platform cache")
+
+    monkeypatch.setattr("src.core.requirements_cache.get_requirements_sync", reject_cache)
+    monkeypatch.setattr(helper, "_get_installed_packages", lambda: [{"name": "sample"}])
+    with patch("src.services.execution.simple_worker._pip_install", return_value=_completed(0)) as install:
+        result = helper.run_requirements_setup_for_content("sample==1")
+    install.assert_called_once()
+    assert result.installed == ["sample==1"]
+    assert result.requirements_installed == 1
 
 
 def test_malformed_option_is_an_explicit_install_failure():

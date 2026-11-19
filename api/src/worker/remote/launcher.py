@@ -193,11 +193,12 @@ class Launcher:
         self.on_ready = on_ready or (lambda: None)
         self.on_stop = on_stop or (lambda: None)
         self.requirements: dict[str, Any] = {}
+        self.requirements_content: str | None = None
         self.pending_terminal: dict[str, dict[str, Any]] = {}
         self.pending_terminal_inventory: dict[str, dict[str, Any]] = {}
         self.template = TemplateProcess()
         # Started with the launcher and kept, like the workflow template.
-        self.agent_template = TemplateProcess(profile="agent")
+        self.agent_template = None if containers else TemplateProcess(profile="agent")
         # Finished agent children by PID -> start time. If their template
         # dies they re-parent to the launcher (PID 1 in a pod), which must
         # reap them.
@@ -278,11 +279,18 @@ class Launcher:
 
     async def start(self) -> None:
         # This existing helper owns requirements IO and exits before ready.
-        result = await self.helper("src.services.execution.requirements_setup_helper")
+        module = "src.services.execution.requirements_setup_helper"
+        if self.containers:
+            result = await self.helper(module, "--bootstrap", input_payload={"content": self.requirements_content})
+        else:
+            result = await self.helper(module)
         self.requirements = result
-        await asyncio.gather(
-            asyncio.to_thread(self.template.start), asyncio.to_thread(self.agent_template.start)
-        )
+        if self.agent_template is None:
+            await asyncio.to_thread(self.template.start)
+        else:
+            await asyncio.gather(
+                asyncio.to_thread(self.template.start), asyncio.to_thread(self.agent_template.start)
+            )
         current, limit = effective_memory_sample()
         self.baseline_bytes = current
         self._monitor_task = self.task(self.monitor())
@@ -334,6 +342,23 @@ class Launcher:
         self.session_generation = welcome["session_generation"]
         self._sequence = 0
         self._last_command_sequence = 0
+        if self.containers:
+            assembler = FragmentAssembler()
+            while True:
+                frame = ControlEnvelope.from_json(await self.socket.recv())
+                if frame.session_generation != self.session_generation or frame.sequence <= self._last_command_sequence:
+                    raise RuntimeError("Invalid worker bootstrap session")
+                self._last_command_sequence = frame.sequence
+                startup = assembler.feed(frame)
+                if startup is None:
+                    continue
+                if startup.kind != "bootstrap" or "requirements_content" not in startup.payload:
+                    raise RuntimeError("Worker bootstrap inputs are required")
+                content = startup.payload["requirements_content"]
+                if content is not None and not isinstance(content, str):
+                    raise RuntimeError("Invalid worker requirements content")
+                self.requirements_content = content
+                break
 
     def inventory(self) -> dict[str, Any]:
         """Describe live physical routes for fenced API-owner adoption.
@@ -374,13 +399,15 @@ class Launcher:
             "terminal_routes": list(self.pending_terminal_inventory.values()),
         }
 
-    async def helper(self, module: str, *args: str) -> dict[str, Any]:
+    async def helper(self, module: str, *args: str, input_payload: dict[str, Any] | None = None) -> dict[str, Any]:
         process = await asyncio.create_subprocess_exec(
             sys.executable, "-m", module, *args,
+            stdin=asyncio.subprocess.PIPE if input_payload is not None else None,
             stdout=asyncio.subprocess.PIPE, start_new_session=True,
         )
         try:
-            stdout, _ = await process.communicate()
+            data = json.dumps(input_payload).encode() if input_payload is not None else None
+            stdout, _ = await process.communicate(data)
         except BaseException:
             await self.kill_process(process)
             raise
@@ -395,6 +422,8 @@ class Launcher:
         action, payload = request["action"], request["payload"]
         try:
             response: dict[str, Any] = {}
+            if self.containers and action in ("service", "agent_run", "agent_summary", "platform_job"):
+                raise ValueError("Work family is unavailable on Containers")
             if action in ("workflow", "service"):
                 self.check_fork_pressure()
                 route_id = payload["route_id"]
@@ -422,6 +451,8 @@ class Launcher:
                 work.put_nowait((child.execution_id, context))
                 response["pid"] = pid
             elif action in ("agent_run", "agent_summary"):
+                if self.agent_template is None:
+                    raise ValueError("Agent template is unavailable")
                 handler = "agent.run" if action == "agent_run" else payload["handler"]
                 if handler not in ("agent.run", "agent.summarize", "agent.summarize_backfill"):
                     raise ValueError("Unknown agent handler")
@@ -490,7 +521,12 @@ class Launcher:
                     await asyncio.to_thread(self.template.shutdown)
                     await asyncio.to_thread(self.template.start)
             elif action == "package_tool":
-                response = await self.helper("src.worker.remote.package_helper", json.dumps(payload))
+                if self.containers:
+                    if payload.get("operation") == "requirements" and "content" not in payload:
+                        raise ValueError("Requirements operation needs explicit content")
+                    response = await self.helper("src.worker.remote.package_helper", "--bootstrap", input_payload=payload)
+                else:
+                    response = await self.helper("src.worker.remote.package_helper", json.dumps(payload))
             elif action == "configure":
                 pressure = float(payload["pressure_threshold"])
                 dangerous = float(payload["dangerous_memory_ratio"])
@@ -705,7 +741,7 @@ class Launcher:
                     logger.warning("Execution template died; replacing it")
                     await asyncio.to_thread(self.template.start)
             async with self._agent_template_lock:
-                if not self.agent_template.is_alive():
+                if self.agent_template is not None and not self.agent_template.is_alive():
                     # Its live children keep running; reap_exited_agent_children
                     # reaps those that re-parent to the launcher.
                     logger.warning("Agent template died; replacing it")
@@ -743,7 +779,8 @@ class Launcher:
                 async with self._template_lock:
                     await asyncio.to_thread(self.template.collect_child_exit_statuses)
                 async with self._agent_template_lock:
-                    await asyncio.to_thread(self.agent_template.collect_child_exit_statuses)
+                    if self.agent_template is not None:
+                        await asyncio.to_thread(self.agent_template.collect_child_exit_statuses)
                 with contextlib.suppress(ConnectionError):
                     await self.send({"event": "sample", "current": current, "limit": limit,
                                      "pressure_ratio": memory_pressure_ratio(), "runs": samples})
@@ -780,7 +817,8 @@ class Launcher:
         self.children.clear()
         await asyncio.gather(*(self.kill_process(p) for p in self.jobs.values()))
         await asyncio.to_thread(self.template.shutdown)
-        await asyncio.to_thread(self.agent_template.shutdown)
+        if self.agent_template is not None:
+            await asyncio.to_thread(self.agent_template.shutdown)
 
     async def begin_drain(self) -> None:
         """Ask the API to drain and retain physical children for its grace."""

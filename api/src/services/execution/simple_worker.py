@@ -100,12 +100,18 @@ def _pip_install(args: list[str]) -> "subprocess.CompletedProcess[str]":
 
 
 def install_requirements() -> RequirementsInstallResult:
+    """Install cache-backed requirements for existing local bootstrap callers."""
+    from src.core.requirements_cache import get_requirements_sync
+
+    return install_requirements_from_content(get_requirements_sync())
+
+
+def install_requirements_from_content(content: str | None) -> RequirementsInstallResult:
     """
     Install packages from requirements.txt resiliently.
 
-    Called once at pool startup (and on recycle_all) to ensure user-installed
-    packages persist across container restarts. Reads requirements via
-    get_requirements_sync() (Redis → S3 fallback).
+    The caller owns acquiring the content. Remote launchers obtain it from
+    the API so installation does not require Redis or storage access.
 
     Strategy: attempt a single batch ``pip install -r`` for speed. If the batch
     fails (e.g. one package can't build), fall back to installing each
@@ -116,11 +122,8 @@ def install_requirements() -> RequirementsInstallResult:
     """
     import tempfile
 
-    from src.core.requirements_cache import get_requirements_sync
-
     result = RequirementsInstallResult()
 
-    content = get_requirements_sync()
     if not content:
         logger.info("[pool] No requirements.txt found")
         return result
