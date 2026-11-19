@@ -16,6 +16,7 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
+from fastapi import HTTPException
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -23,15 +24,20 @@ from shared.version import get_version
 from src.config import get_settings
 from src.core.cache.redis_client import get_redis
 from src.models.enums import ExecutionStatus
-from src.models.orm.agent_runs import AgentRun
+from src.models.orm.agent_runs import AgentRun, AgentRunStep, CloudflareAgentAttempt
+from src.models.orm.agents import Agent, AgentTool
 from src.models.orm.config import SystemConfig
 from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
 from src.models.orm.executions import Execution
 from src.models.orm.organizations import Organization
+from src.models.orm.users import RolePermission
 from src.models.orm.work_dispatches import WorkDispatch
 from src.models.orm.workflows import Workflow
 from src.services import work_dispatch
-from src.services.execution import async_executor, summary_dispatch, workflow_dispatch
+from src.services.authorization.enforce import denial_message
+from src.services.execution import async_executor, cloudflare_agent, cloudflare_summary, summary_dispatch, workflow_dispatch
+from src.services.execution.agent_run_service import request_agent_run_cancel
+from src.services.execution.agent_workflow_tools import AgentWorkflowAuthorizationError
 from src.services.execution.async_executor import _publish_pending
 from src.services.kubernetes_execution import (
     KUBERNETES_CONFIG_CATEGORY,
@@ -51,11 +57,14 @@ from src.services.memory_requests import (
 from src.services.worker_pool import calibration, claims, controller, liveness, maintenance, recovery, sizing
 from src.services.worker_pool.manifest import WorkerJobSpec, build_worker_job_manifest
 from src.worker.admission import Admission
+from src.worker.remote.fencing import LeaseRef, remote_owner_context
+from src.worker.remote.ownership import RemoteOwnerLease
 from src.worker.remote.protocol import (
     CLOUDFLARE_DEV_BUDGET_BYTES,
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
     LINUX_RUNTIME_PROFILE,
 )
+from tests.unit.authorization.committed_runs import World
 
 GIB = 1024 * MIB
 CLOUDFLARE_REVISION = "ab" * 32
@@ -509,60 +518,192 @@ async def test_cloudflare_agent_claim_requires_allowlisted_autonomous_run(db) ->
     assert UUID(claim.message["claim_id"])
 
 
-async def test_cloudflare_tool_replays_one_atomically_accepted_execution(db, monkeypatch) -> None:
-    from src.models.orm.agent_runs import CloudflareAgentAttempt
-    from src.models.orm.agents import Agent
-    from src.services.execution import cloudflare_agent
-
-    run_id, claim_id, agent_id, workflow_id = uuid4(), uuid4(), uuid4(), uuid4()
+@pytest_asyncio.fixture
+async def cloudflare_tool_attempt(db, monkeypatch):
+    worker_id = await _declared_worker(db)
+    lease = RemoteOwnerLease(worker_id, uuid4(), uuid4(), 1, declared_slots=1)
+    claim_id, dispatch_id = uuid4(), uuid4()
     async with db.context() as session:
-        workflow = Workflow(
-            id=workflow_id, name=f"lookup-{workflow_id}", function_name="lookup",
-            path="workflows/fixture.py", type="tool",
-        )
-        agent = Agent(id=agent_id, name="Tool fixture", system_prompt="Fixture", created_by="unit")
-        session.add_all([agent, workflow])
-        await session.flush()
-        session.add(AgentRun(id=run_id, agent_id=agent_id, trigger_type="manual", status="running"))
-        await session.flush()
-        session.add(CloudflareAgentAttempt(claim_id=claim_id, run_id=run_id, data={
-            "tool": {"name": "lookup", "workflow_id": str(workflow_id)}, "step": 0,
+        worker = await session.get(ExecutionWorker, worker_id)
+        worker.remote_owner_id = lease.owner_id
+        worker.remote_launcher_id = lease.launcher_id
+        worker.remote_session_generation = lease.session_generation
+        world = World(session)
+        home, other = await world.organization(), await world.organization()
+        user = await world.person(home)
+        role = await world.role("agents.readbasic", "agents.execute", "workflows.execute")
+        user.base_role_id = role.id
+        agent = await world.agent(home)
+        workflow = await world.workflow(home, type="tool")
+        unbound = await world.workflow(home, type="tool")
+        cross_org = await world.workflow(other, type="tool")
+        run = await world.agent_run(run_user=user, actor=user, organization=home, agent=agent)
+        run.trigger_type = "manual"
+        session.add_all([
+            AgentTool(agent_id=agent.id, workflow_id=workflow.id),
+            AgentTool(agent_id=agent.id, workflow_id=cross_org.id),
+            ExecutionWorkerClaim(id=claim_id, worker_id=worker_id, family="agent_run", subject_id=run.id),
+            WorkDispatch(id=dispatch_id, family="agent_run", subject_id=run.id, handler="agent.run", handler_version=1,
+                         message={}, payload={}, assigned_worker_id=worker_id),
+        ])
+        session.add(CloudflareAgentAttempt(claim_id=claim_id, run_id=run.id, data={
+            "dispatch_id": str(dispatch_id), "profile_id": None, "profile_pin": ["profile"],
+            "model": "stub", "max_requests": 2, "max_tokens": 100, "max_output": 16,
+            "tool": {"name": "lookup", "workflow_id": str(workflow.id)}, "step": 0,
+            "requests": {"1": "first-grant"}, "events": [], "messages": [], "text": "",
             "deadline": (datetime.now(UTC) + timedelta(minutes=1)).isoformat(),
         }))
-    async def lock_run(session, subject, _claim):
-        return await session.get(AgentRun, subject, with_for_update={"of": AgentRun})
-
-    principal = SimpleNamespace(
-        user_id=UUID("00000000-0000-0000-0000-000000000001"), name="Fixture", email="fixture@example.invalid",
-        is_superuser=False, impersonated_by_user_id=None, impersonation_session_id=None,
-    )
-    caller = SimpleNamespace(principal=principal)
     monkeypatch.setattr(cloudflare_agent, "get_db_context", db.context)
-    monkeypatch.setattr(cloudflare_agent, "lock_attempt_run", lock_run)
-    monkeypatch.setattr(cloudflare_agent, "load_runtime_principal", AsyncMock(return_value=principal))
-    monkeypatch.setattr(cloudflare_agent, "load_caller", AsyncMock(return_value=caller))
-    monkeypatch.setattr(cloudflare_agent, "principal_lineage", AsyncMock(return_value=None))
-    monkeypatch.setattr(cloudflare_agent, "authorize_bound_workflow_tool", AsyncMock(
-        return_value=(agent, workflow, caller, None),
-    ))
-    hand_off = AsyncMock()
-    monkeypatch.setattr(cloudflare_agent, "hand_off_workflow_run", hand_off)
-    request = {"run_id": run_id, "claim_id": claim_id, "call_id": "call", "name": "lookup", "arguments": {}}
-
-    first, replay = await asyncio.gather(
-        cloudflare_agent.accept_workflow_tool(**request),
-        cloudflare_agent.accept_workflow_tool(**request),
+    return SimpleNamespace(
+        run_id=run.id, claim_id=claim_id, agent_id=agent.id, workflow_id=workflow.id, role_id=role.id,
+        unbound=unbound.id, cross_org=cross_org.id, lease=lease, dispatch_id=dispatch_id,
+        request={"run_id": run.id, "claim_id": claim_id, "call_id": "call", "name": "lookup", "arguments": {}},
     )
+
+
+async def test_cloudflare_tool_replays_one_atomically_accepted_execution(db, cloudflare_tool_attempt) -> None:
+    attempt = cloudflare_tool_attempt
+    with remote_owner_context(LeaseRef(attempt.lease)):
+        first, replay = await asyncio.gather(
+            cloudflare_agent.accept_workflow_tool(**attempt.request),
+            cloudflare_agent.accept_workflow_tool(**attempt.request),
+        )
+        with pytest.raises(ValueError, match="Conflicting"):
+            await cloudflare_agent.accept_workflow_tool(**{**attempt.request, "arguments": {"changed": True}})
+
     assert first == replay
-    hand_off.assert_awaited_once()
+    db.wake.assert_awaited_once()
     async with db.context() as session:
-        child = await session.get(Execution, first)
-        assert child is not None and child.workflow_id == workflow_id
-        assert child.agent_id == agent_id
+        child = (await session.scalars(select(Execution).where(Execution.agent_id == attempt.agent_id))).one()
+        assert child.id == first and child.workflow_id == attempt.workflow_id
         work = (await session.scalars(select(WorkDispatch).where(WorkDispatch.subject_id == first))).one()
-        assert work.payload["artifact_workspace_id"] == str(run_id)
-    with pytest.raises(ValueError, match="Conflicting"):
-        await cloudflare_agent.accept_workflow_tool(**{**request, "arguments": {"changed": True}})
+        assert work.payload["artifact_workspace_id"] == str(attempt.run_id)
+        journal = await session.get(CloudflareAgentAttempt, attempt.claim_id)
+        assert journal.data["tool_receipt"]["execution_id"] == str(child.id)
+
+
+@pytest.mark.parametrize(("boundary", "error", "match"), [
+    ("claim", ConnectionError, "claim is no longer current"),
+    ("cancel", ValueError, "cannot start a tool"),
+    ("unbound", AgentWorkflowAuthorizationError, "no longer available"),
+    ("cross_org", AgentWorkflowAuthorizationError, "outside the caller's organization reach"),
+])
+async def test_cloudflare_tool_refuses_before_acceptance(db, cloudflare_tool_attempt, boundary, error, match) -> None:
+    attempt = cloudflare_tool_attempt
+    async with db.context() as session:
+        if boundary == "claim":
+            await session.execute(delete(ExecutionWorkerClaim).where(ExecutionWorkerClaim.id == attempt.claim_id))
+        elif boundary == "cancel":
+            assert (await request_agent_run_cancel(session, attempt.run_id)).status == "cancelling"
+        else:
+            journal = await session.get(CloudflareAgentAttempt, attempt.claim_id)
+            journal.data = {**journal.data, "tool": {"name": "lookup", "workflow_id": str(getattr(attempt, boundary))}}
+
+    with remote_owner_context(LeaseRef(attempt.lease)), pytest.raises(error, match=match):
+        await cloudflare_agent.accept_workflow_tool(**attempt.request)
+    db.wake.assert_not_awaited()
+    async with db.context() as session:
+        journal = await session.get(CloudflareAgentAttempt, attempt.claim_id)
+        assert "tool_receipt" not in journal.data
+        assert await session.scalar(select(Execution.id).where(Execution.agent_id == attempt.agent_id)) is None
+
+
+@pytest.mark.parametrize("boundary", ["active", "permission", "binding", "size", "budget"])
+async def test_cloudflare_refuses_a_continuation_before_recording_the_grant(
+    db, cloudflare_tool_attempt, monkeypatch, boundary,
+) -> None:
+    attempt = cloudflare_tool_attempt
+    monkeypatch.setattr(cloudflare_summary, "_eligible_profile", AsyncMock(return_value=(("profile",), None, "stub")))
+    monkeypatch.setattr(cloudflare_summary, "resolve_provider_key", AsyncMock(return_value="stub-key"))
+    execution_id = str(uuid4())
+    async with db.context() as session:
+        journal = await session.get(CloudflareAgentAttempt, attempt.claim_id)
+        data = {
+            **journal.data, "tool_result": "done", "tool_text": "",
+            "model_tool": {"id": "call", "name": "lookup", "arguments": {}},
+            "tool_receipt": {"execution_id": execution_id},
+        }
+        if boundary == "active":
+            (await session.get(Agent, attempt.agent_id)).is_active = False
+        elif boundary == "permission":
+            await session.execute(delete(RolePermission).where(
+                RolePermission.role_id == attempt.role_id, RolePermission.permission == "agents.execute",
+            ))
+        elif boundary == "binding":
+            await session.execute(delete(AgentTool).where(
+                AgentTool.agent_id == attempt.agent_id, AgentTool.workflow_id == attempt.workflow_id,
+            ))
+        elif boundary == "size":
+            data["messages"] = [{"role": "user", "content": "x" * (128 * 1024 - 1024)}]
+            data["tool_text"] = "\n" * (48 * 1024)
+            data["tool_result"] = "x" * (64 * 1024)
+        else:
+            data["max_requests"] = 1
+        journal.data = data
+
+    args = (attempt.run_id, attempt.claim_id, "second-grant", 2, execution_id, "https://model.example.test")
+    with remote_owner_context(LeaseRef(attempt.lease)):
+        if boundary in {"active", "binding"}:
+            with pytest.raises(AgentWorkflowAuthorizationError, match="no longer available"):
+                await cloudflare_agent.grant_turn(*args)
+        elif boundary == "permission":
+            with pytest.raises(HTTPException) as refused:
+                await cloudflare_agent.grant_turn(*args)
+            assert (refused.value.status_code, refused.value.detail) == (403, denial_message("agents.execute"))
+        else:
+            error_type = "AgentBudgetExceeded" if boundary == "budget" else "AgentProviderRequestTooLarge"
+            assert await cloudflare_agent.grant_turn(*args) == {"granted": False, "error_type": error_type}
+    async with db.context() as session:
+        journal = await session.get(CloudflareAgentAttempt, attempt.claim_id)
+        assert journal.data["requests"] == {"1": "first-grant"}
+        assert await session.scalar(select(AgentRunStep.id).where(AgentRunStep.run_id == attempt.run_id)) is None
+
+
+async def test_cloudflare_tool_result_replays_only_at_its_original_sequence(db, cloudflare_tool_attempt) -> None:
+    attempt = cloudflare_tool_attempt
+    async with db.context() as session:
+        journal = await session.get(CloudflareAgentAttempt, attempt.claim_id)
+        journal.data = {**journal.data, "model_tool": {"id": "call", "name": "lookup", "arguments": {}}}
+    event = {"sequence": 1, "turn": 1, "kind": "workflow_tool",
+             "toolCall": {"id": "call", "name": "lookup", "arguments": "{}"}}
+    with remote_owner_context(LeaseRef(attempt.lease)):
+        child_id = await cloudflare_agent.accept_workflow_tool(**attempt.request)
+        async with db.context() as session:
+            child = await session.get(Execution, child_id)
+            child.status = ExecutionStatus.SUCCESS
+            child.result = "known response"
+            child.completed_at = datetime.now(UTC)
+        receipt = {"sequence": 1, "execution_id": str(child_id)}
+        assert await cloudflare_agent.commit_event(attempt.run_id, attempt.claim_id, event) == receipt
+        assert await cloudflare_agent.commit_event(attempt.run_id, attempt.claim_id, event) == receipt
+        with pytest.raises(ValueError, match="already committed"):
+            await cloudflare_agent.commit_event(attempt.run_id, attempt.claim_id, {**event, "sequence": 2})
+    async with db.context() as session:
+        journal = await session.get(CloudflareAgentAttempt, attempt.claim_id)
+        assert len(journal.data["events"]) == 1
+        steps = (await session.scalars(select(AgentRunStep.type).where(AgentRunStep.run_id == attempt.run_id))).all()
+        assert steps.count("tool_result") == 1
+
+
+@pytest.mark.parametrize("finished", [False, True])
+async def test_cloudflare_cancellation_uses_the_committed_terminal_evidence(
+    db, cloudflare_tool_attempt, monkeypatch, finished,
+) -> None:
+    attempt = cloudflare_tool_attempt
+    monkeypatch.setattr("src.core.pubsub.publish_agent_run_update", AsyncMock())
+    async with db.context() as session:
+        journal = await session.get(CloudflareAgentAttempt, attempt.claim_id)
+        if finished:
+            journal.data = {**journal.data, "finished_turn": 1, "finish_reason": "stop", "text": "done"}
+        assert (await request_agent_run_cancel(session, attempt.run_id)).status == "cancelling"
+    with remote_owner_context(LeaseRef(attempt.lease)):
+        await cloudflare_agent.settle_run(attempt.run_id, attempt.claim_id, "uncertain", {})
+    async with db.context() as session:
+        run = await session.get(AgentRun, attempt.run_id)
+        journal = await session.get(CloudflareAgentAttempt, attempt.claim_id)
+        assert run.status == "cancelled"
+        assert run.error == ("Cancelled by user" if finished else cloudflare_agent.UNCERTAIN)
+        assert journal.data["attempt_state"] == ("completed" if finished else "uncertain")
 
 
 async def test_cloudflare_claims_distinct_tenants_with_per_slot_limits(db) -> None:
