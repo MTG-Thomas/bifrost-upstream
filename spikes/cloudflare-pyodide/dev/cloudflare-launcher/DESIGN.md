@@ -1189,3 +1189,47 @@ exercise the opt-in launcher, real API, and private provider Worker with
 a local stub. Keep the handler out of managed-capacity planning. The
 manual path needs a separate Linux workflow slot for the inherited
 artifact workspace on workflow tools.
+
+#### Chat outbox design
+
+Keep chat on Linux until the outbox is qualified with real PostgreSQL,
+Redis and the existing client replay path. The autonomous claim protocol
+continues to exclude chat.
+
+- Under the current run, claim and owner locks, commit each normalized
+  chunk with the transcript mutation it represents. Use a unique key on
+  `(run_id, claim_id, chunk_sequence)`, persist a safe event UUID and the
+  sparse serialized `ChatStreamChunk`, and atomically advance the
+  attempt cursor. Require contiguous sequence numbers and the same
+  payload digest on replay. Reuse the same assistant message ID for
+  message start, deltas, transcript writes and terminal projection. ACK
+  the Worker after PostgreSQL commits, independently of publication.
+- The API scheduler publishes the earliest unpublished chunk for a
+  conversation using a short fenced lease. Allow one publisher per
+  conversation and keep rows until they have a Redis receipt. An expired
+  lease allows another publisher to reclaim the row. The publisher keeps
+  the existing Redis channel, stream envelope, and conversation-wide
+  sequence key, including for interleaved Linux events.
+- Extend the existing Redis Lua operation to accept the stable UUID.
+  For an existing UUID, return the stored conversation sequence without
+  appending or publishing again. For a fresh UUID, allocate a
+  conversation sequence, append to the stream, record the receipt and
+  publish in the same Redis operation. Persist that sequence on the
+  outbox row before allowing its receipt to expire. Keep receipts for
+  unfinished rows even if the usual replay stream trims old entries.
+  Validate stream and receipt key types before the script's first
+  mutation. Reuse the current chat error redaction and client sequence
+  semantics.
+- An API crash before Redis publication leaves a committed pending row.
+  A crash after Redis publication but before the PostgreSQL publish
+  receipt leaves a row that returns the original Redis sequence on retry.
+  A crash before the Worker receives the PostgreSQL ACK replays the
+  existing outbox row. These recovery cases assume Redis retains its
+  projection state. Qualify Redis restart, eviction and conversation
+  reconstruction before enabling admission. The existing conversation
+  reader and client replay cursor must converge after a projection reset.
+
+`chat-outbox-protocol.test.mjs` models the three process-crash windows
+and interleaving with the existing sequence allocator. Its durable stores
+are in-memory fixtures. The production migration, publisher, Redis Lua
+change and cross-process qualification remain separate work.
