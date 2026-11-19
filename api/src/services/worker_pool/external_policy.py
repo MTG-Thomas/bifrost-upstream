@@ -19,6 +19,7 @@ def validate_external_policy(
     primary_only: bool = False,
     additional: WorkerCapacityProfile | None = None,
     containers: bool = False,
+    incomplete_topology: bool = False,
 ) -> None:
     """Reject an incompatible policy without changing it or provisioning work."""
     if profile.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
@@ -31,7 +32,7 @@ def validate_external_policy(
                     f"({profile.memory_limit_bytes // 2**20} MiB)"
                 )
     limit = profile.max_workers + (peer.max_workers if peer else 0) + (additional.max_workers if additional else 0)
-    if not primary_only and policy.max_workers > limit:
+    if not primary_only and not incomplete_topology and policy.max_workers > limit:
         raise ValueError(f"max_workers must not exceed the capacity provider limit ({limit})")
     if (
         (peer is not None or primary_only) and not containers

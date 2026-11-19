@@ -245,6 +245,49 @@ async def test_dual_loop_runs_primary_before_burst_discovery_and_assigns_peers(m
     assert passes == expected
 
 
+async def test_workers_reserve_during_containers_discovery_outage(db, capacity, monkeypatch):
+    primary = capacity.pool.profile.model_copy(update={"max_workers": 1})
+    burst = primary.model_copy(update={
+        "scope": "burst", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+        "memory_limit_bytes": CLOUDFLARE_DEV_BUDGET_BYTES,
+    })
+    settings = SimpleNamespace(
+        **{**vars(SETTINGS), "worker_capacity_url": "https://vm.invalid", "worker_capacity_token": SecretStr(TOKEN)},
+        cloudflare_capacity_url="https://workers.invalid", cloudflare_capacity_token=SecretStr(TOKEN + "w"),
+        cloudflare_containers_url="https://containers.invalid", cloudflare_containers_token=SecretStr(TOKEN + "c"),
+        cloudflare_containers_scope="containers",
+    )
+    policy = replace(capacity.policy, max_workers=3)
+    stop = asyncio.Event()
+    reservations = []
+
+    async def profile(client):
+        if client.endpoint == settings.cloudflare_containers_url:
+            raise httpx.ConnectError("synthetic Containers outage")
+        return primary if client.endpoint == settings.worker_capacity_url else burst
+
+    async def reconcile(pool):
+        if pool.profile == burst:
+            reservations.extend(await pool.launch_for_demand(policy))
+
+    async def next_pass(*args, **kwargs):
+        stop.set()
+
+    async with db.context() as session:
+        session.add(ExecutionWorker(
+            form="external", state="ready", capacity_scope=primary.scope, memory_pressured=True,
+        ))
+    await _set_request(db.sessions, await _accept_pool_run(), CLOUDFLARE_DEV_BUDGET_BYTES, approved=True)
+    monkeypatch.setattr(ExternalCapacityClient, "profile", profile)
+    monkeypatch.setattr(ExternalWorkerPoolController, "reconcile", reconcile)
+    monkeypatch.setattr(controller.Reachability, "check", AsyncMock(return_value=True))
+    monkeypatch.setattr(external_controller, "listen_for_pool_wake", AsyncMock())
+    monkeypatch.setattr(external_controller, "_withdraw_live", AsyncMock())
+    monkeypatch.setattr(external_controller, "wait_for_next_pass", next_pass)
+    await asyncio.wait_for(external_controller.external_worker_pool_loop(stop, settings), timeout=2)
+    assert len(reservations) == 1
+
+
 @pytest.mark.parametrize("lost_reply", [False, True])
 async def test_unbound_cloudflare_prepare_holds_room_until_cleanup(db, capacity, lost_reply):
     provider = capacity.provider

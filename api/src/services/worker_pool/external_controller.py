@@ -95,6 +95,7 @@ class ExternalWorkerPoolController(WorkerCapacityController):
                 peer=self.peer_profile,
                 additional=self.additional_profile,
                 containers=self.containers_mode,
+                incomplete_topology=self.containers_scope is not None and self.additional_profile is None,
                 primary_only=(
                     self.dual_capacity and self.runtime_profile == LINUX_RUNTIME_PROFILE
                     and self.peer_profile is None
@@ -310,14 +311,6 @@ async def external_worker_pool_loop(stop_event: asyncio.Event, settings: Setting
         try:
             while not stop_event.is_set():
                 started = time.monotonic()
-                if containers_client is not None and containers is None:
-                    try:
-                        profile = await containers_client.profile()
-                        if profile.scope != containers_scope or profile.runtime_profile != LINUX_RUNTIME_PROFILE:
-                            raise CapacityProtocolError("Containers provider profile differs from the configured Linux scope")
-                        containers = ExternalWorkerPoolController(containers_client, settings, profile)
-                    except Exception:
-                        logger.exception("Containers worker capacity discovery failed")
                 primary_available = False
                 try:
                     if primary is None:
@@ -349,13 +342,21 @@ async def external_worker_pool_loop(stop_event: asyncio.Event, settings: Setting
                             primary.peer_profile = burst.profile
                             burst.peer_profile = primary.profile
                         burst.additional_profile = containers.profile if containers is not None else None
-                        burst.burst_launch_allowed = primary_available and (containers_client is None or containers is not None)
+                        burst.burst_launch_allowed = primary_available
                         if await burst.reachability.check():
                             await burst.reconcile()
                         if primary is not None:
                             primary.peer_profile = burst.profile
                     except Exception:
                         logger.exception("Burst worker capacity reconciliation failed")
+                if containers_client is not None and containers is None:
+                    try:
+                        profile = await containers_client.profile()
+                        if profile.scope != containers_scope or profile.runtime_profile != LINUX_RUNTIME_PROFILE:
+                            raise CapacityProtocolError("Containers provider profile differs from the configured Linux scope")
+                        containers = ExternalWorkerPoolController(containers_client, settings, profile)
+                    except Exception:
+                        logger.exception("Containers worker capacity discovery failed")
                 if containers is not None:
                     try:
                         containers.burst_launch_allowed = False
