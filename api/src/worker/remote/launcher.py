@@ -26,6 +26,7 @@ from src.worker.remote.control_connection import connect_control, load_control_h
 from src.worker.remote.identity import LauncherIdentity, load_launcher_identity
 from src.worker.remote.protocol import (
     CREDENTIAL_PROTOCOL,
+    CLOUDFLARE_WORKFLOW_HANDLER,
     EXECUTION_HANDLERS,
     SUMMARY_CLAIM_PROTOCOL,
     ControlEnvelope,
@@ -333,7 +334,7 @@ class Launcher:
             "requirements": requirements,
             "version": get_version(),
             "credential_protocol": CREDENTIAL_PROTOCOL,
-            "handlers": EXECUTION_HANDLERS,
+            "handlers": (CLOUDFLARE_WORKFLOW_HANDLER,) if self.containers else EXECUTION_HANDLERS,
             "summary_claim_protocol": SUMMARY_CLAIM_PROTOCOL,
         }, separators=(",", ":")))
         welcome = json.loads(await self.socket.recv())

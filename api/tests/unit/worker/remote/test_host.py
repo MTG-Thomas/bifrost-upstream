@@ -150,6 +150,21 @@ async def test_containers_bootstrap_round_trips_fragmented_requirements() -> Non
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["service", "platform_job", "agent_run", "agent_summary"])
+async def test_containers_launcher_refuses_non_workflow_commands(action: str) -> None:
+    socket = AsyncMock()
+    identity = LauncherIdentity(
+        launcher_id=LEASE.launcher_id, incarnation_id=LEASE.worker_id, job_uid=None, pod_uid=None,
+        hostname="runner", form="external", resource_uid="resource-1",
+    )
+    launcher = Launcher(socket, identity=identity, secret="derived-key", containers=True)
+    launcher.session_generation = 1
+    await launcher.command({"id": "request", "action": action, "payload": {}}, generation=1)
+    reply = ControlEnvelope.from_json(socket.send.await_args.args[0])
+    assert reply.payload["error"] == "Work family is unavailable on Containers"
+
+
+@pytest.mark.asyncio
 async def test_admission_stale_telemetry_still_renews_the_connected_owner() -> None:
     bridge = Bridge(
         Mock(), {"current": 1, "limit": 100, "requirements": {}, "hostname": "runner"}, LEASE

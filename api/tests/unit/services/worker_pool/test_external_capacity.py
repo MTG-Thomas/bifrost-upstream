@@ -457,6 +457,53 @@ async def test_cloudflare_burst_waits_for_linux_ceiling_and_respects_shared_cap(
     assert await capacity.pool.launch_for_demand(capacity.policy) == []
 
 
+@pytest.mark.asyncio
+async def test_containers_overflow_uses_vm_ceiling_and_keeps_workers_dispatches_separate(db, capacity, monkeypatch):
+    primary = capacity.pool
+    primary.profile = primary.profile.model_copy(update={"max_workers": 1})
+    settings = SimpleNamespace(**vars(SETTINGS), cloudflare_containers_scope="containers")
+    primary.settings = settings
+    monkeypatch.setattr(claims, "get_settings", lambda: settings)
+    burst = ExternalWorkerPoolController(capacity.client, settings, primary.profile.model_copy(update={
+        "scope": "burst", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+        "memory_limit_bytes": CLOUDFLARE_DEV_BUDGET_BYTES,
+    }))
+    containers = ExternalWorkerPoolController(capacity.client, settings, primary.profile.model_copy(update={
+        "scope": "containers",
+    }))
+    primary.peer_profile, primary.additional_profile = burst.profile, containers.profile
+    burst.peer_profile, burst.additional_profile = primary.profile, containers.profile
+    containers.peer_profile, containers.additional_profile = primary.profile, burst.profile
+    policy = replace(capacity.policy, max_workers=3, warm_workers=1)
+
+    approved, linux_only = await _accept_pool_run(), await _accept_pool_run()
+    await _set_request(db.sessions, approved, CLOUDFLARE_DEV_BUDGET_BYTES, approved=True)
+    await _set_request(db.sessions, linux_only, CLOUDFLARE_DEV_BUDGET_BYTES)
+    assert await containers.launch_for_demand(policy) == []
+    [vm_id] = await primary.launch_for_demand(policy)
+    async with db.context() as session:
+        vm = await session.get(ExecutionWorker, vm_id)
+        vm.state = "ready"
+        vm.memory_pressured = True
+    [workers_id] = await burst.launch_for_demand(policy)
+    [container_id] = await containers.launch_for_demand(policy)
+    async with db.context() as session:
+        worker = await session.get(ExecutionWorker, container_id)
+        assert worker.supported_handlers == ["workflow.execute"]
+        worker.state = "ready"
+        workers = await session.get(ExecutionWorker, workers_id)
+        workers.state = "ready"
+
+    claim = await claims.claim_next(container_id, fits_bytes=GIB, budget_bytes=GIB)
+    assert claim is not None and str(claim.subject_id) == linux_only
+    assert await claims.claim_next(container_id, fits_bytes=GIB, budget_bytes=GIB) is None
+    claim = await claims.claim_next(workers_id, fits_bytes=CLOUDFLARE_DEV_BUDGET_BYTES, budget_bytes=CLOUDFLARE_DEV_BUDGET_BYTES)
+    assert claim is not None and str(claim.subject_id) == approved
+    another = await _accept_pool_run()
+    await _set_request(db.sessions, another, GIB)
+    assert await containers.launch_for_demand(policy) == []
+
+
 @pytest.mark.parametrize("max_workers", [1, 2], ids=["at-cap", "spare-slot"])
 async def test_cloudflare_hello_preserves_the_external_warm_worker(db, capacity, monkeypatch, max_workers):
     policy = replace(capacity.policy, warm_workers=1, max_workers=max_workers)

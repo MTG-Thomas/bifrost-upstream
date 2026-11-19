@@ -360,10 +360,7 @@ class PoolWorker:
             await mark_static_ready(
                 self.incarnation_id, memory_budget_bytes=self.budget.budget_bytes
             )
-        runs_platform_jobs = (
-            self.hosts_remote_work and self.execution_lane == "normal"
-            and self.runtime_profile == LINUX_RUNTIME_PROFILE
-        )
+        runs_platform_jobs = self.hosts_remote_work and self.supports_linux_background_work
         background = [
             heartbeat,
             asyncio.create_task(self._wake_listener(), name="pool-wake"),
@@ -858,9 +855,13 @@ class PoolWorker:
                 logger.exception("Pool worker heartbeat failed")
             await asyncio.sleep(HEARTBEAT_SECONDS)
 
+    @property
+    def supports_linux_background_work(self) -> bool:
+        return self.execution_lane == "normal" and self.runtime_profile == LINUX_RUNTIME_PROFILE
+
     async def _prepare_admission(self) -> None:
         """Prepare shared admission, then start lane-eligible consumers."""
-        if self.execution_lane == "normal" and self.runtime_profile == LINUX_RUNTIME_PROFILE:
+        if self.supports_linux_background_work:
             await self._start_service_claim_loop()
 
     async def _start_service_claim_loop(self) -> None:

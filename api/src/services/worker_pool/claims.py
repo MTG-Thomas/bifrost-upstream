@@ -18,7 +18,7 @@ from src.models.orm.executions import Execution
 from src.models.orm.work_dispatches import WorkDispatch
 from src.services.kubernetes_execution import load_kubernetes_policy
 from src.services.execution.summary_dispatch import LINUX_ONLY_SUMMARY
-from src.services.worker_pool.eligibility import cloudflare_active_claims, cloudflare_dispatch_sql
+from src.services.worker_pool.eligibility import cloudflare_active_claims, cloudflare_dispatch_sql, containers_dispatch_sql
 from src.worker.remote.fencing import fence_remote_owner
 from src.worker.remote.protocol import (
     CLOUDFLARE_DEV_BUDGET_BYTES,
@@ -245,9 +245,15 @@ async def claim_next(
             AgentRun.status == "queued",
         ).correlate(WorkDispatch).exists()
     )
+    linux_eligible = ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE
+    containers_scope = getattr(get_settings(), "cloudflare_containers_scope", None)
+    if containers_scope is not None:
+        linux_eligible = linux_eligible & (
+            ExecutionWorker.capacity_scope.is_distinct_from(containers_scope) | containers_dispatch_sql()
+        )
     profile_eligible = exists().where(
         ExecutionWorker.id == incarnation_id,
-        (ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE)
+        linux_eligible
         | (
             (ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE)
             & (
@@ -537,7 +543,7 @@ async def begin_idle_drain(incarnation_id: UUID) -> bool:
         worker = await db.execute(
             select(
                 ExecutionWorker.resource_class, ExecutionWorker.execution_lane, ExecutionWorker.runtime_profile,
-                ExecutionWorker.active_runs, ExecutionWorker.memory_reserved_bytes,
+                ExecutionWorker.active_runs, ExecutionWorker.memory_reserved_bytes, ExecutionWorker.capacity_scope,
             ).where(ExecutionWorker.id == incarnation_id)
         )
         worker_row = worker.one_or_none()
@@ -555,10 +561,11 @@ async def begin_idle_drain(incarnation_id: UUID) -> bool:
             if worker_row.execution_lane == "fast_path"
             else policy.warm_workers
         )
-        linux_floor = (
-            worker_row.execution_lane == "normal" and bool(getattr(get_settings(), "cloudflare_capacity_url", None))
-        )
-        if not sized and (not linux_floor or worker_row.runtime_profile == LINUX_RUNTIME_PROFILE):
+        settings = get_settings()
+        containers_scope = getattr(settings, "cloudflare_containers_scope", None)
+        linux_floor = worker_row.execution_lane == "normal" and bool(getattr(settings, "cloudflare_capacity_url", None))
+        containers_worker = containers_scope is not None and worker_row.capacity_scope == containers_scope
+        if not sized and not containers_worker and (not linux_floor or worker_row.runtime_profile == LINUX_RUNTIME_PROFILE):
             ready = select(func.count(ExecutionWorker.id)).where(
                 ExecutionWorker.form.in_(MANAGED_WORKER_FORMS),
                 ExecutionWorker.resource_class == "standard",
@@ -567,6 +574,8 @@ async def begin_idle_drain(incarnation_id: UUID) -> bool:
             )
             if linux_floor:
                 ready = ready.where(ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE)
+                if containers_scope is not None:
+                    ready = ready.where(ExecutionWorker.capacity_scope.is_distinct_from(containers_scope))
             ready_jobs = await db.scalar(ready) or 0
             if ready_jobs <= keep_ready:
                 return False

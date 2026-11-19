@@ -538,6 +538,26 @@ updates, and start only the workflow template. The launcher consumes its
 derived control environment variable before starting helpers and rejects
 service, agent and generic platform-job commands.
 
+Enable the third scope with `BIFROST_CLOUDFLARE_CONTAINERS_SCOPE`,
+`BIFROST_CLOUDFLARE_CONTAINERS_URL` and
+`BIFROST_CLOUDFLARE_CONTAINERS_TOKEN` on the API. The provider must report
+the configured Linux scope and use a distinct endpoint and token. VM and
+Workers configuration remains in the existing settings. Both overflow
+scopes wait for the reconciled VM to reach its live ceiling. Containers
+advertise only Normal `workflow.execute@1`. The planner and fenced
+dispatch predicates exclude Workers-eligible work from Containers, and
+the API skips their platform-job and service supervisors. Existing VM
+claims still win if a VM slot opens during overflow. Containers use the
+VM policy's fixed Linux memory size and have no warm minimum.
+
+The provider under `deploy/cloudflare/worker` comes from `bdbe07f93` in
+#1425. Its wire protocol, durable ledger, physical container lifecycle
+and Wrangler template carry over. The environment parser is stricter on
+this fork. It allows only documented API URLs and runtime paths, rejecting
+credential aliases and any caller-supplied control secret. The provider
+adds the derived key and incarnation identity itself. No generic job
+stage is registered.
+
 **Hosted qualification.** After local conformance and explicit hosted
 approval, qualify a dev-only endpoint with a reachable HTTPS/WebSocket
 origin, a digest-pinned image, matching instance size and provider bounds,

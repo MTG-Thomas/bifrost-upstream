@@ -797,6 +797,10 @@ class ApiExecutor(PoolWorker):
         self._reconciled_generation = 0
         self._admission_prepared = False
 
+    @property
+    def supports_linux_background_work(self) -> bool:
+        return not self.bridge.containers and super().supports_linux_background_work
+
     def _opaque_slots_used(self) -> int:
         assert self.admission is not None
         return self.bridge.opaque_slots_used(self.admission)
@@ -1500,6 +1504,8 @@ class RemoteControlHost:
             if hello.execution_lane == "fast_path" and ("workflow.execute", 2) not in bootstrap["handlers"]:
                 raise AuthenticationError("Fast Path workers must support workflow.execute version 2")
             credential_protocol = hello_credential_protocol(initial)
+            if containers and initial.get("handlers") != [list(CLOUDFLARE_WORKFLOW_HANDLER)]:
+                raise ProtocolError("Containers workers advertise only the Normal workflow handler")
             if cloudflare:
                 # Negotiation filters unsupported handlers. Check the full advertisement.
                 handlers: list[list[str | int]] = [list(CLOUDFLARE_WORKFLOW_HANDLER)]
