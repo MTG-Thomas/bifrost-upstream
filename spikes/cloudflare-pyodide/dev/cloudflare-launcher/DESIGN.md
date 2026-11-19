@@ -954,7 +954,7 @@ settlement.
 
 | Handler | Linux dependencies and state | Tools and credentials | Workers budget and contract | Verdict |
 | --- | --- | --- | --- | --- |
-| `agent.run@1` | The agent consumer and executor use SQLAlchemy/asyncpg for claim, agent and caller resolution, conversation and run history, authorizations, usage and terminal persistence. Redis carries cancellation, chat events, synchronous results and execution context. Pydantic AI streams normalized provider events. Agent attachments and knowledge can require storage/API calls. The model factory uses OpenAI (including compatible endpoints and OpenRouter), Anthropic and Google SDKs over HTTPX. Their Pyodide closure, including the pinned native `pydantic-core` and `jiter` wheels, SSE/retry transport and adapter behavior, needs qualification. The server's asyncpg/socket stack and Redis client are outside the spike's packaged HTTP-only runtime. | Local tool handlers cover system, knowledge and MCP operations. Workflow-backed tools authorize under a refreshed caller and submit a separate Bifrost workflow execution through the execution service, with parent/provenance context. Delegation adds child agent runs. Keep tool and provider secrets in API-side brokers. Give the child attempt-scoped handles limited to authorized tools, models and budgets. | Multiple streamed turns plus retries, tools and delegated waits make cost dependent on turn, token, byte and fan-out limits. JSON/SSE parsing, context assembly and package boot use CPU and memory even when provider waits are idle. Needs a separate approved eligibility rule, opaque attempt identity and sequenced, durable stream and tool receipts. Once a chunk or tool request escapes, a lost result is uncertain. | No direct port. Probe the Linux runtime boundary before advertising even a tool-less slice. |
+| `agent.run@1` | Linux uses SQLAlchemy/asyncpg to load the run and caller and persist the transcript, usage and terminal. Redis carries cancellation, chat replay and sync results. Pydantic AI owns the Linux model loop. The pinned Workers bundle cannot import asyncpg. A bounded JavaScript loop runs in local workerd with stubbed ports. | The API must resolve the admin provider, enforce caller and tool scope, and atomically accept a workflow execution with its receipt. A private provider Worker would receive one ephemeral command credential. Effective chat tools include built-in artifact tools whenever the profile enables tool calling. | Needs claim-bound turn grants, durable sequenced chat events and a journaled terminal. The loop probe covers one tool receipt and continuation in memory. API persistence, ACK replay, provider cancellation and tool placement still need integrated qualification. | **Linux-only for operator lint and admission.** Treat the Workers loop as a probe. |
 | `agent.summarize@1` | Linux snapshots the completed run's input/output and bounded agent instructions in PostgreSQL, calls the configured Pydantic AI adapter once through its buffered completion interface (the adapter consumes a provider stream), then persists parsed fields, prompt version and AIUsage. Redis supplies usage caching/pubsub. No filesystem or tool dependency. A trusted JS Worker can implement the HTTP completion without the Python provider package closure. | No tools. Use a fixed provider endpoint and an ephemeral key resolved from the Bifrost connection. Keep provider config and keys out of TenantHost and dynamic children. Bind the endpoint and model to the API's selected summary provider and refuse unqualified providers. | One provider request, bounded prompt/response and JSON parse. Use a finite deadline covering dispatch and fetch, an opaque route with claim identity, and the existing journal and ACK. Use `not_started` only before fetch can have begun, `completed` for an observed outcome, and `uncertain` on interruption after entry. The API validates the current claim before committing summary and usage. | First candidate. Scope the spike to one OpenAI-compatible completion transport and manual dev enrollment. |
 | `agent.summarize_backfill@1` | Uses the same single-run compute for each dispatch. PostgreSQL stages and reconciles backfill membership and outcome counters. Redis publishes the same status and usage updates. No files or stream. | Same mediation as live summaries. | Same per-invocation shape. Aggregate requests, cost and rate limiting grow with backfill size. Preserve distinct handler concurrency and live-summary capacity priority. Count terminal outcomes only under the current claim and reconcile backfill totals through the API. | Viable after qualifying live summaries. Keep bulk admission disabled in this spike. |
 
@@ -1083,6 +1083,15 @@ the first qualification. Use one ordinary declared slot for the whole agent
 attempt. The workflow pool admits the tool separately, so the tool fixture
 needs independent workflow capacity while the agent holds its slot.
 
+For the model-only chat case, qualify a profile with tool calling disabled.
+`AgentExecutor.chat` adds the built-in artifact definitions whenever the
+profile enables tool calling, even for an agent with zero bound tools. A
+single bound workflow therefore does not produce a one-tool chat request
+under today's policy. A one-workflow fixture needs either a reviewed
+Workers-only capability restriction, or a separately qualified autonomous
+run that preserves its AgentRunStep contract. The operator lint decision
+must inspect the effective tool surface and mode.
+
 The API resolves the active admin-configured model profile and its connection
 for each model turn. Qualify the same pinned OpenAI-compatible HTTPS
 chat-completions transport as summaries. The API pins the selected profile
@@ -1115,6 +1124,13 @@ chat events stable IDs and replay from the durable cursor across a lost
 Redis publication or socket reconnect. Assign an existing assistant message
 identity once and reuse it for deltas, transcript finalization and the
 terminal event.
+
+`publish_chat_run_event` generates a fresh event ID and assigns the
+conversation sequence in Redis. Invoking it after an independent PostgreSQL
+cursor commit creates a crash window in which retry can duplicate an event
+or strand it. Workers admission requires a durable projection into the
+existing client replay contract. Qualify commit followed by API process loss
+before publication, and publication followed by loss before ACK.
 
 The first inventory after welcome advertises the opaque attempt and the
 last locally acknowledged sequence. The replacement API owner validates the
@@ -1181,3 +1197,8 @@ and verify one execution with the expected actor and original-user lineage,
 then verify its result reaches the second model turn. Check Linux records
 against the same scripted provider inputs. Treat this as local runtime
 evidence for that fixture and pinned workerd build.
+
+`agent-loop.test.mjs` currently exercises the portable loop with in-memory
+broker ports in Node and workerd. It has no real execution receipt, provider
+stream, API claim or replay cursor. Keep the handler excluded from launcher
+advertisement and managed-capacity planning until those seams are wired.
