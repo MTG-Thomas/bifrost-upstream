@@ -394,9 +394,11 @@ ceiling. Count live reservations and unconfirmed terminal resources against
 physical headroom until the owning provider confirms cleanup. A shared cap
 equal to the VM ceiling leaves zero overflow slots. Keep the Normal warm
 floor within the VM scope ceiling and both Cloudflare scopes demand-only.
-Preserve existing Fast Path reservations. A failed peer discovery or failed
-primary reconcile cannot authorize new overflow starts. Independently
-reconcile known resources and allow owned cleanup during a peer outage.
+Preserve existing Fast Path reservations. A failed primary reconcile blocks
+new overflow starts. A Containers discovery failure leaves Workers burst
+available under the shared cap, which still counts the configured Containers
+scope. Independently reconcile known resources and allow owned cleanup
+during a peer outage.
 Validate scope identity, memory, lifetime and aggregate capacity on policy
 save and admission. Keep Linux measurements keyed by scope and build.
 

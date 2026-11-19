@@ -260,9 +260,11 @@ async def test_workers_reserve_during_containers_discovery_outage(db, capacity, 
     policy = replace(capacity.policy, max_workers=3)
     stop = asyncio.Event()
     reservations = []
+    containers_reads = []
 
     async def profile(client):
         if client.endpoint == settings.cloudflare_containers_url:
+            containers_reads.append(client.endpoint)
             raise httpx.ConnectError("synthetic Containers outage")
         return primary if client.endpoint == settings.worker_capacity_url else burst
 
@@ -285,6 +287,7 @@ async def test_workers_reserve_during_containers_discovery_outage(db, capacity, 
     monkeypatch.setattr(external_controller, "_withdraw_live", AsyncMock())
     monkeypatch.setattr(external_controller, "wait_for_next_pass", next_pass)
     await asyncio.wait_for(external_controller.external_worker_pool_loop(stop, settings), timeout=2)
+    assert containers_reads == [settings.cloudflare_containers_url]
     assert len(reservations) == 1
 
 

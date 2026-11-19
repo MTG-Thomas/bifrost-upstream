@@ -187,6 +187,7 @@ async def test_containers_run_omits_background_job_and_service_supervisors() -> 
     with (
         patch.object(worker, "_initialize_runtime", new=AsyncMock(return_value=True)),
         patch.object(worker, "_start_executor", new=start_executor),
+        patch.object(worker, "_on_ready", None),
         patch.object(worker, "_heartbeat_loop", new=AsyncMock()),
         patch.object(worker, "_wake_listener", new=AsyncMock()),
         patch.object(worker, "_package_loop", new=AsyncMock()),

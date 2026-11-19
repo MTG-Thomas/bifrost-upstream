@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {execFileSync} from 'node:child_process';
+import {execFileSync, spawnSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {appendFileSync, readFileSync, utimesSync, writeFileSync} from 'node:fs';
 import {mkdir} from 'node:fs/promises';
@@ -575,6 +575,7 @@ async function phase6Checks() {
 }
 
 async function containersChecks() {
+  const startedAt = new Date().toISOString();
   const launchers = ['worker', 'scheduler'].map((service) => config.project + '-' + service + '-1');
   const inspect = (format) => execFileSync('docker', ['inspect', '--format', format, launchers[0]], {encoding: 'utf8'}).trim();
   const vmEnv = Object.fromEntries(JSON.parse(inspect('{{json .Config.Env}}'))
@@ -654,6 +655,15 @@ async function containersChecks() {
     assert.equal(linuxRow.claim.length, 1);
     assert.equal(container?.profile, 'linux-process-v1');
     assert.ok(container.hello > 0);
+    const launcherId = sql(`SELECT to_json(remote_launcher_id) FROM execution_workers WHERE id = '${container.id}'`);
+    assert.ok(launcherId && launcherId !== container.id);
+    for (const name of [config.project + '-api-1', config.project + '-containers-' + container.id]) {
+      const read = spawnSync('docker', ['logs', '--since', startedAt, name], {
+        encoding: 'utf8', timeout: 10_000, maxBuffer: 32 * 1024 ** 2,
+      });
+      assert.equal(read.status, 0, 'could not inspect qualification logs');
+      assert.ok(!(read.stdout + read.stderr).includes(launcherId), 'physical launcher ID leaked into logs');
+    }
     const workerStatus = await until('Container requirements recorded in worker heartbeat', () => JSON.parse(execFileSync(
       'docker', ['exec', config.project + '-redis-1', 'redis-cli', '--raw', 'GET',
         'bifrost:pool:' + container.id + ':heartbeat'], {encoding: 'utf8'},
