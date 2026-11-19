@@ -9,18 +9,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.orm.agent_runs import AgentRun
 from src.models.orm.agents import Agent
-from src.models.orm.ai_models import (
-    AIModelAssignment,
-    AIModelProfile,
-    AIProviderConnection,
-)
+from src.services.agent_runtime.model_factory import provider_name_for_config
+from src.services.execution.model_selection import get_summarization_client
 from src.services.execution.run_summarizer import (
     _broadcast_run,
     _extract_json_object,
     summary_messages,
     write_summary,
 )
-from src.services.llm.base import LLMResponse
+from src.services.llm.base import LLMResponse, is_deepseek_family, request_max_tokens
+from src.services.llm.pydantic_client import PydanticAIClient
 
 REQUEST_BYTES = 256 * 1024
 RESPONSE_BYTES = 64 * 1024
@@ -29,7 +27,7 @@ UNCERTAIN_ERROR = "The summary provider may already have received the request. R
 
 
 def summary_endpoint(value: str | None) -> str | None:
-    if not value or not value.isascii() or any(c.isspace() or c == "\\" for c in value):
+    if not value or not value.isascii() or any(c.isspace() or c in "\\?#" for c in value):
         return None
     try:
         url = urlsplit(value)
@@ -41,19 +39,19 @@ def summary_endpoint(value: str | None) -> str | None:
 
 
 async def prepare_completion(db: AsyncSession, run: AgentRun, endpoint: str) -> dict[str, Any]:
-    # Read profile metadata only. The generic resolver can decrypt credentials
-    # and probe an unclassified endpoint, including failover.
-    profile = (await db.execute(select(
-        AIModelProfile.model, AIModelProfile.default_max_tokens, AIModelProfile.openai_transport,
-        AIModelProfile.failover_profile_id, AIModelProfile.reasoning_effort,
-        AIProviderConnection.provider, AIProviderConnection.endpoint, AIProviderConnection.catalog_provider_id,
-    ).join(AIModelAssignment, AIModelAssignment.profile_id == AIModelProfile.id)
-      .join(AIProviderConnection, AIProviderConnection.id == AIModelProfile.connection_id)
-      .where(AIModelAssignment.assignment_key == "summarization"))).one_or_none()
+    try:
+        client, model = await get_summarization_client(db)
+    except RuntimeError:
+        raise ValueError("The summary connection could not be resolved") from None
+    config = client.config
+    provider = provider_name_for_config(config)
     if (
-        profile is None or profile.provider != "openai_compatible" or profile.catalog_provider_id is not None
-        or profile.failover_profile_id is not None or profile.reasoning_effort is not None
-        or profile.openai_transport != "chat_completions" or summary_endpoint(profile.endpoint) != endpoint
+        not isinstance(client, PydanticAIClient) or client.fallback_configs
+        or config.provider != "openai" or not config.api_key
+        or provider in {"openrouter", "opencode_go"} or not 0 < len(provider) <= 50
+        or config.reasoning_effort is not None
+        or config.extra_params or config.openai_transport != "chat_completions"
+        or summary_endpoint(config.endpoint) != endpoint
     ):
         raise ValueError("Summary profile is outside the Cloudflare chat-completion spike")
     agent = (await db.execute(select(Agent.name, Agent.system_prompt).where(
@@ -65,16 +63,17 @@ async def prepare_completion(db: AsyncSession, run: AgentRun, endpoint: str) -> 
         run.input, run.output,
     )
     body: dict[str, Any] = {
-        "model": profile.model,
+        "model": model,
         "messages": [{"role": msg.role, "content": msg.content} for msg in messages],
         "stream": False,
         "store": False,
     }
-    if (max_tokens := profile.default_max_tokens) is not None:
-        body["max_completion_tokens"] = max_tokens
+    if (max_tokens := request_max_tokens(config, None)) is not None:
+        token_field = "max_tokens" if is_deepseek_family(config) else "max_completion_tokens"
+        body[token_field] = max_tokens
     if len(json.dumps(body).encode()) > REQUEST_BYTES:
         raise ValueError("Cloudflare summary exceeds the request size limit")
-    return {"endpoint": endpoint, "body": body}
+    return {"endpoint": endpoint, "body": body, "api_key": config.api_key, "provider": provider}
 
 
 async def settle_completion(db: AsyncSession, run: AgentRun, result: dict[str, Any], state: str) -> None:
@@ -106,11 +105,17 @@ async def _persist_completion(db: AsyncSession, run: AgentRun, result: dict[str,
     if not isinstance(parsed, dict):
         return "Summarization model did not return a JSON object"
     usage = [result.get(name) for name in ("input_tokens", "output_tokens", "cache_read_tokens", "reasoning_tokens")]
-    if any(type(tokens) is not int or not 0 <= tokens <= 2**31 - 1 for tokens in usage):
+    if any(
+        (tokens is not None or index < 2) and (type(tokens) is not int or not 0 <= tokens <= 2**31 - 1)
+        for index, tokens in enumerate(usage)
+    ):
         return "Invalid Cloudflare summary token usage"
     response = LLMResponse(
         input_tokens=usage[0], output_tokens=usage[1],
         cache_read_tokens=usage[2], reasoning_tokens=usage[3],
     )
-    await write_summary(db, run, parsed, response, provider="openai", model=model, organization_id=run.org_id)
+    provider = result.get("provider")
+    if not isinstance(provider, str) or not 0 < len(provider) <= 50:
+        return "Invalid Cloudflare summary provider attribution"
+    await write_summary(db, run, parsed, response, provider=provider, model=model, organization_id=run.org_id)
     return None

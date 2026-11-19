@@ -1,7 +1,6 @@
 import {DurableObject} from 'cloudflare:workers';
 import {createLauncherWorkflowRunner, launcherTenantId} from '../tenant-workers/launcher-host.mjs';
 import {LauncherCore} from './launcher-core.mjs';
-import {summaryRunner} from './summary-provider.mjs';
 import {MAX_WORKFLOW_SLOTS, SLOT_BYTES} from './protocol.mjs';
 
 const DIAL_TIMEOUT_MS = 10_000;
@@ -107,9 +106,21 @@ export class CloudflareLauncher extends DurableObject {
     this.#settings = settings;
     const getHost = (id) => this.ctx.exports.TenantHost.getByName(id);
     const runWorkflow = createLauncherWorkflowRunner(getHost);
+    const summary = this.env.SUMMARY_PROVIDER;
+    const runSummary = !this.#managed && typeof summary?.fetch === 'function' ?
+      async (route, context, signal) => {
+        const remaining = Date.parse(route.deadline) - Date.now();
+        if (remaining <= 0 || signal.aborted) {
+          return {attempt_state: 'not_started', result: {success: false, error_type: 'SummaryDeadlineElapsed'}};
+        }
+        const response = await summary.fetch('https://summary.internal/complete', {
+          method: 'POST', body: JSON.stringify({...context, remaining_ms: remaining}), signal,
+        });
+        return response.json();
+      } : undefined;
     this.#core = new LauncherCore({
       ...settings, clock: Date.now, storage: this.#storage,
-      runSummary: this.#managed ? undefined : summaryRunner(this.env),
+      runSummary,
       send: (session, frame) => {
         const connection = this.#connection;
         if (connection?.session !== session || connection.socket.readyState !== WebSocket.OPEN) {

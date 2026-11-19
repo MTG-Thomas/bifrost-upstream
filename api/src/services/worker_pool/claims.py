@@ -16,7 +16,7 @@ from src.models.orm.execution_workers import MANAGED_WORKER_FORMS, ExecutionWork
 from src.models.orm.executions import Execution
 from src.models.orm.work_dispatches import WorkDispatch
 from src.services.kubernetes_execution import load_kubernetes_policy
-from src.services.execution.summary_dispatch import LINUX_ONLY_SUMMARY_REVISION
+from src.services.execution.summary_dispatch import LINUX_ONLY_SUMMARY
 from src.services.worker_pool.eligibility import cloudflare_active_claims, cloudflare_dispatch_sql
 from src.worker.remote.fencing import fence_remote_owner
 from src.worker.remote.protocol import (
@@ -244,7 +244,7 @@ async def claim_next(
                 | (
                     (WorkDispatch.handler == CLOUDFLARE_SUMMARY_HANDLER[0])
                     & (WorkDispatch.handler_version == CLOUDFLARE_SUMMARY_HANDLER[1])
-                    & WorkDispatch.cloudflare_revision.is_distinct_from(LINUX_ONLY_SUMMARY_REVISION)
+                    & ~WorkDispatch.payload.contains(LINUX_ONLY_SUMMARY)
                     & (WorkDispatch.memory_request_bytes <= CLOUDFLARE_DEV_BUDGET_BYTES)
                     & ExecutionWorker.capacity_scope.is_(None)
                 )

@@ -609,3 +609,12 @@ async def test_failed_terminal_commit_keeps_route_for_replay(announce) -> None:
     finally:
         waiting.cancel()
         await asyncio.gather(waiting, return_exceptions=True)
+
+
+def test_opaque_summary_is_counted_once_in_declared_occupancy(monkeypatch):
+    bridge = _bridge()
+    executor = ApiExecutor(bridge, LEASE.worker_id)
+    bridge.summaries = Mock()
+    monkeypatch.setattr(executor, "_workflow_runs", lambda: 1)
+    executor._tasks["agent.summarize"].add(Mock())
+    assert executor.active_runs() == 1

@@ -60,12 +60,13 @@ function workflowRoute(payload, runtimeHandle) {
 }
 
 function summaryRoute(payload, runtimeHandle, now) {
-  const {route_id, run_id, claim_id, deadline, memory_request_bytes, context} = payload;
+  const {route_id, run_id, claim_id, timeout_seconds, memory_request_bytes, context} = payload;
   const identity = SUMMARY_ROUTE.exec(route_id);
   if (!identity || identity[1] !== run_id || identity[2] !== claim_id ||
-      !instant(deadline) || Date.parse(deadline) > now + 30_000 ||
+      !integer(timeout_seconds) || timeout_seconds < 1 || timeout_seconds > 30 ||
       !integer(memory_request_bytes) || memory_request_bytes === 0 ||
       memory_request_bytes > SLOT_BYTES || !record(context)) return null;
+  const deadline = new Date(now + timeout_seconds * 1000).toISOString();
   return {kind: 'agent_summary', route_id, subject_id: run_id, claim_id, deadline,
     runtime_handle: runtimeHandle, memory_request_bytes};
 }
@@ -314,7 +315,7 @@ export class LauncherCore {
         return;
       case 'terminate': {
         if (typeof payload.route_id !== 'string' ||
-            !(WORKFLOW_ROUTE.test(payload.route_id) || this.runSummary && SUMMARY_ROUTE.test(payload.route_id)) ||
+            !(WORKFLOW_ROUTE.test(payload.route_id) || SUMMARY_ROUTE.test(payload.route_id)) ||
             typeof payload.error_type !== 'string' || typeof payload.error !== 'string') {
           refuse('ValueError', 'Invalid terminate command');
           return;

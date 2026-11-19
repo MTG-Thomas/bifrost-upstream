@@ -99,9 +99,9 @@ class LLMResponse:
     # Token usage
     input_tokens: int | None = None
     output_tokens: int | None = None
-    cache_read_tokens: int = 0
+    cache_read_tokens: int | None = 0
     cache_write_tokens: int = 0
-    reasoning_tokens: int = 0
+    reasoning_tokens: int | None = 0
     provider_cost: Decimal | None = None
 
     # Model info

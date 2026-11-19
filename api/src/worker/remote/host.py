@@ -258,7 +258,12 @@ class Bridge:
                             f"{self.lease.session_generation} before {action} dispatch"
                         )
                     if opaque:
-                        if not self.connected or not self.reconciliation_ready.is_set():
+                        summary_stop = (
+                            action == "terminate" and self.summaries is not None
+                            and self.inventory_ready.is_set()
+                            and str(payload.get("route_id", "")).startswith("summary:")
+                        )
+                        if not self.connected or (not self.reconciliation_ready.is_set() and not summary_stop):
                             raise CredentialRouteChanged("Opaque launcher inventory is not reconciled")
                         if dispatch and self.freshness_age() > ADMISSION_FRESHNESS_SECONDS:
                             raise CredentialRouteChanged("Opaque launcher heartbeat is stale")

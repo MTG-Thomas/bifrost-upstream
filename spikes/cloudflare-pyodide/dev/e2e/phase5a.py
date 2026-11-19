@@ -238,7 +238,7 @@ def run(runtime, hosted, resume, reset_route, from_reset, summary=False):
         run_id = uuid4()
         database_key = "api-fixture-only-" + secrets.token_hex(16)
         summary_config = {"run": str(run_id), "endpoint": SUMMARY_ENDPOINT,
-                          "key": "worker-fixture-only-" + secrets.token_hex(16), "databaseKey": database_key}
+                          "databaseKey": database_key}
         subprocess.run(["docker", "exec", "-i", f"{project}-api-1", "python", "-",
                         str(run_id), SUMMARY_ENDPOINT, database_key], cwd=ROOT, check=True, text=True, input='''
 import asyncio

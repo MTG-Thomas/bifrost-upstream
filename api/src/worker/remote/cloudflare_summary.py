@@ -17,6 +17,8 @@ from src.services.execution.summary_dispatch import (
     claim_summary,
     fail_remote_summary,
     release_summary,
+    stage_summary,
+    hand_off_summary,
 )
 from src.services.memory_requests import SUMMARY_REQUEST_BYTES
 from src.services.worker_pool.claims import PoolClaim
@@ -37,11 +39,13 @@ class SummaryRoute:
     run_id: UUID
     claim_id: UUID
     memory_request_bytes: int
-    deadline: datetime
+    deadline: datetime  # API supervisor deadline, independent of Worker time
     finished: asyncio.Future[None]
     reservation_key: str
     handle: str | None = None
     receipt: tuple[str, str] | None = None
+    worker_deadline: datetime | None = None
+    queued_at: datetime | None = None
 
     @property
     def id(self) -> str:
@@ -75,9 +79,8 @@ class CloudflareSummaryRoutes:
         deadline = datetime.now(UTC) + timedelta(seconds=TIMEOUT_SECONDS)
         route = SummaryRoute(
             run_id, claim_id, claim.memory_request_bytes, deadline,
-            asyncio.get_running_loop().create_future(), str(claim.dispatch_id),
+            asyncio.get_running_loop().create_future(), str(claim.dispatch_id), queued_at=claim.queued_at,
         )
-        self.routes[route.id] = route
         try:
             async with get_db_context() as db:
                 if not await fence_remote_owner(db, for_update=True):
@@ -93,36 +96,47 @@ class CloudflareSummaryRoutes:
                     ExecutionWorkerClaim.id == claim_id, ExecutionWorkerClaim.worker_id == self.worker_id,
                     ExecutionWorkerClaim.family == FAMILY,
                 ))
-                if run is None or owned is None:
-                    self._resolve(route)
+                if owned is None:
+                    return
+                if run is None:
+                    await claim_summary(db, run_id, claim.dispatch_id)
+                    await db.commit()
                     return
                 completion = await prepare_completion(db, run, self.endpoint)
-                if not await claim_summary(db, run_id, claim.dispatch_id):
-                    self._resolve(route)
-                    return
+                claimed = await claim_summary(db, run_id, claim.dispatch_id)
                 await db.commit()
+                if not claimed:
+                    return
         except ValueError:
             await release_summary(
                 worker_id=self.worker_id, run_id=run_id, dispatch_id=claim.dispatch_id,
                 claim_id=claim_id, linux_only=True,
             )
-            self._resolve(route)
             return
+        except Exception:
+            await release_summary(
+                worker_id=self.worker_id, run_id=run_id, dispatch_id=claim.dispatch_id, claim_id=claim_id,
+            )
+            raise
 
+        self.routes[route.id] = route
         try:
             reply = await self.transport.request("cloudflare_summary", {
                 "route_id": route.id,
                 "run_id": str(run_id),
                 "claim_id": str(claim_id),
-                "deadline": deadline.isoformat(),
+                "timeout_seconds": TIMEOUT_SECONDS,
                 "memory_request_bytes": route.memory_request_bytes,
                 "context": completion,
             }, expected_generation=generation)
         except (ConnectionError, TimeoutError):
             # A lost receipt leaves a provider call possible. Inventory or its terminal decides.
             pass
-        except (CredentialRouteChanged, MemoryError, RuntimeError):
-            await self._fail(route, "The Cloudflare summary request did not start")
+        except (CredentialRouteChanged, MemoryError):
+            await self._restage(route, linux_only=False)
+            return
+        except RuntimeError:
+            await self._restage(route, linux_only=True)
             return
         else:
             try:
@@ -132,7 +146,22 @@ class CloudflareSummaryRoutes:
             except ValueError:
                 # Treat a malformed reply as ambiguous, like a lost one.
                 pass
+        finally:
+            completion.pop("api_key", None)
         await self.wait(route)
+
+    async def _restage(self, route: SummaryRoute, *, linux_only: bool) -> None:
+        async with get_db_context() as db:
+            if not await fence_remote_owner(db, for_update=True):
+                raise ConnectionError("Summary owner changed before requeue")
+            run = await self._current_run(db, route.run_id, route.claim_id)
+            dispatch = None
+            if run is not None:
+                run.summary_status = "pending"
+                dispatch = await stage_summary(db, route.run_id, linux_only=linux_only, queued_at=route.queued_at)
+            await db.commit()
+        await hand_off_summary(dispatch)
+        self._resolve(route)
 
     async def wait(self, route: SummaryRoute) -> None:
         from src.services.execution.cloudflare_summary import UNCERTAIN_ERROR
@@ -146,7 +175,7 @@ class CloudflareSummaryRoutes:
                 await self.transport.request("terminate", {
                     "route_id": route.id, "error_type": "TimeoutError", "error": "Summary deadline elapsed",
                 })
-            except (ConnectionError, TimeoutError, CredentialRouteChanged):
+            except (ConnectionError, TimeoutError, CredentialRouteChanged, RuntimeError):
                 pass
             await self._fail(route, UNCERTAIN_ERROR)
 
@@ -178,7 +207,6 @@ class CloudflareSummaryRoutes:
                 route_id = f"summary:{run_id}:{claim_id}"
                 if (
                     entry.get("route_id") != route_id or route_id in observed or deadline.utcoffset() is None
-                    or deadline > datetime.now(UTC) + timedelta(seconds=TIMEOUT_SECONDS)
                     or type(size) is not int or size != SUMMARY_REQUEST_BYTES
                 ):
                     raise ValueError("Invalid opaque summary inventory")
@@ -187,26 +215,37 @@ class CloudflareSummaryRoutes:
                 if receipt is not None and (not isinstance(receipt[0], str) or not isinstance(receipt[1], str) or receipt[1] not in _STATES):
                     raise ValueError("Invalid opaque summary receipt")
                 route = self.routes.get(route_id)
+                async with get_db_context() as db:
+                    if not await fence_remote_owner(db, for_update=True):
+                        raise ConnectionError("Summary owner changed during reconciliation")
+                    run = await self._current_run(db, run_id, claim_id)
+                if run is None:
+                    if terminal:
+                        if route is not None:
+                            self._resolve(route)
+                        continue
+                    # Keep a waiter and the slot until the old route's terminal.
+                    try:
+                        await self.transport.request("terminate", {
+                            "route_id": route_id, "error_type": "OwnerLost",
+                            "error": "Summary claim was superseded",
+                        })
+                    except (ConnectionError, TimeoutError, CredentialRouteChanged, RuntimeError):
+                        # The retained reservation and supervised deadline cover a lost stop.
+                        pass
                 if route is None:
-                    async with get_db_context() as db:
-                        if not await fence_remote_owner(db, for_update=True):
-                            raise ConnectionError("Summary owner changed during reconciliation")
-                        run = await self._current_run(db, run_id, claim_id)
-                    if run is None:
-                        if not terminal:
-                            raise ValueError("Live summary has no generating claim")
-                        continue  # ACK an already settled or superseded receipt.
                     route = SummaryRoute(
-                        run_id, claim_id, size, deadline,
+                        run_id, claim_id, size, datetime.now(UTC) + timedelta(seconds=TIMEOUT_SECONDS),
                         asyncio.get_running_loop().create_future(), route_id,
                     )
                     self.routes[route_id] = route
                     adopted.append(route)
                 elif (
-                    route.deadline != deadline or route.memory_request_bytes != size
+                    route.worker_deadline not in (None, deadline) or route.memory_request_bytes != size
                     or route.handle not in (None, handle) or route.receipt not in (None, receipt)
                 ):
                     raise ValueError("Opaque summary route metadata changed")
+                route.worker_deadline = deadline
                 route.handle, route.receipt = handle, receipt
 
         async with get_db_context() as db:
@@ -255,6 +294,9 @@ class CloudflareSummaryRoutes:
         ):
             raise ValueError("Invalid opaque summary result")
         route.handle, route.receipt = handle, receipt
+        if state == "not_started":
+            await self._restage(route, linux_only=True)
+            return
         async with get_db_context() as db:
             if not await fence_remote_owner(db, for_update=True):
                 raise ConnectionError("Summary owner changed before settlement")

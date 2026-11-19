@@ -23,6 +23,7 @@ from shared.version import get_version
 from src.config import get_settings
 from src.core.cache.redis_client import get_redis
 from src.models.enums import ExecutionStatus
+from src.models.orm.agent_runs import AgentRun
 from src.models.orm.config import SystemConfig
 from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
 from src.models.orm.executions import Execution
@@ -30,7 +31,7 @@ from src.models.orm.organizations import Organization
 from src.models.orm.work_dispatches import WorkDispatch
 from src.models.orm.workflows import Workflow
 from src.services import work_dispatch
-from src.services.execution import async_executor, workflow_dispatch
+from src.services.execution import async_executor, summary_dispatch, workflow_dispatch
 from src.services.execution.async_executor import _publish_pending
 from src.services.kubernetes_execution import (
     KUBERNETES_CONFIG_CATEGORY,
@@ -3463,3 +3464,30 @@ async def test_worker_registration_stores_handler_names_once_across_versions(db)
     async with db.sessions() as session:
         worker = await session.get(ExecutionWorker, worker_id)
         assert worker.supported_handlers == ["workflow.execute", "agent.run"]
+
+
+async def test_cloudflare_claim_skips_linux_only_summary(db):
+    worker_id = await _declared_worker(db)
+    linux_only, eligible = uuid4(), uuid4()
+    async with db.context() as session:
+        worker = await session.get(ExecutionWorker, worker_id)
+        worker.supported_handlers = ["agent.summarize"]
+        session.add_all([
+            AgentRun(id=run_id, trigger_type="sdk", status="completed", summary_status="pending")
+            for run_id in (linux_only, eligible)
+        ])
+        await session.flush()
+        await summary_dispatch.stage_summary(session, linux_only, linux_only=True)
+        await summary_dispatch.stage_summary(session, eligible)
+    try:
+        claim = await claims.claim_next(worker_id, (("agent.summarize", 1),),
+                                        fits_bytes=32 * MIB, budget_bytes=CLOUDFLARE_DEV_BUDGET_BYTES)
+        assert claim is not None and claim.subject_id == eligible
+        linux = await _static_executor("linux-summary")
+        claim = await claims.claim_next(linux, (("agent.summarize", 1),),
+                                        fits_bytes=32 * MIB, budget_bytes=CLOUDFLARE_DEV_BUDGET_BYTES)
+        assert claim is not None and claim.subject_id == linux_only
+    finally:
+        async with db.context() as session:
+            await session.execute(delete(WorkDispatch).where(WorkDispatch.subject_id.in_((linux_only, eligible))))
+            await session.execute(delete(AgentRun).where(AgentRun.id.in_((linux_only, eligible))))

@@ -151,7 +151,7 @@ before(async () => {
         };
       `},
         ...Object.fromEntries(['cloudflare-launcher/launcher-do.mjs', 'cloudflare-launcher/launcher-core.mjs',
-          'cloudflare-launcher/protocol.mjs', 'cloudflare-launcher/summary-provider.mjs', 'tenant-workers/launcher-host.mjs', 'tenant-workers/tenant-dispatch.mjs',
+          'cloudflare-launcher/protocol.mjs', 'tenant-workers/launcher-host.mjs', 'tenant-workers/tenant-dispatch.mjs',
           'tenant-workers/tenant-registry.mjs', 'tenant-workers/storage-path.mjs',
           'executor/egress-hosts.mjs', 'executor/egress-psl.generated.mjs'].map((name) =>
           [name, {type: 'esm', contents: readFileSync(path(`../${name}`), 'utf8')}])),
@@ -161,9 +161,17 @@ before(async () => {
         BIFROST_WORKER_INCARNATION_ID: incarnation, BIFROST_WORKER_LAUNCHER_ID: launcher,
         BIFROST_WORKER_RESOURCE_UID: 'test:do', BIFROST_WORKER_VERSION: 'test-build',
         API_ORIGIN: 'https://test-api.invalid',
-        BIFROST_CLOUDFLARE_SUMMARY_ENDPOINT: 'https://test-provider.invalid/v1',
-        BIFROST_CLOUDFLARE_SUMMARY_KEY: 'workerd-stub-key',
-      }).map(([key, value]) => [key, {type: 'text', value}])),
+      }).map(([key, value]) => [key, {type: 'text', value}]).concat([
+        ['SUMMARY_PROVIDER', {type: 'worker', worker: 'summary'}],
+      ])),
+    },
+  }, {
+    dev: {outboundService: {type: 'worker', worker: 'api'}},
+    config: {name: 'summary', compatibilityDate,
+      env: {BIFROST_CLOUDFLARE_SUMMARY_ENDPOINT: {type: 'text', value: 'https://test-provider.invalid/v1'}},
+      manifest: {mainModule: 'summary-provider.mjs', modules: {
+        'summary-provider.mjs': {type: 'esm', contents: readFileSync(path('../cloudflare-launcher/summary-provider.mjs'), 'utf8')},
+      }},
     },
   }, {
     config: {name: 'api', compatibilityDate,
@@ -206,8 +214,9 @@ before(async () => {
                 server.send(JSON.stringify({kind: 'command', sequence: 1, session_generation: 1, payload: {
                   id: 'workerd-summary', action: 'cloudflare_summary', payload: {
                     route_id: 'summary:' + run + ':' + claim, run_id: run, claim_id: claim,
-                    deadline: new Date(Date.now() + 15_000).toISOString(), memory_request_bytes: 16777216,
-                    context: {endpoint: 'https://test-provider.invalid/v1', body: {
+                    timeout_seconds: 15, memory_request_bytes: 16777216,
+                    context: {endpoint: 'https://test-provider.invalid/v1', api_key: 'workerd-stub-key',
+                      provider: 'openai', body: {
                       model: 'workerd-stub', stream: false, store: false,
                       messages: [{role: 'system', content: 'summarize'}, {role: 'user', content: 'fixture'}],
                     }},

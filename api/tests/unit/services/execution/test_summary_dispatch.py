@@ -231,13 +231,17 @@ async def test_the_handler_counts_a_claimed_summary_against_its_backfill(world, 
     assert record.await_args.kwargs["job_id"] == job_id
 
 
-async def test_a_lost_executor_s_summary_is_requested_again(world) -> None:  # type: ignore[no-untyped-def]
+@pytest.mark.parametrize("cloudflare", [False, True])
+async def test_a_lost_executor_s_summary_is_requested_again(world, cloudflare) -> None:  # type: ignore[no-untyped-def]
     job_id = await world.backfill_job()
     run_id = await world.run(summary_status="generating", backfill_job_id=job_id)
     worker_id = uuid4()
     world.workers.append(worker_id)
     async with world.sessions() as db:
-        db.add(ExecutionWorker(id=worker_id, form="static", state="lost"))
+        db.add(ExecutionWorker(
+            id=worker_id, form="external" if cloudflare else "static", state="lost",
+            runtime_profile="cloudflare-python-v1" if cloudflare else "linux-process-v1",
+        ))
         await db.flush()
         db.add(ExecutionWorkerClaim(worker_id=worker_id, family=FAMILY, subject_id=run_id))
         await db.commit()
@@ -246,6 +250,10 @@ async def test_a_lost_executor_s_summary_is_requested_again(world) -> None:  # t
         await end_runs_of_lost_worker(db, worker_id)
         await db.commit()
 
+    if cloudflare:
+        assert await world.summary_status(run_id) == "failed"
+        assert not await world.dispatches(run_id)
+        return
     assert await world.summary_status(run_id) == "pending"
     [dispatch] = await world.dispatches(run_id)
     assert dispatch.handler == BACKFILL_HANDLER

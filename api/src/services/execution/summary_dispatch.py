@@ -15,6 +15,7 @@ outcome is counted however the summary is delivered or recovered.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from typing import Any
@@ -40,7 +41,7 @@ FAMILY = WAKE_AGENT_SUMMARY
 HANDLER = "agent.summarize"
 BACKFILL_HANDLER = "agent.summarize_backfill"
 HANDLER_VERSION = 1
-LINUX_ONLY_SUMMARY_REVISION = "b3a451a62d1d77deb45f05a897c4bc48d81635368b23aa6ae152c4e60a57e5b1"
+LINUX_ONLY_SUMMARY = {"linux_only": True}
 
 
 class SummaryOwnershipLost(RuntimeError):
@@ -74,7 +75,8 @@ async def summary_owner_session(factory: Any, run_id: UUID, worker_id: UUID, cla
 
 
 async def stage_summary(
-    db: AsyncSession, run_id: UUID, *, backfill: bool = False
+    db: AsyncSession, run_id: UUID, *, backfill: bool = False,
+    linux_only: bool = False, queued_at: datetime | None = None
 ) -> WorkDispatch | None:
     """Add a summary dispatch to the caller's transaction.
 
@@ -90,7 +92,8 @@ async def stage_summary(
         handler=BACKFILL_HANDLER if backfill else HANDLER,
         handler_version=HANDLER_VERSION,
         message={"run_id": str(run_id)},
-        payload={},
+        payload=LINUX_ONLY_SUMMARY if linux_only else {},
+        queued_at=queued_at,
         memory_request_bytes=SUMMARY_REQUEST_BYTES,
     )
     db.expunge(dispatch)
@@ -217,7 +220,7 @@ async def release_summary(
                     ExecutionWorkerClaim.subject_id == run_id,
                 ),
             )
-            .values(assigned_worker_id=None, **({"cloudflare_revision": LINUX_ONLY_SUMMARY_REVISION} if linux_only else {}))
+            .values(assigned_worker_id=None, **({"payload": LINUX_ONLY_SUMMARY} if linux_only else {}))
             .returning(WorkDispatch.id)
         )
         if released is not None:

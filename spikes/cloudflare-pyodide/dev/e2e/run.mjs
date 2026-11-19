@@ -105,7 +105,7 @@ function observe(direction, raw) {
     event = {kind: 'welcome', generation: frame.session_generation};
   } else if (frame.kind === 'command' && payload.action === 'cloudflare_summary') {
     assert.ok(config.summary);
-    assert.ok(!raw.includes(config.summary.key) && !raw.includes(config.summary.databaseKey));
+    assert.ok(payload.payload.context.api_key === config.summary.databaseKey);
     event = {kind: 'cloudflare_summary', route: payload.payload.route_id};
   } else if (frame.kind === 'command' && payload.action === 'workflow') {
     const command = payload.payload;
@@ -146,7 +146,7 @@ const proxy = createServer(async (request, response) => {
     }
     if (config.summary && path === '/__fixture/v1/chat/completions') {
       assert.equal(request.method, 'POST');
-      assert.ok(request.headers.authorization === 'Bearer ' + config.summary.key);
+      assert.ok(request.headers.authorization === 'Bearer ' + config.summary.databaseKey);
       const body = JSON.parse((await buffer(request)).toString());
       assert.equal(body.model, 'gpt-4o-mini');
       assert.equal(body.stream, false);
@@ -311,8 +311,6 @@ async function launch(port) {
   const exports = {CloudflareLauncher: {type: 'durable-object', storage: 'sqlite'},
     TenantHost: {type: 'durable-object', storage: 'sqlite'}};
   const env = Object.fromEntries(Object.entries({
-    ...(config.summary ? {BIFROST_CLOUDFLARE_SUMMARY_ENDPOINT: config.summary.endpoint,
-      BIFROST_CLOUDFLARE_SUMMARY_KEY: config.summary.key} : {}),
     API_ORIGIN: origin, RUNTIME_SHA256: createHash('sha256').update(artifact).digest('hex'),
     ...(config.phase6 ? {BIFROST_CLOUDFLARE_MANAGED: 'true'} : {
       BIFROST_CLOUDFLARE_LAUNCHER_ENABLED: 'true', BIFROST_WORKER_CONTROL_SECRET: config.controlKey,
@@ -323,7 +321,8 @@ async function launch(port) {
   mf = new Miniflare({cf: false, workers: [{
     dev: {outboundService: {type: 'worker', worker: 'relay'}},
     config: {name: 'launcher', compatibilityDate: '2026-10-30', exports,
-      env: {...env, LOADER: {type: 'worker-loader'}},
+      env: {...env, LOADER: {type: 'worker-loader'},
+        ...(config.summary ? {SUMMARY_PROVIDER: {type: 'worker', worker: 'summary'}} : {})},
       manifest: {mainModule: 'dev/phase5-harness.mjs', modulesRoot: fileURLToPath(new URL('../', root)), modules}},
   }, {
     config: {name: 'relay', compatibilityDate: '2026-10-30',
@@ -337,7 +336,15 @@ async function launch(port) {
           return fetch(new Request('http://127.0.0.1:${port}' + path + url.search, request));
         }};
       `)}}},
-  }, ...(config.phase6 ? [capacityWorker({...config.phase6, version: config.build, maxWorkers: 1})] : [])]});
+  }, ...(config.summary ? [{
+    dev: {outboundService: {type: 'worker', worker: 'relay'}},
+    config: {name: 'summary', compatibilityDate: '2026-10-30',
+      env: {BIFROST_CLOUDFLARE_SUMMARY_ENDPOINT: {type: 'text', value: config.summary.endpoint}},
+      manifest: {mainModule: 'summary-provider.mjs', modules: {
+        'summary-provider.mjs': module(readFileSync(new URL('cloudflare-launcher/summary-provider.mjs', root), 'utf8')),
+      }},
+    },
+  }] : []), ...(config.phase6 ? [capacityWorker({...config.phase6, version: config.build, maxWorkers: 1})] : [])]});
   worker = await mf.getWorker('launcher');
   if (config.phase6) provider = await mf.getWorker('capacity');
 }
@@ -724,10 +731,10 @@ async function summaryChecks() {
       'status',r.status,'summary',r.summary_status,'asked',r.asked,'did',r.did,
       'prompt',r.summary_prompt_version,'metadata',r.metadata,
       'worker',(SELECT worker_id FROM execution_worker_claims WHERE subject_id=r.id AND family='agent_summary'),
-      'usage',(SELECT json_agg(json_build_array(input_tokens,output_tokens)) FROM ai_usage WHERE agent_run_id=r.id))
+      'usage',(SELECT json_agg(json_build_array(input_tokens,output_tokens,cache_read_tokens,reasoning_tokens)) FROM ai_usage WHERE agent_run_id=r.id))
       FROM agent_runs r WHERE r.id='${id}'`);
     assert.deepEqual(row, {status: 'completed', summary: 'completed', asked: 'Summarize fixture',
-      did: 'Collated the run', prompt: 'v4', metadata: {source: 'stub'}, worker: config.incarnation, usage: [[88, 11]]});
+      did: 'Collated the run', prompt: 'v4', metadata: {source: 'stub'}, worker: config.incarnation, usage: [[88, 11, null, null]]});
     evidence('summary-committed-once', {id, providerCalls: summaryCalls, replayedEvent: first.event, row});
   } finally {
     execFileSync('docker', ['unpause', ...linux]);

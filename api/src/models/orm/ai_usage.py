@@ -102,15 +102,15 @@ class AIUsage(Base):
     model: Mapped[str] = mapped_column(String(100), nullable=False)
     input_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
     output_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
-    cache_read_tokens: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0, server_default="0"
+    cache_read_tokens: Mapped[int | None] = mapped_column(
+        Integer().evaluates_none(), nullable=True, default=0, server_default="0"
     )
     cache_write_tokens: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
     # Hidden reasoning/thinking tokens, already included in output_tokens.
-    reasoning_tokens: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0, server_default="0"
+    reasoning_tokens: Mapped[int | None] = mapped_column(
+        Integer().evaluates_none(), nullable=True, default=0, server_default="0"
     )
     provider_cost: Mapped[Decimal | None] = mapped_column(
         Numeric(12, 8), default=None

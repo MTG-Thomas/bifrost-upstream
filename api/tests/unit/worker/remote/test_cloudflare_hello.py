@@ -335,3 +335,11 @@ async def test_lost_incarnation_signal_requires_derived_proof(hello, enrollment,
     else:
         socket.close.assert_awaited_once_with(code=1008)
     socket.send_text.assert_not_awaited()
+
+
+async def test_cloudflare_hello_negotiates_summary_when_enabled(hello, enrollment, enabled_settings):
+    enabled_settings.cloudflare_summary_endpoint = "https://stub.invalid/v1"
+    session, _ = await host.RemoteControlHost().connect(socket_for(
+        hello, handlers=[["workflow.execute", 1], ["agent.summarize", 1]], summary_claim_protocol=1,
+    ))
+    assert session.bridge.handlers == (("workflow.execute", 1), ("agent.summarize", 1))

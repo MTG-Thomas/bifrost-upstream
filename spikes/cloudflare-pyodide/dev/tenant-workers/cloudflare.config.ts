@@ -25,6 +25,7 @@ if (launcherEnabled && (!process.env.WORKER_NAME ||
     ['bifrost-pyodide-tenant-ddf316c1', 'bifrost-pyodide-canary-ddf316c1'].includes(workerName))) {
   throw new Error('Use a distinct WORKER_NAME for the Cloudflare launcher');
 }
+const summaryWorker = process.env.BIFROST_CLOUDFLARE_SUMMARY_WORKER;
 const entrypoint = launcherEnabled ? './launcher-entry.mjs' : './tenant-entry.mjs';
 
 // Identity of the packaged Python runtime the engine child loads. Hashed here,
@@ -61,6 +62,8 @@ export default defineConfig({
     ...(launcherEnabled && !managedLauncher ? {triggers: [triggers.scheduled({schedule: '* * * * *'})]} : {}),
     env: {
       LOADER: {type: 'worker-loader'},
+      ...(launcherEnabled && !managedLauncher && summaryWorker ?
+        {SUMMARY_PROVIDER: {type: 'worker' as const, worker: summaryWorker}} : {}),
       SPIKE_EXPIRES_AT: {type: 'text', value: process.env.SPIKE_EXPIRES_AT ?? '0'},
       RUNTIME_SHA256: {type: 'text', value: runtimeSha256},
       SUPERVISOR_SHA256: {type: 'text', value: supervisorSha256},

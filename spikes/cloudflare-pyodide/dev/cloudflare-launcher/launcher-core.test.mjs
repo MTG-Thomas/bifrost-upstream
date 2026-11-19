@@ -30,7 +30,7 @@ function workflow(suffix = '1') {
   };
 }
 
-function peer({data = new Map(), runHost, beforePut, onSend, slots = 1} = {}) {
+function peer({data = new Map(), runHost, runSummary, beforePut, onSend, slots = 1} = {}) {
   let now = START;
   let order = 0;
   let session;
@@ -70,6 +70,7 @@ function peer({data = new Map(), runHost, beforePut, onSend, slots = 1} = {}) {
       entered.resolve();
       return runHost ? runHost(route, context, signal) : COMPLETED;
     },
+    runSummary,
     stopHost: async (route) => stopped.push(route.route_id),
     background: (promise) => background.push(promise),
   });
@@ -630,4 +631,62 @@ test('heartbeat reports the slot occupied through terminal retention and empty a
   api.setClock(START + 2000);
   await api.tick();
   assert.deepEqual(api.frames().at(-1), {event: 'heartbeat', slot_occupied: false, received_sequence: 2});
+});
+
+
+function summaryCommand() {
+  return {
+    route_id: `summary:${SUBJECT}:${LAUNCHER}`, run_id: SUBJECT, claim_id: LAUNCHER,
+    // An API clock well ahead cannot influence the launcher's deadline.
+    deadline: '2040-01-01T00:00:00Z', timeout_seconds: 30, memory_request_bytes: 16 * 2 ** 20,
+    context: {api_key: 'ephemeral-summary-key'},
+  };
+}
+
+test('summary dispatch uses the launcher clock and journals no credential', async () => {
+  const api = peer({runSummary: async (route, context) => {
+    assert.equal(Date.parse(route.deadline), START + 30_000);
+    assert.equal(context.api_key, 'ephemeral-summary-key');
+    return COMPLETED;
+  }});
+  await connect(api);
+  await api.command('cloudflare_summary', summaryCommand());
+  await api.finish();
+  assert.equal(api.frames().at(-1).event, 'summary_result');
+  assert.equal(api.frames().at(-1).attempt_state, 'completed');
+  assert.ok(!JSON.stringify([...api.data.values()]).includes('ephemeral-summary-key'));
+});
+
+test('terminate aborts a running summary and fences its late completion', async () => {
+  const entered = deferred();
+  const result = deferred();
+  const api = peer({runSummary: (_route, _context, signal) => {
+    entered.resolve(signal);
+    return result.promise;
+  }});
+  await connect(api);
+  const {route_id} = summaryCommand();
+  await api.command('cloudflare_summary', summaryCommand());
+  const signal = await entered.promise;
+  await api.command('terminate', {route_id, error_type: 'OwnerLost', error: 'superseded'});
+  assert.ok(signal.aborted);
+  result.resolve(COMPLETED);
+  await api.finish();
+  assert.equal(api.frames().at(-1).attempt_state, 'uncertain');
+  assert.equal(api.frames().filter((frame) => frame.event === 'summary_result').length, 1);
+});
+
+test('reset while a summary is running replays uncertainty without issuing the call again', async () => {
+  const entered = deferred();
+  const result = deferred();
+  const original = peer({runSummary: () => { entered.resolve(); return result.promise; }});
+  await connect(original);
+  await original.command('cloudflare_summary', summaryCommand());
+  await entered.promise;
+  const reset = peer({data: structuredClone(original.data), runSummary: async () => assert.fail('reissued summary')});
+  await connect(reset, 2);
+  assert.equal(reset.frames().at(-1).event, 'summary_result');
+  assert.equal(reset.frames().at(-1).attempt_state, 'uncertain');
+  result.resolve(COMPLETED);
+  await original.finish();
 });
