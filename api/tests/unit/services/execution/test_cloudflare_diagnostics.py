@@ -19,8 +19,9 @@ from bifrost.cloudflare_report import count_rules, inspect_bundle
     ("getattr(obj, name)()", "CF_DYNAMIC", 1, "static dispatch"),
     ("def broken(", "CF_SOURCE", 1, "entry function"),
     ("from importlib import import_module", "CF_DYNAMIC", 1, "explicit imports"),
-    ("from bifrost import roles\nroles.list()", "CF_SDK_GATEWAY", 2, "Linux"),
-    ("from bifrost import users\nusers.list()", "CF_SDK_GATEWAY", 2, "Linux"),
+    ("from bifrost import workflows\nworkflows.execute('example')", "CF_SDK_GATEWAY", 2, "Linux"),
+    ("from bifrost import executions\nexecutions.get(execution_id)", "CF_SDK_GATEWAY", 2, "Linux"),
+    ("from bifrost import api\napi.get(f'/api/executions/{execution_id}')", "CF_SDK_GATEWAY", 2, "Linux"),
     ("#" * (384 * 1024 + 1), "CF_PARSE_BUDGET", None, "smaller modules"),
 ], ids=lambda value: "oversized Python file" if isinstance(value, str) and len(value) > 1000 else None)
 async def test_diagnostics_rules(snippet, rule, line, hint):
@@ -42,6 +43,16 @@ async def test_imported_unicode_failure_names_the_imported_module():
 
     [issue] = await diagnose(read, "entry.py")
     assert (issue.rule_id, issue.path, issue.line) == ("CF_SOURCE", "helper.py", None)
+
+
+async def test_forwarded_sdk_routes_have_no_gateway_warning():
+    source = b"""from bifrost import api, executions, roles, users
+roles.list()
+users.update(user_id, name="example")
+api.get(f"/api/users/{user_id}")
+executions.get_current_logs()
+"""
+    assert await diagnose_file("entry.py", source) == []
 
 
 async def test_transitive_source_and_single_file_boundary():
@@ -94,7 +105,7 @@ async def test_bundle_budget_rule(snippet, budget, rule):
 
 async def test_report_counts_rules_once_per_artifact_and_notes_agents():
     async def read(path, _maximum):
-        return {"entry.py": b"from bifrost import roles\ndef run(): roles.list(); roles.list()"}.get(path)
+        return {"entry.py": b"from bifrost import workflows\ndef run(): workflows.execute('a'); workflows.execute('b')"}.get(path)
 
     reports = await inspect_bundle(
         read,

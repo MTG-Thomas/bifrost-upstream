@@ -844,9 +844,19 @@ class _Analysis:
         namespace, _, method = qualified.rpartition(".")
         if namespace.startswith("bifrost.") and namespace.split(".")[1] != "types":
             area = namespace.split(".")[1]
-            # These SDK calls require routes outside qualification-gateway.mjs.
-            if area in {"roles", "users"} or qualified == "bifrost.workflows.execute":
+            # Workflow dispatch and execution control belong to the parent.
+            # get_current_logs already uses the forwarded /api/sdk/ surface.
+            if area == "workflows" or area == "executions" and method != "get_current_logs":
                 self.observe("CF_SDK_GATEWAY", f"The gateway does not forward {qualified}", path, node)
+            elif namespace == "bifrost.api":
+                argument = _argument(node, 0, "path")
+                literal = _url_literal(argument, constants) if argument is not None else None
+                if literal is not None:
+                    raw_path = urlsplit(literal.prefix).path if literal.prefix.startswith("/api/") else ""
+                    for root in ("/api/workflows", "/api/executions"):
+                        if raw_path.startswith(f"{root}/") or literal.complete and raw_path == root:
+                            self.observe("CF_SDK_GATEWAY", f"The gateway does not forward {root} routes", path, node)
+                            break
             self.calls += 1
             return
         target = _http_target(node.func, aliases, constants, clients, factories)
@@ -962,7 +972,7 @@ async def diagnose(
     try:
         await _analyze(_Analysis(read, single_file=single_file, findings=findings),
                        path, function_name, subrequest_allowance, cpu_budget_ms)
-    except (AnalysisRejected, asyncio.TimeoutError) as exc:
+    except (AnalysisRejected, asyncio.TimeoutError) as exc:  # noqa: UP041 - offline census supports Python 3.10
         refusal = exc if isinstance(exc, AnalysisRejected) else AnalysisRejected(
             "Source analysis timed out", "CF_PARSE_BUDGET",
         )

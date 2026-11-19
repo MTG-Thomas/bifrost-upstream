@@ -5,14 +5,18 @@ import json
 from argparse import Namespace
 from uuid import uuid4
 
+import httpx
 import pytest
 from sqlalchemy import delete, select
+
+from bifrost.cloudflare_analysis import AnalysisRejected
+from scripts import cloudflare_workflow_approval as approval_cli
 from src.config import get_settings
 from src.core.redis_client import pending_execution_record
 from src.jobs.platform.cloudflare_reapproval import CLOUDFLARE_REAPPROVAL_DEFINITION
 from src.models.orm import CloudflareApproval, Organization, PlatformJob, Workflow
+from src.services.authorization.tokens import RuntimeSubject, issue_run_refresh_token
 from src.services.execution import workflow_dispatch
-from bifrost.cloudflare_analysis import AnalysisRejected
 from src.services.execution.cloudflare_eligibility import (
     POLICY_VERSION,
     accept_proposal,
@@ -23,8 +27,31 @@ from src.services.execution.cloudflare_eligibility import (
 )
 from src.services.file_index_service import FileIndexService
 from src.services.repo_storage import RepoStorage
+from tests.unit.authorization.committed_runs import committed_world
 
-from scripts import cloudflare_workflow_approval as approval_cli
+
+@pytest.mark.e2e
+async def test_gateway_identity_sdk_operations_still_require_run_user_permissions(async_engine, e2e_api_url):
+    async with committed_world(async_engine) as world:
+        org = await world.organization()
+        run_user = await world.person(org)
+        target = await world.person(org)
+        role = await world.role()
+        workflow = await world.workflow(org)
+        execution = await world.execution(run_user=run_user, workflow=workflow, organization=org)
+        await world.session.commit()
+
+        refresh = issue_run_refresh_token(RuntimeSubject("workflow_execution", execution.id))
+        async with httpx.AsyncClient(base_url=e2e_api_url, timeout=30) as client:
+            token = await client.post("/auth/refresh", json={"refresh_token": refresh})
+            token.raise_for_status()
+            client.headers["Authorization"] = f"Bearer {token.json()['access_token']}"
+            assert (await client.get("/api/sdk/context")).status_code == 200
+            assignment = await client.post(f"/api/roles/{role.id}/users", json={"user_ids": [str(target.id)]})
+            update = await client.patch(f"/api/users/{target.id}", json={"name": "Denied"})
+
+        assert assignment.status_code == 403
+        assert update.status_code == 403
 
 
 @pytest.mark.e2e

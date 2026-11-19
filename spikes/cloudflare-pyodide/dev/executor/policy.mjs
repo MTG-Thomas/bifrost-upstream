@@ -4,6 +4,8 @@
 const CHILD_API_PREFIXES = [
   '/api/sdk/',
   '/api/organizations',
+  '/api/roles',
+  '/api/users',
   '/api/configs',
   '/api/files',
   '/api/integrations',

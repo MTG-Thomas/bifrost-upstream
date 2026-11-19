@@ -48,6 +48,15 @@ function engine() {
         const pinned = await fetch('https://test-api.invalid/api/sdk/modules/wf.py', {headers});
         const absent = await fetch('https://test-api.invalid/api/sdk/modules/missing.py', {headers});
         result = {content: (await pinned.json()).content, missing: absent.status};
+      } else if (scenario === 'identity-sdk') {
+        const headers = {Authorization: `Bearer ${engine_token}`, Cookie: 'session=child'};
+        const users = await fetch('https://test-api.invalid/api/users?limit=1', {headers});
+        const assignment = await fetch('https://test-api.invalid/api/roles/role-fixture/users', {
+          method: 'POST', headers: {...headers, 'Content-Type': 'application/json'},
+          body: JSON.stringify({user_ids: ['user-fixture']}),
+        });
+        result = {users: await users.json(), status: assignment.status,
+          denial: assignment.ok ? null : await assignment.json()};
       } else if (scenario === 'model-catalog') {
         const headers = new Headers();
         if (body.context.catalog_etag) headers.set('If-None-Match', body.context.catalog_etag);
@@ -291,6 +300,22 @@ before(async () => {
     dev: {outboundService: {type: 'fetcher', handler: async (request) => {
       const url = new URL(request.url);
       origins.push(url.href);
+      if (url.origin === 'https://upstream.invalid' &&
+          ['/api/users', '/api/roles/role-fixture/users'].includes(url.pathname)) {
+        const authorization = request.headers.get('Authorization');
+        assert.ok(['Bearer test-access', 'Bearer restricted-access'].includes(authorization));
+        assert.equal(request.headers.get('Cookie'), null);
+        if (url.pathname === '/api/users') {
+          assert.equal(request.method, 'GET');
+          assert.equal(url.search, '?limit=1');
+          return Response.json({users: ['user-fixture']});
+        }
+        assert.equal(request.method, 'POST');
+        assert.deepEqual(await request.json(), {user_ids: ['user-fixture']});
+        return authorization === 'Bearer restricted-access'
+          ? Response.json({detail: 'API permission denied'}, {status: 403})
+          : new Response(null, {status: 204});
+      }
       if (url.href === 'https://models.dev/api.json') {
         assert.equal(request.method, 'GET');
         assert.equal(request.headers.get('Authorization'), null);
@@ -343,6 +368,24 @@ function route(tenantId, {routeId = tenantId, scenario = 'count', allowance = 8,
     },
   }};
 }
+
+test('workerd forwards identity SDK requests with run authority and returns the API refusal', async () => {
+  const tenant = 'identity-tenant';
+  await host(tenant, 'warm', {engineOnly: true});
+  const input = route(tenant, {scenario: 'identity-sdk'});
+  const permitted = await host(tenant, 'run', input);
+  assert.deepEqual(permitted.output.result, {
+    users: {users: ['user-fixture']}, status: 204, denial: null,
+  });
+  input.context.engine_token = 'restricted-access';
+  const refused = await host(tenant, 'run', input);
+  assert.deepEqual(refused.output.result, {
+    users: {users: ['user-fixture']}, status: 403, denial: {detail: 'API permission denied'},
+  });
+  assert.deepEqual(refused.timings.api_calls.map(({method, path, status}) => [method, path, status]), [
+    ['GET', '/api/users', 200], ['POST', '/api/roles/role-fixture/users', 403],
+  ]);
+});
 
 test('workerd launcher uses named summary RPC and terminate cancels the outbound provider body', {timeout: 15_000}, async (t) => {
   const {signal} = t;

@@ -73,6 +73,15 @@ will make at runtime. The offline census cannot see install overrides or
 shared source awaiting vendoring. Keep full reports local when source paths
 or artifact names are private.
 
+The launcher forwards the Roles and Users SDK paths through the same
+run-credential bridge as other SDK resources. The API checks the original
+run user's permissions and organization reach. These endpoints use the
+existing JSON request and response transport. Workflow dispatch, cancellation,
+and execution management remain parent-owned. The analyzer flags known
+workflow and execution control calls, including raw SDK requests with an
+identifiable control route. Raw API calls with computed routes still need
+review against the gateway allowlist.
+
 | Rule ID | Severity | Surfaces | Fix |
 | --- | --- | --- | --- |
 | CF_PROCESS | Warning | Save, validate, preflight, report | Replace native processes with Python or use Linux. |
