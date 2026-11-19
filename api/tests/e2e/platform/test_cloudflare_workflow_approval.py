@@ -32,27 +32,36 @@ from tests.unit.authorization.committed_runs import committed_world
 
 
 @pytest.mark.e2e
-async def test_gateway_identity_sdk_operations_still_require_run_user_permissions(async_engine, e2e_api_url):
+@pytest.mark.parametrize(("mode", "allowed"), [("restricted", False), ("full", True)])
+async def test_api_identity_sdk_operations_apply_run_permissions(async_engine, e2e_api_url, mode, allowed):
     async with committed_world(async_engine) as world:
         org = await world.organization()
         run_user = await world.person(org)
         target = await world.person(org)
         role = await world.role()
-        workflow = await world.workflow(org, permission_mode="restricted")
+        workflow = await world.workflow(org, permission_mode=mode)
         execution = await world.execution(run_user=run_user, workflow=workflow, organization=org)
         await world.session.commit()
 
         try:
-            refresh = issue_run_refresh_token(RuntimeSubject("workflow_execution", execution.id))
             async with httpx.AsyncClient(base_url=e2e_api_url, timeout=30) as client:
-                token = await client.post("/auth/refresh", json={"refresh_token": refresh})
-                token.raise_for_status()
-                client.headers["Authorization"] = f"Bearer {token.json()['access_token']}"
+                async def refresh_access():
+                    refresh = issue_run_refresh_token(RuntimeSubject("workflow_execution", execution.id))
+                    token = await client.post("/auth/refresh", json={"refresh_token": refresh})
+                    token.raise_for_status()
+                    client.headers["Authorization"] = f"Bearer {token.json()['access_token']}"
+
+                await refresh_access()
                 assert (await client.get("/api/sdk/context")).status_code == 200
                 assignment = await client.post(f"/api/roles/{role.id}/users", json={"user_ids": [str(target.id)]})
-                assert assignment.status_code == 403, assignment.text
-                update = await client.patch(f"/api/users/{target.id}", json={"name": "Denied"})
-                assert update.status_code == 403, update.text
+                assert assignment.status_code == (204 if allowed else 403), assignment.text
+                if allowed:
+                    # A role assignment changes the API authority epoch.
+                    await refresh_access()
+                update = await client.patch(f"/api/users/{target.id}", json={"name": "Updated"})
+                assert update.status_code == (200 if allowed else 403), update.text
+                if allowed:
+                    assert update.json()["name"] == "Updated"
         finally:
             await world.session.execute(delete(AuditLog).where(AuditLog.organization_id == org.id))
             await world.session.commit()
