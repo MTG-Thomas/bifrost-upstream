@@ -282,7 +282,7 @@ async def test_workers_reserve_during_containers_discovery_outage(db, capacity, 
     await _set_request(db.sessions, await _accept_pool_run(), CLOUDFLARE_DEV_BUDGET_BYTES, approved=True)
     monkeypatch.setattr(ExternalCapacityClient, "profile", profile)
     monkeypatch.setattr(ExternalWorkerPoolController, "reconcile", reconcile)
-    monkeypatch.setattr(controller.Reachability, "check", AsyncMock(return_value=True))
+    monkeypatch.setattr(controller, "Reachability", lambda: SimpleNamespace(check=AsyncMock(return_value=True)))
     monkeypatch.setattr(external_controller, "listen_for_pool_wake", AsyncMock())
     monkeypatch.setattr(external_controller, "_withdraw_live", AsyncMock())
     monkeypatch.setattr(external_controller, "wait_for_next_pass", next_pass)
