@@ -1134,7 +1134,7 @@ async def test_each_lane_reconciles_inventory_before_opening_claims(lane) -> Non
     executor.runtime_profile = LINUX_RUNTIME_PROFILE
     executor.admission = object()
     executor._admission_prepared = False
-    executor.bridge = SimpleNamespace(admission=None, reconciliation_complete=AsyncMock())
+    executor.bridge = SimpleNamespace(admission=None, containers=False, reconciliation_complete=AsyncMock())
     executor._reconcile_transport_inventory = AsyncMock(return_value={})
     executor._apply_reconciled_snapshot = AsyncMock()
     with patch.object(PoolWorker, "_start_service_claim_loop", new_callable=AsyncMock) as services:
