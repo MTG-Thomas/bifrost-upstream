@@ -33,6 +33,7 @@ from src.models.contracts.files import (
 from src.models.contracts.policies import FileAction
 from src.models.contracts.policies import FilePolicies
 from src.core.database import get_db
+from src.core.log_safety import log_safe
 from src.jobs.platform.file_move import MAX_FILE_MOVE_ITEMS, MAX_FILE_MOVE_PATH_CHARS
 from src.models.contracts.platform_jobs import PlatformJobAccepted
 from src.models import (
