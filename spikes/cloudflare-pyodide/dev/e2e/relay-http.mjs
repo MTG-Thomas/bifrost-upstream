@@ -5,7 +5,13 @@ const hopByHop = [
   'te', 'trailer', 'transfer-encoding', 'upgrade',
 ];
 
-export function hostedRelayPath(method, path) {
+export function hostedRelayPath(method, path, qualification = false) {
+  if (qualification) {
+    const pathname = path.split('?', 1)[0];
+    if (method === 'POST' && path === '/__fixture/v1/chat/completions') return true;
+    if (method === 'GET' && ['/api/sdk/modules/workflows/phase6_linux_only.py',
+      '/api/sdk/modules-resolve'].includes(pathname)) return true;
+  }
   return method === 'POST' &&
     ['/api/sdk/tables/list', '/api/sdk/runtime/logs', '/auth/refresh'].includes(path);
 }

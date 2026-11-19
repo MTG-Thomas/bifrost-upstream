@@ -21,6 +21,16 @@ test('allows the runtime log write and refuses log reads and peer routes', () =>
   assert.equal(hostedRelayPath('GET', '/api/sdk/runtime/logs'), false);
 });
 
+test('hosted qualification adds the model stub and the Linux fixture module reads', () => {
+  assert.equal(hostedRelayPath('POST', '/__fixture/v1/chat/completions'), false);
+  assert.equal(hostedRelayPath('POST', '/__fixture/v1/chat/completions', true), true);
+  assert.equal(hostedRelayPath('GET', '/api/sdk/modules/workflows/phase6_linux_only.py', true), true);
+  assert.equal(hostedRelayPath('GET', '/api/sdk/modules-resolve?name=packaging', true), true);
+  assert.equal(hostedRelayPath('GET', '/api/sdk/modules/workflows/another.py', true), false);
+  assert.equal(hostedRelayPath('POST', '/api/sdk/modules-resolve', true), false);
+  assert.equal(hostedRelayPath('POST', '/auth/login', true), false);
+});
+
 test('relays a content-length SDK POST and preserves the API response', async (t) => {
   const api = await listen(t, async (request, response) => {
     assert.equal(request.url, '/api/sdk/tables/list');

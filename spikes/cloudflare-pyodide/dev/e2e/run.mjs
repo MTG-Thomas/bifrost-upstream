@@ -38,7 +38,7 @@ const agentCalls = new Map();
 const agentAborts = new Set();
 
 function evidence(label, data) {
-  console.log(JSON.stringify({label, ...data}));
+  console.log(JSON.stringify({label, ...(config.qualification ? {at: new Date().toISOString()} : {}), ...data}));
 }
 
 async function until(label, probe, ms = 30_000) {
@@ -129,7 +129,7 @@ function observe(direction, raw) {
     }
     event = {kind: 'workflow', id: command.execution_id, route: command.route_id,
       generation: frame.session_generation};
-  } else if (frame.kind === 'command' && ['terminate', 'ready'].includes(payload.action)) {
+  } else if (frame.kind === 'command' && ['terminate', 'ready', 'bootstrap'].includes(payload.action)) {
     event = {kind: payload.action, route: payload.payload.route_id, generation: frame.session_generation};
   } else if (payload?.event === 'inventory') {
     event = {kind: 'inventory', generation: frame.session_generation,
@@ -156,11 +156,12 @@ function observe(direction, raw) {
 const proxy = createServer(async (request, response) => {
   const path = request.url;
   try {
-    if (config.hosted && !hostedRelayPath(request.method, path)) {
+    if (config.hosted && !hostedRelayPath(request.method, path, !!config.qualification)) {
       response.writeHead(404).end();
       return;
     }
-    if (config.summary && path === '/__fixture/v1/chat/completions') {
+    if (config.summary && path === '/__fixture/v1/chat/completions' &&
+        (!config.agent || request.headers.authorization === 'Bearer ' + config.summary.databaseKey)) {
       assert.equal(request.method, 'POST');
       assert.ok(request.headers.authorization === 'Bearer ' + config.summary.databaseKey);
       const body = JSON.parse((await buffer(request)).toString());
@@ -177,7 +178,7 @@ const proxy = createServer(async (request, response) => {
       return;
     }
     if (config.agent && path === '/__fixture/v1/chat/completions') {
-      assert.equal(request.headers.authorization, 'Bearer ' + config.agent.databaseKey);
+      assert.ok(request.headers.authorization === 'Bearer ' + config.agent.databaseKey);
       const body = JSON.parse((await buffer(request)).toString());
       assert.equal(body.model, 'gpt-4o-mini');
       assert.equal(body.stream, true);
@@ -448,8 +449,14 @@ async function startRun(scenario, hold = true, tenant) {
   });
   const row = runRow(id);
   assert.equal(row.claim?.length, 1);
-  assert.equal(row.claim[0].worker, config.incarnation);
   assert.equal(row.credential, 2);
+  if (config.qualification?.placement) {
+    const workers = managedRows();
+    assert.equal(workers.length, 1, 'one managed Workers incarnation for the placement trial');
+    assert.equal(workers[0].state, 'ready');
+    config.incarnation = workers[0].id;
+  }
+  assert.equal(row.claim[0].worker, config.incarnation);
   evidence('claimed', {scenario, id, route: dispatch.route, row});
   if (hold) await until('Python fixture entered the hold', () => {
     if (gate.entered) return true;
@@ -601,19 +608,24 @@ async function containersChecks() {
     project: config.project, image: inspect('{{.Config.Image}}'),
     version: devVersion(), archive: process.cwd(),
   };
+  const hosted = config.qualification?.placement;
   const vmToken = createHash('sha256').update(config.phase6.token + ':vm').digest('hex');
-  const containersToken = createHash('sha256').update(config.phase6.token + ':containers').digest('hex');
-  const vm = localLinuxProvider({...common, scope: 'vm', token: vmToken, vmEnv});
-  const containers = localLinuxProvider({...common, scope: 'containers', token: containersToken, gitFixture: true});
-  const git = localSolutionGit();
+  const containersToken = hosted?.containersToken ??
+    createHash('sha256').update(config.phase6.token + ':containers').digest('hex');
+  const vm = localLinuxProvider({...common, scope: 'vm', token: vmToken, vmEnv,
+    memoryMiB: hosted ? 4096 : 1024});
+  const containers = hosted ? null : localLinuxProvider({...common, scope: 'containers',
+    token: containersToken, gitFixture: true});
+  const git = hosted ? null : localSolutionGit();
   const privateToken = randomBytes(24).toString('hex');
   const privateAuth = 'Basic ' + Buffer.from('x-access-token:' + privateToken).toString('base64');
   let privateFetches = 0;
   execFileSync('docker', ['pause', ...launchers]);
   try {
-    await launch(proxy.address().port);
+    if (!hosted) await launch(proxy.address().port);
+    if (hosted) evidence('hosted-relay-ready', {port: proxy.address().port});
     providerServer = await serveContainersProviders(config.phase6.providerHost, {
-      vm, containers,
+      vm, ...(hosted ? {} : {containers,
       git: {
         fetch(request) {
           assert.equal(request.headers.has('authorization'), false);
@@ -638,19 +650,21 @@ async function containersChecks() {
           }
           return provider.fetch(request);
         },
-      },
+      }}),
     });
     const endpoint = `https://${config.phase6.providerHost}:${providerServer.address().port}`;
-    writeFileSync('api/scripts/.containers-private.json', JSON.stringify({
-      token: privateToken, url: `${endpoint}/private-git/solution.git`,
-    }), {mode: 0o644});
+    if (git) {
+      writeFileSync('api/scripts/.containers-private.json', JSON.stringify({
+        token: privateToken, url: `${endpoint}/private-git/solution.git`,
+      }), {mode: 0o644});
+    }
     appendFileSync('.phase5-api.env', [
       '',
       `BIFROST_WORKER_CAPACITY_URL=${endpoint}/vm`,
       `BIFROST_WORKER_CAPACITY_TOKEN=${vmToken}`,
-      `BIFROST_CLOUDFLARE_CAPACITY_URL=${endpoint}/workers`,
+      `BIFROST_CLOUDFLARE_CAPACITY_URL=${hosted?.workersUrl ?? endpoint + '/workers'}`,
       `BIFROST_CLOUDFLARE_CAPACITY_TOKEN=${config.phase6.token}`,
-      `BIFROST_CLOUDFLARE_CONTAINERS_URL=${endpoint}/containers`,
+      `BIFROST_CLOUDFLARE_CONTAINERS_URL=${hosted?.containersUrl ?? endpoint + '/containers'}`,
       'BIFROST_CLOUDFLARE_CONTAINERS_SCOPE=containers',
       `BIFROST_CLOUDFLARE_CONTAINERS_TOKEN=${containersToken}`,
       '',
@@ -679,20 +693,21 @@ async function containersChecks() {
     }
     const vmRun = await submit('vm');
     await until('VM primary claims held work', () => runRow(vmRun)?.claim?.[0].worker === primary.id);
-    const solution = await api('/api/solutions', {slug: 'container-update', name: 'Container Update'});
-    assert.ok([200, 201].includes(solution.status));
-    const solutionId = solution.data.id;
-    assert.match(solutionId, /^[0-9a-f-]{36}$/);
-    const privateSolution = await api('/api/solutions', {slug: 'container-update-private', name: 'Private Container Update'});
-    assert.ok([200, 201].includes(privateSolution.status));
-    const privateId = privateSolution.data.id;
-    assert.match(privateId, /^[0-9a-f-]{36}$/);
-    execFileSync('docker', ['exec', config.project + '-api-1', 'python', '-m',
-      'scripts.containers_private_fixture', privateId], {timeout: 15_000});
-    sql(`UPDATE solutions SET version = '1.0.0', git_connected = true,
+    if (git) {
+      const solution = await api('/api/solutions', {slug: 'container-update', name: 'Container Update'});
+      assert.ok([200, 201].includes(solution.status));
+      const solutionId = solution.data.id;
+      assert.match(solutionId, /^[0-9a-f-]{36}$/);
+      const privateSolution = await api('/api/solutions', {slug: 'container-update-private', name: 'Private Container Update'});
+      assert.ok([200, 201].includes(privateSolution.status));
+      const privateId = privateSolution.data.id;
+      assert.match(privateId, /^[0-9a-f-]{36}$/);
+      execFileSync('docker', ['exec', config.project + '-api-1', 'python', '-m',
+        'scripts.containers_private_fixture', privateId], {timeout: 15_000});
+      sql(`UPDATE solutions SET version = '1.0.0', git_connected = true,
       git_repo_url = '${endpoint}/git/solution.git', git_ref = 'update', repo_subpath = 'solutions/demo'
       WHERE id = '${solutionId}'`);
-    const jobId = execFileSync('docker', ['exec', config.project + '-api-1', 'python', '-c', `
+      const jobId = execFileSync('docker', ['exec', config.project + '-api-1', 'python', '-c', `
 import asyncio
 from src.core.database import init_db
 from src.jobs.platform.system_maintenance import enqueue_automatic_solution_update_check
@@ -703,9 +718,9 @@ async def run():
 
 asyncio.run(run())
 `], {encoding: 'utf8', timeout: 15_000}).trim().split('\n').at(-1);
-    assert.match(jobId, /^[0-9a-f-]{36}$/);
-    const update = await until('Container Git update check settles', () => {
-      const row = sql(`SELECT json_build_object('status',j.status,'result',j.result,'error',j.error_code,
+      assert.match(jobId, /^[0-9a-f-]{36}$/);
+      const update = await until('Container Git update check settles', () => {
+        const row = sql(`SELECT json_build_object('status',j.status,'result',j.result,'error',j.error_code,
         'stage',j.remote_stage,'update_available',s.update_available_version,'scope',w.capacity_scope,
         'private_version',(SELECT update_available_version FROM solutions WHERE id = '${privateId}'),
         'private_events',(SELECT count(*) FROM events WHERE event_type = 'solution.update_available'
@@ -715,22 +730,32 @@ asyncio.run(run())
         FROM platform_jobs j CROSS JOIN solutions s
         LEFT JOIN execution_workers w ON w.id = (j.remote_stage->>'worker_id')::uuid
         WHERE j.id = '${jobId}' AND s.id = '${solutionId}'`);
-      return ['failed', 'succeeded'].includes(row?.status) && row;
-    }, 90_000);
-    assert.equal(update.status, 'succeeded', JSON.stringify(update));
-    assert.equal(update.scope, 'containers', JSON.stringify(update));
-    assert.equal(update.stage.capability, 'platform.solution_update_check.v1');
-    assert.equal(update.update_available, '2.0.0');
-    assert.equal(update.result.updates_found, 2);
-    assert.equal(update.result.check_failures, 0);
-    assert.equal(update.events, 1);
-    assert.equal(update.private_version, '2.0.0');
-    assert.equal(update.private_events, 1);
-    assert.ok(privateFetches > 0 && git.fetches > privateFetches);
-    evidence('containers-platform-stage', {
-      jobId, solutionId, privateId, ...update, publicFetches: git.fetches - privateFetches, privateFetches,
-    });
+        return ['failed', 'succeeded'].includes(row?.status) && row;
+      }, 90_000);
+      assert.equal(update.status, 'succeeded', JSON.stringify(update));
+      assert.equal(update.scope, 'containers', JSON.stringify(update));
+      assert.equal(update.stage.capability, 'platform.solution_update_check.v1');
+      assert.equal(update.update_available, '2.0.0');
+      assert.equal(update.result.updates_found, 2);
+      assert.equal(update.result.check_failures, 0);
+      assert.equal(update.events, 1);
+      assert.equal(update.private_version, '2.0.0');
+      assert.equal(update.private_events, 1);
+      assert.ok(privateFetches > 0 && git.fetches > privateFetches);
+      evidence('containers-platform-stage', {
+        jobId, solutionId, privateId, ...update, publicFetches: git.fetches - privateFetches, privateFetches,
+      });
+    }
     const approved = await startRun('phase6-a', true, config.phase6.tenants[0]);
+    const solution = hosted ? await startRun('phase6-b', true, config.phase6.tenants[1]) : null;
+    if (solution) {
+      assert.deepEqual(solution.claim.map(({worker}) => worker), approved.claim.map(({worker}) => worker));
+      const worker = managedRows().find(({id}) => id === config.incarnation);
+      assert.equal(worker?.budget, 256 * 2 ** 20);
+      evidence('hosted-two-slot-overlap', {worker, loose: approved.id, solution: solution.id});
+      solution.gate.release.resolve();
+      await settle('phase6-b', solution, 'Success');
+    }
     const linux = await submit('linux');
     const linuxRow = await until('Linux-only workflow settles', () => {
       const result = runRow(linux);
@@ -744,7 +769,8 @@ asyncio.run(run())
     assert.ok(container.hello > 0);
     const launcherId = sql(`SELECT to_json(remote_launcher_id) FROM execution_workers WHERE id = '${container.id}'`);
     assert.ok(launcherId && launcherId !== container.id);
-    for (const name of [config.project + '-api-1', config.project + '-containers-' + container.id]) {
+    for (const name of [config.project + '-api-1',
+      ...(hosted ? [] : [config.project + '-containers-' + container.id])]) {
       const read = spawnSync('docker', ['logs', '--since', startedAt, name], {
         encoding: 'utf8', timeout: 10_000, maxBuffer: 32 * 1024 ** 2,
       });
@@ -760,13 +786,13 @@ asyncio.run(run())
     approved.gate.release.resolve();
     const approvedRow = await settle('phase6-a', approved, 'Success');
     evidence('three-scope-placement', {primary, vmRun, approved: approvedRow.claim[0], linux, container, requirements: 1});
-    const released = await until('Containers retirement and confirmed Docker stop', () =>
+    const released = await until('Containers idle retirement and provider-confirmed deletion', () =>
       managedRows('containers').find((row) => row.id === container.id && row.state === 'retired'
-        && row.deleted && !containers.running(row.id)), 90_000);
+        && row.deleted && (hosted || !containers.running(row.id))), 90_000);
     evidence('containers-release', {row: released});
   } finally {
     execFileSync('docker', ['unpause', ...launchers]);
-    containers.close();
+    containers?.close();
     vm.close();
     git.close();
   }
@@ -1239,12 +1265,70 @@ async function chatChecks({workersConversation, linuxConversation}) {
   }
 }
 
+async function hostedAgentAndRuntimeChecks() {
+  const {incarnation, launcher, resource, build, controlKey} = config;
+  writeFileSync('.phase7-enrollment.json', JSON.stringify({
+    incarnation, launcher, resource, build, controlKey,
+  }), {flag: 'wx', mode: 0o600});
+  evidence('hosted-relay-ready', {port: proxy.address().port});
+  const linux = ['worker', 'scheduler'].map((name) => config.project + '-' + name + '-1');
+  execFileSync('docker', ['pause', ...linux]);
+  try {
+    await until('hosted agent launcher ready', () => workerRow().state === 'ready', 180_000);
+    await delay(3100); // Close the paused Linux launchers' admission windows.
+    const handlers = sql(`SELECT supported_handlers FROM execution_workers WHERE id='${incarnation}'`);
+    assert.deepEqual(new Set(handlers), new Set(['workflow.execute', 'agent.run', 'agent.summarize']));
+
+    const id = config.summary.run;
+    assert.equal((await api('/api/agent-runs/' + id + '/regenerate-summary', {})).status, 200);
+    const summary = await until('hosted summary settlement', () => sql(`
+      SELECT json_build_object('asked',r.asked,'did',r.did,'worker',c.worker_id,
+        'claims',(SELECT count(*) FROM execution_worker_claims WHERE subject_id=r.id AND family='agent_summary'),
+        'usage',(SELECT json_agg(json_build_array(input_tokens,output_tokens)) FROM ai_usage WHERE agent_run_id=r.id))
+      FROM agent_runs r JOIN execution_worker_claims c ON c.subject_id=r.id AND c.family='agent_summary'
+      WHERE r.id='${id}' AND r.summary_status='completed'`));
+    assert.deepEqual(summary, {asked: 'Summarize fixture', did: 'Collated the run',
+      worker: incarnation, claims: 1, usage: [[88, 11]]});
+    assert.equal(summaryCalls, 1);
+    evidence('hosted-summary', {id, summary, providerCalls: summaryCalls});
+
+    const agent = await api('/api/agent-runs/enqueue', {agent_name: config.agent.names[0], input: {scenario: 'text'}});
+    assert.equal(agent.status, 202);
+    const runId = agent.data.run_id;
+    assert.match(runId, /^[0-9a-f-]{36}$/);
+    const row = await until('hosted autonomous agent settlement', () => {
+      const result = agentRow(runId);
+      return result?.journal?.settled && result;
+    });
+    assert.equal(row.status, 'completed');
+    assert.equal(row.worker, incarnation);
+    assert.deepEqual(row.output, {text: 'fixture text'});
+    assert.deepEqual(row.steps, ['llm_request', 'llm_response']);
+    assert.equal(row.usage, 1);
+    assert.equal(agentCalls.get('text'), 1);
+    evidence('hosted-autonomous-agent', {id: runId, worker: row.worker, status: row.status,
+      output: row.output, steps: row.steps, usage: row.usage, providerCalls: agentCalls.get('text')});
+
+    await hostedCpuCheck();
+    await hostedResetCheck();
+    assert.equal(sql(`UPDATE execution_workers SET state='retired' WHERE id='${incarnation}'
+      RETURNING to_json(state)`), 'retired');
+    for (const socket of sockets.clients) socket.close(1012, 'qualification retirement');
+    await until('retired hosted launcher fenced', () => wire.some((event) => event.kind === 'api-close' && event.code === 4001));
+    evidence('retired', {row: workerRow()});
+  } finally {
+    execFileSync('docker', ['unpause', ...linux]);
+  }
+}
+
 await new Promise((resolve, reject) => {
   proxy.once('error', reject);
   proxy.listen(config.port, '127.0.0.1', resolve);
 });
 try {
-  if (config.agent) await agentChecks();
+  if (config.qualification?.placement) await containersChecks();
+  else if (config.qualification) await hostedAgentAndRuntimeChecks();
+  else if (config.agent) await agentChecks();
   else if (config.summary) await summaryChecks();
   else if (config.phase6?.containers) await containersChecks();
   else if (config.phase6) await phase6Checks();

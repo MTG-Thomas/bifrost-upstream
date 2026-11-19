@@ -26,8 +26,12 @@ def mount_private_fixture(root: Path) -> None:
     ))
 
 
-def seed_solution_workflows(project, admin, send, tenant_fixtures):
-    content = (HERE / "fixture.py").read_text().replace(
+def seed_solution_workflows(project, admin, send, tenant_fixtures, *, hosted=False):
+    if hosted:
+        content = (HERE / "fixture-hosted.py").read_text().replace("phase5b_fixture", FUNCTION)
+    else:
+        content = (HERE / "fixture.py").read_text()
+    content = content.replace(
         "from bifrost import tables, workflow\n",
         "from bifrost import tables, workflow\nfrom phase6_support.values import INSTALL_VALUE\n",
     ).replace('"table_count": len(rows)', '"table_count": len(rows), "install_value": INSTALL_VALUE')
@@ -74,24 +78,7 @@ def seed_solution_workflows(project, admin, send, tenant_fixtures):
     return workflows, approvals, results
 
 
-def run(runtime: Path, solution: bool, containers: bool) -> None:
-    prefixes = ("containers-", "containers2-") if containers else ("phase6-", "explore-sol-")
-    if not ROOT.name.startswith(prefixes) or not API_ENV.is_file() or ROOT.stat().st_mode & 0o077:
-        raise SystemExit("Run prepare and start this private phase6 archive's debug stack first")
-    origin, project, admin, send = local_api(False)
-    policy = {"warm_workers": 0, "max_workers": 1, "idle_seconds": 4}
-    if containers:
-        policy.update(warm_workers=1, max_workers=3, worker_memory_mib=1024, largest_worker_mib=1024, idle_seconds=10)
-    send("/api/admin/kubernetes/policy", policy, admin, method="PUT")
-    tenants = [send("/api/organizations", {"name": name}, admin)["id"]
-               for name in ("Phase 6 Tenant A", "Phase 6 Tenant B")]
-    # Register in the actual owner organizations and accept their approvals.
-    tenant_fixtures = tuple(zip(("phase6-a", "phase6-b"), tenants, strict=True))
-    if solution:
-        workflows, approval, results = seed_solution_workflows(project, admin, send, tenant_fixtures)
-    else:
-        workflows, approval = seed_workflows(project, admin, send, False, tenant_fixtures=tenant_fixtures)
-        results = {}
+def seed_linux_workflows(admin, send, workflows, containers):
     path = "workflows/phase6_linux_only.py"
     content = ("from bifrost import workflow\n\n@workflow(name='phase6_linux_only')\n"
                "async def phase6_linux_only():\n    return 6\n")
@@ -106,6 +93,8 @@ async def phase6_linux_only():
     assert os.geteuid() != 0
     assert "BIFROST_WORKER_LAUNCHER_ID" not in os.environ
     assert "BIFROST_WORKER_CONTROL_SECRET" not in os.environ
+    assert not any(key.startswith(("BIFROST_DATABASE_URL", "BIFROST_REDIS_URL", "BIFROST_S3_"))
+                   or key.endswith("CAPACITY_TOKEN") or key == "BIFROST_SECRET_KEY" for key in os.environ)
     try:
         Path("/proc/1/environ").read_bytes()
     except PermissionError:
@@ -133,6 +122,27 @@ async def phase6_linux_only():
     }, admin)["id"]
     if containers:
         send(f"/api/workflows/{workflows['linux']}", {"memory_request_mib": 64}, admin, method="PATCH")
+
+
+def run(runtime: Path, solution: bool, containers: bool) -> None:
+    prefixes = ("containers-", "containers2-") if containers else ("phase6-", "explore-sol-")
+    if not ROOT.name.startswith(prefixes) or not API_ENV.is_file() or ROOT.stat().st_mode & 0o077:
+        raise SystemExit("Run prepare and start this private phase6 archive's debug stack first")
+    origin, project, admin, send = local_api(False)
+    policy = {"warm_workers": 0, "max_workers": 1, "idle_seconds": 4}
+    if containers:
+        policy.update(warm_workers=1, max_workers=3, worker_memory_mib=1024, largest_worker_mib=1024, idle_seconds=10)
+    send("/api/admin/kubernetes/policy", policy, admin, method="PUT")
+    tenants = [send("/api/organizations", {"name": name}, admin)["id"]
+               for name in ("Phase 6 Tenant A", "Phase 6 Tenant B")]
+    # Register in the actual owner organizations and accept their approvals.
+    tenant_fixtures = tuple(zip(("phase6-a", "phase6-b"), tenants, strict=True))
+    if solution:
+        workflows, approval, results = seed_solution_workflows(project, admin, send, tenant_fixtures)
+    else:
+        workflows, approval = seed_workflows(project, admin, send, False, tenant_fixtures=tenant_fixtures)
+        results = {}
+    seed_linux_workflows(admin, send, workflows, containers)
     print(json.dumps({"project": project, "workflows": workflows, "tenants": tenants,
                       "entry_sha256": {item["workflow_id"]: item["entry_sha256"] for item in approval},
                       "runtime_sha256": sha256(runtime.read_bytes())}), flush=True)

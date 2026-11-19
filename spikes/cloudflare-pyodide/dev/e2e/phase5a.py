@@ -31,9 +31,9 @@ def sha256(value):
     return hashlib.sha256(value).hexdigest()
 
 
-def prepare(hosted=False, phase6=False, summary=False, agent=False, chat=False):
+def prepare(hosted=False, phase6=False, summary=False, agent=False, chat=False, qualification=False):
     prefix = "chat-" if chat else "agentrun-" if agent else "explore-agent-" if summary else "phase6-" if phase6 else "phase5b-" if hosted else "phase5-"
-    valid_prefix = (prefix, "explore-sol-", "containers-", "containers2-") if phase6 else prefix
+    valid_prefix = "hosted-" if qualification else (prefix, "explore-sol-", "containers-", "containers2-") if phase6 else prefix
     if not ROOT.name.startswith(valid_prefix) or command("git", "remote") or command(
         "git", "status", "--porcelain"
     ):
@@ -133,14 +133,15 @@ def local_api(hosted):
     return origin, project, admin, send
 
 
-def seed_workflows(project, admin, send, hosted, *, tenant_fixtures=()):
+def seed_workflows(project, admin, send, hosted, *, tenant_fixtures=(), hosted_tenants=False):
     fixtures = (
         ("hosted", "phase5b_fixture", "fixture-hosted.py", 10, 1000, None),
         ("allowance", "phase5b_allowance", "fixture-hosted.py", 4, 1000, None),
     ) if hosted else (("local", FUNCTION, "fixture.py", 10, 1000, None),)
     if tenant_fixtures:
+        fixture_file = "fixture-hosted.py" if hosted_tenants else "fixture.py"
         fixtures = tuple(
-            (kind, kind.replace("-", "_"), "fixture.py", 10, 1000, tenant)
+            (kind, kind.replace("-", "_"), fixture_file, 10, 1000, tenant)
             for kind, tenant in tenant_fixtures
         )
     approval = []
@@ -151,7 +152,8 @@ def seed_workflows(project, admin, send, hosted, *, tenant_fixtures=()):
         if kind == "allowance":
             content = content.replace(b"phase5b_fixture", b"phase5b_allowance")
         if tenant:
-            content = content.replace(FUNCTION.encode(), function.encode())
+            original_function = "phase5b_fixture" if hosted_tenants else FUNCTION
+            content = content.replace(original_function.encode(), function.encode())
         send("/api/files/write", {"path": entry, "content": content.decode(), "location": "workspace"}, admin)
         registration = {"path": entry, "function_name": function}
         if tenant:
@@ -230,7 +232,7 @@ def resume_enrollment(project, reset_route):
     return workflows, approval, incarnation, launcher, enrollment["port"]
 
 
-def seed_agents(project, admin, send, *, chat=False):
+def seed_agents(project, admin, send, endpoint=SUMMARY_ENDPOINT, *, chat=False):
     fixtures = json.loads(next(line.partition("=")[2] for line in API_ENV.read_text().splitlines()
                               if line.startswith("BIFROST_CLOUDFLARE_AGENT_FIXTURE_IDS=")))
     entry = "workflows/autonomous_fixture.py"
@@ -240,7 +242,7 @@ def seed_agents(project, admin, send, *, chat=False):
     database_key = "agent-fixture-only-" + secrets.token_hex(16)
     names = ["workers-agent-text", "workers-agent-tool"]
     subprocess.run(["docker", "exec", "-i", f"{project}-api-1", "python", "-",
-                    json.dumps(fixtures), json.dumps(names), str(UUID(workflow["id"])), SUMMARY_ENDPOINT, database_key,
+                    json.dumps(fixtures), json.dumps(names), str(UUID(workflow["id"])), endpoint, database_key,
                     "chat" if chat else "autonomous"],
                    cwd=ROOT, check=True, text=True, input='''
 import asyncio
@@ -285,30 +287,16 @@ async def seed():
 asyncio.run(seed())
 ''')
     return {"ids": fixtures, "names": names, "workflow": str(UUID(workflow["id"])),
-            "endpoint": SUMMARY_ENDPOINT, "databaseKey": database_key}
+            "endpoint": endpoint, "databaseKey": database_key}
 
 
-def run(runtime, hosted, resume, reset_route, from_reset, summary=False, agent=False, chat=False):
-    sys.path.insert(0, str(ROOT / "api"))
-    from shared.worker_control_auth import external_worker_control_key
-
-    prefix = "chat-" if chat else "agentrun-" if agent else "explore-agent-" if summary else "phase5b-" if hosted else "phase5-"
-    if not API_ENV.is_file() or not ROOT.name.startswith(prefix):
-        raise SystemExit("Run prepare and start this disposable archive's debug stack first")
-    origin, project, admin, send = local_api(hosted)
-    port = 0
-    summary_config = None
-    agent_config = None
-    if agent:
-        agent_config = seed_agents(project, admin, send, chat=chat)
-        workflows, approval, incarnation, launcher = {}, [], uuid4(), uuid4()
-    elif summary:
-        run_id = uuid4()
-        database_key = "api-fixture-only-" + secrets.token_hex(16)
-        summary_config = {"run": str(run_id), "endpoint": SUMMARY_ENDPOINT,
-                          "databaseKey": database_key}
-        subprocess.run(["docker", "exec", "-i", f"{project}-api-1", "python", "-",
-                        str(run_id), SUMMARY_ENDPOINT, database_key], cwd=ROOT, check=True, text=True, input='''
+def seed_summary(project, endpoint=SUMMARY_ENDPOINT):
+    run_id = uuid4()
+    database_key = "api-fixture-only-" + secrets.token_hex(16)
+    summary_config = {"run": str(run_id), "endpoint": endpoint,
+                      "databaseKey": database_key}
+    subprocess.run(["docker", "exec", "-i", f"{project}-api-1", "python", "-",
+                    str(run_id), endpoint, database_key], cwd=ROOT, check=True, text=True, input='''
 import asyncio
 import sys
 from uuid import UUID
@@ -332,14 +320,10 @@ async def seed():
 
 asyncio.run(seed())
 ''')
-        workflows, approval, incarnation, launcher = {}, [], uuid4(), uuid4()
-    elif resume:
-        workflows, approval, incarnation, launcher, port = resume_enrollment(project, reset_route)
-    else:
-        workflows, approval = seed_workflows(project, admin, send, hosted)
-        incarnation, launcher = uuid4(), uuid4()
-    resource = f"{'phase5b' if hosted else 'phase5a'}:do:{incarnation}"
-    build = "phase5b-hosted" if hosted else "phase5a-local"
+    return summary_config
+
+
+def enroll_manual(project, incarnation, launcher, resource, build):
     sql = f"""
         INSERT INTO execution_workers (
             id, form, state, resource_class, execution_lane, runtime_profile,
@@ -353,8 +337,35 @@ asyncio.run(seed())
             0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL
         );
     """
+    postgres(project, sql)
+
+
+def run(runtime, hosted, resume, reset_route, from_reset, summary=False, agent=False, chat=False):
+    sys.path.insert(0, str(ROOT / "api"))
+    from shared.worker_control_auth import external_worker_control_key
+
+    prefix = "chat-" if chat else "agentrun-" if agent else "explore-agent-" if summary else "phase5b-" if hosted else "phase5-"
+    if not API_ENV.is_file() or not ROOT.name.startswith(prefix):
+        raise SystemExit("Run prepare and start this disposable archive's debug stack first")
+    origin, project, admin, send = local_api(hosted)
+    port = 0
+    summary_config = None
+    agent_config = None
+    if agent:
+        agent_config = seed_agents(project, admin, send, chat=chat)
+        workflows, approval, incarnation, launcher = {}, [], uuid4(), uuid4()
+    elif summary:
+        summary_config = seed_summary(project)
+        workflows, approval, incarnation, launcher = {}, [], uuid4(), uuid4()
+    elif resume:
+        workflows, approval, incarnation, launcher, port = resume_enrollment(project, reset_route)
+    else:
+        workflows, approval = seed_workflows(project, admin, send, hosted)
+        incarnation, launcher = uuid4(), uuid4()
+    resource = f"{'phase5b' if hosted else 'phase5a'}:do:{incarnation}"
+    build = "phase5b-hosted" if hosted else "phase5a-local"
     if not resume:
-        postgres(project, sql)
+        enroll_manual(project, incarnation, launcher, resource, build)
     capacity = next(line.partition("=")[2] for line in API_ENV.read_text().splitlines()
                     if line.startswith("BIFROST_WORKER_CAPACITY_TOKEN="))
     key = external_worker_control_key(capacity, incarnation, resource)
