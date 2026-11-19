@@ -75,7 +75,8 @@ or artifact names are private.
 
 The launcher forwards the Roles and Users SDK paths through the same
 run-credential bridge as other SDK resources. The API checks the original
-run user's permissions and organization reach. These endpoints use the
+run user's permissions and organization reach, and applies the workflow's
+configured powers. These endpoints use the
 existing JSON request and response transport. Workflow dispatch, cancellation,
 and execution management remain parent-owned. The analyzer flags known
 workflow and execution control calls, including raw SDK requests with an

@@ -15,6 +15,7 @@ from src.config import get_settings
 from src.core.redis_client import pending_execution_record
 from src.jobs.platform.cloudflare_reapproval import CLOUDFLARE_REAPPROVAL_DEFINITION
 from src.models.orm import CloudflareApproval, Organization, PlatformJob, Workflow
+from src.models.orm.audit import AuditLog
 from src.services.authorization.tokens import RuntimeSubject, issue_run_refresh_token
 from src.services.execution import workflow_dispatch
 from src.services.execution.cloudflare_eligibility import (
@@ -37,21 +38,24 @@ async def test_gateway_identity_sdk_operations_still_require_run_user_permission
         run_user = await world.person(org)
         target = await world.person(org)
         role = await world.role()
-        workflow = await world.workflow(org)
+        workflow = await world.workflow(org, permission_mode="restricted")
         execution = await world.execution(run_user=run_user, workflow=workflow, organization=org)
         await world.session.commit()
 
-        refresh = issue_run_refresh_token(RuntimeSubject("workflow_execution", execution.id))
-        async with httpx.AsyncClient(base_url=e2e_api_url, timeout=30) as client:
-            token = await client.post("/auth/refresh", json={"refresh_token": refresh})
-            token.raise_for_status()
-            client.headers["Authorization"] = f"Bearer {token.json()['access_token']}"
-            assert (await client.get("/api/sdk/context")).status_code == 200
-            assignment = await client.post(f"/api/roles/{role.id}/users", json={"user_ids": [str(target.id)]})
-            update = await client.patch(f"/api/users/{target.id}", json={"name": "Denied"})
-
-        assert assignment.status_code == 403
-        assert update.status_code == 403
+        try:
+            refresh = issue_run_refresh_token(RuntimeSubject("workflow_execution", execution.id))
+            async with httpx.AsyncClient(base_url=e2e_api_url, timeout=30) as client:
+                token = await client.post("/auth/refresh", json={"refresh_token": refresh})
+                token.raise_for_status()
+                client.headers["Authorization"] = f"Bearer {token.json()['access_token']}"
+                assert (await client.get("/api/sdk/context")).status_code == 200
+                assignment = await client.post(f"/api/roles/{role.id}/users", json={"user_ids": [str(target.id)]})
+                assert assignment.status_code == 403, assignment.text
+                update = await client.patch(f"/api/users/{target.id}", json={"name": "Denied"})
+                assert update.status_code == 403, update.text
+        finally:
+            await world.session.execute(delete(AuditLog).where(AuditLog.organization_id == org.id))
+            await world.session.commit()
 
 
 @pytest.mark.e2e
