@@ -351,6 +351,133 @@ run. Findings, checked against the cited code:
   and unconfirmed stops retain the record and its slot. A tombstone prevents
   resurrection after retry or reset.
 
+### Phase 6 extension: Cloudflare Containers for Linux overflow
+
+Design and compatibility findings at fork base `87d9daab1`, compared with
+`origin/pr-1425` at `bdbe07f93`. Integration is blocked at the launcher and
+workload contract described below.
+
+**Placement.** Add an opt-in third managed scope alongside the VM primary
+and the Workers burst scope. The Containers provider launches a Normal
+`linux-process-v1` process. Scope identifies the capacity provider and
+runtime profile identifies the execution protocol. A third scope keeps the
+VM available for the warm floor and work that still needs its trusted data
+plane or isolation, while allowing both Cloudflare runtimes to burst.
+Replacing the VM primary would remove that capacity before parity is
+established.
+
+- The VM remains the primary and supplies the Normal warm floor. Existing
+  Linux and Kubernetes behavior stays on its current path when the third
+  scope is disabled. Existing Fast Path and isolated-build placement remain
+  on their explicitly configured infrastructure.
+- When the VM reaches its advertised live-worker ceiling and work remains
+  uncovered, prefer Workers for revision-approved Normal workflows
+  (including approved install-local Solution workflows) and qualified
+  summaries. Agent runs stay on Linux until their Workers handler passes
+  qualification. Use the existing approval, handler, slot and tenant
+  predicates in both planning and fenced claims. For a deterministic
+  overflow handoff, the API must fence the selected dispatch to the Workers
+  reservation with a bounded handback through the existing queue. Planner
+  preference alone cannot prevent a newly free Linux worker winning the claim.
+- Containers supply remaining Linux-only demand that their build and
+  authenticated runtime contract can handle. Initial targets are native
+  workflow execution and live package tools. Git, app/Solution compilation,
+  service children and long platform jobs each need their own qualified
+  data and lifecycle contract. Privileged jobs lacking such a contract
+  stay on their current trusted backend. Build-class jobs retain their
+  isolation requirement even when the image can run npm and Vite.
+
+**Capacity.** Use the existing API reservation lock and one managed
+`max_workers` across the three scopes, plus each provider's own physical
+ceiling. Count live reservations and unconfirmed terminal resources against
+physical headroom until the owning provider confirms cleanup. A shared cap
+equal to the VM ceiling leaves zero overflow slots. Keep the Normal warm
+floor within the VM scope ceiling and both Cloudflare scopes demand-only.
+Preserve existing Fast Path reservations. A failed peer discovery or failed
+primary reconcile cannot authorize new overflow starts. Independently
+reconcile known resources and allow owned cleanup during a peer outage.
+Validate scope identity, memory, lifetime and aggregate capacity on policy
+save and admission. Keep Linux measurements keyed by scope and build.
+
+**Adopt from #1425.** Keep the v1 capacity HTTP shapes, the ScopeRegistry,
+WorkerLedger and WorkerContainer lifecycle, the prepare/start split, UID
+checks, ambiguous-start observation, terminal tombstones and inactivity hold.
+Use the provider's derived-key environment contract
+(`BIFROST_WORKER_CONTROL_SECRET`) and the existing, identical #1424
+`external_worker_control_key` function. The capability response may continue
+to omit the profile because the fork already defaults it to
+`linux-process-v1`. Keep the upstream provider unit suite and use the shared
+black-box conformance suite. Use a local physical-launch hook for Docker
+qualification and reserve the upstream dashboard hook for an authorized
+hosted run.
+
+**Fork adaptations.** #1425 selects one external provider and assumes
+#1424's API-only launcher and build-matched capability negotiation. Extend the
+fork's existing primary/burst policy with a separately configured URL/token
+pair and distinct scope. Extend the existing controller's count and placement
+logic so the two Linux scopes remain distinct and all three share one cap.
+The API must select the Containers token using the canonical reservation's
+scope and verify a signed Linux hello against its incarnation UUID and
+resource UID, including reconnects. A Containers reservation must accept
+only the derived proof. Preserve legacy Linux authentication for deployments
+without this scope. The provider and API keep the scope's capacity token.
+The container receives only its derived control key and separately scoped
+work credentials. Installation signing/encryption, database, Redis and
+storage credentials stay with the trusted platform. Drain and confirm
+resource deletion before scope or token replacement.
+
+**Image and runtime.** Pin the fork's Linux worker image by digest, with a
+build version that matches the reserved and reported version. Use #1425's
+launcher entrypoint and normal-lane identity. The image needs the locked
+Python runtime, dependencies and native system libraries, Node/npm and Vite
+build tooling, Git and CA certificates, a writable disposable package
+environment, and enough writable disk for image layers, source trees,
+build output and pip/npm caches. Supply compilers and headers where a
+qualified package needs source builds. Pass requirements through authenticated
+bootstrap. Broker Git inputs and private registry access at job scope and
+keep job leases, publication and durable results under the API's authority.
+Measure cgroup budget, image startup, build CPU and disk, package generation
+recycle, service drain/reconnect and long-job handoff before advertising
+each workload.
+
+**Compatibility blocker.** At the fork base, `remote/launcher.py` reads
+`BIFROST_SECRET_KEY` before hello, and `remote/host.py` verifies Linux
+hellos with that key. The fork's launcher then invokes the existing
+requirements helper, which reads the platform requirements cache directly.
+The generic `platform_job` command starts `src.jobs.platform.runner`,
+whose entrypoint initializes PostgreSQL and whose runner decrypts protected
+payloads with platform authority. `solution.update_check` queries the database
+and resolves repository credentials. `workspace.reimport` opens a database
+session and materializes the workspace from platform storage. A derived
+control key solves hello authentication only. #1425's environment rejects
+these platform credentials. Its API-only host limits the generic external
+job claim to supported compute stages, and its catalog places
+`solution.update_check` on the API. Its staged App compiler illustrates
+the split but supplies neither a Container runner for the requested jobs
+nor isolated-build parity.
+
+The implementation stops here. The compatible path requires an API-only
+bootstrap/compute port plus a scoped Container compute stage for a real
+Linux PlatformJob. For a first candidate, keep the Solution update check's
+repository resolution, credentials and state changes on the API, then
+qualify an explicitly bounded Git stage with the existing job lease. A
+trusted Container with direct platform data access would be a separate
+security design.
+
+**Hosted qualification.** After local conformance and explicit hosted
+approval, qualify a dev-only endpoint with a reachable HTTPS/WebSocket
+origin, a digest-pinned image, matching instance size and provider bounds,
+and a dedicated capacity secret. Record physical launch telemetry, signed
+hello, canonical workload receipts and confirmed release. Cloudflare
+`standard-1` provides 4 GiB, 8 GB disk and 0.5 vCPU. At published overage
+rates it costs about $0.038 per running instance-hour in memory and disk
+and up to $0.036 per hour in active CPU. That is about $0.074 per hour
+at full CPU before egress, Workers/DOs and logs, excluding the monthly
+plan and included usage. A persistent service pays the memory/disk rate
+even while idle. Cold starts, service rotation and physical stop on
+Cloudflare remain to be measured.
+[Cloudflare Containers pricing](https://developers.cloudflare.com/containers/platform/pricing/)
+
 ### Multi-slot managed launchers
 
 - The authenticated provider profile declares `memory_limit_bytes` as one to
