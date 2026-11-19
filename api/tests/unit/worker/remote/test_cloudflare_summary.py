@@ -74,7 +74,9 @@ async def test_cloudflare_completion_uses_linux_summary_writer(monkeypatch):
         "content": '{"asked":"example"}', "model": "stub", "provider": "fixture-provider",
         "input_tokens": 3, "output_tokens": 1,
     }) is None
-    args, kwargs = writer.await_args
+    call = writer.await_args
+    assert call is not None
+    args, kwargs = call
     assert args[:3] == (db, run, {"asked": "example"})
     assert args[3].cache_read_tokens is None
     assert args[3].reasoning_tokens is None
