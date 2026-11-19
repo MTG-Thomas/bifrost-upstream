@@ -63,7 +63,7 @@ export default defineConfig({
     env: {
       LOADER: {type: 'worker-loader'},
       ...(launcherEnabled && !managedLauncher && summaryWorker ?
-        {SUMMARY_PROVIDER: {type: 'worker' as const, worker: summaryWorker}} : {}),
+        {SUMMARY_PROVIDER: {type: 'worker' as const, worker: summaryWorker, exportName: 'SummaryProvider'}} : {}),
       SPIKE_EXPIRES_AT: {type: 'text', value: process.env.SPIKE_EXPIRES_AT ?? '0'},
       RUNTIME_SHA256: {type: 'text', value: runtimeSha256},
       SUPERVISOR_SHA256: {type: 'text', value: supervisorSha256},

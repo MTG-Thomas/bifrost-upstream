@@ -162,14 +162,15 @@ before(async () => {
         BIFROST_WORKER_RESOURCE_UID: 'test:do', BIFROST_WORKER_VERSION: 'test-build',
         API_ORIGIN: 'https://test-api.invalid',
       }).map(([key, value]) => [key, {type: 'text', value}]).concat([
-        ['SUMMARY_PROVIDER', {type: 'worker', worker: 'summary'}],
+        ['SUMMARY_PROVIDER', {type: 'worker', worker: 'summary', exportName: 'SummaryProvider'}],
       ])),
     },
   }, {
     dev: {outboundService: {type: 'worker', worker: 'api'}},
-    config: {name: 'summary', compatibilityDate,
+    config: {name: 'summary', exports: {SummaryProvider: {type: 'worker'}}, compatibilityDate,
       env: {BIFROST_CLOUDFLARE_SUMMARY_ENDPOINT: {type: 'text', value: 'https://test-provider.invalid/v1'}},
-      manifest: {mainModule: 'summary-provider.mjs', modules: {
+      manifest: {mainModule: 'summary-worker/entry.mjs', modules: {
+        'summary-worker/entry.mjs': {type: 'esm', contents: readFileSync(path('../cloudflare-launcher/summary-worker/entry.mjs'), 'utf8')},
         'summary-provider.mjs': {type: 'esm', contents: readFileSync(path('../cloudflare-launcher/summary-provider.mjs'), 'utf8')},
       }},
     },
@@ -179,13 +180,29 @@ before(async () => {
       manifest: {mainModule: 'api.mjs', modulesRoot: path('.'), modules: {'api.mjs': {type: 'esm', contents: `
       import {DurableObject} from 'cloudflare:workers';
       export class ScriptedPeer extends DurableObject {
-        fetch(request) {
+        async fetch(request) {
           const url = new URL(request.url);
           const path = url.pathname;
           if (url.origin === 'https://test-provider.invalid') {
             if (path !== '/v1/chat/completions' || request.method !== 'POST' ||
                 request.headers.get('authorization') !== 'Bearer workerd-stub-key') {
               return new Response(null, {status: 401});
+            }
+            const body = await request.json();
+            if (body.model === 'workerd-held') {
+              let sent = false;
+              return new Response(new ReadableStream({
+                pull: (controller) => {
+                  if (sent) return;
+                  sent = true;
+                  controller.enqueue(new TextEncoder().encode('{'));
+                  this.control.send(JSON.stringify({kind: 'command', sequence: 4, session_generation: 1,
+                    payload: {id: 'stop-summary', action: 'terminate', payload: {
+                      route_id: this.heldRoute, error_type: 'OwnerLost', error: 'fixture cancelled',
+                    }}}));
+                },
+                cancel: () => this.observer.send(JSON.stringify({providerCancelled: true})),
+              }));
             }
             return Response.json({
               model: 'workerd-stub', choices: [{message: {content: '{"asked":"workerd"}'}}],
@@ -201,33 +218,43 @@ before(async () => {
           if (path === '/observe') {
             this.observer = server;
           } else {
+            this.control = server;
             let hello;
             let inventory;
+            const run = '22222222-2222-4222-8222-222222222222';
+            const sendSummary = (sequence, claim, model) => {
+              const route = 'summary:' + run + ':' + claim;
+              server.send(JSON.stringify({kind: 'command', sequence, session_generation: 1, payload: {
+                id: model, action: 'cloudflare_summary', payload: {
+                  route_id: route, run_id: run, claim_id: claim,
+                  timeout_seconds: 15, memory_request_bytes: 16777216,
+                  context: {endpoint: 'https://test-provider.invalid/v1', api_key: 'workerd-stub-key',
+                    body: {
+                      model, stream: false, store: false,
+                      messages: [{role: 'system', content: 'summarize'}, {role: 'user', content: 'fixture'}],
+                    }},
+                },
+              }}));
+              return route;
+            };
             server.addEventListener('message', ({data}) => {
               if (!hello) {
                 hello = JSON.parse(data);
                 server.send(JSON.stringify({event: 'welcome', session_generation: 1}));
               } else if (!inventory) {
                 inventory = JSON.parse(data);
-                const run = '22222222-2222-4222-8222-222222222222';
-                const claim = '33333333-3333-4333-8333-333333333333';
-                server.send(JSON.stringify({kind: 'command', sequence: 1, session_generation: 1, payload: {
-                  id: 'workerd-summary', action: 'cloudflare_summary', payload: {
-                    route_id: 'summary:' + run + ':' + claim, run_id: run, claim_id: claim,
-                    timeout_seconds: 15, memory_request_bytes: 16777216,
-                    context: {endpoint: 'https://test-provider.invalid/v1', api_key: 'workerd-stub-key',
-                      provider: 'openai', body: {
-                      model: 'workerd-stub', stream: false, store: false,
-                      messages: [{role: 'system', content: 'summarize'}, {role: 'user', content: 'fixture'}],
-                    }},
-                  },
-                }}));
+                sendSummary(1, '33333333-3333-4333-8333-333333333333', 'workerd-stub');
               } else {
                 const terminal = JSON.parse(data).payload;
-                if (terminal.event === 'summary_result') {
-                  this.observer.send(JSON.stringify({hello, inventory, terminal}));
-                  server.close(1000);
+                if (terminal.event !== 'summary_result') return;
+                if (terminal.route_id === this.heldRoute) {
+                  this.observer.send(JSON.stringify({stopped: terminal}));
+                  return;
                 }
+                this.observer.send(JSON.stringify({hello, inventory, terminal}));
+                server.send(JSON.stringify({kind: 'ack', sequence: 2, session_generation: 1,
+                  payload: {event_id: terminal._event_id}}));
+                this.heldRoute = sendSummary(3, '44444444-4444-4444-8444-444444444444', 'workerd-held');
               }
             });
           }
@@ -316,7 +343,7 @@ function route(tenantId, {routeId = tenantId, scenario = 'count', allowance = 8,
   }};
 }
 
-test('workerd launcher exchanges inventory and completes a summary using only its provider binding', {timeout: 15_000}, async (t) => {
+test('workerd launcher uses named summary RPC and terminate cancels the outbound provider body', {timeout: 15_000}, async (t) => {
   const {signal} = t;
   const observer = await (await mf.getWorker('api')).fetch('https://test-api.invalid/observe', {
     headers: {Upgrade: 'websocket'},
@@ -325,12 +352,18 @@ test('workerd launcher exchanges inventory and completes a summary using only it
   const socket = observer.webSocket;
   const received = new Promise((resolve, reject) => {
     signal.addEventListener('abort', () => reject(signal.reason), {once: true});
-    socket.addEventListener('message', ({data}) => resolve(JSON.parse(data)), {once: true});
+    const evidence = {};
+    socket.addEventListener('message', ({data}) => {
+      Object.assign(evidence, JSON.parse(data));
+      if (evidence.terminal && evidence.stopped && evidence.providerCancelled) resolve(evidence);
+    });
   });
   socket.accept();
   const launched = await (await mf.getWorker('launcher')).fetch('https://launcher.invalid/');
   assert.equal(launched.status, 204);
-  const {hello, inventory, terminal} = await received;
+  const {hello, inventory, terminal, stopped, providerCancelled} = await received;
+  assert.equal(stopped.attempt_state, 'uncertain');
+  assert.equal(providerCancelled, true);
   socket.close();
   assert.equal(hello.hello.incarnation_id, incarnation);
   assert.equal(hello.hello.hello_sequence, 1);

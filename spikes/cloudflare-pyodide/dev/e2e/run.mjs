@@ -322,7 +322,7 @@ async function launch(port) {
     dev: {outboundService: {type: 'worker', worker: 'relay'}},
     config: {name: 'launcher', compatibilityDate: '2026-10-30', exports,
       env: {...env, LOADER: {type: 'worker-loader'},
-        ...(config.summary ? {SUMMARY_PROVIDER: {type: 'worker', worker: 'summary'}} : {})},
+        ...(config.summary ? {SUMMARY_PROVIDER: {type: 'worker', worker: 'summary', exportName: 'SummaryProvider'}} : {})},
       manifest: {mainModule: 'dev/phase5-harness.mjs', modulesRoot: fileURLToPath(new URL('../', root)), modules}},
   }, {
     config: {name: 'relay', compatibilityDate: '2026-10-30',
@@ -338,9 +338,10 @@ async function launch(port) {
       `)}}},
   }, ...(config.summary ? [{
     dev: {outboundService: {type: 'worker', worker: 'relay'}},
-    config: {name: 'summary', compatibilityDate: '2026-10-30',
+    config: {name: 'summary', exports: {SummaryProvider: {type: 'worker'}}, compatibilityDate: '2026-10-30',
       env: {BIFROST_CLOUDFLARE_SUMMARY_ENDPOINT: {type: 'text', value: config.summary.endpoint}},
-      manifest: {mainModule: 'summary-provider.mjs', modules: {
+      manifest: {mainModule: 'summary-worker/entry.mjs', modules: {
+        'summary-worker/entry.mjs': module(readFileSync(new URL('cloudflare-launcher/summary-worker/entry.mjs', root), 'utf8')),
         'summary-provider.mjs': module(readFileSync(new URL('cloudflare-launcher/summary-provider.mjs', root), 'utf8')),
       }},
     },
@@ -741,7 +742,7 @@ async function summaryChecks() {
       'usage',(SELECT json_agg(json_build_array(input_tokens,output_tokens,cache_read_tokens,reasoning_tokens)) FROM ai_usage WHERE agent_run_id=r.id))
       FROM agent_runs r WHERE r.id='${id}'`);
     assert.deepEqual(row, {status: 'completed', summary: 'completed', asked: 'Summarize fixture',
-      did: 'Collated the run', prompt: 'v4', metadata: {source: 'stub'}, worker: config.incarnation, usage: [[88, 11, null, null]]});
+      did: 'Collated the run', prompt: 'v4', metadata: {source: 'stub'}, worker: config.incarnation, usage: [[88, 11, 0, 0]]});
     evidence('summary-committed-once', {id, providerCalls: summaryCalls, replayedEvent: first.event, row});
   } finally {
     execFileSync('docker', ['unpause', ...linux]);

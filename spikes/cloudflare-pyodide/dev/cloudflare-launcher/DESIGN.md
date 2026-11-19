@@ -807,32 +807,47 @@ observability to keep command payloads out of traces. A missing binding
 leaves workflow-only advertisement. Invalid provider configuration refuses
 the summary before provider dispatch and leaves workflow handling available.
 
-The API uses Linux's summarization client resolver on every claim. The
-admitted slice requires one pinned HTTPS OpenAI chat-completions profile,
-without explicit reasoning settings. OpenRouter and OpenCode Go retain
-Linux because they need different wire settings. Provider attribution and
-token defaults come from the Linux helpers, including the DeepSeek ceiling
-and field. The API sends the current connection key on the authenticated
-control socket, and the launcher forwards it in memory only to the dedicated
-Worker through its service binding. The launcher and tenant shared environment
-carry no provider key. The dedicated Worker pins the endpoint, refuses redirects,
-does not log request or response data, and rejects terminal content that echoes
-the key. The launcher journals route metadata and sanitized results only.
-Rotation or revocation affects the next claim. An already-issued provider call
-may still complete and incur cost.
+The API checks assignment metadata before reading the key. The admitted
+slice is one unlinked OpenAI chat-completions profile pinned to the configured
+HTTPS endpoint, with a resolved transport, no failover, and no explicit
+reasoning setting. The API decrypts only that connection's key in a separate
+read transaction before acquiring the dispatch and ownership locks. It never
+runs transport discovery on the Cloudflare path. Rotation or revocation
+affects the next key resolution.
+
+The API sends the key on the authenticated control socket. The launcher
+forwards it in memory via the named `SummaryProvider` RPC entrypoint. The
+summary Worker exposes no fetch handler. The API WebSocket server must never
+log frames at debug or trace level because command frames carry provider keys
+and can already carry `engine_token`. The dedicated Worker pins the endpoint,
+refuses redirects, and does not log request or response data. The provider
+controls its response content, including any text it chooses to echo. The
+configured endpoint and its operator must be trusted with both the key and
+the transcript. The platform does not try to recognize encoded key material
+in provider-controlled text.
 
 The launcher advertises `agent.summarize@1` with `summary_claim_protocol: 1`.
-The API issues a claim-bound `cloudflare_summary` with a relative 30-second
-budget and a 16 MiB slot reservation. The launcher computes its own deadline.
-The provider Worker caps request and response bodies at 256 KiB and 64 KiB.
-The opaque handle, receipt, and attempt state survive reconnect. Superseded
-live routes receive a stop and hold their slot through terminal delivery.
-The API records the result and usage only for the matching generating claim.
-Unreported optional token counts remain SQL NULL for this path. Linux callers
-retain their existing zero defaults and pricing arithmetic treats NULL as zero.
-Known pre-dispatch refusals requeue. Profile and payload refusals mark that
-summary dispatch Linux-only in its JSON payload. An interrupted call whose
-outcome is uncertain requires explicit regeneration.
+The API starts its supervisor deadline at send time and issues a claim-bound
+`cloudflare_summary` with a relative 30-second budget and a 16 MiB reservation.
+The launcher computes its own deadline. Termination closes an RPC byte stream
+that aborts the provider Worker's outbound fetch. The Worker also enforces its
+own deadline and caps request and response bodies at 256 KiB and 64 KiB.
+An already-issued request can still complete or incur charges upstream.
+
+Opaque handles, receipts, and attempt states survive reconnect. Superseded live
+routes receive a stop and hold their slot through terminal delivery. The API
+holds its resolved provider for usage attribution and reads current eligible
+profile metadata again on takeover without decrypting a key. If the assignment
+can no longer attribute the result, settlement fails with an explicit summary
+error. Missing optional token counts use Linux's existing zero defaults.
+
+Each summary dispatch can attempt Cloudflare once. A definitive refusal
+re-stages it for Linux and preserves queue age when the original owner knows
+it. This bounds key resolution and route tombstones without a timer. The
+Linux-only flag lives in the summary dispatch JSON payload. This spike uses
+fresh disposable archives, so the withdrawn nullable-usage migration and its
+flag rewrite are absent. An uncertain provider call requires explicit
+regeneration.
 
 For the disposable CT128 harness, run `phase5a.py prepare --summary` before
 starting the isolated debug stack. Then run `phase5a.py run --summary

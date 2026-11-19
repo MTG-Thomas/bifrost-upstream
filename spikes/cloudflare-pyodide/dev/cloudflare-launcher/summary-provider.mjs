@@ -1,33 +1,6 @@
 const REQUEST_BYTES = 256 * 1024;
 const RESPONSE_BYTES = 64 * 1024;
 
-export default {
-  async fetch(request, env) {
-    const base = env.BIFROST_CLOUDFLARE_SUMMARY_ENDPOINT;
-    let url;
-    try {
-      if (!base || /[?#\\\s]/.test(base)) throw new Error();
-      url = new URL(base);
-      if (url.protocol !== 'https:' || url.username || url.password) throw new Error();
-    } catch {
-      return Response.json(failed('not_started', 'SummaryProviderDisabled'));
-    }
-
-    if (request.method !== 'POST' || new URL(request.url).pathname !== '/complete') {
-      return new Response(null, {status: 404});
-    }
-    let context;
-    try {
-      context = await readJson(request, REQUEST_BYTES + 4096);
-    } catch {
-      return Response.json(failed('not_started', 'SummaryRequestRejected'));
-    }
-    const endpoint = base.replace(/\/+$/, '');
-    return Response.json(await completeSummary(new URL(endpoint + '/chat/completions').href,
-      endpoint, context, request.signal));
-  },
-};
-
 function failed(attempt_state, error_type) {
   return {attempt_state, result: {success: false, error_type}};
 }
@@ -58,10 +31,19 @@ function tokens(value) {
   return value;
 }
 
-async function completeSummary(dest, endpoint, context, signal) {
-  const {body, api_key: key, provider, remaining_ms} = context ?? {};
+export async function completeSummary(base, context, cancellation) {
+  let url;
+  try {
+    if (!base || /[?#\\\s]/.test(base)) throw new Error();
+    url = new URL(base);
+    if (url.protocol !== 'https:' || url.username || url.password) throw new Error();
+  } catch {
+    return failed('not_started', 'SummaryProviderDisabled');
+  }
+  const endpoint = base.replace(/\/+$/, '');
+  const dest = new URL(endpoint + '/chat/completions').href;
+  const {body, api_key: key, remaining_ms} = context ?? {};
   if (context?.endpoint !== endpoint || typeof key !== 'string' || !key || key.length > 2048 ||
-      !/^[A-Za-z0-9._-]{1,50}$/.test(provider ?? '') ||
       !Number.isSafeInteger(remaining_ms) || remaining_ms < 1 || remaining_ms > 30_000 ||
       typeof body?.model !== 'string' || !body.model ||
       body.model.length > 100 || body.stream !== false || body.store !== false ||
@@ -78,14 +60,18 @@ async function completeSummary(dest, endpoint, context, signal) {
   if (new TextEncoder().encode(request).byteLength > REQUEST_BYTES) {
     return failed('not_started', 'SummaryRequestTooLarge');
   }
-  if (signal.aborted) return failed('not_started', 'SummaryDeadlineElapsed');
   const controller = new AbortController();
+  const cancelReader = cancellation.getReader();
+  const abort = () => controller.abort();
+  // The launcher closes its outbound byte stream on terminate, independent
+  // of HTTP Request.signal support on either Worker.
+  void cancelReader.read().then(abort, abort);
   const timer = setTimeout(() => controller.abort(), remaining_ms);
   try {
     const response = await fetch(dest, {
       method: 'POST', redirect: 'manual',
       headers: {Authorization: 'Bearer ' + key, 'Content-Type': 'application/json'},
-      body: request, signal: AbortSignal.any([signal, controller.signal]),
+      body: request, signal: controller.signal,
     });
     if (!response.ok) {
       await response.body?.cancel();
@@ -94,25 +80,26 @@ async function completeSummary(dest, endpoint, context, signal) {
     try {
       const completion = await readJson(response, RESPONSE_BYTES);
       const content = completion.choices?.[0]?.message?.content;
-      if (typeof content !== 'string' || content.includes(key) || completion.model?.includes?.(key) ||
+      if (typeof content !== 'string' ||
           typeof completion.model !== 'string' || !completion.model || completion.model.length > 100) {
         throw new Error('Malformed chat completion');
       }
       const usage = completion.usage;
       return {attempt_state: 'completed', result: {
-        success: true, content, model: completion.model, provider,
+        success: true, content, model: completion.model,
         input_tokens: tokens(usage?.prompt_tokens),
         output_tokens: tokens(usage?.completion_tokens),
-        cache_read_tokens: usage?.prompt_tokens_details?.cached_tokens == null ? null : tokens(usage.prompt_tokens_details.cached_tokens),
-        reasoning_tokens: usage?.completion_tokens_details?.reasoning_tokens == null ? null : tokens(usage.completion_tokens_details.reasoning_tokens),
+        cache_read_tokens: tokens(usage?.prompt_tokens_details?.cached_tokens ?? 0),
+        reasoning_tokens: tokens(usage?.completion_tokens_details?.reasoning_tokens ?? 0),
       }};
     } catch {
-      if (signal.aborted || controller.signal.aborted) return failed('uncertain', 'SummaryInterrupted');
+      if (controller.signal.aborted) return failed('uncertain', 'SummaryInterrupted');
       return failed('completed', 'InvalidSummaryCompletion');
     }
   } catch {
     return failed('uncertain', 'SummaryInterrupted');
   } finally {
     clearTimeout(timer);
+    await cancelReader.cancel().catch(() => {});
   }
 }

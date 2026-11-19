@@ -107,16 +107,29 @@ export class CloudflareLauncher extends DurableObject {
     const getHost = (id) => this.ctx.exports.TenantHost.getByName(id);
     const runWorkflow = createLauncherWorkflowRunner(getHost);
     const summary = this.env.SUMMARY_PROVIDER;
-    const runSummary = !this.#managed && typeof summary?.fetch === 'function' ?
+    const runSummary = !this.#managed && typeof summary?.complete === 'function' ?
       async (route, context, signal) => {
-        const remaining = Date.parse(route.deadline) - Date.now();
-        if (remaining <= 0 || signal.aborted) {
-          return {attempt_state: 'not_started', result: {success: false, error_type: 'SummaryDeadlineElapsed'}};
-        }
-        const response = await summary.fetch('https://summary.internal/complete', {
-          method: 'POST', body: JSON.stringify({...context, remaining_ms: remaining}), signal,
+        let close;
+        const cancellation = new ReadableStream({
+          type: 'bytes',
+          start(controller) {
+            close = () => {
+              close = undefined;
+              controller.close();
+            };
+          },
+          cancel() { close = undefined; },
         });
-        return response.json();
+        const abort = () => close?.();
+        signal.addEventListener('abort', abort, {once: true});
+        if (signal.aborted) abort();
+        try {
+          return await summary.complete({...context, remaining_ms: Date.parse(route.deadline) - Date.now()},
+            cancellation);
+        } finally {
+          signal.removeEventListener('abort', abort);
+          close = undefined;
+        }
       } : undefined;
     this.#core = new LauncherCore({
       ...settings, clock: Date.now, storage: this.#storage,
