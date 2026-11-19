@@ -130,6 +130,14 @@ async def test_cloudflare_hello_requires_external_normal(hello, enabled_settings
             {"handlers": [["workflow.execute", 1], ["agent.summarize_backfill", 1]], "summary_claim_protocol": 1},
             "Unsupported Cloudflare handler advertisement", id="backfill",
         ),
+        pytest.param(
+            {"handlers": [["workflow.execute", 1], ["agent.run", 1]]},
+            "require the autonomous claim protocol", id="agent-without-autonomous-protocol",
+        ),
+        pytest.param(
+            {"handlers": [["workflow.execute", 1], ["agent.run", 1]], "agent_claim_protocol": "autonomous-v1"},
+            "autonomous agents are disabled", id="agent-without-operator-opt-in",
+        ),
         pytest.param({"credential_protocol": 1}, "credential protocol 2", id="legacy-protocol"),
         pytest.param({"credential_protocol": 3}, "credential protocol 2", id="future-protocol"),
     ],
