@@ -135,6 +135,9 @@ function observe(direction, raw) {
     event = {kind: 'inventory', generation: frame.session_generation,
       active: payload.inventory.routes.map((route) => route.route_id),
       terminal: payload.inventory.terminal_routes.map((route) => route.event_id)};
+  } else if (config.agent && payload?.event === 'heartbeat') {
+    event = {kind: 'agent-launcher-heartbeat', generation: frame.session_generation,
+      occupied: payload.slot_occupied};
   } else if (['result', 'summary_result', 'cloudflare_agent_result'].includes(payload?.event)) {
     event = {kind: payload.event, generation: frame.session_generation, route: payload.route_id,
       event: payload._event_id, attempt: payload.attempt_state, success: payload.result.success,
@@ -980,6 +983,8 @@ async function agentChecks() {
     WHERE runtime_profile='linux-process-v1'`);
   await control('start');
   await until('agent launcher ready', () => wire.some((event) => event.kind === 'ready'));
+  await until('agent launcher reports slot liveness', () => wire.some((event) =>
+    event.kind === 'agent-launcher-heartbeat' && event.occupied === false));
   assert.deepEqual(sql(`SELECT supported_handlers FROM execution_workers WHERE id='${config.incarnation}'`),
     ['workflow.execute', 'agent.run']);
   const completed = [];

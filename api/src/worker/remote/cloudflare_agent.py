@@ -80,7 +80,8 @@ class CloudflareAgentRoutes:
                     "route_id": route.id, "run_id": str(route.run_id), "claim_id": str(route.claim_id),
                     "deadline": route.deadline.isoformat(), "memory_request_bytes": claim.memory_request_bytes,
                 }, expected_generation=generation)
-            except (CredentialRouteChanged, MemoryError, RuntimeError):
+            except (CredentialRouteChanged, MemoryError, RuntimeError) as exc:
+                logger.info("Cloudflare agent route %s refused before entry: %s", route.id, exc)
                 await cloudflare_agent.settle_run(route.run_id, route.claim_id, "not_started", {})
                 return
             except (ConnectionError, TimeoutError):
