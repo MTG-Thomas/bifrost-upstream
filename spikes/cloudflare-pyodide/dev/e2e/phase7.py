@@ -27,6 +27,7 @@ def prepare_hosted(hostname):
     ca = ROOT / ".phase7-ca.pem"
     ca.write_bytes((ROOT / ".phase6-ca.pem").read_bytes() +
                    Path("/etc/ssl/certs/ca-certificates.crt").read_bytes())
+    ca.chmod(0o644)  # The non-root API reads this public trust bundle.
     compose = ROOT / "docker-compose.debug.yml"
     compose.write_bytes(compose.read_bytes().replace(
         b"./.phase6-ca.pem:/app/.phase6-ca.pem", b"./.phase7-ca.pem:/app/.phase6-ca.pem",

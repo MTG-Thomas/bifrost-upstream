@@ -126,7 +126,7 @@ function observe(direction, raw) {
   } else if (frame.kind === 'command' && payload.action === 'workflow') {
     const command = payload.payload;
     tokens.set(command.execution_id, command.context.engine_token);
-    if (nextHostedGate) {
+    if (nextHostedGate && command.context.cloudflare_workspace) {
       gates.set(command.execution_id, nextHostedGate);
       nextHostedGate = undefined;
     }
@@ -765,16 +765,24 @@ asyncio.run(run())
         jobId, solutionId, privateId, ...update, publicFetches: git.fetches - privateFetches, privateFetches,
       });
     }
-    const approved = await startRun('phase6-a', true, config.phase6.tenants[0]);
-    const solution = hosted ? await startRun('phase6-b', true, config.phase6.tenants[1]) : null;
-    if (solution) {
-      assert.deepEqual(solution.claim.map(({worker}) => worker), approved.claim.map(({worker}) => worker));
-      const worker = managedRows().find(({id}) => id === config.incarnation);
-      assert.equal(worker?.budget, 256 * 2 ** 20);
-      evidence('hosted-two-slot-overlap', {worker, loose: approved.id, solution: solution.id});
-      solution.gate.release.resolve();
+    const hostedWorkflows = hosted && (async () => {
+      let loose;
+      let solution;
+      try {
+        loose = await startRun('phase6-a', true, config.phase6.tenants[0]);
+        solution = await startRun('phase6-b', true, config.phase6.tenants[1]);
+        assert.deepEqual(solution.claim.map(({worker}) => worker), loose.claim.map(({worker}) => worker));
+        const worker = managedRows().find(({id}) => id === config.incarnation);
+        assert.equal(worker?.budget, 256 * 2 ** 20);
+        evidence('hosted-two-slot-overlap', {worker, loose: loose.id, solution: solution.id});
+      } finally {
+        loose?.gate.release.resolve();
+        solution?.gate.release.resolve();
+      }
       await settle('phase6-b', solution, 'Success');
-    }
+      return settle('phase6-a', loose, 'Success');
+    })().then((row) => ({row}), (error) => ({error}));
+    const approved = hosted ? null : await startRun('phase6-a', true, config.phase6.tenants[0]);
     const linux = await submit('linux');
     const linuxRow = await until('Linux-only workflow settles', () => {
       const result = runRow(linux);
@@ -802,14 +810,16 @@ asyncio.run(run())
     ).trim() || 'null'));
     assert.equal(Number(workerStatus.requirements_installed), 1);
     assert.equal(Number(workerStatus.requirements_total), 1);
-    approved.gate.release.resolve();
-    const approvedRow = await settle('phase6-a', approved, 'Success');
-    evidence('three-scope-placement', {primary, vmRun, approved: approvedRow.claim[0],
-      linux, linuxRow, container, requirements: 1});
+    evidence('containers-workflow', {primary, vmRun, linux, linuxRow, container, requirements: 1});
+    approved?.gate.release.resolve();
+    const localOutcome = hosted ? null : await settle('phase6-a', approved, 'Success');
     const released = await until('Containers idle retirement and provider-confirmed deletion', () =>
       managedRows('containers').find((row) => row.id === container.id && row.state === 'retired'
         && row.deleted && (hosted || !containers.running(row.id))), 90_000);
     evidence('containers-release', {row: released});
+    const workflowOutcome = hosted ? await hostedWorkflows : {row: localOutcome};
+    if (workflowOutcome.error) throw workflowOutcome.error;
+    evidence('three-scope-placement', {primary, vmRun, approved: workflowOutcome.row.claim[0], linux, container});
   } finally {
     execFileSync('docker', ['unpause', ...launchers]);
     containers?.close();
