@@ -26,7 +26,7 @@ from src.jobs.consumers.package_install import PackageInstallConsumer
 from src.jobs.schedulers.platform_jobs import claim_platform_job, run_claimed_platform_job
 from src.models.orm.execution_workers import ExecutionWorker
 from src.services.execution.template_process import TEMPLATE_START_TIMEOUT_SECONDS
-from src.services.memory_requests import MemoryBudget
+from src.services.memory_requests import AGENT_RUN_REQUEST_BYTES, MemoryBudget
 from src.services.worker_pool.claims import (
     PoolClaim,
     admit_external_worker,
@@ -37,7 +37,7 @@ from src.services.worker_pool.claims import (
 from src.worker.admission import Admission
 from src.worker.pool_main import PoolWorker
 from src.worker.remote.agent_route import AgentRoute, RemoteAgentConsumer
-from src.worker.remote.cloudflare_agent import CloudflareAgentRoutes
+from src.worker.remote.cloudflare_agent import CloudflareAgentRoute, CloudflareAgentRoutes
 from src.worker.remote.cloudflare_summary import CloudflareSummaryRoutes, SummaryRoute
 from src.worker.remote.fencing import LeaseRef, current_remote_lease_ref, fence_remote_owner, remote_owner_context
 from src.worker.remote.ownership import (
@@ -987,11 +987,7 @@ class ApiExecutor(PoolWorker):
                         return isinstance(entry, dict) and entry.get("kind") == "agent_run"
 
                     for route in await autonomous.reconcile([entry for entry in live + terminals if is_autonomous(entry)]):
-                        task = asyncio.create_task(autonomous.supervise_adopted(route))
-                        tasks = self._tasks[CLOUDFLARE_AGENT_HANDLER[0]]
-                        tasks.add(task)
-                        task.add_done_callback(tasks.discard)
-                        task.add_done_callback(_observe_task)
+                        self._wait_for_adopted_autonomous_run(autonomous, route)
                     inventory = {
                         **inventory, "routes": [entry for entry in live if not is_autonomous(entry)],
                         "terminal_routes": [entry for entry in terminals if not is_autonomous(entry)],
@@ -1081,6 +1077,25 @@ class ApiExecutor(PoolWorker):
             asyncio.create_task(
                 self._run_platform_job(claim), name=f"pool-platform-job-{claim.id}"
             )
+
+    def _wait_for_adopted_autonomous_run(
+        self, autonomous: CloudflareAgentRoutes, route: CloudflareAgentRoute,
+    ) -> None:
+        admission = self.admission
+        assert admission is not None
+        admission.hold(route.reservation_key, AGENT_RUN_REQUEST_BYTES)
+
+        async def wait() -> None:
+            try:
+                await autonomous.supervise_adopted(route)
+            finally:
+                admission.release(route.reservation_key)
+
+        task = asyncio.create_task(wait(), name=f"pool-adopted-autonomous-{route.run_id}")
+        tasks = self._tasks[CLOUDFLARE_AGENT_HANDLER[0]]
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+        task.add_done_callback(_observe_task)
 
     def _wait_for_adopted_summary(self, summaries: CloudflareSummaryRoutes, route: SummaryRoute) -> None:
         admission = self.admission

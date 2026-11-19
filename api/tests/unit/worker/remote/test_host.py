@@ -7,6 +7,7 @@ import json
 import time
 from contextlib import asynccontextmanager
 from dataclasses import replace
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 from uuid import UUID
@@ -17,6 +18,8 @@ from sqlalchemy.exc import OperationalError
 
 from shared.worker_control_auth import external_worker_control_key
 from src.services.execution.template_process import TEMPLATE_START_TIMEOUT_SECONDS
+from src.services.memory_requests import AGENT_RUN_REQUEST_BYTES
+from src.worker.remote.cloudflare_agent import CloudflareAgentRoute, CloudflareAgentRoutes
 from src.worker.remote.host import ApiExecutor, Bridge, RemoteControlHost, RemoteSession, _reply_timeout
 from src.worker.remote.identity import LauncherIdentity
 from src.worker.remote.launcher import Launcher
@@ -27,6 +30,7 @@ from src.worker.remote.protocol import (
     ControlEnvelope,
     FragmentAssembler,
     Hello,
+    LEGACY_EXECUTION_HANDLERS,
     LINUX_RUNTIME_PROFILE,
     MAX_FRAME_BYTES,
     ProtocolError,
@@ -43,6 +47,47 @@ LEASE = RemoteOwnerLease(
     launcher_id=UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc"),
     session_generation=1,
 )
+
+
+@pytest.mark.parametrize(("profile", "expected"), [
+    (CLOUDFLARE_PYTHON_RUNTIME_PROFILE, ()),
+    (LINUX_RUNTIME_PROFILE, LEGACY_EXECUTION_HANDLERS),
+])
+def test_bridge_defaults_only_legacy_linux_handlers(profile, expected) -> None:
+    bridge = Bridge(Mock(), {
+        "hostname": "runner", "runtime_profile": profile, "current": 1, "limit": 100, "requirements": {},
+    }, LEASE)
+
+    assert bridge.handlers == expected
+
+
+async def test_adopted_autonomous_route_reserves_memory_and_one_physical_slot() -> None:
+    bridge = Bridge(Mock(), {"hostname": "runner", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE}, LEASE)
+    autonomous = bridge.autonomous = CloudflareAgentRoutes(bridge, LEASE.worker_id, "https://model.example.test")
+    worker = ApiExecutor(bridge, LEASE.worker_id)
+    admission = worker.admission = Admission(
+        budget_bytes=2 * AGENT_RUN_REQUEST_BYTES, under_pressure=lambda: False,
+        running_workflow_ids=set, workflow_growth=dict,
+    )
+    route = CloudflareAgentRoute(LEASE.owner_id, LEASE.worker_id, datetime.now(UTC), asyncio.Event(), "dispatch")
+    autonomous.routes[route.id] = route
+    bridge._opaque_routes[route.id] = 1
+
+    async def supervise(_route):
+        await route.finished.wait()
+
+    with patch.object(autonomous, "supervise", side_effect=supervise):
+        worker._wait_for_adopted_autonomous_run(autonomous, route)
+        tasks = list(worker._tasks["agent.run"])
+        assert admission.free_bytes() == AGENT_RUN_REQUEST_BYTES
+        assert bridge.opaque_slots_used(admission) == 1
+        route.finished.set()
+        await asyncio.gather(*tasks)
+
+    assert admission.free_bytes() == 2 * AGENT_RUN_REQUEST_BYTES
+    assert bridge.opaque_slots_used(admission) == 1
+    bridge._opaque_routes.clear()
+    assert bridge.opaque_slots_used(admission) == 0
 
 
 @pytest.mark.asyncio
