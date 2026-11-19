@@ -383,7 +383,7 @@ async function launch(port) {
     },
   }] : []), ...(config.agent ? [{
     dev: {outboundService: {type: 'worker', worker: 'relay'}},
-    config: {name: 'agent', exports: {AgentProvider: {type: 'worker'}}, compatibilityDate: '2026-11-19',
+    config: {name: 'agent', exports: {AgentProvider: {type: 'worker'}}, compatibilityDate: '2026-10-30',
       env: {BIFROST_CLOUDFLARE_AGENT_ENDPOINT: {type: 'text', value: config.agent.endpoint}},
       manifest: {mainModule: 'agent-worker/entry.mjs', modules: {
         'agent-worker/entry.mjs': module(readFileSync(new URL('cloudflare-launcher/agent-worker/entry.mjs', root), 'utf8')),

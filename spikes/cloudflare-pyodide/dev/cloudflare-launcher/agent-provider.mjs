@@ -15,14 +15,17 @@ export async function openAgentStream(base, grant, cancellation) {
 
   const control = new AbortController();
   const cancel = cancellation.getReader();
-  const abort = () => control.abort();
+  let reader;
+  const abort = () => {
+    control.abort();
+    void reader?.cancel().catch(() => {});
+  };
   const deadline = setTimeout(abort, remaining);
   void cancel.read().then(abort, abort);
   const close = () => {
     clearTimeout(deadline);
     void cancel.cancel().catch(() => {});
   };
-  let reader;
   try {
     const response = await fetch(dest, {
       method: 'POST', redirect: 'manual', signal: control.signal,
@@ -48,6 +51,7 @@ export async function openAgentStream(base, grant, cancellation) {
     async pull(controller) {
       try {
         const {done, value} = await reader.read();
+        control.signal.throwIfAborted();
         if (done) {
           controller.close();
           close();

@@ -9,7 +9,7 @@ export default defineConfig({
     name,
     entrypoint: './entry.mjs',
     exports: {AgentProvider: {type: 'worker'}},
-    compatibilityDate: '2026-11-19',
+    compatibilityDate: '2026-10-30',
     workersDev: false,
     previewUrls: false,
     observability: {enabled: false},
