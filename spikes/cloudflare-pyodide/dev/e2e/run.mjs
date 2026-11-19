@@ -70,13 +70,16 @@ function managedRows(scope = 'phase6-local') {
   return sql(`SELECT coalesce(json_agg(json_build_object('id',id,'state',state,'uid',capacity_resource_uid,
     'launcher_bound',remote_launcher_id=id,'profile',runtime_profile,'hello',remote_hello_sequence,
     'budget',memory_limit_bytes,'available',memory_budget_bytes,'active',active_runs,
-    'deleted',capacity_resource_deleted_at IS NOT NULL,'end',end_reason)), '[]'::json)
+    'deleted',capacity_resource_deleted_at IS NOT NULL,'end',end_reason,
+    'created_at',created_at,'ready_at',ready_at,'ended_at',ended_at,
+    'deleted_at',capacity_resource_deleted_at)), '[]'::json)
     FROM execution_workers WHERE capacity_scope = '${scope}'`);
 }
 
 function runRow(id) {
   return sql(`SELECT json_build_object('status',status,'result',result,'error',error_message,
-    'completed',completed_at,'credential',credential_version,'tenant',organization_id,
+    'created',created_at,'started',started_at,'completed',completed_at,
+    'credential',credential_version,'tenant',organization_id,
     'claim',(SELECT json_agg(json_build_object('id',id,'worker',worker_id))
       FROM execution_worker_claims WHERE subject_id=e.id),
     'queued',(SELECT count(*) FROM work_dispatches WHERE subject_id=e.id),
@@ -439,6 +442,7 @@ async function startRun(scenario, hold = true, tenant) {
   assert.equal(submitted.status, 200);
   const id = submitted.data.execution_id;
   assert.match(id, /^[0-9a-f-]{36}$/);
+  if (config.qualification) evidence('submitted', {scenario, id});
   const dispatch = await until('workflow dispatch', () => {
     const event = wire.find((event) => event.kind === 'workflow' && event.id === id);
     if (!event) {
@@ -612,8 +616,7 @@ async function containersChecks() {
   const vmToken = createHash('sha256').update(config.phase6.token + ':vm').digest('hex');
   const containersToken = hosted?.containersToken ??
     createHash('sha256').update(config.phase6.token + ':containers').digest('hex');
-  const vm = localLinuxProvider({...common, scope: 'vm', token: vmToken, vmEnv,
-    memoryMiB: hosted ? 4096 : 1024});
+  const vm = localLinuxProvider({...common, scope: 'vm', token: vmToken, vmEnv});
   const containers = hosted ? null : localLinuxProvider({...common, scope: 'containers',
     token: containersToken, gitFixture: true});
   const git = hosted ? null : localSolutionGit();
@@ -689,6 +692,7 @@ async function containersChecks() {
         workflow_id: config.workflows[key], input_data: {}, sync: false,
       });
       assert.equal(reply.status, 200);
+      if (hosted) evidence('submitted', {scenario: key, id: reply.data.execution_id});
       return reply.data.execution_id;
     }
     const vmRun = await submit('vm');
@@ -785,7 +789,8 @@ asyncio.run(run())
     assert.equal(Number(workerStatus.requirements_total), 1);
     approved.gate.release.resolve();
     const approvedRow = await settle('phase6-a', approved, 'Success');
-    evidence('three-scope-placement', {primary, vmRun, approved: approvedRow.claim[0], linux, container, requirements: 1});
+    evidence('three-scope-placement', {primary, vmRun, approved: approvedRow.claim[0],
+      linux, linuxRow, container, requirements: 1});
     const released = await until('Containers idle retirement and provider-confirmed deletion', () =>
       managedRows('containers').find((row) => row.id === container.id && row.state === 'retired'
         && row.deleted && (hosted || !containers.running(row.id))), 90_000);
@@ -794,7 +799,7 @@ asyncio.run(run())
     execFileSync('docker', ['unpause', ...launchers]);
     containers?.close();
     vm.close();
-    git.close();
+    git?.close();
   }
 }
 

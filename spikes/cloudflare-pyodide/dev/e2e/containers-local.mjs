@@ -25,14 +25,14 @@ export function vmHoldMemoryMiB(budgetBytes) {
 }
 
 export function localLinuxProvider({
-  project, image, scope, token, version, archive, vmEnv = null, protocolOnly = false, gitFixture = false, memoryMiB = 1024,
+  project, image, scope, token, version, archive, vmEnv = null, protocolOnly = false, gitFixture = false,
 }) {
   const records = new Map();
   const resetActors = [];
   const status = (name) => docker(['inspect', '--format', '{{.State.Running}}', name]) === 'true';
   const env = {
     SCOPE: scope, CAPACITY_TOKEN: token, WORKER_VERSION: version,
-    MEMORY_LIMIT_BYTES: String(memoryMiB * 2 ** 20), MAX_WORKERS: '1',
+    MEMORY_LIMIT_BYTES: String(1024 ** 3), MAX_WORKERS: '1',
     MAX_LIFETIME_SECONDS: '21600', STARTING_GRACE_MS: '30000',
     WORKER_CONTAINER_ENV: JSON.stringify({BIFROST_API_URL: 'http://api:8000', HOME: '/home/bifrost'}),
     ...(protocolOnly ? {WORKER_ENTRYPOINT_JSON: '["sleep","300"]'} : {}),
@@ -50,8 +50,7 @@ export function localLinuxProvider({
           delete values.BIFROST_WORKER_CONTROL_SECRET;
           Object.assign(values, vmEnv);
         }
-        const memory = memoryMiB + 'm';
-        const args = ['run', '--detach', '--name', name, '--memory', memory, '--memory-swap', memory,
+        const args = ['run', '--detach', '--name', name, '--memory', '1g', '--memory-swap', '1g',
           '--network', project + '_default'];
         if (gitFixture) {
           args.push('--env', 'SSL_CERT_FILE=/app/.phase6-ca.pem',

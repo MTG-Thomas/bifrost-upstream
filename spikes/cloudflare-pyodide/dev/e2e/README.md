@@ -271,3 +271,67 @@ Workers Logs showed 255 invocation records and 21.0 aggregate CPU-seconds
 across the trial. Cloudflare readback verified zero trial Worker, namespace,
 DNS and connector matches and confirmed the tunnel deletion. Docker reported
 zero containers, networks, volumes and task images for both trial projects.
+
+## Phase 7 hosted three-scope qualification
+
+Use a private, newly initialized `/opt/bifrost-tests/hosted-<sha>` archive.
+Run `phase7.py prepare <trial-host>` before starting the debug stack. Start
+the stack only when CT128 has no running Bifrost test or debug stack. Use
+`BIFROST_FORCE_PORT=1 ./debug.sh up` with a detached owner and a private log.
+Use Node 26, the pinned packaged runtime, and the staged runtime loader files
+from Phase 5b.
+
+Use a dedicated `bifrost-hq-<nine-hex>` prefix. Check the exact account, zone,
+Worker prefix, Durable Object namespaces, container applications, registry
+image, tunnel and DNS name before creating resources. Run
+`node spend-guard.mjs list` with the trial account selected. Both provider
+configs use one outstanding incarnation and the Workers profile declares two
+workflow slots. The Containers application uses one basic instance
+with a digest-pinned image built from `api/Dockerfile`. Its embedded
+`BIFROST_VERSION` must equal `PHASE7_NAME`.
+
+Copy each `phase7.config.ts` to `cloudflare.config.ts` in its own scratch
+deployment directory. Deploy the managed launcher and the Workers capacity
+provider separately. Deploy the Containers provider with `PHASE7_IMAGE`
+set to the dedicated registry image digest. The providers each receive
+their own secret file containing only `CAPACITY_TOKEN`. The managed launcher
+receives the derived incarnation credential over its private DO binding.
+Use `cf deploy --dry-run` before applying each configuration.
+
+For the agent and runtime pass, deploy the private agent and summary
+entrypoints with the trial HTTPS origin plus `/__fixture/v1` as their
+endpoint. Run `phase7.py run <generated-runtime.mjs>` and wait for
+`hosted-relay-ready`. Use the mode-0600 `.phase7-enrollment.json` to stage
+the manual launcher under its own Worker name, with both private provider
+bindings. Upload the replacement using `cf workers versions create` before
+the reset fixture reaches its hold. At `redeploy-requested`, activate that
+version immediately. The harness verifies a summary and autonomous run
+against the stub, CPU settlement, DO recovery and retired hello fencing.
+
+For the placement pass, use `phase7.py run <generated-runtime.mjs> --placement
+<private-provider-handoff.json>`. The handoff has `workersUrl`,
+`containersUrl`, `workersToken` and `containersToken`. Use HTTPS Workers
+endpoints and mode 0600. The harness seeds one approved loose workflow and
+one approved Solution workflow in separate organizations and holds both
+inside SDK calls on the same two-slot incarnation. It holds the sole VM
+worker and sends a Linux subprocess workflow through Containers. Use the
+printed execution IDs with the hosted invocation and application records
+to measure scheduling and cold start. Require both the API's deletion
+receipt and an independent Container instance readback before claiming
+physical stop. API idle retirement and the Cloudflare inactivity timer
+have separate evidence requirements.
+
+For both passes, the connector uses loopback port 31847 in the archive. Use
+an exact-host tunnel ingress rule with this anchored path expression, then
+`http_status:404`:
+
+```text
+^(/api/worker-control|/api/sdk/tables/list|/api/sdk/runtime/logs|/auth/refresh|/__fixture/v1/chat/completions|/api/sdk/modules-resolve|/api/sdk/modules/workflows/phase6_linux_only\.py)$
+```
+
+Check 404 for login and OpenAPI, and 401 for the unauthenticated tables
+POST. Query `cf o11y telemetry query` from the OS temporary directory and
+filter to the trial Worker names. Keep raw logs and handoff files private.
+Use the teardown order from Phase 5b, including the Containers application
+and the dedicated registry image tag. Read back the exact names after
+deletion. Remove the private handoffs and token files.

@@ -65,8 +65,8 @@ def placement(admin, send, project, provision):
         if not re.fullmatch(r"[a-f0-9]{64}", hosted[key]):
             raise SystemExit("Expected dedicated random capacity tokens")
     send("/api/admin/kubernetes/policy", {
-        "warm_workers": 1, "max_workers": 3, "worker_memory_mib": 4096,
-        "largest_worker_mib": 4096, "idle_seconds": 10,
+        "warm_workers": 1, "max_workers": 3, "worker_memory_mib": 1024,
+        "largest_worker_mib": 1024, "idle_seconds": 10,
     }, admin, method="PUT")
     tenants = [send("/api/organizations", {"name": f"Phase 7 Tenant {label}"}, admin)["id"] for label in ("A", "B")]
     workflows, loose = seed_workflows(project, admin, send, False,
