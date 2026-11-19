@@ -46,7 +46,6 @@ type WorkflowExecutionResponse =
 	components["schemas"]["WorkflowExecutionResponse"];
 type WorkflowValidationResponse =
 	components["schemas"]["WorkflowValidationResponse"];
-type ValidationIssue = components["schemas"]["ValidationIssue"];
 
 // Log entry type from execution response
 interface LogEntry {
@@ -649,27 +648,6 @@ export function RunPanel({ executeRef }: RunPanelProps) {
 					}
 				}
 
-				// Show warnings if any
-				const warnings = (result.issues || []).filter(
-					(i: ValidationIssue) => i.severity === "warning",
-				);
-				if (warnings.length > 0) {
-					logs.push({
-						level: "WARNING",
-						message: `⚠ ${warnings.length} warning(s):`,
-						source: "validation",
-						timestamp: new Date().toISOString(),
-					});
-					warnings.forEach((warning: ValidationIssue) => {
-						logs.push({
-							level: "WARNING",
-							message: `  ${warning.message}`,
-							source: "validation",
-							timestamp: new Date().toISOString(),
-						});
-					});
-				}
-
 				toast.success("Workflow is valid!");
 
 				// Invalidate workflows metadata to trigger refetch and update the Run panel
@@ -685,21 +663,27 @@ export function RunPanel({ executeRef }: RunPanelProps) {
 					timestamp: new Date().toISOString(),
 				});
 
-				const errors = (result.issues || []).filter(
-					(i: ValidationIssue) => i.severity === "error",
-				);
-				errors.forEach((error: ValidationIssue) => {
-					const lineInfo = error.line ? `[Line ${error.line}] ` : "";
-					logs.push({
-						level: "ERROR",
-						message: `  ${lineInfo}${error.message}`,
-						source: "validation",
-						timestamp: new Date().toISOString(),
-					});
-				});
-
+				const errorCount = result.issues?.filter((issue) => issue.severity === "error").length ?? 0;
 				toast.error("Workflow validation failed", {
-					description: `${errors.length} error(s) found`,
+					description: `${errorCount} error(s) found`,
+				});
+			}
+
+			for (const issue of result.issues ?? []) {
+				const location = [issue.path, issue.line, issue.column]
+					.filter((part) => part != null)
+					.join(":");
+				const message = [
+					location && `[${location}]`,
+					issue.rule_id && `[${issue.rule_id}]`,
+					issue.message,
+					issue.hint,
+				].filter(Boolean).join(" ");
+				logs.push({
+					level: issue.severity === "error" ? "ERROR" : issue.severity === "warning" ? "WARNING" : "INFO",
+					message: `  ${message}`,
+					source: "validation",
+					timestamp: new Date().toISOString(),
 				});
 			}
 

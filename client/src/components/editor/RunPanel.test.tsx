@@ -6,6 +6,7 @@ import { RunPanel } from "./RunPanel";
 
 const appendTerminalOutput = vi.fn();
 const mutateAsync = vi.fn();
+const validateWorkflow = vi.hoisted(() => vi.fn());
 let metadataOverrides: Record<string, unknown> = {};
 
 vi.mock("sonner", () => ({
@@ -20,6 +21,7 @@ vi.mock("@/hooks/useExecutionStream", () => ({
 }));
 
 vi.mock("@/hooks/useWorkflows", () => ({
+	validateWorkflow,
 	useWorkflowsMetadata: () => ({
 		data: {
 			workflows: [
@@ -62,6 +64,7 @@ vi.mock("@/hooks/useWorkflows", () => ({
 beforeEach(() => {
 	metadataOverrides = {};
 	mutateAsync.mockReset();
+	validateWorkflow.mockReset();
 	appendTerminalOutput.mockReset();
 	useEditorStore.setState({
 		tabs: [
@@ -163,6 +166,48 @@ describe("RunPanel", () => {
 		expect(
 			document.querySelector('[data-slot="select-content"]'),
 		).toHaveClass("z-[200]");
+	});
+
+	it.each([true, false])("shows Cloudflare info and its fix hint when validation is %s", async (valid) => {
+		metadataOverrides = { data: { workflows: [] } };
+		useEditorStore.setState((state) => ({
+			tabs: state.tabs.map((tab) => ({
+				...tab,
+				file: { ...tab.file, entity_type: undefined },
+			})),
+		}));
+		validateWorkflow.mockResolvedValue({
+			valid,
+			issues: [
+				{
+					source: "cloudflare",
+					severity: "info",
+					path: "workflows/helper.py",
+					line: 7,
+					column: 2,
+					rule_id: "CF_URL_REVIEW",
+					message: "Review the destination host.",
+					hint: "Approve the possible hostnames.",
+				},
+			],
+		});
+		const { user } = renderWithProviders(<RunPanel />);
+
+		await user.click(await screen.findByRole("button", { name: "Validate workflow" }));
+
+		await waitFor(() => expect(appendTerminalOutput).toHaveBeenCalledWith(
+			expect.objectContaining({
+				status: valid ? "Success" : "Failed",
+				loggerOutput: expect.arrayContaining([
+					expect.objectContaining({
+						level: "INFO",
+						message: expect.stringContaining(
+							"[workflows/helper.py:7:2] [CF_URL_REVIEW] Review the destination host. Approve the possible hostnames.",
+						),
+					}),
+				]),
+			}),
+		));
 	});
 
 	it("keeps the form populated after a failed submit and allows retry", async () => {
