@@ -332,9 +332,10 @@ async def cloudflare_validation_issues(
     request: WorkflowValidationRequest, *, can_read_workspace: bool,
 ) -> list[ValidationIssue]:
     """Append file-level placement advice independently of Linux validation."""
-    from bifrost.cloudflare_analysis import AnalysisRejected, diagnose, placement_findings
+    from bifrost.cloudflare_analysis import AnalysisRejected, placement_findings
     from src.core.storage.contracts import StorageError
     from src.services.editor.file_filter import normalize_workspace_file_path
+    from src.services.execution.cloudflare_analysis_runner import diagnose
     from src.services.repo_storage import RepoStorage
 
     path = normalize_workspace_file_path(request.path)
@@ -344,11 +345,11 @@ async def cloudflare_validation_issues(
     )
     if not findings:
         storage = RepoStorage() if can_read_workspace else None
-        draft = request.content.encode() if request.content is not None else None
+        draft = request.content
 
         async def read(source_path: str, maximum: int) -> bytes | None:
             if source_path == path and draft is not None:
-                return draft
+                return draft[:maximum + 1].encode()
             if storage is None:
                 return None
             try:

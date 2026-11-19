@@ -1,6 +1,7 @@
 """Cloudflare source diagnostics for an isolated workspace or Solution bundle."""
 
 from collections import Counter, defaultdict
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, replace
 from typing import Literal
 
@@ -12,6 +13,8 @@ from bifrost.cloudflare_analysis import (
     diagnose,
     placement_findings,
 )
+
+BundleDiagnoser = Callable[..., Awaitable[list[Finding]]]
 
 
 @dataclass(frozen=True)
@@ -43,6 +46,7 @@ async def inspect_bundle(
     outbound: bool = False,
     subrequest_allowance: int = MAX_SUBREQUESTS,
     cpu_budget_ms: int = 1000,
+    diagnose_source: BundleDiagnoser = diagnose,
 ) -> list[ArtifactReport]:
     """Use the caller's workspace-isolated source reader for every artifact."""
     reports = []
@@ -62,7 +66,7 @@ async def inspect_bundle(
 
     for path, entries in eligible_entries.items():
         names = tuple(workflows[index]["function_name"] for index in entries)
-        findings = await diagnose(
+        findings = await diagnose_source(
             read, path, names, subrequest_allowance=subrequest_allowance, cpu_budget_ms=cpu_budget_ms,
         )
         for index in entries:

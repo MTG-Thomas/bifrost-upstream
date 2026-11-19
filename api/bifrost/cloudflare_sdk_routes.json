@@ -1,0 +1,29 @@
+{
+  "prefixes": [
+    "/api/sdk/",
+    "/api/organizations",
+    "/api/configs",
+    "/api/files",
+    "/api/integrations",
+    "/api/tables",
+    "/api/events",
+    "/api/forms",
+    "/api/agents",
+    "/api/agent-runs"
+  ],
+  "identifiers": {
+    "uuid": "[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}",
+    "email": "[A-Za-z0-9.!$&'*+=^_~-]+(?:@|%40)[A-Za-z0-9.-]+"
+  },
+  "routes": {
+    "/auth/refresh": ["POST"],
+    "/api/roles": ["GET", "POST"],
+    "/api/roles/{uuid}": ["GET", "PATCH", "DELETE"],
+    "/api/roles/{uuid}/users": ["GET", "POST"],
+    "/api/roles/{uuid}/forms": ["GET", "POST"],
+    "/api/users": ["GET", "POST"],
+    "/api/users/{uuid}": ["GET", "PATCH", "DELETE"],
+    "/api/users/{email}": ["GET", "PATCH", "DELETE"],
+    "/api/platform-jobs/{uuid}": ["GET"]
+  }
+}

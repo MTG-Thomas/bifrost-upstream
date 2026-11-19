@@ -1,6 +1,7 @@
 # Copy this file to `.github/workflows/cloudflare-eligibility-census.yml` in
 # the workspace repo. Copy census.mjs, census-gate.mjs, and analyze-file.py
-# into tools/cloudflare-census/ with cloudflare_analysis.py from the exact
+# into tools/cloudflare-census/ with cloudflare_analysis.py and
+# cloudflare_sdk_routes.json from the exact
 # Bifrost revision whose admission policy should be evaluated.
 #
 # Generate the baseline once from a clean main:

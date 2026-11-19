@@ -1624,15 +1624,13 @@ async def put_file_content_editor(
         from src.config import get_settings
 
         if get_settings().cloudflare_diagnostics_enabled:
-            from bifrost.cloudflare_analysis import diagnose_file
             from src.services.editor.file_filter import normalize_workspace_file_path
+            from src.services.execution.cloudflare_analysis_runner import diagnose_file
 
             try:
                 path = normalize_workspace_file_path(request.path)
                 if path.endswith(".py"):
-                    findings = await asyncio.to_thread(
-                        lambda: asyncio.run(diagnose_file(path, write_result.final_content))
-                    )
+                    findings = await diagnose_file(path, write_result.final_content)
                     diagnostics.extend(
                         FileDiagnostic(
                             severity=finding.severity, message=finding.text,

@@ -8,11 +8,12 @@ import hashlib
 import io
 import json
 import re
+import sys
 import tokenize
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
-from itertools import islice
+from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -22,14 +23,18 @@ MAX_BUNDLE_BYTES = 4 * 1024**2
 MAX_MODULES = 32
 _MAX_PARSE_FILE_BYTES = 384 * 1024
 _MAX_PARSE_BUNDLE_BYTES = 1024 * 1024
-# Dense Python can allocate a large parser arena before the AST node check.
-# Tokenize larger files incrementally before constructing their AST.
-_TOKEN_CHECK_BYTES = 128 * 1024
-_MAX_LARGE_FILE_TOKENS = 75_000
+_MAX_TOKEN_WEIGHT = 75_000
+_MAX_URL_PREFIX = 4096
+_MAX_URL_PARTS = 4096
+_MAX_NAME_LENGTH = 512
+_MAX_FINDINGS = 256
+_MAX_CALL_HINTS = 2048
 MAX_SUBREQUESTS = 50
 MAX_CPU_MS = 2**53 - 1  # Integer range of the launcher wire.
 _MAX_NODES = 100_000
 _MAX_ACTIVE_SCOPE_BINDINGS = 200_000
+_MAX_SCOPE_COPY_WORK = 500_000
+_MAX_SELECTOR_WORK = 1_000_000
 _HOST_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 _PROVIDED = {"bifrost", "js", "pyodide", "_pyodide"}
 # Pyodide 314.0.6, CPython 3.14 WebAssembly. Verified in Workerd against
@@ -94,6 +99,28 @@ _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
 _HTTP_METHODS = {"request", "get", "head", "post", "put", "patch", "delete", "options", "stream", "send"}
 _URLLIB_CALLS = {"urllib.request.urlopen", "urllib.request.urlretrieve"}
 _REQUEST_BUILDERS = {"httpx.Request", "urllib.request.Request"}
+_ROUTE_POLICY = json.loads(Path(__file__).with_name("cloudflare_sdk_routes.json").read_text(encoding="utf-8"))
+_ROUTE_PATTERNS: list[tuple[re.Pattern[str], list[str]]] = [
+    (re.compile(re.sub(r"\{(\w+)\}", lambda match: f"(?:{_ROUTE_POLICY['identifiers'][match[1]]})", path)), methods)
+    for path, methods in _ROUTE_POLICY["routes"].items()
+]
+_ROUTE_EXAMPLE_ID = "11111111-1111-4111-8111-111111111111"
+_SDK_AREA_ROUTES = {
+    "agents": "/api/agent-runs", "ai": "/api/sdk/ai", "artifacts": "/api/sdk/artifacts",
+    "config": "/api/sdk/config", "events": "/api/events", "executions": "/api/executions",
+    "files": "/api/files", "forms": "/api/forms", "integrations": "/api/sdk/integrations",
+    "knowledge": "/api/sdk/knowledge", "organizations": "/api/organizations",
+    "tables": "/api/tables", "workflows": "/api/workflows",
+}
+_SDK_IDENTITY_OPERATIONS = {
+    "list": ("GET", ""), "create": ("POST", ""), "get": ("GET", f"/{_ROUTE_EXAMPLE_ID}"),
+    "update": ("PATCH", f"/{_ROUTE_EXAMPLE_ID}"), "delete": ("DELETE", f"/{_ROUTE_EXAMPLE_ID}"),
+}
+_SDK_ROLE_OPERATIONS = {
+    **_SDK_IDENTITY_OPERATIONS,
+    "list_users": ("GET", f"/{_ROUTE_EXAMPLE_ID}/users"), "assign_users": ("POST", f"/{_ROUTE_EXAMPLE_ID}/users"),
+    "list_forms": ("GET", f"/{_ROUTE_EXAMPLE_ID}/forms"), "assign_forms": ("POST", f"/{_ROUTE_EXAMPLE_ID}/forms"),
+}
 
 SourceReader = Callable[[str, int], Awaitable[bytes | None]]
 
@@ -253,40 +280,106 @@ class _URL:
 
 
 def _url_literal(node: ast.expr, constants: dict[str, str]) -> _URL | None:
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return _URL(node.value)
-    if isinstance(node, ast.Name) and node.id in constants:
-        return _URL(constants[node.id])
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        left = _url_literal(node.left, constants)
-        if left is None or not left.complete:
-            return left
-        right = _url_literal(node.right, constants)
-        return _URL(left.prefix + (right.prefix if right else ""), bool(right and right.complete))
-    if isinstance(node, ast.JoinedStr):
-        prefix = ""
-        for item in node.values:
-            if isinstance(item, ast.FormattedValue):
-                if item.conversion != -1 or item.format_spec is not None:
-                    return _URL(prefix, False) if prefix else None
-                item = item.value
-            part = _url_literal(item, constants)
-            if part is None:
-                return _URL(prefix, False) if prefix else None
-            prefix += part.prefix
-            if not part.complete:
-                return _URL(prefix, False)
-        return _URL(prefix)
-    return None
+    remaining = _MAX_URL_PREFIX
+    parts: list[str] = []
+    stack = [iter((node,))]
+    visited = 0
+    while stack:
+        item = next(stack[-1], None)
+        if item is None:
+            stack.pop()
+            continue
+        visited += 1
+        if visited > _MAX_URL_PARTS:
+            return _URL("", False)
+        if isinstance(item, ast.FormattedValue) and item.conversion == -1 and item.format_spec is None:
+            item = item.value
+        if isinstance(item, ast.BinOp) and isinstance(item.op, ast.Add):
+            stack.append(iter((item.left, item.right)))
+            continue
+        if isinstance(item, ast.JoinedStr):
+            stack.append(iter(item.values))
+            continue
+        part = item.value if isinstance(item, ast.Constant) else constants.get(item.id) if isinstance(item, ast.Name) else None
+        if not isinstance(part, str):
+            return _URL("".join(parts), False) if parts else None
+        if len(part) > remaining:
+            return _URL("", False)
+        remaining -= len(part)
+        parts.append(part)
+    return _URL("".join(parts))
+
+
+def _check_tokens(source: str) -> None:
+    """Account for dense syntax before allocating the parser arena."""
+    remaining = _MAX_TOKEN_WEIGHT
+    for token in tokenize.generate_tokens(io.StringIO(source, newline=None).readline):
+        remaining -= 1
+        # Before PEP 701 a whole f-string, including its expressions, is
+        # emitted as one STRING token. Charge its characters conservatively.
+        if sys.version_info < (3, 12) and token.type == tokenize.STRING:
+            prefix = token.string[:2].lower()
+            if prefix.startswith(("f", "rf")):
+                remaining -= len(token.string)
+        if remaining < 0:
+            raise AnalysisRejected("Python file exceeds the analysis token budget", "CF_PARSE_BUDGET")
+
+
+def _api_path_allowed(method: str, path: str) -> bool:
+    return any(
+        path == prefix or path.startswith(prefix if prefix.endswith("/") else f"{prefix}/")
+        for prefix in _ROUTE_POLICY["prefixes"]
+    ) or any(method in methods and pattern.fullmatch(path) for pattern, methods in _ROUTE_PATTERNS)
+
+
+def _raw_api_allowed(method: str, literal: _URL | None) -> bool:
+    if not literal or not literal.prefix or "\\" in literal.prefix:
+        return False
+    try:
+        url = urlsplit(literal.prefix)
+    except ValueError:
+        return False
+    if url.scheme or url.netloc:
+        if (url.scheme, url.netloc) != ("https", "test-api.invalid"):
+            return False
+    path = url.path
+    if not path.startswith("/") or any(part.lower().replace("%2e", ".") in {".", ".."} for part in path.split("/")):
+        return False
+    if literal.complete or "?" in literal.prefix or "#" in literal.prefix:
+        return _api_path_allowed(method, path)
+    # An unfinished segment could be a different root. Recognize only
+    # established path segments, with a representative final identifier.
+    return path.endswith("/") and _api_path_allowed(method, path + _ROUTE_EXAMPLE_ID)
+
+
+def _sdk_routes_allowed(area: str, method: str) -> bool:
+    if area in {"users", "roles"}:
+        operations = _SDK_ROLE_OPERATIONS if area == "roles" else _SDK_IDENTITY_OPERATIONS
+        operation = operations.get(method)
+        return operation is not None and _api_path_allowed(operation[0], f"/api/{area}{operation[1]}")
+    if (area, method) in {("files", "move"), ("files", "move_many"), ("artifacts", "create_video")}:
+        if not _api_path_allowed("GET", f"/api/platform-jobs/{_ROUTE_EXAMPLE_ID}"):
+            return False
+    if area == "executions" and method == "get_current_logs":
+        return _api_path_allowed("GET", "/api/sdk/runtime/logs/example")
+    path = _SDK_AREA_ROUTES.get(area)
+    return path is None or _api_path_allowed("GET", path)
 
 
 def _dotted(node: ast.expr) -> str:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        parent = _dotted(node.value)
-        return f"{parent}.{node.attr}" if parent else f".{node.attr}"
-    return ""
+    parts = []
+    remaining = _MAX_NAME_LENGTH
+    while isinstance(node, ast.Attribute):
+        remaining -= len(node.attr) + 1
+        if remaining < 0:
+            raise AnalysisRejected("Python name exceeds the analysis budget", "CF_PARSE_BUDGET")
+        parts.append(node.attr)
+        node = node.value
+    root = node.id if isinstance(node, ast.Name) else ""
+    if len(root) > remaining:
+        raise AnalysisRejected("Python name exceeds the analysis budget", "CF_PARSE_BUDGET")
+    parts.append(root)
+    return ".".join(reversed(parts))
 
 
 def _qualified(node: ast.expr, aliases: dict[str, str]) -> str:
@@ -296,6 +389,8 @@ def _qualified(node: ast.expr, aliases: dict[str, str]) -> str:
     resolved = aliases.get(root)
     if resolved is None:
         resolved = f"builtins.{root}" if root in _DYNAMIC | {"getattr", "__builtins__"} else f"unbound.{root}"
+    if len(resolved) + len(tail) > _MAX_NAME_LENGTH:
+        raise AnalysisRejected("Python name exceeds the analysis budget", "CF_PARSE_BUDGET")
     return f"{resolved}.{tail}" if tail else resolved
 
 
@@ -367,6 +462,7 @@ def _literal_helper_selectors(syntax: ast.Module, entry_functions: tuple[str, ..
             reflected_names.add(node.value)
 
     resolved = set()
+    remaining = _MAX_SELECTOR_WORK
     for helper in helpers:
         if bindings[helper.name] != 1 or helper.name in reflected_names:
             continue
@@ -379,6 +475,9 @@ def _literal_helper_selectors(syntax: ast.Module, entry_functions: tuple[str, ..
         scope = [node for stmt in helper.body for node in _scoped_nodes(stmt)]
         rebound = {name for stmt in helper.body for node in ast.walk(stmt) for name in _bound_names(node)}
         parameters = helper.args.posonlyargs + helper.args.args
+        remaining -= len(parameters) * (len(scope) + sum(1 + len(call.keywords) for call in calls))
+        if remaining < 0:
+            raise AnalysisRejected("Python selector analysis exceeds its work budget", "CF_PARSE_BUDGET")
         for index, parameter in enumerate(parameters):
             selectors = [
                 node for node in scope
@@ -469,16 +568,20 @@ class _Analysis:
     nodes: int = 0
     calls: int = 0
     unresolved_url_calls: int = 0
-    url_review_positions: list[tuple[str, int | None, int | None]] = field(default_factory=list)
+    url_review_count: int = 0
+    first_url_review: tuple[str, int | None, int | None] | None = None
     exports: dict[str, _Client] = field(default_factory=dict)
     call_hints: list[_CallHint] = field(default_factory=list)
     single_file: bool = False
     findings: list[Finding] | None = None
     local_helpers_entry: str | None = None
     literal_selectors: dict[int, str] = field(default_factory=dict)
+    scope_copy_work: int = 0
 
     def observe(self, rule: str, message: str, path: str, node: ast.AST) -> None:
         if self.findings is not None:
+            if len(self.findings) == _MAX_FINDINGS:
+                raise AnalysisRejected("Workspace sources exceed the diagnostics budget", "CF_PARSE_BUDGET")
             refusal = AnalysisRejected(message, rule)
             refusal.locate(path, node)
             self.findings.append(Finding.from_refusal(refusal))
@@ -523,12 +626,11 @@ class _Analysis:
         self.remaining -= len(content)
         self.pins[path] = hashlib.sha256(content).hexdigest()
         source = content.decode("utf-8")
-        if len(content) > _TOKEN_CHECK_BYTES:
-            tokens = tokenize.generate_tokens(io.StringIO(source, newline=None).readline)
-            if sum(1 for _ in islice(tokens, _MAX_LARGE_FILE_TOKENS + 1)) > _MAX_LARGE_FILE_TOKENS:
-                raise AnalysisRejected("Python file exceeds the analysis token budget", "CF_PARSE_BUDGET")
-            del tokens
-        syntax = ast.parse(source, filename=path)
+        _check_tokens(source)
+        try:
+            syntax = ast.parse(source, filename=path)
+        except (MemoryError, ValueError) as exc:
+            raise AnalysisRejected("Workspace source could not be analyzed as Python") from exc
         del source, content
         if entry_functions:
             defined = {
@@ -552,6 +654,8 @@ class _Analysis:
         return True
 
     async def resolve(self, dotted: str, *, optional: bool = False) -> bool:
+        if len(dotted) > _MAX_NAME_LENGTH:
+            raise AnalysisRejected("Python import exceeds the analysis budget", "CF_PARSE_BUDGET")
         parts = dotted.split(".")
         root = parts[0]
         if root in _UNSUPPORTED and dotted != "importlib.metadata":
@@ -649,13 +753,12 @@ class _Analysis:
         }
         if arguments is not None:
             local_names.update(node.arg for node in ast.iter_child_nodes(arguments) if isinstance(node, ast.arg))
-        # Recursive scope inspection retains ancestor lookup tables. Bound
-        # their aggregate size independently of the source and AST budgets.
-        inherited_size = (
+        # Copy work includes shadowed entries. Retained entries are counted
+        # once per live dictionary, using the filtered size of each scope.
+        self.charge_scope_copy(
             len(inherited_aliases) + len(inherited_constants) + len(inherited_clients) + len(inherited_factories)
+            + len(local_names)
         )
-        if active_bindings + inherited_size + len(local_names) > _MAX_ACTIVE_SCOPE_BINDINGS:
-            raise AnalysisRejected("Workspace sources exceed the active scope budget", "CF_PARSE_BUDGET")
         aliases = {**inherited_aliases, **{name: f"local.{name}" for name in local_names}}
         constants = {name: value for name, value in inherited_constants.items() if name not in local_names}
         clients = {name: value for name, value in inherited_clients.items() if name not in local_names}
@@ -703,6 +806,7 @@ class _Analysis:
 
         direct_calls = {id(node.func) for node in nodes if isinstance(node, ast.Call)}
         callback_args = {id(arg) for node in nodes if isinstance(node, ast.Call) for arg in node.args}
+        self.check_active_scope(active_bindings, aliases, constants, clients, factories)
         if class_clients is not None:
             nodes.sort(key=lambda node: not isinstance(node, ast.FunctionDef) or node.name != "__init__")
         for node in nodes:
@@ -713,17 +817,21 @@ class _Analysis:
                 raise
             if isinstance(node, _SCOPES):
                 shared = {} if isinstance(node, ast.ClassDef) else class_clients
-                ancestor_bindings = active_bindings + len(aliases) + len(constants) + len(clients) + len(factories)
+                ancestor_bindings = self.check_active_scope(active_bindings, aliases, constants, clients, factories)
                 if isinstance(node, ast.ClassDef):
                     self.inspect_scope(
                         node.body, aliases, constants, clients, factories, imports, path,
                         class_clients=shared, active_bindings=ancestor_bindings,
                     )
                 else:
-                    child_clients = {**clients, **(shared or {})}
+                    child_clients = clients
+                    if shared:
+                        self.charge_scope_copy(len(clients) + len(shared))
+                        child_clients = clients | shared
+                        ancestor_bindings = self.check_active_scope(ancestor_bindings, child_clients)
                     result = self.inspect_scope(
                         node.body, aliases, constants, child_clients, factories, imports, path, node.args,
-                        active_bindings=ancestor_bindings + len(child_clients),
+                        active_bindings=ancestor_bindings,
                     )
                     if shared is not None and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "__init__":
                         shared.update({name: value for name, value in result.items() if name.startswith("self.")})
@@ -756,6 +864,18 @@ class _Analysis:
                         requests[name] = built
         return clients
 
+    def charge_scope_copy(self, count: int) -> None:
+        self.scope_copy_work += count
+        if self.scope_copy_work > _MAX_SCOPE_COPY_WORK:
+            raise AnalysisRejected("Workspace sources exceed the scope copy budget", "CF_PARSE_BUDGET")
+
+    @staticmethod
+    def check_active_scope(active_bindings: int, *tables: dict) -> int:
+        total = active_bindings + sum(map(len, tables))
+        if total > _MAX_ACTIVE_SCOPE_BINDINGS:
+            raise AnalysisRejected("Workspace sources exceed the active scope budget", "CF_PARSE_BUDGET")
+        return total
+
     @staticmethod
     def request_url(
         node: ast.Call, aliases: dict[str, str], constants: dict[str, str],
@@ -780,9 +900,16 @@ class _Analysis:
             self.unresolved_url_calls += 1
             if self.findings is not None and not (check_scheme and self.observe_transport(literal, path, node)):
                 offset = getattr(node, "col_offset", None)
-                self.url_review_positions.append((path, getattr(node, "lineno", None), offset + 1 if offset is not None else None))
+                self.url_review_count += 1
+                if self.first_url_review is None:
+                    self.first_url_review = (path, getattr(node, "lineno", None), offset + 1 if offset is not None else None)
         else:
-            self.hosts.add(proposed)
+            self.add_host(proposed)
+
+    def add_host(self, host: str) -> None:
+        self.hosts.add(host)
+        if len(self.hosts) > 32:
+            raise AnalysisRejected("Workspace sources exceed the HTTPS host budget", "CF_HOST_BUDGET")
 
     def inspect(
         self, node: ast.AST, aliases: dict[str, str], constants: dict[str, str], clients: dict[str, _Client],
@@ -856,23 +983,17 @@ class _Analysis:
             self.observe_transport(_url_literal(base, constants) if base is not None else None, path, node)
             client = _client(node, aliases, constants, clients, factories)
             if client and client.host is not None:
-                self.hosts.add(client.host)
+                self.add_host(client.host)
         namespace, _, method = qualified.rpartition(".")
         if namespace.startswith("bifrost.") and namespace.split(".")[1] != "types":
             area = namespace.split(".")[1]
-            # Workflow dispatch and execution control belong to the parent.
-            # get_current_logs already uses the forwarded /api/sdk/ surface.
-            if area == "workflows" or area == "executions" and method != "get_current_logs":
-                self.observe("CF_SDK_GATEWAY", f"The gateway does not forward {qualified}", path, node)
-            elif namespace == "bifrost.api":
+            if area == "api":
                 argument = _argument(node, 0, "path")
                 literal = _url_literal(argument, constants) if argument is not None else None
-                if literal is not None:
-                    raw_path = urlsplit(literal.prefix).path if literal.prefix.startswith("/api/") else ""
-                    for root in ("/api/workflows", "/api/executions"):
-                        if raw_path.startswith(f"{root}/") or literal.complete and raw_path == root:
-                            self.observe("CF_SDK_GATEWAY", f"The gateway does not forward {root} routes", path, node)
-                            break
+                if not _raw_api_allowed(method.upper(), literal):
+                    self.observe("CF_SDK_GATEWAY", "The SDK request path is outside the gateway policy or needs route review", path, node)
+            elif not _sdk_routes_allowed(area, method):
+                self.observe("CF_SDK_GATEWAY", f"The gateway does not forward {qualified}", path, node)
             self.calls += 1
             return
         target = _http_target(node.func, aliases, constants, clients, factories)
@@ -892,6 +1013,8 @@ class _Analysis:
             not isinstance(node.func, ast.Attribute) or _dotted(node.func.value) not in mappings
         ):
             literal = self.call_url(node, method, aliases, constants, clients, factories, requests)
+            if len(self.call_hints) == _MAX_CALL_HINTS:
+                raise AnalysisRejected("Workspace sources exceed the HTTP analysis budget", "CF_PARSE_BUDGET")
             self.call_hints.append(_CallHint(namespace, literal, path, node))
 
     def observe_transport(self, literal: _URL | None, path: str, node: ast.AST) -> bool:
@@ -942,12 +1065,11 @@ async def _analyze(
     if not await asyncio.wait_for(analysis.load(entry_path, entries), timeout=20):
         raise AnalysisRejected("Workflow source is missing")
     analysis.finish_call_hints()
-    if analysis.findings is not None and analysis.url_review_positions:
-        positions = analysis.url_review_positions
-        path, line, column = positions[0] if len(positions) == 1 else (entry_path, None, None)
+    if analysis.findings is not None and analysis.first_url_review is not None:
+        path, line, column = analysis.first_url_review if analysis.url_review_count == 1 else (entry_path, None, None)
         analysis.findings.append(Finding(
             "CF_URL_REVIEW", "info",
-            f"{len(positions)} HTTP call(s) need operator review of the destination host.",
+            f"{analysis.url_review_count} HTTP call(s) need operator review of the destination host.",
             _HINTS["CF_URL_REVIEW"], path, line, column,
         ))
     # Static sizing signals. Repeated calls, input-dependent work and library
@@ -964,8 +1086,6 @@ async def _analyze(
             f"Estimated CPU ({estimated_cpu_ms} ms) exceeds the budget", "CF_CPU",
             detail=f"Estimated CPU ({estimated_cpu_ms} ms) exceeds the budget ({cpu_budget_ms} ms)",
         )
-    if len(analysis.hosts) > 32:
-        raise AnalysisRejected("Workspace sources exceed the HTTPS host budget", "CF_HOST_BUDGET")
     hosts = sorted(analysis.hosts)
     return {
         "entry_path": entry_path, "function_name": function_name,

@@ -1,7 +1,12 @@
 """Workers advice shares the approval analyzer and remains advisory."""
 
+import ast
+import tokenize
+from types import SimpleNamespace
+
 import pytest
 
+from bifrost import cloudflare_analysis as analysis
 from bifrost.cloudflare_analysis import diagnose, diagnose_file, placement_findings
 from bifrost.cloudflare_report import count_rules, inspect_bundle
 
@@ -22,6 +27,9 @@ from bifrost.cloudflare_report import count_rules, inspect_bundle
     ("from bifrost import workflows\nworkflows.execute('example')", "CF_SDK_GATEWAY", 2, "Linux"),
     ("from bifrost import executions\nexecutions.get(execution_id)", "CF_SDK_GATEWAY", 2, "Linux"),
     ("from bifrost import api\napi.get(f'/api/executions/{execution_id}')", "CF_SDK_GATEWAY", 2, "Linux"),
+    ("from bifrost.api import api\napi.get('/api/worker-control')", "CF_SDK_GATEWAY", 2, "Linux"),
+    ("from bifrost import api\napi.get(f'/api/workflows{suffix}')", "CF_SDK_GATEWAY", 2, "Linux"),
+    ("from bifrost import api\napi.patch('/api/users/bulk')", "CF_SDK_GATEWAY", 2, "Linux"),
     ("#" * (384 * 1024 + 1), "CF_PARSE_BUDGET", None, "smaller modules"),
 ], ids=lambda value: "oversized Python file" if isinstance(value, str) and len(value) > 1000 else None)
 async def test_diagnostics_rules(snippet, rule, line, hint):
@@ -46,13 +54,52 @@ async def test_imported_unicode_failure_names_the_imported_module():
 
 
 async def test_forwarded_sdk_routes_have_no_gateway_warning():
-    source = b"""from bifrost import api, executions, roles, users
+    source = b"""from bifrost import api, artifacts, executions, files, roles, users
 roles.list()
 users.update(user_id, name="example")
 api.get(f"/api/users/{user_id}")
 executions.get_current_logs()
+files.move(source, destination)
+files.move_many(moves)
+artifacts.create_video(title)
+api.get(f"/api/platform-jobs/{job_id}")
 """
     assert await diagnose_file("entry.py", source) == []
+
+
+@pytest.mark.parametrize("expression", ['A + A', 'f"{A}{A}"', 'A'])
+def test_url_resolution_uses_one_prefix_budget(monkeypatch, expression):
+    monkeypatch.setattr(analysis, "_MAX_URL_PREFIX", 12)
+    constant = "https://example.test/" if expression == "A" else "shorter"
+    literal = analysis._url_literal(ast.parse(expression, mode="eval").body, {"A": constant})
+    assert literal is not None and not literal.complete
+    assert len(literal.prefix) <= 12
+    assert literal.host() is None
+
+
+async def test_dense_source_is_checked_below_old_file_threshold(monkeypatch):
+    monkeypatch.setattr(analysis, "_MAX_TOKEN_WEIGHT", 28)
+    [finding] = await diagnose_file("entry.py", b"values = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]\n")
+    assert finding.rule_id == "CF_PARSE_BUDGET"
+
+
+def test_legacy_fstring_token_charges_source_weight(monkeypatch):
+    monkeypatch.setattr(analysis, "sys", SimpleNamespace(version_info=(3, 11)))
+    monkeypatch.setattr(analysis, "_MAX_TOKEN_WEIGHT", 12)
+    token = SimpleNamespace(type=tokenize.STRING, string='rf"prefix {value}"')
+    monkeypatch.setattr(analysis.tokenize, "generate_tokens", lambda _: iter([token]))
+    with pytest.raises(analysis.AnalysisRejected, match="token budget"):
+        analysis._check_tokens(token.string)
+
+
+@pytest.mark.parametrize("failure", [MemoryError, ValueError])
+async def test_parser_resource_errors_have_source_refusals(monkeypatch, failure):
+    def fail(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(analysis.ast, "parse", fail)
+    [finding] = await diagnose_file("entry.py", b"def run(): pass\n")
+    assert (finding.rule_id, finding.path) == ("CF_SOURCE", "entry.py")
 
 
 async def test_transitive_source_and_single_file_boundary():

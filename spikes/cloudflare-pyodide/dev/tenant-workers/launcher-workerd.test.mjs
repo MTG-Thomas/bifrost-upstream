@@ -51,7 +51,7 @@ function engine() {
       } else if (scenario === 'identity-sdk') {
         const headers = {Authorization: `Bearer ${engine_token}`, Cookie: 'session=child'};
         const users = await fetch('https://test-api.invalid/api/users?limit=1', {headers});
-        const assignment = await fetch('https://test-api.invalid/api/roles/role-fixture/users', {
+        const assignment = await fetch('https://test-api.invalid/api/roles/11111111-1111-4111-8111-111111111111/users', {
           method: 'POST', headers: {...headers, 'Content-Type': 'application/json'},
           body: JSON.stringify({user_ids: ['user-fixture']}),
         });
@@ -301,7 +301,7 @@ before(async () => {
       const url = new URL(request.url);
       origins.push(url.href);
       if (url.origin === 'https://upstream.invalid' &&
-          ['/api/users', '/api/roles/role-fixture/users'].includes(url.pathname)) {
+          ['/api/users', '/api/roles/11111111-1111-4111-8111-111111111111/users'].includes(url.pathname)) {
         const authorization = request.headers.get('Authorization');
         assert.ok(['Bearer test-access', 'Bearer restricted-access'].includes(authorization));
         assert.equal(request.headers.get('Cookie'), null);
@@ -383,7 +383,7 @@ test('workerd forwards identity SDK requests with run authority and returns the 
     users: {users: ['user-fixture']}, status: 403, denial: {detail: 'API permission denied'},
   });
   assert.deepEqual(refused.timings.api_calls.map(({method, path, status}) => [method, path, status]), [
-    ['GET', '/api/users', 200], ['POST', '/api/roles/role-fixture/users', 403],
+    ['GET', '/api/users', 200], ['POST', '/api/roles/11111111-1111-4111-8111-111111111111/users', 403],
   ]);
 });
 

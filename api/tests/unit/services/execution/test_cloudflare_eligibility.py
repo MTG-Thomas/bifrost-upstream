@@ -533,9 +533,29 @@ async def test_large_dense_source_is_rejected_before_parsing(monkeypatch):
 async def test_analysis_bounds_inherited_scope_tables(monkeypatch):
     from bifrost import cloudflare_analysis
 
-    monkeypatch.setattr(cloudflare_analysis, "_MAX_ACTIVE_SCOPE_BINDINGS", 6)
-    source = b"a = 'a'\nb = 'b'\ndef run():\n    def nested(): pass\n"
+    # The module retains 5 entries, then run retains 6 including nested.
+    # The nested scope is the first one past the cumulative cap.
+    monkeypatch.setattr(cloudflare_analysis, "_MAX_ACTIVE_SCOPE_BINDINGS", 11)
+    source = b"a = 'a'\nb = 'b'\ndef run():\n    def nested():\n        marker = 1\n        pass\n"
+    inspected = []
+    original = cloudflare_analysis._Analysis.inspect
+
+    def inspect(analysis, node, *args):
+        inspected.append(getattr(node, "lineno", None))
+        return original(analysis, node, *args)
+
+    monkeypatch.setattr(cloudflare_analysis._Analysis, "inspect", inspect)
     with pytest.raises(AnalysisRejected, match="active scope budget"):
+        await _analyze({ENTRY: source})
+    assert 4 in inspected and 5 not in inspected
+
+
+async def test_analysis_budgets_copy_work_across_sibling_scopes(monkeypatch):
+    from bifrost import cloudflare_analysis
+
+    monkeypatch.setattr(cloudflare_analysis, "_MAX_SCOPE_COPY_WORK", 9)
+    source = b"a = 'a'\ndef other(): pass\ndef run(): pass\n"
+    with pytest.raises(AnalysisRejected, match="scope copy budget"):
         await _analyze({ENTRY: source})
 
 

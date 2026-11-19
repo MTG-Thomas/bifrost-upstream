@@ -590,7 +590,7 @@ export class TenantApi extends WorkerEntrypoint {
     if (!HANDLE_RE.test(handle)) return deny(401, 'opaque handle required');
     let target;
     try {
-      target = apiTarget(request.url, this.env.API_ORIGIN, {scope: this.env.SDK_SCOPE});
+      target = apiTarget(request.url, this.env.API_ORIGIN, {scope: this.env.SDK_SCOPE, method: request.method});
     } catch {
       return deny(403, 'API capability denied');
     }

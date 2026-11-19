@@ -1,30 +1,30 @@
 """Opt-in authoring diagnostics preserve the primary editor and validator outcomes."""
 
-from threading import get_ident
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import HTTPException
 
-from bifrost import cloudflare_analysis
 from src import config
 from src.models.contracts.editor import FileContentRequest
-from src.models.contracts.workflows import WorkflowValidationRequest, WorkflowValidationResponse
+from src.models.contracts.workflows import (
+    WorkflowValidationRequest,
+    WorkflowValidationResponse,
+)
 from src.routers import files, workflows
 from src.services import file_storage, workflow_validation
+from src.services.execution import cloudflare_analysis_runner
 from src.services.file_storage.models import WriteResult
 
 
 @pytest.mark.parametrize("analyzer_fails", [False, True])
-async def test_editor_diagnostics_are_off_thread_and_advisory(monkeypatch, caplog, analyzer_fails):
+async def test_editor_diagnostics_use_isolated_analysis_and_remain_advisory(monkeypatch, caplog, analyzer_fails):
     source = b"import subprocess\n"
     path = "workflows/example.py"
-    event_thread = get_ident()
-    analyzer = cloudflare_analysis.diagnose_file
+    analyzer = cloudflare_analysis_runner.diagnose_file
 
     async def analyze(normalized_path, content):
-        assert get_ident() != event_thread
         assert (normalized_path, content) == (path, source)
         if analyzer_fails:
             raise RuntimeError("fixture analyzer failure")
@@ -33,7 +33,7 @@ async def test_editor_diagnostics_are_off_thread_and_advisory(monkeypatch, caplo
     monkeypatch.setattr(config, "get_settings", lambda: SimpleNamespace(cloudflare_diagnostics_enabled=True))
     monkeypatch.setattr(files, "authorize_operation", AsyncMock())
     monkeypatch.setattr(files, "_lock_file_mutation", AsyncMock())
-    monkeypatch.setattr(cloudflare_analysis, "diagnose_file", analyze)
+    monkeypatch.setattr(cloudflare_analysis_runner, "diagnose_file", analyze)
     write = AsyncMock(return_value=WriteResult(file_record=None, final_content=source, content_modified=False))
     monkeypatch.setattr(file_storage, "FileStorageService", Mock(return_value=SimpleNamespace(write_file=write)))
 
@@ -84,8 +84,8 @@ async def test_path_only_validation_retains_off_authorization(monkeypatch, enabl
 
 async def test_enabled_validation_preserves_linux_import_error_and_reports_once(monkeypatch):
     _fixture_caller(monkeypatch, enabled=True)
-    scan = AsyncMock(wraps=cloudflare_analysis.diagnose)
-    monkeypatch.setattr(cloudflare_analysis, "diagnose", scan)
+    scan = AsyncMock(wraps=cloudflare_analysis_runner.diagnose)
+    monkeypatch.setattr(cloudflare_analysis_runner, "diagnose", scan)
     request = WorkflowValidationRequest(
         path="workflows/example.py",
         content=(

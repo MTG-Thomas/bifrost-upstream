@@ -9,7 +9,7 @@ export async function canonicalApiFetch(request, props, env, now = Date.now()) {
   if (!Number.isFinite(props?.deadline) || now >= props.deadline)
     return new Response('Attempt capability expired', {status: 410});
   let target;
-  try {target = apiTarget(request.url, props.apiOrigin);}
+  try {target = apiTarget(request.url, props.apiOrigin, {method: request.method});}
   catch {return new Response('API capability denied', {status: 403});}
   const headers = new Headers(request.headers);
   headers.delete('Host');

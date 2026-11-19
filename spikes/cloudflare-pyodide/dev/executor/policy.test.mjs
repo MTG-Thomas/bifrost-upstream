@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import test from 'node:test';
-import {apiTarget, attemptPayload} from './policy.mjs';
+import {apiTarget, attemptPayload, SDK_ROUTE_POLICY} from './policy.mjs';
+
+const id = '11111111-1111-4111-8111-111111111111';
+
+test('the staged gateway policy matches the SDK analyzer policy', () => {
+  const canonical = new URL('../../../../api/bifrost/cloudflare_sdk_routes.json', import.meta.url);
+  assert.deepEqual(SDK_ROUTE_POLICY, JSON.parse(readFileSync(canonical, 'utf8')));
+});
 test('runtime API capability retains a fixed destination and query', () => {
   assert.equal(apiTarget('https://test-api.invalid/api/sdk/modules/a.py?hash=1', 'https://dev.invalid').href,
     'https://dev.invalid/api/sdk/modules/a.py?hash=1');
@@ -29,10 +37,24 @@ test('SDK resource roots used by real workspace workflows are reachable', () => 
   for (const path of ['/api/organizations', '/api/organizations/0192dead-beef', '/api/configs/get',
     '/api/files/write', '/api/integrations', '/api/tables', '/api/tables/docs-file-org-grants/documents/x',
     '/api/events/emit', '/api/forms/submit', '/api/agents', '/api/agent-runs', '/api/sdk/modules/a.py',
-    '/api/roles', '/api/roles/0192dead-beef/users', '/api/users', '/api/users/0192dead-beef',
-    '/auth/refresh']) {
+    '/api/roles', `/api/roles/${id}/users`, '/api/users', `/api/users/${id}`, '/api/users/person@example.test',
+    `/api/platform-jobs/${id}`]) {
     assert.equal(apiTarget(`https://test-api.invalid${path}`, 'https://dev.invalid').href,
       `https://dev.invalid${path}`);
+  }
+});
+test('identity endpoints admit SDK method and path shapes, and jobs admit polling only', () => {
+  for (const [path, method] of [
+    ['/api/users', 'POST'], [`/api/users/${id}`, 'PATCH'], [`/api/roles/${id}/users`, 'POST'], ['/auth/refresh', 'POST'],
+  ]) {
+    assert.equal(apiTarget(`https://test-api.invalid${path}`, 'https://dev.invalid', {method}).pathname, path);
+  }
+  for (const [path, method] of [
+    ['/api/users/bulk', 'PATCH'], [`/api/users/${id}/mfa/reset`, 'POST'],
+    [`/api/users/${id}/role-assignments`, 'PUT'], [`/api/roles/${id}/permissions`, 'GET'],
+    ['/api/platform-jobs', 'GET'], [`/api/platform-jobs/${id}`, 'POST'], [`/api/platform-jobs/${id}/cancel`, 'POST'],
+  ]) {
+    assert.throws(() => apiTarget(`https://test-api.invalid${path}`, 'https://dev.invalid', {method}));
   }
 });
 test('external fetch, control endpoints and origin ambiguity are rejected before effects', () => {

@@ -1,37 +1,83 @@
-// SDK resource roots a workflow child may reach through the gateway. Dispatch
-// and execution-management routes stay out: the parent owns those. Authorization
-// is still the run token's; this is a capability boundary, not the auth gate.
-const CHILD_API_PREFIXES = [
-  '/api/sdk/',
-  '/api/organizations',
-  '/api/roles',
-  '/api/users',
-  '/api/configs',
-  '/api/files',
-  '/api/integrations',
-  '/api/tables',
-  '/api/events',
-  '/api/forms',
-  '/api/agents',
-  '/api/agent-runs',
-];
+// Generated from the SDK route policy by generate-sdk-route-policy.mjs.
+// Kept inline so staged Workers and Workerd fixtures carry the same policy.
+export const SDK_ROUTE_POLICY = {
+  "prefixes": [
+    "/api/sdk/",
+    "/api/organizations",
+    "/api/configs",
+    "/api/files",
+    "/api/integrations",
+    "/api/tables",
+    "/api/events",
+    "/api/forms",
+    "/api/agents",
+    "/api/agent-runs"
+  ],
+  "identifiers": {
+    "uuid": "[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}",
+    "email": "[A-Za-z0-9.!$&'*+=^_~-]+(?:@|%40)[A-Za-z0-9.-]+"
+  },
+  "routes": {
+    "/auth/refresh": [
+      "POST"
+    ],
+    "/api/roles": [
+      "GET",
+      "POST"
+    ],
+    "/api/roles/{uuid}": [
+      "GET",
+      "PATCH",
+      "DELETE"
+    ],
+    "/api/roles/{uuid}/users": [
+      "GET",
+      "POST"
+    ],
+    "/api/roles/{uuid}/forms": [
+      "GET",
+      "POST"
+    ],
+    "/api/users": [
+      "GET",
+      "POST"
+    ],
+    "/api/users/{uuid}": [
+      "GET",
+      "PATCH",
+      "DELETE"
+    ],
+    "/api/users/{email}": [
+      "GET",
+      "PATCH",
+      "DELETE"
+    ],
+    "/api/platform-jobs/{uuid}": [
+      "GET"
+    ]
+  }
+};
+const CHILD_ROUTES = Object.entries(SDK_ROUTE_POLICY.routes).map(([path, methods]) => ({
+  pattern: new RegExp(`^${path.replaceAll(/\{(\w+)\}/g, (_, name) => `(?:${SDK_ROUTE_POLICY.identifiers[name]})`)}$`),
+  methods,
+}));
 
 // Segment-exact prefix match: `/api/tables` admits `/api/tables` and
 // `/api/tables/...`, never `/api/tables-admin`.
-function isChildApiPath(pathname) {
-  return pathname === '/auth/refresh' ||
-    CHILD_API_PREFIXES.some((prefix) =>
+function isChildApiPath(pathname, method) {
+  return CHILD_ROUTES.some((route) => route.methods.includes(method) && route.pattern.test(pathname)) ||
+    SDK_ROUTE_POLICY.prefixes.some((prefix) =>
       pathname === prefix || pathname.startsWith(prefix.endsWith('/') ? prefix : `${prefix}/`));
 }
 
 // `scope: 'all'` admits every /api/ path (and /auth/refresh). It exists for the
 // capability lab only, to separate "the platform cannot" from "this gateway's
 // policy does not"; the default stays the narrow SDK surface above.
-export function apiTarget(url, origin, {scope = 'sdk'} = {}) {
+export function apiTarget(url, origin, {scope = 'sdk', method = 'GET'} = {}) {
   const incoming = new URL(url);
   const allowed = scope === 'all'
     ? incoming.pathname === '/auth/refresh' || incoming.pathname.startsWith('/api/')
-    : isChildApiPath(incoming.pathname);
+    : isChildApiPath(incoming.pathname, method);
   if (incoming.origin !== 'https://test-api.invalid' || !allowed) {
     throw new TypeError('API capability denied');
   }

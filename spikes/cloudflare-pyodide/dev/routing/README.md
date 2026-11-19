@@ -1,9 +1,11 @@
 # Workspace eligibility census
 
 `census.mjs` discovers workflow entries in `.bifrost/workflows.yaml` or scans for
-workflow-shaped Python files. `analyze-file.py` calls the server's
+workflow-shaped Python files. `analyze-file.py` calls the shared
 `cloudflare_analysis.py` over local source. `census-gate.mjs` compares the report
-with a threshold and baseline. Use Node and Python 3.10 or newer.
+with a threshold and baseline. Use Node and Python 3.10 or newer. Before
+Python 3.12 the tokenizer reports each f-string as one token, so the analyzer
+charges those literals by source length.
 
 ```sh
 node --test
@@ -12,8 +14,8 @@ node census.mjs --repo ../../../.. --out out.json
 ```
 
 Set `BIFROST_ANALYZER_PATH` to the directory containing `cloudflare_analysis.py`
-when running outside the Bifrost checkout. The example Actions workflow
-expects a copy of the analyzer from the policy revision being evaluated.
+and `cloudflare_sdk_routes.json` when running outside the Bifrost checkout.
+The example Actions workflow expects these files from the same policy revision.
 Regenerate the baseline when adopting this analyzer. Previous census reports
 describe the earlier experimental build and detection rules.
 
@@ -73,15 +75,17 @@ will make at runtime. The offline census cannot see install overrides or
 shared source awaiting vendoring. Keep full reports local when source paths
 or artifact names are private.
 
-The launcher forwards the Roles and Users SDK paths through the same
-run-credential bridge as other SDK resources. The API checks the original
-run user's permissions and organization reach, and applies the workflow's
-configured powers. These endpoints use the
-existing JSON request and response transport. Workflow dispatch, cancellation,
-and execution management remain parent-owned. The analyzer flags known
-workflow and execution control calls, including raw SDK requests with an
-identifiable control route. Raw API calls with computed routes still need
-review against the gateway allowlist.
+The launcher forwards the Roles and Users SDK method and path shapes
+through the run-credential bridge. The API checks organization reach and
+the original user's permissions, and applies configured workflow powers.
+The gateway also forwards `GET /api/platform-jobs/{id}` for SDK polling.
+The API checks visibility of each job before returning its status. The
+gateway excludes job listing and cancellation, workflow dispatch and
+execution management, and user or role administration beyond the SDK shapes.
+The analyzer flags SDK requests whose paths fall outside the shared policy
+or cannot be resolved to a known route shape. Regenerate the Workerd
+policy after editing the SDK route data with
+`node spikes/cloudflare-pyodide/dev/executor/generate-sdk-route-policy.mjs`.
 
 | Rule ID | Severity | Surfaces | Fix |
 | --- | --- | --- | --- |

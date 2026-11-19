@@ -22,7 +22,6 @@ from bifrost.cloudflare_analysis import (
     POLICY_VERSION,
     AnalysisRejected,
     SourceUnresolved,
-    analyze,
     digest,
 )
 from src.core.database import get_db_context
@@ -34,6 +33,7 @@ from src.models.orm import (
     SolutionFileIndex,
     Workflow,
 )
+from src.services.execution.cloudflare_analysis_runner import analyze
 from src.services.execution.cloudflare_hosts import reviewed_https_allowlist
 from src.services.repo_storage import RepoStorage
 from src.services.solutions.storage import SolutionStorage

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+
 from src.models.orm import Solution
 from src.services.solutions.deploy import (
     SolutionBundle,
@@ -53,14 +54,14 @@ async def test_deploy_publishes_source_generation_only_after_finalize(db_session
 async def test_deploy_defers_advisory_diagnostics_and_scans_shared_module_once(
     db_session, monkeypatch, caplog, mode,
 ):
-    from bifrost import cloudflare_report
     from src import config
+    from src.services import solution_deploy_preflight
 
     monkeypatch.setattr(config, "get_settings", lambda: SimpleNamespace(cloudflare_diagnostics_enabled=True))
-    scan = AsyncMock(wraps=cloudflare_report.diagnose)
+    scan = AsyncMock(wraps=solution_deploy_preflight.diagnose)
     if mode == "failure":
         scan.side_effect = RuntimeError("fixture diagnostic failure")
-    monkeypatch.setattr(cloudflare_report, "diagnose", scan)
+    monkeypatch.setattr(solution_deploy_preflight, "diagnose", scan)
 
     solution = Solution(id=uuid4(), slug=f"diagnostics-{uuid4().hex}", name="Diagnostics fixture")
     db_session.add(solution)

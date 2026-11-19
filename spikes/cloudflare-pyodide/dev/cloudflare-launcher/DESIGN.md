@@ -755,12 +755,21 @@ public literal selector. It counts the operation as an unresolved URL call,
 without granting any host. Imported modules and unproven selectors retain
 the existing refusal.
 Before parsing, analysis limits source to 384 KiB per file and 1 MiB per
-bundle. Files above 128 KiB pass a streaming 75,000-token ceiling before AST
-construction, since dense source can allocate substantial memory before the
-AST node check. Each imported path is loaded once per bundle and a single
-module AST is processed at a time. The 100,000-node ceiling across the
-bundle still applies. Nested scopes also have a 200,000-entry budget for
-active lookup tables. The CPU estimate and analysis I/O timeout still apply.
+bundle. Every file passes a streaming 75,000-weight token guard before AST
+construction. On Python versions before 3.12, this guard also charges
+f-string tokens by source length. Each imported path is loaded once per
+bundle and the node ceiling is 100,000 per bundle. URL resolution stops
+at 4 KiB or 4,096 visited parts and reports an incomplete target. Scope
+inspection budgets 200,000 retained lookup entries and 500,000 copy-work
+entries over the bundle.
+
+Linux API and PlatformJob analysis use a fresh subprocess with one slot per
+parent process. The child caps address space at 128 MiB and CPU time at
+8 seconds soft and 9 seconds hard before it reads source. The parent owns
+authorized source lookup and pin checks, exchanges bounded source and result
+messages, and enforces a 20-second wall deadline that includes admission and
+source reads. A timeout or cancellation terminates and reaps the child.
+Offline SDK analysis uses the same static input and accumulation limits.
 The estimates are static sizing signals. A call site may execute
 many times and CPU varies with inputs. TenantHost and the platform apply the
 actual limits. Inline code, Fast Path and artifact-workspace dispatches are

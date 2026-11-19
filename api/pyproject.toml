@@ -18,6 +18,9 @@ bifrost = "bifrost.cli:main"
 [tool.setuptools.packages.find]
 include = ["bifrost*"]
 
+[tool.setuptools.package-data]
+bifrost = ["cloudflare_sdk_routes.json"]
+
 [tool.pytest.ini_options]
 addopts = "-ra -q --cov=. --cov-report=term-missing"
 testpaths = ["tests"]

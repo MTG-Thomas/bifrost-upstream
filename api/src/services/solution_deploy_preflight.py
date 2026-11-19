@@ -16,6 +16,7 @@ from __future__ import annotations
 import ast
 
 from bifrost.cloudflare_report import ArtifactReport, inspect_bundle
+from src.services.execution.cloudflare_analysis_runner import diagnose
 
 
 async def cloudflare_preflight(
@@ -28,7 +29,7 @@ async def cloudflare_preflight(
         # analyzer's byte cap without converting an entire oversized source.
         return source[:limit + 1].encode() if source is not None else None
 
-    return await inspect_bundle(read, workflows, agents, outbound=outbound)
+    return await inspect_bundle(read, workflows, agents, outbound=outbound, diagnose_source=diagnose)
 
 
 def _source_defines_function(source: str, function_name: str) -> bool:

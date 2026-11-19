@@ -12,7 +12,7 @@ _EXCLUDED_FILES = {
     "_internal.py",  # Platform-only permission checks
     "_logging.py",  # Platform-only logging
 }
-_RUNTIME_DATA_FILES = {"lucide_icon_names.json"}
+_RUNTIME_DATA_FILES = {"cloudflare_sdk_routes.json", "lucide_icon_names.json"}
 
 
 def to_pep440(version: str) -> str:

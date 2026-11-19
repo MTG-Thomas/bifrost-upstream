@@ -40,7 +40,7 @@ export class DevApi extends WorkerEntrypoint {
       return Response.json({phase: 'egress-rejected', reason: 'unlisted', api_calls: []}, {status: 422});
     }
     let target;
-    try { target = apiTarget(request.url, this.env.API_ORIGIN); }
+    try { target = apiTarget(request.url, this.env.API_ORIGIN, {method: request.method}); }
     catch { return new Response('API capability denied', {status: 403}); }
     const headers = injectionHeaders(request.headers, runToken, this.env.DEV_AUTH ?? '');
     const response = await this.env.DEV_API.fetch(new Request(target, new Request(request, {headers, redirect: 'manual'})));
