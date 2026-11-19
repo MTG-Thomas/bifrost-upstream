@@ -154,6 +154,20 @@ test('launcher requires a matching Solution install and entry digest', async () 
   assert.equal(api.calls[0].context.solution_id, INCARNATION);
 });
 
+test('an approved source snapshot alone cannot authorize an inherited artifact workspace', async () => {
+  const api = peer();
+  await connect(api);
+  const payload = workflow();
+  payload.context.artifact_workspace_id = SUBJECT;
+  await api.command('workflow', payload);
+  assert.equal(api.frames().at(-1).error_type, 'ValueError');
+  assert.equal(api.calls.length, 0);
+  delete payload.context.artifact_workspace_id;
+  await api.command('workflow', {...workflow('2'), context: payload.context});
+  await api.finish();
+  assert.equal(api.calls.length, 1);
+});
+
 test('launcher accepts an operator wildcard and refuses a shared-hosting wildcard before entry', async () => {
   const api = peer();
   await connect(api);

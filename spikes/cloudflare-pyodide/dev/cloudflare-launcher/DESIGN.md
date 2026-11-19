@@ -708,6 +708,37 @@ until the ordinary queue deadline.
 | Artifact-workspace dispatch | Enqueue and send exclude `artifact_workspace_id`. | Linux passes the workspace ID to SDK context. Artifact operations run on the platform using execution/workspace authorization and protected storage or provider credentials. The artifact ID does not select Python source. | **Viable with server-verified workspace binding.** Use the underlying workflow approval and independently validate its execution's workspace membership and caller/org authority. Keep storage credentials on the platform. |
 | Fast Path | The external Cloudflare profile advertises Normal `workflow.execute@1`. Fast Path requires its own reserved lane and `workflow.execute@2`. | Linux has exclusive reserved managed slots or explicitly configured static workers, lane-preserving handback, and its normal source and SDK surface. Dedicated admission protects the queue. Startup and SDK/network latency still affect response time. | **Linux-only in this spike.** A Worker implementation needs signed Fast Path capability, provider reservation and warm readiness, exclusive placement, and measured queue-to-entry latency under load. Per-source approval would still apply and grants no entitlement to the reserved lane. |
 
+### Artifact-workspace follow-up
+
+The nearest extension is an approved Normal workflow invoked as an agent
+tool with an inherited artifact workspace. The agent executor selects the
+root ancestor run ID (or its current run ID) and passes it in pending
+execution context. The durable workflow authority identifies the originating
+agent definition and users, but does not bind this execution to that agent
+run or workspace. Current artifact APIs authorize row access using original
+user reach and privileges. In particular, the write service can initialize
+an empty workspace within that user's reach, so success there cannot prove
+the workspace belongs to the invoking run.
+
+Record a server-verified artifact workspace binding during workflow
+acceptance. Derive it from the invoking agent run and its durable ancestry.
+Validate that the agent run, execution owner and target organization agree
+with the existing tool authorization. Store the binding on the execution
+and load it through the workflow runtime credential. At dispatch, compare
+the pending workspace against that binding in addition to the ordinary
+source approval. Forward the workspace in the context and apply the same
+binding to artifact SDK requests for this execution. Keep the existing
+artifact row authorization as an independent check.
+
+The launcher prototype sends the same approved snapshot with and without an
+unbound artifact workspace. The unbound case produces a definitive refusal
+before host entry. The control enters normally. Before enabling this path,
+test a child tool writing and reading one artifact in its ancestor workspace,
+a mismatched workspace in the dispatch and SDK request, and an empty
+workspace owned by a different organization. Include raw bytes or multipart
+input through the Worker gateway and confirm the run token is revoked at
+settlement.
+
 ## Open questions
 
 - [Pool-worker viability](POOL-WORKER-VIABILITY.md) inventories PlatformJobs,
