@@ -457,6 +457,8 @@ async def settle_run(
         data = attempt.data if attempt is not None else {}
         if data.get("settled"):
             return
+        if state == "not_started" and data.get("requests"):
+            state = "uncertain"
         dispatch_id = dispatch_id or (UUID(data["dispatch_id"]) if data else None)
         dispatch = await db.get(WorkDispatch, dispatch_id) if dispatch_id else None
         if dispatch is None or run.status not in {"queued", "running", "cancelling", "cancelled"}:

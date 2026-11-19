@@ -16,6 +16,7 @@ from src.models.orm.execution_workers import ExecutionWorkerClaim
 from src.services.execution import cloudflare_agent
 from src.services.memory_requests import AGENT_RUN_REQUEST_BYTES
 from src.services.worker_pool.claims import PoolClaim
+from src.worker.remote.agent_route import run_timeout_seconds
 from src.worker.remote.protocol import CredentialRouteChanged
 
 
@@ -47,9 +48,10 @@ class CloudflareAgentRoutes:
         self.routes: dict[str, CloudflareAgentRoute] = {}
 
     async def run(self, claim: PoolClaim, generation: int) -> None:
+        seconds = min(cloudflare_agent.ATTEMPT_SECONDS, await run_timeout_seconds(claim.subject_id))
         route = CloudflareAgentRoute(
             claim.subject_id, UUID(claim.message["claim_id"]),
-            datetime.now(UTC) + timedelta(seconds=cloudflare_agent.ATTEMPT_SECONDS), asyncio.Event(),
+            datetime.now(UTC) + timedelta(seconds=seconds), asyncio.Event(),
             str(claim.dispatch_id),
         )
         self.routes[route.id] = route

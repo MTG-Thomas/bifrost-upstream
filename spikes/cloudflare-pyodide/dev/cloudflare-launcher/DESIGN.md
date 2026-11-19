@@ -954,7 +954,7 @@ settlement.
 
 | Handler | Linux dependencies and state | Tools and credentials | Workers budget and contract | Verdict |
 | --- | --- | --- | --- | --- |
-| `agent.run@1` | Linux uses SQLAlchemy/asyncpg to load the run and caller and persist the transcript, usage and terminal. Redis carries cancellation, chat replay and sync results. Pydantic AI owns the Linux model loop. The pinned Workers bundle cannot import asyncpg. A bounded JavaScript loop runs in local workerd with stubbed ports. | The API must resolve the admin provider, enforce caller and tool scope, and atomically accept a workflow execution with its receipt. A private provider Worker would receive one ephemeral command credential. Effective chat tools include built-in artifact tools whenever the profile enables tool calling. | Needs claim-bound turn grants, durable sequenced chat events and a journaled terminal. The loop probe covers one tool receipt and continuation in memory. API persistence, ACK replay, provider cancellation and tool placement still need integrated qualification. | **Linux-only for operator lint and admission.** Treat the Workers loop as a probe. |
+| `agent.run@1` | Linux uses SQLAlchemy/asyncpg to load the run and caller and persist the transcript, usage and terminal. Redis carries cancellation, chat replay and sync results. Pydantic AI owns the Linux model loop. The Workers loop uses the authenticated API control session and requires no SQL or Redis driver. | The API resolves the admin provider, enforces caller and tool scope, and atomically accepts an ordinary workflow execution with its receipt. A private Worker receives the credential per model turn. Tool-capable chat has built-in artifact tools and needs separate qualification. | The autonomous path holds one slot and permits at most two model requests and one workflow tool. CT128 with local workerd and a stub verified success, terminal and tool ACK replay, provider abort, and uncertain settlement on launcher reset. | **Opt-in for manually enrolled autonomous fixtures only.** Keep general-purpose operator lint and chat placement Linux-only. |
 | `agent.summarize@1` | Linux snapshots the completed run's input/output and bounded agent instructions in PostgreSQL, calls the configured Pydantic AI adapter once through its buffered completion interface (the adapter consumes a provider stream), then persists parsed fields, prompt version and AIUsage. Redis supplies usage caching/pubsub. No filesystem or tool dependency. A trusted JS Worker can implement the HTTP completion without the Python provider package closure. | No tools. Use a fixed provider endpoint and an ephemeral key resolved from the Bifrost connection. Keep provider config and keys out of TenantHost and dynamic children. Bind the endpoint and model to the API's selected summary provider and refuse unqualified providers. | One provider request, bounded prompt/response and JSON parse. Use a finite deadline covering dispatch and fetch, an opaque route with claim identity, and the existing journal and ACK. Use `not_started` only before fetch can have begun, `completed` for an observed outcome, and `uncertain` on interruption after entry. The API validates the current claim before committing summary and usage. | First candidate. Scope the spike to one OpenAI-compatible completion transport and manual dev enrollment. |
 | `agent.summarize_backfill@1` | Uses the same single-run compute for each dispatch. PostgreSQL stages and reconciles backfill membership and outcome counters. Redis publishes the same status and usage updates. No files or stream. | Same mediation as live summaries. | Same per-invocation shape. Aggregate requests, cost and rate limiting grow with backfill size. Preserve distinct handler concurrency and live-summary capacity priority. Count terminal outcomes only under the current claim and reconcile backfill totals through the API. | Viable after qualifying live summaries. Keep bulk admission disabled in this spike. |
 
@@ -1118,17 +1118,9 @@ current owner, pool claim and active run, PostgreSQL stores each accepted
 batch and its watermark in the same transaction. Reject gaps and a
 different payload at a committed sequence. Re-ACK an exact duplicate
 without appending text, charging usage or dispatching again. Give committed
-chat events stable IDs and replay from the durable cursor across a lost
-Redis publication or socket reconnect. Assign an existing assistant message
-identity once and reuse it for deltas, transcript finalization and the
-terminal event.
-
-`publish_chat_run_event` generates a fresh event ID and assigns the
-conversation sequence in Redis. Invoking it after an independent PostgreSQL
-cursor commit creates a crash window in which retry can duplicate an event
-or strand it. Workers admission requires a durable projection into the
-existing client replay contract. Qualify commit followed by API process loss
-before publication, and publication followed by loss before ACK.
+autonomous steps stable IDs and serve committed steps through the existing
+run detail read. Partial model text lives in the attempt journal until a
+complete response or an interrupted terminal is committed.
 
 The first inventory after welcome advertises the opaque attempt and the
 last locally acknowledged sequence. The replacement API owner validates the

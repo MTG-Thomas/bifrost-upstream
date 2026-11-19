@@ -547,7 +547,7 @@ async def test_cloudflare_tool_replays_one_atomically_accepted_execution(db, mon
     ))
     hand_off = AsyncMock()
     monkeypatch.setattr(cloudflare_agent, "hand_off_workflow_run", hand_off)
-    request = dict(run_id=run_id, claim_id=claim_id, call_id="call", name="lookup", arguments={})
+    request = {"run_id": run_id, "claim_id": claim_id, "call_id": "call", "name": "lookup", "arguments": {}}
 
     first, replay = await asyncio.gather(
         cloudflare_agent.accept_workflow_tool(**request),
