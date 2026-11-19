@@ -1061,16 +1061,123 @@ SHA-256 `fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5`.
 It establishes the missing driver in this bundle. A mediated agent loop
 would need its own runtime and protocol qualification.
 
-The first mediated slice should resolve the authorized model, prompt,
-history, run mode and budgets under the API's claim. Hand the isolate an
-immutable snapshot and a route-bound broker handle. Send model requests
-through a trusted broker that pins provider and model, limits body and
-stream sizes, and carries no API key in child state. Emit monotonically
-sequenced chunks using the run and claim UUIDs. The API persists each
-accepted chunk and cursor before publishing chat events or acknowledging
-the write. On cancellation or replacement, the API revokes the handle and
-closes the stream. A lost isolate after a streamed chunk or accepted tool
-request settles as uncertain and retains the existing conversation and
-receipts. A workflow tool can then use the same control channel to obtain
-the canonical workflow execution ID through a deduplicated, authorized API
-submission. Durable execution remains with the workflow pool.
+#### Runtime and admission
+
+Use a bounded JavaScript agent loop in the trusted launcher. The API prepares
+the authorized prompt, history, model, run mode, tool schema and budgets.
+The launcher consumes model deltas, assembles a turn, requests the authorized
+tool when needed and drives the continuation. Put provider-specific encoding
+and decoding at the provider boundary. Reuse the API's existing prompt,
+message, tool receipt and usage logic, extracting pure transformations where
+needed. Keep Linux's child entrypoint, wire bytes and persisted behavior
+as the baseline. The Workers loop needs neither a Python driver nor Redis.
+
+Require an API operator opt-in and a launcher's explicit agent protocol
+capability in addition to its existing Cloudflare hello gate. Bind eligibility
+to a reviewed development fixture and the effective model and tool shape.
+Check it in claim selection and again before dispatch. Start with an existing
+conversation and a single text turn, then allow one bound workflow tool and
+one continuation. Keep attachments, knowledge, delegated agents, agentless
+chat, alternate providers, structured output and autonomous triggers outside
+the first qualification. Use one ordinary declared slot for the whole agent
+attempt. The workflow pool admits the tool separately, so the tool fixture
+needs independent workflow capacity while the agent holds its slot.
+
+The API resolves the active admin-configured model profile and its connection
+for each model turn. Qualify the same pinned OpenAI-compatible HTTPS
+chat-completions transport as summaries. The API pins the selected profile
+and model to the attempt and refuses a continuation if configuration changed.
+Pass the key only in the authenticated per-turn command and across the
+launcher's private provider service binding. Keep it out of DO storage,
+snapshots, replay, logs, and TenantHost. The provider Worker enforces fixed
+destination and model, rejects redirects, bounds bytes and time, and closes
+its fetch when the launcher closes the cancellation stream. Run qualification
+with a local stub using the same admin connection resolution path.
+
+#### Attempt journal and stream
+
+Use a PID-less route bound to the run UUID and the durable pool claim UUID.
+The API records a claim-bound attempt and its absolute deadline before send.
+Keep the assigned dispatch available for a proven pre-entry handback. Make
+the transition to effect permission and the handback mutually exclusive
+under the owner, claim and run locks. Before each provider call the API
+durably records a single-use turn grant. A grant lost in transit is
+conservatively treated as possibly used. No secrets go into the journal.
+
+Sequence normalized deltas, completed turns and tool operations independently
+of control socket sequence numbers. Use the same sequence and payload on
+replay, with one unacknowledged batch per route for backpressure. Under the
+current owner, pool claim and active run, PostgreSQL stores each accepted
+batch and its watermark in the same transaction. Reject gaps and a
+different payload at a committed sequence. Re-ACK an exact duplicate
+without appending text, charging usage or dispatching again. Give committed
+chat events stable IDs and replay from the durable cursor across a lost
+Redis publication or socket reconnect. Assign an existing assistant message
+identity once and reuse it for deltas, transcript finalization and the
+terminal event.
+
+The first inventory after welcome advertises the opaque attempt and the
+last locally acknowledged sequence. The replacement API owner validates the
+claim and replies with its committed watermark. The launcher replays its
+outstanding batch and retained terminal without repeating provider or tool
+calls. A reset can recover the journal and terminal but cannot recover an
+open provider stream. Keep the route's slot through the existing terminal
+ACK, issued after fenced settlement. Never accept success before all
+sequences through the terminal watermark have committed.
+
+#### Workflow receipts and cancellation
+
+Send a workflow-tool request over the fenced control channel. Resolve the
+binding from the snapshot, validate arguments, refresh the caller and use
+the same agent, workflow and Solution authorization as Linux. Reconstruct
+organization, acting and original users, lineage and inherited workspace
+from the run on the API. Stage a normal Bifrost workflow execution so its
+own lane and eligibility determine placement. Store the execution ID and
+argument digest under a unique (run, claim, tool-call ID) in the same
+transaction as workflow acceptance. A matching replay reads that receipt.
+A conflicting replay is a protocol error. Hand off after commit, then
+read the canonical execution outcome and use the existing tool result
+shape. The launcher receives the receipt and bounded result, with no
+workflow credential. A child can finish after its agent stops.
+
+The current `execute_agent_workflow_tool` commits through a separate
+dispatch session by way of `execute_tool` and `enqueue_workflow_execution`.
+It cannot atomically bind an attempt's owner fence, cancellation check and
+receipt to that acceptance. A transactional acceptance seam must share
+canonical authorization and staging before the tool case can be enabled.
+`stage_workflow_run` already accepts a caller transaction. Keep its
+transaction separate from waiting for the child result.
+
+Cancellation uses the canonical AgentRun transition. Serialize it with
+granting a turn, accepting a tool and settling the terminal. Reject later
+grants and tool requests, send an idempotent terminate and close the
+provider byte stream. Treat the absolute deadline the same way. Retain
+partial text, known usage and child receipts. A granted model request may
+still reach its destination and an accepted workflow may already have
+effects. An abort or a stop reply does not establish either outcome.
+
+| Attempt state | Required evidence and disposition |
+| --- | --- |
+| `not_started` | No granted provider turn, accepted tool or committed output. Return the original dispatch with its queue age and clear Workers eligibility for that dispatch. A cancelled run settles as cancelled. |
+| `completed` | Observed terminal with all required deltas and tool receipts accepted. Commit the conventional success or failure once. |
+| `uncertain` | A provider grant, accepted tool or committed output exists and the outcome cannot be established. Preserve partial evidence, mark the run failed or cancelled as appropriate, and forbid automatic redispatch. |
+
+#### Persistence and qualification
+
+The API writes ordinary AgentRun status, timestamps, duration, model, token
+and iteration counts, transcript messages and tool records, and AIUsage with
+Linux attribution. Use existing chat event envelopes, run updates, sync
+result shape and post-completion summary eligibility. Only the protocol
+journal and tool deduplication receipt are Workers-specific. A later
+autonomous slice must preserve AgentRunStep records and its different
+terminal/output contract. Title generation, model fallback and compaction
+need their own qualification before admitting runs that require them.
+
+Verify a tool-less run first. In the local Miniflare and CT128 harness, drop
+an ACK after commit and compare the stored trace and provider call count
+after replay. Cancel mid-stream and verify provider abort, partial transcript
+and absence of a continuation. In the one-tool case, replay tool acceptance
+and verify one execution with the expected actor and original-user lineage,
+then verify its result reaches the second model turn. Check Linux records
+against the same scripted provider inputs. Treat this as local runtime
+evidence for that fixture and pinned workerd build.
