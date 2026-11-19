@@ -546,10 +546,11 @@ async def cancel_chat_run(
         )
 
     if run.status == "cancelling":
-        # The worker watches only Redis, and an earlier request's signal may
-        # not have reached it; signal again. cancel_requested_at keeps the
-        # time cancellation was first asked for.
-        await _signal_chat_run_cancel(run.id)
+        from src.services.execution.cloudflare_chat import find_chat_attempt
+
+        # Linux consumes a Redis flag. Workers observe the committed status.
+        if await find_chat_attempt(db, run) is None:
+            await _signal_chat_run_cancel(run.id)
         return ChatRunCancelResponse(run_id=run.id, status="cancelling")
 
     cancel = await request_agent_run_cancel(db, run.id)

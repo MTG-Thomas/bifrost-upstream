@@ -27,6 +27,7 @@ from src.services.durable_impersonation import principal_durable_impersonation
 from src.services.execution.agent_workflow_tools import authorize_bound_workflow_tool
 from src.services.execution.async_executor import _pending_run
 from src.services.execution.cloudflare_chat import (
+    CHAT_UNCERTAIN,
     load_chat_input,
     stage_chat_start,
     stage_chat_terminal,
@@ -546,6 +547,7 @@ async def settle_run(
         if run.status != "cancelled":
             chat = data.get("chat")
             projection_lost = bool(chat and await has_projection_loss(db, claim_id))
+            uncertain_error = CHAT_UNCERTAIN if chat else UNCERTAIN
             if projection_lost:
                 state = "uncertain"
             final_response_committed = (
@@ -559,10 +561,10 @@ async def settle_run(
             cancelled = run.status == "cancelling"
             error_type = result.get("error_type") if isinstance(result.get("error_type"), str) else None
             if cancelled:
-                if final_response_committed:
+                if final_response_committed and not projection_lost:
                     state = "completed"
                 run.status = "cancelled"
-                run.error = "Cancelled by user" if state != "uncertain" else UNCERTAIN
+                run.error = "Cancelled by user" if state != "uncertain" else uncertain_error
             elif success:
                 run.status = "completed"
                 run.error = None
@@ -577,7 +579,7 @@ async def settle_run(
                     "AgentProviderRequestTooLarge": "The next model request exceeds the provider size limit",
                 }
                 run.error = (
-                    UNCERTAIN if state != "completed" or result.get("success")
+                    uncertain_error if state != "completed" or result.get("success")
                     else refusal.get(error_type, "Cloudflare model request failed")
                 )
             run.output = {"text": data.get("text") or None}

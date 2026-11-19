@@ -295,22 +295,25 @@ async def request_agent_run_cancel(db: AsyncSession, run_id: UUID) -> CancelRequ
     current = (
         await db.execute(select(AgentRun.status).where(AgentRun.id == run_id))
     ).scalar_one()
+    chat_outbox = False
+    if current == "cancelling":
+        from src.services.execution.cloudflare_chat import find_chat_attempt
+
+        run = await db.get(AgentRun, run_id)
+        chat_outbox = run is not None and await find_chat_attempt(db, run) is not None
     await db.commit()
-    return CancelRequest(status=current, accepted=current == "cancelling")
+    return CancelRequest(status=current, accepted=current == "cancelling", chat_outbox=chat_outbox)
 
 
 async def _stage_cloudflare_chat_cancel(db: AsyncSession, run_id: UUID) -> bool:
-    from src.models.orm.agent_runs import CloudflareAgentAttempt
-    from src.services.execution.cloudflare_chat import stage_chunk
+    from src.services.execution.cloudflare_chat import find_chat_attempt, stage_chunk
     from src.services.execution.cloudflare_chat_outbox import has_projection_loss
 
     run = await db.get(AgentRun, run_id)
     if run is None or run.conversation_id is None:
         return False
-    attempt = await db.scalar(select(CloudflareAgentAttempt).where(
-        CloudflareAgentAttempt.run_id == run_id,
-    ))
-    if attempt is None or not attempt.data.get("chat"):
+    attempt = await find_chat_attempt(db, run)
+    if attempt is None:
         return False
     if not await has_projection_loss(db, attempt.claim_id):
         data = dict(attempt.data)
@@ -332,6 +335,8 @@ async def announce_ended_agent_run(run_id: UUID, error: str) -> bool:
     already ended is left alone: whoever ended it woke its callers. Returns
     whether this call ended the run.
     """
+    from src.services.execution.cloudflare_chat import stage_interrupted_chat
+
     async with get_db_context() as db:
         if not await fence_remote_owner(db):
             raise ConnectionError("Remote ownership was lost before ending the agent run")
@@ -341,6 +346,7 @@ async def announce_ended_agent_run(run_id: UUID, error: str) -> bool:
         run.status = "cancelled" if run.status == "cancelling" else "failed"
         run.error = error
         run.completed_at = datetime.now(timezone.utc)
+        chat_outbox = await stage_interrupted_chat(db, run)
         await db.commit()
         agent_name = run.agent.name if run.agent is not None else "Unknown"
 
@@ -349,12 +355,13 @@ async def announce_ended_agent_run(run_id: UUID, error: str) -> bool:
         async with get_redis() as redis:
             await redis.lpush(  # pyright: ignore[reportGeneralTypeIssues]
                 result_key,
-                json.dumps({"output": None, "status": run.status, "error": error}),
+                json.dumps({"output": run.output if chat_outbox else None, "status": run.status,
+                            "error": run.error if chat_outbox else error}),
             )
             await redis.expire(result_key, 300)
     except Exception:
         logger.warning("Could not wake the sync caller of an ended agent run", exc_info=True)
-    if run.trigger_type == "chat" and run.conversation_id is not None:
+    if run.trigger_type == "chat" and run.conversation_id is not None and not chat_outbox:
         kind = "cancelled" if run.status == "cancelled" else "error"
         try:
             await publish_chat_run_event(

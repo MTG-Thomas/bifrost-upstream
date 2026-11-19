@@ -315,6 +315,8 @@ def _agent_run_sweep_policy(run: AgentRun, agent: Agent | None) -> tuple[datetim
 
 async def _cleanup_stale_agent_runs(now: datetime) -> dict[str, Any]:
     """Terminalize stale queued/running/cancelling AgentRun rows without replaying them."""
+    from src.services.execution.cloudflare_chat import stage_interrupted_chat
+
     session_factory = get_session_factory()
     updates: list[dict[str, Any]] = []
     results: dict[str, Any] = {
@@ -406,6 +408,7 @@ async def _cleanup_stale_agent_runs(now: datetime) -> dict[str, Any]:
                 run.status = final_status
                 run.error = timeout_reason
                 run.completed_at = now
+                chat_outbox = await stage_interrupted_chat(db, run)
                 updates.append(
                     {
                         "run": run,
@@ -420,6 +423,7 @@ async def _cleanup_stale_agent_runs(now: datetime) -> dict[str, Any]:
                             }
                             if run.trigger_type == "chat"
                             and run.conversation_id is not None
+                            and not chat_outbox
                             else None
                         ),
                     }

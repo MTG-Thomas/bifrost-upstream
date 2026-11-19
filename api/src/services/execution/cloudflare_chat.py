@@ -15,7 +15,7 @@ from src.core.cache import get_shared_redis
 from src.core.database import get_db_context
 from src.models.contracts.agents import ChatContextUsage, ChatStreamChunk
 from src.models.enums import MessageRole
-from src.models.orm.agent_runs import AgentRun
+from src.models.orm.agent_runs import AgentRun, CloudflareAgentAttempt
 from src.models.orm.agents import Agent, Conversation, Message, MessageAttachment
 from src.models.orm.ai_models import AIModelProfile
 from src.models.orm.work_dispatches import WorkDispatch
@@ -24,11 +24,42 @@ from src.services.ai_usage_service import record_ai_usage
 from src.services.agent_router import MENTION_PATTERN
 from src.services.conversation_messages import add_conversation_message
 from src.services.execution.agent_helpers import build_agent_system_prompt
-from src.services.execution.cloudflare_chat_outbox import stage_chat_chunk
+from src.services.execution.cloudflare_chat_outbox import has_projection_loss, stage_chat_chunk
 from src.services.execution.cloudflare_summary import _eligible_profile
 from src.services.model_capabilities import should_offer_tool_calling
 from src.services.model_catalog import get_model_catalog
 from src.services.model_pricing import config_context_window
+
+CHAT_UNCERTAIN = "The model may already have run. Check the saved conversation before sending again."
+
+
+async def find_chat_attempt(db: AsyncSession, run: AgentRun) -> CloudflareAgentAttempt | None:
+    if run.trigger_type != "chat" or run.conversation_id is None:
+        return None
+    return await db.scalar(select(CloudflareAgentAttempt).where(
+        CloudflareAgentAttempt.run_id == run.id,
+        CloudflareAgentAttempt.data.has_key("chat"),  # noqa: W601 - PostgreSQL JSONB membership
+    ))
+
+
+async def stage_interrupted_chat(db: AsyncSession, run: AgentRun) -> bool:
+    """Preserve committed text and order the terminal after all pending deltas."""
+    attempt = await find_chat_attempt(db, run)
+    if attempt is None:
+        return False
+    data = dict(attempt.data)
+    assert run.completed_at is not None
+    started = run.started_at or run.completed_at
+    run.duration_ms = int((run.completed_at - started).total_seconds() * 1000)
+    run.llm_model = data.get("model")
+    if data.get("requests"):
+        run.error = CHAT_UNCERTAIN
+    await stage_chat_terminal(
+        db, run, attempt.claim_id, data,
+        lost=await has_projection_loss(db, attempt.claim_id), uncertain=bool(data.get("requests")),
+    )
+    attempt.data = {**data, "settled": True, "attempt_state": "uncertain" if data.get("requests") else "not_started"}
+    return True
 
 
 @dataclass(frozen=True)

@@ -207,8 +207,10 @@ IDENTITY_MODELS: set[str] = {
     "HomeCollection",
     "Execution",
     "ExecutionMetricsDaily",
-    # A revision is identified by its digest and workflow. The org is an
-    # approval-time owner witness and never participates in name resolution.
+    # Workflow approval history is selected by workflow UUID, or by exact
+    # workflow UUID and revision digest. organization_id is a historical
+    # owner witness checked for equality with that workflow's current owner.
+    # There is no lookup by name or org-to-global cascade.
     "CloudflareApproval",
     "WorkflowROIDaily",
     # Rollup of deleted runs by (day, org, workflow, status): aggregated
