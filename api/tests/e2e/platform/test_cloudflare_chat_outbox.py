@@ -1,5 +1,6 @@
 """Exercise PostgreSQL and Redis at the outbox transaction boundaries."""
 
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -11,10 +12,14 @@ from src.core.cache.redis_client import get_redis
 from src.core.pubsub import publish_chat_run_event, replay_chat_run_events
 from src.models.contracts.agents import ChatStreamChunk
 from src.models.orm.agent_runs import AgentRun, CloudflareAgentAttempt, CloudflareChatEvent
-from src.models.orm.agents import Conversation
+from src.models.orm.agents import Conversation, Message
 from src.models.orm.users import User
+from src.services.execution.agent_run_service import announce_ended_agent_run, request_agent_run_cancel
+from src.services.execution.cloudflare_chat import CHAT_UNCERTAIN
 from src.services.execution.cloudflare_chat_outbox import (
     discard_receipts,
+    fail_settled_runs_with_projection_loss,
+    prune_settled_events,
     publish_one,
     receipt_key,
     stage_chat_chunk,
@@ -194,3 +199,72 @@ async def test_publishers_exclude_each_other_until_receipt_commits(attempt, asyn
         await second.commit()
         assert not await publish_one(second)
     assert [event["sequence"] for event in await replay_chat_run_events(conversation_id)] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_settled_projection_loss_fails_run_and_discards_late_rows(attempt, db_session):
+    conversation_id, run_id, claim_id = attempt
+    await _stage_delta(db_session, attempt, 1, "one")
+    await db_session.commit()
+    assert await publish_one(db_session)
+    await db_session.commit()
+    row = await db_session.scalar(select(CloudflareChatEvent).where(CloudflareChatEvent.claim_id == claim_id))
+    async with get_redis() as redis:
+        assert await redis.delete(receipt_key(row))
+    assert await publish_one(db_session)
+    await db_session.commit()
+    await _stage_delta(db_session, attempt, 2, "staged during loss detection")
+    run = await db_session.get(AgentRun, run_id)
+    run.status = "completed"
+    run.output = {"text": "one"}
+    journal = await db_session.get(CloudflareAgentAttempt, claim_id)
+    journal.data = {**journal.data, "settled": True}
+    await db_session.commit()
+    assert await publish_one(db_session)
+    await db_session.commit()
+    await fail_settled_runs_with_projection_loss()
+    await db_session.refresh(run)
+    await db_session.refresh(journal)
+    assert run.status == "failed"
+    assert run.output == {"text": "one", "partial": True}
+    assert journal.data["attempt_state"] == "uncertain"
+    assert [event["sequence"] for event in await replay_chat_run_events(conversation_id)] == [1]
+    await discard_receipts(db_session)
+    rows = (await db_session.scalars(select(CloudflareChatEvent).where(
+        CloudflareChatEvent.claim_id == claim_id,
+    ))).all()
+    assert len(rows) == 2 and all(row.projection_lost for row in rows)
+    for row in rows:
+        row.created_at = datetime.now(UTC) - timedelta(days=3)
+    await db_session.flush()
+    await prune_settled_events(db_session)
+    await db_session.commit()
+    assert not await db_session.scalar(select(CloudflareChatEvent.id).where(CloudflareChatEvent.claim_id == claim_id))
+
+
+@pytest.mark.asyncio
+async def test_executor_loss_keeps_partial_and_repeated_cancel_uses_outbox(attempt, db_session):
+    conversation_id, run_id, claim_id = attempt
+    run = await db_session.get(AgentRun, run_id)
+    run.status = "running"
+    journal = await db_session.get(CloudflareAgentAttempt, claim_id)
+    assistant_id = uuid4()
+    journal.data = {
+        **journal.data, "text": "partial", "requests": {"1": "grant"},
+        "chat": {**journal.data["chat"], "assistant_id": str(assistant_id), "sequence": 1},
+    }
+    await _stage_delta(db_session, attempt, 1, "partial")
+    await db_session.commit()
+    assert (await request_agent_run_cancel(db_session, run_id)).chat_outbox
+    assert (await request_agent_run_cancel(db_session, run_id)).chat_outbox
+    assert await announce_ended_agent_run(run_id, "worker stopped")
+    await db_session.refresh(run)
+    assert run.status == "cancelled" and run.error == CHAT_UNCERTAIN
+    assert (await db_session.get(Message, assistant_id)).content == "partial"
+    assert [event["kind"] for event in await replay_chat_run_events(conversation_id)] == ["run_status"]
+    for _ in range(6):
+        assert await publish_one(db_session)
+        await db_session.commit()
+    assert [event["kind"] for event in await replay_chat_run_events(conversation_id)] == [
+        "run_status", "delta", "run_status", "cancelled",
+    ]

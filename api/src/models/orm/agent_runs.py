@@ -213,8 +213,15 @@ class CloudflareChatEvent(Base):
     __table_args__ = (
         UniqueConstraint("claim_id", "chunk_sequence"),
         Index("ix_cf_chat_outbox_pending", "conversation_id", "id",
-              postgresql_where=text("redis_sequence IS NULL AND NOT projection_lost")),
-        Index("ix_cf_chat_outbox_history", "conversation_id", "redis_sequence"),
+              postgresql_where=text("redis_sequence IS NULL AND projection_lost IS FALSE")),
+        Index("ix_cf_chat_outbox_history", "claim_id", "redis_sequence"),
+        Index("ix_cf_chat_outbox_lost", "claim_id", postgresql_where=text("projection_lost IS TRUE")),
+        Index("ix_cf_chat_outbox_receipts", "id", postgresql_where=text(
+            "redis_floor IS NOT NULL AND (redis_sequence IS NOT NULL OR projection_lost IS TRUE)",
+        )),
+        Index("ix_cf_chat_outbox_prune", "created_at", postgresql_where=text(
+            "redis_floor IS NULL AND (redis_sequence IS NOT NULL OR projection_lost IS TRUE)",
+        )),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -223,6 +230,7 @@ class CloudflareChatEvent(Base):
     chunk_sequence: Mapped[int]
     event_id: Mapped[UUID]
     envelope: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
     redis_floor: Mapped[int | None] = mapped_column(BigInteger)
     redis_sequence: Mapped[int | None] = mapped_column(BigInteger)
     projection_lost: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))

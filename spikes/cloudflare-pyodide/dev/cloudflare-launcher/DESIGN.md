@@ -1363,11 +1363,21 @@ that would generate a title, and tool-bearing history also stay on Linux.
 
 Redis projection loss has the same underlying limitation as Linux. Both
 use the same expiring Redis stream and counter, and a client can retain an
-older, higher cursor after those keys disappear. Workers stop projecting
-when an armed receipt is missing, projection keys disagree, or the counter
-is below the committed floor. The attempt follows the existing handback
-or uncertain rules. A future shared fix would persist ordering and replay
-state for all chat writers and qualify a shared recovery contract.
+older, higher cursor after those keys disappear. Each Workers claim starts
+from its queued event and its own committed floor, so ordinary expiry between
+turns permits a new Redis sequence. Workers stop projecting when an armed
+receipt is missing, projection keys disagree, or the counter falls below the
+active claim's floor. Publishing a terminal to that stream would require
+inventing its sequence and can be ignored by clients retaining a higher
+cursor. The terminal and partial message are available from conversation
+state on refresh or reconnect. A connected client can remain stale until it
+hydrates that state. A future shared fix would persist ordering and replay
+state for both writers and qualify a shared recovery contract.
+
+The publisher wakes on committed event hints and sweeps every 15 seconds
+when idle. Receipt keys expire after 48 hours. A bounded cleanup drops
+projected or lost rows after two days once the attempt settles and its
+receipt has been discarded.
 
 `chat-outbox-protocol.test.mjs` models the crash windows in memory. The
 PostgreSQL and Redis tests exercise transaction rollback, retry after Redis

@@ -5,9 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.cache.keys import chat_run_events_stream_key, chat_run_events_version_key
@@ -17,8 +20,16 @@ from src.core.pubsub import chat_run_event_envelope, publish_agent_run_update
 from src.models.contracts.agents import ChatStreamChunk
 from src.models.orm.agent_runs import AgentRun, CloudflareAgentAttempt, CloudflareChatEvent
 from src.models.orm.agents import Conversation
+from src.services.work_dispatch import (
+    listen_for_pool_wake,
+    wait_for_next_pass,
+    wake_pool_workers_after_commit,
+)
 
 logger = logging.getLogger(__name__)
+_WAKE_CHAT_OUTBOX = "cloudflare_chat_outbox"
+_RECEIPT_TTL_SECONDS = 172800
+_OUTBOX_RETENTION = timedelta(days=2)
 
 # Arm a per-event receipt before publication and commit the observed counter
 # in PostgreSQL. Once armed, a missing receipt is evidence of projection loss,
@@ -52,7 +63,7 @@ if stream_type == 'stream' then
 end
 local receipt = redis.call('GET', KEYS[3])
 if ARGV[1] == 'arm' then
-    if not receipt then redis.call('SET', KEYS[3], 'armed') end
+    if not receipt then redis.call('SET', KEYS[3], 'armed', 'EX', ARGV[5]) end
     return counter
 end
 if not receipt then return -1 end
@@ -72,7 +83,7 @@ redis.call(
 )
 redis.call('EXPIRE', KEYS[1], 86400)
 redis.call('EXPIRE', KEYS[2], 86400)
-redis.call('SET', KEYS[3], tostring(sequence))
+redis.call('SET', KEYS[3], tostring(sequence), 'EX', ARGV[5])
 redis.call('PUBLISH', ARGV[4], encoded)
 return sequence
 """
@@ -93,6 +104,7 @@ def stage_chat_chunk(
         claim_id=claim_id, conversation_id=conversation_id, chunk_sequence=sequence, event_id=event_id,
         envelope=chat_run_event_envelope(conversation_id, run_id, chunk.type, status, chunk, event_id=event_id),
     ))
+    wake_pool_workers_after_commit(db, _WAKE_CHAT_OUTBOX)
 
 
 def receipt_key(row: CloudflareChatEvent) -> str:
@@ -106,7 +118,7 @@ async def project(row: CloudflareChatEvent, floor: int) -> int:
             _PROJECT, 3, chat_run_events_stream_key(conversation_id),
             chat_run_events_version_key(conversation_id), receipt_key(row),
             "arm" if row.redis_floor is None else "publish", str(floor),
-            json.dumps(row.envelope), f"bifrost:chat:{conversation_id}",
+            json.dumps(row.envelope), f"bifrost:chat:{conversation_id}", str(_RECEIPT_TTL_SECONDS),
         )
     return int(result)
 
@@ -171,6 +183,19 @@ async def discard_receipts(db: AsyncSession) -> None:
         row.redis_floor = None
 
 
+async def prune_settled_events(db: AsyncSession) -> None:
+    expired = select(CloudflareChatEvent.id).where(
+        CloudflareChatEvent.created_at < datetime.now(UTC) - _OUTBOX_RETENTION,
+        CloudflareChatEvent.redis_floor.is_(None),
+        CloudflareChatEvent.redis_sequence.is_not(None) | CloudflareChatEvent.projection_lost.is_(True),
+        select(CloudflareAgentAttempt.claim_id).where(
+            CloudflareAgentAttempt.claim_id == CloudflareChatEvent.claim_id,
+            CloudflareAgentAttempt.data.contains({"settled": True}),
+        ).exists(),
+    ).order_by(CloudflareChatEvent.created_at).limit(500).with_for_update(skip_locked=True)
+    await db.execute(delete(CloudflareChatEvent).where(CloudflareChatEvent.id.in_(expired)))
+
+
 async def fail_settled_runs_with_projection_loss() -> None:
     """Catch loss detected after the terminal and its outbox row committed."""
     async with get_db_context() as db:
@@ -197,20 +222,35 @@ async def fail_settled_runs_with_projection_loss() -> None:
 
 
 async def run_publisher(stop: asyncio.Event) -> None:
+    from src.config import get_settings
     from src.scheduler.control import wait_or_stop
 
-    while not stop.is_set():
-        try:
-            published = False
-            for _ in range(100):
+    wake = asyncio.Event()
+    listener = asyncio.create_task(listen_for_pool_wake(get_settings().redis_url, {_WAKE_CHAT_OUTBOX: wake}))
+    maintenance_due = 0.0
+    try:
+        while not stop.is_set():
+            started = time.monotonic()
+            try:
+                for _ in range(100):
+                    async with get_db_context() as db:
+                        if not await publish_one(db):
+                            break
+                else:
+                    wake.set()
+                # A preceding publisher may have crashed after marking loss.
+                await fail_settled_runs_with_projection_loss()
                 async with get_db_context() as db:
-                    if not await publish_one(db):
-                        break
-                    published = True
-            # A preceding publisher may have crashed after marking loss.
-            await fail_settled_runs_with_projection_loss()
-            async with get_db_context() as db:
-                await discard_receipts(db)
-        except (TimeoutError, CacheError):
-            logger.warning("Cloudflare chat event publishing will retry", exc_info=True)
-        await wait_or_stop(stop, 0.2 if published else 0.5)
+                    await discard_receipts(db)
+                    if started >= maintenance_due:
+                        await prune_settled_events(db)
+                if started >= maintenance_due:
+                    maintenance_due = started + 60
+            except (TimeoutError, CacheError, SQLAlchemyError):
+                logger.warning("Cloudflare chat event publishing will retry", exc_info=True)
+                await wait_or_stop(stop, 5)
+                continue
+            await wait_for_next_pass(stop, wake, since=started, spacing=0.1, sweep=15)
+    finally:
+        listener.cancel()
+        await asyncio.gather(listener, return_exceptions=True)
