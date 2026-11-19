@@ -34,7 +34,11 @@ async def attempt(db_session):
     run = AgentRun(trigger_type="chat", conversation_id=conversation.id)
     db_session.add(run)
     await db_session.flush()
-    attempt = CloudflareAgentAttempt(claim_id=uuid4(), run_id=run.id, data={"events": []})
+    queued = await publish_chat_run_event(conversation.id, run.id, "run_status", "queued",
+                                          ChatStreamChunk(type="run_status", run_status="queued"))
+    attempt = CloudflareAgentAttempt(
+        claim_id=uuid4(), run_id=run.id, data={"events": [], "chat": {"queued_sequence": queued["sequence"]}},
+    )
     db_session.add(attempt)
     await db_session.commit()
     user_id, conversation_id, run_id, claim_id = user.id, conversation.id, run.id, attempt.claim_id
@@ -59,7 +63,7 @@ async def attempt(db_session):
 async def _stage_delta(db, attempt, sequence, content):
     conversation_id, run_id, claim_id = attempt
     journal = await db.get(CloudflareAgentAttempt, claim_id)
-    journal.data = {"events": [*journal.data["events"], content]}
+    journal.data = {**journal.data, "events": [*journal.data["events"], content]}
     stage_chat_chunk(db, conversation_id, run_id, claim_id, sequence, "running",
                      ChatStreamChunk(type="delta", content=content))
 
@@ -72,15 +76,13 @@ async def test_outbox_recovers_commits_and_reuses_redis_sequence(attempt, async_
         await db.rollback()
     async with async_session_factory() as db:
         journal = await db.get(CloudflareAgentAttempt, claim_id)
-        assert journal.data == {"events": []}
+        assert journal.data["events"] == []
         assert not await publish_one(db)
         await _stage_delta(db, attempt, 1, "one")
         await _stage_delta(db, attempt, 2, "two")
         await db.commit()
 
     # A new publisher observes the durable rows after the producer stopped.
-    await publish_chat_run_event(conversation_id, run_id, "run_status", "running",
-                                 ChatStreamChunk(type="run_status", run_status="running"))
     async with async_session_factory() as db:
         assert await publish_one(db)  # Arm the receipt.
         await db.commit()
@@ -129,4 +131,66 @@ async def test_outbox_refuses_to_guess_after_redis_receipt_loss(attempt, db_sess
     assert row.projection_lost and row.redis_sequence is None
     assert not await publish_one(db_session)
     events = await replay_chat_run_events(conversation_id)
-    assert [event["sequence"] for event in events] == [1]
+    assert [event["sequence"] for event in events] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_new_claim_can_publish_after_normal_expiry(attempt, db_session):
+    conversation_id, _, _ = attempt
+    await _stage_delta(db_session, attempt, 1, "old")
+    await db_session.commit()
+    for _ in range(2):
+        assert await publish_one(db_session)
+        await db_session.commit()
+    await discard_receipts(db_session)
+    await db_session.commit()
+    async with get_redis() as redis:
+        for key in (chat_run_events_stream_key(str(conversation_id)), chat_run_events_version_key(str(conversation_id))):
+            assert await redis.expire(key, 0)
+    run = AgentRun(trigger_type="chat", conversation_id=conversation_id)
+    db_session.add(run)
+    await db_session.flush()
+    run_id, claim_id = run.id, uuid4()
+    try:
+        queued = await publish_chat_run_event(conversation_id, run_id, "run_status", "queued",
+                                              ChatStreamChunk(type="run_status", run_status="queued"))
+        assert queued["sequence"] == 1
+        db_session.add(CloudflareAgentAttempt(
+            run_id=run_id, claim_id=claim_id, data={"events": [], "chat": {"queued_sequence": 1}},
+        ))
+        await db_session.flush()
+        await _stage_delta(db_session, (conversation_id, run_id, claim_id), 1, "new")
+        await db_session.commit()
+        for _ in range(2):
+            assert await publish_one(db_session)
+            await db_session.commit()
+        await discard_receipts(db_session)
+        await db_session.commit()
+        events = await replay_chat_run_events(conversation_id)
+        assert [(event["sequence"], event["payload"].get("content")) for event in events] == [
+            (1, None), (2, "new"),
+        ]
+    finally:
+        await db_session.rollback()
+        await db_session.execute(delete(AgentRun).where(AgentRun.id == run_id))
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_publishers_exclude_each_other_until_receipt_commits(attempt, async_session_factory):
+    conversation_id, _, _ = attempt
+    async with async_session_factory() as first, async_session_factory() as second:
+        await _stage_delta(first, attempt, 1, "one")
+        await first.commit()
+        assert await publish_one(first)
+        await first.commit()
+        assert await publish_one(first)
+        # Redis has the event, but the first transaction still holds the
+        # conversation lock and its publish receipt is not committed.
+        assert not await publish_one(second)
+        await second.commit()
+        await first.commit()
+        await discard_receipts(second)
+        await second.commit()
+        assert not await publish_one(second)
+    assert [event["sequence"] for event in await replay_chat_run_events(conversation_id)] == [1, 2]

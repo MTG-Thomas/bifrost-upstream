@@ -121,7 +121,7 @@ async def publish_one(db: AsyncSession) -> bool:
         ).exists())
         .order_by(Conversation.id)
         .limit(1)
-        .with_for_update(of=Conversation, skip_locked=True, key_share=True)
+        .with_for_update(of=Conversation, skip_locked=True)
     )
     if conversation_id is None:
         return False
@@ -130,13 +130,15 @@ async def publish_one(db: AsyncSession) -> bool:
     ).order_by(CloudflareChatEvent.id).limit(1))
     if row is None:
         return False
+    # A previous turn may belong to a Redis stream that expired normally.
+    lost = await has_projection_loss(db, row.claim_id)
     high_water = await db.scalar(select(func.max(CloudflareChatEvent.redis_sequence)).where(
-        CloudflareChatEvent.conversation_id == conversation_id,
+        CloudflareChatEvent.claim_id == row.claim_id,
     ))
     queued = await db.scalar(select(CloudflareAgentAttempt.data["chat"]["queued_sequence"].as_integer()).where(
         CloudflareAgentAttempt.claim_id == row.claim_id,
     ))
-    result = await project(row, max(high_water or 0, queued or 0, row.redis_floor or 0))
+    result = -1 if lost else await project(row, max(high_water or 0, queued or 0, row.redis_floor or 0))
     if result < 0:
         await db.execute(update(CloudflareChatEvent).where(
             CloudflareChatEvent.claim_id == row.claim_id, *pending,
