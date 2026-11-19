@@ -447,7 +447,7 @@ async def get_sdk_agent_run(
     steps_response: list[AgentRunStepResponse] = []
     is_in_progress = run.status in ("queued", "running", "cancelling")
 
-    if is_in_progress:
+    if is_in_progress and not run.steps:
         # Read from Redis Stream (steps are uncommitted in DB during execution)
         try:
             async with get_redis() as r:

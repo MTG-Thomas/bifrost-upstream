@@ -985,6 +985,7 @@ class ApiExecutor(PoolWorker):
                         "terminal_routes": [entry for entry in terminals if not is_autonomous(entry)],
                     }
                 summaries = self.bridge.summaries
+                adopted: list[SummaryRoute] = []
                 if summaries is not None:
                     def is_summary(entry: Any) -> bool:
                         return isinstance(entry, dict) and entry.get("kind") == "agent_summary"
@@ -1446,7 +1447,7 @@ class RemoteControlHost:
             credential_protocol = hello_credential_protocol(initial)
             if cloudflare:
                 # Negotiation filters unsupported handlers. Check the full advertisement.
-                handlers = [list(CLOUDFLARE_WORKFLOW_HANDLER)]
+                handlers: list[list[str | int]] = [list(CLOUDFLARE_WORKFLOW_HANDLER)]
                 advertised = initial.get("handlers")
                 from src.services.execution.cloudflare_summary import summary_endpoint
 

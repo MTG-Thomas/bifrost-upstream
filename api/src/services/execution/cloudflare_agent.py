@@ -233,7 +233,7 @@ async def accept_workflow_tool(
             if (receipt["call_id"], receipt["arguments_sha256"]) != (call_id, digest):
                 raise ValueError("Conflicting Cloudflare agent tool replay")
             return UUID(receipt["execution_id"])
-        if run.status != "running":
+        if run.status != "running" or datetime.now(UTC) >= datetime.fromisoformat(attempt.data["deadline"]):
             raise ValueError("Cloudflare agent cannot start a tool")
         principal = await load_runtime_principal(db, {"credential_kind": "agent_run", "sub": str(run_id)})
         if principal is None:
@@ -367,7 +367,7 @@ async def commit_event(run_id: UUID, claim_id: UUID, event: dict[str, Any]) -> d
         data = dict(attempt.data)
         sequence, digest, replay = _event_receipt(data, event)
         if replay:
-            receipt = {"sequence": sequence}
+            receipt: dict[str, Any] = {"sequence": sequence}
             if child is not None:
                 receipt["execution_id"] = str(child[0])
             return receipt
@@ -410,6 +410,7 @@ async def commit_event(run_id: UUID, claim_id: UUID, event: dict[str, Any]) -> d
                 if any(type(value) is not int or not 0 <= value <= 1_000_000 for value in usage.values()):
                     raise ValueError("Invalid agent provider usage")
                 call = event.get("toolCall")
+                tool_calls: list[dict[str, Any]] = []
                 if reason == "tool_calls":
                     if (
                         turn != 1 or not data.get("tool") or not isinstance(call, dict)
@@ -421,11 +422,12 @@ async def commit_event(run_id: UUID, claim_id: UUID, event: dict[str, Any]) -> d
                         raise ValueError("Tool arguments must be a JSON object")
                     data["model_tool"] = {"id": call["id"], "name": call["name"], "arguments": arguments}
                     data["tool_text"] = data["text"]
+                    tool_calls.append({"name": call["name"], "arguments": arguments})
                 tokens = usage["input_tokens"] + usage["output_tokens"]
                 run.tokens_used += tokens
                 _step(db, run, data, "llm_response", {
                     "content": data["text"][:20000],
-                    "tool_calls": [{"name": call["name"], "arguments": arguments}] if reason == "tool_calls" else [],
+                    "tool_calls": tool_calls,
                     "finish_reason": {"tool_calls": "tool_call"}.get(reason, reason),
                     "usage": {**usage, "provider_cost": None},
                 }, tokens)
@@ -486,9 +488,10 @@ async def settle_run(
             )
             run.output = {"text": data.get("text") or None}
             run.llm_model = data.get("model")
-            run.completed_at = datetime.now(UTC)
-            start = run.started_at or run.completed_at
-            run.duration_ms = int((run.completed_at - start).total_seconds() * 1000)
+            now = datetime.now(UTC)
+            run.completed_at = now
+            start = run.started_at or now
+            run.duration_ms = int((now - start).total_seconds() * 1000)
             if cancelled and attempt is not None:
                 _step(db, run, data, "cancelled", {"reason": run.error, "iterations_used": run.iterations_used})
             if run.status == "completed":
