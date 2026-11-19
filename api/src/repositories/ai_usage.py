@@ -386,7 +386,7 @@ class AIUsageRepository(BaseRepository[AIUsage]):
             AIUsage.model,
             func.sum(AIUsage.input_tokens).label("input_tokens"),
             func.sum(AIUsage.output_tokens).label("output_tokens"),
-            func.sum(AIUsage.cache_read_tokens).label("cache_read_tokens"),
+            func.coalesce(func.sum(AIUsage.cache_read_tokens), 0).label("cache_read_tokens"),
             func.sum(AIUsage.cache_write_tokens).label("cache_write_tokens"),
             func.coalesce(func.sum(AIUsage.provider_cost), Decimal("0")).label("provider_cost"),
             func.coalesce(func.sum(AIUsage.cost), Decimal("0")).label("cost"),
