@@ -509,6 +509,61 @@ async def test_cloudflare_agent_claim_requires_allowlisted_autonomous_run(db) ->
     assert UUID(claim.message["claim_id"])
 
 
+async def test_cloudflare_tool_replays_one_atomically_accepted_execution(db, monkeypatch) -> None:
+    from src.models.orm.agent_runs import CloudflareAgentAttempt
+    from src.models.orm.agents import Agent
+    from src.services.execution import cloudflare_agent
+
+    run_id, claim_id, agent_id, workflow_id = uuid4(), uuid4(), uuid4(), uuid4()
+    async with db.context() as session:
+        workflow = Workflow(
+            id=workflow_id, name=f"lookup-{workflow_id}", function_name="lookup",
+            path="workflows/fixture.py", type="tool",
+        )
+        agent = Agent(id=agent_id, name="Tool fixture", system_prompt="Fixture", created_by="unit")
+        session.add_all([agent, workflow])
+        await session.flush()
+        session.add(AgentRun(id=run_id, agent_id=agent_id, trigger_type="manual", status="running"))
+        await session.flush()
+        session.add(CloudflareAgentAttempt(claim_id=claim_id, run_id=run_id, data={
+            "tool": {"name": "lookup", "workflow_id": str(workflow_id)},
+        }))
+    async def lock_run(session, subject, _claim):
+        return await session.get(AgentRun, subject, with_for_update={"of": AgentRun})
+
+    principal = SimpleNamespace(
+        user_id=UUID("00000000-0000-0000-0000-000000000001"), name="Fixture", email="fixture@example.invalid",
+        is_superuser=False, impersonated_by_user_id=None, impersonation_session_id=None,
+    )
+    caller = SimpleNamespace(principal=principal)
+    monkeypatch.setattr(cloudflare_agent, "get_db_context", db.context)
+    monkeypatch.setattr(cloudflare_agent, "lock_attempt_run", lock_run)
+    monkeypatch.setattr(cloudflare_agent, "load_runtime_principal", AsyncMock(return_value=principal))
+    monkeypatch.setattr(cloudflare_agent, "load_caller", AsyncMock(return_value=caller))
+    monkeypatch.setattr(cloudflare_agent, "principal_lineage", AsyncMock(return_value=None))
+    monkeypatch.setattr(cloudflare_agent, "authorize_bound_workflow_tool", AsyncMock(
+        return_value=(agent, workflow, caller, None),
+    ))
+    hand_off = AsyncMock()
+    monkeypatch.setattr(cloudflare_agent, "hand_off_workflow_run", hand_off)
+    request = dict(run_id=run_id, claim_id=claim_id, call_id="call", name="lookup", arguments={})
+
+    first, replay = await asyncio.gather(
+        cloudflare_agent.accept_workflow_tool(**request),
+        cloudflare_agent.accept_workflow_tool(**request),
+    )
+    assert first == replay
+    hand_off.assert_awaited_once()
+    async with db.context() as session:
+        child = await session.get(Execution, first)
+        assert child is not None and child.workflow_id == workflow_id
+        assert child.agent_id == agent_id
+        work = (await session.scalars(select(WorkDispatch).where(WorkDispatch.subject_id == first))).one()
+        assert work.payload["artifact_workspace_id"] == str(run_id)
+    with pytest.raises(ValueError, match="Conflicting"):
+        await cloudflare_agent.accept_workflow_tool(**{**request, "arguments": {"changed": True}})
+
+
 async def test_cloudflare_claims_distinct_tenants_with_per_slot_limits(db) -> None:
     other_tenants = [uuid4(), uuid4()]
     async with db.context() as session:

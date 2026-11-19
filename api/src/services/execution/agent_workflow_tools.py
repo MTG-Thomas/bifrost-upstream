@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.scope_resolver import shared_read_organization
 from src.models.orm.agents import Agent, AgentTool
@@ -39,6 +40,76 @@ def workflow_failure_receipt(response: "WorkflowExecutionResponse") -> dict[str,
     }
 
 
+async def authorize_bound_workflow_tool(
+    db: AsyncSession, agent_id: UUID | str, workflow_id: UUID | str, caller: Caller,
+) -> tuple[Agent, Workflow, Caller, UUID | None]:
+    """Resolve the workflow and enforce the canonical agent tool permissions."""
+    from src.services.agent_write_policy import can_read_agent
+    from src.services.solution_scope import check_inbound_allowed, solution_allows_global
+
+    try:
+        agent_uuid = UUID(str(agent_id))
+        workflow_uuid = UUID(str(workflow_id))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise AgentWorkflowAuthorizationError("Workflow tool identity is invalid") from exc
+
+    refreshed = await refresh_caller(db, caller)
+    row = (
+        await db.execute(
+            select(Agent, Workflow)
+            .join(AgentTool, AgentTool.agent_id == Agent.id)
+            .join(Workflow, Workflow.id == AgentTool.workflow_id)
+            .where(Agent.id == agent_uuid)
+            .where(Workflow.id == workflow_uuid)
+            .where(Agent.is_active.is_(True))
+            .where(Workflow.is_active.is_(True))
+            .where(Workflow.type == "tool")
+        )
+    ).one_or_none()
+    if row is None:
+        raise AgentWorkflowAuthorizationError("Workflow tool is no longer available")
+    agent, workflow = row
+
+    selected_organization_id = (
+        refreshed.principal.runtime_authority.organization_id
+        if refreshed.principal.runtime_authority is not None
+        else refreshed.ctx.home_organization_id
+    )
+    agent_permission_org = shared_read_organization(
+        refreshed,
+        agent.organization_id,
+        selected_organization_id=selected_organization_id,
+    )
+    if not user_reach(refreshed).covers(agent.organization_id):
+        raise AgentWorkflowAuthorizationError("Agent is outside the caller's organization reach")
+    if not await can_read_agent(
+        db,
+        refreshed,
+        agent,
+        selected_organization_id=selected_organization_id,
+    ):
+        raise AgentWorkflowAuthorizationError("Agent is no longer available")
+    require_permission(refreshed, "agents.execute", agent_permission_org)
+
+    workflow_permission_org = shared_read_organization(
+        refreshed,
+        workflow.organization_id,
+        selected_organization_id=selected_organization_id,
+    )
+    if not user_reach(refreshed).covers(workflow.organization_id):
+        raise AgentWorkflowAuthorizationError("Workflow is outside the caller's organization reach")
+    require_permission(refreshed, "workflows.execute", workflow_permission_org)
+
+    caller_solution_id = agent.solution_id
+    if workflow.solution_id is not None:
+        if not await check_inbound_allowed(db, workflow.solution_id, caller_solution_id):
+            raise AgentWorkflowAuthorizationError("Workflow tool is not available to this Solution")
+    elif caller_solution_id is not None and not await solution_allows_global(db, caller_solution_id):
+        raise AgentWorkflowAuthorizationError("Workflow tool is not available to this Solution")
+
+    return agent, workflow, refreshed, workflow_permission_org
+
+
 async def execute_agent_workflow_tool(
     *,
     agent_id: UUID | str,
@@ -55,74 +126,14 @@ async def execute_agent_workflow_tool(
     The parent Agent is the resource gate. A workflow role ACL is deliberately
     not consulted for a tool already bound to that Agent.
     """
-    from src.services.agent_write_policy import can_read_agent
-    from src.services.execution.service import execute_tool
-    from src.services.solution_scope import check_inbound_allowed, solution_allows_global
-
-    try:
-        agent_uuid = UUID(str(agent_id))
-        workflow_uuid = UUID(str(workflow_id))
-    except (TypeError, ValueError, AttributeError) as exc:
-        raise AgentWorkflowAuthorizationError("Workflow tool identity is invalid") from exc
-
     from shared.run_lineage import principal_lineage
     from src.core.database import get_session_factory
+    from src.services.execution.service import execute_tool
 
     async with get_session_factory()() as db:
-        refreshed = await refresh_caller(db, caller)
-        row = (
-            await db.execute(
-                select(Agent, Workflow)
-                .join(AgentTool, AgentTool.agent_id == Agent.id)
-                .join(Workflow, Workflow.id == AgentTool.workflow_id)
-                .where(Agent.id == agent_uuid)
-                .where(Workflow.id == workflow_uuid)
-                .where(Agent.is_active.is_(True))
-                .where(Workflow.is_active.is_(True))
-                .where(Workflow.type == "tool")
-            )
-        ).one_or_none()
-        if row is None:
-            raise AgentWorkflowAuthorizationError("Workflow tool is no longer available")
-        agent, workflow = row
-
-        selected_organization_id = (
-            refreshed.principal.runtime_authority.organization_id
-            if refreshed.principal.runtime_authority is not None
-            else refreshed.ctx.home_organization_id
+        agent, workflow, refreshed, workflow_permission_org = await authorize_bound_workflow_tool(
+            db, agent_id, workflow_id, caller,
         )
-        agent_permission_org = shared_read_organization(
-            refreshed,
-            agent.organization_id,
-            selected_organization_id=selected_organization_id,
-        )
-        if not user_reach(refreshed).covers(agent.organization_id):
-            raise AgentWorkflowAuthorizationError("Agent is outside the caller's organization reach")
-        if not await can_read_agent(
-            db,
-            refreshed,
-            agent,
-            selected_organization_id=selected_organization_id,
-        ):
-            raise AgentWorkflowAuthorizationError("Agent is no longer available")
-        require_permission(refreshed, "agents.execute", agent_permission_org)
-
-        workflow_permission_org = shared_read_organization(
-            refreshed,
-            workflow.organization_id,
-            selected_organization_id=selected_organization_id,
-        )
-        if not user_reach(refreshed).covers(workflow.organization_id):
-            raise AgentWorkflowAuthorizationError("Workflow is outside the caller's organization reach")
-        require_permission(refreshed, "workflows.execute", workflow_permission_org)
-
-        caller_solution_id = agent.solution_id
-        if workflow.solution_id is not None:
-            if not await check_inbound_allowed(db, workflow.solution_id, caller_solution_id):
-                raise AgentWorkflowAuthorizationError("Workflow tool is not available to this Solution")
-        elif caller_solution_id is not None and not await solution_allows_global(db, caller_solution_id):
-            raise AgentWorkflowAuthorizationError("Workflow tool is not available to this Solution")
-
         response = await execute_tool(
             workflow_id=str(workflow.id),
             workflow_name=workflow.name,

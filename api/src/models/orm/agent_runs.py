@@ -194,3 +194,13 @@ class AgentRunStep(Base):
     __table_args__ = (
         Index("ix_agent_run_steps_run_id", "run_id"),
     )
+
+
+class CloudflareAgentAttempt(Base):
+    """Claim-scoped journal for an API-mediated autonomous agent run."""
+
+    __tablename__ = "cloudflare_agent_attempts"
+
+    claim_id: Mapped[UUID] = mapped_column(primary_key=True)
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id", ondelete="CASCADE"), index=True)
+    data: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
