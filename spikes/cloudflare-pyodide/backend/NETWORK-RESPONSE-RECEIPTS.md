@@ -9,10 +9,10 @@ dismissed and no scanner exclusion or security control was changed.
 | cloud.mjs | Fixed results/cloud-imports.json and cloud-memory.json; bounded Worker JSON/text | Intended diagnostic data; reject known temporary auth echoes before persistence |
 | cloud-security.mjs | Fixed results/security-cloud.json; bounded probe responses | Same guard, with SPIKE_AUTH supplied |
 | backend/cloud-isolation.mjs | Finite locally selected results filename; bounded response/error records | Same guard; response cannot choose filename; budget ledger/control unchanged |
-| backend/transport.test.mjs | Fixed current-runtime-sync-transport.json; bounded synchronous transport diagnostic | Inert JSON, no credentials supplied; serialized size bounded |
-| backend/invalid-credential.test.mjs | Fixed current-runtime-invalid-credential.json; bounded rejection response | Real ordering defect: formerly wrote before checking known credential echo. Now reject before write |
+| backend/transport.probe.mjs | Fixed current-runtime-sync-transport.json; bounded synchronous transport diagnostic | Inert JSON, no credentials supplied; serialized size bounded |
+| backend/invalid-credential.probe.mjs | Fixed current-runtime-invalid-credential.json; bounded rejection response | Real ordering defect: formerly wrote before checking known credential echo. Now reject before write |
 | backend/fresh-cleanup-readback.mjs | Fixed fresh-cleanup-readback.json; HTTP status and verified empty secret-binding list | Inert JSON; removed rewriting historical config captures during normalization |
-| backend/external-cancel.test.mjs | Fixed external-cpu-cancel-local.json; callback events and bounded response text | Inert JSON; serialized size bounded; no change to cancellation claims |
+| backend/external-cancel.probe.mjs | Fixed external-cpu-cancel-local.json; callback events and bounded response text | Inert JSON; serialized size bounded; no change to cancellation claims |
 | sdk-proof.mjs | Fixed results/sdk-readback.json; bounded independent REST readback | Reject the actual in-memory API token before persistence |
 | termination.mjs | Fixed results/termination.json; bounded interrupted-request outcome | Inert JSON, serialized size bounded; not a physical isolate-stop proof |
 

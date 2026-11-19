@@ -77,7 +77,7 @@ passed 7 tests. Credential/redaction consumers passed 14 tests:
 Docker CLI tools container, with the test runner's Docker-daemon-visible log
 mount corrected after an initial permission failure. JUnit is retained in results.
 
-`node backend/isolation.test.mjs` against local Wrangler port 8795 deliberately
+`node backend/isolation.probe.mjs` against local Wrangler port 8795 deliberately
 fails its CPU-cancellation assertion. Revision 5 evidence records clean sequential
 and parallel builtins/environment/module/tmp-file canaries, parent-binding
 separation, denied egress, and started I/O cancellation with no later observed
@@ -92,7 +92,7 @@ Start `npx wrangler dev --config backend/wrangler.runtime-local.jsonc --port 879
 there; POST `{"action":"inspect"}` to inspect the current closure. The runtime
 entry intentionally rejects execution until canonical authorization is connected.
 For isolation, start the equivalent `wrangler.local.jsonc` on port 8795 and run
-`node backend/isolation.test.mjs`. Generated bundles and source copies are ignored;
+`node backend/isolation.probe.mjs`. Generated bundles and source copies are ignored;
 raw manifests retain source and module hashes.
 
 No new deployment, credential rotation or Dynamic Worker charge was authorized.
@@ -106,13 +106,13 @@ changes were made; positive-PID/cgroup assumptions await shared seam coordinatio
 The entry now also admits two fixed negative diagnostics (no real credentials):
 `sync_transport` with no egress, and `invalid_credential` through a loopback binding
 restricted to one GET module path on the existing isolated debug API. It still
-does not admit arbitrary execution requests. `node backend/invalid-credential.test.mjs`
+does not admit arbitrary execution requests. `node backend/invalid-credential.probe.mjs`
 passes against that real API: exactly one observed 401, real `run_execution`
 returns Failed/WorkflowLoadError, no workflow result, no token in output. The
 initial test incorrectly expected ExecutableNotFound; source inspection confirms
 the loader's denial raises WorkflowLoadError. Both observations are retained.
 
-`node backend/external-cancel.test.mjs` against port 8798 uses a separate Node
+`node backend/external-cancel.probe.mjs` against port 8798 uses a separate Node
 observer. It fails: the caller abort fires after the child's before callback,
 but after arrives about 1.8 seconds later. This excludes delayed parent timers
 as the sole cause of the cancellation gap. `enable_request_signal` is enabled

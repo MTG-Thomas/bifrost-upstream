@@ -58,10 +58,10 @@ they have not been dismissed or self-approved.
 | 1811 | cloud.mjs: temp secret to import probe | Intentional test auth, same constraints; inherited local SDK token cleared. |
 | 1812 | cloud.mjs: temp secret to memory probe | Same fixed-target test auth; no redirects and bounded response read. |
 | 1813 | backend/fresh-cleanup-readback.mjs: status to JSON report | Intentional numeric status evidence at fixed report name; management JSON is checked, never executed. |
-| 1814 | backend/external-cancel.test.mjs: response/effects to JSON | Intentional cancellation evidence; response byte cap and bounded, enumerated loopback effects. |
+| 1814 | backend/external-cancel.probe.mjs: response/effects to JSON | Intentional cancellation evidence; response byte cap and bounded, enumerated loopback effects. |
 | 1815 | backend/cloud-isolation.mjs: response to JSON | Intentional raw test observations at fixed suite report names; response streaming cap before buffering. |
-| 1816 | backend/invalid-credential.test.mjs: response to JSON | Intentional real API denied-loading evidence at fixed path; bounded read, assertions still reject leaked synthetic token. |
-| 1817 | backend/transport.test.mjs: response to JSON | Intentional transport-failure evidence at fixed path; bounded JSON read. |
+| 1816 | backend/invalid-credential.probe.mjs: response to JSON | Intentional real API denied-loading evidence at fixed path; bounded read, assertions still reject leaked synthetic token. |
+| 1817 | backend/transport.probe.mjs: response to JSON | Intentional transport-failure evidence at fixed path; bounded JSON read. |
 | 1818 | cloud-security.mjs: response to JSON | Intentional security assertions/evidence at fixed path; bounded JSON read, no downloaded-code execution. |
 | 1819 | cloud.mjs: import response/status to JSON | Intentional import evidence at fixed path; bounded JSON read. |
 | 1820 | cloud.mjs: memory response to JSON | Intentional failure body at fixed path; bounded before its existing preview truncation. |

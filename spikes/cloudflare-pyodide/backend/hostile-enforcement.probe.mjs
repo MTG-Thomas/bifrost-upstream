@@ -1,6 +1,6 @@
 // Hostile enforcement driver (Phase 2): fresh isolate per attempt.
 // Local first (LOCAL_PROBE=true, no auth), then ONE isolated cloud worker.
-// Usage: node backend/hostile-enforcement.test.mjs [--url http://127.0.0.1:8797] [--out /tmp/...json]
+// Usage: node backend/hostile-enforcement.probe.mjs [--url http://127.0.0.1:8797] [--out /tmp/...json]
 // Cloud: SPIKE_AUTH env must be set; server enforces X-Spike-Auth + expiry.
 import assert from 'node:assert/strict';
 import {writeFile} from 'node:fs/promises';

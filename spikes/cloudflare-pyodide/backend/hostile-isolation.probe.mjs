@@ -1,6 +1,6 @@
 // Hostile Phase-1 driver: honest baseline + hostile variant, sequential AND
 // concurrent, fresh isolate per attempt. Fails closed: any leak is RED.
-// Usage: node backend/hostile-isolation.test.mjs [--url http://127.0.0.1:8796] [--out /tmp/...json]
+// Usage: node backend/hostile-isolation.probe.mjs [--url http://127.0.0.1:8796] [--out /tmp/...json]
 import assert from 'node:assert/strict';
 import {writeFile} from 'node:fs/promises';
 
