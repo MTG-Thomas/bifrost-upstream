@@ -456,13 +456,78 @@ job claim to supported compute stages, and its catalog places
 the split but supplies neither a Container runner for the requested jobs
 nor isolated-build parity.
 
-The implementation stops here. The compatible path requires an API-only
-bootstrap/compute port plus a scoped Container compute stage for a real
-Linux PlatformJob. For a first candidate, keep the Solution update check's
-repository resolution, credentials and state changes on the API, then
-qualify an explicitly bounded Git stage with the existing job lease. A
-trusted Container with direct platform data access would be a separate
-security design.
+#### #1424 port plan
+
+Compared `origin/main...origin/pr-1424` at fork base `3c7d177a4`. The
+comparison starts at merge base `aecd9d45d` and the reference tip is
+`d8206cb5e`. #1425 at `bdbe07f93` carries the same update-check and job
+catalog implementation. The table names the source commits introducing
+the relevant code and the later changes to retain when extracting it.
+
+| Slice | File-level provenance in #1424 | Fork port and adaptations |
+|---|---|---|
+| Derived Linux hello | `e57b33f1d:api/shared/worker_control_auth.py`, `e57b33f1d:api/src/worker/remote/launcher.py` (`_run_launcher`), `e57b33f1d:api/src/worker/remote/host.py` (`connect`), `e57b33f1d:api/src/services/execution/template_process.py` (`_load_workflow_runtime`) | Reuse the fork's byte-identical derivation and the `BIFROST_WORKER_CONTROL_SECRET` environment name from #1425. The upstream external-form test switches every external launcher, so narrow it to the Containers launch mode. On the API, select the mode and token from the immutable reservation's actual scope, Linux profile and resource UID. Require a signed `linux-process-v1` hello for that scope and reject legacy proofs, unknown UIDs and reconnects whose binding changed. Keep the current legacy VM/static hello bytes, Workers enrollment and settings behavior. Strip the control credential before starting workflow and helper subprocesses. |
+| Requirements and startup | `e57b33f1d:api/src/worker/remote/host.py` (`_welcome`, `PackageProxy`), `e57b33f1d:api/src/worker/remote/launcher.py` (bootstrap reader, explicit-content stdin, selective template startup), `e57b33f1d:api/src/services/execution/requirements_setup_helper.py`, `e57b33f1d:api/src/services/execution/simple_worker.py`, `e57b33f1d:api/src/worker/remote/package_helper.py`. Retain the applicable correction in `dff5661c5:api/src/worker/remote/launcher.py`. | Reuse the explicit-content installer, strict JSON input and generation/sequence-checked fragmented bootstrap. Send it after each Containers welcome only. Use API cache reads for startup and package-generation updates. Keep the no-argument legacy startup and existing package wire path for VM/static launchers. Start only the workflow template in the Containers mode. Disable the privileged agent template, service claims and generic platform-job subprocesses until separately qualified. Avoid upstream agent compute, its eager startup and its extra handler advertisement. |
+| API-owned PlatformJob stage | `e57b33f1d:api/src/worker/remote/app_compile_host.py`, `e57b33f1d:api/src/worker/remote/app_compile.py`, `e57b33f1d:api/src/worker/remote/fencing.py`, `e57b33f1d:api/src/jobs/platform/base.py`, `e57b33f1d:api/src/jobs/platform/runner.py`, `e57b33f1d:api/src/jobs/schedulers/platform_jobs.py`, `e57b33f1d:api/src/services/platform_jobs.py` and its `20261114_platform_job_executor_attribution.py` migration. Contract and recovery refinements are in `b5804e0d7` and `dff5661c5`. | The reusable pieces are the fenced claim filter, job/lease/stage binding, validation of retained inventory, status-before-retry, cancellation/release and API settlement. Upstream admission and callbacks are App-specific. A new job kind needs its own capability, typed input and result, lease-fenced dispatch and settlement, and a launcher implementation. Include only persistence and capability changes required by that kind. Keep legacy PlatformJob behavior for the VM. |
+
+The fork also needs opt-in Containers scope configuration, provider
+ownership checks, negotiated capability gating in planning and claims, and
+job attribution sufficient to prove which incarnation ran a stage. Those
+are fork adaptations. The provider itself remains a capacity transport.
+The broad #1424 agent, summary, app-build and API maintenance changes are
+outside this first-job port.
+
+#### First job boundary
+
+#1424 has no Container Git stage to port. Its
+`e57b33f1d:api/src/jobs/platform/catalog.py` registers
+`solution.update_check` with `execution_owner="api"` and no compute
+capability. `e57b33f1d:api/src/jobs/platform/api_maintenance.py` claims that
+job on the API. The scheduler and Git source helpers are unchanged by the
+PR. The stage host for PlatformJobs uses the App-specific
+`app_build_compute` callback and `app.compile.v2` contract. The separately
+named `e57b33f1d:api/src/worker/remote/compute_stage_host.py` binds
+agent runs and their RPC; it is insufficient for a PlatformJob lease.
+
+The current update check fetches `bifrost.solution.yaml` at the connected
+ref, including a selected subdirectory. It supports private GitHub App
+sources. `api/shared/solution_git_sources.py` resolves and verifies the
+repository credential on the API and passes it to the existing Git
+transport. A Container cannot run that authenticated clone while keeping
+the credential on the API without a new transfer boundary. A candidate
+design is to resolve and fetch the authorized immutable Git input on the
+API, then send a bounded, credential-free input tied to the job lease.
+The Container can inspect the descriptor from that input. The API applies
+version comparison, revalidates the Solution source/ref and lease before
+mutating state, and settles the job through existing PlatformJob methods.
+A descriptor-only transfer would keep Git execution on the API, so it
+would prove remote parsing rather than the requested Linux Git stage.
+Agree on the Git input and bounds before integrating a new stage. Preserve
+private and subdirectory semantics and the current sweep's per-repo failure
+handling.
+
+This is the stop point for the minimal port. The first-job acceptance
+requires a new compute contract and Git input design, beyond the #1424
+pieces identified above. Neither the auth/bootstrap candidate nor a
+partial stage is wired into the fork at this checkpoint.
+
+#### Linux workflow path
+
+#1424's API-only worker plan documents the existing credential boundary
+in `e57b33f1d:docs/plans/2026-11-14-api-only-worker-spike.md`. Its launcher
+continues using the existing workflow command and fork template. The
+fork's `api/src/worker/remote/remote_pool.py` writes the active execution
+context on the API and sends a scoped run context to the launcher.
+`api/src/services/execution/template_process.py` scrubs platform credentials
+and primes inert settings before workflow fork. Source and SDK access use
+the run's existing HTTP authorization. #1424 does not change the Linux
+workflow engine, remote pool or module transport. The contained candidate
+is therefore the derived-key/bootstrap port, suppression of privileged
+startup and claim paths, and Containers-scope routing through that Linux
+command. Prove it with a subprocess workflow after the first job stage is
+resolved. Inspect the launcher environment and child access, and prove
+that both the API-scoped workflow source fetch and its result commit work
+with platform credentials absent from the Container.
 
 **Hosted qualification.** After local conformance and explicit hosted
 approval, qualify a dev-only endpoint with a reachable HTTPS/WebSocket
