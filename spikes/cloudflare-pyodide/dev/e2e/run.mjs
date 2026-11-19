@@ -14,7 +14,7 @@ import {supervisorModules} from '../tenant-workers/supervisor-digest.mjs';
 import {stageRuntimeLoader} from '../stage-runtime-loader.mjs';
 import {hostedRelayPath, relayHeaders, relayHttp} from './relay-http.mjs';
 import {capacityWorker} from './capacity-miniflare.mjs';
-import {localLinuxProvider, localSolutionGit, serveContainersProviders} from './containers-local.mjs';
+import {localLinuxProvider, localSolutionGit, serveContainersProviders, vmHoldMemoryMiB} from './containers-local.mjs';
 
 const root = new URL('../', import.meta.url);
 const require = createRequire(new URL('tenant-workers/package.json', root));
@@ -666,9 +666,9 @@ async function containersChecks() {
       ))
     `), 60_000);
     const primary = await until('VM primary ready with measured budget', () =>
-      managedRows('vm').find((row) => row.state === 'ready' && row.available > 128 * 2 ** 20), 90_000);
+      managedRows('vm').find((row) => row.state === 'ready' && row.available > 256 * 2 ** 20), 90_000);
     const hold = await api('/api/workflows/' + config.workflows.vm,
-      {memory_request_mib: Math.floor(primary.available / 2 ** 20) - 8}, config.admin, 'PATCH');
+      {memory_request_mib: vmHoldMemoryMiB(primary.available)}, config.admin, 'PATCH');
     assert.equal(hold.status, 200);
     async function submit(key) {
       const reply = await api('/api/workflows/execute', {

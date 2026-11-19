@@ -18,6 +18,12 @@ const docker = (args, options = {}) => execFileSync('docker', args, {
 }).trim();
 const waitDocker = promisify(execFile);
 
+export function vmHoldMemoryMiB(budgetBytes) {
+  // Split the update check's 256 MiB requirement between the hold's
+  // admission margin and the gap that keeps the update check off the VM.
+  return Math.floor(budgetBytes / 2 ** 20) - 128;
+}
+
 export function localLinuxProvider({
   project, image, scope, token, version, archive, vmEnv = null, protocolOnly = false, gitFixture = false,
 }) {
