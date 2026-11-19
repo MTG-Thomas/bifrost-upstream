@@ -157,6 +157,12 @@ class ControlPlane:
                 self._dispatch_reconcile_loop(), name="work-dispatch-reconciler"
             ),
         ]
+        if self.settings.cloudflare_agent_endpoint:
+            from src.services.execution.cloudflare_chat_outbox import run_publisher
+
+            self._tasks.append(asyncio.create_task(
+                run_publisher(self._stop_event), name="cloudflare-chat-outbox",
+            ))
         from src.core.database import get_db_context
         from src.services.kubernetes_control import start_kubernetes_loops
         from src.services.kubernetes_execution import import_kubernetes_policy_from_env

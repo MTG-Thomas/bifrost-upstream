@@ -463,19 +463,17 @@ def serialize_chat_stream_chunk(chunk: ChatStreamChunk) -> dict[str, Any]:
     }
 
 
-async def publish_chat_run_event(
+def chat_run_event_envelope(
     conversation_id: str | UUID,
     run_id: str | UUID,
     kind: str,
     status: str,
     payload: ChatStreamChunk,
+    *,
+    event_id: UUID,
 ) -> dict[str, Any]:
-    """Publish a versioned, replayable chat run event."""
-    from uuid import uuid4
-
     from src.services.chat_errors import public_chat_error_message
 
-    event_id = uuid4()
     occurred_at = datetime.now(timezone.utc)
     conversation_id_str = str(conversation_id)
     run_id_str = str(run_id)
@@ -484,7 +482,7 @@ async def publish_chat_run_event(
         chunk = chunk.model_copy(
             update={"error": public_chat_error_message(chunk.run_status or status)}
         )
-    envelope: dict[str, Any] = {
+    return {
         "type": "chat_run_event",
         "protocol_version": 1,
         "event_id": str(event_id),
@@ -497,6 +495,19 @@ async def publish_chat_run_event(
         "payload": serialize_chat_stream_chunk(chunk),
     }
 
+
+async def publish_chat_run_event(
+    conversation_id: str | UUID,
+    run_id: str | UUID,
+    kind: str,
+    status: str,
+    payload: ChatStreamChunk,
+) -> dict[str, Any]:
+    """Publish a versioned, replayable chat run event."""
+    from uuid import uuid4
+
+    envelope = chat_run_event_envelope(conversation_id, run_id, kind, status, payload, event_id=uuid4())
+    conversation_id_str = str(conversation_id)
     stream_key = chat_run_events_stream_key(conversation_id_str)
     version_key = chat_run_events_version_key(conversation_id_str)
 
@@ -510,7 +521,7 @@ async def publish_chat_run_event(
             "20000",
             kind,
             status,
-            occurred_at.isoformat(),
+            envelope["occurred_at"],
             "86400",
             f"bifrost:chat:{conversation_id_str}",
         )

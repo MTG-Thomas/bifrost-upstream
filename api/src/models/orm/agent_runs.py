@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -204,3 +204,25 @@ class CloudflareAgentAttempt(Base):
     claim_id: Mapped[UUID] = mapped_column(primary_key=True)
     run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id", ondelete="CASCADE"), index=True)
     data: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+
+class CloudflareChatEvent(Base):
+    """An event committed with its Cloudflare attempt journal or terminal."""
+
+    __tablename__ = "cloudflare_chat_outbox"
+    __table_args__ = (
+        UniqueConstraint("claim_id", "chunk_sequence"),
+        Index("ix_cf_chat_outbox_pending", "conversation_id", "id",
+              postgresql_where=text("redis_sequence IS NULL AND NOT projection_lost")),
+        Index("ix_cf_chat_outbox_history", "conversation_id", "redis_sequence"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    claim_id: Mapped[UUID] = mapped_column(ForeignKey("cloudflare_agent_attempts.claim_id", ondelete="CASCADE"))
+    conversation_id: Mapped[UUID] = mapped_column(ForeignKey("conversations.id", ondelete="CASCADE"))
+    chunk_sequence: Mapped[int]
+    event_id: Mapped[UUID]
+    envelope: Mapped[dict] = mapped_column(JSONB)
+    redis_floor: Mapped[int | None] = mapped_column(BigInteger)
+    redis_sequence: Mapped[int | None] = mapped_column(BigInteger)
+    projection_lost: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
