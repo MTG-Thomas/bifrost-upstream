@@ -42,4 +42,4 @@ include = ["bifrost*"]
 # in the wheel, the installed CLI silently leaves icon imports in "bifrost" and
 # a v1→v2 migration produces an app that can't resolve them (battle-test 2026-06-13).
 [tool.setuptools.package-data]
-bifrost = ["lucide_icon_names.json"]
+bifrost = ["cloudflare_sdk_routes.json", "lucide_icon_names.json"]
