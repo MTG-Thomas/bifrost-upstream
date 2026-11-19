@@ -14,6 +14,7 @@ import {supervisorModules} from '../tenant-workers/supervisor-digest.mjs';
 import {stageRuntimeLoader} from '../stage-runtime-loader.mjs';
 import {hostedRelayPath, relayHeaders, relayHttp} from './relay-http.mjs';
 import {capacityWorker} from './capacity-miniflare.mjs';
+import {localLinuxProvider, serveContainersProviders} from './containers-local.mjs';
 
 const root = new URL('../', import.meta.url);
 const require = createRequire(new URL('tenant-workers/package.json', root));
@@ -65,12 +66,12 @@ function workerRow() {
     WHERE id = '${config.incarnation}'`);
 }
 
-function managedRows() {
+function managedRows(scope = 'phase6-local') {
   return sql(`SELECT coalesce(json_agg(json_build_object('id',id,'state',state,'uid',capacity_resource_uid,
     'launcher',remote_launcher_id,'profile',runtime_profile,'hello',remote_hello_sequence,
-    'budget',memory_limit_bytes,'active',active_runs,
+    'budget',memory_limit_bytes,'available',memory_budget_bytes,'active',active_runs,
     'deleted',capacity_resource_deleted_at IS NOT NULL,'end',end_reason)), '[]'::json)
-    FROM execution_workers WHERE capacity_scope = 'phase6-local'`);
+    FROM execution_workers WHERE capacity_scope = '${scope}'`);
 }
 
 function runRow(id) {
@@ -83,9 +84,9 @@ function runRow(id) {
       AND message LIKE '%committed fixture%')) FROM executions e WHERE id='${id}'`);
 }
 
-async function api(path, body, token = config.admin) {
+async function api(path, body, token = config.admin, method = body === undefined ? 'GET' : 'POST') {
   const response = await fetch(config.origin + path, {
-    method: body === undefined ? 'GET' : 'POST',
+    method,
     headers: {Authorization: 'Bearer ' + token, 'Content-Type': 'application/json'},
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(10_000),
@@ -573,6 +574,109 @@ async function phase6Checks() {
   }
 }
 
+async function containersChecks() {
+  const launchers = ['worker', 'scheduler'].map((service) => config.project + '-' + service + '-1');
+  const inspect = (format) => execFileSync('docker', ['inspect', '--format', format, launchers[0]], {encoding: 'utf8'}).trim();
+  const vmEnv = Object.fromEntries(JSON.parse(inspect('{{json .Config.Env}}'))
+    .filter((item) => /^BIFROST_(SECRET_KEY|DATABASE_URL(?:_SYNC)?|REDIS_URL|S3_[A-Z_]+)=/.test(item))
+    .map((item) => [item.slice(0, item.indexOf('=')), item.slice(item.indexOf('=') + 1)]));
+  const common = {
+    project: config.project, image: inspect('{{.Config.Image}}'),
+    version: devVersion(), archive: process.cwd(),
+  };
+  const vmToken = createHash('sha256').update(config.phase6.token + ':vm').digest('hex');
+  const containersToken = createHash('sha256').update(config.phase6.token + ':containers').digest('hex');
+  const vm = localLinuxProvider({...common, scope: 'vm', token: vmToken, vmEnv});
+  const containers = localLinuxProvider({...common, scope: 'containers', token: containersToken});
+  execFileSync('docker', ['pause', ...launchers]);
+  try {
+    await launch(proxy.address().port);
+    providerServer = await serveContainersProviders(config.phase6.providerHost, {
+      vm, containers,
+      workers: {
+        async fetch(request) {
+          const match = /^\/v1\/workers\/([a-f0-9-]+)\/start$/.exec(new URL(request.url).pathname);
+          if (match && request.method === 'POST') {
+            const row = managedRows().find(({id}) => id === match[1]);
+            assert.equal(row?.state, 'starting');
+            assert.equal(row.uid, (await request.clone().json()).resource_uid);
+            config.incarnation = row.id;
+          }
+          return provider.fetch(request);
+        },
+      },
+    });
+    const endpoint = `https://${config.phase6.providerHost}:${providerServer.address().port}`;
+    appendFileSync('.phase5-api.env', [
+      '',
+      `BIFROST_WORKER_CAPACITY_URL=${endpoint}/vm`,
+      `BIFROST_WORKER_CAPACITY_TOKEN=${vmToken}`,
+      `BIFROST_CLOUDFLARE_CAPACITY_URL=${endpoint}/workers`,
+      `BIFROST_CLOUDFLARE_CAPACITY_TOKEN=${config.phase6.token}`,
+      `BIFROST_CLOUDFLARE_CONTAINERS_URL=${endpoint}/containers`,
+      'BIFROST_CLOUDFLARE_CONTAINERS_SCOPE=containers',
+      `BIFROST_CLOUDFLARE_CONTAINERS_TOKEN=${containersToken}`,
+      '',
+    ].join('\n'));
+    const content = '--no-index\npackaging\n';
+    execFileSync('docker', ['exec', config.project + '-redis-1', 'redis-cli', 'SET', 'bifrost:requirements:content',
+      JSON.stringify({content, hash: createHash('sha256').update(content).digest('hex')})]);
+    reloadApi();
+    await until('paused debug launchers leave placement', () => sql(`
+      SELECT to_json(NOT EXISTS (
+        SELECT FROM execution_workers WHERE form = 'static'
+          AND runtime_profile = 'linux-process-v1' AND state IN ('starting', 'ready', 'draining')
+      ))
+    `), 60_000);
+    const primary = await until('VM primary ready with measured budget', () =>
+      managedRows('vm').find((row) => row.state === 'ready' && row.available > 128 * 2 ** 20), 90_000);
+    const hold = await api('/api/workflows/' + config.workflows.vm,
+      {memory_request_mib: Math.floor(primary.available / 2 ** 20) - 8}, config.admin, 'PATCH');
+    assert.equal(hold.status, 200);
+    async function submit(key) {
+      const reply = await api('/api/workflows/execute', {
+        workflow_id: config.workflows[key], input_data: {}, sync: false,
+      });
+      assert.equal(reply.status, 200);
+      return reply.data.execution_id;
+    }
+    const vmRun = await submit('vm');
+    await until('VM primary claims held work', () => runRow(vmRun)?.claim?.[0].worker === primary.id);
+    const linux = await submit('linux');
+    const approved = await startRun('phase6-a', true, config.phase6.tenants[0]);
+    approved.gate.release.resolve();
+    const approvedRow = await settle('phase6-a', approved, 'Success');
+    const linuxRow = await until('Linux-only workflow settles', () => {
+      const result = runRow(linux);
+      return result?.completed && result;
+    }, 90_000);
+    const container = managedRows('containers').find(({id}) => id === linuxRow.claim?.[0].worker);
+    assert.equal(linuxRow.status, 'Success', JSON.stringify(linuxRow));
+    assert.deepEqual(linuxRow.result, {stdout: 'containers'});
+    assert.equal(linuxRow.claim.length, 1);
+    assert.equal(container?.profile, 'linux-process-v1');
+    assert.ok(container.hello > 0);
+    const workerStatus = JSON.parse(execFileSync('docker', ['exec', config.project + '-redis-1',
+      'redis-cli', '--json', 'HGETALL', 'bifrost:pool:' + container.id], {encoding: 'utf8'}));
+    assert.equal(Number(workerStatus.requirements_installed), 1);
+    assert.equal(Number(workerStatus.requirements_total), 1);
+    evidence('three-scope-placement', {primary, vmRun, approved: approvedRow.claim[0], linux, container, requirements: 1});
+    const released = await until('Containers retirement and confirmed Docker stop', () =>
+      managedRows('containers').find((row) => row.id === container.id && row.state === 'retired'
+        && row.deleted && !containers.running(row.id)), 90_000);
+    evidence('containers-release', {row: released});
+  } finally {
+    execFileSync('docker', ['unpause', ...launchers]);
+    containers.close();
+    vm.close();
+  }
+}
+
+function devVersion() {
+  return execFileSync('docker', ['exec', config.project + '-api-1', 'printenv', 'BIFROST_VERSION'],
+    {encoding: 'utf8', timeout: 5000}).trim();
+}
+
 async function hostedChecks() {
   const happy = await startRun('happy');
   const token = tokens.get(happy.id);
@@ -886,6 +990,7 @@ await new Promise((resolve, reject) => {
 try {
   if (config.agent) await agentChecks();
   else if (config.summary) await summaryChecks();
+  else if (config.phase6?.containers) await containersChecks();
   else if (config.phase6) await phase6Checks();
   else await phase5Checks();
 } finally {

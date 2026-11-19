@@ -111,15 +111,15 @@ async def test_containers_hello_uses_only_the_reserved_scope_key(
         secret_key=legacy_key, cloudflare_containers_scope="containers",
         cloudflare_containers_token=SecretStr(token),
     )
+    # Stop at the ownership boundary so no background session is started.
     with (
         patch("src.worker.remote.host.get_settings", return_value=settings),
         patch("src.worker.remote.host.get_liveness_db_context", database),
         patch("src.worker.remote.host.admit_external_worker", new=AsyncMock(return_value=LEASE.worker_id)) as admit,
         patch("src.worker.remote.host.acquire_remote_owner", new=AsyncMock(return_value=None)),
+        pytest.raises(AuthenticationError),
     ):
-        # Stop at the ownership boundary so no background session is started.
-        with pytest.raises(AuthenticationError):
-            await RemoteControlHost().connect(socket)
+        await RemoteControlHost().connect(socket)
     assert admit.await_count == int(accepted)
 
 
@@ -162,6 +162,26 @@ async def test_containers_launcher_refuses_non_workflow_commands(action: str) ->
     await launcher.command({"id": "request", "action": action, "payload": {}}, generation=1)
     reply = ControlEnvelope.from_json(socket.send.await_args.args[0])
     assert reply.payload["error"] == "Work family is unavailable on Containers"
+
+
+@pytest.mark.asyncio
+async def test_containers_host_skips_platform_job_and_service_claims() -> None:
+    bridge = Bridge(
+        AsyncMock(), {
+            "current": 1, "limit": 100, "requirements": {}, "hostname": "runner",
+            "containers": True, "handlers": (("workflow.execute", 1),),
+        },
+        LEASE,
+    )
+    worker = ApiExecutor(bridge, LEASE.worker_id)
+    with (
+        patch("src.worker.remote.host.claim_platform_job", new=AsyncMock()) as claim,
+        patch.object(worker, "_start_service_claim_loop", new=AsyncMock()) as start_services,
+    ):
+        assert await worker._claim_platform_job(100) is None
+        await PoolWorker._prepare_admission(worker)
+    claim.assert_not_awaited()
+    start_services.assert_not_awaited()
 
 
 @pytest.mark.asyncio

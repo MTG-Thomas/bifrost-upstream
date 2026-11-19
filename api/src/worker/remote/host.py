@@ -912,6 +912,8 @@ class ApiExecutor(PoolWorker):
         return await run_claimed_platform_job(claim, backend=self.bridge)
 
     async def _claim_platform_job(self, fits_bytes: int) -> Any:
+        if self.bridge.containers:
+            return None
         return await claim_platform_job(backend="local", fits_bytes=fits_bytes,
                                         memory_sample=self.bridge.memory())
 

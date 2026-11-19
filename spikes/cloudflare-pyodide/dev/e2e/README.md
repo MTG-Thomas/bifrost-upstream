@@ -138,6 +138,36 @@ job. Both installs use the same helper path with different pinned bytes. The
 test checks each result, the live SDK call, concurrent claims and credential
 revocation on settlement. It uses only local Miniflare and the disposable API.
 
+### Three-scope Containers overflow
+
+Use a new private `/opt/bifrost-tests/containers-<sha>` Git archive on CT128.
+Check that the host is free of other Bifrost test and debug stacks before
+starting. Use Node 26, the local runtime fixture and the Phase 6 preparation
+above. Keep the debug stack owner running while executing each check separately.
+
+```sh
+python3 spikes/cloudflare-pyodide/dev/e2e/phase6.py prepare
+BIFROST_FORCE_PORT=1 ./debug.sh up
+```
+
+From the same archive, using the project printed by the owner:
+
+```sh
+node spikes/cloudflare-pyodide/dev/e2e/containers-conformance.mjs "$project"
+python3 spikes/cloudflare-pyodide/dev/e2e/phase6.py run "$runtime" --containers
+```
+
+Stop the debug owner after both checks. The provider uses #1425's actual
+HTTP handler, registry, ledger and container lifecycle with Docker behind
+the container binding. The conformance hook replaces the in-process actors
+while retaining their storage, and the Docker process is observed and
+stopped independently. The three-scope check holds a run on the VM scope,
+verifies claim ownership for an approved Workers workflow and a Linux
+subprocess workflow, checks the Containers environment names and requirements
+inventory, and requires canonical retirement and confirmed physical stop.
+It uses the debug image for each physical launcher and caps those launchers
+at 1 GiB. Remove the task-owned debug resources and image at the end.
+
 ## Phase 5b hosted launcher
 
 Use a new mode-0700 `/opt/bifrost-tests/phase5b-<sha>` archive with a local Git
