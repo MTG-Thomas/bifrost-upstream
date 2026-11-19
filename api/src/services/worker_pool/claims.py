@@ -12,6 +12,7 @@ from sqlalchemy import case, exists, func, select, text, tuple_, update
 
 from src.config import get_settings
 from src.core.database import get_db_context, get_liveness_db_context
+from src.models.orm.agent_runs import AgentRun
 from src.models.orm.execution_workers import MANAGED_WORKER_FORMS, ExecutionWorker, ExecutionWorkerClaim
 from src.models.orm.executions import Execution
 from src.models.orm.work_dispatches import WorkDispatch
@@ -207,6 +208,7 @@ async def claim_next(
     budget_bytes: int,
     reserve_claim: Callable[[PoolClaim], None] | None = None,
     release_reservation: Callable[[PoolClaim], None] | None = None,
+    cloudflare_autonomous_agents: frozenset[UUID] = frozenset(),
 ) -> PoolClaim | None:
     """Assign the oldest unassigned dispatch this worker can take now.
 
@@ -231,6 +233,17 @@ async def claim_next(
     occupied = select(func.count()).select_from(active_cloudflare).where(
         active_cloudflare.c.worker_id == incarnation_id,
     ).scalar_subquery()
+    autonomous_run = (
+        select(AgentRun.id).where(
+            AgentRun.id == WorkDispatch.subject_id,
+            AgentRun.agent_id.in_(cloudflare_autonomous_agents),
+            AgentRun.trigger_type != "chat",
+            AgentRun.conversation_id.is_(None),
+            AgentRun.parent_run_id.is_(None),
+            func.coalesce(func.jsonb_typeof(AgentRun.output_schema), "null") == "null",
+            AgentRun.status == "queued",
+        ).correlate(WorkDispatch).exists()
+    )
     profile_eligible = exists().where(
         ExecutionWorker.id == incarnation_id,
         (ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE)
@@ -247,6 +260,15 @@ async def claim_next(
                     & ~WorkDispatch.payload.contains({LINUX_ONLY_SUMMARY: True})
                     & (WorkDispatch.memory_request_bytes <= CLOUDFLARE_DEV_BUDGET_BYTES)
                     & ExecutionWorker.capacity_scope.is_(None)
+                )
+                | (
+                    (WorkDispatch.handler == "agent.run")
+                    & (WorkDispatch.handler_version == 1)
+                    & ~WorkDispatch.payload.contains({"cloudflare_agent_linux_only": True})
+                    & ~WorkDispatch.payload.contains({"trigger_type": "chat"})
+                    & (WorkDispatch.memory_request_bytes <= CLOUDFLARE_DEV_BUDGET_BYTES)
+                    & ExecutionWorker.capacity_scope.is_(None)
+                    & autonomous_run
                 )
             )
             & (occupied * CLOUDFLARE_DEV_BUDGET_BYTES < func.coalesce(
@@ -407,7 +429,10 @@ async def claim_next(
                     handler=row.handler,
                     message={
                         **row.message,
-                        **({"claim_id": str(claim_id)} if row.dispatch_family == "agent_summary" else {}),
+                        **({"claim_id": str(claim_id)} if (
+                            row.dispatch_family == "agent_summary"
+                            or (row.dispatch_family == "agent_run" and picked.opaque)
+                        ) else {}),
                     },
                     subject_id=row.subject,
                     memory_request_bytes=row.memory_request_bytes,

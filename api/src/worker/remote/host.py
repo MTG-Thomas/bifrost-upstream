@@ -55,6 +55,8 @@ from src.worker.remote.protocol import (
     CLOUDFLARE_INCARNATION_ENDED,
     CLOUDFLARE_MAX_LOGICAL_BYTES,
     CLOUDFLARE_WORKFLOW_HANDLER,
+    CLOUDFLARE_AGENT_HANDLER,
+    CLOUDFLARE_AGENT_PROTOCOL,
     CLOUDFLARE_SUMMARY_HANDLER,
     AuthenticationError,
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
@@ -1395,14 +1397,25 @@ class RemoteControlHost:
             if cloudflare:
                 # Negotiation filters unsupported handlers. Check the full advertisement.
                 handlers = [list(CLOUDFLARE_WORKFLOW_HANDLER)]
-                if initial.get("handlers") == [*handlers, list(CLOUDFLARE_SUMMARY_HANDLER)]:
-                    from src.services.execution.cloudflare_summary import summary_endpoint
+                advertised = initial.get("handlers")
+                from src.services.execution.cloudflare_summary import summary_endpoint
 
+                if isinstance(advertised, list) and list(CLOUDFLARE_SUMMARY_HANDLER) in advertised:
                     if initial.get("summary_claim_protocol") != SUMMARY_CLAIM_PROTOCOL:
                         raise ProtocolError("Cloudflare summaries require claim protocol 1")
                     if summary_endpoint(settings.cloudflare_summary_endpoint) is None:
                         raise ProtocolError("Cloudflare agent summaries are disabled")
-                elif initial.get("handlers") != handlers:
+                    handlers.append(list(CLOUDFLARE_SUMMARY_HANDLER))
+                if isinstance(advertised, list) and list(CLOUDFLARE_AGENT_HANDLER) in advertised:
+                    if initial.get("agent_claim_protocol") != CLOUDFLARE_AGENT_PROTOCOL:
+                        raise ProtocolError("Cloudflare agents require the autonomous claim protocol")
+                    if (
+                        summary_endpoint(settings.cloudflare_agent_endpoint) is None
+                        or not settings.cloudflare_agent_fixture_ids
+                    ):
+                        raise ProtocolError("Cloudflare autonomous agents are disabled")
+                    handlers.append(list(CLOUDFLARE_AGENT_HANDLER))
+                if advertised != handlers:
                     raise ProtocolError("Unsupported Cloudflare handler advertisement")
                 if credential_protocol != CLOUDFLARE_CREDENTIAL_PROTOCOL:
                     raise ProtocolError("Cloudflare workers require credential protocol 2")

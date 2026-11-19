@@ -1072,25 +1072,23 @@ message, tool receipt and usage logic, extracting pure transformations where
 needed. Keep Linux's child entrypoint, wire bytes and persisted behavior
 as the baseline. The Workers loop needs neither a Python driver nor Redis.
 
-Require an API operator opt-in and a launcher's explicit agent protocol
-capability in addition to its existing Cloudflare hello gate. Bind eligibility
-to a reviewed development fixture and the effective model and tool shape.
-Check it in claim selection and again before dispatch. Start with an existing
-conversation and a single text turn, then allow one bound workflow tool and
-one continuation. Keep attachments, knowledge, delegated agents, agentless
-chat, alternate providers, structured output and autonomous triggers outside
-the first qualification. Use one ordinary declared slot for the whole agent
-attempt. The workflow pool admits the tool separately, so the tool fixture
-needs independent workflow capacity while the agent holds its slot.
+Require the Cloudflare hello gate, a fixed HTTPS
+`BIFROST_CLOUDFLARE_AGENT_ENDPOINT`, a nonempty JSON array of reviewed agent
+UUIDs in `BIFROST_CLOUDFLARE_AGENT_FIXTURE_IDS`, and a launcher's
+`agent_claim_protocol: "autonomous-v1"`. The first slice uses manually
+enrolled launchers. Claim selection requires a queued, root run of an
+allowlisted agent with a non-chat trigger, no conversation or output
+schema, and room in a declared slot. Send-time checks must revalidate
+the effective provider, agent, tools, caller, and budgets. Qualify zero tools
+first and then one workflow tool and one continuation. Attachments,
+knowledge, delegated agents, alternate providers, and chat stay on Linux.
+The workflow pool admits the tool separately, so the tool fixture needs
+independent workflow capacity while the agent holds its slot.
 
-For the model-only chat case, qualify a profile with tool calling disabled.
-`AgentExecutor.chat` adds the built-in artifact definitions whenever the
-profile enables tool calling, even for an agent with zero bound tools. A
-single bound workflow therefore does not produce a one-tool chat request
-under today's policy. A one-workflow fixture needs either a reviewed
-Workers-only capability restriction, or a separately qualified autonomous
-run that preserves its AgentRunStep contract. The operator lint decision
-must inspect the effective tool surface and mode.
+Autonomous runs persist AgentRunStep and AIUsage records instead of chat
+conversation events. Chat requires a separate protocol and eligibility gate.
+Its effective tool set includes built-in artifact tools when the profile
+enables tool calling.
 
 The API resolves the active admin-configured model profile and its connection
 for each model turn. Qualify the same pinned OpenAI-compatible HTTPS

@@ -8,6 +8,7 @@ All configuration is centralized here for easy management.
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from uuid import UUID
 
 from pydantic import (
     AliasChoices,
@@ -53,6 +54,14 @@ class Settings(BaseSettings):
     cloudflare_summary_endpoint: str | None = Field(
         default=None, exclude=True,
         description="Opt-in fixed HTTPS base URL for Cloudflare chat-completion summaries",
+    )
+    cloudflare_agent_endpoint: str | None = Field(
+        default=None, exclude=True,
+        description="Opt-in fixed HTTPS base URL for Cloudflare autonomous agent runs",
+    )
+    cloudflare_agent_fixture_ids: frozenset[UUID] = Field(
+        default_factory=frozenset, exclude=True,
+        description="Agent IDs approved for the Cloudflare autonomous agent spike",
     )
 
     # ==========================================================================

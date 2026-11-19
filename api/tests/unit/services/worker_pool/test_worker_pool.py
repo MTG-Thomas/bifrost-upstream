@@ -479,6 +479,36 @@ async def test_cloudflare_claim_ignores_ineligible_work_at_the_head(db) -> None:
     assert claim is not None and claim.subject_id == UUID(older)
 
 
+async def test_cloudflare_agent_claim_requires_allowlisted_autonomous_run(db) -> None:
+    from src.models.orm.agents import Agent
+    from src.services.execution.agent_run_dispatch import stage_agent_run
+
+    worker_id = await _declared_worker(db)
+    fixture_id, other_agent_id = uuid4(), uuid4()
+    async with db.context() as session:
+        worker = await session.get(ExecutionWorker, worker_id)
+        assert worker is not None
+        worker.supported_handlers = ["workflow.execute", "agent.run"]
+        for agent_id in (fixture_id, other_agent_id):
+            session.add(Agent(id=agent_id, name=str(agent_id), system_prompt="Fixture", created_by="unit"))
+        await session.flush()
+        for agent_id, trigger in ((fixture_id, "chat"), (other_agent_id, "manual"), (fixture_id, "manual")):
+            run = AgentRun(id=uuid4(), agent_id=agent_id, trigger_type=trigger, output_schema=None)
+            session.add(run)
+            stage_agent_run(db=session, run_id=run.id, context={"trigger_type": trigger}, message={})
+        expected_id = run.id
+
+    assert await _claim(worker_id) is None
+    claim = await claims.claim_next(
+        worker_id,
+        fits_bytes=CLOUDFLARE_DEV_BUDGET_BYTES,
+        budget_bytes=CLOUDFLARE_DEV_BUDGET_BYTES,
+        cloudflare_autonomous_agents=frozenset({fixture_id}),
+    )
+    assert claim is not None and claim.subject_id == expected_id
+    assert UUID(claim.message["claim_id"])
+
+
 async def test_cloudflare_claims_distinct_tenants_with_per_slot_limits(db) -> None:
     other_tenants = [uuid4(), uuid4()]
     async with db.context() as session:
