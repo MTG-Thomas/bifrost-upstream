@@ -250,6 +250,55 @@ async def test_dynamic_python_is_rejected(statement):
         await _analyze({ENTRY: f"def run(): {statement}\n".encode()})
 
 
+@pytest.mark.parametrize(("body", "call"), [
+    ("return getattr(obj, method)()", "_dispatch(obj, unknown)"),
+    ("return getattr(obj, method)()", "_dispatch(obj, '__class__')"),
+    ("return getattr(obj, method)()", "_dispatch(obj, 'import_module')"),
+    ("return getattr(obj, method)()", "_dispatch(obj, 'attrgetter')"),
+    ("return getattr(obj, method)()", "_dispatch(*args, method='list')"),
+    ("return getattr(obj, method)()", "map(_dispatch, [obj])"),
+    ("method = unknown; return getattr(obj, method)()", "_dispatch(obj, 'list')"),
+    ("return getattr(__imported_builtins, method)()", "_dispatch(obj, 'list')"),
+])
+async def test_entry_local_dispatch_refuses_unproven_selectors(body, call):
+    source = (
+        "import builtins as __imported_builtins\n"
+        f"def _dispatch(obj, method):\n    {body}\n"
+        f"def run(obj, unknown, args):\n    return {call}\n"
+    ).encode()
+    with pytest.raises(AnalysisRejected, match="dynamic attribute"):
+        await _analyze({ENTRY: source})
+
+
+async def test_entry_local_dispatch_counts_literal_selectors_as_unresolved():
+    source = b"""
+async def _dispatch(obj, method):
+    return await getattr(obj, method)()
+
+async def run(obj):
+    return await _dispatch(obj, "list")
+
+async def other_entry(obj):
+    return await _dispatch(obj, method="search")
+"""
+    result = await _analyze({ENTRY: source})
+    assert result["estimated_subrequests"] == 2
+    assert result["unresolved_url_calls"] == 1
+    assert result["required_https_hosts"] == []
+
+
+async def test_imported_entry_cannot_use_entry_local_selector_analysis():
+    source = b"""
+import helpers
+def _dispatch(obj, method):
+    return getattr(obj, method)()
+def run(obj):
+    return _dispatch(obj, "list")
+"""
+    with pytest.raises(AnalysisRejected, match="Entry-local attribute selectors"):
+        await _analyze({ENTRY: source, HELPER: b"from workflows.fixture import _dispatch\n"})
+
+
 async def test_parse_rejects_oversized_source_before_parsing(monkeypatch):
     from src.services.execution import cloudflare_analysis
 

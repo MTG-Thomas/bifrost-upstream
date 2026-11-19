@@ -457,6 +457,12 @@ The API and Worker ship generated data from PSL `2026-11-17_16-14-34_UTC`
 [official PSL](https://publicsuffix.org/list/public_suffix_list.dat), then run
 `node spikes/cloudflare-pyodide/dev/executor/generate-egress-psl.mjs public_suffix_list.dat`
 from the repo root, update this pin, and run the shared matcher vectors.
+
+The analyzer recognizes immediate `getattr` calls in private helpers defined
+in the entry module when every reference is a direct call and supplies a
+public literal selector. It counts the operation as an unresolved URL call,
+without granting any host. Imported modules and unproven selectors retain
+the existing refusal.
 Before parsing, analysis limits raw source buffers
 to 128 KiB per file and 512 KiB per bundle, with a single module AST processed
 at a time and at most 100,000 visited nodes across the bundle. Python object

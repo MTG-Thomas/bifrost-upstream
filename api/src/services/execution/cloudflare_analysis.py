@@ -79,6 +79,7 @@ _DYNAMIC = {"__import__", "eval", "exec", "compile", "vars", "globals"}
 _HTTP_CLIENTS = {"httpx.Client", "httpx.AsyncClient"}
 _FETCH_FUNCTIONS = {"js.fetch", "js.globalThis.fetch", "pyodide.http.pyfetch", "workers.fetch"}
 _BLOCKED_ATTRIBUTES = { "__subclasses__", "__globals__", "__code__", "__builtins__"}
+_REFLECTIVE_SELECTORS = _DYNAMIC | _TRAPS | _BLOCKED_ATTRIBUTES | {"getattr", "modules"}
 _REFLECTION = {"sys.modules", "operator.attrgetter", "operator.methodcaller", "pydoc.locate", "pkgutil.resolve_name"}
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
 _HTTP_METHODS = {"request", "get", "head", "post", "put", "patch", "delete", "options", "stream", "send"}
@@ -224,6 +225,84 @@ def _argument(node: ast.Call, index: int, *keywords: str) -> ast.expr | None:
     return next((item.value for item in node.keywords if item.arg in keywords), None)
 
 
+def _bound_names(node: ast.AST) -> set[str]:
+    if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+        return {node.id}
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return {node.name}
+    if isinstance(node, ast.arg):
+        return {node.arg}
+    if isinstance(node, ast.alias):
+        return {node.asname or node.name.split(".")[0]}
+    if isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and node.name:
+        return {node.name}
+    if isinstance(node, ast.MatchMapping) and node.rest:
+        return {node.rest}
+    if isinstance(node, (ast.Global, ast.Nonlocal)):
+        return set(node.names)
+    return set()
+
+
+def _literal_helper_selectors(syntax: ast.Module, entry_function: str) -> set[int]:
+    """Recognize a private entry-local helper called only with literal selectors."""
+    helpers = [
+        node for node in syntax.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name.startswith("_") and node.name != entry_function and not node.decorator_list
+    ]
+    if not helpers:
+        return set()
+    nodes = list(ast.walk(syntax))
+    direct = {
+        id(node.func): node for node in nodes
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    bindings = Counter(name for node in nodes for name in _bound_names(node))
+    references: dict[str, list[ast.Name]] = {}
+    reflected_names = set()
+    for node in nodes:
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            references.setdefault(node.id, []).append(node)
+        elif isinstance(node, ast.Attribute):
+            reflected_names.add(node.attr)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            reflected_names.add(node.value)
+
+    resolved = set()
+    for helper in helpers:
+        if bindings[helper.name] != 1 or helper.name in reflected_names:
+            continue
+        uses = references.get(helper.name, [])
+        if not uses or any(id(use) not in direct for use in uses):
+            continue
+        calls = [direct[id(use)] for use in uses]
+        if any(isinstance(arg, ast.Starred) for call in calls for arg in call.args):
+            continue
+        scope = [node for stmt in helper.body for node in _scoped_nodes(stmt)]
+        rebound = {name for stmt in helper.body for node in ast.walk(stmt) for name in _bound_names(node)}
+        parameters = helper.args.posonlyargs + helper.args.args
+        for index, parameter in enumerate(parameters):
+            selectors = [
+                node for node in scope
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "getattr" and len(node.args) >= 2
+                and not any(isinstance(arg, ast.Starred) for arg in node.args)
+                and isinstance(node.args[1], ast.Name) and node.args[1].id == parameter.arg
+            ]
+            if not selectors or parameter.arg in rebound:
+                continue
+            values = [_argument(call, index, parameter.arg) for call in calls]
+            if all(
+                isinstance(value, ast.Constant) and isinstance(value.value, str)
+                and value.value.isidentifier() and not value.value.startswith("_")
+                and value.value not in _REFLECTIVE_SELECTORS
+                and all(not ref.endswith(f".{value.value}") for ref in _REFLECTION)
+                for value in values
+            ):
+                resolved.update(map(id, selectors))
+    return resolved
+
+
 @dataclass(frozen=True)
 class _Client:
     host: str | None
@@ -291,9 +370,13 @@ class _Analysis:
     unresolved_url_calls: int = 0
     exports: dict[str, _Client] = field(default_factory=dict)
     call_hints: list[_CallHint] = field(default_factory=list)
+    local_helpers_entry: str | None = None
+    literal_selectors: set[int] = field(default_factory=set)
 
     async def load(self, path: str, entry_function: str | None = None) -> bool:
         if path in self.found:
+            if path == self.local_helpers_entry:
+                raise AnalysisRejected("Entry-local attribute selectors cannot be used in an imported module")
             return self.found[path]
         if not _valid_path(path) or len(self.found) >= 128:
             raise AnalysisRejected("Workspace import paths exceed the analysis policy")
@@ -313,7 +396,7 @@ class _Analysis:
         ):
             raise AnalysisRejected("Workflow entry function was not found")
 
-        imports = self.inspect_module(syntax, path)
+        imports = self.inspect_module(syntax, path, entry_function)
         del syntax, content
         for node in imports:
             if isinstance(node, ast.Import):
@@ -364,13 +447,20 @@ class _Analysis:
             if not (found or child):
                 raise AnalysisRejected(f"Unresolved import: {module}.{alias.name}")
 
-    def inspect_module(self, syntax: ast.Module, path: str) -> list[ast.Import | ast.ImportFrom]:
+    def inspect_module(
+        self, syntax: ast.Module, path: str, entry_function: str | None,
+    ) -> list[ast.Import | ast.ImportFrom]:
         for _ in ast.walk(syntax):
             self.nodes += 1
             if self.nodes > _MAX_NODES:
                 raise AnalysisRejected("Workspace sources exceed the analysis complexity budget")
+        if entry_function:
+            self.literal_selectors = _literal_helper_selectors(syntax, entry_function)
+            if self.literal_selectors:
+                self.local_helpers_entry = path
         imports: list[ast.Import | ast.ImportFrom] = []
         clients = self.inspect_scope(syntax.body, {}, {}, {}, {}, imports, path)
+        self.literal_selectors.clear()
         module = path.removesuffix("/__init__.py").removesuffix(".py").replace("/", ".")
         self.exports.update({f"{module}.{name}": value for name, value in clients.items()})
         return imports
@@ -538,11 +628,19 @@ class _Analysis:
         if qualified == "builtins.getattr":
             attr = node.args[1] if len(node.args) > 1 else None
             if not isinstance(attr, ast.Constant) or not isinstance(attr.value, str):
+                if (
+                    id(node) in direct_calls and id(node) in self.literal_selectors
+                    and _qualified(node.args[0], aliases) != "builtins"
+                ):
+                    # The selector is bounded, but the receiver may make an HTTP
+                    # request. Require review without proposing an inferred host.
+                    self.record_call(None)
+                    return
                 if node.args and (_qualified(node.args[0], aliases) == "builtins" or id(node) in direct_calls):
                     raise AnalysisRejected("Unsupported dynamic attribute lookup")
                 return
             if (
-                attr.value in _DYNAMIC | _TRAPS | _BLOCKED_ATTRIBUTES | {"getattr", "modules"}
+                attr.value in _REFLECTIVE_SELECTORS
                 or attr.value == "__dict__" and _qualified(node.args[0], aliases) == "builtins"
             ):
                 raise AnalysisRejected("Unsupported dynamic attribute lookup")
