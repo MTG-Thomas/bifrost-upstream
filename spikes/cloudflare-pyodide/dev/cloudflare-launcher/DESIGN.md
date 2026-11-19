@@ -1122,14 +1122,14 @@ autonomous steps stable IDs and serve committed steps through the existing
 run detail read. Partial model text lives in the attempt journal until a
 complete response or an interrupted terminal is committed.
 
-The first inventory after welcome advertises the opaque attempt and the
-last locally acknowledged sequence. The replacement API owner validates the
-claim and replies with its committed watermark. The launcher replays its
-outstanding batch and retained terminal without repeating provider or tool
-calls. A reset can recover the journal and terminal but cannot recover an
-open provider stream. Keep the route's slot through the existing terminal
-ACK, issued after fenced settlement. Never accept success before all
-sequences through the terminal watermark have committed.
+The first inventory after welcome advertises the opaque attempt and its
+deadline. The replacement API owner checks the claim against the durable
+cursor. A live launcher replays its outstanding request with the original
+request ID and sequence, so the API can return its previous acknowledgement.
+A launcher reset can recover the terminal journal but cannot recover an
+open provider stream. Keep the route's slot through the terminal ACK, issued
+after fenced settlement. Accept success only when all sequences through
+the terminal watermark have committed.
 
 #### Workflow receipts and cancellation
 

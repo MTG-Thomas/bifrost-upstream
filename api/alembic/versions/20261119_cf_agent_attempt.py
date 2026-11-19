@@ -1,8 +1,9 @@
 """Add the claim-bound Cloudflare autonomous agent journal."""
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 revision = "20261119_cf_agent_attempt"
 down_revision = "20261118_cf_solution_source"
