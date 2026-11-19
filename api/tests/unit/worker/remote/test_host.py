@@ -185,6 +185,27 @@ async def test_containers_host_skips_platform_job_and_service_claims() -> None:
 
 
 @pytest.mark.asyncio
+async def test_containers_reconcile_workflow_inventory_without_an_agent_consumer() -> None:
+    bridge = Bridge(
+        AsyncMock(), {
+            "current": 1, "limit": 100, "requirements": {}, "hostname": "runner",
+            "containers": True, "handlers": (("workflow.execute", 1),),
+        },
+        LEASE,
+    )
+    worker = ApiExecutor(bridge, LEASE.worker_id)
+    worker.admission = Mock(spec=Admission)
+    snapshot = {"workflow_requests": {"workflow-id": 12}, "agent_runs": {}}
+    bridge.pool = SimpleNamespace(reconcile_inventory=AsyncMock(return_value=snapshot))
+    bridge.inventory = {"routes": [{"kind": "workflow"}], "terminal_routes": []}
+    bridge.inventory_ready.set()
+    assert await worker._reconcile_transport_inventory() == snapshot
+    await worker._apply_reconciled_snapshot(snapshot)
+    worker.admission.hold.assert_called_once_with("workflow-id", 12, workflow=True)
+    assert bridge.agents is None
+
+
+@pytest.mark.asyncio
 async def test_admission_stale_telemetry_still_renews_the_connected_owner() -> None:
     bridge = Bridge(
         Mock(), {"current": 1, "limit": 100, "requirements": {}, "hostname": "runner"}, LEASE

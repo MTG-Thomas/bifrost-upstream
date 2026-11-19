@@ -1020,6 +1020,13 @@ class ApiExecutor(PoolWorker):
                     for route in adopted:
                         self._wait_for_adopted_summary(summaries, route)
             else:
+                if self.bridge.containers:
+                    for key in ("routes", "terminal_routes"):
+                        entries = self.bridge.inventory.get(key)
+                        if not isinstance(entries, list) or any(
+                            not isinstance(entry, dict) or entry.get("kind") != "workflow" for entry in entries
+                        ):
+                            raise ProtocolError("Containers inventory must contain only workflow routes")
                 snapshot = await self.bridge.pool.reconcile_inventory(self.bridge.inventory)
             if self.runtime_profile != LINUX_RUNTIME_PROFILE and snapshot is None:
                 self.bridge.disconnect()
@@ -1028,7 +1035,7 @@ class ApiExecutor(PoolWorker):
                 return None
             if expected_generation is not None and self.bridge.lease.session_generation != generation:
                 return None
-            if self.runtime_profile == LINUX_RUNTIME_PROFILE:
+            if self.runtime_profile == LINUX_RUNTIME_PROFILE and not self.bridge.containers:
                 self.bridge.reject_missing_platform_routes(self.bridge.inventory)
                 assert self.bridge.agents is not None
                 await self.bridge.agents.reject_missing(self.bridge.inventory)
@@ -1041,7 +1048,7 @@ class ApiExecutor(PoolWorker):
             self.admission.hold(execution_id, request_bytes, workflow=True)
             self.admission.started(execution_id)
             self._remember_started(execution_id)
-        if self.runtime_profile != LINUX_RUNTIME_PROFILE:
+        if self.runtime_profile != LINUX_RUNTIME_PROFILE or self.bridge.containers:
             return
         agents = self.bridge.agents
         assert agents is not None

@@ -96,7 +96,7 @@ def phase6_linux_only():
             "path": vm_path, "location": "workspace",
             "content": "import asyncio\nfrom bifrost import workflow\n\n"
                        "@workflow(name='phase6_vm_hold')\nasync def phase6_vm_hold():\n"
-                       "    await asyncio.sleep(50)\n    return 'vm'\n",
+                       "    await asyncio.sleep(90)\n    return 'vm'\n",
         }, admin)
         workflows["vm"] = send("/api/workflows/register", {
             "path": vm_path, "function_name": "phase6_vm_hold",

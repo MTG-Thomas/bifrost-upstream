@@ -642,10 +642,8 @@ async function containersChecks() {
     }
     const vmRun = await submit('vm');
     await until('VM primary claims held work', () => runRow(vmRun)?.claim?.[0].worker === primary.id);
-    const linux = await submit('linux');
     const approved = await startRun('phase6-a', true, config.phase6.tenants[0]);
-    approved.gate.release.resolve();
-    const approvedRow = await settle('phase6-a', approved, 'Success');
+    const linux = await submit('linux');
     const linuxRow = await until('Linux-only workflow settles', () => {
       const result = runRow(linux);
       return result?.completed && result;
@@ -656,10 +654,14 @@ async function containersChecks() {
     assert.equal(linuxRow.claim.length, 1);
     assert.equal(container?.profile, 'linux-process-v1');
     assert.ok(container.hello > 0);
-    const workerStatus = JSON.parse(execFileSync('docker', ['exec', config.project + '-redis-1',
-      'redis-cli', '--json', 'HGETALL', 'bifrost:pool:' + container.id], {encoding: 'utf8'}));
+    const workerStatus = await until('Container requirements recorded in worker heartbeat', () => JSON.parse(execFileSync(
+      'docker', ['exec', config.project + '-redis-1', 'redis-cli', '--raw', 'GET',
+        'bifrost:pool:' + container.id + ':heartbeat'], {encoding: 'utf8'},
+    ).trim() || 'null'));
     assert.equal(Number(workerStatus.requirements_installed), 1);
     assert.equal(Number(workerStatus.requirements_total), 1);
+    approved.gate.release.resolve();
+    const approvedRow = await settle('phase6-a', approved, 'Success');
     evidence('three-scope-placement', {primary, vmRun, approved: approvedRow.claim[0], linux, container, requirements: 1});
     const released = await until('Containers retirement and confirmed Docker stop', () =>
       managedRows('containers').find((row) => row.id === container.id && row.state === 'retired'
