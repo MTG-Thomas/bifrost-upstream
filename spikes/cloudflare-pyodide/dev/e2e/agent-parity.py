@@ -62,7 +62,7 @@ async def signature(run_id):
                 }
             steps.append({"type": row.type, "content": content, "tokens_used": row.tokens_used})
         usage = (await db.scalars(
-            select(AIUsage).where(AIUsage.agent_run_id == run_id).order_by(AIUsage.created_at),
+            select(AIUsage).where(AIUsage.agent_run_id == run_id).order_by(AIUsage.timestamp),
         )).all()
         return {
             "status": run.status, "output": run.output, "model": run.llm_model,
