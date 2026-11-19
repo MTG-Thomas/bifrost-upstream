@@ -15,6 +15,17 @@ from zipfile import ZipFile
 from phase5a import API_ENV, ENTRY, FUNCTION, HERE, ROOT, approve_workflow, local_api, prepare, seed_workflows, sha256
 
 
+def mount_private_fixture(root: Path) -> None:
+    target = root / "api/scripts/containers_private_fixture.py"
+    shutil.copyfile(HERE / "containers_private_fixture.py", target)
+    # The archive is private. Uvicorn runs as the unprivileged API user.
+    target.chmod(0o644)
+    compose = root / "docker-compose.debug.yml"
+    compose.write_text(compose.read_text().replace(
+        "uvicorn src.main:app", "uvicorn scripts.containers_private_fixture:app", 1,
+    ))
+
+
 def seed_solution_workflows(project, admin, send, tenant_fixtures):
     content = (HERE / "fixture.py").read_text().replace(
         "from bifrost import tables, workflow\n",
@@ -146,11 +157,7 @@ if __name__ == "__main__":
     if args.action == "prepare":
         prepare(phase6=True)
         if ROOT.name.startswith(("containers-", "containers2-")):
-            shutil.copyfile(HERE / "containers_private_fixture.py", ROOT / "api/scripts/containers_private_fixture.py")
-            compose = ROOT / "docker-compose.debug.yml"
-            compose.write_text(compose.read_text().replace(
-                "uvicorn src.main:app", "uvicorn scripts.containers_private_fixture:app", 1,
-            ))
+            mount_private_fixture(ROOT)
     else:
         if args.containers and args.solution:
             parser.error("--containers uses the existing approved workspace fixture")

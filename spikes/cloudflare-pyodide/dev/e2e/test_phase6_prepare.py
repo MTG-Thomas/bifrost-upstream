@@ -2,9 +2,12 @@
 
 import unittest
 from pathlib import Path
+from stat import S_IROTH
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import phase5a
+from phase6 import mount_private_fixture
 
 
 class Phase6PrepareTest(unittest.TestCase):
@@ -20,3 +23,19 @@ class Phase6PrepareTest(unittest.TestCase):
             phase5a.prepare(phase6=True)
         self.assertEqual(git.call_count, 2)
         create.assert_called_once()
+
+    def test_private_fixture_can_be_read_by_the_api_user(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / "api/scripts"
+            scripts.mkdir(parents=True)
+            target = scripts / "containers_private_fixture.py"
+            target.touch()
+            target.chmod(0o600)
+            compose = root / "docker-compose.debug.yml"
+            compose.write_text("command: uvicorn src.main:app\n")
+
+            mount_private_fixture(root)
+
+            self.assertTrue(target.stat().st_mode & S_IROTH)
+            self.assertIn("uvicorn scripts.containers_private_fixture:app", compose.read_text())
