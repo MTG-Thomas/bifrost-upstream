@@ -1,0 +1,13 @@
+{
+  "name": "bifrost-cloudflare-summary-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "cf build"
+  },
+  "devDependencies": {
+    "cf": "1.0.0-rc.1",
+    "wrangler": "4.163.0"
+  }
+}
