@@ -13,6 +13,7 @@ import httpx
 import pytest
 import pytest_asyncio
 from pydantic import SecretStr
+from shared.solution_git_stage import SOLUTION_GIT_CAPABILITY
 from sqlalchemy import select
 
 from shared.models import WorkerCapacityProfile, WorkerCapacityReservation
@@ -538,7 +539,7 @@ async def test_containers_overflow_uses_vm_ceiling_and_keeps_workers_dispatches_
     [container_id] = await containers.launch_for_demand(policy)
     async with db.context() as session:
         worker = await session.get(ExecutionWorker, container_id)
-        assert worker.supported_handlers == ["workflow.execute"]
+        assert worker.supported_handlers == ["workflow.execute", SOLUTION_GIT_CAPABILITY]
         worker.state = "ready"
         workers = await session.get(ExecutionWorker, workers_id)
         workers.state = "ready"
