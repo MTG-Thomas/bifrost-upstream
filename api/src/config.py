@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     worker_capacity_token: SecretStr | None = Field(default=None, repr=False, exclude=True)
     cloudflare_capacity_url: str | None = Field(default=None, description="Optional Cloudflare burst provider HTTPS endpoint")
     cloudflare_capacity_token: SecretStr | None = Field(default=None, repr=False, exclude=True)
+    cloudflare_containers_scope: str | None = Field(default=None, description="Cloudflare Containers capacity scope")
+    cloudflare_containers_token: SecretStr | None = Field(default=None, repr=False, exclude=True)
     cloudflare_worker_hello_enabled: bool = Field(
         default=False,
         exclude=True,

@@ -31,6 +31,7 @@ from src.worker.remote.protocol import (
     ControlEnvelope,
     FragmentAssembler,
     Hello,
+    LINUX_RUNTIME_PROFILE,
     PayloadSerializationError,
     fragment,
     new_nonce,
@@ -178,11 +179,13 @@ class Launcher:
         on_ready: Callable[[], None] | None = None,
         on_stop: Callable[[], None] | None = None,
         authenticated_control: bool = False,
+        containers: bool = False,
     ) -> None:
         self.socket = socket
         self.identity = identity
         self.secret = secret
         self._authenticated_control = authenticated_control
+        self.containers = containers
         self.session_generation = 0
         self._sequence = 0
         self._last_command_sequence = 0
@@ -310,6 +313,7 @@ class Launcher:
             nonce=new_nonce(),
             hello_sequence=self._hello_sequence,
             execution_lane=os.environ.get("BIFROST_POOL_WORKER_EXECUTION_LANE", "normal"),
+            runtime_profile=LINUX_RUNTIME_PROFILE if self.containers else None,
         )
         await self.socket.send(json.dumps({
             "event": "hello",
@@ -817,7 +821,8 @@ async def _run_launcher(
     control_url += "/api/worker-control"
     control_headers = load_control_headers(control_url)
     identity = load_launcher_identity()
-    secret = os.environ["BIFROST_SECRET_KEY"]
+    containers = identity.form == "external" and "BIFROST_WORKER_CONTROL_SECRET" in os.environ
+    secret = os.environ.pop("BIFROST_WORKER_CONTROL_SECRET") if containers else os.environ["BIFROST_SECRET_KEY"]
     launcher: Launcher | None = None
     candidate: Launcher | None = None
     stopping = asyncio.Event()
@@ -835,6 +840,7 @@ async def _run_launcher(
                                 socket, identity=identity, secret=secret,
                                 on_ready=on_ready, on_stop=on_stop,
                                 authenticated_control=bool(control_headers),
+                                containers=containers,
                             )
                         else:
                             # A lost welcome may follow a committed enrollment.

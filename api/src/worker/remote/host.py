@@ -1418,6 +1418,29 @@ class RemoteControlHost:
                 )
             else:
                 control_key = settings.secret_key
+                containers_scope = getattr(settings, "cloudflare_containers_scope", None)
+                if signed.form == "external" and containers_scope is not None:
+                    async with get_liveness_db_context() as db:
+                        reservation = (await db.execute(select(
+                            ExecutionWorker.capacity_scope,
+                            ExecutionWorker.capacity_resource_uid,
+                            ExecutionWorker.runtime_profile,
+                        ).where(
+                            ExecutionWorker.id == signed.incarnation_id,
+                            ExecutionWorker.form == "external",
+                        ))).one_or_none()
+                    if reservation is not None and reservation.capacity_scope == containers_scope:
+                        token = settings.cloudflare_containers_token
+                        if (
+                            not token or signed.resource_uid is None
+                            or signed.resource_uid != reservation.capacity_resource_uid
+                            or signed.runtime_profile != LINUX_RUNTIME_PROFILE
+                            or reservation.runtime_profile != LINUX_RUNTIME_PROFILE
+                        ):
+                            raise AuthenticationError("Invalid Containers worker resource binding")
+                        control_key = external_worker_control_key(
+                            token.get_secret_value(), signed.incarnation_id, signed.resource_uid,
+                        )
             hello = verify_hello(control_key, signed)
             if "runtime_profile" in initial:
                 raise ProtocolError("physical runtime profile must be inside signed hello")
