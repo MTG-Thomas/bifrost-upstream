@@ -185,8 +185,11 @@ const proxy = createServer(async (request, response) => {
       assert.ok(['text', 'tool', 'cancel', 'reset', 'chat-text', 'chat-next', 'chat-cancel', 'chat-reset'].includes(scenario));
       if (scenario === 'chat-next') {
         assert.deepEqual(body.messages.slice(1, -1).map(({role, content}) => [role, content]),
-          [['user', '{"scenario":"chat-text"}'], ['assistant', 'fixture chat-text']]);
+          [['user', '{"scenario":"chat-prior"}'], ['assistant', 'fixture chat-prior'],
+            ['user', '{"scenario":"chat-text"}'], ['assistant', 'fixture chat-text']]);
       }
+      if (scenario === 'chat-text') assert.deepEqual(body.messages.slice(1, -1).map(({role, content}) => [role, content]),
+        [['user', '{"scenario":"chat-prior"}'], ['assistant', 'fixture chat-prior']]);
       if (scenario.startsWith('chat-')) assert.equal(body.tools, undefined);
       agentCalls.set(scenario, (agentCalls.get(scenario) ?? 0) + 1);
       response.writeHead(200, {'Content-Type': 'text/event-stream'});
@@ -981,6 +984,7 @@ async function agentChecks() {
   sql(`UPDATE execution_workers SET supported_handlers=supported_handlers
     - 'agent.run' - 'agent.summarize' - 'agent.summarize_backfill'
     WHERE runtime_profile='linux-process-v1'`);
+  const chats = config.chat ? await seedChatHistory() : null;
   await control('start');
   await until('agent launcher ready', () => wire.some((event) => event.kind === 'ready'));
   await until('agent launcher reports slot liveness', () => wire.some((event) =>
@@ -1048,7 +1052,7 @@ async function agentChecks() {
     input: readFileSync(new URL('./agent-parity.py', import.meta.url)), stdio: ['pipe', 'inherit', 'inherit'],
     timeout: 30_000,
   });
-  if (config.chat) await chatChecks();
+  if (chats) await chatChecks(chats);
 }
 
 async function subscribeChat(conversation) {
@@ -1110,10 +1114,31 @@ const chatSignature = (events) => events.map(({sequence, kind, status, payload})
   payload.finish_reason ?? null, payload.incomplete ?? null,
 ]);
 
-async function chatChecks() {
+function runLinuxChat(id) {
+  execFileSync('docker', ['exec', '-i', config.project + '-api-1', 'python', '-', id], {
+    input: readFileSync(new URL('./chat-parity.py', import.meta.url)), stdio: ['pipe', 'inherit', 'inherit'],
+    timeout: 30_000,
+  });
+}
+
+async function seedChatHistory() {
   const workersConversation = await chatConversation(config.agent.ids[0]);
   const linuxAgent = sql("SELECT to_json(id) FROM agents WHERE name='linux-chat-parity'");
   const linuxConversation = await chatConversation(linuxAgent);
+  for (const conversation of [workersConversation, linuxConversation]) {
+    const id = await submitChat(conversation, 'chat-prior');
+    runLinuxChat(id);
+    assert.equal(chatRecords(id).status, 'completed');
+    for (const suffix of ['events', 'sequence']) {
+      const result = execFileSync('docker', ['exec', config.project + '-redis-1', 'redis-cli',
+        'EXPIRE', `bifrost:chat:${conversation}:${suffix}`, '0'], {encoding: 'utf8', timeout: 5000});
+      assert.equal(result.trim(), '1');
+    }
+  }
+  return {workersConversation, linuxConversation};
+}
+
+async function chatChecks({workersConversation, linuxConversation}) {
   const {socket, events} = await subscribeChat(workersConversation);
   const linux = await subscribeChat(linuxConversation);
   try {
@@ -1138,10 +1163,7 @@ async function chatChecks() {
     assert.equal(agentRow(workersId).worker, config.incarnation);
 
     const linuxId = await submitChat(linuxConversation, 'chat-text');
-    execFileSync('docker', ['exec', '-i', config.project + '-api-1', 'python', '-', linuxId], {
-      input: readFileSync(new URL('./chat-parity.py', import.meta.url)), stdio: ['pipe', 'inherit', 'inherit'],
-      timeout: 30_000,
-    });
+    runLinuxChat(linuxId);
     await until('Linux chat done on the same subscription contract', () => linux.events.some(({kind}) => kind === 'done'));
     assert.deepEqual(chatRecords(linuxId), workersRow);
     assert.deepEqual(chatSignature(expected), chatSignature(linux.events));

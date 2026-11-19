@@ -20,10 +20,11 @@ def completion(request):
     body = json.loads(request.content)
     assert body["stream"]
     assert not body.get("tools")
-    assert body["messages"][-1]["content"] == '{"scenario":"chat-text"}'
+    scenario = json.loads(body["messages"][-1]["content"])["scenario"]
+    assert scenario in {"chat-prior", "chat-text"}
     chunks = [
         {"choices": [{"index": 0, "delta": {"role": "assistant", "content": "fixture "}}]},
-        {"choices": [{"index": 0, "delta": {"content": "chat-text"}}]},
+        {"choices": [{"index": 0, "delta": {"content": scenario}}]},
         {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
         {"choices": [], "usage": {"prompt_tokens": 9, "completion_tokens": 3, "total_tokens": 12}},
     ]
