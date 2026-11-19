@@ -796,7 +796,7 @@ Manual development enrollment requires the API hello gate and the same
 `BIFROST_CLOUDFLARE_SUMMARY_ENDPOINT` on the API and private summary Worker.
 The launcher opts in with `BIFROST_CLOUDFLARE_SUMMARY_WORKER`, which supplies
 the service binding in its hosted config. The dedicated Worker config is
-`cloudflare.summary.config.ts`. It uses no public hostname and disables
+`summary-worker/cloudflare.config.ts`. Run the private Worker build from that directory. It uses no public hostname and disables
 observability to keep command payloads out of traces. A missing binding
 leaves workflow-only advertisement. Invalid provider configuration refuses
 the summary before provider dispatch and leaves workflow handling available.

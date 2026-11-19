@@ -7,7 +7,7 @@ if (!name || !endpoint) throw new Error('Configure the private summary Worker na
 export default defineConfig({
   worker: {
     name,
-    entrypoint: './summary-provider.mjs',
+    entrypoint: '../summary-provider.mjs',
     compatibilityDate: '2026-10-30',
     workersDev: false,
     previewUrls: false,
