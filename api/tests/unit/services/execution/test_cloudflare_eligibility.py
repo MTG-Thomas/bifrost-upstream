@@ -530,6 +530,15 @@ async def test_large_dense_source_is_rejected_before_parsing(monkeypatch):
     parse.assert_not_called()
 
 
+async def test_analysis_bounds_inherited_scope_tables(monkeypatch):
+    from bifrost import cloudflare_analysis
+
+    monkeypatch.setattr(cloudflare_analysis, "_MAX_ACTIVE_SCOPE_BINDINGS", 6)
+    source = b"a = 'a'\nb = 'b'\ndef run():\n    def nested(): pass\n"
+    with pytest.raises(AnalysisRejected, match="active scope budget"):
+        await _analyze({ENTRY: source})
+
+
 @pytest.mark.parametrize("indexed", [False, True])
 async def test_missing_import_retries_only_if_the_index_has_the_path(review, monkeypatch, indexed):
     approval, sources, _ = review

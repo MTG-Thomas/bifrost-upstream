@@ -29,6 +29,7 @@ _MAX_LARGE_FILE_TOKENS = 75_000
 MAX_SUBREQUESTS = 50
 MAX_CPU_MS = 2**53 - 1  # Integer range of the launcher wire.
 _MAX_NODES = 100_000
+_MAX_ACTIVE_SCOPE_BINDINGS = 200_000
 _HOST_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 _PROVIDED = {"bifrost", "js", "pyodide", "_pyodide"}
 # Pyodide 314.0.6, CPython 3.14 WebAssembly. Verified in Workerd against
@@ -636,6 +637,7 @@ class _Analysis:
         inherited_constants: dict[str, str], inherited_clients: dict[str, _Client],
         inherited_factories: dict[str, _Client], imports: list[ast.Import | ast.ImportFrom], path: str,
         arguments: ast.arguments | None = None, class_clients: dict[str, _Client] | None = None,
+        *, active_bindings: int = 0,
     ) -> dict[str, _Client]:
         roots = body if isinstance(body, list) else [body]
         nodes = [node for root in roots for node in _scoped_nodes(root)]
@@ -647,6 +649,13 @@ class _Analysis:
         }
         if arguments is not None:
             local_names.update(node.arg for node in ast.iter_child_nodes(arguments) if isinstance(node, ast.arg))
+        # Recursive scope inspection retains ancestor lookup tables. Bound
+        # their aggregate size independently of the source and AST budgets.
+        inherited_size = (
+            len(inherited_aliases) + len(inherited_constants) + len(inherited_clients) + len(inherited_factories)
+        )
+        if active_bindings + inherited_size + len(local_names) > _MAX_ACTIVE_SCOPE_BINDINGS:
+            raise AnalysisRejected("Workspace sources exceed the active scope budget", "CF_PARSE_BUDGET")
         aliases = {**inherited_aliases, **{name: f"local.{name}" for name in local_names}}
         constants = {name: value for name, value in inherited_constants.items() if name not in local_names}
         clients = {name: value for name, value in inherited_clients.items() if name not in local_names}
@@ -704,11 +713,18 @@ class _Analysis:
                 raise
             if isinstance(node, _SCOPES):
                 shared = {} if isinstance(node, ast.ClassDef) else class_clients
+                ancestor_bindings = active_bindings + len(aliases) + len(constants) + len(clients) + len(factories)
                 if isinstance(node, ast.ClassDef):
-                    self.inspect_scope(node.body, aliases, constants, clients, factories, imports, path, class_clients=shared)
+                    self.inspect_scope(
+                        node.body, aliases, constants, clients, factories, imports, path,
+                        class_clients=shared, active_bindings=ancestor_bindings,
+                    )
                 else:
                     child_clients = {**clients, **(shared or {})}
-                    result = self.inspect_scope(node.body, aliases, constants, child_clients, factories, imports, path, node.args)
+                    result = self.inspect_scope(
+                        node.body, aliases, constants, child_clients, factories, imports, path, node.args,
+                        active_bindings=ancestor_bindings + len(child_clients),
+                    )
                     if shared is not None and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "__init__":
                         shared.update({name: value for name, value in result.items() if name.startswith("self.")})
                 continue

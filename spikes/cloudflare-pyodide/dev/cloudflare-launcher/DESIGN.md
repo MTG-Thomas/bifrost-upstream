@@ -705,7 +705,8 @@ bundle. Files above 128 KiB pass a streaming 75,000-token ceiling before AST
 construction, since dense source can allocate substantial memory before the
 AST node check. Each imported path is loaded once per bundle and a single
 module AST is processed at a time. The 100,000-node ceiling across the
-bundle still applies, as do the CPU estimate and analysis I/O timeout.
+bundle still applies. Nested scopes also have a 200,000-entry budget for
+active lookup tables. The CPU estimate and analysis I/O timeout still apply.
 The estimates are static sizing signals. A call site may execute
 many times and CPU varies with inputs. TenantHost and the platform apply the
 actual limits. Inline code, Fast Path and artifact-workspace dispatches are
