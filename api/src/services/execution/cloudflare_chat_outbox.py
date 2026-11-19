@@ -191,6 +191,8 @@ async def prune_settled_events(db: AsyncSession) -> None:
         select(CloudflareAgentAttempt.claim_id).where(
             CloudflareAgentAttempt.claim_id == CloudflareChatEvent.claim_id,
             CloudflareAgentAttempt.data.contains({"settled": True}),
+            CloudflareChatEvent.projection_lost.is_(False)
+            | (CloudflareAgentAttempt.data["attempt_state"].as_string() == "uncertain"),
         ).exists(),
     ).order_by(CloudflareChatEvent.created_at).limit(500).with_for_update(skip_locked=True)
     await db.execute(delete(CloudflareChatEvent).where(CloudflareChatEvent.id.in_(expired)))
@@ -201,10 +203,14 @@ async def fail_settled_runs_with_projection_loss() -> None:
     async with get_db_context() as db:
         runs = (await db.scalars(
             select(AgentRun).join(CloudflareAgentAttempt, CloudflareAgentAttempt.run_id == AgentRun.id)
-            .where(AgentRun.status == "completed", select(CloudflareChatEvent.id).where(
-                CloudflareChatEvent.claim_id == CloudflareAgentAttempt.claim_id,
-                CloudflareChatEvent.projection_lost.is_(True),
-            ).exists())
+            .where(
+                CloudflareAgentAttempt.data.contains({"settled": True}),
+                CloudflareAgentAttempt.data["attempt_state"].as_string().is_distinct_from("uncertain"),
+                select(CloudflareChatEvent.id).where(
+                    CloudflareChatEvent.claim_id == CloudflareAgentAttempt.claim_id,
+                    CloudflareChatEvent.projection_lost.is_(True),
+                ).exists(),
+            )
             .limit(20).with_for_update(of=AgentRun, skip_locked=True)
         )).all()
         updates = []
@@ -213,7 +219,8 @@ async def fail_settled_runs_with_projection_loss() -> None:
                 CloudflareAgentAttempt.run_id == run.id,
             ))).one()
             attempt.data = {**attempt.data, "attempt_state": "uncertain"}
-            run.status = "failed"
+            if run.status == "completed":
+                run.status = "failed"
             run.error = "The Cloudflare chat event projection was lost. The saved messages may be incomplete."
             run.output = {"text": (run.output or {}).get("text"), "partial": True}
             updates.append((run, run.agent.name if run.agent else "Chat"))
@@ -246,7 +253,7 @@ async def run_publisher(stop: asyncio.Event) -> None:
                         await prune_settled_events(db)
                 if started >= maintenance_due:
                     maintenance_due = started + 60
-            except (TimeoutError, CacheError, SQLAlchemyError):
+            except (OSError, CacheError, SQLAlchemyError):
                 logger.warning("Cloudflare chat event publishing will retry", exc_info=True)
                 await wait_or_stop(stop, 5)
                 continue

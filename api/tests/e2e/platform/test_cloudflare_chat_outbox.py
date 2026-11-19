@@ -222,13 +222,6 @@ async def test_settled_projection_loss_fails_run_and_discards_late_rows(attempt,
     await db_session.commit()
     assert await publish_one(db_session)
     await db_session.commit()
-    await fail_settled_runs_with_projection_loss()
-    await db_session.refresh(run)
-    await db_session.refresh(journal)
-    assert run.status == "failed"
-    assert run.output == {"text": "one", "partial": True}
-    assert journal.data["attempt_state"] == "uncertain"
-    assert [event["sequence"] for event in await replay_chat_run_events(conversation_id)] == [1]
     await discard_receipts(db_session)
     rows = (await db_session.scalars(select(CloudflareChatEvent).where(
         CloudflareChatEvent.claim_id == claim_id,
@@ -237,6 +230,18 @@ async def test_settled_projection_loss_fails_run_and_discards_late_rows(attempt,
     for row in rows:
         row.created_at = datetime.now(UTC) - timedelta(days=3)
     await db_session.flush()
+    await prune_settled_events(db_session)
+    await db_session.commit()
+    assert await db_session.scalar(select(CloudflareChatEvent.id).where(
+        CloudflareChatEvent.claim_id == claim_id,
+    ).limit(1))
+    await fail_settled_runs_with_projection_loss()
+    await db_session.refresh(run)
+    await db_session.refresh(journal)
+    assert run.status == "failed"
+    assert run.output == {"text": "one", "partial": True}
+    assert journal.data["attempt_state"] == "uncertain"
+    assert [event["sequence"] for event in await replay_chat_run_events(conversation_id)] == [1]
     await prune_settled_events(db_session)
     await db_session.commit()
     assert not await db_session.scalar(select(CloudflareChatEvent.id).where(CloudflareChatEvent.claim_id == claim_id))
