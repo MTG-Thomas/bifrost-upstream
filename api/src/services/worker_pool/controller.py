@@ -525,7 +525,7 @@ class WorkerCapacityController(ABC):
                     idle_declared[worker.id] = budget
             # Prefer Cloudflare slots for eligible work, leaving Linux capacity
             # for requests only Linux can execute.
-            free = [*available_declared, *free]
+            free = [*available_declared, *sorted(free, key=lambda budget: budget.containers)]
             needed = [request for request in waiting_requests if request.id not in covered]
             profile, peer = self.capacity_profile, self.peer_profile
             new_declared = None

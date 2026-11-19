@@ -558,8 +558,11 @@ scopes wait for the reconciled VM to reach its live ceiling. Containers
 advertise only Normal `workflow.execute@1`. The planner and fenced
 dispatch predicates exclude Workers-eligible work from Containers, and
 the API skips their platform-job and service supervisors. Existing VM
-claims still win if a VM slot opens during overflow. Containers use the
-VM policy's fixed Linux memory size and have no warm minimum.
+claimants can still take a dispatch if their slot opens during overflow.
+The planner packs compatible VM capacity before Containers capacity.
+Fenced claims retain queue order and whichever eligible owner claims first
+gets the dispatch. Containers use the VM policy's fixed Linux memory
+size and have no warm minimum.
 
 The provider under `deploy/cloudflare/worker` comes from `bdbe07f93` in
 #1425. Its wire protocol, durable ledger, physical container lifecycle
