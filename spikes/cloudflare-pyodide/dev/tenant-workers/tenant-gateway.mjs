@@ -39,10 +39,11 @@ export function basePathForName(name) {
   return base;
 }
 
-export function createTenantGateway({store, manifest, runToken} = {}) {
+export function createTenantGateway({store, manifest, runToken, solutionId} = {}) {
   const sources = isRecord(store) ? store : {};
   const pins = isRecord(manifest) ? manifest : {};
   const token = typeof runToken === 'string' && runToken.length >= 10 ? runToken : null;
+  const storageRoot = solutionId == null ? '' : `_solutions/${solutionId}/`;
 
   async function resolve(name) {
     const base = basePathForName(name);
@@ -52,7 +53,7 @@ export function createTenantGateway({store, manifest, runToken} = {}) {
       const pin = pins[candidate];
       if (typeof content === 'string' && HEX64.test(pin ?? '')) {
         if ((await sha256Hex(content)) !== pin) continue;
-        return {kind, path: candidate, storage_path: candidate, hash: pin};
+        return {kind, path: candidate, storage_path: storageRoot + candidate, hash: pin};
       }
     }
     if (Object.keys(sources).some((p) => p.startsWith(`${base}/`))) {
@@ -73,12 +74,20 @@ export function createTenantGateway({store, manifest, runToken} = {}) {
       // gateway decision. The value itself is never echoed or forwarded here.
       const headers = {'X-Gateway-Injected': token === null ? 'false' : 'true'};
       if (url.pathname === '/api/sdk/modules-resolve') {
+        if (url.searchParams.get('solution_id') !== (solutionId ?? null) ||
+            url.searchParams.get('global_repo_access') === 'true') {
+          return Response.json({phase: 'scope-mismatch'}, {status: 403, headers});
+        }
         const name = url.searchParams.get('name') ?? '';
         return Response.json(await resolve(name), {headers});
       }
       const prefix = '/api/sdk/modules/';
       if (url.pathname.startsWith(prefix)) {
-        const path = decodeURIComponent(url.pathname.slice(prefix.length));
+        const storagePath = decodeURIComponent(url.pathname.slice(prefix.length));
+        if (!storagePath.startsWith(storageRoot)) {
+          return Response.json({phase: 'scope-mismatch'}, {status: 404, headers});
+        }
+        const path = storagePath.slice(storageRoot.length);
         if (!isStoragePath(path)) {
           return Response.json({phase: 'invalid-path', error: 'Invalid module path'}, {status: 400, headers});
         }
@@ -93,7 +102,8 @@ export function createTenantGateway({store, manifest, runToken} = {}) {
         if ((await sha256Hex(content)) !== pin) {
           return Response.json({phase: 'digest-mismatch', error: 'Workspace module digest mismatch'}, {status: 409, headers});
         }
-        return Response.json({path, content, hash: pin}, {headers});
+        return Response.json({path, content, hash: pin,
+          ...(solutionId == null ? {} : {storage_path: storagePath})}, {headers});
       }
       return new Response('Not found', {status: 404});
     },

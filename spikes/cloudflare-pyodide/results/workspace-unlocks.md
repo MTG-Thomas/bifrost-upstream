@@ -83,3 +83,22 @@ Run the census using `dev/routing/census.mjs` against an archive of the
 stated workspace revision with `--cpu 1000` and `--allowance 50` or
 `--allowance 12`. Keep the raw reports local because they include source
 paths and inferred hostnames.
+
+## Installed Solution census
+
+The same revision contains 35 Solution workspaces and 317 manifest entries.
+The install-aware rerun uses the CLI's package source collector and the
+server analyzer against each install's own tree. Four descriptors with
+outbound access account for 36 excluded entries. Among the remaining entries,
+71 are other executable types, leaving 210 Normal workflow entries to analyze.
+
+| Subrequest allowance | Earlier static candidates | Before Solution routing | After Solution routing, conditional on approval | Unresolved URL calls among the new candidates |
+| ---: | ---: | ---: | ---: | ---: |
+| 12 | 78 | 0 | 52 | 7 |
+| 50 | 124 | 0 | 83 | 11 |
+
+The 52 and 83 are eligible to receive the dispatch marker once the exact
+installed bytes have been published and approved. No approvals were granted
+for this workspace. The archive cannot establish live install settings,
+instance-vendored modules, actual SDK calls, or execution success. Reproduce
+the aggregate-only count with `dev/routing/solution-census.py`.

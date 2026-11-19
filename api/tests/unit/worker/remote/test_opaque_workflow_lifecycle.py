@@ -44,7 +44,7 @@ REVISION = "ab" * 32
 
 @pytest.fixture
 def reviewed_workspace(monkeypatch):
-    prepare = AsyncMock(return_value=cloudflare_eligibility.ApprovedWorkspace({}))
+    prepare = AsyncMock(return_value=cloudflare_eligibility.ApprovedWorkspace({}, "a" * 64))
     monkeypatch.setattr(cloudflare_eligibility, "prepare_approved_workspace", prepare)
     return prepare
 

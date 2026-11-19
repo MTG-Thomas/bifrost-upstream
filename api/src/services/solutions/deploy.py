@@ -561,6 +561,7 @@ class SolutionDeployer:
         if bundle.version is not None and bundle.version != solution.version:
             solution.upgraded_from_version = solution.version
             solution.version = bundle.version
+        solution.runtime_source_generation = None
 
         # ── Solution-level icon — deploy-owned exactly like the app logo:
         # declared in the bundle => set, absent => cleared.
@@ -633,6 +634,7 @@ class SolutionDeployer:
                         ),
                     ),
                 )
+            solution.runtime_source_generation = uuid4()
 
         return DeployResult(
             workflows_upserted=len(rb.workflows),

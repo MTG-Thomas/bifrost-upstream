@@ -83,6 +83,23 @@ test('modules-resolve maps import names to storage paths', async () => {
   assert.equal(miss.kind, 'not_found');
 });
 
+test('installed snapshot serves only the bound Solution storage scope', async () => {
+  const solutionId = '0e9d8c7b-6a59-4847-b6a5-948372615041';
+  const store = {[WF]: wfSrc};
+  const gateway = createTenantGateway({store, manifest: await manifestFor(store), solutionId});
+  const storagePath = `_solutions/${solutionId}/${WF}`;
+  const resolution = '/api/sdk/modules-resolve?name=workflows.wf';
+  const module = await (await get(gateway, resolution + '&solution_id=' + solutionId)).json();
+  assert.equal(module.storage_path, storagePath);
+  const source = await (await get(gateway, `/api/sdk/modules/${storagePath}`)).json();
+  assert.equal(source.path, WF);
+  assert.equal(source.content, wfSrc);
+  assert.equal((await get(gateway, resolution)).status, 403);
+  assert.equal((await get(gateway, resolution + '&solution_id=' + solutionId + '&global_repo_access=true')).status, 403);
+  assert.equal((await get(gateway, '/api/sdk/modules/_solutions/other/' + WF)).status, 404);
+  assert.equal((await get(gateway, '/api/sdk/modules/' + WF)).status, 404);
+});
+
 test('isStoragePath rejects escapes and non-python paths', () => {
   assert.equal(isStoragePath('workflows/wf.py'), true);
   assert.equal(isStoragePath('wf'), false);

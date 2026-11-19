@@ -359,7 +359,8 @@ export class TenantHost extends DurableObject {
       this.#current = {handle, generation, deadlineAt, routeId, stop, stopped: false,
         remainingSubrequests: routeId ? workspace.subrequest_allowance : undefined,
         egress: new Set((routeId ? workspace.https_hosts : egressHosts).map((h) => h.toLowerCase())),
-        snapshot: routeId ? createTenantGateway({store: workspace.sources, manifest: workspace.manifest}) : null};
+        snapshot: routeId ? createTenantGateway({store: workspace.sources, manifest: workspace.manifest,
+          solutionId: workspace.solution_id}) : null};
       // Survives a host reset: the next instance retires this generation. The
       // only gated write: it is made durable before the final deadline check,
       // so nothing is left to hold the child dispatch at the output gate.

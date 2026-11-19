@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from dataclasses import dataclass
 from typing import Annotated
 from uuid import UUID
@@ -14,7 +15,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import get_db_context
 from src.core.storage.contracts import StorageError
-from src.models.orm import CloudflareApproval, FileIndex, Workflow
+from src.models.orm import (
+    CloudflareApproval,
+    FileIndex,
+    Solution,
+    SolutionFileIndex,
+    Workflow,
+)
 from src.services.execution.cloudflare_analysis import (
     MAX_BUNDLE_BYTES,
     MAX_CPU_MS,
@@ -29,8 +36,17 @@ from src.services.execution.cloudflare_analysis import (
 )
 from src.services.execution.cloudflare_hosts import reviewed_https_allowlist
 from src.services.repo_storage import RepoStorage
+from src.services.solutions.storage import SolutionStorage
 
 _SourceDigest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+
+
+class SolutionApprovalScope(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    install_id: UUID
+    version: str | None
+    source_generation: UUID
 
 
 class ApprovalDeclaration(BaseModel):
@@ -49,10 +65,17 @@ class ApprovalDeclaration(BaseModel):
     subrequest_allowance: int = Field(strict=True, ge=0, le=MAX_SUBREQUESTS)
     estimated_cpu_ms: int = Field(strict=True, ge=0)
     cpu_budget_ms: int = Field(strict=True, gt=0, le=MAX_CPU_MS)
+    solution: SolutionApprovalScope | None = None
 
     @property
     def manifest(self) -> dict[str, str]:
         return {**self.module_sha256, self.entry_path: self.entry_sha256}
+
+    def review_fields(self) -> dict[str, object]:
+        fields = self.model_dump(mode="json")
+        if self.solution is None:
+            fields.pop("solution")
+        return fields
 
 
 @dataclass(frozen=True)
@@ -70,7 +93,7 @@ class ApprovalProposal:
             "organization_id": str(self.organization_id) if self.organization_id else None,
             "previous_revision": self.previous_revision,
             "inactive_history_count": self.inactive_history_count,
-            **self.declaration.model_dump(mode="json"),
+            **self.declaration.review_fields(),
         }
 
     @property
@@ -81,6 +104,7 @@ class ApprovalProposal:
 @dataclass(frozen=True)
 class ApprovedWorkspace:
     bundle: dict[str, object]
+    entry_sha256: str
 
 
 async def current_approval(db: AsyncSession, workflow_id: UUID) -> CloudflareApproval | None:
@@ -111,16 +135,37 @@ async def revoke_approval(db: AsyncSession, workflow_id: UUID) -> str | None:
     return current.revision
 
 
-async def indexed_pins(db: AsyncSession, paths: set[str]) -> dict[str, str | None]:
-    rows = await db.execute(select(FileIndex.path, FileIndex.content_hash).where(FileIndex.path.in_(paths)))
+async def indexed_pins(
+    db: AsyncSession, paths: set[str], *, install_id: UUID | None = None,
+) -> dict[str, str | None]:
+    if install_id is None:
+        query = select(FileIndex.path, FileIndex.content_hash).where(FileIndex.path.in_(paths))
+    else:
+        query = select(SolutionFileIndex.path, SolutionFileIndex.content_hash).where(
+            SolutionFileIndex.solution_id == install_id, SolutionFileIndex.path.in_(paths),
+        )
+    rows = await db.execute(query)
     return {row.path: row.content_hash for row in rows}
 
 
-def _loose_workflow(workflow: Workflow | None) -> bool:
-    return bool(
-        workflow is not None and workflow.is_active and workflow.solution_id is None
-        and workflow.type == "workflow"
+async def solution_approval_scope(
+    db: AsyncSession, install_id: UUID, organization_id: UUID | None,
+) -> SolutionApprovalScope | None:
+    row = (await db.execute(select(Solution.version, Solution.runtime_source_generation).where(
+        Solution.id == install_id, Solution.status == "active",
+        Solution.organization_id.is_not_distinct_from(organization_id),
+        Solution.runtime_source_generation.is_not(None),
+        ~Solution.allow_outbound_access,
+    ))).one_or_none()
+    if row is None:
+        return None
+    return SolutionApprovalScope(
+        install_id=install_id, version=row.version, source_generation=row.runtime_source_generation,
     )
+
+
+def _source_storage(install_id: UUID | None) -> RepoStorage | SolutionStorage:
+    return SolutionStorage(install_id) if install_id is not None else RepoStorage()
 
 
 class ObservationChanged(AnalysisRejected):
@@ -135,14 +180,20 @@ async def propose_approval(
 ) -> ApprovalProposal:
     async with get_db_context() as db:
         workflow = await db.get(Workflow, workflow_id)
-        if workflow is None or not _loose_workflow(workflow):
-            raise ObservationChanged("Expected an active loose-workspace workflow")
+        if workflow is None or not workflow.is_active or workflow.type != "workflow":
+            raise ObservationChanged("Expected an active workflow")
+        install_id = workflow.solution_id
+        solution = None
+        if install_id is not None:
+            solution = await solution_approval_scope(db, install_id, workflow.organization_id)
+            if solution is None:
+                raise ObservationChanged("Expected an active Solution with published install-local source")
         current = await current_approval(db, workflow_id)
         previous_revision = current.revision if current else None
         history_count = 0 if current else await _history_count(db, workflow_id)
         entry_path, function_name, organization_id = workflow.path, workflow.function_name, workflow.organization_id
 
-    storage = RepoStorage()
+    storage = _source_storage(install_id)
 
     async def read(path: str, max_bytes: int) -> bytes | None:
         try:
@@ -158,13 +209,13 @@ async def propose_approval(
                 raise
             content = None
         if analysed_pins is not None:
-            await check_pin(path, storage.compute_hash(content) if content is not None else None)
+            await check_pin(path, hashlib.sha256(content).hexdigest() if content is not None else None)
         return content
 
     async def check_pin(path: str, pin: str | None) -> None:
         if pin is None:
             async with get_db_context() as db:
-                if path in await indexed_pins(db, {path}):
+                if path in await indexed_pins(db, {path}, install_id=install_id):
                     raise SourceUnresolved("Indexed workspace source is missing from storage")
         if expected_pins is not None and path in expected_pins and pin != expected_pins[path]:
             raise ObservationChanged("Observed workspace sources changed before analysis")
@@ -178,7 +229,7 @@ async def propose_approval(
     merged_hosts = sorted(set(declaration.required_https_hosts) | set(reviewed_https_allowlist(https_hosts or [])))
     if len(merged_hosts) > 32:
         raise AnalysisRejected("The reviewed HTTPS allowlist exceeds 32 hosts")
-    declaration = declaration.model_copy(update={"https_hosts": merged_hosts})
+    declaration = declaration.model_copy(update={"https_hosts": merged_hosts, "solution": solution})
     return ApprovalProposal(workflow_id, organization_id, previous_revision, declaration, history_count)
 
 
@@ -189,14 +240,17 @@ async def accept_proposal(
     workflow = await _lock_workflow(db, proposal.workflow_id)
     declaration = proposal.declaration
     current = await current_approval(db, proposal.workflow_id)
+    solution = declaration.solution
+    install_id = solution.install_id if solution else None
     if (
-        workflow is None or not _loose_workflow(workflow)
-        or (workflow.organization_id, workflow.path, workflow.function_name) != (
-            proposal.organization_id, declaration.entry_path, declaration.function_name,
+        workflow is None or not workflow.is_active or workflow.type != "workflow"
+        or (workflow.organization_id, workflow.solution_id, workflow.path, workflow.function_name) != (
+            proposal.organization_id, install_id, declaration.entry_path, declaration.function_name,
         )
+        or (install_id is not None and await solution_approval_scope(db, install_id, proposal.organization_id) != solution)
         or (current.revision if current else None) != proposal.previous_revision
         or (current is None and await _history_count(db, proposal.workflow_id) != proposal.inactive_history_count)
-        or await indexed_pins(db, set(declaration.manifest)) != declaration.manifest
+        or await indexed_pins(db, set(declaration.manifest), install_id=install_id) != declaration.manifest
     ):
         raise AnalysisRejected("Workflow scope, source pins or current approval changed during review")
 
@@ -207,7 +261,7 @@ async def accept_proposal(
                 await db.flush()
             row = CloudflareApproval(
                 revision=proposal.revision, workflow_id=proposal.workflow_id, organization_id=proposal.organization_id,
-                policy_version=POLICY_VERSION, declaration=declaration.model_dump(mode="json"), accepted_by=accepted_by,
+                policy_version=POLICY_VERSION, declaration=declaration.review_fields(), accepted_by=accepted_by,
             )
             db.add(row)
             await db.flush()
@@ -223,8 +277,10 @@ async def prepare_approved_workspace(
     function_name: str | None,
     entry_sha256: str | None,
     expected_revision: str,
+    solution_id: str | None = None,
 ) -> ApprovedWorkspace | None:
     """Check the active approval and send only the exact pinned UTF-8 bytes."""
+    install_id = UUID(solution_id) if solution_id is not None else None
     matching = (
         select(CloudflareApproval)
         .join(Workflow, Workflow.id == CloudflareApproval.workflow_id)
@@ -234,7 +290,7 @@ async def prepare_approved_workspace(
             CloudflareApproval.policy_version == POLICY_VERSION,
             CloudflareApproval.is_current,
             CloudflareApproval.organization_id.is_not_distinct_from(Workflow.organization_id),
-            Workflow.is_active, Workflow.solution_id.is_(None), Workflow.type == "workflow",
+            Workflow.is_active, Workflow.solution_id.is_not_distinct_from(install_id), Workflow.type == "workflow",
             Workflow.path == entry_path, Workflow.function_name == function_name,
         )
     )
@@ -243,14 +299,22 @@ async def prepare_approved_workspace(
         if approval is None:
             return None
         declaration = ApprovalDeclaration.model_validate(approval.declaration)
-    if (declaration.entry_path, declaration.function_name, declaration.entry_sha256) != (
-        entry_path, function_name, entry_sha256,
+        owner = approval.organization_id
+        solution = declaration.solution
+        if (solution.install_id if solution else None) != install_id:
+            return None
+        if install_id is not None and await solution_approval_scope(db, install_id, owner) != solution:
+            return None
+    if (
+        (declaration.entry_path, declaration.function_name) != (entry_path, function_name)
+        or (install_id is None and declaration.entry_sha256 != entry_sha256)
+        or (install_id is not None and entry_sha256 is not None and declaration.entry_sha256 != entry_sha256)
     ):
         return None
 
     sources: dict[str, str] = {}
     remaining = MAX_BUNDLE_BYTES
-    storage = RepoStorage()
+    storage = _source_storage(install_id)
     manifest = declaration.manifest
     if digest(manifest) != declaration.manifest_sha256:
         return None
@@ -258,7 +322,7 @@ async def prepare_approved_workspace(
         async with asyncio.timeout(20):
             for path, sha256 in manifest.items():
                 content = await storage.read(path, max_bytes=min(remaining, MAX_SOURCE_BYTES))
-                if storage.compute_hash(content) != sha256:
+                if hashlib.sha256(content).hexdigest() != sha256:
                     return None
                 sources[path] = content.decode("utf-8")
                 remaining -= len(content)
@@ -269,8 +333,14 @@ async def prepare_approved_workspace(
     async with get_db_context() as db:
         if await db.scalar(matching.with_only_columns(CloudflareApproval.revision)) is None:
             return None
+        if install_id is not None and (
+            await indexed_pins(db, set(manifest), install_id=install_id) != manifest
+            or await solution_approval_scope(db, install_id, owner) != solution
+        ):
+            return None
     return ApprovedWorkspace({
         "manifest": manifest, "sources": sources,
+        **({"solution_id": solution_id} if install_id is not None else {}),
         "packages": declaration.packages, "https_hosts": declaration.https_hosts,
         "subrequest_allowance": declaration.subrequest_allowance, "cpu_budget_ms": declaration.cpu_budget_ms,
-    })
+    }, declaration.entry_sha256)

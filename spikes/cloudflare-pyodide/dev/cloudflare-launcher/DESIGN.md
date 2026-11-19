@@ -469,9 +469,20 @@ at a time and at most 100,000 visited nodes across the bundle. Python object
 overhead is additional and the worker admission and memory limits apply.
 The estimates are static sizing signals. A call site may execute
 many times and CPU varies with inputs. TenantHost and the platform apply the
-actual limits. Inline code, Fast Path, Solution and artifact-workspace dispatches
-are outside this policy. Enqueue compares indexed digests and workflow identity
+actual limits. Inline code, Fast Path and artifact-workspace dispatches are
+outside this policy. Enqueue compares indexed digests and workflow identity
 against the current approval without reading or parsing source.
+
+For Solutions, the same operator command reviews the active workflow in its
+install. The review records the install ID, declared version, published
+runtime source generation and owner organization. A deploy clears the
+generation in its first commit and publishes a new generation with the source
+index after storage finalization. Existing installs need a successful
+redeploy to acquire the marker. Only installs with outbound access disabled
+are eligible. Imports must resolve in the install or the supported runtime.
+Vendored modules count as install source. Approval never grants access to
+shared workspace imports. Carry-forward analyzes the new generation under the
+same install and owner, even when all source pins are unchanged.
 
 The first Normal dispatch to observe changed entry or module pins stays
 Linux-only and queues a deduplicated `workflow.cloudflare_reapproval` PlatformJob.
@@ -497,6 +508,10 @@ Before sending `workflow`, the API repeats verification against the current
 approval and source. The command context carries `cloudflare_workspace`
 with the approved `manifest`, the exact verified UTF-8 `sources` keyed by
 path, `packages`, `https_hosts`, `subrequest_allowance`, and `cpu_budget_ms`.
+Solution snapshots also bind the install ID and carry the approved entry
+digest on the command context. The API rechecks the install generation and
+indexed pins after fetching the bytes. The run retains its ordinary
+execution-scoped SDK credential and Solution context.
 The launcher must execute that snapshot and enforce the declared outbound
 policy. Missing, revoked or changed pins prevent a send and hand the run
 back as Linux-only. Other definitive refusals retain the revision and

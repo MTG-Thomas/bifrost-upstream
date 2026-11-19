@@ -21,7 +21,7 @@ from src.jobs.platform.base import (
     PlatformJobFailure,
     define_platform_job,
 )
-from src.models.orm import FileIndex, PlatformJob
+from src.models.orm import FileIndex, PlatformJob, SolutionFileIndex
 from src.services.execution.cloudflare_analysis import (
     MAX_MODULES,
     POLICY_VERSION,
@@ -32,10 +32,12 @@ from src.services.execution.cloudflare_analysis import (
 from src.services.execution.cloudflare_eligibility import (
     ApprovalDeclaration,
     ObservationChanged,
+    SolutionApprovalScope,
     accept_proposal,
     current_approval,
     indexed_pins,
     propose_approval,
+    solution_approval_scope,
 )
 from src.services.execution.cloudflare_hosts import egress_host_allowed
 from src.services.platform_job_lease import LeaseLost, hold_lease
@@ -53,6 +55,11 @@ class ReapprovalPayload(BaseModel):
     workflow_id: UUID
     parent_revision: _Digest
     observed_pins: dict[str, _Digest | None] = Field(min_length=1, max_length=MAX_MODULES)
+    solution: SolutionApprovalScope | None = None
+
+    @property
+    def install_id(self) -> UUID | None:
+        return self.solution.install_id if self.solution else None
 
 
 @dataclass(frozen=True)
@@ -67,6 +74,8 @@ def _carry_forward(
     parent_hosts = set(parent.https_hosts)
     return (
         (parent.entry_path, parent.function_name) == (candidate.entry_path, candidate.function_name)
+        and (parent.solution.install_id if parent.solution else None)
+        == (candidate.solution.install_id if candidate.solution else None)
         and set(candidate.packages) == set(parent.packages)
         and all(egress_host_allowed(host, parent_hosts) for host in candidate.https_hosts)
     )
@@ -80,8 +89,13 @@ def _pin_diff(before: dict[str, str], after: dict[str, str]) -> dict[str, dict[s
     }
 
 
-async def _observation_matches(db: AsyncSession, payload: ReapprovalPayload) -> bool:
-    indexed = await indexed_pins(db, set(payload.observed_pins))
+async def _observation_matches(
+    db: AsyncSession, payload: ReapprovalPayload, owner: UUID | None,
+) -> bool:
+    install_id = payload.install_id
+    if install_id is not None and await solution_approval_scope(db, install_id, owner) != payload.solution:
+        return False
+    indexed = await indexed_pins(db, set(payload.observed_pins), install_id=install_id)
     return all(indexed.get(path) == pin for path, pin in payload.observed_pins.items())
 
 
@@ -96,7 +110,7 @@ async def _run_reapproval(context: PlatformJobContext, payload: ReapprovalPayloa
         parent = ApprovalDeclaration.model_validate(current.declaration)
         if (
             parent.manifest.keys() != payload.observed_pins.keys()
-            or not await _observation_matches(db, payload)
+            or not await _observation_matches(db, payload, context.organization_id)
         ):
             return {"outcome": "superseded"}
 
@@ -104,7 +118,7 @@ async def _run_reapproval(context: PlatformJobContext, payload: ReapprovalPayloa
 
     async def review_required(reason: str) -> dict[str, Any]:
         async with get_db_context() as db:
-            indexed = await indexed_pins(db, set(analysed_pins))
+            indexed = await indexed_pins(db, set(analysed_pins), install_id=payload.install_id)
         if any(indexed.get(path) != pin for path, pin in analysed_pins.items()):
             return {"outcome": "superseded"}
         return {"outcome": "review_required", "reason": reason, "analysed_pins": analysed_pins}
@@ -126,13 +140,15 @@ async def _run_reapproval(context: PlatformJobContext, payload: ReapprovalPayloa
 
     if candidate.previous_revision != payload.parent_revision or candidate.organization_id != context.organization_id:
         return {"outcome": "superseded"}
+    if candidate.declaration.solution != payload.solution:
+        return {"outcome": "superseded"}
     pins = candidate.declaration.manifest
     if any(payload.observed_pins[path] != pins[path] for path in payload.observed_pins.keys() & pins.keys()):
         return {"outcome": "superseded"}
     if not _carry_forward(parent, candidate.declaration):
         return await review_required("approval_envelope_changed")
     diff = _pin_diff(parent.manifest, pins)
-    if not diff:
+    if not diff and parent.solution == candidate.declaration.solution:
         return {"outcome": "unchanged"}
 
     candidate = replace(candidate, declaration=candidate.declaration.model_copy(
@@ -141,7 +157,7 @@ async def _run_reapproval(context: PlatformJobContext, payload: ReapprovalPayloa
     try:
         async with get_db_context() as db:
             await hold_lease(db, context.job_id, context.lease_token)
-            if not await _observation_matches(db, payload):
+            if not await _observation_matches(db, payload, context.organization_id):
                 return {"outcome": "superseded"}
             approval = await accept_proposal(db, candidate, accepted_by=_ACTOR)
             approval.derived_from = payload.parent_revision
@@ -160,7 +176,10 @@ _staging: dict[str, asyncio.Task[None]] = {}
 
 
 def _dedupe_key(payload: ReapprovalPayload) -> str:
-    return digest(["reapproval-v4", payload.parent_revision, payload.observed_pins])
+    parts: list[object] = ["reapproval-v4", payload.parent_revision, payload.observed_pins]
+    if payload.solution is not None:
+        parts.append(payload.solution.model_dump(mode="json"))
+    return digest(parts)
 
 
 def schedule_reapproval(request: ReapprovalRequest) -> None:
@@ -190,10 +209,16 @@ async def _stage_reapproval(db: AsyncSession, request: ReapprovalRequest) -> Non
     analysed = func.json_each_text(PlatformJob.result["analysed_pins"]).table_valued(
         column("key"), column("value"),
     )
+    if payload.install_id is None:
+        index = FileIndex
+        join_on = FileIndex.path == analysed.c.key
+    else:
+        index = SolutionFileIndex
+        join_on = and_(SolutionFileIndex.path == analysed.c.key, SolutionFileIndex.solution_id == payload.install_id)
     changed_pin = (
         select(1)
-        .select_from(analysed.outerjoin(FileIndex, FileIndex.path == analysed.c.key))
-        .where(FileIndex.content_hash.is_distinct_from(analysed.c.value))
+        .select_from(analysed.outerjoin(index, join_on))
+        .where(index.content_hash.is_distinct_from(analysed.c.value))
         .correlate(PlatformJob)
         .exists()
     )

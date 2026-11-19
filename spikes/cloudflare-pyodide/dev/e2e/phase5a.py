@@ -32,7 +32,8 @@ def sha256(value):
 
 def prepare(hosted=False, phase6=False):
     prefix = "phase6-" if phase6 else "phase5b-" if hosted else "phase5-"
-    if not ROOT.name.startswith(prefix) or command("git", "remote") or command(
+    valid_prefix = (prefix, "explore-sol-") if phase6 else prefix
+    if not ROOT.name.startswith(valid_prefix) or command("git", "remote") or command(
         "git", "status", "--porcelain"
     ):
         raise SystemExit(f"Use a clean, freshly initialized {prefix}* archive without Git remotes")
@@ -107,11 +108,12 @@ def local_api(hosted):
         raise SystemExit("The hosted run requires the random seeded admin password")
     origin = f"http://{address}"
 
-    def send(path, body, token=None, method="POST"):
+    def send(path, body, token=None, method="POST", *, content_type=None):
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
         if token:
-            headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
-            body = json.dumps(body).encode()
+            headers = {"Content-Type": content_type or "application/json", "Authorization": f"Bearer {token}"}
+            if content_type is None:
+                body = json.dumps(body).encode() if body is not None else None
         try:
             with urlopen(Request(origin + path, data=body, headers=headers, method=method), timeout=15) as response:
                 return None if response.status == 204 else json.load(response)
@@ -150,8 +152,13 @@ def seed_workflows(project, admin, send, hosted, *, tenant_fixtures=()):
             raise SystemExit("Fixture workflow was registered in the wrong tenant")
         workflow_id = workflows[kind] = workflow["id"]
         send(f"/api/workflows/{workflow_id}", {"timeout_seconds": 60}, admin, method="PATCH")
-        # Keep database diagnostics on stderr and the proposal JSON on stdout.
-        operator = ["docker", "exec", f"{project}-api-1", "python", "-c", """
+        approval.append(approve_workflow(project, workflow_id, content, allowance, cpu))
+    return workflows, approval
+
+
+def approve_workflow(project, workflow_id, content, allowance, cpu, *, solution_id=None):
+    # Keep database diagnostics on stderr and the proposal JSON on stdout.
+    operator = ["docker", "exec", f"{project}-api-1", "python", "-c", """
 import contextlib
 import sys
 output = sys.stdout
@@ -160,18 +167,17 @@ with contextlib.redirect_stdout(sys.stderr):
     operator.print = lambda *args, **kwargs: print(*args, file=output, **kwargs)
     operator.main()
 """]
-        arguments = [
-            workflow_id, "--subrequest-allowance", str(allowance), "--cpu-budget-ms", str(cpu),
-        ]
-        proposal = json.loads(command(*operator, "propose", *arguments))
-        if proposal["workflow_id"] != workflow_id or proposal["entry_sha256"] != sha256(content):
-            raise SystemExit("Generated proposal does not match the disposable fixture")
-        # The harness approves only the checked-in, byte-matched test fixture.
-        approval.append(json.loads(command(
-            *operator, "accept", *arguments, "--review-sha256", proposal["review_sha256"],
-            "--operator", "phase5/6 disposable fixture",
-        )))
-    return workflows, approval
+    arguments = [
+        workflow_id, "--subrequest-allowance", str(allowance), "--cpu-budget-ms", str(cpu),
+    ]
+    proposal = json.loads(command(*operator, "propose", *arguments))
+    if (proposal["workflow_id"] != workflow_id or proposal["entry_sha256"] != sha256(content)
+        or (proposal.get("solution") or {}).get("install_id") != solution_id):
+        raise SystemExit("Generated proposal does not match the disposable fixture")
+    return json.loads(command(
+        *operator, "accept", *arguments, "--review-sha256", proposal["review_sha256"],
+        "--operator", "phase5/6 disposable fixture",
+    ))
 
 
 def postgres(project, sql):

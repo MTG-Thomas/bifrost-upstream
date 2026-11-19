@@ -383,7 +383,7 @@ async function settle(scenario, run, status, ackCount = 1, dispatchCount = 1) {
   assert.deepEqual(row.claim, run.claim);
   assert.equal(row.queued, 0);
   if (status === 'Success') {
-    assert.deepEqual(row.result, {case: scenario, table_count: 0});
+    assert.deepEqual(row.result, {case: scenario, table_count: 0, ...config.phase6?.results?.[scenario]});
     assert.equal(row.logs, 1);
   }
   assert.equal(wire.filter((event) => event.kind === 'workflow' && event.id === run.id).length, dispatchCount);

@@ -9,6 +9,7 @@ import {
 const CONTROL = 'control';
 const slotKey = (index) => index === 0 ? 'slot' : `slot:${index}`;
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const UUID_RE = new RegExp(`^${UUID}$`);
 const ROUTE = new RegExp(`^workflow:(${UUID}):${UUID}$`);
 const INSTANT = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?(?:Z|[+-]\d\d:\d\d)$/;
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -44,9 +45,14 @@ function workflowRoute(payload, runtimeHandle) {
       (timeout_seconds === 0 ? workflow_deadline !== null :
         !instant(workflow_deadline) || Date.parse(workflow_deadline) - Date.parse(started_at) !== timeout_seconds * 1000) ||
       !record(context) || context.workflow_deadline !== workflow_deadline ||
-      context.code || context.solution_id != null || context.artifact_workspace_id != null ||
+      context.code != null || context.service != null || context.artifact_workspace_id != null ||
+      context.solution_global_repo_access ||
       typeof context.engine_token !== 'string' || !context.engine_token ||
       !validWorkspace(context.cloudflare_workspace, context.file_path)) return null;
+  const workspace = context.cloudflare_workspace;
+  if ((context.solution_id ?? null) !== (workspace.solution_id ?? null) ||
+      (context.solution_id != null && (!UUID_RE.test(context.solution_id) ||
+        workspace.manifest[context.file_path] !== context.content_hash))) return null;
 
   return {kind: 'workflow', route_id, subject_id: execution_id, runtime_handle: runtimeHandle,
     active_execution, started_at, timeout_seconds, workflow_deadline, memory_request_bytes};

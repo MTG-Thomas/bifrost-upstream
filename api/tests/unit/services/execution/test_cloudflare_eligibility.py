@@ -72,6 +72,42 @@ async def _prepare(approval):
     )
 
 
+@pytest.mark.parametrize("changed", [None, "generation", "index", "bytes", "install"])
+async def test_prepare_solution_uses_only_its_published_install_snapshot(review, monkeypatch, changed):
+    approval, sources, _ = review
+    install_id, owner = uuid4(), uuid4()
+    scope = cloudflare_eligibility.SolutionApprovalScope(
+        install_id=install_id, version="2.0.0", source_generation=uuid4(),
+    )
+    approval.organization_id = owner
+    approval.declaration["solution"] = scope.model_dump(mode="json")
+    scope_lookup = AsyncMock(return_value=scope)
+    if changed == "generation":
+        scope_lookup.side_effect = [scope, scope.model_copy(update={"source_generation": uuid4()})]
+    monkeypatch.setattr(cloudflare_eligibility, "solution_approval_scope", scope_lookup)
+    manifest = cloudflare_eligibility.ApprovalDeclaration.model_validate(approval.declaration).manifest
+    index = {} if changed == "index" else manifest
+    monkeypatch.setattr(cloudflare_eligibility, "indexed_pins", AsyncMock(return_value=index))
+    storage = cloudflare_eligibility.RepoStorage()
+    solution_storage = Mock(return_value=storage)
+    monkeypatch.setattr(cloudflare_eligibility, "SolutionStorage", solution_storage)
+    monkeypatch.setattr(cloudflare_eligibility, "RepoStorage", Mock(side_effect=AssertionError("loose read")))
+    if changed == "bytes":
+        sources[HELPER] = b"VALUE = 9\n"
+    workspace = await cloudflare_eligibility.prepare_approved_workspace(
+        workflow_id=str(approval.workflow_id), entry_path=ENTRY, function_name="run",
+        entry_sha256=None, expected_revision=approval.revision,
+        solution_id=str(uuid4() if changed == "install" else install_id),
+    )
+    if changed is None:
+        assert workspace is not None
+        assert workspace.bundle["sources"] == {path: source.decode() for path, source in sources.items()}
+        assert workspace.bundle["solution_id"] == str(install_id)
+        solution_storage.assert_called_once_with(install_id)
+    else:
+        assert workspace is None
+
+
 @pytest.mark.parametrize("state", ["unapproved", "unchanged", "changed-helper", "changed-owner"])
 async def test_enqueue_uses_only_the_durable_approval_and_index(review, monkeypatch, state):
     approval, _, stored = review
@@ -364,7 +400,7 @@ async def test_missing_import_retries_only_if_the_index_has_the_path(review, mon
 
     monkeypatch.setattr(cloudflare_eligibility, "get_db_context", db_context)
     monkeypatch.setattr(cloudflare_eligibility, "indexed_pins", AsyncMock(
-        side_effect=lambda _, paths: {HELPER: "a" * 64} if indexed and HELPER in paths else {},
+        side_effect=lambda _, paths, *, install_id: {HELPER: "a" * 64} if indexed and HELPER in paths else {},
     ))
     storage = SimpleNamespace(read=read, compute_hash=lambda content: hashlib.sha256(content).hexdigest())
     monkeypatch.setattr(cloudflare_eligibility, "RepoStorage", lambda: storage)
@@ -414,7 +450,7 @@ async def test_inactive_workflow_is_superseded_before_reading_source(review, mon
     storage = Mock()
     monkeypatch.setattr(cloudflare_eligibility, "get_db_context", inactive_context)
     monkeypatch.setattr(cloudflare_eligibility, "RepoStorage", storage)
-    with pytest.raises(cloudflare_eligibility.ObservationChanged, match="active loose-workspace"):
+    with pytest.raises(cloudflare_eligibility.ObservationChanged, match="active workflow"):
         await cloudflare_eligibility.propose_approval(
             approval.workflow_id, subrequest_allowance=10, cpu_budget_ms=100,
         )

@@ -30,10 +30,14 @@ class SolutionStorage:
             await store.write(self._key(path), content)
         return hashlib.sha256(content).hexdigest()
 
-    async def read(self, path: str) -> bytes:
-        async with self._get_store() as store:
-            async with store.open_read(self._key(path)) as read:
-                return await read.body.read()
+    async def read(self, path: str, *, max_bytes: int | None = None) -> bytes:
+        async with self._get_store() as store, store.open_read(self._key(path)) as read:
+            if max_bytes is not None:
+                content = await read.body.read(max_bytes + 1)
+                if len(content) > max_bytes:
+                    raise ValueError("Solution source exceeds its read budget")
+                return content
+            return await read.body.read()
 
     async def delete(self, path: str) -> None:
         async with self._get_store() as store:

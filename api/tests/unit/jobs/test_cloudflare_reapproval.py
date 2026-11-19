@@ -25,6 +25,7 @@ from src.services.execution.cloudflare_eligibility import (
     ApprovalDeclaration,
     ApprovalProposal,
     ObservationChanged,
+    SolutionApprovalScope,
 )
 from src.services.platform_job_lease import LeaseLost
 
@@ -95,6 +96,26 @@ def test_carry_forward_requires_concrete_hosts_covered_by_parent(scenario, candi
     parent = parent.model_copy(update={"https_hosts": ["*.halopsa.com", "example.com"]})
     candidate = parent.model_copy(update={"https_hosts": [candidate_host]})
     assert reapproval._carry_forward(parent, candidate) is allowed
+
+
+async def test_carry_forward_rebinds_unchanged_pins_to_new_solution_generation(
+    scenario, worker, monkeypatch,
+):
+    approval, parent, payload, context = scenario
+    before = SolutionApprovalScope(install_id=uuid4(), version="1", source_generation=uuid4())
+    after = before.model_copy(update={"version": "2", "source_generation": uuid4()})
+    parent = parent.model_copy(update={"solution": before, "entry_sha256": worker.declaration.entry_sha256})
+    approval.declaration = parent.model_dump()
+    payload = payload.model_copy(update={"solution": after})
+    candidate = ApprovalProposal(
+        worker.workflow_id, None, worker.previous_revision, parent.model_copy(update={"solution": after}),
+    )
+    reapproval.propose_approval.return_value = candidate
+    monkeypatch.setattr(reapproval, "solution_approval_scope", AsyncMock(return_value=after))
+    assert await reapproval._run_reapproval(context, payload) == {"outcome": "approved", "revision": candidate.revision}
+    assert reapproval.accept_proposal.return_value.pin_diff == {}
+    other = after.model_copy(update={"install_id": uuid4()})
+    assert not reapproval._carry_forward(parent, candidate.declaration.model_copy(update={"solution": other}))
 
 
 @pytest.mark.parametrize("change", ["edit", "owner"])

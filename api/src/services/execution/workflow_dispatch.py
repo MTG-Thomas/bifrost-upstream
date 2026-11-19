@@ -202,6 +202,7 @@ async def _cloudflare_placement(
         ApprovalDeclaration,
         current_approval,
         indexed_pins,
+        solution_approval_scope,
     )
     from src.services.execution.service import (
         WorkflowLoadError,
@@ -216,7 +217,7 @@ async def _cloudflare_placement(
         workflow = await get_workflow_for_execution(workflow_id, db=db)
     except (WorkflowLoadError, WorkflowNotFoundError):
         return None, None
-    if workflow["solution_id"] is not None or workflow["type"] != "workflow":
+    if workflow["type"] != "workflow":
         return None, None
     metadata = message.get("dispatch_metadata")
     if metadata is not None and any(
@@ -230,12 +231,22 @@ async def _cloudflare_placement(
         workflow["organization_id"], workflow["path"], workflow["function_name"],
     ):
         return None, None
-    manifest = declaration.manifest
-    indexed = await indexed_pins(db, set(manifest))
-    observed = {path: indexed.get(path) for path in manifest}
-    if observed[declaration.entry_path] != workflow["content_hash"]:
+    install_id = UUID(workflow["solution_id"]) if workflow["solution_id"] is not None else None
+    approved_solution = declaration.solution
+    if (approved_solution.install_id if approved_solution else None) != install_id:
         return None, None
-    if observed != manifest:
+    solution = None
+    if install_id is not None:
+        solution = await solution_approval_scope(db, install_id, approval.organization_id)
+        if solution is None:
+            return None, None
+    manifest = declaration.manifest
+    indexed = await indexed_pins(db, set(manifest), install_id=install_id)
+    observed = {path: indexed.get(path) for path in manifest}
+    entry_pin = observed[declaration.entry_path]
+    if entry_pin is None or (install_id is None and entry_pin != workflow["content_hash"]):
+        return None, None
+    if observed != manifest or solution != approved_solution:
         from src.jobs.platform.cloudflare_reapproval import (
             ReapprovalPayload,
             ReapprovalRequest,
@@ -243,7 +254,8 @@ async def _cloudflare_placement(
 
         return None, ReapprovalRequest(
             ReapprovalPayload(
-                workflow_id=approval.workflow_id, parent_revision=approval.revision, observed_pins=observed,
+                workflow_id=approval.workflow_id, parent_revision=approval.revision,
+                observed_pins=observed, solution=solution,
             ),
             approval.organization_id,
         )

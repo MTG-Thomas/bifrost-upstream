@@ -860,14 +860,16 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                 or workflow_id != active_execution.get("workflow_id")
                 or context.get("tags") != ["workflow"]
                 or any(context.get(key) is not None for key in (
-                    "solution_id", "artifact_workspace_id", "code", "service",
+                    "artifact_workspace_id", "code", "service",
                 ))
+                or context.get("solution_global_repo_access")
             ):
                 raise CloudflareRevisionRejected("An approved workspace workflow is required")
             workspace = await prepare_approved_workspace(
                 workflow_id=workflow_id, entry_path=context.get("file_path"),
                 function_name=context.get("function_name"), entry_sha256=context.get("content_hash"),
                 expected_revision=cloudflare_revision,
+                **({"solution_id": context["solution_id"]} if context.get("solution_id") is not None else {}),
             )
             if workspace is None:
                 raise CloudflareRevisionRejected("Cloudflare workflow revision no longer matches its approval")
@@ -916,6 +918,8 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                 handle.process.memory_request_bytes = self._request_bytes(execution_id)
             if workspace is not None:
                 context = {**context, "cloudflare_workspace": workspace.bundle}
+                if context.get("solution_id") is not None:
+                    context["content_hash"] = workspace.entry_sha256
             try:
                 response = await self.transport.request(
                     "workflow",

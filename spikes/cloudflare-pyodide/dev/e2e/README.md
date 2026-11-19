@@ -113,6 +113,15 @@ committed on incarnation `5a0aab8d-5d6c-4175-b935-d6b5485586ad`.
 The provider confirmed deletion after idle retirement. Linux-only execution
 `5ba006cc-71b4-4203-b4ee-337f7e333736` remained queued throughout.
 
+### Installed Solution variant
+
+Use the same Phase 6 preparation in a private `explore-sol-<sha>` archive.
+Pass `--solution` to `phase6.py run`. The test deploys the same Solution and
+manifest UUID into two distinct owner organizations via the ordinary deploy
+job. Both installs use the same helper path with different pinned bytes. The
+test checks each result, the live SDK call, concurrent claims and credential
+revocation on settlement. It uses only local Miniflare and the disposable API.
+
 ## Phase 5b hosted launcher
 
 Use a new mode-0700 `/opt/bifrost-tests/phase5b-<sha>` archive with a local Git

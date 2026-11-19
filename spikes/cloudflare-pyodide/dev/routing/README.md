@@ -23,3 +23,18 @@ executes source nor grants an approval. Review and accept deployed workspace
 source using the operator command in [the launcher design](../cloudflare-launcher/DESIGN.md#phase-3-workspace-approval-and-placement).
 
 Historical results: [workspace census](../../backend/WORKSPACE-CENSUS.md).
+
+For installed Solutions, use `solution-census.py` against an archive of the
+workspace commit. With Bifrost's CLI dependencies available, add `api` and
+`api/src/services/execution` to `PYTHONPATH` and run:
+
+```sh
+python spikes/cloudflare-pyodide/dev/routing/solution-census.py /path/to/workspace-archive
+```
+
+This mode prints aggregate counts only. It applies the CLI's install-local
+source collector and excludes outbound-enabled installs, non-workflow types
+and explicit Fast Path entries. It models no instance-side vendoring or
+overrides. It counts source candidates after the install and lane checks.
+The real queue also requires a finalized install, current accepted approval
+and an eligible Worker.

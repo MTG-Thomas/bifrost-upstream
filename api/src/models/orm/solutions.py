@@ -108,6 +108,8 @@ class Solution(Base):
     upgraded_from_version: Mapped[str | None] = mapped_column(
         String(64), nullable=True, default=None
     )
+    # Published with the runtime source index after deploy finalization.
+    runtime_source_generation: Mapped[UUID | None]
 
     # Setup completeness (Task 5/6). A solution is "incomplete" when it declares
     # required configs that have no value set. Default True = nothing unset (a

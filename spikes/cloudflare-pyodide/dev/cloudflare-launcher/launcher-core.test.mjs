@@ -132,6 +132,28 @@ test('workspace entry supports hyphenated storage directories', async () => {
   assert.equal(h.calls[0].context.file_path, file);
 });
 
+test('launcher requires a matching Solution install and entry digest', async () => {
+  const api = peer();
+  await connect(api);
+  const payload = workflow();
+  const context = payload.context;
+  const workspace = context.cloudflare_workspace;
+  context.solution_id = INCARNATION;
+  context.content_hash = workspace.manifest[context.file_path];
+  workspace.solution_id = LAUNCHER;
+  await api.command('workflow', payload);
+  assert.equal(api.frames().at(-1).error_type, 'ValueError');
+  workspace.solution_id = INCARNATION;
+  context.content_hash = 'b'.repeat(64);
+  await api.command('workflow', {...workflow('2'), context});
+  assert.equal(api.frames().at(-1).error_type, 'ValueError');
+  assert.equal(api.calls.length, 0);
+  context.content_hash = workspace.manifest[context.file_path];
+  await api.command('workflow', {...workflow('3'), context});
+  await api.finish();
+  assert.equal(api.calls[0].context.solution_id, INCARNATION);
+});
+
 test('launcher accepts an operator wildcard and refuses a shared-hosting wildcard before entry', async () => {
   const api = peer();
   await connect(api);
