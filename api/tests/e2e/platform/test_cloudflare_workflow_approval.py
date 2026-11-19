@@ -38,6 +38,7 @@ async def test_api_identity_sdk_operations_apply_run_permissions(async_engine, e
         org = await world.organization()
         run_user = await world.person(org)
         target = await world.person(org)
+        target.email = f"cloudflare-approval-{target.id}@example.com"
         role = await world.role()
         workflow = await world.workflow(org, permission_mode=mode)
         execution = await world.execution(run_user=run_user, workflow=workflow, organization=org)
