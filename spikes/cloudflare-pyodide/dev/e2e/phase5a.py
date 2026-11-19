@@ -20,6 +20,7 @@ ROOT = HERE.parents[3]
 API_ENV = ROOT / ".phase5-api.env"
 ENTRY = "workflows/phase5a_fixture.py"
 FUNCTION = "phase5a_fixture"
+SUMMARY_ENDPOINT = "https://phase5-fixture.invalid/v1"
 
 
 def command(*args, **kwargs):
@@ -30,8 +31,8 @@ def sha256(value):
     return hashlib.sha256(value).hexdigest()
 
 
-def prepare(hosted=False, phase6=False):
-    prefix = "phase6-" if phase6 else "phase5b-" if hosted else "phase5-"
+def prepare(hosted=False, phase6=False, summary=False):
+    prefix = "explore-agent-" if summary else "phase6-" if phase6 else "phase5b-" if hosted else "phase5-"
     valid_prefix = (prefix, "explore-sol-") if phase6 else prefix
     if not ROOT.name.startswith(valid_prefix) or command("git", "remote") or command(
         "git", "status", "--porcelain"
@@ -45,6 +46,8 @@ def prepare(hosted=False, phase6=False):
     with os.fdopen(fd, "w") as env:
         os.fchmod(env.fileno(), 0o644)
         env.write("BIFROST_CLOUDFLARE_WORKER_HELLO_ENABLED=true\n")
+        if summary:
+            env.write(f"BIFROST_CLOUDFLARE_SUMMARY_ENDPOINT={SUMMARY_ENDPOINT}\n")
         if not phase6:
             env.write(f"BIFROST_WORKER_CAPACITY_TOKEN={secrets.token_hex(32)}\n")
     for directory in ("node_modules", "sdk_src"):
@@ -221,16 +224,48 @@ def resume_enrollment(project, reset_route):
     return workflows, approval, incarnation, launcher, enrollment["port"]
 
 
-def run(runtime, hosted, resume, reset_route, from_reset):
+def run(runtime, hosted, resume, reset_route, from_reset, summary=False):
     sys.path.insert(0, str(ROOT / "api"))
     from shared.worker_control_auth import external_worker_control_key
 
-    prefix = "phase5b-" if hosted else "phase5-"
+    prefix = "explore-agent-" if summary else "phase5b-" if hosted else "phase5-"
     if not API_ENV.is_file() or not ROOT.name.startswith(prefix):
         raise SystemExit("Run prepare and start this disposable archive's debug stack first")
     origin, project, admin, send = local_api(hosted)
     port = 0
-    if resume:
+    summary_config = None
+    if summary:
+        run_id = uuid4()
+        database_key = "api-fixture-only-" + secrets.token_hex(16)
+        summary_config = {"run": str(run_id), "endpoint": SUMMARY_ENDPOINT,
+                          "key": "worker-fixture-only-" + secrets.token_hex(16), "databaseKey": database_key}
+        subprocess.run(["docker", "exec", "-i", f"{project}-api-1", "python", "-",
+                        str(run_id), SUMMARY_ENDPOINT, database_key], cwd=ROOT, check=True, text=True, input='''
+import asyncio
+import sys
+from uuid import UUID
+
+from src.core.database import get_db_context
+from src.models.orm.agent_runs import AgentRun
+from src.services.ai_model_service import AIModelService
+
+async def seed():
+    async with get_db_context() as db:
+        ai = AIModelService(db)
+        connection = await ai.create_connection(name="Disposable stub", provider="openai_compatible",
+                                                api_key=sys.argv[3], endpoint=sys.argv[2])
+        profile = await ai.create_profile(name="Disposable summary", connection_id=connection.id,
+                                          model="gpt-4o-mini", capabilities=None, enabled_for_chat=False)
+        await ai.set_assignment("summarization", profile.id)
+        profile.openai_transport = "chat_completions"
+        db.add(AgentRun(id=UUID(sys.argv[1]), status="completed", trigger_type="sdk",
+                        input={"question": "Cloudflare summary fixture"}, output={"answer": "done"}))
+        await db.commit()
+
+asyncio.run(seed())
+''')
+        workflows, approval, incarnation, launcher = {}, [], uuid4(), uuid4()
+    elif resume:
         workflows, approval, incarnation, launcher, port = resume_enrollment(project, reset_route)
     else:
         workflows, approval = seed_workflows(project, admin, send, hosted)
@@ -263,7 +298,7 @@ def run(runtime, hosted, resume, reset_route, from_reset):
         input=json.dumps({"origin": origin, "project": project, "admin": admin,
                           "workflows": workflows, "runtime": str(runtime), "hosted": hosted, "port": port,
                           "resetRoute": reset_route,
-                          "fromReset": from_reset,
+                          "fromReset": from_reset, "summary": summary_config,
                           "incarnation": str(incarnation), "launcher": str(launcher),
                           "resource": resource, "build": build, "controlKey": key}),
     )
@@ -272,17 +307,21 @@ def run(runtime, hosted, resume, reset_route, from_reset):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
-    sub.add_parser("prepare").add_argument("--hosted", action="store_true")
+    prepare_modes = sub.add_parser("prepare").add_mutually_exclusive_group()
+    prepare_modes.add_argument("--hosted", action="store_true")
+    prepare_modes.add_argument("--summary", action="store_true")
     run_parser = sub.add_parser("run")
     run_parser.add_argument("runtime", type=Path, help="Prepared generated-runtime.mjs")
-    run_parser.add_argument("--hosted", action="store_true")
+    run_modes = run_parser.add_mutually_exclusive_group()
+    run_modes.add_argument("--hosted", action="store_true")
+    run_modes.add_argument("--summary", action="store_true")
     run_parser.add_argument("--resume-enrollment", action="store_true")
     reset = run_parser.add_mutually_exclusive_group()
     reset.add_argument("--resume-reset", metavar="WORKFLOW_ROUTE")
     reset.add_argument("--from-reset", action="store_true")
     args = parser.parse_args()
     if args.action == "prepare":
-        prepare(args.hosted)
+        prepare(args.hosted, summary=args.summary)
     else:
         if args.resume_enrollment and not args.hosted:
             parser.error("--resume-enrollment requires --hosted")
@@ -294,4 +333,4 @@ if __name__ == "__main__":
         ):
             parser.error("--resume-reset requires --resume-enrollment and an interrupted workflow route")
         run(args.runtime.resolve(strict=True), args.hosted, args.resume_enrollment,
-            args.resume_reset, args.from_reset)
+            args.resume_reset, args.from_reset, summary=args.summary)

@@ -153,7 +153,17 @@ async def end_runs_of_lost_worker(
                     await record_peak_growth(
                         db, workflow_id, budget - WORKFLOW_REQUEST_MARGIN_BYTES, None
                     )
-    if summary_ids:
+    if summary_ids and await db.scalar(
+        select(ExecutionWorker.runtime_profile).where(ExecutionWorker.id == worker_id)
+    ) == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
+        from src.services.execution.cloudflare_summary import UNCERTAIN_ERROR
+
+        await db.execute(
+            update(AgentRun)
+            .where(AgentRun.id.in_(summary_ids), AgentRun.summary_status == "generating")
+            .values(summary_status="failed", summary_error=UNCERTAIN_ERROR)
+        )
+    elif summary_ids:
         interrupted = (
             await db.execute(
                 update(AgentRun)

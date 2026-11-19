@@ -40,6 +40,7 @@ FAMILY = WAKE_AGENT_SUMMARY
 HANDLER = "agent.summarize"
 BACKFILL_HANDLER = "agent.summarize_backfill"
 HANDLER_VERSION = 1
+LINUX_ONLY_SUMMARY_REVISION = "b3a451a62d1d77deb45f05a897c4bc48d81635368b23aa6ae152c4e60a57e5b1"
 
 
 class SummaryOwnershipLost(RuntimeError):
@@ -196,7 +197,9 @@ async def fail_unclaimed_summary(db: AsyncSession, run_id: UUID, reason: str) ->
     )
 
 
-async def release_summary(*, worker_id: UUID, run_id: UUID, dispatch_id: UUID, claim_id: UUID) -> None:
+async def release_summary(
+    *, worker_id: UUID, run_id: UUID, dispatch_id: UUID, claim_id: UUID, linux_only: bool = False,
+) -> None:
     """Return a summary refused before forking, preserving its queue position."""
     async with get_db_context() as db:
         if not await fence_remote_owner(db, for_update=True):
@@ -214,7 +217,7 @@ async def release_summary(*, worker_id: UUID, run_id: UUID, dispatch_id: UUID, c
                     ExecutionWorkerClaim.subject_id == run_id,
                 ),
             )
-            .values(assigned_worker_id=None)
+            .values(assigned_worker_id=None, **({"cloudflare_revision": LINUX_ONLY_SUMMARY_REVISION} if linux_only else {}))
             .returning(WorkDispatch.id)
         )
         if released is not None:

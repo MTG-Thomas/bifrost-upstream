@@ -33,7 +33,7 @@ from src.services.ai_behavior_service import AGENT_EXECUTION_MODE_METADATA_KEY
 from src.services.ai_usage_service import record_ai_usage
 from src.services.execution.model_selection import get_summarization_client
 from src.services.execution.run_metadata import MAX_KEYS
-from src.services.llm import LLMMessage
+from src.services.llm import LLMMessage, LLMResponse
 
 logger = logging.getLogger(__name__)
 
@@ -240,21 +240,7 @@ async def summarize_run(
             # only needs enough context to distinguish outcome from role.
             agent_system_prompt = (agent_row[1] or "")[:2000]
 
-    # Build the prompt with agent context so the summarizer can describe
-    # *what changed on this run* instead of paraphrasing the agent's role.
-    user_content = json.dumps(
-        {
-            "agent_name": agent_name,
-            "agent_system_prompt": agent_system_prompt,
-            "input": run_input,
-            "output": run_output,
-        },
-        default=str,
-    )
-    messages = [
-        LLMMessage(role="system", content=SUMMARIZE_SYSTEM_PROMPT),
-        LLMMessage(role="user", content=user_content),
-    ]
+    messages = summary_messages(agent_name, agent_system_prompt, run_input, run_output)
 
     # Phase 2: call LLM (no DB connection held)
     # We intentionally don't cap max_tokens here. Providers that support an
@@ -360,61 +346,88 @@ async def summarize_run(
         run = (
             await db.execute(select(AgentRun).where(AgentRun.id == run_id))
         ).scalar_one()
-        run.asked = _truncate(parsed.get("asked"), 400)
-        run.did = _truncate(parsed.get("did"), 1200)
-        run.answered = _truncate(parsed.get("answered"), 400)
-        run.confidence = _clamp_confidence(parsed.get("confidence"))
-        run.confidence_reason = _truncate(parsed.get("confidence_reason"), 500)
-
-        md = parsed.get("metadata") or {}
-        if isinstance(md, dict):
-            extracted = {
-                str(k): str(v)[:256]
-                for k, v in md.items()
-                if (
-                    isinstance(v, (str, int, float))
-                    and k != AGENT_EXECUTION_MODE_METADATA_KEY
-                )
-            }
-            existing = run.run_metadata or {}
-            # Existing (agent-supplied) wins; LLM fills in gaps.
-            persisted_mode = existing.get(AGENT_EXECUTION_MODE_METADATA_KEY)
-            merged = {
-                **extracted,
-                **{
-                    key: value
-                    for key, value in existing.items()
-                    if key != AGENT_EXECUTION_MODE_METADATA_KEY
-                },
-            }
-            # Execution topology is selected by the platform before a run
-            # begins. It is not summarizer metadata, so an LLM may neither
-            # invent nor displace it, even when the metadata cap is full.
-            limit = MAX_KEYS - (1 if persisted_mode in {"delegated", "automatic"} else 0)
-            run.run_metadata = dict(list(merged.items())[:limit])
-            if persisted_mode in {"delegated", "automatic"}:
-                run.run_metadata[AGENT_EXECUTION_MODE_METADATA_KEY] = persisted_mode
-
-        run.summary_generated_at = datetime.now(timezone.utc)
-        run.summary_status = "completed"
-        run.summary_error = None
-        run.summary_prompt_version = SUMMARIZE_PROMPT_VERSION
-
-        provider = getattr(llm_client, "provider_name", "unknown")
-        model_name = getattr(response, "model", None) or resolved_model
-        await record_ai_usage(
-            session=db,
-            redis_client=await get_shared_redis(),
-            agent_run_id=run.id,
+        await write_summary(
+            db, run, parsed, response,
+            provider=getattr(llm_client, "provider_name", "unknown"),
+            model=getattr(response, "model", None) or resolved_model,
             organization_id=org_id,
-            provider=provider,
-            model=model_name,
-            input_tokens=response.input_tokens or 0,
-            output_tokens=response.output_tokens or 0,
-            cache_read_tokens=response.cache_read_tokens,
-            cache_write_tokens=response.cache_write_tokens,
-            reasoning_tokens=response.reasoning_tokens,
-            provider_cost=response.provider_cost,
         )
         await db.commit()
         await _broadcast_run(run, db)
+
+
+def summary_messages(agent_name: str, system_prompt: str, run_input: Any, run_output: Any) -> list[LLMMessage]:
+    user_content = json.dumps(
+        {
+            "agent_name": agent_name,
+            "agent_system_prompt": system_prompt,
+            "input": run_input,
+            "output": run_output,
+        },
+        default=str,
+    )
+    return [
+        LLMMessage(role="system", content=SUMMARIZE_SYSTEM_PROMPT),
+        LLMMessage(role="user", content=user_content),
+    ]
+
+
+async def write_summary(
+    db: AsyncSession, run: AgentRun, parsed: dict[str, Any], response: LLMResponse,
+    *, provider: str, model: str, organization_id: UUID | None,
+) -> None:
+    """Persist normalized fields and usage within the caller's transaction."""
+    run.asked = _truncate(parsed.get("asked"), 400)
+    run.did = _truncate(parsed.get("did"), 1200)
+    run.answered = _truncate(parsed.get("answered"), 400)
+    run.confidence = _clamp_confidence(parsed.get("confidence"))
+    run.confidence_reason = _truncate(parsed.get("confidence_reason"), 500)
+
+    md = parsed.get("metadata") or {}
+    if isinstance(md, dict):
+        extracted = {
+            str(k): str(v)[:256]
+            for k, v in md.items()
+            if (
+                isinstance(v, (str, int, float))
+                and k != AGENT_EXECUTION_MODE_METADATA_KEY
+            )
+        }
+        existing = run.run_metadata or {}
+        # Existing (agent-supplied) wins; LLM fills in gaps.
+        persisted_mode = existing.get(AGENT_EXECUTION_MODE_METADATA_KEY)
+        merged = {
+            **extracted,
+            **{
+                key: value
+                for key, value in existing.items()
+                if key != AGENT_EXECUTION_MODE_METADATA_KEY
+            },
+        }
+        # Execution topology is selected by the platform before a run
+        # begins. It is not summarizer metadata, so an LLM may neither
+        # invent nor displace it, even when the metadata cap is full.
+        limit = MAX_KEYS - (1 if persisted_mode in {"delegated", "automatic"} else 0)
+        run.run_metadata = dict(list(merged.items())[:limit])
+        if persisted_mode in {"delegated", "automatic"}:
+            run.run_metadata[AGENT_EXECUTION_MODE_METADATA_KEY] = persisted_mode
+
+    run.summary_generated_at = datetime.now(timezone.utc)
+    run.summary_status = "completed"
+    run.summary_error = None
+    run.summary_prompt_version = SUMMARIZE_PROMPT_VERSION
+
+    await record_ai_usage(
+        session=db,
+        redis_client=await get_shared_redis(),
+        agent_run_id=run.id,
+        organization_id=organization_id,
+        provider=provider,
+        model=model,
+        input_tokens=response.input_tokens or 0,
+        output_tokens=response.output_tokens or 0,
+        cache_read_tokens=response.cache_read_tokens,
+        cache_write_tokens=response.cache_write_tokens,
+        reasoning_tokens=response.reasoning_tokens,
+        provider_cost=response.provider_cost,
+    )

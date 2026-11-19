@@ -16,11 +16,13 @@ from src.models.orm.execution_workers import MANAGED_WORKER_FORMS, ExecutionWork
 from src.models.orm.executions import Execution
 from src.models.orm.work_dispatches import WorkDispatch
 from src.services.kubernetes_execution import load_kubernetes_policy
+from src.services.execution.summary_dispatch import LINUX_ONLY_SUMMARY_REVISION
 from src.services.worker_pool.eligibility import cloudflare_active_claims, cloudflare_dispatch_sql
 from src.worker.remote.fencing import fence_remote_owner
 from src.worker.remote.protocol import (
     CLOUDFLARE_DEV_BUDGET_BYTES,
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+    CLOUDFLARE_SUMMARY_HANDLER,
     EXECUTION_HANDLERS,
     LINUX_RUNTIME_PROFILE,
 )
@@ -234,10 +236,18 @@ async def claim_next(
         (ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE)
         | (
             (ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE)
-            & cloudflare_dispatch_sql()
-            & ~exists().where(
-                active_cloudflare.c.execution_id.is_not(None),
-                active_cloudflare.c.tenant_id.is_not_distinct_from(dispatch_tenant),
+            & (
+                (cloudflare_dispatch_sql() & ~exists().where(
+                    active_cloudflare.c.execution_id.is_not(None),
+                    active_cloudflare.c.tenant_id.is_not_distinct_from(dispatch_tenant),
+                ))
+                | (
+                    (WorkDispatch.handler == CLOUDFLARE_SUMMARY_HANDLER[0])
+                    & (WorkDispatch.handler_version == CLOUDFLARE_SUMMARY_HANDLER[1])
+                    & WorkDispatch.cloudflare_revision.is_distinct_from(LINUX_ONLY_SUMMARY_REVISION)
+                    & (WorkDispatch.memory_request_bytes <= CLOUDFLARE_DEV_BUDGET_BYTES)
+                    & ExecutionWorker.capacity_scope.is_(None)
+                )
             )
             & (occupied * CLOUDFLARE_DEV_BUDGET_BYTES < func.coalesce(
                 ExecutionWorker.memory_limit_bytes, CLOUDFLARE_DEV_BUDGET_BYTES,

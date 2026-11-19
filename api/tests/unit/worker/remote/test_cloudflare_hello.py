@@ -113,10 +113,22 @@ async def test_cloudflare_hello_requires_external_normal(hello, enabled_settings
 @pytest.mark.parametrize(
     ("fields", "message"),
     [
-        pytest.param({"handlers": [["workflow.execute", 2]]}, "only workflow.execute", id="wrong-handler"),
+        pytest.param({"handlers": [["workflow.execute", 2]]}, "Unsupported Cloudflare handler advertisement", id="wrong-handler"),
         pytest.param(
             {"handlers": [["workflow.execute", 1], ["unknown", 1]]},
-            "only workflow.execute", id="extra-handler",
+            "Unsupported Cloudflare handler advertisement", id="extra-handler",
+        ),
+        pytest.param(
+            {"handlers": [["workflow.execute", 1], ["agent.summarize", 1]]},
+            "require claim protocol 1", id="summary-without-claim-protocol",
+        ),
+        pytest.param(
+            {"handlers": [["workflow.execute", 1], ["agent.summarize", 1]], "summary_claim_protocol": 1},
+            "summaries are disabled", id="summary-without-endpoint-opt-in",
+        ),
+        pytest.param(
+            {"handlers": [["workflow.execute", 1], ["agent.summarize_backfill", 1]], "summary_claim_protocol": 1},
+            "Unsupported Cloudflare handler advertisement", id="backfill",
         ),
         pytest.param({"credential_protocol": 1}, "credential protocol 2", id="legacy-protocol"),
         pytest.param({"credential_protocol": 3}, "credential protocol 2", id="future-protocol"),

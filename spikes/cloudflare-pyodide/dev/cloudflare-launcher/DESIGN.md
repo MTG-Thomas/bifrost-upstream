@@ -757,7 +757,7 @@ settlement.
 | Handler | Linux dependencies and state | Tools and credentials | Workers budget and contract | Verdict |
 | --- | --- | --- | --- | --- |
 | `agent.run@1` | The agent consumer and executor use SQLAlchemy/asyncpg for claim, agent and caller resolution, conversation and run history, authorizations, usage and terminal persistence. Redis carries cancellation, chat events, synchronous results and execution context. Pydantic AI streams normalized provider events. Agent attachments and knowledge can require storage/API calls. The model factory uses OpenAI (including compatible endpoints and OpenRouter), Anthropic and Google SDKs over HTTPX. Their Pyodide closure, including the pinned native `pydantic-core` and `jiter` wheels, SSE/retry transport and adapter behavior, needs qualification. The server's asyncpg/socket stack and Redis client are outside the spike's packaged HTTP-only runtime. | Local tool handlers cover system, knowledge and MCP operations. Workflow-backed tools authorize under a refreshed caller and submit a separate Bifrost workflow execution through the execution service, with parent/provenance context. Delegation adds child agent runs. Keep tool and provider secrets in API-side brokers. Give the child attempt-scoped handles limited to authorized tools, models and budgets. | Multiple streamed turns plus retries, tools and delegated waits make cost dependent on turn, token, byte and fan-out limits. JSON/SSE parsing, context assembly and package boot use CPU and memory even when provider waits are idle. Needs a separate approved eligibility rule, opaque attempt identity and sequenced, durable stream and tool receipts. Once a chunk or tool request escapes, a lost result is uncertain. | No direct port. Probe the Linux runtime boundary before advertising even a tool-less slice. |
-| `agent.summarize@1` | Linux snapshots the completed run's input/output and bounded agent instructions in PostgreSQL, calls the configured Pydantic AI adapter once without streaming, then persists parsed fields, prompt version and AIUsage. Redis supplies usage caching/pubsub. No filesystem or tool dependency. A trusted JS Worker can implement the HTTP completion without the Python provider package closure. | No tools. Use a fixed provider endpoint and independently provisioned secret in the trusted Worker. Keep provider config and keys out of TenantHost and dynamic children. Bind the endpoint and model to the API's selected summary provider and refuse unqualified providers. | One provider request, bounded prompt/response and JSON parse. Use a finite deadline covering dispatch and fetch, an opaque route with claim identity, and the existing journal and ACK. Use `not_started` only before fetch can have begun, `completed` for an observed outcome, and `uncertain` on interruption after entry. The API validates the current claim before committing summary and usage. | First candidate. Scope the spike to one OpenAI-compatible completion transport and manual dev enrollment. |
+| `agent.summarize@1` | Linux snapshots the completed run's input/output and bounded agent instructions in PostgreSQL, calls the configured Pydantic AI adapter once through its buffered completion interface (the adapter consumes a provider stream), then persists parsed fields, prompt version and AIUsage. Redis supplies usage caching/pubsub. No filesystem or tool dependency. A trusted JS Worker can implement the HTTP completion without the Python provider package closure. | No tools. Use a fixed provider endpoint and independently provisioned secret in the trusted Worker. Keep provider config and keys out of TenantHost and dynamic children. Bind the endpoint and model to the API's selected summary provider and refuse unqualified providers. | One provider request, bounded prompt/response and JSON parse. Use a finite deadline covering dispatch and fetch, an opaque route with claim identity, and the existing journal and ACK. Use `not_started` only before fetch can have begun, `completed` for an observed outcome, and `uncertain` on interruption after entry. The API validates the current claim before committing summary and usage. | First candidate. Scope the spike to one OpenAI-compatible completion transport and manual dev enrollment. |
 | `agent.summarize_backfill@1` | Uses the same single-run compute for each dispatch. PostgreSQL stages and reconciles backfill membership and outcome counters. Redis publishes the same status and usage updates. No files or stream. | Same mediation as live summaries. | Same per-invocation shape. Aggregate requests, cost and rate limiting grow with backfill size. Preserve distinct handler concurrency and live-summary capacity priority. Count terminal outcomes only under the current claim and reconcile backfill totals through the API. | Viable after qualifying live summaries. Keep bulk admission disabled in this spike. |
 
 The provider call should run in trusted Worker code outside TenantHost. A provider
@@ -789,3 +789,39 @@ and budgets. Pin and probe the exact [Python package runtime](https://developers
 before admitting an agent package closure. Local workerd establishes
 behavior at the pinned runtime, with hosted resource limits still requiring
 separate qualification.
+
+### Live-summary spike contract
+
+For manual development enrollment, set the API hello gate and set
+`BIFROST_CLOUDFLARE_SUMMARY_ENDPOINT` on the API and launcher to the same
+HTTPS chat-completions base URL. Configure the launcher's separate
+`BIFROST_CLOUDFLARE_SUMMARY_KEY` secret for that endpoint. The Worker appends
+`/chat/completions`. On the API, assign `summarization` to an unlinked
+OpenAI-compatible profile with the chat-completions transport resolved and
+no failover or explicit reasoning setting. The API reads profile metadata
+without decrypting its key. An incompatible or oversized request returns
+to Linux before the launcher is sent a command and is marked Linux-only
+for that dispatch. Bulk backfill stays on Linux. The
+managed provider does not advertise or plan summary capacity.
+
+With both settings in place, the manual launcher advertises
+`agent.summarize@1` after `workflow.execute@1`, with `summary_claim_protocol: 1`. The API issues
+`cloudflare_summary` with `summary:<run UUID>:<claim UUID>`, an absolute
+30-second deadline, a 16 MiB declared reservation and a credential-free
+prompt/model payload. The trusted launcher code calls only its fixed
+provider URL, caps request and response bodies at 256 KiB and 64 KiB, and
+issues one non-streaming completion. The summary route shares the workflow
+slot and journal. It returns an opaque handle and retains `summary_result`
+until ACK. Inventory uses `kind: "agent_summary"` with the claim UUID,
+runtime handle, deadline, reservation and optional terminal receipt. The
+API applies the result and usage only while that same canonical claim is
+generating. An already committed receipt can be acknowledged on replay.
+On lost ownership an interrupted Cloudflare summary fails with an explicit
+regenerate action. The provider may have received the request.
+
+For the disposable CT128 harness, run `phase5a.py prepare --summary` before
+starting the isolated debug stack. Then run `phase5a.py run --summary
+/path/to/generated-runtime.mjs` with Node 26 on PATH. Use the existing
+[local harness instructions](../e2e/README.md) for stack ownership and cleanup.
+The harness submits regeneration via the API, drops the first terminal ACK,
+and requires one stub call and one persisted usage row across replay.

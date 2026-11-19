@@ -3,16 +3,17 @@
 from typing import cast
 from uuid import UUID
 
-from sqlalchemy import exists, func, select
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.orm import aliased
 from sqlalchemy.sql import Select
 from sqlalchemy.sql.elements import ColumnElement
 
 from src.models.enums import LIVE_EXECUTION_STATUSES
+from src.models.orm.agent_runs import AgentRun
 from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
 from src.models.orm.executions import Execution
 from src.models.orm.work_dispatches import WorkDispatch
-from src.services.work_dispatch import WAKE_WORKFLOW
+from src.services.work_dispatch import WAKE_AGENT_SUMMARY, WAKE_WORKFLOW
 from src.worker.remote.protocol import (
     CLOUDFLARE_DEV_BUDGET_BYTES,
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
@@ -42,12 +43,21 @@ def cloudflare_active_claims() -> Select[tuple[UUID, UUID | None, UUID | None]]:
             cast(ColumnElement[UUID | None], Execution.id.label("execution_id")),
         )
         .join(worker, worker.id == ExecutionWorkerClaim.worker_id)
-        .outerjoin(Execution, Execution.id == ExecutionWorkerClaim.subject_id)
+        .outerjoin(Execution, and_(
+            Execution.id == ExecutionWorkerClaim.subject_id, ExecutionWorkerClaim.family == WAKE_WORKFLOW,
+        ))
+        .outerjoin(AgentRun, and_(
+            AgentRun.id == ExecutionWorkerClaim.subject_id, ExecutionWorkerClaim.family == WAKE_AGENT_SUMMARY,
+        ))
         .where(
             worker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
             worker.state.in_(("ready", "draining")),
-            ExecutionWorkerClaim.family == WAKE_WORKFLOW,
-            Execution.id.is_(None) | Execution.status.in_(LIVE_EXECUTION_STATUSES),
+            or_(
+                and_(ExecutionWorkerClaim.family == WAKE_WORKFLOW,
+                     Execution.id.is_(None) | Execution.status.in_(LIVE_EXECUTION_STATUSES)),
+                and_(ExecutionWorkerClaim.family == WAKE_AGENT_SUMMARY,
+                     AgentRun.summary_status.in_(("pending", "generating"))),
+            ),
         )
     )
 

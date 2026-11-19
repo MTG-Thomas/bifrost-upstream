@@ -10,7 +10,8 @@ const CONTROL = 'control';
 const slotKey = (index) => index === 0 ? 'slot' : `slot:${index}`;
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const UUID_RE = new RegExp(`^${UUID}$`);
-const ROUTE = new RegExp(`^workflow:(${UUID}):${UUID}$`);
+const WORKFLOW_ROUTE = new RegExp(`^workflow:(${UUID}):${UUID}$`);
+const SUMMARY_ROUTE = new RegExp(`^summary:(${UUID}):(${UUID})$`);
 const INSTANT = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?(?:Z|[+-]\d\d:\d\d)$/;
 const HEX64 = /^[0-9a-f]{64}$/;
 const STATES = new Set(['not_started', 'completed', 'uncertain']);
@@ -36,7 +37,7 @@ function validWorkspace(workspace, entry) {
 function workflowRoute(payload, runtimeHandle) {
   const {route_id, execution_id, active_execution, started_at, timeout_seconds,
     workflow_deadline, memory_request_bytes, context} = payload;
-  if (typeof route_id !== 'string' || ROUTE.exec(route_id)?.[1] !== execution_id ||
+  if (typeof route_id !== 'string' || WORKFLOW_ROUTE.exec(route_id)?.[1] !== execution_id ||
       !record(active_execution) || active_execution.execution_id !== execution_id ||
       typeof active_execution.sync !== 'boolean' ||
       (active_execution.org_id != null && typeof active_execution.org_id !== 'string') ||
@@ -58,12 +59,25 @@ function workflowRoute(payload, runtimeHandle) {
     active_execution, started_at, timeout_seconds, workflow_deadline, memory_request_bytes};
 }
 
+function summaryRoute(payload, runtimeHandle, now) {
+  const {route_id, run_id, claim_id, deadline, memory_request_bytes, context} = payload;
+  const identity = SUMMARY_ROUTE.exec(route_id);
+  if (!identity || identity[1] !== run_id || identity[2] !== claim_id ||
+      !instant(deadline) || Date.parse(deadline) > now + 30_000 ||
+      !integer(memory_request_bytes) || memory_request_bytes === 0 ||
+      memory_request_bytes > SLOT_BYTES || !record(context)) return null;
+  return {kind: 'agent_summary', route_id, subject_id: run_id, claim_id, deadline,
+    runtime_handle: runtimeHandle, memory_request_bytes};
+}
+
 function failure(attemptState, errorType, error) {
   return {attempt_state: attemptState, result: {success: false, error_type: errorType, error}};
 }
 
-function timeout() {
-  return failure('not_started', 'TimeoutError', 'Workflow deadline elapsed before engine entry');
+function timeout(route) {
+  const detail = route.kind === 'workflow' ? 'Workflow deadline elapsed before engine entry' :
+    'Summary deadline elapsed before provider dispatch';
+  return failure('not_started', 'TimeoutError', detail);
 }
 
 // Each slot holds one confirmed route record. A terminal and its metadata
@@ -76,7 +90,7 @@ export class LauncherCore {
   #aborts = new Map();
   #released = false;
 
-  constructor({identity, secret, clock, storage, send, runHost, stopHost, background, slots = 1, newId = newNonce}) {
+  constructor({identity, secret, clock, storage, send, runHost, stopHost, runSummary, background, slots = 1, newId = newNonce}) {
     this.#slots = Array(slots).fill(null);
     this.identity = identity;
     this.secret = secret;
@@ -84,6 +98,7 @@ export class LauncherCore {
     this.storage = storage;
     this.send = send;
     this.runHost = runHost;
+    this.runSummary = runSummary;
     this.stopHost = stopHost;
     this.background = background;
     this.newId = newId;
@@ -146,7 +161,7 @@ export class LauncherCore {
       if (!slot || slot.state === 'terminal') continue;
       const entering = slot.state === 'entering';
       if (entering) this.#stop(slot.route);
-      const outcome = this.#expired(slot.route) && !entering ? timeout() :
+      const outcome = this.#expired(slot.route) && !entering ? timeout(slot.route) :
         failure(entering ? 'uncertain' : 'not_started', 'LauncherReset', 'Launcher reset before a terminal was recorded');
       await this.#settle(index, slot.route, outcome);
     }
@@ -170,7 +185,9 @@ export class LauncherCore {
       const session = {generation: 0, sent: 0, received: 0, nextHeartbeat: 0,
         assembler: new FragmentAssembler()};
       this.#session = session;
-      return {session, hello: JSON.stringify({event: 'hello', hello, handlers: CLOUDFLARE_HANDLERS,
+      const handlers = this.runSummary ? [...CLOUDFLARE_HANDLERS, ['agent.summarize', 1]] : CLOUDFLARE_HANDLERS;
+      return {session, hello: JSON.stringify({event: 'hello', hello, handlers,
+        ...(this.runSummary ? {summary_claim_protocol: 1} : {}),
         credential_protocol: CREDENTIAL_PROTOCOL, version: this.identity.version})};
     });
   }
@@ -296,7 +313,8 @@ export class LauncherCore {
         accept({});
         return;
       case 'terminate': {
-        if (typeof payload.route_id !== 'string' || !ROUTE.test(payload.route_id) ||
+        if (typeof payload.route_id !== 'string' ||
+            !(WORKFLOW_ROUTE.test(payload.route_id) || this.runSummary && SUMMARY_ROUTE.test(payload.route_id)) ||
             typeof payload.error_type !== 'string' || typeof payload.error !== 'string') {
           refuse('ValueError', 'Invalid terminate command');
           return;
@@ -318,25 +336,31 @@ export class LauncherCore {
         return;
       }
       case 'workflow':
-        return this.#workflow(session, payload, accept, refuse);
+        return this.#dispatch(session, payload, accept, refuse, WORKFLOW_ROUTE, workflowRoute);
+      case 'cloudflare_summary':
+        if (!this.runSummary) {
+          refuse('ValueError', 'Cloudflare summaries are disabled');
+          return;
+        }
+        return this.#dispatch(session, payload, accept, refuse, SUMMARY_ROUTE, summaryRoute);
       default:
         refuse('ValueError', 'Unknown launcher command');
     }
   }
 
-  async #workflow(session, payload, accept, refuse) {
+  async #dispatch(session, payload, accept, refuse, routePattern, makeRoute) {
     // A tombstone contains only identity. It fences refused and settled routes
     // across generations, including interruption between intent and slot writes.
-    if (typeof payload.route_id !== 'string' || !ROUTE.test(payload.route_id)) {
-      refuse('ValueError', 'Invalid workflow route identity');
+    if (typeof payload.route_id !== 'string' || !routePattern.test(payload.route_id)) {
+      refuse('ValueError', 'Invalid execution route identity');
       return;
     }
     const routeKey = `seen:${payload.route_id}`;
-    if (await this.storage.get(routeKey)) throw new ProtocolError('workflow route already seen');
+    if (await this.storage.get(routeKey)) throw new ProtocolError('execution route already seen');
     await this.storage.put(routeKey, true);
-    const route = workflowRoute(payload, this.newId());
+    const route = makeRoute(payload, this.newId(), this.clock());
     if (!route) {
-      refuse('ValueError', 'Invalid Cloudflare workflow dispatch');
+      refuse('ValueError', 'Invalid Cloudflare dispatch');
       return;
     }
     const index = this.#slots.findIndex((slot) => !slot);
@@ -344,7 +368,7 @@ export class LauncherCore {
       refuse('MemoryError', 'No Cloudflare workflow slot available');
       return;
     }
-    if (this.#slots.some((slot) => slot &&
+    if (route.kind === 'workflow' && this.#slots.some((slot) => slot?.route.kind === 'workflow' &&
         (slot.state !== 'terminal' || slot.terminal.attempt_state === 'uncertain') &&
         (slot.route.active_execution.org_id ?? null) === (route.active_execution.org_id ?? null))) {
       refuse('MemoryError', 'This tenant already holds a Cloudflare workflow slot');
@@ -365,7 +389,8 @@ export class LauncherCore {
   }
 
   #expired(route) {
-    return route.workflow_deadline !== null && this.clock() >= Date.parse(route.workflow_deadline);
+    const deadline = route.kind === 'workflow' ? route.workflow_deadline : route.deadline;
+    return deadline !== null && this.clock() >= Date.parse(deadline);
   }
 
   async #execute(index, route, context) {
@@ -373,7 +398,7 @@ export class LauncherCore {
       const slot = this.#slots[index];
       if (slot?.route !== route || slot.state !== 'accepted') return null;
       if (this.#expired(route)) {
-        await this.#settle(index, route, timeout());
+        await this.#settle(index, route, timeout(route));
         return null;
       }
       if (this.retired) {
@@ -382,7 +407,7 @@ export class LauncherCore {
       }
       await this.#saveSlot(index, {route, state: 'entering'});
       if (this.#expired(route)) {
-        await this.#settle(index, route, timeout());
+        await this.#settle(index, route, timeout(route));
         return null;
       }
       const controller = new AbortController();
@@ -404,24 +429,29 @@ export class LauncherCore {
 
   async #hostOutcome(route, context, signal) {
     try {
-      const outcome = await this.runHost(route, context, signal);
+      const outcome = route.kind === 'workflow' ? await this.runHost(route, context, signal) :
+        await this.runSummary(route, context, signal);
       if (STATES.has(outcome?.attempt_state) && typeof outcome.result?.success === 'boolean' &&
           (!outcome.result.success || outcome.attempt_state === 'completed')) return outcome;
     } catch {
       // The RPC may have started work even if its eventual reply failed.
+    }
+    if (route.kind === 'agent_summary') {
+      return failure('uncertain', 'SummaryOutcomeUnknown', 'The provider call did not confirm an outcome');
     }
     return failure('uncertain', 'TenantHostOutcomeUnknown', 'TenantHost did not confirm the workflow outcome');
   }
 
   #stop(route) {
     this.#aborts.get(route.route_id)?.abort();
+    if (route.kind === 'agent_summary') return;
     this.background(this.stopHost(route).catch(() => {
       // API fencing and the retained uncertain terminal cover a lost stop.
     }));
   }
 
   async #settle(index, route, {attempt_state, result}) {
-    const terminal = {event: 'result', route_id: route.route_id, runtime_handle: route.runtime_handle,
+    const terminal = {event: route.kind === 'workflow' ? 'result' : 'summary_result', route_id: route.route_id, runtime_handle: route.runtime_handle,
       _event_id: this.newId(), attempt_state, result};
     await this.#saveSlot(index, {route, state: 'terminal', terminal});
     this.#emitCurrent(terminal);

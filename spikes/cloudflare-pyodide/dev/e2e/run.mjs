@@ -32,6 +32,7 @@ let mf;
 let nextHostedGate;
 let provider;
 let providerServer;
+let summaryCalls = 0;
 
 function evidence(label, data) {
   console.log(JSON.stringify({label, ...data}));
@@ -102,6 +103,10 @@ function observe(direction, raw) {
     event = {kind: 'hello', hello: frame.hello.hello_sequence};
   } else if (frame.event === 'welcome') {
     event = {kind: 'welcome', generation: frame.session_generation};
+  } else if (frame.kind === 'command' && payload.action === 'cloudflare_summary') {
+    assert.ok(config.summary);
+    assert.ok(!raw.includes(config.summary.key) && !raw.includes(config.summary.databaseKey));
+    event = {kind: 'cloudflare_summary', route: payload.payload.route_id};
   } else if (frame.kind === 'command' && payload.action === 'workflow') {
     const command = payload.payload;
     tokens.set(command.execution_id, command.context.engine_token);
@@ -117,8 +122,8 @@ function observe(direction, raw) {
     event = {kind: 'inventory', generation: frame.session_generation,
       active: payload.inventory.routes.map((route) => route.route_id),
       terminal: payload.inventory.terminal_routes.map((route) => route.event_id)};
-  } else if (payload?.event === 'result') {
-    event = {kind: 'result', generation: frame.session_generation, route: payload.route_id,
+  } else if (['result', 'summary_result'].includes(payload?.event)) {
+    event = {kind: payload.event, generation: frame.session_generation, route: payload.route_id,
       event: payload._event_id, attempt: payload.attempt_state, success: payload.result.success,
       errorType: payload.result.error_type};
   } else if (frame.kind === 'ack') {
@@ -137,6 +142,22 @@ const proxy = createServer(async (request, response) => {
   try {
     if (config.hosted && !hostedRelayPath(request.method, path)) {
       response.writeHead(404).end();
+      return;
+    }
+    if (config.summary && path === '/__fixture/v1/chat/completions') {
+      assert.equal(request.method, 'POST');
+      assert.ok(request.headers.authorization === 'Bearer ' + config.summary.key);
+      const body = JSON.parse((await buffer(request)).toString());
+      assert.equal(body.model, 'gpt-4o-mini');
+      assert.equal(body.stream, false);
+      assert.equal(JSON.parse(body.messages[1].content).input.question, 'Cloudflare summary fixture');
+      summaryCalls++;
+      response.writeHead(200, {'Content-Type': 'application/json'}).end(JSON.stringify({
+        model: body.model, choices: [{message: {content: JSON.stringify({
+          asked: 'Summarize fixture', did: 'Collated the run', metadata: {source: 'stub'}, confidence: 0.75,
+        })}}],
+        usage: {prompt_tokens: 88, completion_tokens: 11},
+      }));
       return;
     }
     if (path.startsWith('/__fixture/hold/')) {
@@ -290,6 +311,8 @@ async function launch(port) {
   const exports = {CloudflareLauncher: {type: 'durable-object', storage: 'sqlite'},
     TenantHost: {type: 'durable-object', storage: 'sqlite'}};
   const env = Object.fromEntries(Object.entries({
+    ...(config.summary ? {BIFROST_CLOUDFLARE_SUMMARY_ENDPOINT: config.summary.endpoint,
+      BIFROST_CLOUDFLARE_SUMMARY_KEY: config.summary.key} : {}),
     API_ORIGIN: origin, RUNTIME_SHA256: createHash('sha256').update(artifact).digest('hex'),
     ...(config.phase6 ? {BIFROST_CLOUDFLARE_MANAGED: 'true'} : {
       BIFROST_CLOUDFLARE_LAUNCHER_ENABLED: 'true', BIFROST_WORKER_CONTROL_SECRET: config.controlKey,
@@ -675,12 +698,49 @@ async function phase5Checks() {
   evidence('retired', {row: workerRow(), ledger: retired, helloCount});
 }
 
+async function summaryChecks() {
+  await launch(proxy.address().port);
+  const linux = ['worker', 'scheduler'].map((name) => config.project + '-' + name + '-1');
+  execFileSync('docker', ['pause', ...linux]);
+  try {
+    await control('start');
+    await until('launcher ready', () => wire.some((event) => event.kind === 'ready'));
+    assert.deepEqual(sql(`SELECT supported_handlers FROM execution_workers WHERE id='${config.incarnation}'`),
+      ['workflow.execute', 'agent.summarize']);
+    await delay(3500); // Close the paused Linux launchers' admission windows.
+    fault = 'ack';
+    const id = config.summary.run;
+    const submission = await api('/api/agent-runs/' + id + '/regenerate-summary', {});
+    assert.equal(submission.status, 200);
+    const first = await until('summary ACK withheld', () => wire.find((event) => event.kind === 'ack' && event.dropped));
+    for (const socket of sockets.clients) socket.close(1012, 'retry summary acknowledgement');
+    await until('summary terminal acknowledged on reconnect', () => wire.some(
+      (event) => event.kind === 'ack' && event.event === first.event && !event.dropped));
+    const outcomes = wire.filter((event) => event.kind === 'summary_result');
+    assert.equal(outcomes.length, 2);
+    assert.ok(outcomes.every((event) => event.attempt === 'completed' && event.success && event.event === first.event));
+    assert.equal(summaryCalls, 1);
+    const row = sql(`SELECT json_build_object(
+      'status',r.status,'summary',r.summary_status,'asked',r.asked,'did',r.did,
+      'prompt',r.summary_prompt_version,'metadata',r.metadata,
+      'worker',(SELECT worker_id FROM execution_worker_claims WHERE subject_id=r.id AND family='agent_summary'),
+      'usage',(SELECT json_agg(json_build_array(input_tokens,output_tokens)) FROM ai_usage WHERE agent_run_id=r.id))
+      FROM agent_runs r WHERE r.id='${id}'`);
+    assert.deepEqual(row, {status: 'completed', summary: 'completed', asked: 'Summarize fixture',
+      did: 'Collated the run', prompt: 'v4', metadata: {source: 'stub'}, worker: config.incarnation, usage: [[88, 11]]});
+    evidence('summary-committed-once', {id, providerCalls: summaryCalls, replayedEvent: first.event, row});
+  } finally {
+    execFileSync('docker', ['unpause', ...linux]);
+  }
+}
+
 await new Promise((resolve, reject) => {
   proxy.once('error', reject);
   proxy.listen(config.port, '127.0.0.1', resolve);
 });
 try {
-  if (config.phase6) await phase6Checks();
+  if (config.summary) await summaryChecks();
+  else if (config.phase6) await phase6Checks();
   else await phase5Checks();
 } finally {
   for (const gate of gates.values()) gate.release.resolve();

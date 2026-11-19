@@ -46,6 +46,11 @@ class Settings(BaseSettings):
         description="Operator opt-in for dev Cloudflare external worker control sessions",
     )
 
+    cloudflare_summary_endpoint: str | None = Field(
+        default=None, exclude=True,
+        description="Opt-in fixed HTTPS base URL for Cloudflare chat-completion summaries",
+    )
+
     # ==========================================================================
     # Environment
     # ==========================================================================

@@ -37,6 +37,7 @@ from src.services.worker_pool.claims import (
 from src.worker.admission import Admission
 from src.worker.pool_main import PoolWorker
 from src.worker.remote.agent_route import AgentRoute, RemoteAgentConsumer
+from src.worker.remote.cloudflare_summary import CloudflareSummaryRoutes, SummaryRoute
 from src.worker.remote.fencing import LeaseRef, current_remote_lease_ref, fence_remote_owner, remote_owner_context
 from src.worker.remote.ownership import (
     DEFAULT_OWNER_LEASE_SECONDS,
@@ -54,6 +55,7 @@ from src.worker.remote.protocol import (
     CLOUDFLARE_INCARNATION_ENDED,
     CLOUDFLARE_MAX_LOGICAL_BYTES,
     CLOUDFLARE_WORKFLOW_HANDLER,
+    CLOUDFLARE_SUMMARY_HANDLER,
     AuthenticationError,
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
     CloudflareRevisionRejected,
@@ -64,6 +66,7 @@ from src.worker.remote.protocol import (
     LINUX_RUNTIME_PROFILE,
     OpaqueDispatchInterrupted,
     ProtocolError,
+    SUMMARY_CLAIM_PROTOCOL,
     SignedHello,
     hello_credential_protocol,
     hello_execution_handlers,
@@ -137,6 +140,7 @@ class Bridge:
         self.pool: Any = None
         # Agent runs in launcher children; kept across reconnects like jobs.
         self.agents: RemoteAgentConsumer | None = None
+        self.summaries: CloudflareSummaryRoutes | None = None
         self.admission: Admission | None = None
         self.requirements = hello["requirements"] if self.runtime_profile == LINUX_RUNTIME_PROFILE else {}
         self.inventory: dict[str, Any] | None = None
@@ -173,9 +177,15 @@ class Bridge:
         # A route only adds occupancy beyond the holds if it has already been
         # settled (or was a send refused but not yet seen in a heartbeat).
         occupied = admission.held_slots() + sum(
-            admission.request_bytes(route.split(":")[1]) is None for route in self._opaque_routes
+            admission.request_bytes(self._opaque_reservation_key(route)) is None for route in self._opaque_routes
         )
         return max(occupied, int(self._opaque_legacy_busy))
+
+    def _opaque_reservation_key(self, route_id: str) -> str:
+        if route_id.startswith("summary:") and self.summaries is not None:
+            route = self.summaries.routes.get(route_id)
+            return route.reservation_key if route is not None else route_id
+        return route_id.split(":")[1]
 
     def _receive_opaque_heartbeat(self, event: dict[str, Any]) -> None:
         received = event.get("received_sequence")
@@ -228,7 +238,8 @@ class Bridge:
         command is refused with ``CredentialRouteChanged`` before anything is
         sent.
         """
-        opaque = self.runtime_profile != LINUX_RUNTIME_PROFILE and action in ("workflow", "terminate")
+        dispatch = action in ("workflow", "cloudflare_summary")
+        opaque = self.runtime_profile != LINUX_RUNTIME_PROFILE and (dispatch or action == "terminate")
         if not self.connected:
             if opaque:
                 raise CredentialRouteChanged("Opaque launcher disconnected before dispatch")
@@ -249,7 +260,7 @@ class Bridge:
                     if opaque:
                         if not self.connected or not self.reconciliation_ready.is_set():
                             raise CredentialRouteChanged("Opaque launcher inventory is not reconciled")
-                        if action == "workflow" and self.freshness_age() > ADMISSION_FRESHNESS_SECONDS:
+                        if dispatch and self.freshness_age() > ADMISSION_FRESHNESS_SECONDS:
                             raise CredentialRouteChanged("Opaque launcher heartbeat is stale")
                         socket = self.socket
                     message = ControlEnvelope(
@@ -268,7 +279,7 @@ class Bridge:
                     sent = 0
                     send_deadline = loop.time() + _reply_timeout(action)
                     for frame in fragment(message):
-                        if opaque and action == "workflow":
+                        if opaque and dispatch:
                             self._opaque_routes[payload["route_id"]] = message.sequence + (
                                 frame.payload["total"] - 1 if frame.kind == "fragment" else 0
                             )
@@ -462,7 +473,7 @@ class Bridge:
                     self._opaque_routes = {
                         entry["route_id"]: 0 for entry in live + terminals
                         if isinstance(entry, dict) and isinstance(entry.get("route_id"), str)
-                        and entry["route_id"].startswith("workflow:")
+                        and entry["route_id"].startswith(("workflow:", "summary:"))
                     }
             if self.runtime_profile == LINUX_RUNTIME_PROFILE:
                 baseline_bytes = inventory.get("baseline_bytes")
@@ -480,9 +491,11 @@ class Bridge:
                     self.requirements = requirements
             self.inventory = inventory
             self.inventory_ready.set()
-        elif event.get("event") in {"result", "job_exit", "agent_exit"}:
-            if self.runtime_profile != LINUX_RUNTIME_PROFILE and event["event"] != "result":
-                raise ProtocolError("Opaque launcher supports workflow results only")
+        elif event.get("event") in {"result", "job_exit", "agent_exit", "summary_result"}:
+            if event["event"] == "summary_result" and self.summaries is None:
+                raise ProtocolError("Launcher did not negotiate Cloudflare summaries")
+            if self.runtime_profile != LINUX_RUNTIME_PROFILE and event["event"] not in {"result", "summary_result"}:
+                raise ProtocolError("Unexpected opaque launcher result")
             # Inventory is authoritative when an API takes over. In
             # particular, a terminal replay can arrive before the old route
             # has been recreated in this API process. Retain it until that
@@ -573,7 +586,10 @@ class Bridge:
                 await self.acknowledge(event_id)
             return True
 
-        if event.get("event") == "agent_exit":
+        if event.get("event") == "summary_result":
+            assert self.summaries is not None
+            deliver = self.summaries.handle_result
+        elif event.get("event") == "agent_exit":
             agents = self.agents
             if agents is None or not agents.tracks(event.get("route_id")):
                 if not self.reconciliation_ready.is_set():
@@ -720,6 +736,12 @@ class ApiExecutor(PoolWorker):
         )
         self.incarnation_id = incarnation_id
         self.bridge = bridge
+        if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and CLOUDFLARE_SUMMARY_HANDLER in bridge.handlers:
+            from src.services.execution.cloudflare_summary import summary_endpoint
+
+            endpoint = summary_endpoint(self.settings.cloudflare_summary_endpoint)
+            assert endpoint is not None  # Hello validates the opt-in endpoint.
+            bridge.summaries = CloudflareSummaryRoutes(bridge, incarnation_id, endpoint)
         if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
             self.admission = Admission(
                 budget_bytes=bridge.declared_slots * CLOUDFLARE_DEV_BUDGET_BYTES,
@@ -737,6 +759,11 @@ class ApiExecutor(PoolWorker):
     def _opaque_slots_used(self) -> int:
         assert self.admission is not None
         return self.bridge.opaque_slots_used(self.admission)
+
+    def active_runs(self) -> int:
+        if self.bridge.summaries is not None:
+            return self._workflow_runs()  # Declared occupancy includes summary holds and terminals.
+        return super().active_runs()
 
     def _workflow_runs(self) -> int:
         if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
@@ -798,7 +825,10 @@ class ApiExecutor(PoolWorker):
         return self.bridge.agents
 
     async def _execute_summary(self, claim: PoolClaim) -> None:
-        await self._make_agent_consumer().process_message(claim.message, handler=claim.handler)
+        if self.bridge.summaries is not None:
+            await self.bridge.summaries.run(claim, self.bridge.lease.session_generation)
+        else:
+            await self._make_agent_consumer().process_message(claim.message, handler=claim.handler)
 
     def _measure_budget(self) -> MemoryBudget:
         current, limit = self.bridge.memory()
@@ -896,9 +926,27 @@ class ApiExecutor(PoolWorker):
                     "workflow_requests": {}, "services": [], "platform_jobs": [], "agent_runs": {},
                 }
             if self.runtime_profile != LINUX_RUNTIME_PROFILE:
-                snapshot = await self.bridge.pool.reconcile_inventory(
-                    self.bridge.inventory, admission=self.admission,
-                )
+                inventory = self.bridge.inventory
+                summaries = self.bridge.summaries
+                if summaries is not None:
+                    def is_summary(entry: Any) -> bool:
+                        return isinstance(entry, dict) and entry.get("kind") == "agent_summary"
+
+                    live, terminals = inventory["routes"], inventory["terminal_routes"]
+                    if len(live) + len(terminals) > self.bridge.declared_slots:
+                        raise ProtocolError("Opaque inventory exceeds the prepared capacity")
+                    adopted = await summaries.reconcile(
+                        [entry for entry in live if is_summary(entry)],
+                        [entry for entry in terminals if is_summary(entry)],
+                    )
+                    inventory = {
+                        **inventory, "routes": [entry for entry in live if not is_summary(entry)],
+                        "terminal_routes": [entry for entry in terminals if not is_summary(entry)],
+                    }
+                snapshot = await self.bridge.pool.reconcile_inventory(inventory, admission=self.admission)
+                if snapshot is not None and summaries is not None:
+                    for route in adopted:
+                        self._wait_for_adopted_summary(summaries, route)
             else:
                 snapshot = await self.bridge.pool.reconcile_inventory(self.bridge.inventory)
             if self.runtime_profile != LINUX_RUNTIME_PROFILE and snapshot is None:
@@ -956,6 +1004,23 @@ class ApiExecutor(PoolWorker):
             asyncio.create_task(
                 self._run_platform_job(claim), name=f"pool-platform-job-{claim.id}"
             )
+
+    def _wait_for_adopted_summary(self, summaries: CloudflareSummaryRoutes, route: SummaryRoute) -> None:
+        admission = self.admission
+        assert admission is not None
+        admission.hold(route.reservation_key, route.memory_request_bytes)
+
+        async def wait() -> None:
+            try:
+                await summaries.wait(route)
+            finally:
+                admission.release(route.reservation_key)
+
+        task = asyncio.create_task(wait(), name=f"pool-adopted-summary-{route.run_id}")
+        tasks = self._tasks[CLOUDFLARE_SUMMARY_HANDLER[0]]
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+        task.add_done_callback(_observe_task)
 
     def _wait_for_adopted_agent_run(self, route: AgentRoute, request_bytes: int) -> None:
         """Hold an adopted child's memory and count it as a run until it ends."""
@@ -1324,8 +1389,16 @@ class RemoteControlHost:
             credential_protocol = hello_credential_protocol(initial)
             if cloudflare:
                 # Negotiation filters unsupported handlers. Check the full advertisement.
-                if initial.get("handlers") != [list(CLOUDFLARE_WORKFLOW_HANDLER)]:
-                    raise ProtocolError("Cloudflare workers must advertise only workflow.execute version 1")
+                handlers = [list(CLOUDFLARE_WORKFLOW_HANDLER)]
+                if initial.get("handlers") == [*handlers, list(CLOUDFLARE_SUMMARY_HANDLER)]:
+                    from src.services.execution.cloudflare_summary import summary_endpoint
+
+                    if initial.get("summary_claim_protocol") != SUMMARY_CLAIM_PROTOCOL:
+                        raise ProtocolError("Cloudflare summaries require claim protocol 1")
+                    if summary_endpoint(settings.cloudflare_summary_endpoint) is None:
+                        raise ProtocolError("Cloudflare agent summaries are disabled")
+                elif initial.get("handlers") != handlers:
+                    raise ProtocolError("Unsupported Cloudflare handler advertisement")
                 if credential_protocol != CLOUDFLARE_CREDENTIAL_PROTOCOL:
                     raise ProtocolError("Cloudflare workers require credential protocol 2")
                 version = initial.get("version")
