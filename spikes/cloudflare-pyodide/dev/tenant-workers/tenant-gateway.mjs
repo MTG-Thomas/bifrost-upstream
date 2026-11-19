@@ -53,7 +53,7 @@ export function createTenantGateway({store, manifest, runToken, solutionId} = {}
       const pin = pins[candidate];
       if (typeof content === 'string' && HEX64.test(pin ?? '')) {
         if ((await sha256Hex(content)) !== pin) continue;
-        return {kind, path: candidate, storage_path: storageRoot + candidate, hash: pin};
+        return {kind, path: candidate, storage_path: storageRoot + candidate, content, hash: pin};
       }
     }
     if (Object.keys(sources).some((p) => p.startsWith(`${base}/`))) {

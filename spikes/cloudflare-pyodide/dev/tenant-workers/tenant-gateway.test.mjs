@@ -74,6 +74,7 @@ test('modules-resolve maps import names to storage paths', async () => {
   const mod = await (await get(gateway, '/api/sdk/modules-resolve?name=workflows.helper')).json();
   assert.equal(mod.kind, 'module');
   assert.equal(mod.storage_path, HELPER);
+  assert.equal(mod.content, helperSrc);
   const entry = await (await get(gateway, '/api/sdk/modules-resolve?name=workflows.wf')).json();
   assert.equal(entry.kind, 'module');
   assert.equal(entry.storage_path, WF);
@@ -91,6 +92,7 @@ test('installed snapshot serves only the bound Solution storage scope', async ()
   const resolution = '/api/sdk/modules-resolve?name=workflows.wf';
   const module = await (await get(gateway, resolution + '&solution_id=' + solutionId)).json();
   assert.equal(module.storage_path, storagePath);
+  assert.equal(module.content, wfSrc);
   const source = await (await get(gateway, `/api/sdk/modules/${storagePath}`)).json();
   assert.equal(source.path, WF);
   assert.equal(source.content, wfSrc);
