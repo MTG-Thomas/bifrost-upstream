@@ -54,7 +54,8 @@ export function localLinuxProvider({
         }
         const record = {name, launches: []};
         records.set(workerId, record);
-        record.launches.push(docker([...args, image, ...entrypoint], {env: childEnv}));
+        const [program, ...programArgs] = entrypoint;
+        record.launches.push(docker([...args, '--entrypoint', program, image, ...programArgs], {env: childEnv}));
         if (!vmEnv) {
           const names = JSON.parse(docker(['inspect', '--format', '{{json .Config.Env}}', name]))
             .map((item) => item.split('=', 1)[0]).sort();

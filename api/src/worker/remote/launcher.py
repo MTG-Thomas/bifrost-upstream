@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ctypes
 import json
 import logging
 import os
@@ -41,6 +42,26 @@ from src.worker.remote.protocol import (
 
 logger = logging.getLogger(__name__)
 LAUNCHER_DRAIN_GRACE_SECONDS = 300.0
+PR_SET_DUMPABLE = 4
+
+
+def _load_containers_control_secret() -> str:
+    """Remove the child environment copy and protect the initial /proc image."""
+    if os.geteuid() == 0:
+        raise RuntimeError("Containers launcher requires a non-root user")
+    for name in os.environ:
+        normalized = name.upper().removeprefix("BIFROST_")
+        if (
+            "DATABASE_URL" in normalized
+            or normalized in {"SECRET_KEY", "REDIS_URL", "CAPACITY_TOKEN", "WORKER_CAPACITY_TOKEN",
+                              "CLOUDFLARE_CAPACITY_TOKEN", "CLOUDFLARE_CONTAINERS_TOKEN", "WORKER_LAUNCHER_ID"}
+            or normalized.startswith(("S3_", "AZURE_BLOB_"))
+        ):
+            raise RuntimeError("Containers launcher received a forbidden environment variable")
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0:
+        raise RuntimeError("Containers launcher could not protect its process environment")
+    return os.environ.pop("BIFROST_WORKER_CONTROL_SECRET")
 
 
 async def _next_control_frame(
@@ -452,8 +473,6 @@ class Launcher:
                 work.put_nowait((child.execution_id, context))
                 response["pid"] = pid
             elif action in ("agent_run", "agent_summary"):
-                if self.agent_template is None:
-                    raise ValueError("Agent template is unavailable")
                 handler = "agent.run" if action == "agent_run" else payload["handler"]
                 if handler not in ("agent.run", "agent.summarize", "agent.summarize_backfill"):
                     raise ValueError("Unknown agent handler")
@@ -861,7 +880,7 @@ async def _run_launcher(
     control_headers = load_control_headers(control_url)
     identity = load_launcher_identity()
     containers = identity.form == "external" and "BIFROST_WORKER_CONTROL_SECRET" in os.environ
-    secret = os.environ.pop("BIFROST_WORKER_CONTROL_SECRET") if containers else os.environ["BIFROST_SECRET_KEY"]
+    secret = _load_containers_control_secret() if containers else os.environ["BIFROST_SECRET_KEY"]
     launcher: Launcher | None = None
     candidate: Launcher | None = None
     stopping = asyncio.Event()

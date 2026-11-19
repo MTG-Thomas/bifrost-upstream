@@ -68,7 +68,7 @@ function workerRow() {
 
 function managedRows(scope = 'phase6-local') {
   return sql(`SELECT coalesce(json_agg(json_build_object('id',id,'state',state,'uid',capacity_resource_uid,
-    'launcher',remote_launcher_id,'profile',runtime_profile,'hello',remote_hello_sequence,
+    'launcher_bound',remote_launcher_id=id,'profile',runtime_profile,'hello',remote_hello_sequence,
     'budget',memory_limit_bytes,'available',memory_budget_bytes,'active',active_runs,
     'deleted',capacity_resource_deleted_at IS NOT NULL,'end',end_reason)), '[]'::json)
     FROM execution_workers WHERE capacity_scope = '${scope}'`);
@@ -479,7 +479,7 @@ async function startCapacityEndpoint() {
         const row = managedRows().find(({id}) => id === start[1]);
         assert.equal(row?.state, 'starting');
         assert.equal(row.uid, JSON.parse(body).resource_uid);
-        assert.equal(row.launcher, row.id);
+        assert.equal(row.launcher_bound, true);
         assert.equal(row.profile, 'cloudflare-python-v1');
         assert.equal(row.hello, 0);
         assert.equal(row.budget, config.phase6.slots * 128 * 2 ** 20);
@@ -650,7 +650,7 @@ async function containersChecks() {
     }, 90_000);
     const container = managedRows('containers').find(({id}) => id === linuxRow.claim?.[0].worker);
     assert.equal(linuxRow.status, 'Success', JSON.stringify(linuxRow));
-    assert.deepEqual(linuxRow.result, {stdout: 'containers'});
+    assert.deepEqual(linuxRow.result, {stdout: 'containers', proc_environment_denied: true});
     assert.equal(linuxRow.claim.length, 1);
     assert.equal(container?.profile, 'linux-process-v1');
     assert.ok(container.hello > 0);

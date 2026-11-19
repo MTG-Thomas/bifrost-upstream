@@ -591,7 +591,6 @@ test("the ledger launches the container with the identity it needs", async () =>
     let captured = null;
     const env = {
         ...ENV,
-        WORKER_ENTRYPOINT_JSON: '["python","-m","src.worker.main"]',
         WORKER_CONTAINER: {
             getByName: () => ({
                 fetch: async (_url, init) => {
@@ -608,7 +607,7 @@ test("the ledger launches the container with the identity it needs", async () =>
     assert.equal(captured.env.BIFROST_WORKER_INCARNATION_ID, WORKER);
     assert.equal(captured.env.BIFROST_WORKER_RESOURCE_UID, "uid-1");
     assert.equal(captured.env.HOSTNAME, `cf-${WORKER}`);
-    assert.deepEqual(captured.entrypoint, ["python", "-m", "src.worker.main"]);
+    assert.deepEqual(captured.entrypoint, ["/entrypoint.sh", "python", "-m", "src.worker.main"]);
 });
 
 test("the ledger refuses to record a container destroy that failed", async () => {

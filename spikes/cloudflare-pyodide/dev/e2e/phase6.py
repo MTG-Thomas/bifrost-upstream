@@ -84,12 +84,23 @@ def run(runtime: Path, solution: bool, containers: bool) -> None:
     content = ("from bifrost import workflow\n\n@workflow(name='phase6_linux_only')\n"
                "async def phase6_linux_only():\n    return 6\n")
     if containers:
-        content = """import subprocess
+        content = """import os
+import subprocess
 from bifrost import workflow
+from pathlib import Path
 
 @workflow(name="phase6_linux_only")
 async def phase6_linux_only():
-    return {"stdout": subprocess.check_output(["printf", "containers"], text=True)}
+    assert os.geteuid() != 0
+    assert "BIFROST_WORKER_LAUNCHER_ID" not in os.environ
+    assert "BIFROST_WORKER_CONTROL_SECRET" not in os.environ
+    try:
+        Path("/proc/1/environ").read_bytes()
+    except PermissionError:
+        pass
+    else:
+        raise AssertionError("the supervisor environment is readable")
+    return {"stdout": subprocess.check_output(["printf", "containers"], text=True), "proc_environment_denied": True}
 """
         vm_path = "workflows/phase6_vm_hold.py"
         send("/api/files/write", {

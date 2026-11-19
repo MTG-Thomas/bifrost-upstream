@@ -535,9 +535,19 @@ authenticated reservation. Its reconnect takes the command lock while
 replacing the socket and sending bootstrap. Legacy launchers retain
 the existing welcome, helper arguments and cache-backed installation.
 Containers opt into the helpers' stdin mode, including package-generation
-updates, and start only the workflow template. The launcher consumes its
-derived control environment variable before starting helpers and rejects
-service, agent and generic platform-job commands.
+updates, and start only the workflow template. The provider starts the image's
+`/entrypoint.sh`. That script drops the production image's root user to
+`bifrost` before exec, and the development image already defaults to that user.
+The Containers launcher rejects root and inherited platform credential
+variables before connecting. It sets `PR_SET_DUMPABLE=0` to prevent
+unprivileged same-UID children reading its initial environment via procfs,
+then removes the derived key from the environment passed to descendants.
+This assumes the workload lacks a capability such as `CAP_SYS_PTRACE`
+that can bypass the kernel check. The physical launcher UUID is created in
+memory and sent in the signed control hello. It is omitted from child
+inputs and harness evidence, and the API hides SQL parameters when a
+Containers scope is configured. The launcher rejects service, agent and
+generic platform-job commands.
 
 Enable the third scope with `BIFROST_CLOUDFLARE_CONTAINERS_SCOPE`,
 `BIFROST_CLOUDFLARE_CONTAINERS_URL` and

@@ -4,14 +4,33 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 
 from src.worker.remote.identity import LauncherIdentity
-from src.worker.remote.launcher import Launcher
+from src.worker.remote.launcher import Launcher, _load_containers_control_secret
 from src.worker.remote.protocol import ControlEnvelope
+
+
+@pytest.mark.parametrize("name", [
+    "BIFROST_SECRET_KEY", "BIFROST_DATABASE_URL_SYNC", "OTHER_DATABASE_URL",
+    "REDIS_URL", "BIFROST_REDIS_URL", "S3_TOKEN", "BIFROST_S3_SECRET_KEY",
+    "CAPACITY_TOKEN", "BIFROST_WORKER_LAUNCHER_ID",
+])
+def test_containers_refuse_privileged_image_environment(monkeypatch, name) -> None:
+    monkeypatch.setattr(os, "environ", {name: "synthetic", "BIFROST_WORKER_CONTROL_SECRET": "derived"})
+    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+    with pytest.raises(RuntimeError, match="forbidden environment variable"):
+        _load_containers_control_secret()
+
+
+def test_containers_refuse_root_before_reading_the_key(monkeypatch) -> None:
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    with pytest.raises(RuntimeError, match="non-root"):
+        _load_containers_control_secret()
 
 
 @pytest.mark.asyncio
