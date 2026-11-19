@@ -869,7 +869,7 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                 workflow_id=workflow_id, entry_path=context.get("file_path"),
                 function_name=context.get("function_name"), entry_sha256=context.get("content_hash"),
                 expected_revision=cloudflare_revision,
-                **({"solution_id": context["solution_id"]} if context.get("solution_id") is not None else {}),
+                solution_id=context.get("solution_id"),
             )
             if workspace is None:
                 raise CloudflareRevisionRejected("Cloudflare workflow revision no longer matches its approval")

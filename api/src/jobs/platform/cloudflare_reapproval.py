@@ -117,6 +117,7 @@ async def _run_reapproval(context: PlatformJobContext, payload: ReapprovalPayloa
     analysed_pins = dict(payload.observed_pins)
 
     async def review_required(reason: str) -> dict[str, Any]:
+        # The generation in the dedupe key scopes this refusal to one Solution publication.
         async with get_db_context() as db:
             indexed = await indexed_pins(db, set(analysed_pins), install_id=payload.install_id)
         if any(indexed.get(path) != pin for path, pin in analysed_pins.items()):

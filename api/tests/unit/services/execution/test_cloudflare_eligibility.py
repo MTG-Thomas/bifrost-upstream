@@ -8,10 +8,17 @@ from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
+import pytest_asyncio
 from src.core.redis_client import PendingExecution, pending_execution_record
 from src.core.storage.contracts import StorageError
 from src.jobs.platform import cloudflare_reapproval
-from src.models.orm import CloudflareApproval
+from src.models.orm import (
+    CloudflareApproval,
+    Organization,
+    Solution,
+    SolutionFileIndex,
+    Workflow,
+)
 from src.services.execution import cloudflare_eligibility, service, workflow_dispatch
 from src.services.execution.cloudflare_analysis import (
     POLICY_VERSION,
@@ -70,6 +77,123 @@ async def _prepare(approval):
         workflow_id=str(approval.workflow_id), entry_path=ENTRY, function_name="run",
         entry_sha256=approval.declaration["entry_sha256"], expected_revision=approval.revision,
     )
+
+
+@pytest_asyncio.fixture
+async def installed_review(review, db_session, monkeypatch):
+    approval, sources, _ = review
+    owner = Organization(id=uuid4(), name="Solution review fixture", created_by="test")
+    db_session.add(owner)
+    await db_session.flush()
+    solution = Solution(
+        id=uuid4(), slug=f"review-{uuid4().hex}", name="Review fixture", organization_id=owner.id,
+        version="2.0.0", runtime_source_generation=uuid4(),
+    )
+    db_session.add(solution)
+    await db_session.flush()
+    workflow = Workflow(
+        id=approval.workflow_id, name="Review fixture", path=ENTRY, function_name="run",
+        organization_id=owner.id, solution_id=solution.id,
+    )
+    db_session.add(workflow)
+    for path, content in sources.items():
+        db_session.add(SolutionFileIndex(
+            solution_id=solution.id, path=path, content_hash=hashlib.sha256(content).hexdigest(),
+        ))
+    await db_session.flush()
+    scope = cloudflare_eligibility.SolutionApprovalScope(
+        install_id=solution.id, version=solution.version, source_generation=solution.runtime_source_generation,
+    )
+    approval.organization_id = owner.id
+    approval.declaration["solution"] = scope.model_dump(mode="json")
+    storage = cloudflare_eligibility.RepoStorage()
+    solution_storage = Mock(return_value=storage)
+    monkeypatch.setattr(cloudflare_eligibility, "SolutionStorage", solution_storage)
+    monkeypatch.setattr(cloudflare_eligibility, "RepoStorage", Mock(side_effect=AssertionError("loose read")))
+
+    @asynccontextmanager
+    async def db_context():
+        yield db_session
+
+    monkeypatch.setattr(cloudflare_eligibility, "get_db_context", db_context)
+    return approval, solution, scope, solution_storage
+
+
+@pytest.mark.parametrize("state", ["matching", "other-install", "outbound", "new-generation"])
+async def test_solution_placement_uses_current_install_scope(installed_review, db_session, state):
+    approval, solution, scope, storage = installed_review
+    if state == "other-install":
+        approval.declaration["solution"]["install_id"] = str(uuid4())
+    elif state == "outbound":
+        solution.allow_outbound_access = True
+    elif state == "new-generation":
+        solution.runtime_source_generation = uuid4()
+    await db_session.flush()
+    pending = pending_execution_record(
+        execution_id=str(uuid4()), workflow_id=str(approval.workflow_id), parameters={},
+        org_id=str(approval.organization_id), user_id=str(uuid4()), user_name="Operator",
+        user_email="operator@example.com", lineage=None,
+    )
+    revision, request = await workflow_dispatch._cloudflare_placement(
+        db_session, pending, {"workflow_id": pending["workflow_id"]},
+    )
+    assert revision == (approval.revision if state == "matching" else None)
+    if state == "new-generation":
+        assert request is not None
+        assert request.payload.solution == scope.model_copy(
+            update={"source_generation": solution.runtime_source_generation},
+        )
+        assert request.payload.parent_revision == approval.revision
+        assert request.organization_id == solution.organization_id
+    else:
+        assert request is None
+    storage.assert_not_called()
+
+
+@pytest.mark.parametrize("changed", ["none", "generation", "version", "owner", "outbound"])
+async def test_solution_acceptance_requires_the_reviewed_install_scope(installed_review, db_session, changed):
+    approval, solution, scope, storage = installed_review
+    proposal = await cloudflare_eligibility.propose_approval(
+        approval.workflow_id, subrequest_allowance=10, cpu_budget_ms=500,
+    )
+    assert proposal.declaration.solution == scope
+    assert proposal.organization_id == solution.organization_id
+    storage.assert_called_once_with(solution.id)
+    if changed == "none":
+        accepted = await cloudflare_eligibility.accept_proposal(db_session, proposal, accepted_by="operator")
+        assert accepted.declaration["solution"] == scope.model_dump(mode="json")
+        assert accepted.organization_id == solution.organization_id
+        return
+    if changed == "generation":
+        solution.runtime_source_generation = uuid4()
+    elif changed == "version":
+        solution.version = "3.0.0"
+    elif changed == "owner":
+        solution.organization_id = None
+    else:
+        solution.allow_outbound_access = True
+    await db_session.flush()
+    with pytest.raises(AnalysisRejected, match="changed during review"):
+        await cloudflare_eligibility.accept_proposal(db_session, proposal, accepted_by="operator")
+
+
+@pytest.mark.parametrize("state", ["unpublished", "outbound", "inactive", "wrong-owner"])
+async def test_proposal_refuses_ineligible_solution_before_storage(installed_review, db_session, state):
+    approval, solution, _, storage = installed_review
+    if state == "unpublished":
+        solution.runtime_source_generation = None
+    elif state == "outbound":
+        solution.allow_outbound_access = True
+    elif state == "inactive":
+        solution.status = "inactive"
+    else:
+        solution.organization_id = None
+    await db_session.flush()
+    with pytest.raises(AnalysisRejected, match="published install-local source"):
+        await cloudflare_eligibility.propose_approval(
+            approval.workflow_id, subrequest_allowance=10, cpu_budget_ms=500,
+        )
+    storage.assert_not_called()
 
 
 @pytest.mark.parametrize("changed", [None, "generation", "index", "bytes", "install"])
@@ -399,9 +523,11 @@ async def test_missing_import_retries_only_if_the_index_has_the_path(review, mon
         raise StorageError("not_found", provider_code="NoSuchKey")
 
     monkeypatch.setattr(cloudflare_eligibility, "get_db_context", db_context)
-    monkeypatch.setattr(cloudflare_eligibility, "indexed_pins", AsyncMock(
-        side_effect=lambda _, paths, *, install_id: {HELPER: "a" * 64} if indexed and HELPER in paths else {},
-    ))
+    async def pins_for_scope(_, paths, *, install_id):
+        assert install_id is None
+        return {HELPER: "a" * 64} if indexed and HELPER in paths else {}
+
+    monkeypatch.setattr(cloudflare_eligibility, "indexed_pins", pins_for_scope)
     storage = SimpleNamespace(read=read, compute_hash=lambda content: hashlib.sha256(content).hexdigest())
     monkeypatch.setattr(cloudflare_eligibility, "RepoStorage", lambda: storage)
     pins: dict[str, str | None] = {}
@@ -514,5 +640,51 @@ async def test_opaque_route_sends_the_verified_workspace_snapshot(review, monkey
         assert bundle["sources"] == {path: source.decode() for path, source in sources.items()}
         assert bundle["manifest"] == {ENTRY: approval.declaration["entry_sha256"], **approval.declaration["module_sha256"]}
         assert bundle["https_hosts"] == approval.declaration["https_hosts"]
+    finally:
+        await pool.ownership_lost()
+
+
+@pytest.mark.parametrize("outbound", [False, True])
+async def test_opaque_solution_route_sends_only_the_verified_entry_digest(installed_review, monkeypatch, outbound):
+    approval, solution, _, _ = installed_review
+    prepare = AsyncMock(wraps=cloudflare_eligibility.prepare_approved_workspace)
+    monkeypatch.setattr(cloudflare_eligibility, "prepare_approved_workspace", prepare)
+    transport = Mock(
+        lease=RemoteOwnerLease(uuid4(), uuid4(), uuid4(), 1, 2),
+        request=AsyncMock(return_value={"runtime_handle": "fixture:1"}),
+        memory_request_bytes=Mock(return_value=64 << 20),
+    )
+    pool = ThinRemoteProcessPool(transport, runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE)
+    write = AsyncMock()
+    monkeypatch.setattr(pool, "_write_context_to_redis", write)
+    monkeypatch.setattr(pool, "_write_active_execution_lease", AsyncMock())
+    context = {
+        "workflow_id": str(approval.workflow_id), "file_path": ENTRY, "function_name": "run",
+        "content_hash": None, "solution_id": str(solution.id), "solution_global_repo_access": outbound,
+        "tags": ["workflow"], "timeout_seconds": 0,
+    }
+
+    async def route():
+        await pool.route_execution(
+            str(uuid4()), context, {"workflow_id": str(approval.workflow_id)},
+            credential_route=pool.credential_route(), cloudflare_revision=approval.revision,
+        )
+
+    try:
+        if outbound:
+            with pytest.raises(CloudflareRevisionRejected):
+                await route()
+            prepare.assert_not_awaited()
+            transport.request.assert_not_awaited()
+            return
+        await route()
+        prepare.assert_awaited_once_with(
+            workflow_id=str(approval.workflow_id), entry_path=ENTRY, function_name="run",
+            entry_sha256=None, expected_revision=approval.revision, solution_id=str(solution.id),
+        )
+        sent = transport.request.await_args.args[1]["context"]
+        assert sent["solution_id"] == str(solution.id)
+        assert sent["content_hash"] == approval.declaration["entry_sha256"]
+        assert write.await_args.args[1]["content_hash"] is None
     finally:
         await pool.ownership_lost()

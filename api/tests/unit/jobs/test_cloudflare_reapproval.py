@@ -141,7 +141,7 @@ async def test_lease_loss_prevents_acceptance(scenario, worker):
 
 @pytest.mark.parametrize("error, outcome", [
     (ObservationChanged("changed"), "superseded"),
-    (ObservationChanged("Expected an active loose-workspace workflow"), "superseded"),
+    (ObservationChanged("Expected an active workflow"), "superseded"),
     (AnalysisRejected("Unresolved import: requests"), "review_required"),
     (SourceUnresolved("Indexed source missing"), "retryable"),
 ])

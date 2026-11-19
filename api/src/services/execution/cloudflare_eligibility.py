@@ -308,7 +308,6 @@ async def prepare_approved_workspace(
     if (
         (declaration.entry_path, declaration.function_name) != (entry_path, function_name)
         or (install_id is None and declaration.entry_sha256 != entry_sha256)
-        or (install_id is not None and entry_sha256 is not None and declaration.entry_sha256 != entry_sha256)
     ):
         return None
 

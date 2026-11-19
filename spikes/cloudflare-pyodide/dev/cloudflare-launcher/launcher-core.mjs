@@ -51,6 +51,7 @@ function workflowRoute(payload, runtimeHandle) {
       typeof context.engine_token !== 'string' || !context.engine_token ||
       !validWorkspace(context.cloudflare_workspace, context.file_path)) return null;
   const workspace = context.cloudflare_workspace;
+  // Wire consistency only. The API verifies the approved source bytes before sending.
   if ((context.solution_id ?? null) !== (workspace.solution_id ?? null) ||
       (context.solution_id != null && (!UUID_RE.test(context.solution_id) ||
         workspace.manifest[context.file_path] !== context.content_hash))) return null;

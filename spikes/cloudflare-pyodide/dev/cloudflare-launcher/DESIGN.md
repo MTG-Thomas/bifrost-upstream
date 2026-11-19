@@ -483,6 +483,9 @@ are eligible. Imports must resolve in the install or the supported runtime.
 Vendored modules count as install source. Approval never grants access to
 shared workspace imports. Carry-forward analyzes the new generation under the
 same install and owner, even when all source pins are unchanged.
+Holders of `solutions.deploy` and git auto-pull can publish code that carries
+forward automatically within the operator's approved limits. The same deploy
+authority already allows that code to run on Linux with broader egress.
 
 The first Normal dispatch to observe changed entry or module pins stays
 Linux-only and queues a deduplicated `workflow.cloudflare_reapproval` PlatformJob.
@@ -512,6 +515,8 @@ Solution snapshots also bind the install ID and carry the approved entry
 digest on the command context. The API rechecks the install generation and
 indexed pins after fetching the bytes. The run retains its ordinary
 execution-scoped SDK credential and Solution context.
+The launcher's install ID and entry digest comparison checks wire
+consistency. The API verifies the source bytes before sending.
 The launcher must execute that snapshot and enforce the declared outbound
 policy. Missing, revoked or changed pins prevent a send and hand the run
 back as Linux-only. Other definitive refusals retain the revision and
@@ -699,11 +704,11 @@ until the ordinary queue deadline.
   with its Cloudflare revision cleared. The launcher enforces the same
   bound during reassembly.
 
-## Workload viability at `1bd47b0c8`
+## Workload viability
 
 | Workload | Current Cloudflare blocker | Linux execution contract | Approval scope and verdict |
 |---|---|---|---|
-| Solution-installed workflow | Enqueue, approval, send and launcher admit only loose workspace source. | Linux reads the active install's `_solutions/{id}/` tree through the scoped module loader, with optional shared-repo lookup. The run's credential carries server-derived install and organization authority for SDK calls. Retained portable source is an input to rebuilds. The published runtime tree is the source of executed Python. | **Viable with a finalized, install-local snapshot.** Bind the approval to workflow, install, version, published source generation and owner org, including explicit global ownership. Carry forward within the same install and owner under the existing package, host and budget envelope. Shared-repo import resolution needs a separate design for tier precedence and shadowing. |
+| Solution-installed workflow | Supported for approved Normal workflows with a published source generation and outbound access disabled. | Linux reads the active install's `_solutions/{id}/` tree through the scoped module loader, with optional shared-repo lookup. The run's credential carries server-derived install and organization authority for SDK calls. The published runtime tree supplies executed Python. | **Implemented for install-local snapshots.** Approval binds the workflow, install, version, published source generation and owner org, including explicit global ownership. Shared-repo import resolution needs a separate design for tier precedence and shadowing. |
 | Inline code / script | Inline acceptance has no workflow row or indexed source revision. The opaque launcher expects a workflow entry and function. | Linux executes per-run base64 source through the script entry point, with caller/org context, SDK credentials and script output semantics. Normal admission and deadlines still apply. | **Viable with a distinct approval contract.** Approve immutable source, execution form, dependency pins and limits for a named org scope. A script name or a queued payload is insufficient authority. Arbitrary SDK- or agent-generated scripts stay on Linux. |
 | Artifact-workspace dispatch | Enqueue and send exclude `artifact_workspace_id`. | Linux passes the workspace ID to SDK context. Artifact operations run on the platform using execution/workspace authorization and protected storage or provider credentials. The artifact ID does not select Python source. | **Viable with server-verified workspace binding.** Use the underlying workflow approval and independently validate its execution's workspace membership and caller/org authority. Keep storage credentials on the platform. |
 | Fast Path | The external Cloudflare profile advertises Normal `workflow.execute@1`. Fast Path requires its own reserved lane and `workflow.execute@2`. | Linux has exclusive reserved managed slots or explicitly configured static workers, lane-preserving handback, and its normal source and SDK surface. Dedicated admission protects the queue. Startup and SDK/network latency still affect response time. | **Linux-only in this spike.** A Worker implementation needs signed Fast Path capability, provider reservation and warm readiness, exclusive placement, and measured queue-to-entry latency under load. Per-source approval would still apply and grants no entitlement to the reserved lane. |
@@ -730,9 +735,10 @@ source approval. Forward the workspace in the context and apply the same
 binding to artifact SDK requests for this execution. Keep the existing
 artifact row authorization as an independent check.
 
-The launcher prototype sends the same approved snapshot with and without an
-unbound artifact workspace. The unbound case produces a definitive refusal
-before host entry. The control enters normally. Before enabling this path,
+The launcher test exercises only the refusal for an artifact-workspace route.
+It sends the same approved snapshot with and without an artifact workspace
+ID. The request carrying the ID is refused before host entry. The control
+enters normally. Workspace binding remains a design. Before enabling this path,
 test a child tool writing and reading one artifact in its ancestor workspace,
 a mismatched workspace in the dispatch and SDK request, and an empty
 workspace owned by a different organization. Include raw bytes or multipart
