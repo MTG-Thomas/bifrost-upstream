@@ -1,6 +1,8 @@
 # Cloudflare launcher: Workers as an external worker in the upstream pool
 
-Status: phases 5a and 5b passed on the fork, 2026-11-18. Targets upstream
+Status: phases 5a and 5b passed on the fork, 2026-11-18. Phase 7 verified
+hosted provisioning and provider discovery. CT128 occupancy blocked
+its workload pass on 2026-11-19. Targets upstream
 `main` (Jack's merged
 capacity core, #1423) and stays compatible with the direction of #1424
 (API-owned compute, derived worker keys) and #1425 (Cloudflare Containers
@@ -641,6 +643,46 @@ plan and included usage. A persistent service pays the memory/disk rate
 even while idle. Cold starts, service rotation and physical stop on
 Cloudflare remain to be measured.
 [Cloudflare Containers pricing](https://developers.cloudflare.com/containers/platform/pricing/)
+
+### Phase 7 hosted preflight, 2026-11-19
+
+The [Phase 7 harness](../e2e/README.md#phase-7-hosted-three-scope-qualification)
+adds the hosted peers to the existing real-API fixture. Source base
+`9ac5ef5b1`, harness archive `hosted-fe504a900`, and deployment configuration
+`d68ce134b` used the same compiled runtime digest as Phase 5b.
+
+| Check | Result |
+|---|---|
+| Workers capacity discovery | Authenticated HTTP 200, protocol v1, `cloudflare-python-v1`, 256 MiB declared capacity for two slots, one maximum managed incarnation, 600-second maximum lifetime. Anonymous capabilities returned 401. |
+| Containers capacity discovery | Authenticated HTTP 200, protocol v1, 1 GiB and one maximum worker. The hosted application accepted the pinned image and one `basic` instance. The image was 1.12 GB locally and the local overflow harness had qualified the workload at 1 GiB. |
+| Tunnel ingress | Cloudflare read back the dedicated hostname and anchored allowlist, with catch-all HTTP 404. DNS stayed absent and no connector registered. |
+| CT128 admission | Running Bifrost test stacks occupied the first two launch checks. A different debug stack and its reservation occupied the final check. The gated archive never started its debug stack. |
+| Workflows, agent, and summary | Unrun. No hosted control hello, execution, claim, result, or model-provider call. |
+| Three scopes and hosted runtime behavior | Unrun. No Bifrost Container assignment, requirements bootstrap, workload cold start, inactivity expiry, idle retirement, CPU-limit classification, DO recovery or scheduling latency was measured in this pass. |
+
+The trial used the Midtown Technology Group account and the
+`bifrost-hq-9ac5ef5b1` prefix. The five deployed Workers used suffixes
+`-launcher`, `-workers`, `-containers`, `-summary` and `-agent`. The
+Container application `bifrost-hq-9ac5ef5b1-container`
+(`a03ea905-8092-41f0-9156-cb7adde53a7b`) used registry tag
+`bifrost-hq-9ac5ef5b1:fe504a900` and digest
+`sha256:7f148e55fc9f692625399aba0125f7a7e176dbeecc92ac5877b0b4e8c1efa810`.
+The tunnel `6f418fb0-0f40-4051-ae75-5c423419d18e` was deleted at 16:21:44 UTC.
+Cloudflare readback returned zero trial Workers, Durable Object namespaces,
+Container apps, registry images, live tunnels, DNS records and connectors.
+CT128 readback returned zero trial project containers, networks, volumes,
+image tags and connector processes. The temporary registry credential and
+private API files were removed.
+
+The account's existing $25 Workers notification policy was enabled. A
+Workers Logs query filtered to the two capacity providers returned four
+records during the preflight window.
+Estimated incremental usage was below $0.01 for provider probes and
+provisioning. No workload instance or LLM request was observed, and the
+invoice was unavailable at teardown. The CT128 Docker CLI used the legacy
+builder, so the private archive supplied the tracked LICENSE at mode 0644
+in place of Dockerfile `COPY --chmod=644`. No runtime source fix was
+identified in this preflight.
 
 ### Multi-slot managed launchers
 
