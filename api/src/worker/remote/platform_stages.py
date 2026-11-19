@@ -3,22 +3,38 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import json
 import os
+import signal
 import sys
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass
-from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
 from src.worker.remote.platform_stage_protocol import (
+    MAX_STAGE_INPUT_BYTES,
     MAX_STAGE_RESULT_BYTES,
     StageBinding,
     encode_bundle,
 )
 
 MAX_STAGE_RECORDS = 4096
+STAGE_READY = b"\x01"
+
+
+def read_stage_input() -> bytes:
+    """Read protected stdin after the child has blocked same-UID procfs access."""
+    if ctypes.CDLL(None, use_errno=True).prctl(4, 0, 0, 0, 0) != 0:  # PR_SET_DUMPABLE
+        raise RuntimeError("Could not protect stage process descriptors")
+    sys.stdout.buffer.write(STAGE_READY)
+    sys.stdout.buffer.flush()
+    data = sys.stdin.buffer.read(MAX_STAGE_INPUT_BYTES + 1)
+    if len(data) > MAX_STAGE_INPUT_BYTES:
+        raise ValueError("Platform stage input exceeds its size limit")
+    return data
 
 
 @dataclass(frozen=True)
@@ -35,6 +51,7 @@ class _Stage:
     result: dict[str, Any] | None = None
     state: str = "running"
     stopping: bool = False
+    stop_signal_sent: bool = False
 
 
 class PlatformStages:
@@ -43,10 +60,8 @@ class PlatformStages:
     def __init__(
         self,
         programs: Mapping[str, StageProgram],
-        kill: Callable[[asyncio.subprocess.Process], Awaitable[None]],
     ) -> None:
         self.programs = programs
-        self.kill = kill
         self.active: _Stage | None = None
         self.released: dict[str, StageBinding] = {}
 
@@ -86,8 +101,7 @@ class PlatformStages:
         stage = self._lookup(binding)
         if stage is not None:
             stage.stopping = True
-            if stage.process is not None:
-                await self.kill(stage.process)
+            self._kill(stage)
             # The task also observes stopping if release won the spawn race.
             assert stage.task is not None
             await asyncio.shield(stage.task)
@@ -100,11 +114,17 @@ class PlatformStages:
         if self.active is not None:
             await self.release(self.active.binding)
 
+    @staticmethod
+    def _kill(stage: _Stage) -> None:
+        if stage.process is not None and not stage.stop_signal_sent:
+            stage.stop_signal_sent = True
+            # Git may outlive its Python parent. Always stop the process group.
+            with suppress(ProcessLookupError):
+                os.killpg(stage.process.pid, signal.SIGKILL)
+
     async def _run(self, stage: _Stage, program: StageProgram, encoded: bytes) -> None:
         try:
             with TemporaryDirectory(prefix="bifrost-platform-stage-") as directory:
-                root = Path(directory)
-                (root / "input.json").write_bytes(encoded)
                 # Whitelist only execution paths and CA settings. In particular
                 # Git configuration, proxies, SDK tokens and control keys are absent.
                 env = {
@@ -118,14 +138,20 @@ class PlatformStages:
                     return
                 process = stage.process = await asyncio.create_subprocess_exec(
                     sys.executable, "-m", program.module, directory, env=env,
+                    stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
                     start_new_session=True, limit=MAX_STAGE_RESULT_BYTES + 1,
                 )
                 try:
                     if stage.stopping:
                         return
-                    assert process.stdout is not None
+                    assert process.stdout is not None and process.stdin is not None
                     async with asyncio.timeout(program.timeout_seconds):
+                        if await process.stdout.read(1) != STAGE_READY:
+                            raise ValueError("Platform stage process did not become ready")
+                        process.stdin.write(encoded)
+                        await process.stdin.drain()
+                        process.stdin.close()
                         try:
                             await process.stdout.readexactly(MAX_STAGE_RESULT_BYTES + 1)
                         except asyncio.IncompleteReadError as exc:
@@ -141,7 +167,11 @@ class PlatformStages:
                     stage.result = result
                     stage.state = "succeeded"
                 finally:
-                    await self.kill(process)
+                    self._kill(stage)
+                    assert process.stdout is not None
+                    while await process.stdout.read(8192):
+                        pass
+                    await process.wait()
         except (OSError, ValueError, TypeError, TimeoutError, RecursionError):
             stage.state = "failed"
         finally:

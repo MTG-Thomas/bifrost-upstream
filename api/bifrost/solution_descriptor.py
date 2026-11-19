@@ -117,9 +117,14 @@ def load_descriptor(path: Path | str) -> SolutionDescriptor:
     resolved = os.path.realpath(os.path.join(root, DESCRIPTOR_FILENAME))
     if not resolved.startswith(root + os.sep) or not os.path.isfile(resolved):
         raise FileNotFoundError(f"No {DESCRIPTOR_FILENAME} at {Path(root) / DESCRIPTOR_FILENAME}")
+    return parse_descriptor(Path(resolved).read_text(encoding="utf-8"))
+
+
+def parse_descriptor(content: str) -> SolutionDescriptor:
+    """Validate descriptor text already read from a confined source."""
     from bifrost.definition_validation import read_yaml_mapping, validate_definition
 
-    data = read_yaml_mapping(Path(resolved).read_text(encoding="utf-8"), path=DESCRIPTOR_FILENAME)
+    data = read_yaml_mapping(content, path=DESCRIPTOR_FILENAME)
     # ``scope`` was removed from the portable descriptor. Old descriptors may
     # carry any historic value, so retain its documented ignore behavior while
     # rejecting every other unsupported fixed key.

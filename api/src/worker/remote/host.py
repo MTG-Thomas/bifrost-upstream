@@ -16,12 +16,13 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from shared.worker_control_auth import external_worker_control_key
 from sqlalchemy import func, select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from starlette.websockets import WebSocketState
 
+from shared.solution_git_stage import SOLUTION_GIT_CAPABILITY, SOLUTION_UPDATE_CHECK_JOB
+from shared.worker_control_auth import external_worker_control_key
 from src.config import get_settings
 from src.core.database import get_db_context, get_liveness_db_context
 from src.jobs.consumers.package_install import PackageInstallConsumer
@@ -62,6 +63,7 @@ from src.worker.remote.ownership import (
     release_remote_owner,
     renew_remote_owner,
 )
+from src.worker.remote.platform_stage_host import PlatformStageBackend
 from src.worker.remote.protocol import (
     CLOUDFLARE_AGENT_HANDLER,
     CLOUDFLARE_AGENT_PROTOCOL,
@@ -150,6 +152,15 @@ class Bridge:
         self.handlers = hello.get(
             "handlers", LEGACY_EXECUTION_HANDLERS if self.runtime_profile == LINUX_RUNTIME_PROFILE else (),
         )
+        self.platform_stage_backend: PlatformStageBackend | None = None
+        if self.containers and (SOLUTION_GIT_CAPABILITY, 1) in self.handlers:
+            from src.jobs.platform.solution_update_stage import (
+                run_solution_update_stage,
+            )
+
+            self.platform_stage_backend = PlatformStageBackend(
+                self, {SOLUTION_UPDATE_CHECK_JOB: (SOLUTION_GIT_CAPABILITY, run_solution_update_stage)},
+            )
         self.declared_slots = lease.declared_slots
         self._reset_freshness()
         self.pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
@@ -290,6 +301,8 @@ class Bridge:
                             raise CredentialRouteChanged("Opaque launcher inventory is not reconciled")
                         if dispatch and self.freshness_age() > ADMISSION_FRESHNESS_SECONDS:
                             raise CredentialRouteChanged("Opaque launcher heartbeat is stale")
+                        socket = self.socket
+                    elif authorization is not None:
                         socket = self.socket
                     async with authorization if authorization is not None else nullcontext():
                         message = ControlEnvelope(
@@ -926,12 +939,32 @@ class ApiExecutor(PoolWorker):
             self._lost or not self.bridge.connected or self.bridge.freshness_age() > ADMISSION_FRESHNESS_SECONDS
         ):
             return False
-        return self.bridge.reconciliation_ready.is_set()
+        stages = self.bridge.platform_stage_backend
+        return self.bridge.reconciliation_ready.is_set() and (stages is None or not stages.releasing)
+
+    @property
+    def supports_platform_jobs(self) -> bool:
+        return self.bridge.platform_stage_backend is not None or super().supports_platform_jobs
+
+    def active_handler_counts(self) -> dict[str, int]:
+        counts = super().active_handler_counts()
+        stages = self.bridge.platform_stage_backend
+        if stages is not None:
+            counts[SOLUTION_GIT_CAPABILITY] = int(bool(self._platform_jobs) or stages.active is not None)
+        return counts
 
     async def _execute_platform_job(self, claim: Any) -> bool:
-        return await run_claimed_platform_job(claim, backend=self.bridge)
+        return await run_claimed_platform_job(claim, backend=self.bridge.platform_stage_backend or self.bridge)
 
     async def _claim_platform_job(self, fits_bytes: int) -> Any:
+        stages = self.bridge.platform_stage_backend
+        if stages is not None:
+            if self._platform_jobs or stages.busy or stages.active is not None:
+                return None
+            return await claim_platform_job(
+                backend="local", fits_bytes=fits_bytes, memory_sample=self.bridge.memory(),
+                job_types=frozenset(stages.handlers),
+            )
         return await claim_platform_job(backend="local", fits_bytes=fits_bytes,
                                         memory_sample=self.bridge.memory())
 
@@ -1041,6 +1074,11 @@ class ApiExecutor(PoolWorker):
                             not isinstance(entry, dict) or entry.get("kind") != "workflow" for entry in entries
                         ):
                             raise ProtocolError("Containers inventory must contain only workflow routes")
+                    stages = self.bridge.platform_stage_backend
+                    if stages is not None:
+                        await stages.reconcile(self.bridge.inventory.get("compute_stages"))
+                    elif self.bridge.inventory.get("compute_stages"):
+                        raise ProtocolError("Unnegotiated Container stage inventory")
                 snapshot = await self.bridge.pool.reconcile_inventory(self.bridge.inventory)
             if self.runtime_profile != LINUX_RUNTIME_PROFILE and snapshot is None:
                 self.bridge.disconnect()
@@ -1546,8 +1584,13 @@ class RemoteControlHost:
             if hello.execution_lane == "fast_path" and ("workflow.execute", 2) not in bootstrap["handlers"]:
                 raise AuthenticationError("Fast Path workers must support workflow.execute version 2")
             credential_protocol = hello_credential_protocol(initial)
-            if containers and initial.get("handlers") != [list(CLOUDFLARE_WORKFLOW_HANDLER)]:
-                raise ProtocolError("Containers workers advertise only the Normal workflow handler")
+            if containers:
+                base = [list(CLOUDFLARE_WORKFLOW_HANDLER)]
+                staged = [*base, [SOLUTION_GIT_CAPABILITY, 1]]
+                if initial.get("handlers") == staged:
+                    bootstrap["handlers"] = (*bootstrap["handlers"], (SOLUTION_GIT_CAPABILITY, 1))
+                elif initial.get("handlers") != base:
+                    raise ProtocolError("Invalid Containers capability advertisement")
             if cloudflare:
                 # Negotiation filters unsupported handlers. Check the full advertisement.
                 handlers: list[list[str | int]] = [list(CLOUDFLARE_WORKFLOW_HANDLER)]

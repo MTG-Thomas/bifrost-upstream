@@ -14,26 +14,33 @@ import os
 import signal
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, NamedTuple
+from typing import Any, NamedTuple
 from uuid import UUID, uuid4
 
+from shared.solution_git_stage import SOLUTION_GIT_CAPABILITY
 from shared.version import get_version
 from src.services.execution.cpu_sampler import CPUSampler, get_clock_ticks
-from src.services.execution.memory_monitor import effective_memory_sample, memory_pressure_ratio
+from src.services.execution.memory_monitor import (
+    effective_memory_sample,
+    memory_pressure_ratio,
+)
 from src.services.execution.template_process import TemplateProcess
 from src.worker.remote.control_connection import connect_control, load_control_headers
 from src.worker.remote.identity import LauncherIdentity, load_launcher_identity
+from src.worker.remote.platform_stage_protocol import StageBinding
+from src.worker.remote.platform_stages import PlatformStages, StageProgram
 from src.worker.remote.protocol import (
-    CREDENTIAL_PROTOCOL,
     CLOUDFLARE_WORKFLOW_HANDLER,
+    CREDENTIAL_PROTOCOL,
     EXECUTION_HANDLERS,
+    LINUX_RUNTIME_PROFILE,
     SUMMARY_CLAIM_PROTOCOL,
     ControlEnvelope,
     FragmentAssembler,
     Hello,
-    LINUX_RUNTIME_PROFILE,
     PayloadSerializationError,
     fragment,
     new_nonce,
@@ -208,6 +215,12 @@ class Launcher:
         self.secret = secret
         self._authenticated_control = authenticated_control
         self.containers = containers
+        self.platform_stages = (
+            PlatformStages(
+                {SOLUTION_GIT_CAPABILITY: StageProgram("src.worker.remote.solution_git_stage", 45)},
+            )
+            if containers else None
+        )
         self.session_generation = 0
         self._sequence = 0
         self._last_command_sequence = 0
@@ -355,7 +368,10 @@ class Launcher:
             "requirements": requirements,
             "version": get_version(),
             "credential_protocol": CREDENTIAL_PROTOCOL,
-            "handlers": (CLOUDFLARE_WORKFLOW_HANDLER,) if self.containers else EXECUTION_HANDLERS,
+            "handlers": (
+                (CLOUDFLARE_WORKFLOW_HANDLER, (SOLUTION_GIT_CAPABILITY, 1))
+                if self.containers else EXECUTION_HANDLERS
+            ),
             "summary_claim_protocol": SUMMARY_CLAIM_PROTOCOL,
         }, separators=(",", ":")))
         welcome = json.loads(await self.socket.recv())
@@ -419,6 +435,7 @@ class Launcher:
             "baseline_bytes": self.baseline_bytes,
             "routes": routes,
             "terminal_routes": list(self.pending_terminal_inventory.values()),
+            **({"compute_stages": self.platform_stages.inventory()} if self.platform_stages is not None else {}),
         }
 
     async def helper(self, module: str, *args: str, input_payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -446,7 +463,20 @@ class Launcher:
             response: dict[str, Any] = {}
             if self.containers and action in ("service", "agent_run", "agent_summary", "platform_job"):
                 raise ValueError("Work family is unavailable on Containers")
-            if action in ("workflow", "service"):
+            if self.platform_stages is not None and action in ("stage_status", "stage_start", "stage_release"):
+                binding = StageBinding.parse(payload)
+                if action == "stage_start":
+                    status = self.platform_stages.status(binding)
+                    if status["state"] == "unknown" and (
+                        self.pressure_threshold is None or memory_pressure_ratio() >= self.pressure_threshold
+                    ):
+                        raise MemoryError("Launcher memory pressure rejects platform stage")
+                    response = self.platform_stages.start(binding, payload["bundle"])
+                elif action == "stage_release":
+                    response = await self.platform_stages.release(binding)
+                else:
+                    response = self.platform_stages.status(binding)
+            elif action in ("workflow", "service"):
                 self.check_fork_pressure()
                 route_id = payload["route_id"]
                 if route_id in self.children or route_id in self.jobs:
@@ -836,6 +866,8 @@ class Launcher:
             child.result.close()
         self.children.clear()
         await asyncio.gather(*(self.kill_process(p) for p in self.jobs.values()))
+        if self.platform_stages is not None:
+            await self.platform_stages.close()
         await asyncio.to_thread(self.template.shutdown)
         if self.agent_template is not None:
             await asyncio.to_thread(self.agent_template.shutdown)

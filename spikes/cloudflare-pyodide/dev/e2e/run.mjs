@@ -14,7 +14,7 @@ import {supervisorModules} from '../tenant-workers/supervisor-digest.mjs';
 import {stageRuntimeLoader} from '../stage-runtime-loader.mjs';
 import {hostedRelayPath, relayHeaders, relayHttp} from './relay-http.mjs';
 import {capacityWorker} from './capacity-miniflare.mjs';
-import {localLinuxProvider, serveContainersProviders} from './containers-local.mjs';
+import {localLinuxProvider, localSolutionGit, serveContainersProviders} from './containers-local.mjs';
 
 const root = new URL('../', import.meta.url);
 const require = createRequire(new URL('tenant-workers/package.json', root));
@@ -588,12 +588,13 @@ async function containersChecks() {
   const vmToken = createHash('sha256').update(config.phase6.token + ':vm').digest('hex');
   const containersToken = createHash('sha256').update(config.phase6.token + ':containers').digest('hex');
   const vm = localLinuxProvider({...common, scope: 'vm', token: vmToken, vmEnv});
-  const containers = localLinuxProvider({...common, scope: 'containers', token: containersToken});
+  const containers = localLinuxProvider({...common, scope: 'containers', token: containersToken, gitFixture: true});
+  const git = localSolutionGit();
   execFileSync('docker', ['pause', ...launchers]);
   try {
     await launch(proxy.address().port);
     providerServer = await serveContainersProviders(config.phase6.providerHost, {
-      vm, containers,
+      vm, containers, git,
       workers: {
         async fetch(request) {
           const match = /^\/v1\/workers\/([a-f0-9-]+)\/start$/.exec(new URL(request.url).pathname);
@@ -643,6 +644,41 @@ async function containersChecks() {
     }
     const vmRun = await submit('vm');
     await until('VM primary claims held work', () => runRow(vmRun)?.claim?.[0].worker === primary.id);
+    const solution = await api('/api/solutions', {slug: 'container-update', name: 'Container Update'});
+    assert.ok([200, 201].includes(solution.status));
+    const solutionId = solution.data.id;
+    assert.match(solutionId, /^[0-9a-f-]{36}$/);
+    sql(`UPDATE solutions SET version = '1.0.0', git_connected = true,
+      git_repo_url = '${endpoint}/git/solution.git', git_ref = 'update', repo_subpath = 'solutions/demo'
+      WHERE id = '${solutionId}'`);
+    const jobId = execFileSync('docker', ['exec', config.project + '-api-1', 'python', '-c', `
+import asyncio
+from src.core.database import init_db
+from src.jobs.platform.system_maintenance import enqueue_automatic_solution_update_check
+
+async def run():
+    await init_db()
+    print((await enqueue_automatic_solution_update_check()).platform_job_id)
+
+asyncio.run(run())
+`], {encoding: 'utf8', timeout: 15_000}).trim().split('\n').at(-1);
+    assert.match(jobId, /^[0-9a-f-]{36}$/);
+    const update = await until('Container Git update check settles', () => {
+      const row = sql(`SELECT json_build_object('status',j.status,'result',j.result,'error',j.error_code,
+        'stage',j.remote_stage,'update_available',s.update_available_version,'scope',w.capacity_scope)
+        FROM platform_jobs j CROSS JOIN solutions s
+        LEFT JOIN execution_workers w ON w.id = (j.remote_stage->>'worker_id')::uuid
+        WHERE j.id = '${jobId}' AND s.id = '${solutionId}'`);
+      return ['failed', 'succeeded'].includes(row?.status) && row;
+    }, 90_000);
+    assert.equal(update.status, 'succeeded', JSON.stringify(update));
+    assert.equal(update.scope, 'containers', JSON.stringify(update));
+    assert.equal(update.stage.capability, 'platform.solution_update_check.v1');
+    assert.equal(update.update_available, '2.0.0');
+    assert.equal(update.result.updates_found, 1);
+    assert.equal(update.result.check_failures, 0);
+    assert.ok(git.fetches > 0);
+    evidence('containers-platform-stage', {jobId, solutionId, ...update, gitFetches: git.fetches});
     const approved = await startRun('phase6-a', true, config.phase6.tenants[0]);
     const linux = await submit('linux');
     const linuxRow = await until('Linux-only workflow settles', () => {
@@ -681,6 +717,7 @@ async function containersChecks() {
     execFileSync('docker', ['unpause', ...launchers]);
     containers.close();
     vm.close();
+    git.close();
   }
 }
 

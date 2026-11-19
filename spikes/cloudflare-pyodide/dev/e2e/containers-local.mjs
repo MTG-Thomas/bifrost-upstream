@@ -2,8 +2,10 @@
 // ledger and lifecycle code are the actual provider modules.
 import assert from 'node:assert/strict';
 import {execFile, execFileSync} from 'node:child_process';
-import {readFileSync} from 'node:fs';
+import {mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {createServer} from 'node:https';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {buffer} from 'node:stream/consumers';
 import {promisify} from 'node:util';
 
@@ -17,7 +19,7 @@ const docker = (args, options = {}) => execFileSync('docker', args, {
 const waitDocker = promisify(execFile);
 
 export function localLinuxProvider({
-  project, image, scope, token, version, archive, vmEnv = null, protocolOnly = false,
+  project, image, scope, token, version, archive, vmEnv = null, protocolOnly = false, gitFixture = false,
 }) {
   const records = new Map();
   const resetActors = [];
@@ -44,6 +46,10 @@ export function localLinuxProvider({
         }
         const args = ['run', '--detach', '--name', name, '--memory', '1g', '--memory-swap', '1g',
           '--network', project + '_default'];
+        if (gitFixture) {
+          args.push('--env', 'SSL_CERT_FILE=/app/.phase6-ca.pem',
+            '--mount', `type=bind,src=${archive}/.phase6-ca.pem,dst=/app/.phase6-ca.pem,readonly`);
+        }
         const childEnv = {...process.env};
         for (const [key, value] of Object.entries(values)) {
           args.push('--env', key);
@@ -137,6 +143,60 @@ export function localLinuxProvider({
       }
     },
   };
+}
+
+export function localSolutionGit() {
+  const root = mkdtempSync(join(tmpdir(), 'bifrost-containers-git-'));
+  const repo = join(root, 'solution.git');
+  const git = (...args) => execFileSync('git', args, {cwd: repo, stdio: 'pipe', timeout: 5000});
+  try {
+    mkdirSync(join(repo, 'solutions/demo'), {recursive: true});
+    git('init', '--initial-branch=main');
+    git('config', 'user.email', 'fixture@example.invalid');
+    git('config', 'user.name', 'Git Stage Fixture');
+    const descriptor = join(repo, 'solutions/demo/bifrost.solution.yaml');
+    for (const version of ['1.0.0', '2.0.0']) {
+      writeFileSync(descriptor, `slug: container-update\nname: Container Update\nversion: "${version}"\n`);
+      git('add', 'solutions/demo/bifrost.solution.yaml');
+      git('commit', '-m', version);
+    }
+    git('tag', 'update');
+    git('reset', '--hard', 'HEAD^');
+    return {
+      fetches: 0,
+      async fetch(request) {
+        const {pathname, search} = new URL(request.url);
+        if (!['/solution.git/info/refs', '/solution.git/git-upload-pack'].includes(pathname)) {
+          return new Response(null, {status: 404});
+        }
+        if (request.method === 'POST') this.fetches += 1;
+        const input = Buffer.from(await request.arrayBuffer());
+        const output = execFileSync('git', ['http-backend'], {
+          input, timeout: 5000, maxBuffer: 1024 ** 2,
+          env: {
+            PATH: process.env.PATH, GIT_PROJECT_ROOT: root, GIT_HTTP_EXPORT_ALL: '1',
+            PATH_INFO: pathname, QUERY_STRING: search.slice(1), REQUEST_METHOD: request.method,
+            CONTENT_TYPE: request.headers.get('content-type') ?? '',
+            CONTENT_LENGTH: String(input.length),
+            HTTP_GIT_PROTOCOL: request.headers.get('git-protocol') ?? '',
+          },
+        });
+        const separator = output.indexOf('\r\n\r\n');
+        assert.ok(separator > 0);
+        const headers = new Headers();
+        for (const line of output.subarray(0, separator).toString().split('\r\n')) {
+          const colon = line.indexOf(':');
+          headers.append(line.slice(0, colon), line.slice(colon + 1).trim());
+        }
+        const status = Number(headers.get('status')?.split(' ')[0] ?? 200);
+        return new Response(output.subarray(separator + 4), {status, headers});
+      },
+      close() { rmSync(root, {recursive: true}); },
+    };
+  } catch (error) {
+    rmSync(root, {recursive: true});
+    throw error;
+  }
 }
 
 export async function serveContainersProviders(host, providers) {

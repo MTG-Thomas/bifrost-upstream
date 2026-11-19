@@ -140,7 +140,7 @@ revocation on settlement. It uses only local Miniflare and the disposable API.
 
 ### Three-scope Containers overflow
 
-Use a new private `/opt/bifrost-tests/containers-<sha>` Git archive on CT128.
+Use a new private `/opt/bifrost-tests/containers2-<sha>` Git archive on CT128.
 Check that the host is free of other Bifrost test and debug stacks before
 starting. Use Node 26, the local runtime fixture and the Phase 6 preparation
 above. Keep the debug stack owner running while executing each check separately.
@@ -162,6 +162,9 @@ HTTP handler, registry, ledger and container lifecycle with Docker behind
 the container binding. The conformance hook replaces the in-process actors
 while retaining their storage, and the Docker process is observed and
 stopped independently. The three-scope check holds a run on the VM scope,
+proves that queued `solution.update_check` demand launches a Container, serves
+a shallow Git fetch from a local TLS fixture, and verifies the persisted
+incarnation, stage, and version from the configured tag and subdirectory. It also
 verifies claim ownership for an approved Workers workflow and a Linux
 subprocess workflow, checks the Containers environment names and requirements
 inventory, and requires canonical retirement and confirmed physical stop.

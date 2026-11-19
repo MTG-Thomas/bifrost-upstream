@@ -28,16 +28,17 @@ import asyncio
 import json
 import logging
 import time
-from collections import Counter
 from abc import ABC, abstractmethod
+from collections import Counter
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import and_, func, literal, select, text, update
 
 from shared.models import WorkerCapacityProfile
+from shared.solution_git_stage import SOLUTION_GIT_CAPABILITY, SOLUTION_UPDATE_CHECK_JOB
 from shared.version import get_version
 from src.config import Settings, get_settings
 from src.core.database import get_db_context
@@ -48,13 +49,17 @@ from src.jobs.platform.kubernetes_client import (
 )
 from src.models.orm.execution_workers import MANAGED_WORKER_FORMS, ExecutionWorker
 from src.models.orm.executions import Execution
-from src.models.orm.platform_jobs import PlatformJob
 from src.models.orm.package_changes import PackageChange
+from src.models.orm.platform_jobs import PlatformJob
 from src.models.orm.services import ServiceDefinition
 from src.models.orm.work_dispatches import WorkDispatch
 from src.models.orm.workflows import Workflow
 from src.services.kubernetes_execution import KubernetesPolicy, load_kubernetes_policy
-from src.services.memory_requests import LAUNCHABLE_GENERATION_KEY, LAUNCHABLE_KEY, workflow_request_sql
+from src.services.memory_requests import (
+    LAUNCHABLE_GENERATION_KEY,
+    LAUNCHABLE_KEY,
+    workflow_request_sql,
+)
 from src.services.service_lifecycle import pending_service_statement
 from src.services.work_dispatch import (
     DISPATCH_WAKE_FAMILIES,
@@ -63,9 +68,19 @@ from src.services.work_dispatch import (
     listen_for_pool_wake,
     wait_for_next_pass,
 )
+from src.services.worker_pool.calibration import measured_budget
 from src.services.worker_pool.claims import CAPACITY_LOCK, REMOTE_WORKER_HANDLER_NAMES
 from src.services.worker_pool.demand import pending_local_platform_job_ids
-from src.services.worker_pool.eligibility import cloudflare_active_claims, containers_workflow_fits, profile_matches
+from src.services.worker_pool.eligibility import (
+    cloudflare_active_claims,
+    containers_workflow_fits,
+    profile_matches,
+)
+from src.services.worker_pool.liveness import (
+    HEARTBEAT_LOST_AFTER,
+    Reachability,
+    silent_executor,
+)
 from src.services.worker_pool.manifest import (
     SAFE_TO_EVICT,
     WorkerJobSpec,
@@ -73,18 +88,17 @@ from src.services.worker_pool.manifest import (
     resolve_job_spec_when_ready,
     worker_job_name,
 )
-from src.services.worker_pool.liveness import (
-    HEARTBEAT_LOST_AFTER,
-    Reachability,
-    silent_executor,
-)
 from src.services.worker_pool.recovery import (
     LostRuns,
     announce_lost_runs,
     end_runs_of_lost_worker,
 )
-from src.services.worker_pool.sizing import LIVE_STATES, JobSizing, job_baseline, launch_limit
-from src.services.worker_pool.calibration import measured_budget
+from src.services.worker_pool.sizing import (
+    LIVE_STATES,
+    JobSizing,
+    job_baseline,
+    launch_limit,
+)
 from src.worker.remote.protocol import (
     CLOUDFLARE_DEV_BUDGET_BYTES,
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
@@ -114,7 +128,7 @@ CONTROLLERS_KEY = "bifrost:worker-pool:controllers"
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 @dataclass(frozen=True)
@@ -351,6 +365,7 @@ class WorkerCapacityController(ABC):
                         WorkDispatch.handler_version,
                         WorkDispatch.cloudflare_revision,
                         Execution.organization_id.label("tenant_id"),
+                        literal(None).label("platform_job_type"),
                     )
                     .outerjoin(Execution, Execution.id == WorkDispatch.subject_id)
                     .where(
@@ -370,6 +385,7 @@ class WorkerCapacityController(ABC):
                             literal(None),
                             literal(None),
                             literal(None),
+                            PlatformJob.job_type,
                         ).where(
                             PlatformJob.id.in_(platform_job_ids),
                             PlatformJob.status == "queued",
@@ -381,6 +397,7 @@ class WorkerCapacityController(ABC):
                             workflow_request_sql(Workflow),
                             ServiceDefinition.updated_at,
                             # Every physical executor supervises services.
+                            literal(None),
                             literal(None),
                             literal(None),
                             literal(None),
@@ -431,6 +448,7 @@ class WorkerCapacityController(ABC):
                 Request(
                     row.id, row.memory_request_bytes, row.handler, row.handler_version,
                     row.cloudflare_revision, row.tenant_id,
+                    platform_job_type=row.platform_job_type,
                 )
                 for row in waiting
             ]
@@ -451,6 +469,8 @@ class WorkerCapacityController(ABC):
                 # A worker launched for one dispatch holds it until it claims it.
                 held = 0
                 handler_slots = dict(HANDLER_CONCURRENCY_LIMITS)
+                if containers:
+                    handler_slots[SOLUTION_GIT_CAPABILITY] = 1
                 if worker.state not in ("reserved", "starting"):
                     if worker.active_handler_counts is None:
                         handler_slots = {handler: 0 for handler in handler_slots}
@@ -962,8 +982,9 @@ class WorkerCapacityController(ABC):
                 memory_limit_bytes=memory_limit_bytes,
                 memory_calibration=None if cloudflare else {"environment": environment},
                 supported_handlers=(
-                    [CLOUDFLARE_WORKFLOW_HANDLER[0]]
-                    if cloudflare or self.containers_mode else list(REMOTE_WORKER_HANDLER_NAMES)
+                    [CLOUDFLARE_WORKFLOW_HANDLER[0], SOLUTION_GIT_CAPABILITY] if self.containers_mode
+                    else [CLOUDFLARE_WORKFLOW_HANDLER[0]] if cloudflare
+                    else list(REMOTE_WORKER_HANDLER_NAMES)
                 ),
                 runtime_profile=self.runtime_profile,
                 remote_launcher_id=worker_id if cloudflare else None,
@@ -1122,6 +1143,7 @@ class Request:
     handler_version: int | None = None
     cloudflare_revision: str | None = None
     tenant_id: UUID | None = None
+    platform_job_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1136,6 +1158,8 @@ class FreeBudget:
 
     def takes(self, request: Request) -> bool:
         if self.containers:
+            if request.platform_job_type == SOLUTION_UPDATE_CHECK_JOB:
+                return SOLUTION_GIT_CAPABILITY in self.handlers
             return containers_workflow_fits(
                 request.handler, request.handler_version, request.cloudflare_revision, request.bytes,
             )
@@ -1192,7 +1216,11 @@ def _plan_launches(
             if opaque and item.tenant_id in busy_tenants:
                 continue
             remaining_slots = slots[index]
-            handler = item.handler
+            handler = (
+                SOLUTION_GIT_CAPABILITY
+                if budget.containers and item.platform_job_type == SOLUTION_UPDATE_CHECK_JOB
+                else item.handler
+            )
             available_slots = (
                 None if handler is None else remaining_slots.get(handler, 0 if handler in limited else None)
             )
@@ -1209,9 +1237,9 @@ def _plan_launches(
                 break
         if placed:
             continue
-        if new_containers and not containers_workflow_fits(
-            item.handler, item.handler_version, item.cloudflare_revision, item.bytes,
-        ):
+        new_handlers = frozenset({CLOUDFLARE_WORKFLOW_HANDLER[0], SOLUTION_GIT_CAPABILITY}) if new_containers else frozenset(REMOTE_WORKER_HANDLER_NAMES)
+        new_budget = FreeBudget(standard_budget, new_handlers, containers=new_containers)
+        if new_containers and not new_budget.takes(item):
             continue
         if new_declared is not None:
             if item.tenant_id not in busy_tenants and new_declared.fits(item):
@@ -1228,9 +1256,11 @@ def _plan_launches(
             if request <= largest_budget or probe_largest:
                 sized.append((dispatch_id, request))
             continue
-        bins.append(FreeBudget(standard_budget, frozenset(REMOTE_WORKER_HANDLER_NAMES), containers=new_containers))
+        bins.append(new_budget)
         rooms.append(standard_budget - request)
         new_slots = dict(limited)
+        if new_containers:
+            new_slots[SOLUTION_GIT_CAPABILITY] = int(item.platform_job_type != SOLUTION_UPDATE_CHECK_JOB)
         if item.handler in limited:
             new_slots[item.handler] -= 1
         slots.append(new_slots)

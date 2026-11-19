@@ -10,7 +10,7 @@ import {promisify} from 'node:util';
 import {localLinuxProvider, serveContainersProviders} from './containers-local.mjs';
 
 const [project] = process.argv.slice(2);
-if (!/^bifrost-debug-[a-f0-9]+$/.test(project ?? '') || !process.cwd().split('/').at(-1).startsWith('containers-')) {
+if (!/^bifrost-debug-[a-f0-9]+$/.test(project ?? '') || !/^containers2?-/.test(process.cwd().split('/').at(-1))) {
   throw new Error('Pass the project of the owned Containers debug archive');
 }
 const archive = process.cwd();

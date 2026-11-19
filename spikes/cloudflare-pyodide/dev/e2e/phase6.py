@@ -63,7 +63,7 @@ def seed_solution_workflows(project, admin, send, tenant_fixtures):
 
 
 def run(runtime: Path, solution: bool, containers: bool) -> None:
-    prefixes = ("containers-",) if containers else ("phase6-", "explore-sol-")
+    prefixes = ("containers-", "containers2-") if containers else ("phase6-", "explore-sol-")
     if not ROOT.name.startswith(prefixes) or not API_ENV.is_file() or ROOT.stat().st_mode & 0o077:
         raise SystemExit("Run prepare and start this private phase6 archive's debug stack first")
     origin, project, admin, send = local_api(False)

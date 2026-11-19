@@ -27,7 +27,11 @@ from src.worker.remote.platform_stage_protocol import (
     StageBinding,
     encode_bundle,
 )
-from src.worker.remote.protocol import ProtocolError
+from src.worker.remote.protocol import (
+    CredentialRouteChanged,
+    OpaqueDispatchInterrupted,
+    ProtocolError,
+)
 
 if TYPE_CHECKING:
     from src.worker.remote.host import Bridge
@@ -75,7 +79,7 @@ class PlatformStageBackend:
         return ApiStageJobProcess(self, claim, handler)
 
     @asynccontextmanager
-    async def _authorize(self, binding: StageBinding, *, release: bool):
+    async def _authorize(self, binding: StageBinding, generation: int, *, release: bool):
         # The bridge holds its send lock; the DB locks span only the bounded
         # command send, never the reply or a Container subprocess.
         async with get_db_context() as db:
@@ -83,7 +87,12 @@ class PlatformStageBackend:
                 if current_remote_lease_ref() is None or not await fence_remote_owner(db):
                     raise PlatformJobCancelled
             else:
-                await lock_stage_job(db, UUID(binding.job_id), UUID(binding.lease_token))
+                job = await lock_stage_job(db, UUID(binding.job_id), UUID(binding.lease_token))
+                if job.remote_stage != self._attribution(binding, job.attempt):
+                    raise PlatformJobCancelled
+            owner = current_remote_lease_ref()
+            if owner is None or owner.lease.session_generation != generation:
+                raise ConnectionError("Platform stage launcher session changed")
             async with asyncio.timeout(3):
                 yield
 
@@ -94,10 +103,13 @@ class PlatformStageBackend:
         gate = self.bridge.inventory_ready if release else self.bridge.reconciliation_ready
         if not self.bridge.connected or not gate.is_set():
             raise ConnectionError("Platform stage launcher is reconciling")
-        reply = await self.bridge.request(
-            action, {**binding.wire(), **payload}, expected_generation=generation,
-            authorization=self._authorize(binding, release=release),
-        )
+        try:
+            reply = await self.bridge.request(
+                action, {**binding.wire(), **payload}, expected_generation=generation,
+                authorization=self._authorize(binding, generation, release=release),
+            )
+        except (CredentialRouteChanged, OpaqueDispatchInterrupted) as exc:
+            raise ConnectionError("Platform stage launcher session changed") from exc
         if StageBinding.parse(reply) != binding:
             raise ProtocolError("Platform stage reply binding changed")
         return reply

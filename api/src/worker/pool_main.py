@@ -41,29 +41,28 @@ from src.jobs.schedulers.platform_jobs import (
     recover_expired_platform_jobs,
     run_claimed_platform_job,
 )
+from src.jobs.summarize_worker import handle_summarize_message
 from src.scheduler.control import replica_heartbeat_loop
 from src.services.kubernetes_control import start_kubernetes_loops
 from src.services.kubernetes_execution import (
     import_kubernetes_policy_from_env,
     load_kubernetes_policy,
 )
-from src.services.scheduler_diagnostics import remove_scheduler_replica
-from src.jobs.summarize_worker import handle_summarize_message
 from src.services.memory_requests import (
     WORKFLOW_REQUEST_MARGIN_BYTES,
     MemoryBudget,
     measure_budget,
     under_pressure,
 )
-from src.worker.admission import Admission
 from src.services.package_generation import (
     change_message,
     current_package_generation,
     package_changes_after,
 )
+from src.services.scheduler_diagnostics import remove_scheduler_replica
 from src.services.worker_pool.claims import (
-    PoolClaim,
     SUPPORTED_HANDLERS,
+    PoolClaim,
     admit_worker,
     begin_drain,
     begin_idle_drain,
@@ -73,13 +72,19 @@ from src.services.worker_pool.claims import (
     register_static_worker,
     retire_worker,
 )
-from src.services.worker_pool.recovery import UNSTARTED_CLAIM_WINDOW, release_unstarted_claims
+from src.services.worker_pool.recovery import (
+    UNSTARTED_CLAIM_WINDOW,
+    release_unstarted_claims,
+)
+from src.worker.admission import Admission
 from src.worker.remote.protocol import (
-    CloudflareRevisionRejected,
-    HANDLER_CONCURRENCY_LIMITS,
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+    HANDLER_CONCURRENCY_LIMITS,
     LINUX_RUNTIME_PROFILE,
+    CloudflareRevisionRejected,
     OpaqueWorkflowNotStarted,
+)
+from src.worker.remote.protocol import (
     WORKER_DRAIN_GRACE_SECONDS as DRAIN_GRACE_SECONDS,
 )
 
@@ -360,7 +365,7 @@ class PoolWorker:
             await mark_static_ready(
                 self.incarnation_id, memory_budget_bytes=self.budget.budget_bytes
             )
-        runs_platform_jobs = self.hosts_remote_work and self.supports_linux_background_work
+        runs_platform_jobs = self.hosts_remote_work and self.supports_platform_jobs
         background = [
             heartbeat,
             asyncio.create_task(self._wake_listener(), name="pool-wake"),
@@ -638,7 +643,9 @@ class PoolWorker:
                 except (MemoryError, OpaqueWorkflowNotStarted) as exc:
                     # A refused fork or an opaque dispatch that never started
                     # can go back to waiting for an executor.
-                    from src.services.execution.workflow_dispatch import release_workflow_run
+                    from src.services.execution.workflow_dispatch import (
+                        release_workflow_run,
+                    )
 
                     if not opaque or claim.claimed is None:
                         self._release_claim_reservation(claim)
@@ -858,6 +865,10 @@ class PoolWorker:
     @property
     def supports_linux_background_work(self) -> bool:
         return self.execution_lane == "normal" and self.runtime_profile == LINUX_RUNTIME_PROFILE
+
+    @property
+    def supports_platform_jobs(self) -> bool:
+        return self.supports_linux_background_work
 
     async def _prepare_admission(self) -> None:
         """Prepare shared admission, then start lane-eligible consumers."""
