@@ -78,6 +78,21 @@ transport-local fixture. The comparison covers terminal output, model and
 tool steps, usage, child execution status, and lineage. It excludes timings,
 generated IDs and framework-specific request composition diagnostics.
 
+## Chat qualification
+
+Use a fresh private `/opt/bifrost-tests/chat-<sha>` archive with the same
+loopback debug setup. Run `phase5a.py prepare --chat` before boot and
+`phase5a.py run <generated-runtime.mjs> --chat` after readiness. This first
+runs autonomous regression cases, then exercises the authenticated Chat
+WebSocket subscription, a lost chunk ACK, a second turn using conversation
+history, cancellation and launcher reset. The Linux writer uses the same
+scripted response through a local HTTP transport fixture. The comparison
+includes conversation sequences, persisted messages and model usage.
+
+Run the outbox transaction tests separately with
+`./test.sh tests/e2e/platform/test_cloudflare_chat_outbox.py`. Stop the
+debug stack before starting the test stack.
+
 ## Phase 6 managed Workers capacity
 
 Use a fresh, private `/opt/bifrost-tests/phase6-<sha>` archive with an

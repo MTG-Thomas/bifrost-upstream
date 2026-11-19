@@ -462,6 +462,7 @@ services:
       - ./api/scripts:/app/scripts:ro  # Scripts for migration utilities
       - ./api/tests:/app/tests:ro
       - ./spikes/cloudflare-pyodide/backend/attempt_journal.py:/app/pyodide-prototype/attempt_journal.py:ro  # Host-side executor contract qualification only.
+      - ./spikes/cloudflare-pyodide/dev/e2e:/app/pyodide-e2e:ro  # Fork-local launcher qualification lint inputs.
       - ./api/alembic:/app/alembic:ro
       - ./api/alembic.ini:/app/alembic.ini:ro
       - ./api/pytest.ini:/app/pytest.ini:ro

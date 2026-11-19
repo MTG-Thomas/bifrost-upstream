@@ -1079,7 +1079,7 @@ settlement.
 
 | Handler | Linux dependencies and state | Tools and credentials | Workers budget and contract | Verdict |
 | --- | --- | --- | --- | --- |
-| `agent.run@1` | Linux uses SQLAlchemy/asyncpg to load the run and caller and persist the transcript, usage and terminal. Redis carries cancellation, chat replay and sync results. Pydantic AI owns the Linux model loop. The Workers loop uses the authenticated API control session and requires no SQL or Redis driver. | The API resolves the admin provider, enforces caller and tool scope, and atomically accepts an ordinary workflow execution with its receipt. A private Worker receives the credential per model turn. Tool-capable chat has built-in artifact tools and needs separate qualification. | The autonomous path holds one slot and permits at most two model requests and one workflow tool. CT128 with local workerd and a stub verified success, terminal and tool ACK replay, provider abort, and uncertain settlement on launcher reset. | **Opt-in for manually enrolled autonomous fixtures only.** Keep general-purpose operator lint and chat placement Linux-only. |
+| `agent.run@1` | Linux uses SQLAlchemy/asyncpg to load the run and caller and persist the transcript, usage and terminal. Redis carries cancellation, chat replay and sync results. Pydantic AI owns the Linux model loop. The Workers loop uses the authenticated API control session and requires no SQL or Redis driver. | The API resolves the admin provider, enforces caller and tool scope, and atomically accepts an ordinary workflow execution with its receipt. A private Worker receives the credential per model turn. Workers chat uses a PostgreSQL outbox and the existing conversation stream. | Autonomous fixtures hold one slot for up to two model requests and one workflow tool. Text-only chat fixtures hold one slot for a single model request. The local Miniflare harness exercises both modes with a stub provider. | **Opt-in for manually enrolled fixtures.** Chat also requires `BIFROST_CLOUDFLARE_CHAT_ENABLED=true` and the claim checks below. Keep general-purpose operator lint and other chat on Linux. |
 | `agent.summarize@1` | Linux snapshots the completed run's input/output and bounded agent instructions in PostgreSQL, calls the configured Pydantic AI adapter once through its buffered completion interface (the adapter consumes a provider stream), then persists parsed fields, prompt version and AIUsage. Redis supplies usage caching/pubsub. No filesystem or tool dependency. A trusted JS Worker can implement the HTTP completion without the Python provider package closure. | No tools. Use a fixed provider endpoint and an ephemeral key resolved from the Bifrost connection. Keep provider config and keys out of TenantHost and dynamic children. Bind the endpoint and model to the API's selected summary provider and refuse unqualified providers. | One provider request, bounded prompt/response and JSON parse. Use a finite deadline covering dispatch and fetch, an opaque route with claim identity, and the existing journal and ACK. Use `not_started` only before fetch can have begun, `completed` for an observed outcome, and `uncertain` on interruption after entry. The API validates the current claim before committing summary and usage. | First candidate. Scope the spike to one OpenAI-compatible completion transport and manual dev enrollment. |
 | `agent.summarize_backfill@1` | Uses the same single-run compute for each dispatch. PostgreSQL stages and reconciles backfill membership and outcome counters. Redis publishes the same status and usage updates. No files or stream. | Same mediation as live summaries. | Same per-invocation shape. Aggregate requests, cost and rate limiting grow with backfill size. Preserve distinct handler concurrency and live-summary capacity priority. Count terminal outcomes only under the current claim and reconcile backfill totals through the API. | Viable after qualifying live summaries. Keep bulk admission disabled in this spike. |
 
@@ -1206,12 +1206,14 @@ allowlisted agent with a non-chat trigger, no conversation or output
 schema, and room in a declared slot. Send-time checks must revalidate
 the effective provider, agent, tools, caller, and budgets. Qualify zero tools
 first and then one workflow tool and one continuation. Attachments,
-knowledge, delegated agents, alternate providers, and chat stay on Linux.
+knowledge, delegated agents and alternate providers stay on Linux. Chat
+uses the separate admission rules below.
 The workflow pool admits the tool separately, so the tool fixture needs
 independent workflow capacity while the agent holds its slot.
 
 Autonomous runs persist AgentRunStep and AIUsage records instead of chat
-conversation events. Chat requires a separate protocol and eligibility gate.
+conversation events. Chat has a separate eligibility gate and reuses the
+launcher event protocol.
 Its effective tool set includes built-in artifact tools when the profile
 enables tool calling.
 
@@ -1317,9 +1319,16 @@ artifact workspace on workflow tools.
 
 #### Chat outbox design
 
-Keep chat on Linux until the outbox is qualified with real PostgreSQL,
-Redis and the existing client replay path. The autonomous claim protocol
-continues to exclude chat.
+Workers chat is opt-in for the existing manually enrolled agent fixture
+allowlist. The API verifies the profile and conversation before claim and
+rechecks them during preparation. A claimed turn must have a published queued
+event, a named conversation, a fixed agent, bounded text history, and a
+pinned chat-completions profile that explicitly disables tool calling. An
+unknown capability is treated as tool-capable, matching Linux. Tool-capable
+profiles stay on Linux because Chat adds built-in artifact tools to them.
+New and historical attachments stay on Linux because the Workers broker
+does not read attachment content. Agent mentions, untitled conversations
+that would generate a title, and tool-bearing history also stay on Linux.
 
 - Under the current run, claim and owner locks, commit each normalized
   chunk with the transcript mutation it represents. Use a unique key on
@@ -1330,13 +1339,13 @@ continues to exclude chat.
   message start, deltas, transcript writes and terminal projection. ACK
   the Worker after PostgreSQL commits, independently of publication.
 - The API scheduler publishes the earliest unpublished chunk for a
-  conversation using a short fenced lease. Allow one publisher per
-  conversation and keep rows until they have a Redis receipt. An expired
-  lease allows another publisher to reclaim the row. The publisher keeps
+  conversation under a short PostgreSQL row lock. A failed transaction
+  releases the lock so another API process can resume. The publisher keeps
   the existing Redis channel, stream envelope, and conversation-wide
   sequence key, including for interleaved Linux events.
-- Extend the existing Redis Lua operation to accept the stable UUID.
-  For an existing UUID, return the stored conversation sequence without
+- The Workers Redis projection accepts the stable UUID. The first pass arms
+  a receipt in Redis and records the observed sequence in PostgreSQL. For
+  a published receipt, return the stored conversation sequence without
   appending or publishing again. For a fresh UUID, allocate a
   conversation sequence, append to the stream, record the receipt and
   publish in the same Redis operation. Persist that sequence on the
@@ -1349,12 +1358,17 @@ continues to exclude chat.
   A crash after Redis publication but before the PostgreSQL publish
   receipt leaves a row that returns the original Redis sequence on retry.
   A crash before the Worker receives the PostgreSQL ACK replays the
-  existing outbox row. These recovery cases assume Redis retains its
-  projection state. Qualify Redis restart, eviction and conversation
-  reconstruction before enabling admission. The existing conversation
-  reader and client replay cursor must converge after a projection reset.
+  existing outbox row. With retained Redis state, these crash windows preserve
+  the Linux sequence and deliver each committed event once.
 
-`chat-outbox-protocol.test.mjs` models the three process-crash windows
-and interleaving with the existing sequence allocator. Its durable stores
-are in-memory fixtures. The production migration, publisher, Redis Lua
-change and cross-process qualification remain separate work.
+Redis projection loss has the same underlying limitation as Linux. Both
+use the same expiring Redis stream and counter, and a client can retain an
+older, higher cursor after those keys disappear. Workers stop projecting
+when an armed receipt is missing, projection keys disagree, or the counter
+is below the committed floor. The attempt follows the existing handback
+or uncertain rules. A future shared fix would persist ordering and replay
+state for all chat writers and qualify a shared recovery contract.
+
+`chat-outbox-protocol.test.mjs` models the crash windows in memory. The
+PostgreSQL and Redis tests exercise transaction rollback, retry after Redis
+publication, interleaving with the Linux publisher, and receipt loss.
