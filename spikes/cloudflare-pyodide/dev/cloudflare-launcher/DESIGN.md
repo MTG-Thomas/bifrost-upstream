@@ -354,8 +354,9 @@ run. Findings, checked against the cited code:
 ### Phase 6 extension: Cloudflare Containers for Linux overflow
 
 Design and compatibility findings at fork base `87d9daab1`, compared with
-`origin/pr-1425` at `bdbe07f93`. Integration is blocked at the launcher and
-workload contract described below.
+`origin/pr-1425` at `bdbe07f93`. The first implementation covers Linux
+workflow overflow. Platform-job parity still requires the workload
+contract described below.
 
 **Placement.** Add an opt-in third managed scope alongside the VM primary
 and the Workers burst scope. The Containers provider launches a Normal

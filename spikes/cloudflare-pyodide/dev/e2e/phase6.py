@@ -88,7 +88,7 @@ def run(runtime: Path, solution: bool, containers: bool) -> None:
 from bifrost import workflow
 
 @workflow(name="phase6_linux_only")
-def phase6_linux_only():
+async def phase6_linux_only():
     return {"stdout": subprocess.check_output(["printf", "containers"], text=True)}
 """
         vm_path = "workflows/phase6_vm_hold.py"
