@@ -4,6 +4,7 @@
 import argparse
 import json
 import secrets
+import shutil
 import subprocess
 import time
 from io import BytesIO
@@ -144,6 +145,12 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.action == "prepare":
         prepare(phase6=True)
+        if ROOT.name.startswith(("containers-", "containers2-")):
+            shutil.copyfile(HERE / "containers_private_fixture.py", ROOT / "api/scripts/containers_private_fixture.py")
+            compose = ROOT / "docker-compose.debug.yml"
+            compose.write_text(compose.read_text().replace(
+                "uvicorn src.main:app", "uvicorn scripts.containers_private_fixture:app", 1,
+            ))
     else:
         if args.containers and args.solution:
             parser.error("--containers uses the existing approved workspace fixture")

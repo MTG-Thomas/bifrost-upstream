@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {execFileSync, spawn, spawnSync} from 'node:child_process';
-import {createHash} from 'node:crypto';
+import {createHash, randomBytes} from 'node:crypto';
 import {appendFileSync, readFileSync, utimesSync, writeFileSync} from 'node:fs';
 import {mkdir} from 'node:fs/promises';
 import {createServer} from 'node:http';
@@ -606,11 +606,27 @@ async function containersChecks() {
   const vm = localLinuxProvider({...common, scope: 'vm', token: vmToken, vmEnv});
   const containers = localLinuxProvider({...common, scope: 'containers', token: containersToken, gitFixture: true});
   const git = localSolutionGit();
+  const privateToken = randomBytes(24).toString('hex');
+  const privateAuth = 'Basic ' + Buffer.from('x-access-token:' + privateToken).toString('base64');
+  let privateFetches = 0;
   execFileSync('docker', ['pause', ...launchers]);
   try {
     await launch(proxy.address().port);
     providerServer = await serveContainersProviders(config.phase6.providerHost, {
-      vm, containers, git,
+      vm, containers,
+      git: {
+        fetch(request) {
+          assert.equal(request.headers.has('authorization'), false);
+          return git.fetch(request);
+        },
+      },
+      'private-git': {
+        fetch(request) {
+          if (request.headers.get('authorization') !== privateAuth) return new Response(null, {status: 401});
+          if (request.method === 'POST') privateFetches += 1;
+          return git.fetch(request);
+        },
+      },
       workers: {
         async fetch(request) {
           const match = /^\/v1\/workers\/([a-f0-9-]+)\/start$/.exec(new URL(request.url).pathname);
@@ -625,6 +641,9 @@ async function containersChecks() {
       },
     });
     const endpoint = `https://${config.phase6.providerHost}:${providerServer.address().port}`;
+    writeFileSync('api/scripts/.containers-private.json', JSON.stringify({
+      token: privateToken, url: `${endpoint}/private-git/solution.git`,
+    }), {mode: 0o644});
     appendFileSync('.phase5-api.env', [
       '',
       `BIFROST_WORKER_CAPACITY_URL=${endpoint}/vm`,
@@ -664,6 +683,12 @@ async function containersChecks() {
     assert.ok([200, 201].includes(solution.status));
     const solutionId = solution.data.id;
     assert.match(solutionId, /^[0-9a-f-]{36}$/);
+    const privateSolution = await api('/api/solutions', {slug: 'container-update-private', name: 'Private Container Update'});
+    assert.ok([200, 201].includes(privateSolution.status));
+    const privateId = privateSolution.data.id;
+    assert.match(privateId, /^[0-9a-f-]{36}$/);
+    execFileSync('docker', ['exec', config.project + '-api-1', 'python', '-m',
+      'scripts.containers_private_fixture', privateId], {timeout: 15_000});
     sql(`UPDATE solutions SET version = '1.0.0', git_connected = true,
       git_repo_url = '${endpoint}/git/solution.git', git_ref = 'update', repo_subpath = 'solutions/demo'
       WHERE id = '${solutionId}'`);
@@ -682,6 +707,9 @@ asyncio.run(run())
     const update = await until('Container Git update check settles', () => {
       const row = sql(`SELECT json_build_object('status',j.status,'result',j.result,'error',j.error_code,
         'stage',j.remote_stage,'update_available',s.update_available_version,'scope',w.capacity_scope,
+        'private_version',(SELECT update_available_version FROM solutions WHERE id = '${privateId}'),
+        'private_events',(SELECT count(*) FROM events WHERE event_type = 'solution.update_available'
+          AND data->'solution'->>'id' = '${privateId}' AND data->'solution'->>'available_version' = '2.0.0'),
         'events',(SELECT count(*) FROM events WHERE event_type = 'solution.update_available'
           AND data->'solution'->>'id' = s.id::text AND data->'solution'->>'available_version' = '2.0.0'))
         FROM platform_jobs j CROSS JOIN solutions s
@@ -693,11 +721,15 @@ asyncio.run(run())
     assert.equal(update.scope, 'containers', JSON.stringify(update));
     assert.equal(update.stage.capability, 'platform.solution_update_check.v1');
     assert.equal(update.update_available, '2.0.0');
-    assert.equal(update.result.updates_found, 1);
+    assert.equal(update.result.updates_found, 2);
     assert.equal(update.result.check_failures, 0);
     assert.equal(update.events, 1);
-    assert.ok(git.fetches > 0);
-    evidence('containers-platform-stage', {jobId, solutionId, ...update, gitFetches: git.fetches});
+    assert.equal(update.private_version, '2.0.0');
+    assert.equal(update.private_events, 1);
+    assert.ok(privateFetches > 0 && git.fetches > privateFetches);
+    evidence('containers-platform-stage', {
+      jobId, solutionId, privateId, ...update, publicFetches: git.fetches - privateFetches, privateFetches,
+    });
     const approved = await startRun('phase6-a', true, config.phase6.tenants[0]);
     const linux = await submit('linux');
     const linuxRow = await until('Linux-only workflow settles', () => {
