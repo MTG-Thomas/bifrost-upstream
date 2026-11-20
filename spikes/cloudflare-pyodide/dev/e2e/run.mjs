@@ -14,7 +14,7 @@ import {supervisorModules} from '../tenant-workers/supervisor-digest.mjs';
 import {stageRuntimeLoader} from '../stage-runtime-loader.mjs';
 import {hostedRelayPath, relayHeaders, relayHttp} from './relay-http.mjs';
 import {capacityWorker} from './capacity-miniflare.mjs';
-import {localLinuxProvider, localSolutionGit, OVERFLOW_MEMORY_MIB, serveContainersProviders,
+import {expiryCapacityRelay, localLinuxProvider, localSolutionGit, OVERFLOW_MEMORY_MIB, serveContainersProviders,
   vmHoldMemoryMiB} from './containers-local.mjs';
 
 const root = new URL('../', import.meta.url);
@@ -617,8 +617,7 @@ async function containersChecks() {
   };
   const hosted = config.qualification?.placement;
   const expiry = hosted?.containerExpiry;
-  let containerQuiet = false;
-  let containerDeletes = 0;
+  const expiryRelay = expiry ? expiryCapacityRelay(hosted.containersUrl) : null;
   const vmToken = randomBytes(32).toString('hex');
   const containersToken = hosted?.containersToken ??
     createHash('sha256').update(config.phase6.token + ':containers').digest('hex');
@@ -635,24 +634,7 @@ async function containersChecks() {
     if (!hosted) await launch(proxy.address().port);
     if (hosted) evidence('hosted-relay-ready', {port: proxy.address().port});
     providerServer = await serveContainersProviders(config.phase6.providerHost, {
-      ...(expiry ? {containers: {
-        async fetch(request) {
-          if (containerQuiet) return new Response(null, {status: 503});
-          if (request.method === 'DELETE') containerDeletes += 1;
-          const url = new URL(request.url);
-          const target = new URL(hosted.containersUrl);
-          target.pathname = url.pathname;
-          target.search = url.search;
-          const headers = new Headers();
-          for (const name of ['authorization', 'content-type']) {
-            if (request.headers.has(name)) headers.set(name, request.headers.get(name));
-          }
-          const response = await fetch(target, {method: request.method, headers, redirect: 'manual',
-            body: request.body ? await request.arrayBuffer() : undefined});
-          return new Response(response.body, {status: response.status,
-            headers: {'content-type': response.headers.get('content-type') ?? 'application/json'}});
-        },
-      }} : {}),
+      ...(expiryRelay ? {containers: expiryRelay} : {}),
       vm: {
         async fetch(request) {
           const response = await vm.fetch(request);
@@ -839,16 +821,16 @@ asyncio.run(run())
     assert.equal(Number(workerStatus.requirements_total), 1);
     evidence('containers-workflow', {primary, vmRun, linux, linuxRow, container, requirements: 1});
     if (expiry) {
-      containerQuiet = true;
-      assert.equal(containerDeletes, 0);
+      expiryRelay.stopForwarding();
+      assert.equal(expiryRelay.deletesForwarded, 0);
       assert.equal(container.state, 'ready');
       assert.equal(container.deleted, false);
       assert.ok(!runRow(vmRun).completed, 'VM primary remained occupied through overflow settlement');
-      evidence('container-expiry-wait', {id: linux, incarnation: container.id, deletesForwarded: containerDeletes});
+      evidence('container-expiry-wait', {id: linux, incarnation: container.id, deletesForwarded: expiryRelay.deletesForwarded});
       await until('independent Cloudflare instance stop receipt', () => existsSync('.phase7-expiry-observed'), 420_000);
       evidence('container-expiry-bifrost', {id: linux, row: runRow(linux),
         incarnation: managedRows('containers', {includeRetired: true}).find(({id}) => id === container.id),
-        deletesForwarded: containerDeletes});
+        deletesForwarded: expiryRelay.deletesForwarded});
       return;
     }
     approved?.gate.release.resolve();

@@ -26,6 +26,31 @@ export function vmHoldMemoryMiB(budgetBytes) {
   return Math.floor(budgetBytes / 2 ** 20) - 128;
 }
 
+export function expiryCapacityRelay(origin, send = fetch) {
+  let quiet = false;
+  let deletes = 0;
+  return {
+    stopForwarding() { quiet = true; },
+    get deletesForwarded() { return deletes; },
+    async fetch(request) {
+      if (quiet) return new Response(null, {status: 503});
+      if (request.method === 'DELETE') deletes += 1;
+      const url = new URL(request.url);
+      const target = new URL(origin);
+      target.pathname = url.pathname;
+      target.search = url.search;
+      const headers = new Headers();
+      for (const name of ['authorization', 'content-type', 'x-bifrost-capacity-scope']) {
+        if (request.headers.has(name)) headers.set(name, request.headers.get(name));
+      }
+      const response = await send(target, {method: request.method, headers, redirect: 'manual',
+        body: request.body ? await request.arrayBuffer() : undefined});
+      return new Response(response.body, {status: response.status,
+        headers: {'content-type': response.headers.get('content-type') ?? 'application/json'}});
+    },
+  };
+}
+
 export function localLinuxProvider({
   project, image, scope, token, version, archive, vmEnv = null, protocolOnly = false, gitFixture = false,
 }) {
