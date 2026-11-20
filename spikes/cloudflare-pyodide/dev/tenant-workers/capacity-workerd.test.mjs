@@ -189,23 +189,6 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
   assert.equal(hellos.get(id).length, 1);
 });
 
-test('shared capacity conformance exercises the real local HTTP provider', async () => {
-  const suite = fileURLToPath(new URL('../../../../deploy/capacity/conformance/conformance.py', import.meta.url));
-  const hook = fileURLToPath(new URL('../e2e/workers-local.py', import.meta.url));
-  const python = process.platform === 'win32' ? 'py' : 'python3';
-  const flags = process.platform === 'win32' ? ['-3'] : [];
-  const args = [...flags, suite, '--base-url', base, '--scope', settings.scope,
-    '--managed-cloudflare',
-    '--hook-command', [python, ...flags, `"${hook}"`].join(' ')];
-  const child = spawn(python, args, {env: {...process.env, CAPACITY_TOKEN: settings.token, CAPACITY_HOOK_URL: base + '/hook'}});
-  const [out, err, code] = await Promise.all([
-    buffer(child.stdout), buffer(child.stderr),
-    new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve); }),
-  ]);
-  assert.equal(code, 0, out.toString() + err.toString());
-  assert.match(out.toString(), /17\/17 passed, 0 failed, 0 skipped/);
-});
-
 for (const {name, status, headers, proof, expected} of [
   {name: 'accepts authenticated 204', status: 204, headers: {'x-bifrost-worker-ingress': 'v1; allowed'}, expected: {}},
   {name: 'rejects ingress 404', status: 404, expected: {stage: 'sdk_response', error_class: 'http_status', status: 404}},
@@ -242,3 +225,22 @@ for (const {name, status, headers, proof, expected} of [
     }
   });
 }
+
+// Conformance ends by simulating process loss for a reserved worker. Keep
+// that reservation out of the canary cases, which share a one-worker scope.
+test('shared capacity conformance exercises the real local HTTP provider', async () => {
+  const suite = fileURLToPath(new URL('../../../../deploy/capacity/conformance/conformance.py', import.meta.url));
+  const hook = fileURLToPath(new URL('../e2e/workers-local.py', import.meta.url));
+  const python = process.platform === 'win32' ? 'py' : 'python3';
+  const flags = process.platform === 'win32' ? ['-3'] : [];
+  const args = [...flags, suite, '--base-url', base, '--scope', settings.scope,
+    '--managed-cloudflare',
+    '--hook-command', [python, ...flags, `"${hook}"`].join(' ')];
+  const child = spawn(python, args, {env: {...process.env, CAPACITY_TOKEN: settings.token, CAPACITY_HOOK_URL: base + '/hook'}});
+  const [out, err, code] = await Promise.all([
+    buffer(child.stdout), buffer(child.stderr),
+    new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve); }),
+  ]);
+  assert.equal(code, 0, out.toString() + err.toString());
+  assert.match(out.toString(), /17\/17 passed, 0 failed, 0 skipped/);
+});

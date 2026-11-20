@@ -72,9 +72,21 @@ async def test_dual_stack_probe_uses_reachable_address(ingress, addresses) -> No
 async def test_unreachable_hostname_does_not_start_canary(ingress) -> None:
     installation, _, control, canary = ingress((IPV6,), httpx.ConnectTimeout("Connection timed out"))
 
-    assert not (await probes.probe_worker_ingress(installation, runtime_canary=canary)).reachable
+    result = await probes.probe_worker_ingress(installation, runtime_canary=canary)
+    assert not result.reachable
+    assert result.failure == probes.CanaryFailure("ingress", "unreachable")
     control.assert_not_awaited()
     canary.assert_not_awaited()
+
+
+@pytest.mark.parametrize(("signed", "stage"), [(False, "hello"), (True, "ack")])
+def test_incomplete_runtime_canary_reports_the_unobserved_stage(signed: bool, stage: str) -> None:
+    result = probes.WorkerIngressProbeResult(
+        ORIGIN, True, True, True, (probes.RouteProbe("GET", "/api/sdk/context", 401, True),),
+        probes.RuntimeCanary(signed, False),
+    )
+    assert not result.ready
+    assert result.failure == probes.CanaryFailure(stage, "timeout")
 
 
 @pytest.mark.asyncio
