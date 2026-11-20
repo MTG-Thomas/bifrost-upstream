@@ -523,6 +523,7 @@ async def test_claim_gate_tracks_scale_in_and_deployment_changes_without_restart
     await db_session.flush()
     db_session.add(CloudflareWorkerReservation(
         worker_id=worker_id, installation_id=installation.id, scope="workers", deployment_revision=1,
+        control_root_version=1,
     ))
     scope = CloudflareCapacityScope(
         installation_id=installation.id, scope="workers", endpoint="https://capacity.example.test",

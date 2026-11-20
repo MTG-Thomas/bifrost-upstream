@@ -9,13 +9,24 @@ from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
+from pydantic import SecretStr
+from shared.worker_control_auth import (
+    external_worker_control_key,
+    managed_cloudflare_control_key,
+)
 from sqlalchemy import delete
-
-from shared.worker_control_auth import external_worker_control_key, managed_cloudflare_control_key
 from src.config import Settings
-from src.models.orm.cloudflare_capacity import CloudflareCredential, CloudflareInstallation, CloudflareWorkerReservation
+from src.models.orm.cloudflare_capacity import (
+    CloudflareCredential,
+    CloudflareInstallation,
+    CloudflareWorkerReservation,
+)
 from src.models.orm.execution_workers import ExecutionWorker
 from src.services.worker_pool import claims
+from src.services.worker_pool.cloudflare_credentials import (
+    CredentialRef,
+    seal_credential,
+)
 from src.worker.remote import host, ownership
 from src.worker.remote.fencing import LeaseRef, fence_remote_owner, remote_owner_context
 from src.worker.remote.protocol import (
@@ -29,9 +40,9 @@ from src.worker.remote.protocol import (
     sign_hello,
 )
 
-
 PLATFORM_KEY = "platform-key-for-cloudflare-hello-tests"
 CAPACITY_TOKEN = "test-capacity-token"
+CONTROL_ROOT = "synthetic-managed-control-root"
 RESOURCE = "prepared-do"
 BUILD = "prepared-build"
 
@@ -287,25 +298,33 @@ async def test_managed_cloudflare_hello_uses_exact_reserved_scope(hello, enrollm
         db.add(CloudflareInstallation(
             id=installation_id, account_id="a" * 32, worker_ingress_origin="https://workers.example.test",
             consent_version="test", consent_actor="fixture", consent_at=now, policy={},
-            desired_state="scaled_in", desired_revision=1, api_token_version=1,
+            desired_state="scaled_in", desired_revision=2, api_token_version=1, control_root_version=2,
         ))
         await db.flush()
         db.add(CloudflareCredential(
             installation_id=installation_id, purpose="account_token", scope="", version=1,
             account_id="a" * 32, ciphertext="synthetic", recorded_by="fixture", recorded_at=now,
         ))
+        db.add_all([
+            seal_credential(
+                CredentialRef(installation_id, "a" * 32, "control_root", "", version),
+                SecretStr(value), now=now, actor="fixture",
+            )
+            for version, value in ((1, CONTROL_ROOT), (2, "replacement-managed-control-root"))
+        ])
+        await db.flush()
         db.add(CloudflareWorkerReservation(
             worker_id=hello.incarnation_id, installation_id=installation_id, scope="managed-workers",
-            deployment_revision=1,
+            deployment_revision=1, control_root_version=1,
         ))
     enabled_settings.worker_capacity_token = None
     hello = replace(hello, resource_uid=uid)
     control_host = host.RemoteControlHost()
     try:
-        wrong = managed_cloudflare_control_key(PLATFORM_KEY, "different-scope", hello.incarnation_id, uid)
+        wrong = managed_cloudflare_control_key(CONTROL_ROOT, installation_id, 1, "different-scope", hello.incarnation_id, uid)
         with pytest.raises(AuthenticationError, match="invalid hello proof"):
             await control_host.connect(socket_for(hello, key=wrong))
-        key = managed_cloudflare_control_key(PLATFORM_KEY, "managed-workers", hello.incarnation_id, uid)
+        key = managed_cloudflare_control_key(CONTROL_ROOT, installation_id, 1, "managed-workers", hello.incarnation_id, uid)
         session, _ = await control_host.connect(socket_for(hello, key=key))
         assert session.lease.worker_id == hello.incarnation_id
     finally:
@@ -314,6 +333,7 @@ async def test_managed_cloudflare_hello_uses_exact_reserved_scope(hello, enrollm
             installation.desired_state = "disconnected"
             installation.retired_at = now
             installation.api_token_version = None
+            installation.control_root_version = None
             await db.flush()
             await db.execute(delete(CloudflareWorkerReservation).where(
                 CloudflareWorkerReservation.installation_id == installation_id,

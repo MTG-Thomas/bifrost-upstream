@@ -12,12 +12,12 @@ import httpx
 from sqlalchemy import and_, select, update
 
 from shared.models import WorkerCapacityProfile, WorkerCapacityReservation
-from shared.worker_control_auth import managed_cloudflare_control_key
 from src.config import Settings
 from src.core.database import get_db_context
 from src.models.orm.cloudflare_capacity import CloudflareWorkerReservation
 from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
 from src.services.kubernetes_execution import KubernetesPolicy
+from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
 from src.services.worker_pool.eligibility import cloudflare_active_claims
 from src.services.worker_pool.controller import (
     RECONCILE_SECONDS, SWEEP_SECONDS, LiveControllers, WorkerCapacityController, _now, _withdraw_live,
@@ -273,9 +273,10 @@ class ExternalWorkerPoolController(WorkerCapacityController):
                             return
                         async with asyncio.timeout(CAPACITY_REQUEST_SECONDS):
                             if self.profile.protocol_version == 2:
-                                if uid is None:
-                                    raise CapacityProtocolError("Managed Cloudflare reservation lacks its caller UID")
-                                key = managed_cloudflare_control_key(self.settings.secret_key, self.profile.scope, worker_id, uid)
+                                pin = await db.get(CloudflareWorkerReservation, worker_id)
+                                if uid is None or pin is None or managed is None:
+                                    raise CapacityProtocolError("Managed Cloudflare reservation lacks its control binding")
+                                key = await load_managed_control_key(db, pin, uid)
                                 resource = await self.client.prepare(reservation, self.profile.scope, managed_identity=(uid, key))
                             else:
                                 resource = await self.client.prepare(reservation, self.profile.scope)

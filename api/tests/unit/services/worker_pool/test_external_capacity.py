@@ -4,7 +4,7 @@ import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
@@ -12,16 +12,33 @@ from uuid import UUID, uuid4
 import httpx
 import pytest
 import pytest_asyncio
-from shared.solution_git_stage import SOLUTION_GIT_CAPABILITY
-from sqlalchemy import select
-
+from pydantic import SecretStr
 from shared.models import WorkerCapacityProfile, WorkerCapacityReservation
+from shared.solution_git_stage import SOLUTION_GIT_CAPABILITY
 from shared.worker_control_auth import managed_cloudflare_control_key
+from sqlalchemy import delete, select
+from src.models.enums import ExecutionStatus
+from src.models.orm.cloudflare_capacity import (
+    CloudflareCapacityScope,
+    CloudflareCredential,
+    CloudflareInstallation,
+    CloudflareWorkerReservation,
+)
 from src.models.orm.execution_workers import ExecutionWorker
 from src.models.orm.executions import Execution
-from src.models.enums import ExecutionStatus
 from src.services.worker_pool import claims, controller, external_controller
-from src.services.worker_pool.external_client import CapacityProtocolError, ExternalCapacityClient
+from src.services.worker_pool.cloudflare_admission import (
+    ManagedCloudflareScope,
+    PrimaryPool,
+)
+from src.services.worker_pool.cloudflare_credentials import (
+    CredentialRef,
+    seal_credential,
+)
+from src.services.worker_pool.external_client import (
+    CapacityProtocolError,
+    ExternalCapacityClient,
+)
 from src.services.worker_pool.external_controller import ExternalWorkerPoolController
 from src.worker.remote import ownership
 from src.worker.remote.protocol import (
@@ -30,8 +47,18 @@ from src.worker.remote.protocol import (
     LINUX_RUNTIME_PROFILE,
 )
 from tests.unit.services.worker_pool.test_worker_pool import (
-    GIB, POLICY, SETTINGS, _accept_pool_run, _clean as _clean,
-    _set_request, _store_policy, db as db_fixture,
+    GIB,
+    POLICY,
+    SETTINGS,
+    _accept_pool_run,
+    _set_request,
+    _store_policy,
+)
+from tests.unit.services.worker_pool.test_worker_pool import (
+    _clean as _clean,
+)
+from tests.unit.services.worker_pool.test_worker_pool import (
+    db as db_fixture,
 )
 
 db = db_fixture
@@ -53,6 +80,7 @@ class Provider:
         self.fail_deletions = False
         self.refuse_prepare = False
         self.lose_prepare_response = False
+        self.installation_id = uuid4()
 
     async def handle(self, request):
         assert request.headers["Authorization"] == f"Bearer {TOKEN}"
@@ -70,7 +98,7 @@ class Provider:
             if self.profile.protocol_version == 2:
                 uid = body.pop("resource_uid")
                 assert body.pop("control_key") == managed_cloudflare_control_key(
-                    CONTROL_ROOT, self.profile.scope, UUID(worker_id), uid,
+                    CONTROL_ROOT, self.installation_id, 1, self.profile.scope, UUID(worker_id), uid,
                 )
             reservation = WorkerCapacityReservation.model_validate(body)
             assert str(reservation.worker_id) == worker_id
@@ -117,15 +145,64 @@ async def capacity(db, monkeypatch):
         yield SimpleNamespace(provider=provider, client=client, pool=pool, policy=policy)
 
 
-async def test_managed_prepare_uses_the_uid_committed_before_provider_io(db, capacity):
+@pytest_asyncio.fixture
+async def managed_pool(db, capacity):
     provider = capacity.provider
     provider.profile = provider.profile.model_copy(update={
         "protocol_version": 2,
         "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
         "memory_limit_bytes": CLOUDFLARE_DEV_BUDGET_BYTES,
     })
-    settings = SimpleNamespace(**vars(SETTINGS), secret_key=CONTROL_ROOT)
-    pool = ExternalWorkerPoolController(capacity.client, settings, provider.profile)
+    installation_id, scope_name = provider.installation_id, provider.profile.scope
+    account_id, now = "a" * 32, datetime.now(UTC)
+    async with db.context() as session:
+        session.add(CloudflareInstallation(
+            id=installation_id, account_id=account_id, worker_ingress_origin="https://workers.example.test",
+            consent_version="test", consent_actor="fixture", consent_at=now,
+            policy={"limits": {"workers": {"work_kinds": ["workflow"]}}},
+            desired_state="enabled", desired_revision=1, admitted_revision=1, api_token_version=1, control_root_version=1,
+        ))
+        await session.flush()
+        session.add_all([
+            seal_credential(CredentialRef(installation_id, account_id, purpose, scope, 1), SecretStr(secret),
+                            actor="fixture", now=now)
+            for purpose, scope, secret in (
+                ("account_token", "", "synthetic-account-token"),
+                ("control_root", "", CONTROL_ROOT),
+                ("scope_bearer", scope_name, TOKEN),
+            )
+        ])
+        await session.flush()
+        session.add(CloudflareCapacityScope(
+            installation_id=installation_id, scope=scope_name, endpoint="https://capacity.invalid",
+            deployment_revision=1, bearer_version=1,
+        ))
+        session.add(ExecutionWorker(
+            id=uuid4(), form="static", state="ready", heartbeat_at=now, memory_pressured=True,
+        ))
+    pool = ExternalWorkerPoolController(capacity.client, SETTINGS, provider.profile)
+    pool.managed_cloudflare_scope = ManagedCloudflareScope(installation_id, scope_name, 1)
+    pool.cloudflare_primary = PrimaryPool("static")
+    pool.shared_managed_worker_cap = 1
+    yield pool
+    async with db.context() as session:
+        row = await session.get(CloudflareInstallation, installation_id, with_for_update=True)
+        row.desired_state, row.admitted_revision, row.retired_at = "disconnected", None, now
+        row.control_root_version = row.api_token_version = None
+        await session.flush()
+        await session.execute(delete(CloudflareWorkerReservation).where(
+            CloudflareWorkerReservation.installation_id == installation_id,
+        ))
+        await session.execute(delete(CloudflareCapacityScope).where(
+            CloudflareCapacityScope.installation_id == installation_id,
+        ))
+        await session.execute(delete(CloudflareCredential).where(CloudflareCredential.installation_id == installation_id))
+        await session.delete(row)
+
+
+async def test_managed_prepare_uses_the_uid_committed_before_provider_io(db, capacity, managed_pool):
+    provider = capacity.provider
+    pool = managed_pool
     policy = replace(capacity.policy, max_workers=1)
     await _set_request(db.sessions, await _accept_pool_run(), 1, approved=True)
     [worker_id] = await pool.launch_for_demand(policy)
@@ -162,15 +239,8 @@ async def test_prepared_uid_is_committed_before_start(db, capacity):
     assert capacity.provider.starts == [str(worker_id)]
 
 
-async def test_cloudflare_reserves_only_approved_fitting_dispatches_before_hello(db, capacity):
-    capacity.provider.profile = capacity.provider.profile.model_copy(update={
-        "protocol_version": 2,
-        "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
-        "memory_limit_bytes": CLOUDFLARE_DEV_BUDGET_BYTES,
-    })
-    pool = ExternalWorkerPoolController(
-        capacity.client, SimpleNamespace(**vars(SETTINGS), secret_key=CONTROL_ROOT), await capacity.client.profile(),
-    )
+async def test_cloudflare_reserves_only_approved_fitting_dispatches_before_hello(db, capacity, managed_pool):
+    pool = managed_pool
     for amount, approved in ((1, False), (CLOUDFLARE_DEV_BUDGET_BYTES + 1, True)):
         await _set_request(db.sessions, await _accept_pool_run(), amount, approved=approved)
     assert await pool.launch_for_demand(capacity.policy) == []
@@ -866,7 +936,12 @@ async def test_absence_during_delayed_prepare_does_not_confirm_cleanup(db, capac
 
 async def test_fixed_size_provider_measures_one_cold_worker_before_admission(db, capacity):
     from src.services import work_dispatch
-    from tests.unit.services.worker_pool.test_worker_pool import MIB, _claim, _report_budget, _set_request
+    from tests.unit.services.worker_pool.test_worker_pool import (
+        MIB,
+        _claim,
+        _report_budget,
+        _set_request,
+    )
 
     capacity.provider.profile = capacity.provider.profile.model_copy(update={"memory_limit_bytes": GIB})
     capacity.pool.profile = capacity.provider.profile

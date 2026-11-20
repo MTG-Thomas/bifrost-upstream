@@ -7,12 +7,14 @@ from typing import Literal
 from uuid import UUID
 
 from pydantic import SecretStr
+from shared.worker_control_auth import managed_cloudflare_control_key
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.security import decrypt_secret, encrypt_secret
 from src.models.orm.cloudflare_capacity import (
     CloudflareCredential,
     CloudflareInstallation,
+    CloudflareWorkerReservation,
 )
 
 CredentialPurpose = Literal["account_token", "control_root", "scope_bearer"]
@@ -69,3 +71,16 @@ async def load_account_token(db: AsyncSession, installation: CloudflareInstallat
     if row is None:
         raise ValueError("Cloudflare management credential is unavailable")
     return open_credential(CredentialRef(installation.id, installation.account_id, "account_token", "", version), row)
+
+
+async def load_managed_control_key(db: AsyncSession, pin: CloudflareWorkerReservation, resource_uid: str) -> str:
+    version = pin.control_root_version
+    if version is None:
+        raise ValueError("Cloudflare control root is unavailable")
+    row = await db.get(CloudflareCredential, (pin.installation_id, "control_root", "", version))
+    if row is None:
+        raise ValueError("Cloudflare control root is unavailable")
+    root = open_credential(CredentialRef(pin.installation_id, row.account_id, "control_root", "", version), row)
+    return managed_cloudflare_control_key(
+        root.get_secret_value(), pin.installation_id, version, pin.scope, pin.worker_id, resource_uid,
+    )

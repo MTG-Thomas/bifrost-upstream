@@ -1,7 +1,7 @@
 """Incarnation-scoped external-worker control keys; no application imports.
 
-The installation key remains in the API. The API and provider derive a worker
-key from their existing dedicated capacity credential and the prepared resource.
+For managed Cloudflare the installation root remains in Bifrost. Prepare
+hands the provider only the control key scoped to the prepared resource.
 Canonical admission and ownership revoke terminal incarnations independently.
 """
 
@@ -14,14 +14,18 @@ import re
 from uuid import UUID
 
 _EXTERNAL_CONTROL_DOMAIN = b"bifrost.external-worker.control.v1\0"
-_MANAGED_CLOUDFLARE_DOMAIN = b"bifrost.cloudflare-capacity.control.v2\0"
+_MANAGED_CLOUDFLARE_DOMAIN = b"bifrost.cloudflare-capacity.control.installation.v1\0"
 
 
-def managed_cloudflare_control_key(root: str, scope: str, worker_id: UUID, resource_uid: str) -> str:
+def managed_cloudflare_control_key(
+    root: str, installation_id: UUID, root_version: int, scope: str, worker_id: UUID, resource_uid: str,
+) -> str:
     """Bind a Workers control key to its scope and API-reserved identity."""
     if re.fullmatch(r"[0-9a-f]{32}", resource_uid) is None:
         raise ValueError("Invalid managed Cloudflare resource identity")
-    binding = json.dumps([scope, str(worker_id), resource_uid], separators=(",", ":")).encode()
+    binding = json.dumps(
+        [str(installation_id), root_version, scope, str(worker_id), resource_uid], separators=(",", ":"),
+    ).encode()
     return hmac.new(root.encode(), _MANAGED_CLOUDFLARE_DOMAIN + binding, hashlib.sha256).hexdigest()
 
 

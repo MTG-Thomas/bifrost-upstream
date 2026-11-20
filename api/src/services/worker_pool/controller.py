@@ -359,8 +359,11 @@ class WorkerCapacityController(ABC):
             if not locked:
                 return []
             managed_scope = self.managed_cloudflare_scope
-            if managed_scope is not None and not await managed_scope.lock_admission(db):
-                return []
+            control_root_version = None
+            if managed_scope is not None:
+                control_root_version = await managed_scope.lock_admission(db)
+                if control_root_version is None:
+                    return []
             platform_job_ids = await pending_local_platform_job_ids(db, policy, _now())
             waiting = (
                 await db.execute(
@@ -646,9 +649,9 @@ class WorkerCapacityController(ABC):
                     ))
                 ]
                 if launched:
-                    if managed_scope is not None:
+                    if managed_scope is not None and control_root_version is not None:
                         await db.flush()
-                        db.add_all(managed_scope.pin(worker_id) for worker_id in launched)
+                        db.add_all(managed_scope.pin(worker_id, control_root_version) for worker_id in launched)
                     await db.commit()
                 return launched
             # Fast Path capacity is a fixed exclusive reservation, not an

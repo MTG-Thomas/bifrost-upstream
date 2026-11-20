@@ -16,13 +16,13 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from shared.solution_git_stage import SOLUTION_GIT_CAPABILITY, SOLUTION_UPDATE_CHECK_JOB
+from shared.worker_control_auth import external_worker_control_key
 from sqlalchemy import func, select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from starlette.websockets import WebSocketState
 
-from shared.solution_git_stage import SOLUTION_GIT_CAPABILITY, SOLUTION_UPDATE_CHECK_JOB
-from shared.worker_control_auth import external_worker_control_key, managed_cloudflare_control_key
 from src.config import get_settings
 from src.core.database import get_db_context, get_liveness_db_context
 from src.jobs.consumers.package_install import PackageInstallConsumer
@@ -30,7 +30,10 @@ from src.jobs.schedulers.platform_jobs import (
     claim_platform_job,
     run_claimed_platform_job,
 )
-from src.models.orm.cloudflare_capacity import CloudflareInstallation, CloudflareWorkerReservation
+from src.models.orm.cloudflare_capacity import (
+    CloudflareInstallation,
+    CloudflareWorkerReservation,
+)
 from src.models.orm.execution_workers import ExecutionWorker
 from src.services.execution.template_process import TEMPLATE_START_TIMEOUT_SECONDS
 from src.services.memory_requests import AGENT_RUN_REQUEST_BYTES, MemoryBudget
@@ -41,6 +44,7 @@ from src.services.worker_pool.claims import (
     register_static_worker,
     report_worker_handlers,
 )
+from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
 from src.worker.admission import Admission
 from src.worker.pool_main import PoolWorker
 from src.worker.remote.agent_route import AgentRoute, RemoteAgentConsumer
@@ -1532,21 +1536,9 @@ class RemoteControlHost:
                     if not settings.cloudflare_worker_hello_enabled:
                         raise ProtocolError("Cloudflare worker hello is disabled")
                     raise AuthenticationError("Cloudflare worker lacks its reserved resource binding")
-                async with get_liveness_db_context() as db:
-                    pinned = await db.scalar(
-                        select(CloudflareWorkerReservation.worker_id)
-                        .join(CloudflareInstallation, CloudflareInstallation.id == CloudflareWorkerReservation.installation_id)
-                        .where(
-                            CloudflareWorkerReservation.worker_id == signed.incarnation_id,
-                            CloudflareWorkerReservation.scope == binding.capacity_scope,
-                            CloudflareInstallation.retired_at.is_(None),
-                        )
-                    )
-                if binding.capacity_scope is not None and pinned is None:
-                    raise AuthenticationError("Cloudflare worker lacks its current installation pin")
-                if pinned is None and not settings.cloudflare_worker_hello_enabled:
-                    raise ProtocolError("Cloudflare worker hello is disabled")
                 if binding.capacity_scope is None:
+                    if not settings.cloudflare_worker_hello_enabled:
+                        raise ProtocolError("Cloudflare worker hello is disabled")
                     token = settings.worker_capacity_token
                     if not token:
                         raise AuthenticationError("Manual Cloudflare worker control is not configured")
@@ -1554,12 +1546,22 @@ class RemoteControlHost:
                         token.get_secret_value(), signed.incarnation_id, signed.resource_uid,
                     )
                 else:
-                    try:
-                        control_key = managed_cloudflare_control_key(
-                            settings.secret_key, binding.capacity_scope, signed.incarnation_id, signed.resource_uid,
+                    async with get_liveness_db_context() as db:
+                        pin = await db.scalar(
+                            select(CloudflareWorkerReservation)
+                            .join(CloudflareInstallation, CloudflareInstallation.id == CloudflareWorkerReservation.installation_id)
+                            .where(
+                                CloudflareWorkerReservation.worker_id == signed.incarnation_id,
+                                CloudflareWorkerReservation.scope == binding.capacity_scope,
+                                CloudflareInstallation.retired_at.is_(None),
+                            )
                         )
-                    except ValueError:
-                        raise AuthenticationError("Invalid managed Cloudflare resource binding") from None
+                        if pin is None:
+                            raise AuthenticationError("Cloudflare worker lacks its current installation pin")
+                        try:
+                            control_key = await load_managed_control_key(db, pin, signed.resource_uid)
+                        except ValueError:
+                            raise AuthenticationError("Invalid managed Cloudflare resource binding") from None
             else:
                 control_key = settings.secret_key
                 containers_scope = getattr(settings, "cloudflare_containers_scope", None)

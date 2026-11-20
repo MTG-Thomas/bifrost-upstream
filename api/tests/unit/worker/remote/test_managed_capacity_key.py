@@ -5,6 +5,8 @@ from shared.worker_control_auth import managed_cloudflare_control_key
 
 def test_managed_capacity_key_wire_vector() -> None:
     actual = managed_cloudflare_control_key(
-        "fixed-root", "workers", UUID("00000000-0000-0000-0000-000000000001"), "a" * 32,
+        "fixed-root", UUID(int=2), 3, "workers", UUID(int=1), "a" * 32,
     )
-    assert actual == "5efdab323f726dee4997f15510b254e30dcf2a5d34512cd7a434b94a90c47fad"
+    assert actual == "e2f1ceb9355d8d4d264e5ab4d261c4f92f63c3fb01084674583d5771f6a357a8"
+    assert managed_cloudflare_control_key("fixed-root", UUID(int=3), 3, "workers", UUID(int=1), "a" * 32) != actual
+    assert managed_cloudflare_control_key("fixed-root", UUID(int=2), 4, "workers", UUID(int=1), "a" * 32) != actual

@@ -2,6 +2,7 @@
 
 import json
 import re
+import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -133,6 +134,7 @@ async def create_cloudflare_installation(
             desired_revision=1,
             desired_state="scaled_in",
             api_token_version=1,
+            control_root_version=1,
         )
         .on_conflict_do_nothing(
             index_elements=[CloudflareInstallation.singleton],
@@ -144,7 +146,11 @@ async def create_cloudflare_installation(
         raise CloudflareInstallationExists("A Cloudflare installation already exists")
 
     ref = CredentialRef(installation_id, account_id, "account_token", "", 1)
-    db.add(seal_credential(ref, verified_api_token, actor=actor, now=now))
+    root = CredentialRef(installation_id, account_id, "control_root", "", 1)
+    db.add_all([
+        seal_credential(ref, verified_api_token, actor=actor, now=now),
+        seal_credential(root, SecretStr(secrets.token_urlsafe(32)), actor=actor, now=now),
+    ])
     await db.flush()
     return installation_id
 
@@ -172,6 +178,7 @@ async def retire_cloudflare_installation(
     if remaining is not None or scope is not None or await cloudflare_workers_remain(db, installation_id):
         raise CloudflarePolicyConflict("Cloudflare cleanup is pending")
     row.api_token_version = None
+    row.control_root_version = None
     row.retired_at = datetime.now(UTC)
     await db.execute(update(CloudflareCredential).where(
         CloudflareCredential.installation_id == installation_id,

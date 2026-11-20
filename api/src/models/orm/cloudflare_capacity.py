@@ -49,6 +49,18 @@ class CloudflareInstallation(Base):
             ],
             name="fk_cf_active_account_token", deferrable=True, initially="DEFERRED", use_alter=True,
         ),
+        CheckConstraint(
+            "control_root_purpose = 'control_root' AND control_root_scope = ''",
+            name="ck_cf_installation_control_root",
+        ),
+        ForeignKeyConstraint(
+            ["id", "control_root_purpose", "control_root_scope", "control_root_version"],
+            [
+                "cloudflare_capacity_credentials.installation_id", "cloudflare_capacity_credentials.purpose",
+                "cloudflare_capacity_credentials.scope", "cloudflare_capacity_credentials.version",
+            ],
+            name="fk_cf_installation_control_root", deferrable=True, initially="DEFERRED", use_alter=True,
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True)
@@ -66,6 +78,9 @@ class CloudflareInstallation(Base):
     api_token_purpose: Mapped[str] = mapped_column(String(16), server_default="account_token")
     api_token_scope: Mapped[str] = mapped_column(String(64), server_default="")
     api_token_version: Mapped[int | None]
+    control_root_purpose: Mapped[str] = mapped_column(String(16), server_default="control_root")
+    control_root_scope: Mapped[str] = mapped_column(String(64), server_default="")
+    control_root_version: Mapped[int | None]
 
 
 class CloudflareCredential(Base):
@@ -125,7 +140,20 @@ class CloudflareWorkerReservation(Base):
     __tablename__ = "cloudflare_worker_reservations"
     __table_args__ = (
         CheckConstraint("deployment_revision > 0", name="ck_cf_reservation_revision"),
+        CheckConstraint("control_root_version IS NOT NULL", name="ck_cf_reservation_has_root", postgresql_not_valid=True),
         Index("ix_cf_reservations_installation", "installation_id"),
+        CheckConstraint(
+            "control_root_purpose = 'control_root' AND control_root_scope = ''",
+            name="ck_cf_reservation_control_root",
+        ),
+        ForeignKeyConstraint(
+            ["installation_id", "control_root_purpose", "control_root_scope", "control_root_version"],
+            [
+                "cloudflare_capacity_credentials.installation_id", "cloudflare_capacity_credentials.purpose",
+                "cloudflare_capacity_credentials.scope", "cloudflare_capacity_credentials.version",
+            ],
+            name="fk_cf_reservation_control_root",
+        ),
     )
 
     worker_id: Mapped[UUID] = mapped_column(
@@ -134,6 +162,9 @@ class CloudflareWorkerReservation(Base):
     installation_id: Mapped[UUID] = mapped_column(ForeignKey("cloudflare_installations.id", ondelete="RESTRICT"))
     scope: Mapped[str] = mapped_column(String(64))
     deployment_revision: Mapped[int]
+    control_root_purpose: Mapped[str] = mapped_column(String(16), server_default="control_root")
+    control_root_scope: Mapped[str] = mapped_column(String(64), server_default="")
+    control_root_version: Mapped[int | None]
 
 
 class CloudflareOwnedResource(Base):

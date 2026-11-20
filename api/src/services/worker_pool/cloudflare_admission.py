@@ -33,29 +33,30 @@ class ManagedCloudflareScope:
             CloudflareWorkerReservation.deployment_revision == self.revision,
         )
 
-    async def lock_admission(self, db: AsyncSession) -> bool:
+    async def lock_admission(self, db: AsyncSession) -> int | None:
+        """Fence admission and return the version of the root for a new reservation."""
         locked = await db.scalar(select(CloudflareInstallation.id).where(
             CloudflareInstallation.id == self.installation_id,
         ).with_for_update(read=True))
         if locked is None:
-            return False
-        result = await db.scalar(select(CloudflareInstallation.id)
+            return None
+        return await db.scalar(select(CloudflareInstallation.control_root_version)
             .join(CloudflareCapacityScope, CloudflareCapacityScope.installation_id == CloudflareInstallation.id)
             .where(
                 CloudflareInstallation.id == self.installation_id,
                 CloudflareInstallation.retired_at.is_(None),
                 CloudflareInstallation.desired_state == "enabled",
+                CloudflareInstallation.control_root_version.is_not(None),
                 CloudflareInstallation.admitted_revision == self.revision,
                 CloudflareInstallation.policy["limits"]["workers"]["work_kinds"].contains(["workflow"]),
                 CloudflareCapacityScope.scope == self.name,
                 CloudflareCapacityScope.deployment_revision == self.revision,
             ))
-        return result is not None
 
-    def pin(self, worker_id: UUID) -> CloudflareWorkerReservation:
+    def pin(self, worker_id: UUID, control_root_version: int) -> CloudflareWorkerReservation:
         return CloudflareWorkerReservation(
             worker_id=worker_id, installation_id=self.installation_id, scope=self.name,
-            deployment_revision=self.revision,
+            deployment_revision=self.revision, control_root_version=control_root_version,
         )
 
 
@@ -117,6 +118,7 @@ async def cloudflare_claim_allowed(db: AsyncSession, worker_id: UUID) -> bool:
         installation.desired_state == "enabled",
         installation.admitted_revision.is_not(None),
         installation.admitted_revision == pin.deployment_revision,
+        pin.control_root_version.is_not(None),
         installation.policy["limits"]["workers"]["work_kinds"].contains(["workflow"]),
         ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
         ExecutionWorker.capacity_scope.is_not_distinct_from(pin.scope),
