@@ -100,6 +100,23 @@ class CloudflareWorkerCredentialRotation(CloudflareCapacityAction):
     credential: Literal["control_root", "scope_bearer"]
 
 
+class CloudflareAccountTokenReferenceRotation(CloudflareCapacityAction):
+    credential_ref: UUID
+
+
+class CloudflareStageCredentialRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    account_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    purpose: Literal["connect", "rotate"]
+    api_token: SecretStr = Field(min_length=16, max_length=512, json_schema_extra={"writeOnly": True})
+
+
+class CloudflareStagedCredential(BaseModel):
+    credential_ref: UUID
+    expires_at: datetime
+
+
 class CloudflareConnectRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
@@ -108,8 +125,15 @@ class CloudflareConnectRequest(BaseModel):
     worker_ingress_origin: str = Field(max_length=255)
     consent_version: str = Field(max_length=64)
     consent: Literal[True]
-    api_token: SecretStr = Field(min_length=16, max_length=512, json_schema_extra={"writeOnly": True})
+    api_token: SecretStr | None = Field(default=None, min_length=16, max_length=512, json_schema_extra={"writeOnly": True})
+    credential_ref: UUID | None = None
     policy: CloudflareCapacityPolicy
+
+    @model_validator(mode="after")
+    def require_one_credential(self) -> CloudflareConnectRequest:
+        if (self.api_token is None) == (self.credential_ref is None):
+            raise ValueError("Provide one Cloudflare credential")
+        return self
 
 
 class CloudflarePolicyUpdate(CloudflareCapacityAction):

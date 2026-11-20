@@ -899,6 +899,10 @@ jobs:
             echo "::error::Configure QUALIFIED_WORKERS_RUNTIME_URL for the exact qualified Workers runtime."
             exit 1
           fi
+          if [[ -z "$BIFROST_RELEASE_WORKERS_METER_BOUNDS" ]]; then
+            echo "::error::Configure QUALIFIED_WORKERS_METER_BOUNDS with the pinned Workers meter bounds."
+            exit 1
+          fi
           staging=$(mktemp -d)
           trap 'rm -rf "$staging"' EXIT
           runtime="$staging/runtime.mjs"

@@ -41,12 +41,11 @@ class FakeProvisioningAdapter:
         if self.lose_create_response:
             raise ObservationPending
 
-    async def delete(self, *, api_token: SecretStr, expected: ResourceObservation) -> bool:
+    async def delete(self, *, api_token: SecretStr, expected: ResourceObservation) -> None:
         self.calls.append("delete")
         assert self.resource == expected
         if self.confirm_delete:
             self.resource = None
-        return self.confirm_delete
 
     async def verify_absent(
         self, *, api_token: SecretStr, target: ResourceTarget, namespace_ids: frozenset[str] = frozenset(),

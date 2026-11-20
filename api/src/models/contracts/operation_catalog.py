@@ -53,6 +53,7 @@ class CliOperationBinding(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     path: tuple[str, ...]
+    aliases: tuple[tuple[str, ...], ...] = Field(default=(), exclude_if=lambda value: not value)
 
     @field_validator("path")
     @classmethod
@@ -66,6 +67,7 @@ class McpOperationBinding(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     name: str
+    aliases: tuple[str, ...] = Field(default=(), exclude_if=lambda value: not value)
 
     @field_validator("name")
     @classmethod

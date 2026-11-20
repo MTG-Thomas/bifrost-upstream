@@ -126,7 +126,7 @@ function CloudflareConfigurationForm({ status, onSaved }: {
 				<div><Label htmlFor="cf-launcher-cap">Workers Launcher Limit</Label><Input id="cf-launcher-cap" name="launcher_cap" type="number" min={1} max={1000} defaultValue={settings?.workers.launcher_cap ?? 1} required /></div>
 				<div><Label htmlFor="cf-slots">Slots Per Launcher</Label><Input id="cf-slots" name="slots" type="number" min={1} max={4} defaultValue={settings?.workers.slots_per_launcher ?? 2} required /></div>
 				<div><Label htmlFor="cf-lifetime">Maximum Lifetime in Seconds</Label><Input id="cf-lifetime" name="lifetime" type="number" min={60} max={604800} defaultValue={settings?.workers.max_lifetime_seconds ?? 3600} required /></div>
-				<div><Label htmlFor="cf-monthly">Monthly Spend Limit in USD</Label><Input id="cf-monthly" name="monthly_limit" type="number" min="0.01" step="0.01" defaultValue={settings?.monthly_limit_usd ?? "10.00"} required /></div>
+				<div><Label htmlFor="cf-monthly">Monthly Spend Limit in USD</Label><Input id="cf-monthly" name="monthly_limit" type="number" min="0.01" step="0.01" defaultValue={settings?.monthly_limit_usd ?? "30.00"} required /></div>
 				<div><Label htmlFor="cf-shared-cap">Shared Managed Worker Limit</Label><Input id="cf-shared-cap" name="shared_cap" type="number" min={1} max={1000} defaultValue={settings?.shared_managed_worker_cap ?? undefined} /></div>
 			</div>
 			<label className="flex items-center gap-2 text-sm">
@@ -348,7 +348,23 @@ export function CloudflareCapacity() {
 								{installation.desired_state === "scaled_in" && (
 									<>
 										<Button variant="outline" disabled={busy} onClick={() => mutation.mutate("rotate-root")}>Rotate Control Root</Button>
-										<Button variant="outline" disabled={busy} onClick={() => mutation.mutate("rotate-bearer")}>Rotate Scope Bearer</Button>
+										<AlertDialog>
+											<AlertDialogTrigger asChild>
+												<Button variant="outline" disabled={busy}>Rotate Scope Bearer</Button>
+											</AlertDialogTrigger>
+											<AlertDialogContent>
+												<AlertDialogHeader>
+													<AlertDialogTitle>Rotate Cloudflare Scope Bearer</AlertDialogTitle>
+													<AlertDialogDescription>
+														Bifrost will delete the previous Workers deployment before staging the new bearer. Enable will deploy the Workers again.
+													</AlertDialogDescription>
+												</AlertDialogHeader>
+												<AlertDialogFooter>
+													<AlertDialogCancel>Cancel</AlertDialogCancel>
+													<AlertDialogAction onClick={() => mutation.mutate("rotate-bearer")}>Rotate Scope Bearer</AlertDialogAction>
+												</AlertDialogFooter>
+											</AlertDialogContent>
+										</AlertDialog>
 									</>
 								)}
 								<Dialog open={rotateOpen} onOpenChange={setRotateOpen}>

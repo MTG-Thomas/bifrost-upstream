@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
+import { isDeepStrictEqual } from "node:util";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const spike = resolve(root, "spikes/cloudflare-pyodide");
@@ -54,6 +55,12 @@ export async function buildWorkers(runtimePath, outputPath, sourceRevision, mete
   if (!/^[0-9a-f]{40}$/.test(sourceRevision)) throw new Error("An exact source commit is required");
   const runtime = await readFile(runtimePath);
   if (sha256(runtime) !== runtimePin) throw new Error("The qualified Workers runtime digest does not match");
+  const pinnedBounds = JSON.parse(await readFile(
+    resolve(root, "api/src/services/worker_pool/cloudflare_meter_bounds.json"), "utf8",
+  ));
+  if (!isDeepStrictEqual(meterBounds, pinnedBounds)) {
+    throw new Error("Supply the pinned Workers meter bounds from cloudflare_meter_bounds.json");
+  }
   const { build } = require("esbuild");
   const output = resolve(outputPath);
   const release = {
@@ -68,7 +75,7 @@ export async function buildWorkers(runtimePath, outputPath, sourceRevision, mete
     runtime_profile: "cloudflare-python-v1",
     capabilities: [["workflow.execute", 1]],
     max_slots_per_launcher: 4,
-    ...(meterBounds === undefined ? {} : {meter_bounds: meterBounds}),
+    meter_bounds: pinnedBounds,
     workers: {},
   };
   const artifacts = [];

@@ -150,7 +150,7 @@ async def run_workers_canary(
             or row.admitted_revision is not None
         ):
             return RuntimeCanary(False, False)
-        if await cloudflare_workers_remain(db, row.id):
+        if await cloudflare_workers_remain(db, row.id, before_revision=revision):
             raise PlatformJobRequiresAction("Wait for Cloudflare Workers to Retire", {"code": "CF_PRIOR_WORKERS_LIVE"})
         db.add(ExecutionWorker(
             id=worker_id, form="external", state="starting", execution_lane="normal",

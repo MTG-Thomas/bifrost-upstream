@@ -84,14 +84,16 @@ backoff without writing replacement zeroes.
 [Error responses](https://developers.cloudflare.com/analytics/graphql-api/errors/)
 [Query limits](https://developers.cloudflare.com/analytics/graphql-api/limits/)
 
-**Disposition.** GraphQL Analytics did not qualify for the usage writer. The guard
-requires a complete, attributable observation no more than 15 minutes old.
-Admission therefore stays in
-**Spend Data Stale**. Ask Cloudflare for a supported scoped metering source
-with per-resource coverage and a usable completeness watermark, then qualify
-it against the same guard. The restricted billable-usage API documents daily
-account-level records. Even with access, its attribution and timing require
-separate evidence. [Billable usage API](https://developers.cloudflare.com/api/resources/billing/subresources/usage/methods/get_account_usage_v2/)
+**Product decision.** Bifrost meters its own durable ledger. It prices
+incarnation lifetimes, provisioned slot-seconds, committed cloud dispatch
+assignments and authenticated SDK gateway requests at versioned published
+rates. Admission uses the current UTC calendar month and closes at the
+budget or if ledger evidence is unavailable or inconsistent. Policy save
+also validates the static envelope. The estimate can differ from the invoice.
+
+GraphQL Analytics is an advisory comparison of sampled Worker requests
+and the Bifrost request proxy. The incomplete Durable Object data prevents
+a full spend reconciliation. Missing or divergent samples never gate admission.
 
 ## Item 2. Workers Paid and Containers entitlement
 
@@ -111,10 +113,7 @@ Cloudflare documents **Billing Read** for the REST equivalent,
 HTTP 403 with the provisioning token. This run reproduced HTTP 403, code 10000, with
 an Account Settings Read-only token. It resolved the account-scoped Billing
 Read permission group, but account-owned token creation with that grant alone
-returned HTTP 400 and the token list showed no matching creation. That leaves
-the operator `cf` read verified and the isolated Billing Read product
-credential unqualified. Enable still needs an independently authorized
-authority that can provide the same current-account evidence.
+returned HTTP 400 and the token list showed no matching creation. Billing Read is outside the product grant.
 [Account subscriptions API](https://developers.cloudflare.com/api/resources/accounts/subresources/subscriptions/methods/get/)
 
 `GET /client/v4/accounts/{account_id}/entitlements` returned HTTP 200 with
@@ -122,8 +121,7 @@ active boolean-true `containers.enabled` and `workers.enabled` allocations
 under a temporary token with **Account Settings Read alone**. For a Containers
 feature check, require `containers.enabled`, a boolean-true allocation and an
 empty deletion date. Cloudflare lists **Account Read** for this endpoint.
-`workers.enabled` establishes feature access. Use the subscription read for
-plan identity and period evidence.
+`workers.enabled` establishes feature access. Connect and Enable require active boolean-true `containers.enabled` as evidence of Workers Paid. Account Settings Read alone is sufficient.
 [Account entitlements API](https://developers.cloudflare.com/api/resources/accounts/subresources/entitlements/methods/list/)
 
 ## Spend and teardown

@@ -19,9 +19,10 @@ from pydantic import SecretStr
 from shared.models import WorkerCapacityProfile, WorkerCapacityResource
 from src.services import worker_ingress_probes as probes
 from src.services.worker_ingress import ALLOW_MARKER, CONTROL_PATH, INGRESS_HEADER, PORT
+from src.services.worker_pool import cloudflare_release
+from src.services.worker_pool import cloudflare_connection
 from src.services.worker_pool.cloudflare_provisioning import ResourceObservation
 from src.services.worker_pool.cloudflare_release import QUALIFIED_RUNTIME_SHA256, load_workers_release
-from src.services.worker_pool.cloudflare_spend import WORKERS_RATES
 from src.services.worker_pool.cloudflare_workers_rest import ConfiguredWorkersScript, WorkersRestCleanup
 from src.worker.remote.protocol import ControlEnvelope, Hello, new_nonce, sign_hello
 from websockets.asyncio.client import connect
@@ -40,10 +41,7 @@ def _release():
         "pyodide_version": "314.0.6", "compatibility_date": "2026-10-30", "compatibility_flags": [],
         "capacity_protocol": 2, "credential_protocol": 2, "runtime_profile": "cloudflare-python-v1",
         "capabilities": [["workflow.execute", 1]], "max_slots_per_launcher": 4,
-        "meter_bounds": {
-            "cleanup_margin_seconds": 60, "per_launcher_second": dict.fromkeys(WORKERS_RATES, 0),
-            "per_fleet_fixed": dict.fromkeys(WORKERS_RATES, 0),
-        },
+        "meter_bounds": json.loads(Path(cloudflare_release.__file__).with_name("cloudflare_meter_bounds.json").read_bytes()),
         "workers": {},
     }
     with tempfile.TemporaryDirectory() as directory:
@@ -105,12 +103,11 @@ class _Cloudflare(WorkersRestCleanup):
         classes = EXPORTS["capacity" if capacity else "launcher"]
         return ConfiguredWorkersScript(CAPACITY if capacity else None, {
             exported: sha256(f"{name}:{exported}".encode()).hexdigest()[:32] for exported in classes
-        }, True)
+        })
 
     async def delete(self, *, api_token, expected):
         assert await self.observe(api_token=api_token, intent=expected.intent) == expected
         (ROOT / expected.intent.target.name).unlink()
-        return True
 
     async def verify_absent(self, *, api_token, target, namespace_ids=frozenset()):
         assert (target.account_id, api_token) == (ACCOUNT, TOKEN)
@@ -156,9 +153,9 @@ async def _forward(reader, writer):
         await asyncio.gather(ingress.wait_closed(), writer.wait_closed(), return_exceptions=True)
 
 
-def install_api(router_module):
-    router_module.load_workers_release = _release
-    router_module.WorkersRestCleanup = _Cloudflare
+def install_api():
+    cloudflare_connection.load_workers_release = _release
+    cloudflare_connection.WorkersRestCleanup = _Cloudflare
 
 
 def install_enable(job_module):

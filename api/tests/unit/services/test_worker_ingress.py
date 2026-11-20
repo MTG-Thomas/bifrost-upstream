@@ -3,7 +3,9 @@
 import asyncio
 import inspect
 import re
+from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -12,6 +14,7 @@ import pytest
 import yaml
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.routing import APIRoute, APIWebSocketRoute
+from sqlalchemy.exc import SQLAlchemyError
 from starlette.responses import RedirectResponse
 
 from bifrost.cloudflare_analysis import _api_path_allowed
@@ -19,6 +22,42 @@ from bifrost import _runtime_io, client as sdk_client
 from bifrost.commands import agents as agent_commands
 from bifrost.executions import executions
 from src.services import worker_ingress as ingress
+
+
+async def test_listener_survives_transient_installation_read_error(monkeypatch):
+    transitions = []
+    stopped = asyncio.Event()
+    results = iter(("https://workers.example.test", SQLAlchemyError(), "https://workers.example.test", None))
+
+    async def read_origin():
+        result = next(results, None)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    origin = AsyncMock(side_effect=read_origin)
+    real_sleep = asyncio.sleep
+
+    @asynccontextmanager
+    async def serve(_app):
+        transitions.append("open")
+        try:
+            yield
+        finally:
+            transitions.append(("closed", origin.await_count))
+            stopped.set()
+
+    async def sleep(_seconds):
+        await real_sleep(0)
+
+    monkeypatch.setattr(ingress, "_installation_origin", origin)
+    monkeypatch.setattr(ingress, "serve_worker_ingress", serve)
+    monkeypatch.setattr(ingress, "asyncio", SimpleNamespace(
+        create_task=asyncio.create_task, CancelledError=asyncio.CancelledError, sleep=sleep,
+    ))
+    async with ingress.watch_worker_ingress(FastAPI()):
+        await asyncio.wait_for(stopped.wait(), 2)
+    assert transitions == ["open", ("closed", 4)]
 
 
 def test_versioned_allowlist_matches_sdk_and_registered_api_routes():

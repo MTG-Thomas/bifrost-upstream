@@ -45,9 +45,10 @@ from src.services.work_dispatch import (
 )
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
-    confirm_account_token_write,
+    consume_staged_token,
     load_account_token,
     open_credential,
+    purge_expired_staged_tokens,
     seal_credential,
 )
 from src.services.worker_pool.cloudflare_policy import (
@@ -191,13 +192,11 @@ async def _cleanup_one(
     if resource.state != "deleting":
         resource.state = "deleting"
         return "progressed"  # Commit the deletion intent before issuing DELETE.
-    wrote = await resume_deletion(
+    await resume_deletion(
         adapter, api_token=token,
         committed_deletion=ResourceObservation(intent, resource.provider_id, resource.provider_version),
         namespace_ids=frozenset(resource.namespace_ids.values()),
     )
-    if wrote:
-        await confirm_account_token_write(db, row)
     resource.state = "absent"
     resource.observed_at = datetime.now(UTC)
     return "progressed"
@@ -541,6 +540,13 @@ async def _rotate_account_token(context: PlatformJobContext, parsed: BaseModel) 
             candidate.ciphertext = None
         else:
             installation.api_token_version = payload.replacement_version
+            # Replacing a token revokes Bifrost's access to earlier versions.
+            # Repair a narrower or revoked replacement with another explicit rotation.
+            await db.execute(update(CloudflareCredential).where(
+                CloudflareCredential.installation_id == installation.id,
+                CloudflareCredential.purpose == "account_token",
+                CloudflareCredential.version < payload.replacement_version,
+            ).values(ciphertext=None))
             await emit_audit(
                 db, "capacity.cloudflare_account_token_rotated", resource_type="cloudflare_installation",
                 resource_id=installation.id, details={
@@ -581,6 +587,8 @@ async def _rotate_worker_credential(context: PlatformJobContext, parsed: BaseMod
                         await _require_legacy_cleanup(db)
                         raise PlatformJobRequiresAction("Wait for Cloudflare Workers to Retire", {"code": "CF_PRIOR_WORKERS_LIVE"})
                     if scope:
+                        # Keep the revision fence through the exact delete
+                        # and absence receipt, even if the job lease expires.
                         progress = await _cleanup_one(db, row, adapter)
                         if progress == "progressed":
                             continue
@@ -658,7 +666,7 @@ async def enqueue_cloudflare_worker_credential_rotation(
 
 
 async def enqueue_cloudflare_account_token_rotation(
-    db: AsyncSession, caller: Caller, *, installation_id: UUID, expected_revision: int, replacement: SecretStr,
+    db: AsyncSession, caller: Caller, *, installation_id: UUID, expected_revision: int, replacement: SecretStr | UUID,
 ) -> tuple[PlatformJob, bool]:
     require_operation(caller, "capacity.cloudflare_rotate_account_token", GLOBAL)
     actor = caller.principal
@@ -668,6 +676,10 @@ async def enqueue_cloudflare_account_token_rotation(
     key = str(row.id)
     if await find_active_platform_job(db, ROTATE_JOB, key) is not None:
         raise CloudflarePolicyConflict("A Cloudflare API token rotation is already pending")
+    if isinstance(replacement, UUID):
+        replacement = await consume_staged_token(
+            db, replacement, actor_id=actor.user_id, account_id=row.account_id, purpose="rotate",
+        )
     versions = (
         CloudflareCredential.installation_id == row.id,
         CloudflareCredential.purpose == "account_token",
@@ -695,6 +707,7 @@ async def enqueue_cloudflare_account_token_rotation(
 
 async def schedule_cloudflare_reconcile(db: AsyncSession, *, now: datetime) -> None:
     """Schedule one durable inventory observation per admitted revision and interval."""
+    await purge_expired_staged_tokens(db)
     installation = await db.scalar(select(CloudflareInstallation).where(
         CloudflareInstallation.retired_at.is_(None),
         CloudflareInstallation.admitted_revision.is_not(None),

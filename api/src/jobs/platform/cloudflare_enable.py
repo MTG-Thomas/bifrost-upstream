@@ -45,7 +45,6 @@ from src.services.worker_ingress_probes import probe_worker_ingress
 from src.services.worker_pool.cloudflare_canary import run_workers_canary
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
-    confirm_account_token_write,
     open_credential,
     seal_credential,
 )
@@ -187,7 +186,7 @@ async def _settle_enable(
             row = await _locked_current(db, context, payload)
             if row is None:
                 return {"outcome": "superseded"}
-            if await cloudflare_workers_remain(db, row.id):
+            if await cloudflare_workers_remain(db, row.id, before_revision=payload.revision):
                 raise PlatformJobRequiresAction("Wait for Cloudflare Workers to Retire", {"code": "CF_PRIOR_WORKERS_LIVE"})
             cleanup = await _cleanup_one(db, row, cleanup_adapter, before_revision=payload.revision)
             if cleanup == "progressed":
@@ -214,6 +213,9 @@ async def _settle_enable(
     adapter = WorkersRestProvisioner(http, deployment)
     capacity_endpoint = None
     for identifier in identifiers:
+        # An upload is an unconditional PUT. Keep the revision/effect fence
+        # until its bounded response and receipt commit, so Disconnect cannot
+        # verify absence and tombstone an intent that can still be uploaded.
         async with get_db_context() as db:
             row = await _locked_current(db, context, payload)
             if row is None:
@@ -226,8 +228,6 @@ async def _settle_enable(
                 adapter, resource, token=await _management_token(db, row),
                 bearer=bearer if is_capacity else None,
             )
-            if result.confirmed_write:
-                await confirm_account_token_write(db, row)
             if is_capacity:
                 capacity_endpoint = result.endpoint
     if capacity_endpoint is None:
@@ -241,7 +241,7 @@ async def _settle_enable(
             return {"outcome": "superseded"}
         scope = await db.get(CloudflareCapacityScope, (row.id, "workers", payload.revision))
         if scope is None:
-            if await cloudflare_workers_remain(db, row.id):
+            if await cloudflare_workers_remain(db, row.id, before_revision=payload.revision):
                 raise PlatformJobRequiresAction("Wait for Cloudflare Workers to Retire", {"code": "CF_PRIOR_WORKERS_LIVE"})
             db.add(CloudflareCapacityScope(
                 installation_id=row.id, scope="workers", deployment_revision=payload.revision,

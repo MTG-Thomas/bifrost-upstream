@@ -1,0 +1,29 @@
+{
+  "cleanup_margin_seconds": 300,
+  "per_launcher_second": {
+    "worker_requests": "2",
+    "worker_cpu_ms": "60000",
+    "do_requests": "64",
+    "do_gb_seconds": "1",
+    "sqlite_rows_read": "128",
+    "sqlite_rows_written": "128",
+    "sqlite_stored_gb_month": "0.0001",
+    "log_events": "64",
+    "log_ingested_gb": "0.0001",
+    "log_stored_gb_month": "0.0001",
+    "transfer_gb": "0"
+  },
+  "per_fleet_fixed": {
+    "worker_requests": "200",
+    "worker_cpu_ms": "6000000",
+    "do_requests": "1000",
+    "do_gb_seconds": "600",
+    "sqlite_rows_read": "1000",
+    "sqlite_rows_written": "1000",
+    "sqlite_stored_gb_month": "0.1",
+    "log_events": "1000",
+    "log_ingested_gb": "0.01",
+    "log_stored_gb_month": "0.01",
+    "transfer_gb": "0"
+  }
+}

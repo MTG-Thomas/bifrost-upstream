@@ -199,6 +199,10 @@ async def acknowledge_capacity_canary(worker_id: UUID, request: Request) -> Resp
         or not await cloudflare_sdk_canary_proof(worker_id, int(generation), received=proof)
     ):
         raise HTTPException(401, "Invalid Capacity Canary Credential")
+    budget = request.scope["worker_ingress_canary_budget"](str(worker_id))
+    if budget is None:
+        raise HTTPException(429, "Capacity Canary Budget Reached")
+    budget.active -= 1
     return Response(status_code=204, headers={"Cache-Control": "no-store"})
 
 

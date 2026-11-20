@@ -260,7 +260,7 @@ class WorkerIngress:
         self.origin_until = 0.0
         self.origin_lock = asyncio.Lock()
         self.refresh = _RequestBudget(16, 8)
-        self.capacity_canary = _RequestBudget(4, 2)
+        self.capacity_canary = _IdentityBudgets(4, 2)
         self.pending_hello = _RequestBudget(16, 8)
         self.http = _IdentityBudgets(40, 8)
         self.launchers = _IdentityBudgets(4, 2)
@@ -299,16 +299,19 @@ class WorkerIngress:
         if scope["type"] == "websocket":
             await self._serve_control(scope, receive, send)
             return
-        limit = 8192 if scope["path"] == _REFRESH_PATH else _BODY_LIMIT
+        canary = scope["path"].startswith(_CANARY_PREFIX) and scope["method"] == "GET"
+        limit = 0 if canary else (8192 if scope["path"] == _REFRESH_PATH else _BODY_LIMIT)
         if not 0 <= _content_length(scope) <= limit:
             await _respond(scope, send, 413)
+            return
+        if canary:
+            scope["worker_ingress_capacity_canary"] = True
+            scope["worker_ingress_canary_budget"] = self.capacity_canary.take
+            await self._serve_http(scope, receive, send, limit, origin)
             return
         refresh = scope["path"] == _REFRESH_PATH
         if refresh:
             budget = self.refresh if self.refresh.take() else None
-        elif scope["path"].startswith(_CANARY_PREFIX) and scope["method"] == "GET":
-            scope["worker_ingress_capacity_canary"] = True
-            budget = self.capacity_canary if self.capacity_canary.take() else None
         else:
             claims = _access_claims(scope)
             if not claims or not isinstance(claims.get("sub"), str):
@@ -526,8 +529,13 @@ async def watch_worker_ingress(app: FastAPI) -> AsyncIterator[None]:
             try:
                 if await _installation_origin() is not None:
                     async with serve_worker_ingress(app):
-                        while await _installation_origin() is not None:
+                        while True:
                             await asyncio.sleep(1)
+                            try:
+                                if await _installation_origin() is None:
+                                    break
+                            except (SQLAlchemyError, TimeoutError):
+                                logger.warning("Could not refresh the worker ingress installation", exc_info=True)
             except (SQLAlchemyError, OSError, TimeoutError, RuntimeError):
                 logger.warning("Worker ingress is unavailable", exc_info=True)
             await asyncio.sleep(1)

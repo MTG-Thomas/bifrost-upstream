@@ -2,14 +2,16 @@
 
 from typing import Annotated, Literal
 
-import httpx
 from fastapi import APIRouter, Body, HTTPException, Response, status
 from shared.models import (
     CloudflareAccountTokenRotation,
+    CloudflareAccountTokenReferenceRotation,
     CloudflareCapacityAction,
     CloudflareCapacityStatus,
     CloudflareConnectRequest,
     CloudflarePolicyUpdate,
+    CloudflareStageCredentialRequest,
+    CloudflareStagedCredential,
     CloudflareWorkerCredentialRotation,
 )
 
@@ -26,24 +28,18 @@ from src.models.contracts.platform_jobs import PlatformJobAccepted
 from src.services.audit import emit_audit
 from src.services.authorization.enforce import load_caller, require_operation
 from src.services.authorization.evaluator import GLOBAL
+from src.services.worker_pool.cloudflare_connection import configure_cloudflare
+from src.services.worker_pool.cloudflare_credentials import stage_account_token
 from src.services.worker_pool.cloudflare_policy import (
-    CONSENT_TEXT_VERSION,
     CloudflareInstallationExists,
     CloudflarePolicyConflict,
-    create_cloudflare_installation,
     get_cloudflare_capacity_status,
-    release_meter_bounds,
-    save_cloudflare_policy,
 )
 from src.services.worker_pool.cloudflare_provisioning import ObservationPending
-from src.services.worker_pool.cloudflare_release import (
-    WorkersReleaseUnavailable,
-    load_workers_release,
-)
+from src.services.worker_pool.cloudflare_release import WorkersReleaseUnavailable
 from src.services.worker_pool.cloudflare_workers_rest import (
     CloudflareManagementDenied,
     CloudflareRestUnavailable,
-    WorkersRestCleanup,
     WorkersPaidUnverified,
 )
 
@@ -57,6 +53,22 @@ async def get_cloudflare_capacity(db: DbSession, user: CurrentActiveUser) -> Clo
     return await get_cloudflare_capacity_status(db, caller)
 
 
+@router.post(
+    "/credential", response_model=CloudflareStagedCredential, status_code=status.HTTP_201_CREATED,
+    operation_id="capacity.cloudflare_credential_stage",
+)
+async def stage_cloudflare_credential(
+    body: CloudflareStageCredentialRequest, db: DbSession, user: CurrentActiveUser,
+) -> CloudflareStagedCredential:
+    caller = await load_caller(db, user)
+    require_operation(caller, "capacity.cloudflare_credential_stage", GLOBAL)
+    ref, expires_at = await stage_account_token(
+        db, actor_id=caller.principal.user_id, account_id=body.account_id, purpose=body.purpose, token=body.api_token,
+    )
+    await emit_audit(db, "capacity.cloudflare_credential_stage", details={"account_id": body.account_id, "purpose": body.purpose})
+    return CloudflareStagedCredential(credential_ref=ref, expires_at=expires_at)
+
+
 @router.patch("", response_model=CloudflareCapacityStatus, operation_id="capacity.cloudflare_configure")
 async def configure_cloudflare_capacity(
     body: Annotated[CloudflareConnectRequest | CloudflarePolicyUpdate, Body(discriminator="action")],
@@ -66,29 +78,7 @@ async def configure_cloudflare_capacity(
     caller = await load_caller(db, user)
     require_operation(caller, "capacity.cloudflare_configure", GLOBAL)
     try:
-        bounds = release_meter_bounds(load_workers_release())
-        if isinstance(body, CloudflareConnectRequest):
-            if body.consent_version != CONSENT_TEXT_VERSION:
-                raise CloudflarePolicyConflict("Review the current Cloudflare consent text.")
-            async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
-                await WorkersRestCleanup(http).verify_workers_paid(body.account_id, body.api_token)
-            installation_id = await create_cloudflare_installation(
-                db, account_id=body.account_id, worker_ingress_origin=body.worker_ingress_origin,
-                consent_version=body.consent_version, actor_id=caller.principal.user_id,
-                verified_api_token=body.api_token, policy=body.policy, bounds=bounds,
-            )
-            await emit_audit(
-                db, "capacity.cloudflare_connect", resource_type="cloudflare_installation", resource_id=installation_id,
-                details={"account_id": body.account_id, "consent_version": body.consent_version},
-            )
-        else:
-            revision = await save_cloudflare_policy(
-                db, installation_id=body.installation_id, expected_revision=body.expected_revision,
-                policy=body.policy, bounds=bounds,
-            )
-            if revision != body.expected_revision:
-                await emit_audit(db, "capacity.cloudflare_policy_updated", resource_type="cloudflare_installation",
-                                 resource_id=body.installation_id, details={"revision": revision})
+        return await configure_cloudflare(db, caller, body)
     except WorkersReleaseUnavailable:
         raise HTTPException(503, "Install a qualified Workers release with metering ceilings.") from None
     except (WorkersPaidUnverified, CloudflareManagementDenied):
@@ -99,7 +89,6 @@ async def configure_cloudflare_capacity(
         raise HTTPException(409, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-    return await get_cloudflare_capacity_status(db, caller)
 
 
 @router.post(
@@ -178,15 +167,15 @@ async def disconnect_cloudflare_capacity(
     operation_id="capacity.cloudflare_rotate_account_token",
 )
 async def rotate_cloudflare_account_token(
-    body: CloudflareAccountTokenRotation | CloudflareWorkerCredentialRotation,
+    body: CloudflareAccountTokenRotation | CloudflareAccountTokenReferenceRotation | CloudflareWorkerCredentialRotation,
     response: Response, db: DbSession, user: CurrentActiveUser,
 ) -> PlatformJobAccepted:
     caller = await load_caller(db, user)
     try:
-        if isinstance(body, CloudflareAccountTokenRotation):
+        if isinstance(body, (CloudflareAccountTokenRotation, CloudflareAccountTokenReferenceRotation)):
             job, reused = await enqueue_cloudflare_account_token_rotation(
                 db, caller, installation_id=body.installation_id, expected_revision=body.expected_revision,
-                replacement=body.api_token,
+                replacement=body.api_token if isinstance(body, CloudflareAccountTokenRotation) else body.credential_ref,
             )
         else:
             job, reused = await enqueue_cloudflare_worker_credential_rotation(
@@ -195,5 +184,7 @@ async def rotate_cloudflare_account_token(
             )
     except CloudflarePolicyConflict as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
     response.headers["Location"] = f"/api/platform-jobs/{job.id}"
     return PlatformJobAccepted(job_id=job.id, status=job.status, notification_id=job.notification_id, reused=reused)

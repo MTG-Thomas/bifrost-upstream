@@ -2,23 +2,66 @@
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import SecretStr
 from shared.worker_control_auth import managed_cloudflare_control_key
-from sqlalchemy import update
+from sqlalchemy import delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.security import decrypt_secret, encrypt_secret
 from src.models.orm.cloudflare_capacity import (
     CloudflareCredential,
     CloudflareInstallation,
+    CloudflareStagedToken,
     CloudflareWorkerReservation,
 )
 
 CredentialPurpose = Literal["account_token", "control_root", "scope_bearer"]
+StagePurpose = Literal["connect", "rotate"]
+
+
+def _stage_binding(ref: UUID, actor_id: UUID, account_id: str, purpose: StagePurpose) -> list[str]:
+    return ["cloudflare-staged-token-v1", str(ref), str(actor_id), account_id, purpose]
+
+
+async def purge_expired_staged_tokens(db: AsyncSession) -> None:
+    await db.execute(delete(CloudflareStagedToken).where(
+        CloudflareStagedToken.expires_at <= func.statement_timestamp(),
+    ))
+
+
+async def stage_account_token(
+    db: AsyncSession, *, actor_id: UUID, account_id: str, purpose: StagePurpose, token: SecretStr,
+) -> tuple[UUID, datetime]:
+    await purge_expired_staged_tokens(db)
+    ref = uuid4()
+    expires_at = datetime.now(UTC) + timedelta(minutes=10)
+    binding = _stage_binding(ref, actor_id, account_id, purpose)
+    db.add(CloudflareStagedToken(
+        id=ref, actor_id=actor_id, account_id=account_id, purpose=purpose, expires_at=expires_at,
+        ciphertext=encrypt_secret(json.dumps([binding, token.get_secret_value()])),
+    ))
+    return ref, expires_at
+
+
+async def consume_staged_token(
+    db: AsyncSession, ref: UUID, *, actor_id: UUID, account_id: str, purpose: StagePurpose,
+) -> SecretStr:
+    row = await db.scalar(delete(CloudflareStagedToken).where(
+        CloudflareStagedToken.id == ref,
+        CloudflareStagedToken.actor_id == actor_id,
+        CloudflareStagedToken.account_id == account_id,
+        CloudflareStagedToken.purpose == purpose,
+        CloudflareStagedToken.expires_at > func.statement_timestamp(),
+    ).returning(CloudflareStagedToken.ciphertext))
+    if row is not None:
+        binding, value = json.loads(decrypt_secret(row))
+        if binding == _stage_binding(ref, actor_id, account_id, purpose) and isinstance(value, str):
+            return SecretStr(value)
+    raise ValueError("Invalid or expired Cloudflare credential reference")
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,18 +115,6 @@ async def load_account_token(db: AsyncSession, installation: CloudflareInstallat
     if row is None:
         raise ValueError("Cloudflare management credential is unavailable")
     return open_credential(CredentialRef(installation.id, installation.account_id, "account_token", "", version), row)
-
-
-async def confirm_account_token_write(db: AsyncSession, installation: CloudflareInstallation) -> None:
-    """Purge predecessors after a fenced write and independently verified readback."""
-    version = installation.api_token_version
-    if version is not None:
-        await db.execute(update(CloudflareCredential).where(
-            CloudflareCredential.installation_id == installation.id,
-            CloudflareCredential.purpose == "account_token",
-            CloudflareCredential.version < version,
-            CloudflareCredential.ciphertext.is_not(None),
-        ).values(ciphertext=None))
 
 
 async def load_managed_control_key(db: AsyncSession, pin: CloudflareWorkerReservation, resource_uid: str) -> str:

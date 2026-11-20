@@ -55,7 +55,9 @@ def upgrade() -> None:
             THEN w.memory_limit_bytes / 134217728 END
           FROM execution_workers w WHERE w.id = NEW.worker_id;
           RETURN NEW;
-        END $$;
+        END $$
+    """)
+    op.execute("""
         CREATE TRIGGER record_cf_usage_incarnation AFTER INSERT ON cloudflare_worker_reservations
           FOR EACH ROW EXECUTE FUNCTION record_cf_usage_incarnation()
     """)
@@ -65,7 +67,9 @@ def upgrade() -> None:
           UPDATE cloudflare_usage_incarnations SET deleted_at = NEW.capacity_resource_deleted_at
           WHERE worker_id = NEW.id AND deleted_at IS NULL;
           RETURN NEW;
-        END $$;
+        END $$
+    """)
+    op.execute("""
         CREATE TRIGGER settle_cf_usage_incarnation AFTER UPDATE OF capacity_resource_deleted_at ON execution_workers
           FOR EACH ROW WHEN (NEW.capacity_resource_deleted_at IS NOT NULL)
           EXECUTE FUNCTION settle_cf_usage_incarnation()
@@ -79,7 +83,9 @@ def upgrade() -> None:
           ON CONFLICT (installation_id, period_start) DO UPDATE
             SET dispatched_runs = cloudflare_usage_activity.dispatched_runs + 1;
           RETURN NEW;
-        END $$;
+        END $$
+    """)
+    op.execute("""
         CREATE TRIGGER record_cf_usage_dispatch AFTER INSERT ON execution_worker_claims
           FOR EACH ROW EXECUTE FUNCTION record_cf_usage_dispatch()
     """)

@@ -31,6 +31,7 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareCredential,
     CloudflareInstallation,
     CloudflareOwnedResource,
+    CloudflareStagedToken,
     CloudflareUsageActivity,
     CloudflareWorkerReservation,
 )
@@ -50,6 +51,7 @@ from src.services.kubernetes_execution import KubernetesExecutionService
 from src.services.work_dispatch import WAKE_WORKFLOW
 from src.services.worker_pool import (
     cloudflare_supervisor,
+    cloudflare_canary,
     controller,
     external_controller,
 )
@@ -59,9 +61,10 @@ from src.services.worker_pool.cloudflare_admission import (
 )
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
-    confirm_account_token_write,
+    consume_staged_token,
     open_credential,
     seal_credential,
+    stage_account_token,
 )
 from src.services.worker_pool.cloudflare_policy import (
     CONSENT_TEXT_VERSION,
@@ -116,6 +119,9 @@ def test_cloudflare_routes_refuse_provider_org_membership(e2e_client, provider_o
     path = "/api/capacity/cloudflare"
     assert e2e_client.get(path, headers=platform_admin.headers).status_code == 200
     assert e2e_client.get(path, headers=provider_org_user.headers).status_code == 403
+    assert e2e_client.post(f"{path}/credential", headers=provider_org_user.headers, json={
+        "account_id": "a" * 32, "purpose": "connect", "api_token": "synthetic-management-token",
+    }).status_code == 403
     body = {"installation_id": str(uuid4()), "expected_revision": 1}
     assert e2e_client.patch(path, headers=provider_org_user.headers, json={
         **body, "action": "policy", "policy": {
@@ -129,6 +135,93 @@ def test_cloudflare_routes_refuse_provider_org_membership(e2e_client, provider_o
         f"{path}/rotate", headers=provider_org_user.headers,
         json={**body, "api_token": "synthetic-replacement-token"},
     ).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_staged_credential_is_encrypted_bound_expiring_and_single_use(db_session: AsyncSession) -> None:
+    token = SecretStr("synthetic-staged-account-token")
+    account = "a" * 32
+    ref, expires_at = await stage_account_token(
+        db_session, actor_id=OPERATOR_ID, account_id=account, purpose="connect", token=token,
+    )
+    await db_session.flush()
+    staged = await db_session.get(CloudflareStagedToken, ref)
+    assert staged is not None and token.get_secret_value() not in staged.ciphertext
+    assert expires_at > datetime.now(UTC)
+    for bad_actor, bad_account, bad_purpose in (
+        (uuid4(), account, "connect"), (OPERATOR_ID, "b" * 32, "connect"), (OPERATOR_ID, account, "rotate"),
+    ):
+        with pytest.raises(ValueError, match="Invalid or expired"):
+            await consume_staged_token(
+                db_session, ref, actor_id=bad_actor, account_id=bad_account, purpose=bad_purpose,
+            )
+    assert await consume_staged_token(
+        db_session, ref, actor_id=OPERATOR_ID, account_id=account, purpose="connect",
+    ) == token
+    with pytest.raises(ValueError, match="Invalid or expired"):
+        await consume_staged_token(db_session, ref, actor_id=OPERATOR_ID, account_id=account, purpose="connect")
+    expired, _ = await stage_account_token(
+        db_session, actor_id=OPERATOR_ID, account_id=account, purpose="rotate", token=token,
+    )
+    await db_session.flush()
+    await db_session.execute(update(CloudflareStagedToken).where(
+        CloudflareStagedToken.id == expired,
+    ).values(expires_at=datetime.now(UTC) - timedelta(seconds=1)))
+    with pytest.raises(ValueError, match="Invalid or expired"):
+        await consume_staged_token(db_session, expired, actor_id=OPERATOR_ID, account_id=account, purpose="rotate")
+
+
+@pytest.mark.asyncio
+async def test_canary_proof_requires_current_lease_worker_generation_and_revision(
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch,
+) -> None:
+    job, _ = await enable_job.enqueue_cloudflare_enable(
+        db_session, _platform_operator(), installation_id=installation.id, expected_revision=1,
+    )
+    now = datetime.now(UTC)
+    job.status = "running"
+    job.lease_token = uuid4()
+    job.lease_expires_at = now + timedelta(minutes=2)
+    worker = ExecutionWorker(
+        id=uuid4(), form="external", state="ready", capacity_scope="workers",
+        runtime_profile="cloudflare-python-v1", memory_limit_bytes=128 * 2**20,
+        capacity_resource_uid=uuid4().hex, remote_hello_sequence=1, remote_session_generation=7,
+        remote_owner_lease_expires_at=now + timedelta(minutes=2),
+    )
+    db_session.add(worker)
+    await db_session.flush()
+    pin = ManagedCloudflareScope(installation.id, "workers", 1).pin(worker.id, 1)
+    pin.canary_job_id, pin.canary_lease_token = job.id, job.lease_token
+    db_session.add(pin)
+    await db_session.flush()
+    connection = await db_session.connection()
+
+    @asynccontextmanager
+    async def context():
+        async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as session:
+            yield session
+            await session.commit()
+
+    monkeypatch.setattr(cloudflare_canary, "get_db_context", context)
+    proof_for = cloudflare_canary.cloudflare_sdk_canary_proof
+    proof = await proof_for(worker.id, 7)
+    assert proof is not None and await proof_for(worker.id, 8, received=proof) is None
+    assert await proof_for(worker.id, 7, received="a" * 64) is None
+    assert await proof_for(worker.id, 7, received=proof) == proof
+    assert await proof_for(worker.id, 7, acknowledged=True) == proof
+    await db_session.refresh(pin)
+    assert pin.canary_sdk_at is not None and pin.canary_ack_at is not None
+    worker.state = "starting"
+    await db_session.flush()
+    assert await proof_for(worker.id, 7) is None
+    worker.state = "ready"
+    installation.desired_revision = 2
+    await db_session.flush()
+    assert await proof_for(worker.id, 7) is None
+    installation.desired_revision = 1
+    job.lease_expires_at = now - timedelta(seconds=1)
+    await db_session.flush()
+    assert await proof_for(worker.id, 7) is None
 
 
 @pytest.mark.asyncio
@@ -300,15 +393,12 @@ async def test_account_rotation_switches_only_a_valid_same_account_version(
             await db_session.refresh(installation)
     assert installation.api_token_version == 3 and installation.control_root_version == 1
     previous = await db_session.get(CloudflareCredential, (installation.id, "account_token", "", 1))
-    assert previous is not None and previous.ciphertext is not None
+    assert previous is not None and previous.ciphertext is None
     audit = await db_session.scalar(select(AuditLog).where(
         AuditLog.resource_id == installation.id, AuditLog.action == "capacity.cloudflare_account_token_rotated",
     ))
     assert audit is not None
     assert candidate.get_secret_value() not in json.dumps(audit.details)
-    await confirm_account_token_write(db_session, installation)
-    await db_session.refresh(previous)
-    assert previous.ciphertext is None
 
 
 @pytest.mark.asyncio

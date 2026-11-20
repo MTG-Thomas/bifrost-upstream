@@ -280,13 +280,16 @@ async def retire_cloudflare_installation(
     await db.flush()
 
 
-async def cloudflare_workers_remain(db: AsyncSession, installation_id: UUID) -> bool:
+async def cloudflare_workers_remain(db: AsyncSession, installation_id: UUID, *, before_revision: int | None = None) -> bool:
+    pinned = CloudflareWorkerReservation.installation_id == installation_id
+    if before_revision is not None:
+        pinned = pinned & (CloudflareWorkerReservation.deployment_revision < before_revision)
     return (await db.scalar(
         select(ExecutionWorker.id)
         .outerjoin(CloudflareWorkerReservation, ExecutionWorker.id == CloudflareWorkerReservation.worker_id)
         .where(
             or_(
-                CloudflareWorkerReservation.installation_id == installation_id,
+                pinned,
                 (CloudflareWorkerReservation.worker_id.is_(None)
                  & ExecutionWorker.capacity_scope.is_not(None)
                  & (ExecutionWorker.runtime_profile == "cloudflare-python-v1")),

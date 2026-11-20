@@ -171,5 +171,3 @@ async def record_sdk_gateway_request(db: AsyncSession, installation_id: UUID) ->
         index_elements=[activity.installation_id, activity.period_start],
         set_={"sdk_requests": activity.sdk_requests + 1},
     ))
-
-

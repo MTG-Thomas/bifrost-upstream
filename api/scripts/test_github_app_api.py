@@ -25,11 +25,10 @@ from fastapi import APIRouter, Request
 
 from shared import github_git_app
 from src.main import app  # noqa: F401 -- ASGI export used only by docker-compose.test.yml
-from src.routers import cloudflare_capacity
 from src.services import github_api
 from test_cloudflare_fixture import install_api
 
-install_api(cloudflare_capacity)
+install_api()
 
 APP_ID = 314159
 INSTALLATION_ID = 2718

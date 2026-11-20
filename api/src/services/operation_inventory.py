@@ -254,6 +254,8 @@ def build_operation_inventory(app: FastAPI, repo_root: Path) -> dict[str, Any]:
         cli_path = operation.cli.path if operation.cli else None
         if cli_path in cli_paths:
             consumed["cli"].add(cli_path)
+        cli_aliases = operation.cli.aliases if operation.cli else ()
+        consumed["cli"].update(path for path in cli_aliases if path in cli_paths)
 
         mcp_name = operation.mcp.name if operation.mcp else None
         legacy_mcp_name = mcp_name.removeprefix("bifrost_") if mcp_name else None
@@ -264,6 +266,8 @@ def build_operation_inventory(app: FastAPI, repo_root: Path) -> dict[str, Any]:
         )
         if observed_mcp:
             consumed["mcp"].add(observed_mcp)
+        mcp_aliases = operation.mcp.aliases if operation.mcp else ()
+        consumed["mcp"].update(name for name in mcp_aliases if name in mcp_names)
 
         manifest_entity = operation.manifest.entity if operation.manifest else None
         if manifest_entity in manifest_entities:
@@ -292,7 +296,7 @@ def build_operation_inventory(app: FastAPI, repo_root: Path) -> dict[str, Any]:
                     "cli": {
                         "status": (
                             OperationSurfaceStatus.EXACT
-                            if cli_path in cli_paths
+                            if cli_path in cli_paths and all(path in cli_paths for path in cli_aliases)
                             else OperationSurfaceStatus.INTENTIONALLY_UNSUPPORTED
                             if operation.exclusions.get("cli")
                             else OperationSurfaceStatus.MISSING
@@ -302,7 +306,7 @@ def build_operation_inventory(app: FastAPI, repo_root: Path) -> dict[str, Any]:
                     "mcp": {
                         "status": (
                             OperationSurfaceStatus.EXACT
-                            if mcp_name and observed_mcp == mcp_name
+                            if mcp_name and observed_mcp == mcp_name and all(name in mcp_names for name in mcp_aliases)
                             else OperationSurfaceStatus.DIVERGENT
                             if observed_mcp
                             else OperationSurfaceStatus.INTENTIONALLY_UNSUPPORTED

@@ -75,6 +75,24 @@ def _read_policy(policy: TextIO) -> dict[str, Any]:
     return value
 
 
+@cloudflare_group.command("stage-credential")
+@click.option("--account-id", required=True)
+@click.option("--purpose", type=click.Choice(["connect", "rotate"]), required=True)
+@click.pass_context
+@pass_resolver
+@run_async
+async def stage_credential(
+    ctx: click.Context, account_id: str, purpose: str, *, client: BifrostClient, resolver: RefResolver,
+) -> None:
+    """Enter a Cloudflare token for a one-time MCP credential reference."""
+    response = await client.post(f"{_PATH}/credential", json={
+        "account_id": account_id, "purpose": purpose,
+        "api_token": click.prompt("Cloudflare API Token", hide_input=True),
+    })
+    response.raise_for_status()
+    output_result(response.json(), ctx=ctx)
+
+
 @cloudflare_group.command("connect")
 @click.option("--account-id", required=True)
 @click.option("--worker-ingress-origin", required=True)

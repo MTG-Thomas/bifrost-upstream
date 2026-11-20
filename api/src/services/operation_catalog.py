@@ -144,13 +144,31 @@ OPERATION_CATALOG: tuple[OperationDefinition, ...] = (
             method="PATCH", path="/api/capacity/cloudflare",
             request_model="CloudflareConnectRequest | CloudflarePolicyUpdate", response_model="CloudflareCapacityStatus",
         ),
-        cli=CliOperationBinding(path=("capacity", "cloudflare", "connect")),
-        mcp=McpOperationBinding(name="bifrost_cloudflare_policy_update"),
+        cli=CliOperationBinding(path=("capacity", "cloudflare", "connect"), aliases=(("capacity", "cloudflare", "policy"),)),
+        mcp=McpOperationBinding(name="bifrost_cloudflare_policy_update", aliases=("bifrost_cloudflare_connect_execute",)),
         action_scopes=("platform.readwrite",),
         authorization_resolver="platform.readwrite at Global",
         exclusions={
             "native_builder": "Cloudflare capacity is platform administration.",
             "manifest": "Capacity installations and credentials are bound to the deployment.",
+            "sdk": "Runtime SDKs do not administer capacity.",
+        },
+    ),
+    OperationDefinition(
+        operation_id="capacity.cloudflare_credential_stage",
+        summary="Stage Cloudflare Credential",
+        target_kind=OperationTargetKind.PLATFORM,
+        rest=RestOperationBinding(
+            method="POST", path="/api/capacity/cloudflare/credential",
+            request_model="CloudflareStageCredentialRequest", response_model="CloudflareStagedCredential",
+        ),
+        cli=CliOperationBinding(path=("capacity", "cloudflare", "stage-credential")),
+        action_scopes=("platform.readwrite",), authorization_resolver="platform.readwrite at Global",
+        audit_event="capacity.cloudflare_credential_stage",
+        exclusions={
+            "mcp": "The operator enters the raw token through the CLI's protected prompt.",
+            "native_builder": "Cloudflare capacity is platform administration.",
+            "manifest": "Cloudflare credentials are bound to the platform.",
             "sdk": "Runtime SDKs do not administer capacity.",
         },
     ),
@@ -215,12 +233,15 @@ OPERATION_CATALOG: tuple[OperationDefinition, ...] = (
         target_kind=OperationTargetKind.PLATFORM,
         rest=RestOperationBinding(
             method="POST", path="/api/capacity/cloudflare/rotate",
-            request_model="CloudflareAccountTokenRotation | CloudflareWorkerCredentialRotation",
+            request_model="CloudflareAccountTokenRotation | CloudflareAccountTokenReferenceRotation | CloudflareWorkerCredentialRotation",
             response_model="PlatformJobAccepted",
         ),
-        cli=CliOperationBinding(path=("capacity", "cloudflare", "rotate")),
-        mcp=McpOperationBinding(name="bifrost_cloudflare_worker_credential_replace"),
-        audit_event="capacity.cloudflare_rotate_account_token",
+        cli=CliOperationBinding(path=("capacity", "cloudflare", "rotate"), aliases=(
+            ("capacity", "cloudflare", "rotate-root"), ("capacity", "cloudflare", "rotate-bearer"),
+        )),
+        mcp=McpOperationBinding(name="bifrost_cloudflare_worker_credential_replace",
+                                aliases=("bifrost_cloudflare_account_token_replace",)),
+        audit_event="capacity.cloudflare_rotate_worker_credential",
         action_scopes=("platform.readwrite",),
         authorization_resolver="platform.readwrite at Global",
         async_policy=OperationAsyncPolicy.PLATFORM_JOB,
@@ -4028,10 +4049,10 @@ def validate_operation_catalog(
             (op.rest.method, op.rest.path) for op in materialized
         ),
         "CLI binding": _duplicates(
-            op.cli.path if op.cli is not None else None for op in materialized
+            path for op in materialized if op.cli for path in (op.cli.path, *op.cli.aliases)
         ),
         "MCP binding": _duplicates(
-            op.mcp.name if op.mcp is not None else None for op in materialized
+            name for op in materialized if op.mcp for name in (op.mcp.name, *op.mcp.aliases)
         ),
     }
     errors = [
@@ -4046,10 +4067,9 @@ def validate_operation_catalog(
     # enforcement in R1. R2 owns adding that validation back once the scope
     # catalog it validates against exists.
 
-    for operation in materialized:
-        if operation.mcp is None:
-            continue
-        name = operation.mcp.name
+    for operation, name in (
+        (op, name) for op in materialized if op.mcp for name in (op.mcp.name, *op.mcp.aliases)
+    ):
         if len(name) > 64 or not _MCP_NAME_RE.match(name):
             errors.append(
                 f"{operation.operation_id}: MCP name {name!r} does not match "

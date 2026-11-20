@@ -217,6 +217,21 @@ class CloudflareOwnedResource(Base):
     observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class CloudflareStagedToken(Base):
+    __tablename__ = "cloudflare_staged_tokens"
+    __table_args__ = (
+        CheckConstraint("purpose IN ('connect', 'rotate')", name="ck_cf_staged_token_purpose"),
+        Index("ix_cf_staged_token_expiry", "expires_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    actor_id: Mapped[UUID]
+    account_id: Mapped[str] = mapped_column(String(32))
+    purpose: Mapped[str] = mapped_column(String(16))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    ciphertext: Mapped[str] = mapped_column(Text)
+
+
 class CloudflareUsageActivity(Base):
     __tablename__ = "cloudflare_usage_activity"
     __table_args__ = (

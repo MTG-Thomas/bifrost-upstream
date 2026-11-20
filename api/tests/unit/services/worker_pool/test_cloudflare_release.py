@@ -9,6 +9,7 @@ import httpx
 import pytest
 from pydantic import SecretStr
 from shared.models import CloudflareWorkersPolicy
+from src.services.worker_pool import cloudflare_release
 from src.services.worker_pool.cloudflare_provisioning import (
     ResourceIntent,
     ResourceTarget,
@@ -38,6 +39,7 @@ def release(tmp_path: Path) -> Path:
         "runtime_profile": "cloudflare-python-v1",
         "capabilities": [["workflow.execute", 1]],
         "max_slots_per_launcher": 4,
+        "meter_bounds": json.loads(Path(cloudflare_release.__file__).with_name("cloudflare_meter_bounds.json").read_bytes()),
         "workers": {},
     }
     for role, exports in (
@@ -83,6 +85,15 @@ def test_release_rejects_manifest_with_an_unqualified_runtime(release: Path) -> 
     manifest["runtime_sha256"] = "0" * 64
     path.write_text(json.dumps(manifest))
     with pytest.raises(WorkersReleaseUnavailable, match="qualified digest"):
+        load_workers_release(release)
+
+
+def test_release_rejects_substituted_meter_bounds(release: Path) -> None:
+    path = release / "manifest.json"
+    manifest = json.loads(path.read_bytes())
+    manifest["meter_bounds"]["per_launcher_second"]["worker_cpu_ms"] = "0"
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(WorkersReleaseUnavailable, match="pinned digest"):
         load_workers_release(release)
 
 

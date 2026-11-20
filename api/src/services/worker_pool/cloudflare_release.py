@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from hashlib import sha256
+import json
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -12,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 WORKERS_RELEASE_PATH = Path("/app/artifacts/cloudflare/workers")
 MAX_WORKER_BYTES = 64 * 1024 * 1024
 QUALIFIED_RUNTIME_SHA256 = "fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5"
+QUALIFIED_METER_BOUNDS_SHA256 = "428e72441dce13bd1862afe56218d116882e75c92cd62c13648f7b907dff1eb8"
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 WorkerRole = Literal["launcher", "capacity"]
 
@@ -103,6 +105,10 @@ def load_workers_release(path: Path = WORKERS_RELEASE_PATH) -> WorkersRelease:
         manifest = WorkersManifest.model_validate_json(raw)
         if manifest.runtime_sha256 != QUALIFIED_RUNTIME_SHA256:
             raise WorkersReleaseUnavailable("Workers runtime does not match the qualified digest")
+        if manifest.meter_bounds is None or sha256(json.dumps(
+            manifest.meter_bounds.model_dump(mode="json"), sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest() != QUALIFIED_METER_BOUNDS_SHA256:
+            raise WorkersReleaseUnavailable("Workers meter bounds do not match the pinned digest")
         if set(manifest.workers) != {"launcher", "capacity"}:
             raise WorkersReleaseUnavailable("Workers release must contain the launcher and capacity roles")
         modules: dict[WorkerRole, dict[str, bytes]] = {}
