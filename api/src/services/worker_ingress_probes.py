@@ -48,6 +48,7 @@ class RouteProbe:
     path: str
     status: int | None
     passed: bool
+    connect_unavailable: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,17 +82,32 @@ class WorkerIngressProbeResult:
 
 
 async def _public_addresses(host: str) -> tuple[str, ...]:
-    addresses = {
+    addresses = tuple(dict.fromkeys(
         str(info[4][0]) for info in await asyncio.get_running_loop().getaddrinfo(
             host, 443, type=socket.SOCK_STREAM,
         )
-    }
+    ))
     if not addresses or any(
         not ipaddress.ip_address(addr).is_global or ipaddress.ip_address(addr).is_multicast
         for addr in addresses
     ):
         raise ValueError("Worker ingress DNS must resolve exclusively to public unicast addresses")
-    return tuple(sorted(addresses))
+    return addresses
+
+
+def _address_unavailable(error: httpx.HTTPError) -> bool:
+    if isinstance(error, httpx.ConnectTimeout):
+        return True
+    if not isinstance(error, httpx.ConnectError):
+        return False
+    # HTTPX also uses ConnectError for TLS handshake failures. Keep those
+    # fatal so a reachable peer with an invalid certificate cannot pass.
+    cause: BaseException | None = error
+    while cause is not None:
+        if isinstance(cause, ssl.SSLError):
+            return False
+        cause = cause.__cause__
+    return True
 
 
 async def _check_route(
@@ -110,8 +126,8 @@ async def _check_route(
             )
             passed = expected and response.headers.get(PROBE_HEADER.decode()) == nonce
             return RouteProbe(method, path, response.status_code, passed)
-    except httpx.HTTPError:
-        return RouteProbe(method, path, None, False)
+    except httpx.HTTPError as exc:
+        return RouteProbe(method, path, None, False, connect_unavailable=_address_unavailable(exc))
 
 
 async def _check_control(
@@ -206,11 +222,16 @@ async def probe_worker_ingress(
         async with asyncio.timeout(30):
             addresses = await _public_addresses(host)
             for address in addresses:
-                result = await _probe_address(origin, host, address)
-                if not result.reachable:
-                    return result
+                candidate = await _probe_address(origin, host, address)
+                if candidate.routes and candidate.routes[0].connect_unavailable:
+                    continue
+                if not candidate.reachable:
+                    return candidate
+                result = candidate
     except (OSError, TimeoutError, ValueError):
         return unavailable
+    if not result.reachable:
+        return result
     canary = await runtime_canary(origin)
     return WorkerIngressProbeResult(
         origin, result.tls, result.websocket, result.hello_rejected, result.routes, canary,

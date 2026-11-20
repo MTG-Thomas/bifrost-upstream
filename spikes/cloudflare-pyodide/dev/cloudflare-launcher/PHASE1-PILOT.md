@@ -117,6 +117,12 @@ the listener on port 8001. Other paths received 404.
 
 ### Spend calibration
 
+Admission closure at the limit is covered by the existing admission E2E
+tests, which put the ledger at or above the configured limit. The hosted
+spend check calibrates the estimate against observed workload usage. The
+static fleet envelope has a minimum of $13.31, so a below-spend limit is
+outside the trial's $1 abort threshold.
+
 The 15:02:00–15:05:51 UTC GraphQL sample returned **29 estimated capacity
 Worker requests and 12,694 µs of CPU**, with a sample interval of 1 and no
 launcher or Durable Object samples. The observed Workers-only marginal
