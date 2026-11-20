@@ -28,6 +28,8 @@ def config():
 async def seed(solution_id: UUID) -> None:
     await init_db()
     async with get_db_context() as db:
+        solution = await db.get(Solution, solution_id)
+        assert solution is not None
         source = await save_verified_source(
             db,
             {
@@ -38,10 +40,8 @@ async def seed(solution_id: UUID) -> None:
                     "default_branch": "main", "private": True,
                 },
             },
-            None, "local-qualification",
+            solution.organization_id, "local-qualification",
         )
-        solution = await db.get(Solution, solution_id)
-        assert solution is not None
         solution.version = "1.0.0"
         solution.git_connected = True
         solution.git_repo_url = REPO
