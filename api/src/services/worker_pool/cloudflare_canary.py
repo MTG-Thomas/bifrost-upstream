@@ -156,7 +156,7 @@ async def run_workers_canary(
             id=worker_id, form="external", state="starting", execution_lane="normal",
             runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE, supported_handlers=[],
             capacity_scope="workers", capacity_resource_uid=resource_uid, version=profile.worker_version,
-            memory_limit_bytes=profile.memory_limit_bytes,
+            memory_limit_bytes=profile.memory_limit_bytes, remote_launcher_id=worker_id,
         ))
         await db.flush()
         pin = ManagedCloudflareScope(installation_id, "workers", revision).pin(worker_id, row.control_root_version)
