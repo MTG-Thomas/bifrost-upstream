@@ -108,7 +108,7 @@ the listener on port 8001. Other paths received 404.
 | 1. Connect | Pass | HTTP 200. Installation `bea3fe96-d238-40fe-9c3d-ca07b13e1a24`, revision 1. Consent `existing-https-v1` recorded at 15:00:33 UTC, using staged credential `291f4c98-cfad-46e2-97b6-f5f7e09cb88d`. The Paid check passed. Status showed a $14.51 fleet envelope, $0.00 usage, and a separate $5.00 subscription. |
 | 2. Enable | Fail | Job `d0d41ff0-4601-4258-8115-b16d73660b91` passed entitlement and deployed both packaged scripts. Both IPv4 addresses passed 100 route checks and the WebSocket refusal check. Neither advertised IPv6 address was reachable from the API runner. The job returned `CF_WORKER_INGRESS_UNVERIFIED` before the signed runtime canary, and admission stayed closed. Cloudflare rejected the trial-record-only IPv4 setting with error 9227. |
 | 3. Burst | Not run | The product accepted the loose and Solution approvals. Admission never opened, so no workflows were submitted for placement and no execution IDs were issued. |
-| 4. Spend | Fail | Self-meter status and the partial Analytics comparison were observed. Policy rejected a $0.01 limit with HTTP 422 because the static envelope was $14.51. At $0.00 estimated usage there was no valid positive limit below the estimate. Even with successful burst work, a limit below $1 could not satisfy the $13.31 minimum fleet envelope. Admission close and reopen remained untested. |
+| 4. Spend | Fail (hosted calibration incomplete) | Self-meter status and the partial Analytics comparison were observed. Policy rejected a $0.01 limit with HTTP 422 because the static envelope was $14.51. Admission closure at the limit is E2E-only because the $13.31 minimum fleet envelope exceeds the hosted trial's $1 abort threshold. |
 | 5. Ingress refusal | Pass | From outside the guest, login, admin, and OpenAPI each returned 404 with the ingress denial marker. SDK context returned 401 with the allowed marker, and the catch-all path returned 404. |
 | 6. Reconcile | Pass | Job `0d5b5f69-8c23-40d2-9232-07a4b01d68e6` returned `verified` with no reported deployment drift. |
 | 7. Scale In | Pass for an empty fleet | Job `0d406dd3-97f9-4a2d-87ed-4d2ecc9a8afc` returned `scaled_in`, revision 2 with admission closed. Independent readback showed both scripts and all four namespaces retained. Active drain was not exercised. |
@@ -146,3 +146,83 @@ record. Docker reported zero containers, networks, volumes, and images
 for the trial debug project. The connector process and staged local
 credential files were absent. No Container apps or registry images were
 created.
+
+## Dual-stack follow-up
+
+The earlier probe used HTTPX with a validated literal address and the
+WebSocket client with a socket connected to that same address. It
+required every address to connect, so a later `ENETUNREACH` invalidated
+successful IPv4 checks. The signed canary already opens its connections
+by hostname from Cloudflare. The ingress probe now keeps looking after
+unavailable addresses and requires HTTPS, the route matrix, and the
+WebSocket checks on the addresses it reaches. Invalid TLS certificates
+and nonpublic DNS answers still block Enable.
+
+The live follow-up ran the fixed probe on a hostname with two IPv4 and
+two IPv6 addresses. Both IPv6 connects returned errno 101, and IPv4
+passed all 100 route checks and WebSocket validation. The probe reached
+the canary callback boundary. Connect created installation
+`91f2d69f-128c-40ad-a14d-879a7f21a6fa`, but the first Enable job
+`3a582d41-3e16-4865-aea2-1c0bb80ed13e` stopped earlier with
+`CF_DEPLOYMENT_UNVERIFIED`. Both scripts and all four namespaces
+existed. The capacity script's journal remained in `creating`.
+
+Cloudflare's audit log recorded HTTP 200 for the capacity script's
+endpoint update at 15:26:38 UTC. The job stopped before its next
+ownership read. A later read-only check found the exact namespace and
+deployment, the endpoint enabled, and previews disabled. This places
+the failure between the successful update and final ownership
+verification, where Enable required an immediate GET of the new
+subdomain settings. The fix validates the documented update response
+for both settings and retains final ownership verification. The
+regression fixture leaves the GET response stale after the update and
+checks refusal when the update returns mismatched settings.
+[Cloudflare update response](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/subdomain/methods/create/).
+
+Reconcile job `363f6e09-393b-49f5-981d-eb7d2d92a40a` could not verify
+the incomplete receipt. Scale In job
+`9bcd9a42-bd21-411f-afe4-ccb28a49cbc5` completed with an empty fleet.
+Disconnect job `484ec7cb-991b-4e21-8e3e-94877e4dff45` retired the
+installation. Independent readback found zero scripts and namespaces
+for that installation.
+
+### Product run with both fixes
+
+The follow-up used product source `94b46d246` and release manifest
+`d1b32e36bba0cf9ff63944d23ae311f114bec9284ded133d6073a73a24577ce2`.
+The new Connect used the existing scoped pilot token, with Workers
+Scripts Write, Account Settings Read, and Account Analytics Read.
+Both attempts shared the same 25-minute connector envelope starting
+15:25:48 UTC, the $25 usage ceiling and notification guard, the $0.50
+target, and the $1 abort threshold. The guest started with one other
+test stack and 15 GiB available on the host. The trial used one
+canary launcher in total and zero Containers or LLM calls.
+
+| Step | Result | Evidence |
+| --- | --- | --- |
+| 1. Connect | Pass | HTTP 200 for installation `e759aaf2-bab4-4a31-ae58-8af2e768d9a2` with explicit consent and staged reference `bbc642cc-24e2-4509-8765-3baebd7c2333`. The Paid check passed and the policy returned a $14.51 envelope. |
+| 2. Enable | Fail (scoped SDK canary) | Job `9a17b796-7ebe-4170-9fcd-a9dfbfa1245f` confirmed two packaged scripts, four namespaces, and public ingress. Hosted canary `69c4010d-49f8-498f-8a14-4b0b3928f32a` recorded signed hello sequence 1 and session generation 1. The API logged `RuntimeError: Capacity canary failed`. The SDK receipt and acknowledgement remained empty. The launcher retired with a verified physical deletion at 15:37:35 UTC. Admission stayed closed and the job returned `CF_WORKER_INGRESS_UNVERIFIED`. |
+| 3. Burst | Not run | The product approved the loose workflow and the Solution-installed workflow. No workloads were submitted because admission stayed closed. |
+| 4. Spend | Fail (hosted calibration incomplete) | Bifrost estimated $0.07. The sample included 72 capacity Worker requests and 35,806 µs of Worker CPU, with sample interval 1. The launcher and Durable Object datasets returned no rows. No workload calibration ratio was available. The runtime threshold is E2E-only. Both the exact-limit reservation test and the claim test with the ledger pushed past the limit passed. |
+| 5. Ingress refusal | Pass | The public login, admin and OpenAPI requests all returned 404 with the worker-ingress refusal marker. SDK context returned 401 with the allowed marker. |
+| 6. Reconcile | Pass | Job `baca42f6-4246-4a82-8f10-11f05d4d6ef0` returned `verified`. |
+| 7. Scale In | Pass for an empty fleet | Job `f89e3a19-b479-47db-bdd1-75fca58c52d4` returned `scaled_in`. Both scripts and all four namespaces were retained. Active drain was not exercised. |
+| 8. Disconnect | Pass | Job `1b11cb19-a54b-4ad5-a20f-32fe4fe1e9dc` returned `disconnected`. Product status returned `installation: null`. Across both attempts, the journal recorded four verified-absent scripts, two retired installations, and zero remaining scopes or credential ciphertext. |
+| 9. Free-plan control | Not run | The operator could see only the Paid account. |
+
+The Worker Logs query returned zero events for the launcher during the
+canary. The scoped pilot token could read account Analytics and had no
+zone Analytics permission. An external test reached the scoped canary
+path and returned the expected 401 with an invalid proof. The failing
+hosted SDK request's HTTP status and reason remain unobserved.
+
+The connector stopped at 15:44:32 UTC. Independent `cf` and Docker
+readback found zero trial Workers, Durable Object namespaces, Container
+apps, account tokens, DNS records, live tunnels, connections, or project
+containers, networks, volumes, and images. The tunnel deletion record
+had no connections. Operator credential files were removed. No registry
+artifacts were created.
+
+The focused ingress, canary, and persistence suite passed 81 tests.
+The Worker release and provisioning suite passed all 21 tests,
+including the stale-read and mismatched-update fixtures.
