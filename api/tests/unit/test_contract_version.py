@@ -443,7 +443,8 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Workflow validation is now fingerprinted for CLI and MCP. Request fields
     # are optional and Cloudflare issue metadata and info severity are additive.
     # Additive Cloudflare capacity policy, status and action DTOs.
-    "9a843de8f06671174c52b81fa9b55145dd1470b9d7301ce46c2fff52718ee96c"
+    # Cloudflare capacity adds a write-only rotation request and latest job ID.
+    "0b783ea86b1c2a9b29efac29652cdbd3bfc50ec64d1557284e2c1edc39b9e3a5"
 )
 
 

@@ -64,6 +64,12 @@ _METADATA = MappingProxyType(
                 PlatformJobPolicy(5 * 60, max_attempts=3, min_memory_headroom_mb=128, retry_on_failure=True),
             ),
             _metadata(
+                "capacity.cloudflare_rotate_account_token",
+                "src.jobs.platform.cloudflare_capacity",
+                "CLOUDFLARE_ROTATE_ACCOUNT_DEFINITION",
+                PlatformJobPolicy(5 * 60, max_attempts=3, min_memory_headroom_mb=128, retry_on_failure=True),
+            ),
+            _metadata(
                 "workflow.cloudflare_reapproval",
                 "src.jobs.platform.cloudflare_reapproval",
                 "CLOUDFLARE_REAPPROVAL_DEFINITION",

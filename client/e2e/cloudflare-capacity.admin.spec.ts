@@ -40,7 +40,7 @@ test("an operator scales in Cloudflare capacity from Settings", async ({
 				id: jobId,
 				status: "succeeded",
 				revision: 1,
-				progress: { phase: "Scale In Complete" },
+				progress: { phase: "Completed" },
 			},
 		}),
 	);
@@ -55,7 +55,7 @@ test("an operator scales in Cloudflare capacity from Settings", async ({
 	).toBeVisible();
 	await page.getByRole("button", { name: "Scale In", exact: true }).click();
 	await expect(
-		page.getByText("Scale In Complete", { exact: true }),
+		page.getByText("Completed", { exact: true }),
 	).toBeVisible();
 	await expect(page.getByText("Scaled In", { exact: true })).toBeVisible();
 });

@@ -21,6 +21,7 @@ from src.services.worker_pool.cloudflare_release import WorkerRole, WorkersRelea
 
 API = "https://api.cloudflare.com/client/v4"
 OWNER_BINDING = "BIFROST_CAPACITY_OWNER"
+_ACCOUNT_ID = re.compile(r"[a-f0-9]{32}")
 _CF_UUID = re.compile(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}")
 
 
@@ -35,7 +36,7 @@ class CloudflareRestUnavailable(Exception):
 def _script_path(target: ResourceTarget) -> str:
     if (
         target.kind != "worker_script" or target.scope != "workers"
-        or not re.fullmatch(r"[a-f0-9]{32}", target.account_id)
+        or not _ACCOUNT_ID.fullmatch(target.account_id)
         or not re.fullmatch(r"[a-z0-9-]{1,63}", target.name)
     ):
         raise OwnershipConflict("Cloudflare resource is outside the Workers cleanup contract")
@@ -58,7 +59,7 @@ class WorkersRestCleanup:
     ) -> dict[str, Any] | None:
         try:
             response = await self._http.request(
-                method, f"{API}/accounts/{account}/{path}", params=params,
+                method, f"{API}/accounts/{account}" + (f"/{path}" if path else ""), params=params,
                 headers={"Authorization": f"Bearer {token.get_secret_value()}"},
                 files=files, json=json_body,
             )
@@ -79,6 +80,31 @@ class WorkersRestCleanup:
         if not isinstance(payload, dict) or payload.get("success") is not True or "result" not in payload:
             raise ObservationPending("Cloudflare REST returned an unconfirmed result")
         return payload
+
+    async def verify_account(self, account_id: str, candidate: SecretStr) -> None:
+        """Bind an authenticated read to the explicit account."""
+        value = candidate.get_secret_value()
+        if not _ACCOUNT_ID.fullmatch(account_id) or not re.fullmatch(r"[\x21-\x7e]{16,512}", value):
+            raise CloudflareManagementDenied
+        account = await self._request(candidate, account_id, "GET", "", allow_missing=True)
+        record = account["result"] if account is not None else None
+        if not isinstance(record, dict) or record.get("id") != account_id:
+            raise CloudflareManagementDenied
+
+    async def verify_workers_entitlement(self, account_id: str, candidate: SecretStr) -> None:
+        await self.verify_account(account_id, candidate)
+        response = await self._request(candidate, account_id, "GET", "entitlements")
+        entries = response["result"] if response is not None else None
+        if not isinstance(entries, list) or not any(
+            isinstance(entry, dict)
+            and entry.get("id") == "workers.enabled"
+            and entry.get("deleted_date") == ""
+            and isinstance(allocation := entry.get("allocation"), dict)
+            and allocation.get("type") == "bool"
+            and allocation.get("value") is True
+            for entry in entries
+        ):
+            raise CloudflareManagementDenied
 
     async def observe(
         self, *, api_token: SecretStr, intent: ResourceIntent,

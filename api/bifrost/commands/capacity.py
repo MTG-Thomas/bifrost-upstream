@@ -5,7 +5,10 @@ from typing import Any
 import click
 
 from bifrost.client import BifrostClient
-from bifrost.contracts.cloudflare_capacity import CloudflareCapacityAction
+from bifrost.contracts.cloudflare_capacity import (
+    CloudflareAccountTokenRotation,
+    CloudflareCapacityAction,
+)
 from bifrost.dto_flags import build_cli_flags
 from bifrost.platform_jobs import poll_platform_job
 from bifrost.refs import RefResolver
@@ -51,3 +54,25 @@ def _register_action(name: str, help_text: str) -> None:
 
 _register_action("scale-in", "Drain Cloudflare workers and retain the connection.")
 _register_action("disconnect", "Drain Cloudflare workers and remove verified owned capacity.")
+
+
+@cloudflare_group.command("rotate", help="Validate and replace the Cloudflare account API token.")
+@click.option("--wait", is_flag=True, help="Wait for completion through the platform job.")
+@_apply_flags(_ACTION_FLAGS)
+@click.pass_context
+@pass_resolver
+@run_async
+async def rotate(
+    ctx: click.Context, wait: bool, *, client: BifrostClient, resolver: RefResolver, **fields: Any,
+) -> None:
+    body = CloudflareAccountTokenRotation.model_validate({
+        **fields, "api_token": click.prompt("Replacement Cloudflare API Token", hide_input=True),
+    })
+    response = await client.post(f"{_PATH}/rotate", json={
+        **body.model_dump(mode="json", exclude={"api_token"}),
+        "api_token": body.api_token.get_secret_value(),
+    })
+    response.raise_for_status()
+    accepted = response.json()
+    result = await poll_platform_job(client, accepted["job_id"], label="Rotate Cloudflare API Token") if wait else accepted
+    output_result(result, ctx=ctx)

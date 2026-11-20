@@ -63,6 +63,7 @@ from src.services.worker_pool.cloudflare_policy import (
     CloudflarePolicyConflict,
     WorkersReleaseMeterBounds,
     create_cloudflare_installation,
+    get_cloudflare_capacity_status,
     retire_cloudflare_installation,
     save_cloudflare_policy,
 )
@@ -98,6 +99,70 @@ def test_cloudflare_routes_refuse_provider_org_membership(e2e_client, provider_o
     body = {"installation_id": str(uuid4()), "expected_revision": 1}
     for action in ("scale-in", "disconnect"):
         assert e2e_client.post(f"{path}/{action}", headers=provider_org_user.headers, json=body).status_code == 403
+    assert e2e_client.post(
+        f"{path}/rotate", headers=provider_org_user.headers,
+        json={**body, "api_token": "synthetic-replacement-token"},
+    ).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_account_rotation_switches_only_a_valid_same_account_version(
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch,
+) -> None:
+    admin = _platform_operator()
+    candidate = SecretStr("test-rotated-account-token")
+    connection = await db_session.connection()
+
+    @asynccontextmanager
+    async def context():
+        async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as session:
+            yield session
+            await session.commit()
+
+    monkeypatch.setattr(lifecycle_job, "get_db_context", context)
+    monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
+    accepted = False
+
+    def remote(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == f"/client/v4/accounts/{installation.account_id}"
+        assert request.headers["Authorization"] == "Bearer " + candidate.get_secret_value()
+        return httpx.Response(200, json={
+            "success": True, "result": {"id": installation.account_id if accepted else "b" * 32},
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as http:
+        adapter = WorkersRestCleanup(http)
+        monkeypatch.setattr(lifecycle_job, "WorkersRestCleanup", lambda _http: adapter)
+        for replacement_version in (2, 3):
+            job, reused = await lifecycle_job.enqueue_cloudflare_account_token_rotation(
+                db_session, admin, installation_id=installation.id, expected_revision=1, replacement=candidate,
+            )
+            assert not reused and job.payload["replacement_version"] == replacement_version
+            assert candidate.get_secret_value() not in json.dumps(job.payload)
+            assert installation.api_token_version == 1
+            assert (await get_cloudflare_capacity_status(db_session, admin)).latest_job_id == job.id
+            token = uuid4()
+            job.lease_token = token
+            job.status = "running"
+            await db_session.flush()
+            payload = lifecycle_job.CloudflareRotateAccountPayload.model_validate(job.payload)
+            running = PlatformJobContext(job.id, token, None, str(OPERATOR_ID), admin.principal.email, "")
+            handler = lifecycle_job.CLOUDFLARE_ROTATE_ACCOUNT_DEFINITION.handler
+            if replacement_version == 2:
+                with pytest.raises(PlatformJobRequiresAction) as denied:
+                    await handler(running, payload)
+                assert denied.value.result == {"code": "CF_MANAGEMENT_CREDENTIAL"}
+                job.status = "requires_action"
+                rejected = await db_session.get(CloudflareCredential, (installation.id, "account_token", "", 2))
+                assert rejected is not None and rejected.ciphertext is None
+                accepted = True
+            else:
+                assert await handler(running, payload) == {"outcome": "rotated", "credential_version": 3}
+            await db_session.refresh(installation)
+    assert installation.api_token_version == 3 and installation.control_root_version == 1
+    previous = await db_session.get(CloudflareCredential, (installation.id, "account_token", "", 1))
+    assert previous is not None and previous.ciphertext is None
 
 
 @pytest.mark.asyncio
@@ -683,13 +748,15 @@ async def test_claim_gate_tracks_scale_in_and_deployment_changes_without_restart
 
     installation.admitted_revision = 2
     installation.desired_state = "enabled"
-    db_session.add(CloudflareCapacityScope(
+    replacement_scope = CloudflareCapacityScope(
         installation_id=scope.installation_id, scope=scope.scope, endpoint="https://new-capacity.example.test",
         deployment_revision=2, bearer_version=scope.bearer_version,
-    ))
+    )
+    db_session.add(replacement_scope)
     await db_session.flush()
     assert not await cloudflare_claim_allowed(db_session, worker_id)
     await db_session.delete(scope)
+    await db_session.delete(replacement_scope)
     await db_session.flush()
     assert not await cloudflare_claim_allowed(db_session, worker_id)
     assert await cloudflare_claim_allowed(db_session, uuid4())

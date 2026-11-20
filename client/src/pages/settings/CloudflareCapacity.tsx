@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 
 import {
@@ -14,11 +14,23 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogFooter,
+	DialogHeader,
+	DialogTitle,
+	DialogTrigger,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { getErrorMessage } from "@/lib/api-error";
 import { GLOBAL_TARGET } from "@/lib/authorization";
 import { useAuthorization } from "@/services/authorization";
 import {
 	getCloudflareCapacity,
+	rotateCloudflareAccountToken,
 	startCloudflareAction,
 	type CloudflareAction,
 } from "@/services/cloudflareCapacity";
@@ -41,9 +53,14 @@ export function CloudflareCapacity() {
 		queryFn: getCloudflareCapacity,
 		enabled: canRead,
 	});
-	const [jobId, setJobId] = useState<string>();
-	const [job, setJob] = useState<PlatformJob>();
+	const [acceptedJobId, setAcceptedJobId] = useState<string>();
+	const [observedJob, setObservedJob] = useState<PlatformJob>();
+	const [rotateOpen, setRotateOpen] = useState(false);
+	const [rotating, setRotating] = useState(false);
+	const [rotateError, setRotateError] = useState<string>();
 	const installation = data?.installation;
+	const jobId = acceptedJobId ?? data?.latest_job_id;
+	const job = observedJob?.id === jobId ? observedJob : undefined;
 	const mutation = useMutation({
 		mutationFn: (action: CloudflareAction) => {
 			if (!installation || !canWrite)
@@ -54,8 +71,7 @@ export function CloudflareCapacity() {
 			});
 		},
 		onSuccess: (accepted) => {
-			setJob(undefined);
-			setJobId(accepted.job_id);
+			setAcceptedJobId(accepted.job_id);
 			void refetch();
 		},
 	});
@@ -63,8 +79,8 @@ export function CloudflareCapacity() {
 	useEffect(() => {
 		if (!jobId) return;
 		const update = (next: PlatformJob) => {
-			setJob((current) =>
-				current && current.revision >= next.revision ? current : next,
+			setObservedJob((current) =>
+				current?.id === next.id && current.revision >= next.revision ? current : next,
 			);
 			if (terminal.has(next.status)) void refetch();
 		};
@@ -77,8 +93,34 @@ export function CloudflareCapacity() {
 		};
 	}, [jobId, refetch]);
 
+	async function submitRotation(event: FormEvent<HTMLFormElement>) {
+		event.preventDefault();
+		if (!installation || !canWrite || rotating) return;
+		const form = event.currentTarget;
+		const candidate = new FormData(form).get("api_token");
+		form.reset();
+		if (typeof candidate !== "string" || !candidate) return;
+		setRotating(true);
+		setRotateError(undefined);
+		try {
+			const accepted = await rotateCloudflareAccountToken({
+				installation_id: installation.installation_id,
+				expected_revision: installation.desired_revision,
+				api_token: candidate,
+			});
+			setAcceptedJobId(accepted.job_id);
+			setRotateOpen(false);
+			void refetch();
+		} catch (error) {
+			setRotateError(getErrorMessage(error, "Could not queue Cloudflare API token rotation."));
+		} finally {
+			setRotating(false);
+		}
+	}
+
 	const busy =
 		mutation.isPending ||
+		rotating ||
 		Boolean(jobId && (!job || !terminal.has(job.status)));
 	const connectionStatus =
 		installation?.desired_state === "disconnected"
@@ -168,6 +210,29 @@ export function CloudflareCapacity() {
 						</dl>
 						{canWrite && (
 							<div className="flex flex-wrap gap-2">
+								<Dialog open={rotateOpen} onOpenChange={setRotateOpen}>
+									<DialogTrigger asChild>
+										<Button variant="outline" disabled={busy}>Rotate API Token</Button>
+									</DialogTrigger>
+									<DialogContent>
+										<DialogHeader>
+											<DialogTitle>Rotate Cloudflare API Token</DialogTitle>
+											<DialogDescription>
+												Enter a replacement API token for the connected account.
+											</DialogDescription>
+										</DialogHeader>
+										<form className="space-y-4" onSubmit={submitRotation}>
+											<div className="space-y-2">
+												<Label htmlFor="cloudflare-api-token">Replacement API Token</Label>
+												<Input id="cloudflare-api-token" name="api_token" type="password" autoComplete="new-password" required />
+											</div>
+											{rotateError && <p role="alert">{rotateError}</p>}
+											<DialogFooter>
+												<Button type="submit" disabled={rotating}>Rotate API Token</Button>
+											</DialogFooter>
+										</form>
+									</DialogContent>
+								</Dialog>
 								<Button
 									variant="outline"
 									disabled={

@@ -7,6 +7,7 @@ vi.mock("@/lib/api-client", () => ({
 
 import {
 	getCloudflareCapacity,
+	rotateCloudflareAccountToken,
 	startCloudflareAction,
 } from "./cloudflareCapacity";
 
@@ -56,5 +57,17 @@ describe("Cloudflare capacity service", () => {
 			}),
 		).rejects.toThrow("Cloudflare installation changed.");
 		expect(mocks.post).toHaveBeenCalledTimes(1);
+	});
+
+	it("posts the replacement to the write-only rotation action", async () => {
+		const body = {
+			installation_id: "installation-id",
+			expected_revision: 3,
+			api_token: "synthetic-replacement",
+		};
+		const accepted = { job_id: "job-id", status: "queued" };
+		mocks.post.mockResolvedValue({ data: accepted });
+		await expect(rotateCloudflareAccountToken(body)).resolves.toBe(accepted);
+		expect(mocks.post).toHaveBeenCalledWith("/api/capacity/cloudflare/rotate", { body });
 	});
 });

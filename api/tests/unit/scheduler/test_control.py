@@ -126,7 +126,6 @@ async def test_leader_installs_the_full_catalog(monkeypatch: pytest.MonkeyPatch)
     control = _control(FakeLease())
     await control._start_leader_services()
     try:
-        await asyncio.wait_for(started.wait(), timeout=1)
         scheduler = control._scheduler
         assert scheduler is not None
         assert {job.id for job in scheduler.get_jobs()} == set(LEGACY_SCHEDULES)
@@ -142,6 +141,7 @@ async def test_leader_installs_the_full_catalog(monkeypatch: pytest.MonkeyPatch)
         assert deferred is not None
         assert deferred.next_run_time.hour == 2 and deferred.next_run_time.minute == 30
         assert str(deferred.next_run_time.tzinfo) in {"UTC", "utc"}
+        await asyncio.wait_for(started.wait(), timeout=1)
     finally:
         await control._stop_leader_services()
     assert stopped.is_set()

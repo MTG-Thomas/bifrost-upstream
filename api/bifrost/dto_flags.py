@@ -58,6 +58,8 @@ _ORG_TARGET_EXCLUDE = {"organization_id"}
 
 #: Per-DTO field exclusions, keyed by ``model_cls.__name__``.
 DTO_EXCLUDES: dict[str, set[str]] = {
+    # Collected interactively with echo disabled so it cannot appear in argv.
+    "CloudflareAccountTokenRotation": {"api_token"},
     # Org targeting via the unified --org/--global standard (org_option), not
     # the DTO flag generator. See _ORG_TARGET_EXCLUDE above.
     "ConfigCreate": set(_ORG_TARGET_EXCLUDE),

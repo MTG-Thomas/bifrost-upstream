@@ -29,6 +29,9 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareWorkerReservation,
 )
 from src.models.orm.execution_workers import ExecutionWorker
+from src.models.orm.platform_jobs import PlatformJob
+from src.services.authorization.enforce import Caller
+from src.services.platform_job_access import platform_job_visibility_filter
 from src.services.work_dispatch import (
     WAKE_CLOUDFLARE_CAPACITY,
     wake_pool_workers_after_commit,
@@ -69,7 +72,7 @@ class CloudflareInstallationExists(ValueError):
     """A current installation must finish disconnecting before another is created."""
 
 
-async def get_cloudflare_capacity_status(db: AsyncSession) -> CloudflareCapacityStatus:
+async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> CloudflareCapacityStatus:
     row = (await db.execute(
         select(
             CloudflareInstallation,
@@ -86,8 +89,18 @@ async def get_cloudflare_capacity_status(db: AsyncSession) -> CloudflareCapacity
     if row is None:
         return CloudflareCapacityStatus(consent_text_version=CONSENT_TEXT_VERSION, installation=None)
     installation, admission_open, owned_resources_pending = row
+    latest_job_id = await db.scalar(select(PlatformJob.id).where(
+        PlatformJob.resource_type == "cloudflare_installation",
+        PlatformJob.resource_id == str(installation.id),
+        platform_job_visibility_filter(caller),
+        or_(
+            PlatformJob.requested_by_user_id != "system",
+            PlatformJob.status.in_(("failed", "requires_action")),
+        ),
+    ).order_by(PlatformJob.created_at.desc(), PlatformJob.id.desc()).limit(1))
     return CloudflareCapacityStatus(
         consent_text_version=CONSENT_TEXT_VERSION,
+        latest_job_id=latest_job_id,
         installation=CloudflareInstallationStatus.model_validate({
             "installation_id": installation.id,
             "account_id": installation.account_id,

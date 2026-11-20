@@ -192,6 +192,26 @@ OPERATION_CATALOG: tuple[OperationDefinition, ...] = (
         },
     ),
     OperationDefinition(
+        operation_id="capacity.cloudflare_rotate_account_token",
+        summary="Rotate Cloudflare Account API Token",
+        target_kind=OperationTargetKind.PLATFORM,
+        rest=RestOperationBinding(
+            method="POST", path="/api/capacity/cloudflare/rotate",
+            request_model="CloudflareAccountTokenRotation", response_model="PlatformJobAccepted",
+        ),
+        cli=CliOperationBinding(path=("capacity", "cloudflare", "rotate")),
+        audit_event="capacity.cloudflare_rotate_account_token",
+        action_scopes=("platform.readwrite",),
+        authorization_resolver="platform.readwrite at Global",
+        async_policy=OperationAsyncPolicy.PLATFORM_JOB,
+        exclusions={
+            "mcp": "The replacement token is entered through a protected operator input.",
+            "native_builder": "Cloudflare capacity is platform administration.",
+            "manifest": "Capacity credentials are bound to the deployment.",
+            "sdk": "Runtime SDKs do not administer capacity.",
+        },
+    ),
+    OperationDefinition(
         operation_id="users.defaults.get",
         summary="Read the default base role for newly provisioned accounts",
         target_kind=OperationTargetKind.COLLECTION,

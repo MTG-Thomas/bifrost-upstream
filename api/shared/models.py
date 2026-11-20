@@ -61,6 +61,7 @@ class CloudflareInstallationStatus(BaseModel):
 class CloudflareCapacityStatus(BaseModel):
     consent_text_version: str
     installation: CloudflareInstallationStatus | None
+    latest_job_id: UUID | None = None
 
 
 class CloudflareCapacityAction(BaseModel):
@@ -68,6 +69,10 @@ class CloudflareCapacityAction(BaseModel):
 
     installation_id: UUID
     expected_revision: int = Field(gt=0)
+
+
+class CloudflareAccountTokenRotation(CloudflareCapacityAction):
+    api_token: SecretStr = Field(min_length=16, max_length=512, json_schema_extra={"writeOnly": True})
 
 
 class GitAppManifestRequest(BaseModel):

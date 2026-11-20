@@ -7,7 +7,7 @@ from uuid import UUID
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
-from sqlalchemy import case, delete, select, text, true
+from sqlalchemy import case, delete, func, select, text, true, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import get_db_context
@@ -20,6 +20,7 @@ from src.jobs.platform.base import (
 )
 from src.models.orm.cloudflare_capacity import (
     CloudflareCapacityScope,
+    CloudflareCredential,
     CloudflareInstallation,
     CloudflareOwnedResource,
 )
@@ -38,7 +39,12 @@ from src.services.work_dispatch import (
     WAKE_CLOUDFLARE_CAPACITY,
     wake_pool_workers_after_commit,
 )
-from src.services.worker_pool.cloudflare_credentials import load_account_token
+from src.services.worker_pool.cloudflare_credentials import (
+    CredentialRef,
+    load_account_token,
+    open_credential,
+    seal_credential,
+)
 from src.services.worker_pool.cloudflare_policy import (
     CloudflarePolicyConflict,
     cloudflare_workers_remain,
@@ -62,6 +68,7 @@ from src.services.worker_pool.cloudflare_workers_rest import (
 
 DISABLE_JOB = "capacity.cloudflare_disable"
 RECONCILE_JOB = "capacity.cloudflare_reconcile"
+ROTATE_JOB = "capacity.cloudflare_rotate_account_token"
 RECONCILE_INTERVAL_SECONDS = 5 * 60
 DRAIN_DEADLINE = timedelta(minutes=10)
 CREATE_SETTLEMENT_WINDOW = timedelta(minutes=1)
@@ -88,6 +95,13 @@ class CloudflareReconcilePayload(BaseModel):
 
     installation_id: UUID
     revision: int = Field(gt=0)
+
+
+class CloudflareRotateAccountPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    installation_id: UUID
+    previous_version: int = Field(gt=0)
+    replacement_version: int = Field(gt=0)
 
 
 def _resource_intent(resource: CloudflareOwnedResource) -> ResourceIntent:
@@ -298,6 +312,113 @@ async def _reconcile(context: PlatformJobContext, parsed: BaseModel) -> dict[str
 
 
 CLOUDFLARE_RECONCILE_DEFINITION = define_platform_job(RECONCILE_JOB, CloudflareReconcilePayload, _reconcile)
+
+
+async def _rotate_account_token(context: PlatformJobContext, parsed: BaseModel) -> dict[str, str | int]:
+    payload = CloudflareRotateAccountPayload.model_validate(parsed)
+    await context.report("Validating Replacement Cloudflare API Token")
+    denial = None
+    try:
+        async with get_db_context() as db:
+            await _hold_installation_lease(db, context, payload.installation_id)
+            installation = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
+            if installation is None or installation.retired_at is not None:
+                return {"outcome": "superseded"}
+            if installation.api_token_version == payload.replacement_version:
+                return {"outcome": "rotated", "credential_version": payload.replacement_version}
+            candidate = await db.get(CloudflareCredential, (
+                installation.id, "account_token", "", payload.replacement_version,
+            ))
+            if candidate is None or candidate.ciphertext is None:
+                raise PlatformJobRequiresAction("Submit A Replacement Cloudflare API Token", {"code": "CF_REPLACEMENT_MISSING"})
+            if installation.api_token_version != payload.previous_version:
+                candidate.ciphertext = None
+                return {"outcome": "superseded"}
+            ref = CredentialRef(installation.id, installation.account_id, "account_token", "", payload.replacement_version)
+            bearer = open_credential(ref, candidate)
+            async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
+                adapter = WorkersRestCleanup(http)
+                try:
+                    await adapter.verify_account(installation.account_id, bearer)
+                    # Prove that the token can also read the exact inventory.
+                    resources = await db.scalars(select(CloudflareOwnedResource).where(
+                        CloudflareOwnedResource.installation_id == installation.id,
+                        CloudflareOwnedResource.state.in_(("present", "deleting")),
+                    ))
+                    for resource in resources:
+                        if resource.provider_id is None or resource.provider_version is None:
+                            raise OwnershipConflict
+                        intent = _resource_intent(resource)
+                        await observe_owned(
+                            adapter, api_token=bearer, intent=intent,
+                            recorded=ResourceObservation(intent, resource.provider_id, resource.provider_version),
+                        )
+                except CloudflareManagementDenied:
+                    denial = ("Submit A Replacement Cloudflare API Token", "CF_MANAGEMENT_CREDENTIAL")
+                except (ObservationPending, OwnershipConflict):
+                    denial = ("Verify Cloudflare Ownership", "CF_DEPLOYMENT_UNVERIFIED")
+            if denial is not None:
+                candidate.ciphertext = None
+            else:
+                previous = await db.get(CloudflareCredential, (installation.id, "account_token", "", payload.previous_version))
+                installation.api_token_version = payload.replacement_version
+                if previous is not None:
+                    previous.ciphertext = None
+                await emit_audit(
+                    db, "capacity.cloudflare_account_token_rotated", resource_type="cloudflare_installation",
+                    resource_id=installation.id, details={
+                        "credential_version": payload.replacement_version, "job_id": str(context.job_id),
+                    }, actor_override=ActorContext(None, None, source="scheduler"),
+                )
+    except CloudflareRestUnavailable:
+        raise PlatformJobFailure("CF_PROVIDER_UNAVAILABLE", "Cloudflare REST Is Temporarily Unavailable", retryable=True) from None
+    if denial is not None:
+        raise PlatformJobRequiresAction(denial[0], {"code": denial[1]})
+    return {"outcome": "rotated", "credential_version": payload.replacement_version}
+
+
+CLOUDFLARE_ROTATE_ACCOUNT_DEFINITION = define_platform_job(
+    ROTATE_JOB, CloudflareRotateAccountPayload, _rotate_account_token,
+)
+
+
+async def enqueue_cloudflare_account_token_rotation(
+    db: AsyncSession, caller: Caller, *, installation_id: UUID, expected_revision: int, replacement: SecretStr,
+) -> tuple[PlatformJob, bool]:
+    require_operation(caller, "capacity.cloudflare_rotate_account_token", GLOBAL)
+    actor = caller.principal
+    row = await db.get(CloudflareInstallation, installation_id, with_for_update=True, populate_existing=True)
+    if row is None or row.retired_at is not None or row.desired_revision != expected_revision or row.api_token_version is None:
+        raise CloudflarePolicyConflict("Cloudflare installation changed. Reload its current policy.")
+    key = str(row.id)
+    if await find_active_platform_job(db, ROTATE_JOB, key) is not None:
+        raise CloudflarePolicyConflict("A Cloudflare API token rotation is already pending")
+    versions = (
+        CloudflareCredential.installation_id == row.id,
+        CloudflareCredential.purpose == "account_token",
+        CloudflareCredential.scope == "",
+    )
+    next_version = (await db.scalar(select(func.max(CloudflareCredential.version)).where(*versions)) or 0) + 1
+    await db.execute(update(CloudflareCredential).where(
+        *versions, CloudflareCredential.version != row.api_token_version, CloudflareCredential.ciphertext.is_not(None),
+    ).values(ciphertext=None))
+    ref = CredentialRef(row.id, row.account_id, "account_token", "", next_version)
+    db.add(seal_credential(ref, replacement, actor=str(actor.user_id), now=datetime.now(UTC)))
+    payload = CloudflareRotateAccountPayload(
+        installation_id=row.id, previous_version=row.api_token_version, replacement_version=next_version,
+    )
+    job, reused = await enqueue_platform_job(
+        db, CLOUDFLARE_ROTATE_ACCOUNT_DEFINITION, payload, dedupe_key=key,
+        resource_lock_key=f"cloudflare-installation:{row.id}",
+        organization_id=None, requested_by_user_id=actor.user_id, requested_by_email=actor.email,
+        requested_by_name=actor.name, resource_type="cloudflare_installation", resource_id=str(row.id),
+        title="Rotate Cloudflare API Token", action_url=None,
+    )
+    await emit_audit(
+        db, "capacity.cloudflare_rotate_account_token", resource_type="cloudflare_installation", resource_id=row.id,
+        details={"credential_version": next_version, "job_id": str(job.id)},
+    )
+    return job, reused
 
 
 async def schedule_cloudflare_reconcile(db: AsyncSession, *, now: datetime) -> None:

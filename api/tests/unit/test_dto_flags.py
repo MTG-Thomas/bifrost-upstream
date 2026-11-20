@@ -22,7 +22,7 @@ from bifrost.dto_flags import (  # noqa: E402
     build_cli_flags,
 )
 from bifrost.contracts.claims import CustomClaimCreate, CustomClaimUpdate  # noqa: E402
-from bifrost.contracts.cloudflare_capacity import CloudflareCapacityAction  # noqa: E402
+from bifrost.contracts.cloudflare_capacity import CloudflareAccountTokenRotation, CloudflareCapacityAction  # noqa: E402
 from bifrost.contracts.files import FilePolicyCreate, FilePolicyUpdate  # noqa: E402
 from bifrost.contracts.policy_rules import PolicyRuleCreate, PolicyRuleUpdate  # noqa: E402
 from src.models.contracts.agents import AgentCreate, AgentUpdate  # noqa: E402
@@ -58,6 +58,7 @@ from src.models.contracts.workflows import WorkflowUpdateRequest  # noqa: E402
 # "exclude nothing." Workflows have no ``Create`` DTO — workflows are
 # created from code via @workflow registration, not the API.
 COVERED_DTOS: list[type] = [
+    CloudflareAccountTokenRotation,
     CloudflareCapacityAction,
     OrganizationCreate,
     OrganizationUpdate,

@@ -14,12 +14,12 @@ REPO_ROOT = API_ROOT.parent
 
 def test_every_observed_surface_is_classified_with_a_reason() -> None:
     inventory = build_operation_inventory(app, REPO_ROOT)
-    # Cloudflare status, Scale In, and Disconnect each add a CLI, MCP, and REST binding.
+    # Cloudflare rotation collects the replacement token through REST and a CLI prompt.
     assert inventory["counts"] == {
-        "cli": 185,
+        "cli": 186,
         "manifest": 16,
         "mcp": 104,
-        "rest": 727,
+        "rest": 728,
         "sdk": 21,
     }
     for surface, rows in inventory["uncataloged"].items():

@@ -5,12 +5,14 @@ import { expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
 	get: vi.fn(),
 	start: vi.fn(),
+	rotate: vi.fn(),
 	observe: vi.fn(),
 	subscribe: vi.fn(),
 }));
 vi.mock("@/services/cloudflareCapacity", () => ({
 	getCloudflareCapacity: mocks.get,
 	startCloudflareAction: mocks.start,
+	rotateCloudflareAccountToken: mocks.rotate,
 }));
 vi.mock("@/services/authorization", () => ({
 	useAuthorization: () => ({ canAt: () => true, isLoading: false }),
@@ -53,9 +55,10 @@ it("drains using the displayed installation revision and the shared job observer
 	mocks.observe.mockImplementation((_id, update) => ({
 		promise: Promise.resolve().then(() =>
 			update({
+				id: "job-id",
 				status: "succeeded",
 				revision: 2,
-				progress: { phase: "Scale In Complete" },
+				progress: { phase: "Completed" },
 			}),
 		),
 		cancel: vi.fn(),
@@ -66,7 +69,7 @@ it("drains using the displayed installation revision and the shared job observer
 		</QueryClientProvider>,
 	);
 	fireEvent.click(await screen.findByRole("button", { name: "Scale In" }));
-	expect(await screen.findByText("Scale In Complete")).toBeVisible();
+	expect(await screen.findByText("Completed")).toBeVisible();
 	expect(screen.getByText("Scaled In")).toBeVisible();
 	expect(mocks.start).toHaveBeenCalledWith("scale-in", {
 		installation_id: "installation-id",
@@ -76,4 +79,24 @@ it("drains using the displayed installation revision and the shared job observer
 		"job-id",
 		expect.any(Function),
 	);
+});
+
+it("recovers Action Required from the last visible job on page load", async () => {
+	mocks.get.mockResolvedValue({ installation: null, latest_job_id: "previous-job" });
+	mocks.observe.mockImplementation((_id, update) => ({
+		promise: Promise.resolve().then(() => update({
+			id: "previous-job",
+			status: "requires_action",
+			revision: 4,
+			progress: { phase: "Reconnect Cloudflare" },
+		})),
+		cancel: vi.fn(),
+	}));
+	render(
+		<QueryClientProvider client={new QueryClient()}>
+			<CloudflareCapacity />
+		</QueryClientProvider>,
+	);
+	expect(await screen.findByText("Reconnect Cloudflare")).toBeVisible();
+	expect(mocks.subscribe).toHaveBeenCalledWith("previous-job", expect.any(Function));
 });
