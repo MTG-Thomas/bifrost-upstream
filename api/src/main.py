@@ -282,7 +282,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     mcp_app = _get_mcp_asgi_app()
 
     # Combine both lifespans - app first, then MCP
-    async with app_lifespan(app):
+    from src.services.worker_ingress import serve_worker_ingress
+
+    async with app_lifespan(app), serve_worker_ingress(app):
         if mcp_app and hasattr(mcp_app, 'lifespan'):
             async with mcp_app.lifespan(app):
                 yield

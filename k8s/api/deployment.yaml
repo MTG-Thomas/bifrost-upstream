@@ -55,6 +55,8 @@ spec:
                 command: ["sleep", "5"]
           ports:
             - containerPort: 8000
+            - name: worker-ingress
+              containerPort: 8001
               name: http
           envFrom:
             - configMapRef:

@@ -189,6 +189,8 @@ services:
       # Public URL - Set this to your public address (https://bifrost.yourdomain.com)
       BIFROST_PUBLIC_URL: ${BIFROST_PUBLIC_URL:-}
     # Note: API port 8000 not exposed - access via client proxy at http://localhost:3000
+    expose:
+      - "8001" # Worker ingress. Route the dedicated TLS proxy here with Host preserved.
     # Debug port (5678) only exposed in docker-compose.dev.yml
     depends_on:
       init:

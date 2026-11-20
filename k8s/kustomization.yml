@@ -6,6 +6,7 @@ resources:
   - api/rbac.yaml
   - api/deployment.yaml
   - api/service.yaml
+  - api/worker-ingress-service.yaml
   - client/deployment.yaml
   - client/service.yaml
   - worker/deployment.yaml
