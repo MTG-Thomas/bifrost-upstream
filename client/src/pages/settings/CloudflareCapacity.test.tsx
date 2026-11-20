@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { expect, it, vi } from "vitest";
 
@@ -102,7 +102,9 @@ it("submits the current consent version and clears the write-only token", async 
 	fireEvent.change(token, { target: { value: "synthetic-management-token" } });
 	expect(screen.getByText("Current operator consent")).toBeVisible();
 	fireEvent.click(screen.getByRole("checkbox", { name: "I Accept the Cloudflare Terms Above" }));
-	fireEvent.submit((screen.getByRole("button", { name: "Connect Cloudflare" }) as HTMLButtonElement).form!);
+	await act(async () => {
+		fireEvent.submit((screen.getByRole("button", { name: "Connect Cloudflare" }) as HTMLButtonElement).form!);
+	});
 	expect(mocks.configure).toHaveBeenCalledWith(expect.objectContaining({
 		action: "connect",
 		account_id: "a".repeat(32),
