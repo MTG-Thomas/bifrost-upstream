@@ -49,6 +49,7 @@ class RouteProbe:
     status: int | None
     passed: bool
     connect_unavailable: bool = False
+    error_class: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +67,10 @@ class CanaryFailure:
     @classmethod
     def from_result(cls, value: object) -> "CanaryFailure":
         allowed = {
-            "ingress": ("unreachable", "route_refused", "websocket_failed"),
+            "ingress": (
+                "unreachable", "route_refused", "route_timeout", "route_protocol_error",
+                "route_transport_error", "websocket_failed",
+            ),
             "hello": ("timeout", "lease_changed"),
             "launcher": ("unavailable", "unexpected", "connection_lost"),
             "proof": ("invalid_command", "unavailable"),
@@ -125,7 +129,7 @@ class WorkerIngressProbeResult:
             return CanaryFailure("ingress", "unreachable")
         failed = next((route for route in self.routes if not route.passed), None)
         if failed is not None:
-            return CanaryFailure("ingress", "route_refused", failed.status)
+            return CanaryFailure("ingress", failed.error_class or "route_refused", failed.status)
         return CanaryFailure("ingress", "websocket_failed")
 
 
@@ -175,7 +179,13 @@ async def _check_route(
             passed = expected and response.headers.get(PROBE_HEADER.decode()) == nonce
             return RouteProbe(method, path, response.status_code, passed)
     except httpx.HTTPError as exc:
-        return RouteProbe(method, path, None, False, connect_unavailable=_address_unavailable(exc))
+        if isinstance(exc, httpx.TimeoutException):
+            kind = "route_timeout"
+        elif isinstance(exc, httpx.ProtocolError):
+            kind = "route_protocol_error"
+        else:
+            kind = "route_transport_error"
+        return RouteProbe(method, path, None, False, _address_unavailable(exc), kind)
 
 
 async def _check_control(

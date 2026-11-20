@@ -16,7 +16,7 @@ IPV6 = "2606:4700:4700::1111"
 
 @pytest.fixture
 def ingress(monkeypatch):
-    def configure(addresses, failure, cause=None):
+    def configure(addresses, failure, cause=None, *, route_failure=None):
         resolver = AsyncMock(return_value=[
             (socket.AF_INET6 if ":" in ip else socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 443))
             for ip in addresses
@@ -33,6 +33,8 @@ def ingress(monkeypatch):
             assert address == IPV4
             assert request.headers["Host"] == "workers.example.test"
             assert request.extensions["sni_hostname"] == "workers.example.test"
+            if route_failure is not None and request.url.path == "/auth/login":
+                raise route_failure
             allowed = (request.method, request.url.path) not in probes._REFUSALS
             return httpx.Response(401 if allowed else 404, headers={
                 probes.INGRESS_HEADER.decode(): (probes.ALLOW_MARKER if allowed else probes.DENY_MARKER).decode(),
@@ -75,6 +77,24 @@ async def test_unreachable_hostname_does_not_start_canary(ingress) -> None:
     result = await probes.probe_worker_ingress(installation, runtime_canary=canary)
     assert not result.reachable
     assert result.failure == probes.CanaryFailure("ingress", "unreachable")
+    control.assert_not_awaited()
+    canary.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("error", "kind"), [
+    (httpx.ReadTimeout, "route_timeout"),
+    (httpx.RemoteProtocolError, "route_protocol_error"),
+    (httpx.ReadError, "route_transport_error"),
+])
+async def test_route_transport_failure_reports_only_its_class(ingress, error, kind) -> None:
+    installation, _, control, canary = ingress(
+        (IPV4,), None, route_failure=error("Private diagnostic details"),
+    )
+    result = await probes.probe_worker_ingress(installation, runtime_canary=canary)
+
+    assert result.tls and not result.reachable
+    assert result.failure.as_result() == {"stage": "ingress", "error_class": kind}
     control.assert_not_awaited()
     canary.assert_not_awaited()
 
