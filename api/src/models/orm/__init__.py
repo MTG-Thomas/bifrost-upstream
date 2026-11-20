@@ -41,6 +41,12 @@ from src.models.orm.authz import AuthzProtocolState, AuthzVersion
 from src.models.orm.base import Base
 from src.models.orm.branding import GlobalBranding
 from src.models.orm.cloudflare_approvals import CloudflareApproval
+from src.models.orm.cloudflare_capacity import (
+    CloudflareCapacityScope,
+    CloudflareCredential,
+    CloudflareInstallation,
+    CloudflareOwnedResource,
+)
 from src.models.orm.config import Config, SystemConfig
 from src.models.orm.events import Event, EventDelivery, EventSource, EventSubscription, WebhookSource
 from src.models.orm.executions import Execution, ExecutionLog
@@ -168,6 +174,10 @@ __all__ = [
     # Workflows
     "Workflow",
     "CloudflareApproval",
+    "CloudflareCapacityScope",
+    "CloudflareCredential",
+    "CloudflareInstallation",
+    "CloudflareOwnedResource",
     "WorkflowOperationUsage",
     "WorkflowPermissionGrant",
     "WorkflowRole",
