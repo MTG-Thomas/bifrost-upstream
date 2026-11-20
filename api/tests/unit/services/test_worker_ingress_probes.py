@@ -186,3 +186,16 @@ async def test_control_refusal_reports_status_without_provider_message(monkeypat
     upgraded, failure = await probes._check_control(ORIGIN, "workers.example.test", IPV4, 443, ssl.create_default_context())
     assert not upgraded
     assert failure == probes.CanaryFailure("ingress_websocket", "unexpected_status", 403)
+
+
+def test_anyio_connection_wrapper_classifies_first_errno() -> None:
+    unreachable = OSError(errno.ENETUNREACH, "Network unavailable")
+    refused = ConnectionRefusedError(errno.ECONNREFUSED, "Server refused")
+    refused.__cause__ = unreachable
+    wrapper = OSError("All connection attempts failed")
+    wrapper.__cause__ = unreachable
+    assert probes._missing_tcp_route(wrapper)
+    wrapper.__cause__ = ExceptionGroup("connect", [unreachable, unreachable])
+    assert probes._missing_tcp_route(wrapper)
+    wrapper.__cause__ = ExceptionGroup("connect", [unreachable, refused])
+    assert not probes._missing_tcp_route(wrapper)

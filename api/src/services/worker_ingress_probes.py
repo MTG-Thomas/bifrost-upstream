@@ -157,8 +157,8 @@ def _tls_error(cause: BaseException | None) -> bool:
 
 def _missing_tcp_route(cause: BaseException | None) -> bool:
     while cause is not None:
-        if isinstance(cause, OSError) and cause.errno in _MISSING_ROUTE_ERRNOS:
-            return True
+        if isinstance(cause, OSError) and cause.errno is not None:
+            return cause.errno in _MISSING_ROUTE_ERRNOS
         if isinstance(cause, BaseExceptionGroup):
             return all(_missing_tcp_route(member) for member in cause.exceptions)
         # httpcore can suppress the display of the original OSError with

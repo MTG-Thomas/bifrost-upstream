@@ -794,6 +794,37 @@ async def test_cleanup_deadline_excludes_queue_time(
 
 
 @pytest.mark.asyncio
+async def test_deletion_deadline_requires_action_across_attempts(
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch,
+) -> None:
+    admin = _platform_operator()
+    job, _ = await lifecycle_job.enqueue_cloudflare_disable(
+        db_session, admin, installation_id=installation.id, expected_revision=1, action="disconnect",
+    )
+    job.status = "running"
+    job.started_at = datetime.now(UTC) - lifecycle_job.DRAIN_DEADLINE
+    connection = await db_session.connection()
+
+    @asynccontextmanager
+    async def context():
+        async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as session:
+            yield session
+
+    monkeypatch.setattr(lifecycle_job, "get_db_context", context)
+    monkeypatch.setattr(lifecycle_job, "cloudflare_workers_remain", AsyncMock(return_value=False))
+    monkeypatch.setattr(lifecycle_job, "_cleanup_one", AsyncMock(side_effect=lifecycle_job.DeletionSettling()))
+    payload = lifecycle_job.CloudflareDisablePayload.model_validate(job.payload)
+    for attempt in (1, 2, 3):
+        job.attempt = attempt
+        job.lease_token = uuid4()
+        await db_session.flush()
+        running = PlatformJobContext(job.id, job.lease_token, None, str(OPERATOR_ID), admin.principal.email, "")
+        with pytest.raises(PlatformJobRequiresAction) as expired:
+            await lifecycle_job._settle_disable(running, payload, SimpleNamespace())
+        assert expired.value.result == {"code": "CF_CLEANUP_PENDING"}
+
+
+@pytest.mark.asyncio
 async def test_reconcile_dedupes_schedule_and_closes_admission_on_missing_deployment(
     db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch,
 ) -> None:

@@ -243,9 +243,7 @@ async def _settle_disable(
             started_at = await db.scalar(select(PlatformJob.started_at).where(PlatformJob.id == context.job_id))
             if started_at is not None and datetime.now(UTC) >= started_at + DRAIN_DEADLINE:
                 if waiting_for_deletion:
-                    raise PlatformJobFailure(
-                        "CF_DELETION_UNCONFIRMED", "Cloudflare Deletion Is Still Propagating", retryable=True,
-                    )
+                    raise PlatformJobRequiresAction("Cloudflare Cleanup Pending", {"code": "CF_CLEANUP_PENDING"})
                 phase = "Wait for Cloudflare Creation to Settle" if not workers_remain else "Verify Cloudflare Worker Retirement"
                 raise PlatformJobRequiresAction(phase, {"code": "CF_DRAIN_TIMEOUT"})
         if waiting_for_deletion:
