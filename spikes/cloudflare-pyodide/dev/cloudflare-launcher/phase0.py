@@ -19,31 +19,40 @@ from phase0_adapter import (
     Cloudflare,
     QualificationError,
     RegistryCopy,
+    ResourceExists,
     active_entitlement,
     application_path,
     application_spec,
     file_digest,
+    matches_application,
     observe_owned,
     pinned_registry_image,
     require_absent,
+    subprocess_environment,
 )
 
 ROOT = Path(__file__).resolve().parent
 CF_VERSION = "1.0.0-beta.31"
 ARTIFACTS = json.loads((ROOT / "phase0-artifacts.json").read_text(encoding="utf-8"))
 FIXTURE_DIGEST = ARTIFACTS["image"]["digest"]
+TEARDOWN_ERRORS = (QualificationError, httpx.TransportError, subprocess.TimeoutExpired,
+                   OSError, ValueError, KeyError, TypeError)
 
 
 def evidence(operation, **fields):
     print(json.dumps({"operation": operation, **fields}), flush=True)
 
 
+class CfCommandError(QualificationError):
+    def __init__(self, operation, status):
+        self.status = status
+        super().__init__(f"cf {operation} failed" + (f" (HTTP {status})" if status else ""))
+
+
 class Cf:
     def __init__(self, account, directory, token=None):
         self.directory = directory
-        self.env = {**os.environ, "NO_COLOR": "1", "CLOUDFLARE_ACCOUNT_ID": account}
-        for key in ("CLOUDFLARE_API_TOKEN", "CLOUDFLARE_API_KEY", "CLOUDFLARE_ZONE_ID"):
-            self.env.pop(key, None)
+        self.env = {**subprocess_environment(), "NO_COLOR": "1", "CLOUDFLARE_ACCOUNT_ID": account}
         if token:
             self.env["CLOUDFLARE_API_TOKEN"] = token
         self.executable = shutil.which("cf.cmd" if os.name == "nt" else "cf")
@@ -61,10 +70,7 @@ class Cf:
         )
         if result.returncode:
             status = re.search(r"\b(?:400|401|403|404|409|429|500|502|503)\b", result.stderr)
-            raise QualificationError(
-                f"cf {' '.join(args[:3])} failed"
-                + (f" (HTTP {status[0]})" if status else "")
-            )
+            raise CfCommandError(" ".join(args[:3]), int(status[0]) if status else None)
         return result.stdout
 
     def json(self, *args, quiet=True):
@@ -77,9 +83,10 @@ class Cf:
             raise QualificationError(f"cf {' '.join(args[:3])} returned non-JSON") from None
 
     def preflight(self):
-        safeguards = self.json("billing", "spend-policies", "list")
-        if not any(row["enabled"] and row["product_id"] == "workers" for row in safeguards):
-            raise QualificationError("existing Workers spend guard is disabled")
+        policies = self.json("billing", "spend-policies", "list")
+        if not any(row["enabled"] and row["product_id"] == "workers"
+                   and row["action"] == "notification" and row["threshold_cents"] == 2500 for row in policies):
+            raise QualificationError("existing $25 Workers spend notification could not be verified")
         subscriptions = self.json("accounts", "subscriptions", "get")
         now = dt.datetime.now(dt.UTC)
         if not any(
@@ -89,10 +96,10 @@ class Cf:
             for row in subscriptions
         ):
             raise QualificationError("Workers Paid subscription could not be verified")
-        evidence("account-preflight", workers_paid=True, workers_spend_guard=True)
+        evidence("account-preflight", workers_paid=True, workers_spend_notification_usd=25)
 
     @contextlib.contextmanager
-    def scoped_token(self, account, name, containers):
+    def scoped_token(self, account, name, containers, record):
         names = {"Account Settings Read", "Workers Scripts Write"}
         if containers:
             names.add("Workers Containers Write")
@@ -108,24 +115,48 @@ class Cf:
             "resources": {f"com.cloudflare.api.account.{account}": "*"},
         }]), encoding="utf-8")
         expires = dt.datetime.now(dt.UTC) + dt.timedelta(minutes=30)
+        record("token-intent", name=token_name, expires_on=expires.isoformat())
+        created = self.json(
+            "accounts", "tokens", "create", "--name", token_name,
+            "--expires-on", expires.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "--policies", "@policy.json",
+        )
+        token_id = created["id"]
+        if not ACCOUNT_ID.fullmatch(token_id):
+            raise QualificationError("invalid trial token identity")
+        record("token-observed", id=token_id)
+        evidence("scoped-token", grants=sorted(names), expiry_minutes=30)
+        verified = False
+
+        def confirm_teardown():
+            nonlocal verified
+            verified = True
+
         try:
-            created = self.json(
-                "accounts", "tokens", "create", "--name", token_name,
-                "--expires-on", expires.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "--policies", "@policy.json",
-            )
-            evidence("scoped-token", grants=sorted(names), expiry_minutes=30)
-            yield created["value"]
+            yield created["value"], confirm_teardown
         finally:
-            tokens = self.json("accounts", "tokens", "list")
-            owned = [item for item in tokens if item["name"] == token_name]
-            if len(owned) > 1:
-                raise QualificationError("ambiguous trial token inventory")
-            if owned:
-                self.json("accounts", "tokens", "delete", owned[0]["id"], "--force")
-            if any(item["name"] == token_name for item in self.json("accounts", "tokens", "list")):
-                raise QualificationError("trial token remains")
-            evidence("token-teardown", absent=True)
+            if verified:
+                self.delete_trial_token(token_id, token_name)
+            else:
+                evidence("token-teardown", retained_until_expiry=True)
+
+    def delete_trial_token(self, token_id, token_name):
+        current = self.json("accounts", "tokens", "get", token_id)
+        if current["id"] != token_id or current["name"] != token_name:
+            raise QualificationError("trial token ownership conflict")
+        self.json("accounts", "tokens", "delete", token_id, "--force")
+
+        def absent():
+            try:
+                self.json("accounts", "tokens", "get", token_id)
+            except CfCommandError as error:
+                if error.status == 404:
+                    return True
+                raise
+            return False
+
+        wait_until(absent, "exact token deletion")
+        evidence("token-teardown", absent=True)
 
 
 def do_binding(name, cls, script=None):
@@ -157,6 +188,7 @@ class Trial:
         self.prefix = prefix
         self.owner = secrets.token_hex(16)
         self.worker_intents = []
+        self.unconfirmed_uploads = set()
         self.record = record
         self.mutation_deadline = time.monotonic() + 18 * 60
 
@@ -193,29 +225,32 @@ class Trial:
         if container_images:
             metadata["exports"]["WorkerContainer"]["container"] = "trial"
             metadata["containers"] = [{"name": "trial", "class_name": "WorkerContainer", "images": container_images}]
-        self.worker_intents.append(name)
         self.record("worker-intent", name=name, owner=self.owner, parts=hashes)
+        self.worker_intents.append(name)
+        before = self.api.upload_attempts
+        response_lost = False
         try:
             result = self.api.upload(name, parts, **metadata)
         except httpx.TransportError:
             # The PUT may have committed. Observe first and issue no second PUT.
-            lose_response = True
-        if lose_response:
-            # Discard the upload receipt before running the same recovery path.
-            wait_until(lambda: self.owned_worker(name), "ambiguous upload")
-            evidence("lost-response", resource=suffix, uploads=1, recovered=True)
-        elif result["id"] != name:
+            response_lost = True
+            self.unconfirmed_uploads.add(name)
+        if not (response_lost or lose_response) and result["id"] != name:
             raise QualificationError("worker upload returned unexpected identity")
         settings = wait_until(lambda: self.owned_worker(name), "worker ownership")
+        self.unconfirmed_uploads.discard(name)
         expected = {(row["name"], row["type"]) for row in bindings}
         actual = {(row["name"], row["type"]) for row in settings["bindings"]}
         if not expected <= actual:
             raise QualificationError("worker binding readback differed")
+        if response_lost or lose_response:
+            evidence("lost-response", resource=suffix, uploads=self.api.upload_attempts - before,
+                     recovered=True, simulated=not response_lost)
         evidence("worker-upload", role=suffix, parts=hashes)
         return name
 
     def namespace(self, script, cls):
-        rows = self.api.request("GET", "workers/durable_objects/namespaces", params={"per_page": 1000})
+        rows = self.api.inventory("workers/durable_objects/namespaces")
         matches = [row["id"] for row in rows if row.get("script") == script
                    and row["class"] == cls and not row.get("preview")]
         if len(matches) != 1:
@@ -237,10 +272,11 @@ class Trial:
 
     def workers(self):
         runtime = self.upload("runtime", "phase0-runtime.mjs", (), [], lose_response=True)
+        before = self.api.upload_attempts
         try:
-            require_absent(self.settings(runtime))
-        except QualificationError:
-            evidence("occupied-resource", refused=True, uploads=0)
+            self.upload("runtime", "phase0-runtime.mjs", (), [])
+        except ResourceExists:
+            evidence("occupied-resource", refused=True, uploads=self.api.upload_attempts - before)
         else:
             raise QualificationError("occupied resource passed create preflight")
         launcher = self.upload(
@@ -272,21 +308,26 @@ class Trial:
             wait_until(invoke, "provider invocation")
         evidence("workers-invocation", anonymous=401, authenticated=200, sqlite_round_trip=True)
 
-    def cleanup_workers(self):
+    def cleanup_workers(self, *, allow_delete=True):
         failures = []
         for worker in reversed(self.worker_intents):
             try:
                 if self.owned_worker(worker) is not None:
+                    if not allow_delete:
+                        raise QualificationError("Worker retained while physical stop is unverified")
                     self.api.request("DELETE", f"workers/scripts/{worker}")
+                elif worker in self.unconfirmed_uploads:
+                    raise QualificationError("Worker PUT outcome remains unverified")
                 wait_until(lambda worker=worker: self.settings(worker) is None, "worker deletion")
-            except (QualificationError, httpx.TransportError) as error:
-                failures.append(type(error).__name__)
+            except TEARDOWN_ERRORS as error:
+                failures.append(f"script {worker.removeprefix(self.prefix + '-')}: {type(error).__name__}")
         def namespaces_absent():
-            rows = self.api.request(
-                "GET", "workers/durable_objects/namespaces", params={"per_page": 1000},
-            )
+            rows = self.api.inventory("workers/durable_objects/namespaces")
             return not any(row.get("script") in self.worker_intents for row in rows)
-        wait_until(namespaces_absent, "namespace deletion")
+        try:
+            wait_until(namespaces_absent, "namespace deletion")
+        except TEARDOWN_ERRORS as error:
+            failures.append(f"namespace readback: {type(error).__name__}")
         if failures:
             raise QualificationError(f"Worker teardown incomplete: {failures}")
         evidence("workers-teardown", scripts_absent=True, namespaces_absent=True)
@@ -303,6 +344,8 @@ class ContainerTrial:
         self.copy_intent = False
         self.app_intent = None
         self.app_path = None
+        self.application_create_unconfirmed = False
+        self.instance_may_be_live = False
         self.caller = httpx.Client(timeout=20, trust_env=False)
         self.url = None
 
@@ -313,7 +356,7 @@ class ContainerTrial:
         )
 
     def applications(self):
-        return self.api.request("GET", "containers/applications", params={"name": self.name})
+        return self.api.inventory("containers/applications", cursor=True, name=self.name)
 
     def owned_application(self):
         rows = [row for row in self.applications() if row["name"] == self.name]
@@ -322,7 +365,7 @@ class ContainerTrial:
         if len(rows) != 1 or self.app_intent is None:
             raise QualificationError("Container application name conflict")
         row = rows[0]
-        if any(row[key] != value for key, value in self.app_intent.items()):
+        if not matches_application(row, self.app_intent):
             raise QualificationError("Container application ownership conflict")
         path = application_path(row["id"])
         if self.app_path and self.app_path != path:
@@ -333,11 +376,11 @@ class ContainerTrial:
         self.trial.check_deadline()
         if self.images():
             raise QualificationError("registry repository already exists")
-        self.crane.bind_credentials(self.api)
-        self.copy_intent = True
-        self.trial.record("image-intent", tag=self.tag, digest=FIXTURE_DIGEST)
         source = f"{ARTIFACTS['image']['repository']}@{FIXTURE_DIGEST}"
-        self.crane.copy(source, self.tag, FIXTURE_DIGEST)
+        with self.crane.credentials(self.api, push=True):
+            self.trial.record("image-intent", tag=self.tag, digest=FIXTURE_DIGEST)
+            self.copy_intent = True
+            self.crane.copy(source, self.tag, FIXTURE_DIGEST)
         evidence("oci-copy", platform=ARTIFACTS["image"]["platform"], digest=FIXTURE_DIGEST)
         if not self.images():
             raise QualificationError("cf did not list the copied trial image")
@@ -354,7 +397,7 @@ class ContainerTrial:
         evidence("image-preparation", ready=True)
 
     def instances(self):
-        return self.api.request("GET", self.app_path + "/instances-v2")
+        return self.api.inventory(self.app_path + "/instances-v2", cursor=True)
 
     def live_instances(self):
         rows = self.instances()
@@ -389,11 +432,12 @@ class ContainerTrial:
             created = self.api.request("POST", "containers/applications", json=self.app_intent)
             self.app_path = application_path(created["id"])
         except httpx.TransportError:
-            pass  # Ownership is reconstructed by name and exact namespace below.
+            self.application_create_unconfirmed = True
         self.app_path = wait_until(self.owned_application, "application creation")
+        self.application_create_unconfirmed = False
         self.trial.record("application-observed", path=self.app_path)
         application = self.api.request("GET", self.app_path)
-        if any(application[key] != value for key, value in self.app_intent.items()):
+        if not matches_application(application, self.app_intent):
             raise QualificationError("Container application readback differed")
         evidence("container-application", scheduling_policy="durable_object", exact_namespace=True)
         self.url = self.trial.public_url(worker)
@@ -401,6 +445,7 @@ class ContainerTrial:
                    "Container provider auth")
         self.trial.check_deadline()
         self.trial.record("instance-start-intent", application=self.app_path)
+        self.instance_may_be_live = True
         response = self.invoke("PUT")
         if response.status_code != 202:
             reason = response.text if response.text in ("container-not-bound", "image-not-bound") else ""
@@ -415,37 +460,80 @@ class ContainerTrial:
         wait_until(running, "running instance", seconds=90)
         evidence("instance-start", running=1)
         refused = self.invoke("PUT", "second")
-        if refused.status_code != 409 or refused.json() != {"ok": False} or not running():
+        if not registry_refused(refused) or not running():
             raise QualificationError("second instance was not refused by the ScopeRegistry")
         evidence("instance-cap", cap=1, second_reservation=409, running=1)
 
     def cleanup(self):
-        if self.app_intent is not None:
-            existing = self.owned_application()
-            if existing:
-                self.app_path = existing
-                if self.url:
-                    try:
-                        stopped = self.invoke("DELETE")
-                        evidence("instance-stop-request", status=stopped.status_code)
-                    except httpx.TransportError:
-                        evidence("instance-stop-request", response_unknown=True)
-                wait_until(lambda: not self.live_instances(), "physical stop", seconds=150)
-                evidence("instance-stop", live=0)
-                self.api.request("DELETE", self.app_path)
-                wait_until(lambda: self.api.optional(self.app_path) is None
-                           and self.owned_application() is None, "application deletion")
-                evidence("application-teardown", absent=True)
-        self.trial.cleanup_workers()
-        if self.copy_intent:
-            if self.images():
+        failures = []
+        applications_clear = workers_clear = False
+        try:
+            self.cleanup_application()
+            applications_clear = True
+        except TEARDOWN_ERRORS as error:
+            failures.append(f"application: {type(error).__name__}")
+        try:
+            self.trial.cleanup_workers(allow_delete=not self.instance_may_be_live)
+            workers_clear = True
+        except TEARDOWN_ERRORS as error:
+            failures.append(f"Workers and namespaces: {type(error).__name__}")
+        try:
+            self.cleanup_registry(allow_delete=applications_clear and workers_clear)
+        except TEARDOWN_ERRORS as error:
+            failures.append(f"registry: {type(error).__name__}")
+        if failures:
+            raise QualificationError(f"Container teardown incomplete: {', '.join(failures)}")
+
+    def cleanup_application(self):
+        if self.app_intent is None:
+            return
+        existing = self.owned_application()
+        if not existing:
+            if self.app_path and self.api.optional(self.app_path) is not None:
+                raise QualificationError("Container application still exists by ID")
+            if self.application_create_unconfirmed:
+                raise QualificationError("Container application POST outcome remains unverified")
+            if self.instance_may_be_live:
+                raise QualificationError("physical stop could not be verified")
+            return
+        self.app_path = existing
+        if self.instance_may_be_live and self.url:
+            try:
+                stopped = self.invoke("DELETE")
+                evidence("instance-stop-request", status=stopped.status_code)
+            except httpx.TransportError:
+                evidence("instance-stop-request", response_unknown=True)
+        wait_until(lambda: not self.live_instances(), "physical stop", seconds=150)
+        self.instance_may_be_live = False
+        evidence("instance-stop", live=0)
+        self.api.request("DELETE", self.app_path)
+        wait_until(lambda: self.api.optional(self.app_path) is None
+                   and self.owned_application() is None, "application deletion")
+        evidence("application-teardown", absent=True)
+
+    def cleanup_registry(self, *, allow_delete):
+        if not self.copy_intent:
+            return
+        if self.images():
+            if not allow_delete:
+                raise QualificationError("registry tag retained while references are unverified")
+            with self.crane.credentials(self.api):
                 if self.crane.run("digest", self.tag) != FIXTURE_DIGEST:
                     raise QualificationError("registry tag ownership conflict")
-                self.trial.cf.json(
-                    "containers", "images", "delete", self.name + ":trial", "--force", quiet=False,
-                )
-            wait_until(lambda: not self.images(), "registry deletion")
-            evidence("registry-teardown", path="cf-fallback", tags_absent=True)
+            self.trial.cf.json(
+                "containers", "images", "delete", self.name + ":trial", "--force", quiet=False,
+            )
+        wait_until(lambda: not self.images(), "registry deletion")
+        evidence("registry-teardown", path="cf-fallback", tags_absent=True)
+
+
+def registry_refused(response):
+    if response.status_code != 409:
+        return False
+    try:
+        return response.json() == {"ok": False}
+    except ValueError:
+        return False
 
 
 @contextlib.contextmanager
@@ -485,7 +573,7 @@ def main():
         if not args.apply:
             return
         with (trial_receipt(args.account, prefix, args.scope) as record,
-              cf.scoped_token(args.account, prefix, containers=containers) as token):
+              cf.scoped_token(args.account, prefix, containers, record) as (token, confirm_teardown)):
             api = Cloudflare(args.account, token)
             with api.http:
                 if api.request("GET")["id"] != args.account:
@@ -505,12 +593,14 @@ def main():
                             container_trial.run()
                         finally:
                             container_trial.cleanup()
+                            confirm_teardown()
                 else:
                     trial = Trial(cf, api, prefix, record)
                     try:
                         trial.workers()
                     finally:
                         trial.cleanup_workers()
+                        confirm_teardown()
 
 
 if __name__ == "__main__":

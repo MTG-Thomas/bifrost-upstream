@@ -11,7 +11,6 @@ export class WorkerContainer extends DurableObject {
       await this.alarm();
       return Response.json({running: container.running});
     }
-    if (request.method === 'GET') return Response.json({running: container.running});
     if (!container.images?.fixture) return new Response('image-not-bound', {status: 503});
     if (this.ctx.storage.kv.get('started')) return new Response(null, {status: 409});
     this.ctx.storage.kv.put('started', true);
@@ -37,6 +36,7 @@ export default {
     if (request.headers.get('Authorization') !== `Bearer ${env.TRIAL_BEARER}`) {
       return new Response(null, {status: 401});
     }
+    if (!['PUT', 'DELETE'].includes(request.method)) return new Response(null, {status: 405});
     const workerId = new URL(request.url).pathname.slice(1);
     if (!['first', 'second'].includes(workerId)) return new Response(null, {status: 404});
     if (request.method === 'PUT') {

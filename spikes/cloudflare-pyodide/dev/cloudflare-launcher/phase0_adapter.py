@@ -6,6 +6,8 @@ import json
 import os
 import re
 import subprocess
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 import httpx
@@ -13,6 +15,14 @@ import httpx
 ACCOUNT_ID = re.compile(r"[0-9a-f]{32}")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 REGISTRY = "registry.cloudflare.com"
+SUBPROCESS_ENV = {
+    "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP", "TMPDIR",
+    "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME",
+}
+
+
+def subprocess_environment():
+    return {key: value for key, value in os.environ.items() if key.upper() in SUBPROCESS_ENV}
 
 
 class QualificationError(RuntimeError):
@@ -31,6 +41,7 @@ class Cloudflare:
         if not ACCOUNT_ID.fullmatch(account):
             raise QualificationError("invalid account ID")
         self.account = account
+        self.upload_attempts = 0
         self.http = httpx.Client(
             base_url=f"https://api.cloudflare.com/client/v4/accounts/{account}/",
             headers={"Authorization": f"Bearer {token}"},
@@ -38,7 +49,7 @@ class Cloudflare:
             trust_env=False,
         )
 
-    def request(self, method, path="", **kwargs):
+    def envelope(self, method, path="", **kwargs):
         # Envelope only. Error bodies may echo bindings or credentials.
         response = self.http.request(method, path, **kwargs)
         if response.status_code == 204:
@@ -50,7 +61,58 @@ class Cloudflare:
         if not response.is_success or not payload.get("success"):
             codes = [item["code"] for item in payload.get("errors", []) if isinstance(item.get("code"), int)]
             raise ApiError(method, response.status_code, codes, path)
-        return payload["result"]
+        return payload
+
+    def request(self, method, path="", **kwargs):
+        payload = self.envelope(method, path, **kwargs)
+        return None if payload is None else payload["result"]
+
+    def inventory(self, path, *, cursor=False, **filters):
+        rows = []
+        seen_ids = set()
+        total = None
+        params = {**filters, "per_page": 100}
+        if not cursor:
+            params["page"] = 1
+        for _ in range(100):
+            payload = self.envelope("GET", path, params=dict(params))
+            info = payload.get("result_info") or {}
+            batch = payload["result"]
+            ids = {row["id"] for row in batch}
+            if len(ids) != len(batch) or seen_ids & ids or info.get("count", len(batch)) != len(batch):
+                raise QualificationError("inventory page count or identity mismatch")
+            seen_ids.update(ids)
+            rows.extend(batch)
+            reported_total = info.get("total_count")
+            if reported_total is not None:
+                if total is not None and total != reported_total:
+                    raise QualificationError("inventory total changed during pagination")
+                total = reported_total
+            if cursor:
+                next_token = info.get("next_page_token")
+                if next_token:
+                    if not batch or next_token == params.get("page_token"):
+                        raise QualificationError("inventory cursor did not advance")
+                    params["page_token"] = next_token
+                    continue
+                if not info and len(batch) >= params["per_page"]:
+                    raise QualificationError("full cursor page lacks pagination metadata")
+            else:
+                page = params["page"]
+                if info.get("page", page) != page:
+                    raise QualificationError("inventory page did not advance")
+                pages = info.get("total_pages")
+                if ((pages is not None and page < pages)
+                        or (total is not None and len(rows) < total)
+                        or (pages is None and total is None and len(batch) >= info.get("per_page", 100))):
+                    if not batch:
+                        raise QualificationError("inventory ended before its reported total")
+                    params["page"] += 1
+                    continue
+            if total is not None and len(rows) != total:
+                raise QualificationError("inventory total did not reconcile")
+            return rows
+        raise QualificationError("inventory exceeded the pagination bound")
 
     def optional(self, path):
         try:
@@ -61,8 +123,10 @@ class Cloudflare:
             return None
 
     def upload(self, name, parts, **metadata):
+        files = worker_parts(parts, metadata)
+        self.upload_attempts += 1
         return self.request(
-            "PUT", f"workers/scripts/{name}", files=worker_parts(parts, metadata)
+            "PUT", f"workers/scripts/{name}", files=files
         )
 
 
@@ -102,9 +166,13 @@ def observe_owned(settings, owner):
     return settings
 
 
+class ResourceExists(QualificationError):
+    pass
+
+
 def require_absent(settings):
     if settings is not None:
-        raise QualificationError("resource already exists")
+        raise ResourceExists("resource already exists")
 
 
 def application_spec(name, namespace):
@@ -124,6 +192,14 @@ def application_path(application_id):
     return f"containers/applications/{application_id}"
 
 
+def matches_application(row, spec):
+    return (
+        row.get("name") == spec["name"]
+        and row.get("scheduling_policy") == spec["scheduling_policy"]
+        and (row.get("durable_objects") or {}).get("namespace_id") == spec["durable_objects"]["namespace_id"]
+    )
+
+
 def active_entitlement(entries, key):
     return any(
         row["id"] == key and not row["deleted_date"]
@@ -137,8 +213,8 @@ class RegistryCopy:
 
     def __init__(self, executable, directory):
         self.executable = executable.resolve(strict=True)
-        self.config = directory / "docker-config"
-        self.env = {**os.environ, "DOCKER_CONFIG": str(self.config)}
+        self.directory = directory
+        self.env = {**subprocess_environment(), "DOCKER_CONFIG": str(directory / "anonymous-config")}
         if self.run("version") != "v0.20.6":
             raise QualificationError("crane v0.20.6 is required")
 
@@ -151,20 +227,27 @@ class RegistryCopy:
             raise QualificationError(f"crane {args[0]} failed")
         return result.stdout.strip()
 
-    def bind_credentials(self, api):
+    @contextmanager
+    def credentials(self, api, *, push=False):
         credentials = api.request(
             "POST", f"containers/registries/{REGISTRY}/credentials",
-            json={"expiration_minutes": 15, "permissions": ["pull", "push"]},
+            json={"expiration_minutes": 15, "permissions": ["pull", "push"] if push else ["pull"]},
         )
         if credentials["account_id"] != api.account or credentials["registry_host"] != REGISTRY:
             raise QualificationError("registry credentials resolved a different account or host")
         encoded = base64.b64encode(
             f"{credentials['username']}:{credentials['password']}".encode()
         ).decode()
-        self.config.mkdir(mode=0o700)
-        token_file = self.config / "config.json"
-        with os.fdopen(os.open(token_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "w") as stream:
-            json.dump({"auths": {REGISTRY: {"auth": encoded}}}, stream)
+        with tempfile.TemporaryDirectory(prefix="registry-", dir=self.directory) as config:
+            token_file = Path(config) / "config.json"
+            with os.fdopen(os.open(token_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "w") as stream:
+                json.dump({"auths": {REGISTRY: {"auth": encoded}}}, stream)
+            previous = self.env["DOCKER_CONFIG"]
+            self.env["DOCKER_CONFIG"] = config
+            try:
+                yield
+            finally:
+                self.env["DOCKER_CONFIG"] = previous
 
     def copy(self, source, tag, digest):
         if self.run("digest", source) != digest:
