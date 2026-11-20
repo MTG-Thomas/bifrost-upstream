@@ -129,6 +129,6 @@ Define shared Pydantic DTOs. Run `./test.sh tests/unit/test_dto_flags.py` and `.
 
 ## Remaining Risks and Decisions
 
-Phase 0 qualified the provisioning operations. Phase 1 qualified the least-privilege entitlement read. The first product pilot reached Connect and the Paid check, then failed closed at its $5 limit. With the subscription shown separately, the smallest fleet envelope is $13.31. [Phase 1 product pilot](PHASE1-PILOT.md).
+Phase 0 qualified the provisioning operations. The Phase 1 product pilot verified Connect, the Paid check, the packaged REST deployment, ingress refusals, Reconcile, and cleanup. Enable stayed closed because the API runner could reach only the IPv4 addresses of the dual-stack ingress hostname. The signed canary, burst, and active drain remain unqualified. The smallest usage envelope is $13.31, which also prevents a below-current-spend policy change within the trial's $1 abort threshold. [Phase 1 product pilot](PHASE1-PILOT.md).
 
 Phase 3 owns the Containers scheduling path. If a supported path is unavailable, keep that scope gated and report the blocker. Cloudflare previously refused an instance while the application was otherwise healthy. Qualified configuration cannot guarantee capacity at a particular time. Hosted Workers success used the warm-state ordering fix. The subsequent storage `sync()` durability change has local evidence only.

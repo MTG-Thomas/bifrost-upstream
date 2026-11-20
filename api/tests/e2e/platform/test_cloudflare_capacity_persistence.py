@@ -1,19 +1,25 @@
 """Exercise the Cloudflare journal against the migrated platform database."""
 
 import json
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
+from alembic.script import ScriptDirectory
 from fastapi import HTTPException
 from pydantic import SecretStr
 from shared.models import CloudflareCapacityPolicy, CloudflareWorkersPolicy
 from sqlalchemy import delete, select, text, update
+from sqlalchemy.engine import Connection
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import Settings
@@ -987,6 +993,31 @@ async def create_installation(
         ),
         bounds=WorkersReleaseMeterBounds(60, zero, zero, "fixture-release", rated_slots),
     )
+
+
+@pytest.mark.asyncio
+async def test_usage_envelope_migration_preserves_saved_policy(
+    db_session: AsyncSession, installation: CloudflareInstallation,
+) -> None:
+    scripts = ScriptDirectory(str(Path(__file__).resolve().parents[3] / "alembic"))
+    migration = scripts.get_revision("20261120_cf_usage_only_envelope")
+    assert migration is not None
+    module = migration.module
+    original = {**installation.policy, "fleet_envelope_usd": "13.31"}
+    installation.policy = original
+    await db_session.flush()
+    connection = await db_session.connection()
+
+    def migrate(sync_connection: Connection, operation: Callable[[], None]) -> None:
+        with Operations.context(MigrationContext.configure(sync_connection)):
+            operation()
+
+    await connection.run_sync(migrate, module.downgrade)
+    await db_session.refresh(installation)
+    assert installation.policy == {**original, "fleet_envelope_usd": "18.31"}
+    await connection.run_sync(migrate, module.upgrade)
+    await db_session.refresh(installation)
+    assert installation.policy == original
 
 
 @pytest.mark.asyncio

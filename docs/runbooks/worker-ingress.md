@@ -8,6 +8,11 @@ replica checks the hostname against the non-retired installation's HTTPS
 origin and caches the result for three seconds. The listener remains available during
 Scale In and Disconnect so launchers can drain.
 
+The API runner needs outbound HTTPS and WebSocket connectivity to every
+public address advertised for the worker hostname. If DNS returns both
+A and AAAA records, the runner needs both IPv4 and IPv6 egress. A working
+browser probe on IPv4 alone is insufficient for Enable.
+
 - **Docker Compose** — Attach the proxy to the Bifrost network and target
   `http://api:8001`. Compose exposes the port to the network without publishing
   it on the host.
