@@ -453,7 +453,7 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # are optional and Cloudflare issue metadata and info severity are additive.
     # Cloudflare capacity and workflow approval add request and status DTOs.
     # MIN_CLI_VERSION remains unchanged.
-    "ad812ee2c9c87f74a3a7a7e5d9b8763a5dcd66b6c67a90ece3a962f5a42e462b"
+    "c9cad3fca20a53200a91921847cbea436abff95a62a1a3cf75c1b6a8a9195be4"
 )
 
 

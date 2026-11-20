@@ -16660,6 +16660,11 @@ export interface components {
             state: "ready" | "budget_reached" | "ledger_unavailable";
             /** Estimated Usd */
             estimated_usd: string | null;
+            /**
+             * Workers Paid Subscription Usd
+             * @description Monthly Workers Paid subscription billed separately by Cloudflare
+             */
+            workers_paid_subscription_usd: string;
             /** Rate Table Version */
             rate_table_version: string;
             /**
