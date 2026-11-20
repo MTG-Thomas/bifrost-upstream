@@ -86,3 +86,21 @@ a canary callback for its reserved launcher. The callback verifies a signed
 hello and a no-effect SDK read from the runtime on the same origin.
 `reachable` reports the transport and policy checks. `ready` additionally
 reports both canary observations.
+
+## Usage Estimate Coverage
+
+Managed Workers price launcher lifetime and control traffic separately
+from workflow receipts. Provider polling reaches both WorkerLedger and
+the launcher and is budgeted at the fastest controller cadence. Startup,
+alarm, reconnect and cleanup traffic have control reserves. The workload
+receipt covers launcher storage, TenantHost dispatch RPCs and application
+logs. Bifrost charges at least the pinned workload caps and retains
+observed usage above them. Exhaustion closes workload admission while
+terminal ACK recovery continues.
+
+Bifrost reserves TenantHost residency through each managed workflow's
+finite timeout plus the warm window and final alarm. The reservation also
+covers known RPCs, storage writes and logs. Provider-generated retries and
+logs, Dynamic Worker creation, retained storage beyond the reserve, and
+account-level allowances and invoice rounding can affect the provider bill.
+[Cloudflare Durable Object pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)

@@ -10,12 +10,12 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from shared.models import CloudflareLauncherUsage
+from shared.models import CloudflareLauncherCounts
 
 WORKERS_RELEASE_PATH = Path("/app/artifacts/cloudflare/workers")
 MAX_WORKER_BYTES = 64 * 1024 * 1024
 QUALIFIED_RUNTIME_SHA256 = "fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5"
-QUALIFIED_METER_BOUNDS_SHA256 = "ec57811a7e51bfa202f7af644b26f4550c40b7e88394ae7f723e37cbfdaf1aa6"
+QUALIFIED_METER_BOUNDS_SHA256 = "4742444461d123f65b06d8961ec559f05466971bb9546e0c9bf752e84fe58b30"
 LAUNCHER_CPU_CEILING_MS = 30_000
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 WorkerRole = Literal["launcher", "capacity"]
@@ -72,7 +72,7 @@ class LauncherReference(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source: str = Field(min_length=1)
-    observed: CloudflareLauncherUsage
+    observed: CloudflareLauncherCounts
 
 
 class MeterQualification(BaseModel):

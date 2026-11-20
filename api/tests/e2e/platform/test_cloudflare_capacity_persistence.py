@@ -22,7 +22,7 @@ from shared.models import (
     CloudflareLauncherUsage,
     CloudflareWorkersPolicy,
 )
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -99,11 +99,10 @@ from src.services.worker_pool.cloudflare_spend import (
     WORKERS_LEGACY_RATE_TABLE_VERSION,
     WORKERS_RATE_TABLE_VERSION,
     WORKERS_RATES,
-    _reported_cost,
     cloudflare_estimated_usage,
     launcher_lifetime_rate,
-    launcher_meter_cost,
     read_workers_usage,
+    reserve_tenant_host_usage,
     usage_period,
 )
 from src.services.worker_pool.cloudflare_workers_rest import (
@@ -114,6 +113,7 @@ from src.services.worker_pool.cloudflare_workers_rest import (
 )
 
 OPERATOR_ID = UUID("20cb7fe5-78e2-48d7-8f1e-8edcac69ffab")
+TEST_LAUNCHER_CAPS = {"sqlite_rows_written": 100, "do_requests": 20, "log_events": 5}
 
 
 def _platform_operator() -> Caller:
@@ -1085,7 +1085,7 @@ async def create_installation(
             monthly_limit_usd=Decimal("10.00"),
             shared_managed_worker_cap=8,
         ),
-        bounds=WorkersReleaseMeterBounds(60, zero, zero, "fixture-release", rated_slots),
+        bounds=WorkersReleaseMeterBounds(60, zero, zero, "fixture-release", rated_slots, TEST_LAUNCHER_CAPS),
     )
 
 
@@ -1359,24 +1359,32 @@ async def test_admission_prices_the_qualified_ledger_bounds(
     assert await db_session.scalar(price) == (
         Decimal("0.01681260") + elapsed * Decimal("0.001447353")
     )
-    receipt = CloudflareLauncherUsage(sqlite_rows_written=12, do_requests=8, log_events=3)
+    receipt = CloudflareLauncherUsage(sqlite_rows_written=120, do_requests=22, log_events=8, exhausted=True)
     current.meter_release_digest = "b" * 64
     current.meter_rate_version = WORKERS_RATE_TABLE_VERSION
     bounds = json.loads(Path(cloudflare_spend.__file__).with_name("cloudflare_meter_bounds.json").read_bytes())
     current.meter_bounds = {
-        "caps": {name: count * 10 for name, count in bounds["qualification"]["launcher_reference"]["observed"].items()},
+        "caps": TEST_LAUNCHER_CAPS,
         "second_usd": str(launcher_lifetime_rate({name: Decimal(value) for name, value in bounds["per_launcher_second"].items()})),
     }
+    # The production guard charges a floor per meter and retains amounts
+    # above the cap even for a regressing or uncertain final receipt.
+    lifetime_base = Decimal("0.01681260") + elapsed * Decimal("0.00068439050") + Decimal("0.00004280")
+    fallback = lifetime_base + Decimal("0.000106")
+    await db_session.flush()
+    assert await db_session.scalar(price) == fallback
     current.meter_final = receipt.model_dump()
     await db_session.flush()
-    assert await db_session.scalar(price) == _reported_cost(elapsed, elapsed * 2, 11, 17, launcher_meter_cost(receipt))
-    current.meter_final = None
-    await db_session.flush()
-    assert await db_session.scalar(price) == _reported_cost(elapsed, elapsed * 2, 11, 17, launcher_meter_cost(None))
-    current.meter_final = receipt.model_dump()
+    assert await db_session.scalar(price) == lifetime_base + Decimal("0.00012810")
+    current.meter_terminal = {"sqlite_rows_written": 150, "do_requests": 18, "log_events": 1}
     current.meter_uncertain = True
     await db_session.flush()
-    assert await db_session.scalar(price) == _reported_cost(elapsed, elapsed * 2, 11, 17, launcher_meter_cost(None))
+    assert await db_session.scalar(price) == lifetime_base + Decimal("0.00015810")
+    saved_bounds = current.meter_bounds
+    current.meter_bounds = {"caps": {"do_requests": 1}, "second_usd": "0.00068126550"}
+    await db_session.flush()
+    assert await db_session.scalar(price) is None
+    current.meter_bounds = saved_bounds
     installation.policy = {**installation.policy, "rate_table_version": "previous-rate-table"}
     await db_session.flush()
     assert await db_session.scalar(price) is None
@@ -1384,6 +1392,73 @@ async def test_admission_prices_the_qualified_ledger_bounds(
     assert status.installation is not None
     assert status.installation.spend.state == "ledger_unavailable"
     assert status.installation.spend.rate_table_version == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_tenant_residency_reserves_route_and_warm_tail_in_the_spend_query(
+    db_session: AsyncSession, installation: CloudflareInstallation,
+) -> None:
+    now = await db_session.scalar(select(func.clock_timestamp()))
+    assert now is not None
+    worker_id = uuid4()
+    incarnation = CloudflareUsageIncarnation(
+        worker_id=worker_id, installation_id=installation.id, started_at=now - timedelta(minutes=1),
+        slots=1, meter_release_digest="f" * 64, meter_rate_version=WORKERS_RATE_TABLE_VERSION,
+        meter_bounds={"caps": TEST_LAUNCHER_CAPS, "second_usd": "0.00068126550"},
+    )
+    db_session.add(incarnation)
+    await db_session.flush()
+    price = select(cloudflare_estimated_usage()).where(CloudflareInstallation.id == installation.id)
+    assert not await reserve_tenant_host_usage(db_session, worker_id, None)
+    assert await reserve_tenant_host_usage(db_session, worker_id, now + timedelta(seconds=120))
+    row = await db_session.get(CloudflareUsageActivity, (installation.id, usage_period(now)[0]))
+    assert row is not None
+    assert 119 <= row.tenant_host_seconds - (20 * 60 + 45) <= 120
+    assert row.tenant_dispatches == 1
+    incarnation.deleted_at = now
+    await db_session.flush()
+    with_host = await db_session.scalar(price)
+    expected = Decimal("0.0000414") + row.tenant_host_seconds * (
+        Decimal("0.0000015625") + Decimal("0.00000610") / 45
+    )
+    row.tenant_host_seconds = row.tenant_dispatches = 0
+    await db_session.flush()
+    without_host = await db_session.scalar(price)
+    assert with_host is not None and without_host is not None
+    assert abs(with_host - without_host - expected) < Decimal("0.000000000001")
+    # A route booked across rollover leaves a residency reservation in
+    # the next UTC month even though its request starts in this month.
+    next_period = usage_period(now)[1]
+    assert await reserve_tenant_host_usage(db_session, worker_id, next_period + timedelta(seconds=10))
+    rollover = await db_session.get(CloudflareUsageActivity, (installation.id, next_period))
+    assert rollover is not None
+    assert (rollover.tenant_host_seconds, rollover.tenant_dispatches) == (1255, 0)
+    installation.policy = {**installation.policy, "meter_launcher": {}}
+    await db_session.flush()
+    assert await db_session.scalar(price) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delete_uid,final_match", [("wrong", True), ("owned", False)])
+async def test_canary_cannot_seal_without_a_matching_delete_receipt_and_row(
+    monkeypatch, delete_uid: str, final_match: bool,
+) -> None:
+    worker_id = uuid4()
+    db = SimpleNamespace(scalar=AsyncMock(side_effect=[worker_id, worker_id if final_match else None]))
+
+    @asynccontextmanager
+    async def context():
+        yield db
+
+    seal = AsyncMock()
+    monkeypatch.setattr(cloudflare_canary, "get_db_context", context)
+    monkeypatch.setattr(cloudflare_canary, "seal_launcher_meter", seal)
+    client = SimpleNamespace(
+        get=AsyncMock(return_value=SimpleNamespace(resource_uid="owned", state="running")),
+        remove=AsyncMock(return_value=SimpleNamespace(resource_uid=delete_uid, state="deleted", usage={})),
+    )
+    assert not await cloudflare_canary._retire_canary(client, worker_id, "owned")
+    seal.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1563,7 +1638,7 @@ async def test_policy_save_fences_old_admission_and_rejects_an_unsafe_budget(
     )
     zero = dict.fromkeys(WORKERS_RATES, Decimal(0))
     fixed = {**zero, "sqlite_rows_written": Decimal(5_000_000)}
-    bounds = WorkersReleaseMeterBounds(60, zero, fixed, "fixture-release", 2)
+    bounds = WorkersReleaseMeterBounds(60, zero, fixed, "fixture-release", 2, TEST_LAUNCHER_CAPS)
     with pytest.raises(CloudflareBudgetTooLow):
         await save_cloudflare_policy(
             db_session, installation_id=installation.id, expected_revision=1, policy=policy, bounds=bounds,

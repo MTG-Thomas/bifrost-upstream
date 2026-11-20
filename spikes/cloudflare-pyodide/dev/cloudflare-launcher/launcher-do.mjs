@@ -4,12 +4,11 @@ import {LauncherCore} from './launcher-core.mjs';
 import {runAgentLoop} from './agent-loop.mjs';
 import {agentStreamEvents} from './agent-provider.mjs';
 import {MAX_WORKFLOW_SLOTS, SLOT_BYTES} from './protocol.mjs';
-import {launcherMeter, METER_ERROR} from './launcher-meter.mjs';
+import {launcherMeter, METER_ERROR, STORAGE_CHUNK} from './launcher-meter.mjs';
 
 const DIAL_TIMEOUT_MS = 10_000;
 const ALARM_WATCHDOG_MS = 15_000;
 const MAX_BACKOFF_MS = 30_000;
-const STORAGE_CHUNK = 1 << 20;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 function readSettings(env) {
@@ -60,14 +59,13 @@ function confirmedStorage(ctx, meter) {
       const text = rows.map(({data}) => decoder.decode(data, {stream: true})).join('') + decoder.decode();
       return JSON.parse(text);
     },
-    put(key, value, essential = true) {
+    put(key, value, kind = 'control') {
       const bytes = new TextEncoder().encode(JSON.stringify(value));
-      if (meter) {
+      if (meter && kind !== 'control') {
         const oldRows = sql.exec('SELECT count(*) AS n FROM ledger WHERE key = ?', key).one().n;
         // The ledger has one secondary index. Reserve table and index writes.
         const chunks = Math.ceil(bytes.length / STORAGE_CHUNK);
-        if (!meter.charge({sqlite_rows_written: 2 * (oldRows + chunks)}, essential) &&
-            (!essential || chunks > 1)) {
+        if (!meter.charge({sqlite_rows_written: 2 * (oldRows + chunks)}, kind === 'settlement')) {
           throw Object.assign(new Error('Cloudflare launcher SQLite budget reached'), {name: METER_ERROR});
         }
       }
@@ -79,14 +77,15 @@ function confirmedStorage(ctx, meter) {
         }
       }));
     },
-    delete(key) {
+    delete(slot, tombstone) {
+      const predicate = 'WHERE key IN (?, ?)';
       if (meter) meter.charge({sqlite_rows_written: 2 *
-        sql.exec('SELECT count(*) AS n FROM ledger WHERE key = ?', key).one().n}, true);
-      return confirm(() => sql.exec('DELETE FROM ledger WHERE key = ?', key));
+        sql.exec(`SELECT count(*) AS n FROM ledger ${predicate}`, slot, tombstone).one().n}, true);
+      return confirm(() => sql.exec(`DELETE FROM ledger ${predicate}`, slot, tombstone));
     },
     clearReleased() {
       if (meter) meter.charge({sqlite_rows_written: 2 *
-        sql.exec("SELECT count(*) AS n FROM ledger WHERE key != 'enrollment'").one().n}, true);
+        sql.exec("SELECT count(*) AS n FROM ledger WHERE key NOT IN ('enrollment', 'control')").one().n}, true);
       return confirm(() => sql.exec("DELETE FROM ledger WHERE key != 'enrollment'"));
     },
   };
@@ -124,13 +123,19 @@ export class CloudflareLauncher extends DurableObject {
     this.#settings = settings;
     const getHost = (id) => {
       const host = this.ctx.exports.TenantHost.getByName(id);
+      const charge = () => {
+        if (!this.#meter.charge({do_requests: 1})) {
+          throw Object.assign(new Error('Cloudflare launcher DO request budget reached'),
+            {name: METER_ERROR, attemptState: 'not_started'});
+        }
+      };
       return this.#meter ? {
         run: (input) => {
-          if (!this.#meter.charge({do_requests: 1})) throw new Error('Cloudflare launcher DO request budget reached');
+          charge();
           return host.run(input);
         },
         warm: (input) => {
-          if (!this.#meter.charge({do_requests: 1})) throw new Error('Cloudflare launcher DO request budget reached');
+          charge();
           return host.warm(input);
         },
         stopWorkflow: (id) => {
@@ -258,7 +263,6 @@ export class CloudflareLauncher extends DurableObject {
       const settings = enrollmentSettings(enrollment, this.env);
       if (enrollment.launcherId !== enrollment.incarnationId) throw new Error('Invalid managed enrollment');
       const fact = this.#binding(enrollment.resourceUid);
-      this.#meter?.charge({do_requests: 1});
       if (fact) {
         if (!fact.enrollment || Object.keys(enrollment).some((key) => key !== 'memoryLimitBytes' &&
             enrollment[key] !== fact.enrollment[key]) || (fact.enrollment.memoryLimitBytes ?? SLOT_BYTES) !==
@@ -276,12 +280,11 @@ export class CloudflareLauncher extends DurableObject {
   startManaged(resourceUid) {
     return this.#serialize(async () => {
       const fact = this.#binding(resourceUid);
-      this.#meter?.charge({do_requests: 1});
       if (!fact || !['prepared', 'accepted'].includes(fact.state)) throw new Error('Launcher cannot start');
       if (fact.state === 'prepared') {
         // Set the wake before committing acceptance. A reset after the wake
         // cannot dial until the durable state says this start was accepted.
-        await this.#setAlarm(Date.now());
+        await this.ctx.storage.setAlarm(Date.now());
         await this.#saveFact({...fact, state: 'accepted'});
       }
     });
@@ -290,7 +293,6 @@ export class CloudflareLauncher extends DurableObject {
   observeManaged(resourceUid) {
     return this.#serialize(async () => {
       const fact = this.#binding(resourceUid);
-      this.#meter?.charge({do_requests: 1});
       if (!fact || fact.state === 'prepared') return {state: 'prepared', start_fact: 'never_started'};
       if (fact.state === 'deleted') return {state: 'deleted', start_fact: 'destroyed'};
       if (await this.#core.isStopped()) return {state: 'stopped', start_fact: 'exited'};
@@ -302,7 +304,6 @@ export class CloudflareLauncher extends DurableObject {
     return this.#serialize(async () => {
       const fact = this.#binding(resourceUid);
       if (this.#meter?.final) return this.#meter.seal();
-      this.#meter?.charge({do_requests: 1}, true);
       if (fact?.state === 'deleted') {
         await this.#stopReleased();
         return this.#meter?.seal();
@@ -326,21 +327,7 @@ export class CloudflareLauncher extends DurableObject {
 
   async #stopReleased() {
     await this.#storage.clearReleased();
-    await this.#deleteAlarm();
-  }
-
-  #setAlarm(at) {
-    this.#meter?.charge({sqlite_rows_written: 1}, true);
-    return this.ctx.storage.setAlarm(at);
-  }
-
-  #deleteAlarm() {
-    this.#meter?.charge({sqlite_rows_written: 1}, true);
-    return this.ctx.storage.deleteAlarm();
-  }
-
-  #log(...record) {
-    if (!this.#meter || this.#meter.charge({log_events: 1})) console.info(...record);
+    await this.ctx.storage.deleteAlarm();
   }
 
   async start() {
@@ -352,22 +339,25 @@ export class CloudflareLauncher extends DurableObject {
 
   async alarm() {
     if (this.#managed && !await this.#serialize(() => this.#fact?.state === 'accepted')) return;
-    if (this.#meter && !this.#meter.charge({do_requests: 1})) return;
     // Keep a durable wake-up even if the DO resets while a connection is open.
     // A close schedules an earlier retry. Only the current alarm opens sockets.
     const core = this.#core;
     if (!core || core.retired) return;
-    await this.#setAlarm(Date.now() + ALARM_WATCHDOG_MS);
+    if (!await core.canReconnect()) {
+      await this.ctx.storage.deleteAlarm();
+      return;
+    }
+    await this.ctx.storage.setAlarm(Date.now() + ALARM_WATCHDOG_MS);
     if (this.#connection) return;
     const dial = await core.beginDial();
     if (!dial || this.#core !== core || core.retired) {
-      if (core.retired) await this.#deleteAlarm();
+      if (core.retired) await this.ctx.storage.deleteAlarm();
       return;
     }
     const controller = new AbortController();
     const connection = {session: dial.session, socket: null, welcomeTimer: null, heartbeat: null, controller};
     this.#connection = connection;
-    this.#log('launcher_control_dial', this.#settings.identity.incarnationId);
+    console.info('launcher_control_dial', this.#settings.identity.incarnationId);
     const timeout = setTimeout(() => controller.abort(), DIAL_TIMEOUT_MS);
     try {
       const response = await fetch(this.#settings.controlUrl, {
@@ -384,7 +374,7 @@ export class CloudflareLauncher extends DurableObject {
         return;
       }
       if (!connection.socket) {
-        this.#log('launcher_control_upgrade_refused', response.status);
+        console.info('launcher_control_upgrade_refused', response.status);
         await response.body?.cancel();
         await this.#disconnect(connection);
         return;
@@ -403,13 +393,10 @@ export class CloudflareLauncher extends DurableObject {
 
   async #receive(connection, data) {
     if (this.#connection !== connection) return;
-    // One conservative unit for every frame, with ACKs still receivable
-    // after the workload budget closes.
-    if (this.#meter && !this.#meter.charge({do_requests: 1})) this.#meter.charge({do_requests: 1}, true);
     await this.#core.receive(connection.session, data);
     if (this.#connection !== connection) return;
     if (connection.session.generation && connection.heartbeat === null) {
-      this.#log('launcher_control_welcome', connection.session.generation);
+      console.info('launcher_control_welcome', connection.session.generation);
       clearTimeout(connection.welcomeTimer);
       this.#backoff = 1000;
       connection.heartbeat = setInterval(() =>
@@ -432,14 +419,13 @@ export class CloudflareLauncher extends DurableObject {
     const ws = connection.socket;
     const core = this.#core;
     await core.closed(connection.session, code);
-    this.#log('launcher_control_closed', code ?? null, core.retired);
+    console.info('launcher_control_closed', code ?? null, core.retired);
     if (ws?.readyState === WebSocket.OPEN) ws.close(1000, 'launcher control closed');
-    if (core.retired || this.#fact?.state === 'deleted') {
-      await this.#deleteAlarm();
+    if (this.#fact?.state === 'deleted' || !await core.canReconnect()) {
+      await this.ctx.storage.deleteAlarm();
       return;
     }
-    if (this.#meter?.exhausted) return;
-    await this.#setAlarm(Date.now() + this.#backoff);
+    await this.ctx.storage.setAlarm(Date.now() + this.#backoff);
     this.#backoff = Math.min(this.#backoff * 2, MAX_BACKOFF_MS);
   }
 }

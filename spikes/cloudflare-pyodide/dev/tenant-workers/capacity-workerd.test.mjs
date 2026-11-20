@@ -31,16 +31,17 @@ const modules = Object.fromEntries([
 ].map((path) => [path, {type: 'esm', contents: readFileSync(new URL(path, root), 'utf8')}]));
 modules['entry.mjs'] = {type: 'esm', contents: `
   import {DurableObject} from 'cloudflare:workers';
-  import {launcherMeter} from './cloudflare-launcher/launcher-meter.mjs';
+  import {launcherMeter, SQLITE_HEADROOM} from './cloudflare-launcher/launcher-meter.mjs';
   export {CloudflareLauncher} from './cloudflare-launcher/launcher-do.mjs';
   export class MeterProbe extends DurableObject {
     witness(name, count) {
       const meter = launcherMeter(this.ctx.storage.sql,
-        '{"sqlite_rows_written":100,"do_requests":10,"log_events":2}');
-      const accepted = meter.charge({[name]: count});
-      const rejected = meter.charge({[name]: 1});
-      return JSON.stringify({accepted, rejected, counted: meter.snapshot()[name],
-        exhausted: meter.exhausted, sealed: !!meter.seal()});
+        JSON.stringify({sqlite_rows_written: SQLITE_HEADROOM + 20, do_requests: 10, log_events: 2}));
+      const accepted = name === 'log_events' ? meter.log() && meter.log() : meter.charge({[name]: count});
+      const rejected = name === 'log_events' ? meter.log() : meter.charge({[name]: 1});
+      const exhausted = Boolean(meter.exhausted);
+      meter.charge({[name]: name === 'log_events' ? 0 : 400}, true);
+      return JSON.stringify({accepted, rejected, exhausted, sealed: meter.seal()});
     }
   }
   export default {fetch() { return new Response(null, {status: 404}); }};
@@ -55,6 +56,10 @@ const canaries = new Map();
 const upgrades = new WebSocketServer({noServer: true});
 const measuredBundle = process.env.BIFROST_QUALIFIED_CAPACITY_BUNDLE;
 const measuredLauncher = process.env.BIFROST_QUALIFIED_LAUNCHER_BUNDLE;
+const controllerPolls = Number(process.env.BIFROST_QUALIFIED_CONTROLLER_POLLS ?? 0);
+const controllerSource = new URL('../../../../api/src/services/pool_cadence.py', import.meta.url);
+const reconcileSeconds = Number(/^POOL_RECONCILE_SPACING_SECONDS = (\d+(?:\.\d+)?)$/m.exec(
+  readFileSync(controllerSource, 'utf8').replaceAll('\r\n', '\n'))[1]);
 
 const sha256 = input => createHash('sha256').update(input).digest('hex');
 
@@ -96,6 +101,20 @@ async function referenceAttempt(record, solution) {
   assert.equal(terminal.result.success, true, JSON.stringify(terminal));
   assert.deepEqual(terminal.result.result, {case: caseName, table_count: 0, ...(solution ? {install_value: 'solution'} : {})});
   return {id, usage: terminal.usage};
+}
+
+async function observeAtControllerCadence(path) {
+  const script = fileURLToPath(new URL('../e2e/controller-cadence.py', import.meta.url));
+  const observer = spawn('python3', [script, `${base}/v1/${path}`, String(controllerPolls)],
+    {stdio: ['pipe', 'pipe', 'inherit']});
+  const completion = new Promise((resolve, reject) => {
+    observer.once('error', reject);
+    observer.once('close', code => code === 0 ? resolve() : reject(new Error(`Cadence observer exited ${code}`)));
+    observer.stdin.on('error', reject);
+  });
+  observer.stdin.end(JSON.stringify(auth));
+  const [receipt] = await Promise.all([buffer(observer.stdout), completion]);
+  console.info('controller-cadence', receipt.toString('utf8').trim());
 }
 
 function localWorkerdCpu() {
@@ -234,7 +253,8 @@ async function start() {
             RUNTIME_SHA256: {type: 'text', value: 'fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5'},
             BIFROST_METER_ENGINE_CPU_MS: {type: 'text', value: '30000'},
             BIFROST_METER_SDK_REQUESTS: {type: 'text', value: '40'},
-            BIFROST_LAUNCHER_METERS: {type: 'text', value: '{"sqlite_rows_written":10000,"do_requests":1000,"log_events":100}'},
+            BIFROST_LAUNCHER_METERS: {type: 'text', value: process.env.BIFROST_QUALIFIED_LAUNCHER_METERS ??
+              '{"sqlite_rows_written":10000,"do_requests":1000,"log_events":100}'},
           } : {MeterProbe: {type: 'durable-object', worker: 'launcher', exportName: 'MeterProbe'}})},
         manifest: {mainModule: 'entry.mjs', modulesRoot: fileURLToPath(root), modules: measuredLauncher
           ? {'entry.mjs': {type: 'esm', contents: readFileSync(measuredLauncher, 'utf8')}} : modules}},
@@ -268,7 +288,9 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
   const uid = randomBytes(16).toString('hex');
   const key = randomBytes(32).toString('hex');
   const reservation = {worker_id: id, worker_version: settings.version,
-    memory_limit_bytes: (measuredLauncher ? 256 : 128) * 1024 ** 2, max_lifetime_seconds: 60, drain_grace_seconds: 5,
+    memory_limit_bytes: (measuredLauncher ? 256 : 128) * 1024 ** 2,
+    max_lifetime_seconds: controllerPolls ? Math.ceil(controllerPolls * reconcileSeconds) + 120 : 60,
+    drain_grace_seconds: 5,
     resource_uid: uid, control_key: key};
   assert.equal((await request(path, 'PUT', reservation, {...auth, Authorization: `Bearer ${key}`})).status, 401);
   assert.equal((await request(path, 'PUT', reservation, {...auth, 'X-Bifrost-Capacity-Scope': 'foreign'})).status, 404);
@@ -293,9 +315,15 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
   assert.equal(identity.runtime_profile, 'cloudflare-python-v1');
   assert.equal(seen.inventory.payload.event, 'inventory');
   assert.equal((await (await request(path)).json()).state, 'running');
-  const references = measuredLauncher
-    ? await Promise.all([referenceAttempt(seen, false), referenceAttempt(seen, true)])
-    : null;
+  let references = null;
+  if (controllerPolls) {
+    assert.ok(measuredLauncher);
+    const loose = await referenceAttempt(seen, false);
+    await observeAtControllerCadence(path);
+    references = [loose, await referenceAttempt(seen, true)];
+  } else if (measuredLauncher) {
+    references = await Promise.all([referenceAttempt(seen, false), referenceAttempt(seen, true)]);
+  }
   if (references) {
     // A later empty heartbeat witnesses that both terminal ACKs cleared
     // their slots before the provider was asked to seal the incarnation.
@@ -323,13 +351,16 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
 });
 
 for (const [meter, count, counted] of [
-  ['sqlite_rows_written', 19, 21], ['do_requests', 6, 6], ['log_events', 2, 2],
+  ['sqlite_rows_written', 19, 423], ['do_requests', 6, 406], ['log_events', 2, 2],
 ]) {
   test(`workerd counts and refuses launcher ${meter} at the workload ceiling`, async () => {
     const probes = await mf.getDurableObjectNamespace('MeterProbe', 'launcher');
-    assert.deepEqual(JSON.parse(await probes.getByName(meter).witness(meter, count)), {
-      accepted: true, rejected: false, counted, exhausted: meter, sealed: false,
-    });
+    const receipt = JSON.parse(await probes.getByName(meter).witness(meter, count));
+    assert.equal(receipt.accepted, true);
+    assert.equal(receipt.rejected, false);
+    assert.equal(receipt.exhausted, meter !== 'log_events');
+    assert.equal(receipt.sealed.exhausted, meter !== 'log_events');
+    assert.equal(receipt.sealed[meter], counted);
   });
 }
 

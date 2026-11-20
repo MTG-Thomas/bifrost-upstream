@@ -137,22 +137,30 @@ def _canary_session_failure(checkpoint: dict, worker_id: UUID, generation: int) 
 
 async def _retire_canary(client: ExternalCapacityClient, worker_id: UUID, resource_uid: str) -> bool:
     async with get_db_context() as db:
-        await db.execute(update(ExecutionWorker).where(
+        matched = await db.scalar(update(ExecutionWorker).where(
             ExecutionWorker.id == worker_id, ExecutionWorker.capacity_resource_uid == resource_uid,
-        ).values(state="retired", ended_at=datetime.now(UTC), end_reason="cloudflare_enable_canary"))
+        ).values(state="retired", ended_at=datetime.now(UTC), end_reason="cloudflare_enable_canary")
+            .returning(ExecutionWorker.id))
+        if matched is None:
+            return False
     try:
         observed = await client.get(worker_id, "workers")
         if observed is None or observed.resource_uid != resource_uid:
             return False
         if observed.state != "deleted":
             observed = await client.remove(worker_id, "workers", resource_uid)
+        if observed is None or observed.resource_uid != resource_uid or observed.state != "deleted":
+            return False
     except (httpx.HTTPError, CapacityProtocolError):
         return False
     async with get_db_context() as db:
-        await db.execute(update(ExecutionWorker).where(
+        matched = await db.scalar(update(ExecutionWorker).where(
             ExecutionWorker.id == worker_id, ExecutionWorker.capacity_resource_uid == resource_uid,
-        ).values(capacity_resource_deleted_at=func.clock_timestamp()))
-        await seal_launcher_meter(db, worker_id, observed.usage if observed is not None else None)
+            ExecutionWorker.state == "retired", ExecutionWorker.capacity_resource_deleted_at.is_(None),
+        ).values(capacity_resource_deleted_at=func.clock_timestamp()).returning(ExecutionWorker.id))
+        if matched is None:
+            return False
+        await seal_launcher_meter(db, worker_id, observed.usage)
     return True
 
 

@@ -8,6 +8,7 @@ import {
 } from './protocol.mjs';
 
 const CONTROL = 'control';
+const ACKNOWLEDGED = 'acknowledged';
 const slotKey = (index) => index === 0 ? 'slot' : `slot:${index}`;
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const UUID_RE = new RegExp(`^${UUID}$`);
@@ -96,6 +97,8 @@ function timeout(route) {
 // Each slot holds one confirmed route record. A terminal and its metadata
 // are written together and held until the API acknowledges that exact event.
 export class LauncherCore {
+  #acknowledged = new Set();
+  #stops = new Set();
   #control;
   #slots;
   #session = null;
@@ -133,7 +136,7 @@ export class LauncherCore {
   canReconnect() {
     return this.#serialize(async () => {
       await this.#load();
-      return !this.retired;
+      return !this.retired && (!this.meter?.exhausted || this.#slots.some(Boolean));
     });
   }
 
@@ -151,11 +154,11 @@ export class LauncherCore {
         await Promise.all(this.#slots.map((_, index) => this.storage.get(slotKey(index))));
       this.#released = true;
       this.#session = null;
-      if (slots.some(Boolean)) this.meter?.markUncertain();
       for (const slot of slots) {
         if (slot?.state === 'entering') this.#stop(slot.route);
       }
       this.#slots.fill(null);
+      await Promise.all(this.#stops);
     });
   }
 
@@ -166,18 +169,19 @@ export class LauncherCore {
   }
 
   async #saveControl(control) {
-    await this.storage.put(CONTROL, control);
+    await this.storage.put(CONTROL, control, 'control');
     this.#control = control;
   }
 
   async #saveSlot(index, slot) {
-    await this.storage.put(slotKey(index), slot, slot.state === 'terminal');
+    await this.storage.put(slotKey(index), slot, slot.state === 'terminal' ? 'settlement' : 'workload');
     this.#slots[index] = slot;
   }
 
   async #load() {
     if (this.#control) return;
     const control = await this.storage.get(CONTROL);
+    this.#acknowledged = new Set(await this.storage.get(ACKNOWLEDGED));
     for (let index = 0; index < this.#slots.length; index++) {
       const slot = this.#slots[index] = await this.storage.get(slotKey(index));
       if (!slot || slot.state === 'terminal') continue;
@@ -194,7 +198,7 @@ export class LauncherCore {
     return this.#serialize(async () => {
       if (this.#released) return null;
       await this.#load();
-      if (this.retired || this.#session) return null;
+      if (this.retired || this.#session || (this.meter?.exhausted && !this.#slots.some(Boolean))) return null;
       const helloSequence = this.#control.helloSequence + 1;
       if (!Number.isSafeInteger(helloSequence)) throw new ProtocolError('hello sequence exhausted');
       await this.#saveControl({...this.#control, helloSequence});
@@ -259,7 +263,13 @@ export class LauncherCore {
       const index = this.#slots.findIndex((slot) =>
         slot?.state === 'terminal' && slot.terminal._event_id === message.payload.event_id);
       if (index !== -1) {
-        await this.storage.delete(slotKey(index));
+        const routeId = this.#slots[index].route.route_id;
+        // Persist the compact replay fence before removing the bulky slot
+        // and its tombstone. A reset between writes can only replay the ACK.
+        const acknowledged = new Set(this.#acknowledged).add(routeId);
+        await this.storage.put(ACKNOWLEDGED, [...acknowledged], 'settlement');
+        this.#acknowledged = acknowledged;
+        await this.storage.delete(slotKey(index), `seen:${routeId}`);
         this.#slots[index] = null;
       }
       return;
@@ -410,20 +420,13 @@ export class LauncherCore {
   }
 
   async #dispatch(session, payload, accept, refuse, routePattern, makeRoute) {
-    // A tombstone contains only identity. It fences refused and settled routes
-    // across generations, including interruption between intent and slot writes.
     if (typeof payload.route_id !== 'string' || !routePattern.test(payload.route_id)) {
       refuse('ValueError', 'Invalid execution route identity');
       return;
     }
     const routeKey = `seen:${payload.route_id}`;
-    if (await this.storage.get(routeKey)) throw new ProtocolError('execution route already seen');
-    try {
-      await this.storage.put(routeKey, true, false);
-    } catch (error) {
-      if (error?.name !== METER_ERROR) throw error;
-      refuse(METER_ERROR, 'Cloudflare launcher meter limit reached before dispatch');
-      return;
+    if (this.#acknowledged.has(payload.route_id) || await this.storage.get(routeKey)) {
+      throw new ProtocolError('execution route already seen');
     }
     const route = makeRoute(payload, this.newId(), this.clock());
     if (!route) {
@@ -443,6 +446,8 @@ export class LauncherCore {
     }
     if (this.#session !== session) return;
     try {
+      // A durable intent fences an interruption before the slot is saved.
+      await this.storage.put(routeKey, true, 'workload');
       await this.#saveSlot(index, {route, state: 'accepted'});
     } catch (error) {
       if (error?.name !== METER_ERROR) throw error;
@@ -529,27 +534,20 @@ export class LauncherCore {
   #stop(route) {
     this.#aborts.get(route.route_id)?.abort();
     if (route.kind !== 'workflow') return;
-    this.background(this.stopHost(route).catch(() => {
+    const stop = this.stopHost(route).catch(() => {
       // API fencing and the retained uncertain terminal cover a lost stop.
-    }));
+    }).finally(() => this.#stops.delete(stop));
+    this.#stops.add(stop);
+    this.background(stop);
   }
 
   async #settle(index, route, {attempt_state, result}) {
-    if (attempt_state === 'uncertain') this.meter?.markUncertain();
     const event = route.kind === 'workflow' ? 'result' : route.kind === 'agent_run' ? 'cloudflare_agent_result' : 'summary_result';
-    let terminal = {event, route_id: route.route_id, runtime_handle: route.runtime_handle,
+    if (this.meter?.log()) console.info('launcher_workload_terminal', route.kind, attempt_state);
+    const terminal = {event, route_id: route.route_id, runtime_handle: route.runtime_handle,
       _event_id: this.newId(), attempt_state, result};
-    const limited = () => ({...terminal, ...failure(attempt_state, METER_ERROR,
-      `Cloudflare launcher meter limit reached: ${this.meter.exhausted}`)});
-    if (this.meter?.exhausted) terminal = limited();
     if (this.meter) terminal.usage = this.meter.snapshot();
-    try {
-      await this.#saveSlot(index, {route, state: 'terminal', terminal});
-    } catch (error) {
-      if (error?.name !== METER_ERROR) throw error;
-      terminal = {...limited(), usage: this.meter.snapshot()};
-      await this.#saveSlot(index, {route, state: 'terminal', terminal});
-    }
+    await this.#saveSlot(index, {route, state: 'terminal', terminal});
     this.#emitCurrent(terminal);
   }
 

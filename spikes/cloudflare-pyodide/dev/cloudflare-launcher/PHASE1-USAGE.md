@@ -124,61 +124,84 @@ assumptions are reservations for admission. Request-class limits are
 enforced per invocation, and the model does not measure concurrent or
 provider-generated CPU or establish a maximum invocation rate per second.
 
-The exact packaged launcher ran the loose Python reference workflow
-`8846c12c-104d-4324-aba2-8905a5375e73` and the Solution snapshot reference
-`3505ac02-de64-432f-81e4-132671c5aba9` on its two slots under workerd. The
-test supplied the approved module snapshots, served the upstream SDK
-response locally and verified both workflow results, including the Solution
-helper value. The relay acknowledged both terminal events. This qualified
-the packaged launcher meter without a hosted deployment or a Bifrost
-placement run.
+The exact packaged launcher completed loose Python workflow
+`defd0cc3-5fdf-4716-8179-43fbae4151b8`, remained running for 170 real
+provider GETs over 340.545 seconds, then completed Solution snapshot
+workflow `7fc64336-dc58-44ec-be82-89ef4e5fe013`. The workerd harness
+used the controller's two-second minimum interval, which is faster than
+the five-second idle sweep. It sent the same resource GET through the
+real capacity Worker, WorkerLedger and launcher, with the launcher alarm
+and control WebSocket active. The test supplied approved module snapshots,
+verified both Python results and witnessed both terminal ACKs. It
+exercised the provider path at controller cadence with a local relay
+and fixtures for the API peer and placement.
+
+The packaged caps passed the same 170-poll check using Bifrost's
+production wake scheduler. That run took 340.841 seconds for the polling
+window. Loose execution `2cce230e-f440-4bbd-a620-28a91f985011` and
+Solution execution `cf3d6e6f-964f-4964-8af1-a82b374a398e` both
+succeeded. Their sealed counts matched the table and exhaustion was false.
 
 | Launcher meter | Loose terminal | Solution terminal | Sealed incarnation | 10× cap |
 | --- | ---: | ---: | ---: | ---: |
-| SQLite row writes | 57 | 66 | 94 | 940 |
-| DO request units | 13 | 14 | 16 | 160 |
-| Application log events | 2 | 2 | 3 | 30 |
+| SQLite row writes | 15 | 43 | 62 | 620 |
+| DO request units | 3 | 6 | 6 | 60 |
+| Application log events | 1 | 2 | 2 | 20 |
 
 Terminal reports are cumulative snapshots. The sealed count includes
-terminal and ACK bookkeeping, the launcher's own meter journal, allowance
-for index and alarm writes, and release bookkeeping. The measurement
-uses the sealed incarnation as a conservative single reference input.
-The launcher stops admitting work when a meter is exhausted, reserves
-capacity for settlement, and reports the limiting meter in the execution
-error. A missing, incomplete, regressing or uncertain final receipt
-reserves all three caps. Open incarnations also reserve the caps.
-Pricing retains each incarnation's deployed release, rate version and
-pinned bounds across policy changes and month boundaries.
+terminal and ACK storage, the launcher's meter journal, index writes,
+and workload release bookkeeping. Polling, the control socket and
+watchdog alarms are outside the workload cap. Exhaustion declines new
+work before engine entry and leaves completed results intact. The
+launcher can reconnect while results await ACK. Excess diagnostic logs
+are suppressed independently. ACK clears each route tombstone after
+committing a compact replay fence.
+
+For each receipt meter, Bifrost reserves the largest of the pinned cap,
+the sealed count, and the highest terminal count. Missing counts still
+reserve the cap and over-cap cleanup remains billable. Incarnations
+retain the rate and bounds of their deployed release. Admission closes
+if a receipt-priced release has missing bounds.
 
 Cloudflare bills DO duration by non-hibernating wall time at 128 MB per
 object, with concurrent calls sharing an object's billed duration.
 Bifrost charges the launcher's entire reservation-to-verified-deletion
 lifetime at 0.125 GB, an upper bound for active time of that launcher in
-its owned lifetime. It keeps a separate slot-residency proxy for the
-tenant hosts. The launcher counts its own controlled traffic. The
-Cloudflare bill may also include shared capacity objects, tenant-host
-activity after launcher retirement, incoming platform retries, mandatory
-cleanup, automatic logs, storage and Dynamic Worker creation. The estimate
-does not reconcile those units or represent an invoice cap. Static
-policy validation retains conservative bounds for the wider fleet.
+its owned lifetime. Each two-second control poll reserves two DO requests
+for WorkerLedger and Launcher. The lifetime rate adds a cadence allowance
+for the watchdog, hello/reconnect, control frames, SQLite and logs, plus
+one lifecycle allowance for startup and release. It reserves WorkerLedger
+and ScopeRegistry residency at 128 MB each for the launcher lifetime.
+Managed workflow dispatch
+reserves TenantHost residency through its finite route deadline, the
+20-minute warm window and the final 45-second alarm interval. It reserves
+RPCs, writes and logs for each dispatch and warm ping, including the SDK
+gateway's TenantHost diagnostics. Duration reservations follow UTC
+month boundaries even after the launcher has retired.
+
+The estimate uses marginal rates. Provider-initiated retries and
+automatic logs, Dynamic Worker creations, exact retained storage,
+and provider account allowances and billing rounding remain outside the
+reconciliation. The static policy envelope retains wider fleet reserves.
 [Cloudflare Durable Object billing](https://developers.cloudflare.com/durable-objects/platform/pricing/)
 
-Repricing the previous pilot ledger under the new rules gives
-**$0.08348536**, or **2,799.3×** its observed Worker request and CPU cost
+Repricing the previous pilot as a 60-second-deadline scenario gives
+**$0.09063056**, or **3,038.9×** its observed Worker request and CPU cost
 of `$0.00002982382`. The ledger has 79.355808 launcher- and slot-seconds,
-3 dispatches, 43 SDK requests and 3 incarnations, each of which falls back
-to the full 940/160/30 cap because that release never emitted receipts.
-The prior estimate was `$0.095413612894224`. This is a counterfactual
-calibration. Existing historical rows keep their deployed-release pricing.
-The comparison denominator excludes Durable Objects and other meters that
-Cloudflare Analytics could not attribute to the pilot.
+3 dispatches, 43 SDK requests and 3 incarnations. The historical capture
+has no workload receipts or route-deadline reservations. This comparison
+uses the new 620/60/20 floor and assumes the local reference's 60-second
+deadline for each dispatch. The earlier receipt model estimated
+`$0.08348536` on that ledger. Stored historical charges keep their
+deployed release pricing. The Cloudflare sample covers Worker requests
+and CPU only. This run incurred no hosted spend.
 
 The release manifest pins the exact Worker bundle fingerprint, the
 measured capacity module digest, both measurement sources, the measured
 inputs and the margin. The builder and API verify these against the
 shipped bytes and enforced limits. Re-qualify changed bundles before
 packaging. The rate version is
-`workers-paid-2026-11-20-launcher-receipts`.
+`workers-paid-2026-11-20-control-cadence`.
 
 For a new qualification, build both candidate modules with `bundleWorker`
 from `deploy/capacity/cloudflare/build-workers.mjs` and the qualified runtime.
@@ -186,7 +209,9 @@ Run the lifecycle test in `dev/tenant-workers/capacity-workerd.test.mjs`
 first with `BIFROST_QUALIFIED_CAPACITY_BUNDLE` alone to measure capacity CPU.
 Then set `BIFROST_QUALIFIED_LAUNCHER_BUNDLE` as well to run the two Python
 references and seal the counters. Run only the
-`prepare, start, signed hello` test for those measurements. The CPU probe
+`prepare, start, signed hello` test. Set `BIFROST_QUALIFIED_CONTROLLER_POLLS=170`
+for the cadence run and supply the packaged `BIFROST_LAUNCHER_METERS` JSON
+as `BIFROST_QUALIFIED_LAUNCHER_METERS` for its acceptance check. The CPU probe
 uses Linux process counters.
 
 #### Hosted SDK Measurement

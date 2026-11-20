@@ -51,7 +51,7 @@ function peer({data = new Map(), runHost, runSummary, runAgent, beforePut, onSen
         if (beforePut) await beforePut(key, value);
         data.set(key, structuredClone(value));
       },
-      delete: async (key) => data.delete(key),
+      delete: async (...keys) => keys.forEach(key => data.delete(key)),
     },
     send: (current, raw) => {
       assert.equal(current, session);
@@ -502,22 +502,26 @@ test('one slot holds through terminal settlement and refuses a second engine ent
   assert.equal(api.calls.length, 2);
 });
 
-test('launcher meter exhaustion publishes a typed terminal and releases after its ACK', async () => {
-  const usage = {sqlite_rows_written: 31, do_requests: 7, log_events: 3};
-  const meter = {exhausted: null, snapshot: () => usage};
+test('launcher exhaustion preserves success and allows redial until the terminal ACK', async () => {
+  const usage = {sqlite_rows_written: 31, do_requests: 7, log_events: 3, exhausted: true};
+  const meter = {exhausted: null, log: () => false, snapshot: () => usage};
   const api = peer({meter, runHost() {
-    meter.exhausted = 'log_events';
+    meter.exhausted = 'do_requests';
     return COMPLETED;
   }});
   await connect(api);
   await api.command('workflow', workflow());
   await api.finish();
   const terminal = api.frames().at(-1);
-  assert.equal(terminal.result.error_type, 'CloudflareLauncherMeterLimitExceeded');
-  assert.match(terminal.result.error, /log_events/);
+  assert.deepEqual(terminal.result, COMPLETED.result);
   assert.deepEqual(terminal.usage, usage);
   assert.equal(await api.core.isStopped(), false);
+  await api.close();
+  assert.equal(await api.core.canReconnect(), true);
+  await connect(api, 2);
+  assert.deepEqual(api.frames().at(-1), terminal);
   await api.ack(terminal._event_id);
+  assert.equal(await api.core.canReconnect(), false);
   assert.equal(await api.core.isStopped(), true);
 });
 
@@ -578,6 +582,7 @@ test('a route omitted after confirmation of receipt is fenced across resets', as
   await api.command('workflow', attempt);
   await api.finish();
   await api.ack(api.frames().at(-1)._event_id);
+  assert.equal(api.data.has(`seen:${attempt.route_id}`), false);
   const reset = peer({data: api.data});
   await connect(reset, 2);
   const snapshot = reset.frames();

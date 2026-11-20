@@ -6,6 +6,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { isDeepStrictEqual } from "node:util";
+import { SQLITE_HEADROOM } from "../../../spikes/cloudflare-pyodide/dev/cloudflare-launcher/launcher-meter.mjs";
+import { MAX_WORKFLOW_SLOTS } from "../../../spikes/cloudflare-pyodide/dev/cloudflare-launcher/protocol.mjs";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const spike = resolve(root, "spikes/cloudflare-pyodide");
@@ -53,7 +55,7 @@ export function qualifiedMeterLimits(bounds) {
   }
   const launcherMeters = Object.fromEntries(Object.entries(launcher.observed).sort().map(([name, value]) =>
     [name, value * measurement.safety_margin]));
-  if (launcherMeters.sqlite_rows_written < 100 || launcherMeters.do_requests < 10) {
+  if (launcherMeters.sqlite_rows_written <= SQLITE_HEADROOM || launcherMeters.do_requests <= MAX_WORKFLOW_SLOTS) {
     throw new Error("Launcher meter bounds must cover reserved retirement operations");
   }
   return {capacityCpuMs, sdkRequests, engineCpuMs: theoreticalCpuMs, launcherMeters};

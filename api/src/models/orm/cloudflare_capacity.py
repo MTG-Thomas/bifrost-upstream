@@ -248,6 +248,8 @@ class CloudflareUsageActivity(Base):
     period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
     dispatched_runs: Mapped[int] = mapped_column(BigInteger, server_default="0")
     sdk_requests: Mapped[int] = mapped_column(BigInteger, server_default="0")
+    tenant_host_seconds: Mapped[int] = mapped_column(BigInteger, server_default="0")
+    tenant_dispatches: Mapped[int] = mapped_column(BigInteger, server_default="0")
 
 
 class CloudflareUsageIncarnation(Base):
@@ -264,7 +266,7 @@ class CloudflareUsageIncarnation(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     slots: Mapped[int | None] = mapped_column(SmallInteger)
     meter_terminal: Mapped[dict[str, int] | None] = mapped_column(JSONB)
-    meter_final: Mapped[dict[str, int] | None] = mapped_column(JSONB)
+    meter_final: Mapped[dict[str, int | bool] | None] = mapped_column(JSONB)
     meter_uncertain: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     meter_release_digest: Mapped[str | None] = mapped_column(String(100))
     meter_rate_version: Mapped[str | None] = mapped_column(String(64))

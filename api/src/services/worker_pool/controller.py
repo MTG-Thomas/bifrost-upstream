@@ -35,11 +35,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, func, literal, select, text, update
-
 from shared.models import WorkerCapacityProfile
 from shared.solution_git_stage import SOLUTION_GIT_CAPABILITY, SOLUTION_UPDATE_CHECK_JOB
 from shared.version import get_version
+from sqlalchemy import and_, func, literal, select, text, update
+
 from src.config import Settings, get_settings
 from src.core.database import get_db_context
 from src.jobs.platform.kubernetes_client import (
@@ -47,7 +47,10 @@ from src.jobs.platform.kubernetes_client import (
     KubernetesJobClient,
     oom_killed,
 )
-from src.models.orm.cloudflare_capacity import CloudflareInstallation, CloudflareWorkerReservation
+from src.models.orm.cloudflare_capacity import (
+    CloudflareInstallation,
+    CloudflareWorkerReservation,
+)
 from src.models.orm.execution_workers import MANAGED_WORKER_FORMS, ExecutionWorker
 from src.models.orm.executions import Execution
 from src.models.orm.package_changes import PackageChange
@@ -61,6 +64,10 @@ from src.services.memory_requests import (
     LAUNCHABLE_KEY,
     workflow_request_sql,
 )
+from src.services.pool_cadence import (
+    POOL_RECONCILE_SPACING_SECONDS,
+    POOL_RECONCILE_SWEEP_SECONDS,
+)
 from src.services.service_lifecycle import pending_service_statement
 from src.services.work_dispatch import (
     DISPATCH_WAKE_FAMILIES,
@@ -71,7 +78,10 @@ from src.services.work_dispatch import (
 )
 from src.services.worker_pool.calibration import measured_budget
 from src.services.worker_pool.claims import CAPACITY_LOCK, REMOTE_WORKER_HANDLER_NAMES
-from src.services.worker_pool.cloudflare_admission import ManagedCloudflareScope, PrimaryPool
+from src.services.worker_pool.cloudflare_admission import (
+    ManagedCloudflareScope,
+    PrimaryPool,
+)
 from src.services.worker_pool.demand import pending_local_platform_job_ids
 from src.services.worker_pool.eligibility import (
     cloudflare_active_claims,
@@ -117,8 +127,8 @@ LOST_JOB_CLEANUP = timedelta(hours=1)
 # The controller reconciles on a pool wake-up (new work may need a worker), at
 # most every RECONCILE_SECONDS, and sweeps every SWEEP_SECONDS without one:
 # often enough for worker-loss detection and idle-worker eviction marks.
-RECONCILE_SECONDS = 2.0
-SWEEP_SECONDS = 5.0
+RECONCILE_SECONDS = POOL_RECONCILE_SPACING_SECONDS
+SWEEP_SECONDS = POOL_RECONCILE_SWEEP_SECONDS
 # A ready worker holding no work this long may be evicted by the cluster
 # autoscaler to empty a node; it drains on SIGTERM and is replaced.
 EVICTABLE_AFTER_IDLE_SECONDS = 10.0

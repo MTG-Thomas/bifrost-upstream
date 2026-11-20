@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Mapping
@@ -28,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import get_db_context
 from src.models.orm.work_dispatches import WorkDispatch
+from src.services.pool_cadence import wait_for_next_pass
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,11 @@ class DispatchFamily:
 
 
 def _families() -> dict[str, DispatchFamily]:
-    from src.services.execution import agent_run_dispatch, summary_dispatch, workflow_dispatch
+    from src.services.execution import (
+        agent_run_dispatch,
+        summary_dispatch,
+        workflow_dispatch,
+    )
 
     return {
         workflow_dispatch.FAMILY: DispatchFamily(
@@ -182,27 +186,6 @@ async def listen_for_pool_wake(redis_url: str, wakes: Mapping[str, asyncio.Event
             await asyncio.sleep(WAKE_RECONNECT_SECONDS)
         finally:
             await client.aclose()
-
-
-async def wait_for_next_pass(
-    stop: asyncio.Event, wake: asyncio.Event, *, since: float, spacing: float, sweep: float
-) -> None:
-    """Wait until a loop's next pass: on a wake-up, but no sooner than
-    ``spacing`` after the last pass began (``since``, monotonic), or after
-    ``sweep`` without one. Clears ``wake``. Returns early on ``stop``."""
-    stopped = asyncio.ensure_future(stop.wait())
-    woken = asyncio.ensure_future(wake.wait())
-    try:
-        remaining = sweep - (time.monotonic() - since)
-        await asyncio.wait({stopped, woken}, timeout=max(0.0, remaining), return_when=asyncio.FIRST_COMPLETED)
-        if wake.is_set() and not stop.is_set():
-            delay = spacing - (time.monotonic() - since)
-            if delay > 0:
-                await asyncio.wait({stopped}, timeout=delay)
-    finally:
-        stopped.cancel()
-        woken.cancel()
-        wake.clear()
 
 
 _wakes: set[asyncio.Task[None]] = set()

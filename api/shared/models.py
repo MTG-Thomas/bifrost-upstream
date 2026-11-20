@@ -463,13 +463,19 @@ class WorkerCapacityReservation(BaseModel):
     drain_grace_seconds: int = Field(ge=0, le=3600, strict=True)
 
 
-class CloudflareLauncherUsage(BaseModel):
-    """Cumulative application-controlled counters for one launcher."""
+class CloudflareLauncherCounts(BaseModel):
+    """Cumulative workload counts for one launcher."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     sqlite_rows_written: int = Field(strict=True, ge=0, le=2**53 - 1)
     do_requests: int = Field(strict=True, ge=0, le=2**53 - 1)
     log_events: int = Field(strict=True, ge=0, le=2**53 - 1)
+
+
+class CloudflareLauncherUsage(CloudflareLauncherCounts):
+    """Terminal or deletion receipt including workload admission state."""
+
+    exhausted: bool = Field(default=False, strict=True)
 
 
 class WorkerCapacityResource(BaseModel):

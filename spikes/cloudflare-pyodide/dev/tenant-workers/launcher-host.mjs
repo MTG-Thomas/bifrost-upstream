@@ -81,6 +81,9 @@ async function runLauncherWorkflow(getHost, queueWarm, {route, context, publicUr
       warm: (get, tenant) => boundedWarm(get, tenant, {deadline, signal, beforeRun, now, queueWarm}),
     });
   } catch (error) {
+    if (error?.attemptState === 'not_started' && error?.name === 'CloudflareLauncherMeterLimitExceeded') {
+      return terminal('not_started', error.name, 'Cloudflare launcher DO request budget reached before engine entry.');
+    }
     if (error?.attemptState !== 'not_started') {
       return terminal('uncertain', 'TenantHostOutcomeUnknown', 'TenantHost did not confirm the workflow outcome');
     }

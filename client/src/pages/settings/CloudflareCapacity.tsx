@@ -328,6 +328,14 @@ export function CloudflareCapacity() {
 											? `${installation.spend.analytics.worker_requests} sampled Worker requests, ${installation.spend.analytics.request_difference} difference from the Bifrost request estimate`
 											: "No Attributable Sample"}</dd>
 									</div>
+									<div>
+										<dt className="text-muted-foreground">Usage Estimate Coverage</dt>
+										<dd>
+											{installation.spend.rate_table_version === "workers-paid-2026-11-20-control-cadence" &&
+												"Includes Bifrost launcher, control, and tenant host reservations. "}
+											Provider-generated retries and logs, Dynamic Worker creation, retained storage beyond the reserve, and account billing adjustments are outside this estimate.
+										</dd>
+									</div>
 								</>
 							)}
 						</dl>

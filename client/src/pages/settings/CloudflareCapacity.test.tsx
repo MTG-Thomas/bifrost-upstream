@@ -40,7 +40,7 @@ it("drains using the displayed installation revision and the shared job observer
 			workers: { launcher_cap: 2, slots_per_launcher: 2 },
 		},
 		fleet_envelope_usd: "10.50",
-		spend: { state: "ready", estimated_usd: "0.12", workers_paid_subscription_usd: "5.00" },
+		spend: { state: "ready", estimated_usd: "0.12", workers_paid_subscription_usd: "5.00", rate_table_version: "workers-paid-2026-11-20-control-cadence" },
 	};
 	mocks.get.mockResolvedValue({ installation });
 	mocks.start.mockImplementation(async () => {
@@ -76,6 +76,9 @@ it("drains using the displayed installation revision and the shared job observer
 	expect(screen.getByText("0.12 USD")).toBeVisible();
 	expect(screen.getByText("Workers Paid Subscription (Billed by Cloudflare)")).toBeVisible();
 	expect(screen.getByText("5.00 USD per Month")).toBeVisible();
+	expect(screen.getByText("Usage Estimate Coverage")).toBeVisible();
+	expect(screen.getByText(/Provider-generated retries and logs/)).toBeVisible();
+	expect(screen.getByText(/tenant host reservations/)).toBeVisible();
 	fireEvent.click(scaleIn);
 	expect(await screen.findByText("Completed")).toBeVisible();
 	expect(screen.getByText("Scaled In")).toBeVisible();

@@ -44,6 +44,7 @@ from src.services.worker_pool.cloudflare_credentials import (
 )
 from src.services.worker_pool.cloudflare_release import WorkersRelease
 from src.services.worker_pool.cloudflare_spend import (
+    LAUNCHER_RECEIPT_METERS,
     WORKERS_PAID_SUBSCRIPTION_USD,
     WORKERS_RATE_TABLE_VERSION,
     cloudflare_estimated_usage,
@@ -70,7 +71,7 @@ class WorkersReleaseMeterBounds:
     per_fleet_fixed: Mapping[str, Decimal]
     release: str
     max_slots_per_launcher: int
-    launcher_caps: Mapping[str, int] | None = None
+    launcher_caps: Mapping[str, int]
 
 
 def release_meter_bounds(release: WorkersRelease) -> WorkersReleaseMeterBounds:
@@ -161,11 +162,16 @@ def _price_policy(
 ) -> dict[str, object]:
     if policy.workers.slots_per_launcher > bounds.max_slots_per_launcher:
         raise ValueError("Workers meter bounds do not cover the configured slot count")
+    if set(bounds.launcher_caps) != set(LAUNCHER_RECEIPT_METERS) or any(
+        type(cap) is not int or cap <= 0 for cap in bounds.launcher_caps.values()
+    ):
+        raise ValueError("Workers release needs positive caps for all launcher meters")
     digest = sha256(json.dumps({
         "cleanup_margin_seconds": bounds.cleanup_margin_seconds,
         "max_slots_per_launcher": bounds.max_slots_per_launcher,
         "per_launcher_second": {k: str(v.normalize()) for k, v in bounds.per_launcher_second.items()},
         "per_fleet_fixed": {k: str(v.normalize()) for k, v in bounds.per_fleet_fixed.items()},
+        "launcher_caps": dict(bounds.launcher_caps),
     }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     envelope = workers_fleet_envelope_usd(
         launcher_cap=policy.workers.launcher_cap,
@@ -185,7 +191,7 @@ def _price_policy(
         "bounds_digest": digest,
         "bounds_release": bounds.release,
         "meter_launcher": {
-            "caps": dict(bounds.launcher_caps or {}),
+            "caps": dict(bounds.launcher_caps),
             "second_usd": str(launcher_lifetime_rate(bounds.per_launcher_second)),
         },
     }

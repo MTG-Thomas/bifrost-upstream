@@ -12,6 +12,7 @@ import json
 import logging
 import time
 from contextlib import AbstractAsyncContextManager, nullcontext
+from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -45,7 +46,10 @@ from src.services.worker_pool.claims import (
     report_worker_handlers,
 )
 from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
-from src.services.worker_pool.cloudflare_spend import record_launcher_terminal_meter
+from src.services.worker_pool.cloudflare_spend import (
+    record_launcher_terminal_meter,
+    reserve_tenant_host_usage,
+)
 from src.worker.admission import Admission
 from src.worker.pool_main import PoolWorker
 from src.worker.remote.agent_route import AgentRoute, RemoteAgentConsumer
@@ -145,6 +149,7 @@ class Bridge:
         self.socket = socket
         self.connected = True
         self.runtime_profile = hello.get("runtime_profile", LINUX_RUNTIME_PROFILE)
+        self.managed_cloudflare = hello.get("managed_cloudflare", False)
         self.containers = hello.get("containers", False)
         if self.runtime_profile == LINUX_RUNTIME_PROFILE:
             self.current = int(hello["current"])
@@ -324,6 +329,20 @@ class Bridge:
                             if action == "workflow":
                                 raise CloudflareRevisionRejected("Cloudflare workflow exceeds the control payload limit")
                             raise ProtocolError("Cloudflare command exceeds the control payload limit")
+                        if action == "workflow" and self.managed_cloudflare:
+                            deadline = payload.get("workflow_deadline")
+                            # Commit the reservation before sending any frame. A
+                            # failed socket send can leave a conservative charge.
+                            with remote_owner_context(LeaseRef(self.lease)):
+                                async with get_db_context() as db:
+                                    if not await fence_remote_owner(db):
+                                        raise CredentialRouteChanged("Cloudflare ownership changed before dispatch")
+                                    if not await reserve_tenant_host_usage(
+                                        db, self.lease.worker_id, datetime.fromisoformat(deadline) if deadline else None,
+                                    ):
+                                        raise CloudflareRevisionRejected(
+                                            "Managed Cloudflare workflows require a finite timeout"
+                                        )
                         sent = 0
                         send_deadline = loop.time() + _reply_timeout(action)
                         for frame in fragment(message):
@@ -685,7 +704,9 @@ class Bridge:
             else:
                 with remote_owner_context(terminal_ref):
                     await deliver(event)
-                    if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and event.get("event") == "result":
+                    if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and event.get("event") in (
+                        "result", "summary_result", "cloudflare_agent_result",
+                    ):
                         async with get_db_context() as db:
                             if not await fence_remote_owner(db):
                                 raise ConnectionError("Remote API ownership was replaced before metering")
@@ -1522,7 +1543,10 @@ class RemoteControlHost:
     def _start_capacity_canary(self, session: RemoteSession) -> None:
         async def probe() -> None:
             from src.services.worker_ingress_probes import CanaryFailure
-            from src.services.worker_pool.cloudflare_canary import cloudflare_sdk_canary_proof, record_canary_failure
+            from src.services.worker_pool.cloudflare_canary import (
+                cloudflare_sdk_canary_proof,
+                record_canary_failure,
+            )
 
             generation = session.lease.session_generation
             worker_id = session.lease.worker_id
@@ -1565,6 +1589,7 @@ class RemoteControlHost:
             cloudflare = signed.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
             containers = False
             capacity_canary = False
+            managed_cloudflare = False
             enrollment = None
             if cloudflare:
                 if signed.form != "external" or signed.resource_uid is None:
@@ -1602,6 +1627,7 @@ class RemoteControlHost:
                         )
                         if pin is None:
                             raise AuthenticationError("Cloudflare worker lacks its current installation pin")
+                        managed_cloudflare = True
                         capacity_canary = pin.canary_job_id is not None
                         try:
                             control_key = await load_managed_control_key(db, pin, signed.resource_uid)
@@ -1662,6 +1688,7 @@ class RemoteControlHost:
                 execution_lane=hello.execution_lane,
                 runtime_profile=hello.runtime_profile or LINUX_RUNTIME_PROFILE,
                 containers=containers,
+                managed_cloudflare=managed_cloudflare,
             )
             if hello.execution_lane == "fast_path" and ("workflow.execute", 2) not in bootstrap["handlers"]:
                 raise AuthenticationError("Fast Path workers must support workflow.execute version 2")

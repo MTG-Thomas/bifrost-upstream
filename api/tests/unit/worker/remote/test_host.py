@@ -14,32 +14,40 @@ from uuid import UUID
 
 import pytest
 from pydantic import SecretStr
-from sqlalchemy.exc import OperationalError
-
 from shared.worker_control_auth import external_worker_control_key
+from sqlalchemy.exc import OperationalError
 from src.services.execution.template_process import TEMPLATE_START_TIMEOUT_SECONDS
 from src.services.memory_requests import AGENT_RUN_REQUEST_BYTES
-from src.worker.remote.cloudflare_agent import CloudflareAgentRoute, CloudflareAgentRoutes
-from src.worker.remote.host import ApiExecutor, Bridge, RemoteControlHost, RemoteSession, _reply_timeout
+from src.worker.admission import Admission
+from src.worker.pool_main import PoolWorker
+from src.worker.remote.agent_route import AgentRoute
+from src.worker.remote.cloudflare_agent import (
+    CloudflareAgentRoute,
+    CloudflareAgentRoutes,
+)
+from src.worker.remote.fencing import LeaseRef
+from src.worker.remote.host import (
+    ApiExecutor,
+    Bridge,
+    RemoteControlHost,
+    RemoteSession,
+    _reply_timeout,
+)
 from src.worker.remote.identity import LauncherIdentity
 from src.worker.remote.launcher import Launcher
 from src.worker.remote.ownership import RemoteOwnerLease
 from src.worker.remote.protocol import (
-    AuthenticationError,
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
-    ControlEnvelope,
-    FragmentAssembler,
-    Hello,
     LEGACY_EXECUTION_HANDLERS,
     LINUX_RUNTIME_PROFILE,
     MAX_FRAME_BYTES,
+    AuthenticationError,
+    ControlEnvelope,
+    FragmentAssembler,
+    Hello,
     ProtocolError,
     sign_hello,
 )
-from src.worker.pool_main import PoolWorker
-from src.worker.admission import Admission
-from src.worker.remote.agent_route import AgentRoute
-
 
 LEASE = RemoteOwnerLease(
     worker_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
@@ -59,6 +67,38 @@ def test_bridge_defaults_only_legacy_linux_handlers(profile, expected) -> None:
     }, LEASE)
 
     assert bridge.handlers == expected
+
+
+@pytest.mark.parametrize("kind", ["result", "summary_result", "cloudflare_agent_result"])
+async def test_terminal_receipts_in_all_cloudflare_domains_are_checked_before_ack(kind) -> None:
+    bridge = Bridge(Mock(), {"hostname": "runner", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE}, LEASE)
+    bridge.lease_ref = LeaseRef(LEASE)
+    deliver = AsyncMock()
+    bridge.pool = SimpleNamespace(handle_event=deliver)
+    bridge.summaries = SimpleNamespace(handle_result=deliver)
+    bridge.autonomous = SimpleNamespace(handle_result=deliver)
+    event = {"event": kind, "_event_id": "terminal", "attempt_state": "uncertain",
+             "usage": {"sqlite_rows_written": 100, "log_events": 2, "do_requests": 3, "exhausted": True}}
+
+    @asynccontextmanager
+    async def context():
+        yield object()
+
+    calls = Mock()
+    calls.attach_mock(deliver, "deliver")
+    calls.attach_mock(AsyncMock(), "meter")
+    calls.attach_mock(AsyncMock(), "ack")
+    with (
+        patch.object(bridge, "acknowledge", calls.ack),
+        patch("src.worker.remote.host.get_db_context", context),
+        patch("src.worker.remote.host.fence_remote_owner", AsyncMock(return_value=True)),
+        patch("src.worker.remote.host.record_launcher_terminal_meter", calls.meter),
+    ):
+        assert await bridge._deliver_terminal(event)
+        await asyncio.gather(*bridge.results)
+    assert [call[0] for call in calls.mock_calls] == ["deliver", "meter", "ack"]
+    assert calls.meter.await_args.args[1:] == (LEASE.worker_id, event["usage"])
+    assert calls.meter.await_args.kwargs == {"uncertain": True}
 
 
 async def test_adopted_autonomous_route_reserves_memory_and_one_physical_slot() -> None:
@@ -911,9 +951,8 @@ def test_remote_admission_uses_launcher_pressure_ratio_not_unbounded_usage_ratio
 @pytest.mark.parametrize("valid_proof", [False, True], ids=["invalid-proof", "owner-refused"])
 async def test_refused_remote_control_handshake_closes_once(valid_proof: bool) -> None:
     """A rejected handshake must not send a second close after connect rejects it."""
-    from starlette.websockets import WebSocket
-
     from src.worker.remote import host as host_mod
+    from starlette.websockets import WebSocket
 
     hello = Hello(
         launcher_id=LEASE.launcher_id,
@@ -981,7 +1020,6 @@ async def test_telemetry_skips_the_database_fence_only_while_the_lease_is_known_
 @pytest.mark.parametrize("event", ["inventory", "result", "agent_exit", "job_exit"])
 async def test_control_defers_delivery_until_database_ownership_is_confirmed(event: str) -> None:
     from fastapi import WebSocketDisconnect
-
     from src.worker.remote import host as host_mod
 
     socket = Mock(receive_text=AsyncMock(side_effect=[

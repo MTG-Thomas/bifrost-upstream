@@ -24,6 +24,17 @@ test('warm-up retries use the same API deadline and approved snapshot', async ()
   assert.deepEqual(result, {attempt_state: 'completed', result: {success: true, status: 'Success', result: 42}});
 });
 
+test('a budget refusal before the host RPC is definitively not_started', async () => {
+  const budget = Object.assign(new Error('refused before RPC'), {
+    name: 'CloudflareLauncherMeterLimitExceeded', attemptState: 'not_started',
+  });
+  const result = await createLauncherWorkflowRunner(() => ({
+    run: () => { throw budget; },
+  }))({route, context: {}, signal: new AbortController().signal, now: () => START});
+  assert.equal(result.attempt_state, 'not_started');
+  assert.equal(result.result.error_type, budget.name);
+});
+
 test('deadline during warm-up never dispatches after the needsWarm refusal', async () => {
   let now = START;
   let calls = 0;
