@@ -20,6 +20,8 @@ keyvault-certs/
 # Node
 node_modules/
 .phase7-*
+# Private Git fixture token written by the local Containers qualification
+api/scripts/.containers-private.json
 
 # ==================== PYTHON ====================
 
