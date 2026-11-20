@@ -6,6 +6,10 @@ import {
 	type WorkflowListItem,
 } from "./WorkflowListSurface";
 
+vi.mock("@/components/solutions/SolutionManagedBadge", () => ({
+	SolutionManagedBadge: () => null,
+}));
+
 function LocationProbe() {
 	const location = useLocation();
 	return (
