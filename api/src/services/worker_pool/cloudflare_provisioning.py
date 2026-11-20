@@ -39,7 +39,23 @@ class OwnershipConflict(Exception):
     """The provider returned an incompatible owner, resource ID or revision."""
 
 
-class ProvisioningAdapter(Protocol):
+class OwnedResourceCleanup(Protocol):
+    async def observe(
+        self, *, api_token: SecretStr, intent: ResourceIntent,
+    ) -> ResourceObservation | None:
+        """Return None only on verified absence. Reject foreign occupants."""
+        ...
+
+    async def delete(self, *, api_token: SecretStr, expected: ResourceObservation) -> None:
+        """Delete only if the target still matches the entire observation."""
+        ...
+
+    async def verify_absent(self, *, api_token: SecretStr, target: ResourceTarget) -> None:
+        """Check late effects and any resources implicitly owned by this target."""
+        ...
+
+
+class ProvisioningAdapter(OwnedResourceCleanup, Protocol):
     """A single qualified path, bound to the authenticated account.
 
     Adapters check exact preconditions immediately before each mutation and
@@ -67,13 +83,8 @@ class ProvisioningAdapter(Protocol):
         """
         ...
 
-    async def delete(self, *, api_token: SecretStr, expected: ResourceObservation) -> None:
-        """Delete only if the target still matches the entire observation."""
-        ...
-
-
 async def observe_owned(
-    adapter: ProvisioningAdapter,
+    adapter: OwnedResourceCleanup,
     *,
     api_token: SecretStr,
     intent: ResourceIntent,
@@ -112,7 +123,7 @@ async def resume_creation(
 
 
 async def resume_deletion(
-    adapter: ProvisioningAdapter,
+    adapter: OwnedResourceCleanup,
     *,
     api_token: SecretStr,
     committed_deletion: ResourceObservation,
@@ -121,10 +132,10 @@ async def resume_deletion(
     observed = await observe_owned(
         adapter, api_token=api_token, intent=committed_deletion.intent, recorded=committed_deletion,
     )
-    if observed is None:
-        return
-    await adapter.delete(api_token=api_token, expected=observed)
-    if await observe_owned(
-        adapter, api_token=api_token, intent=committed_deletion.intent, recorded=committed_deletion,
-    ) is not None:
-        raise ObservationPending("Cloudflare resource deletion is unconfirmed")
+    if observed is not None:
+        await adapter.delete(api_token=api_token, expected=observed)
+        if await observe_owned(
+            adapter, api_token=api_token, intent=committed_deletion.intent, recorded=committed_deletion,
+        ) is not None:
+            raise ObservationPending("Cloudflare resource deletion is unconfirmed")
+    await adapter.verify_absent(api_token=api_token, target=committed_deletion.intent.target)

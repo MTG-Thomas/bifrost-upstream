@@ -47,6 +47,10 @@ class FakeProvisioningAdapter:
         if self.confirm_delete:
             self.resource = None
 
+    async def verify_absent(self, *, api_token: SecretStr, target: ResourceTarget) -> None:
+        self.calls.append("verify_absent")
+        assert self.resource is None
+
 
 @pytest.fixture
 def intent() -> ResourceIntent:
@@ -136,4 +140,4 @@ async def test_deletion_requires_independent_absence_and_replays_without_mutatio
     assert adapter.calls == ["observe", "delete", "observe"]
     adapter.resource = None  # The previously sent delete completed after our read.
     await resume_deletion(adapter, api_token=SecretStr("token"), committed_deletion=record)
-    assert adapter.calls == ["observe", "delete", "observe", "observe"]
+    assert adapter.calls == ["observe", "delete", "observe", "observe", "verify_absent"]

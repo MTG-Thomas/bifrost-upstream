@@ -7,9 +7,13 @@ from typing import Literal
 from uuid import UUID
 
 from pydantic import SecretStr
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.security import decrypt_secret, encrypt_secret
-from src.models.orm.cloudflare_capacity import CloudflareCredential
+from src.models.orm.cloudflare_capacity import (
+    CloudflareCredential,
+    CloudflareInstallation,
+)
 
 CredentialPurpose = Literal["account_token", "control_root", "scope_bearer"]
 
@@ -55,3 +59,13 @@ def open_credential(ref: CredentialRef, row: CloudflareCredential) -> SecretStr:
     if binding != ref.binding() or not isinstance(value, str):
         raise ValueError("Cloudflare credential binding does not match")
     return SecretStr(value)
+
+
+async def load_account_token(db: AsyncSession, installation: CloudflareInstallation) -> SecretStr:
+    version = installation.api_token_version
+    if version is None:
+        raise ValueError("Cloudflare management credential is unavailable")
+    row = await db.get(CloudflareCredential, (installation.id, "account_token", "", version))
+    if row is None:
+        raise ValueError("Cloudflare management credential is unavailable")
+    return open_credential(CredentialRef(installation.id, installation.account_id, "account_token", "", version), row)

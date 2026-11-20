@@ -1,10 +1,13 @@
 """Lease-fenced scale-in and disconnect settlement."""
 
 import asyncio
+from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
+import httpx
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import case, delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import get_db_context
@@ -14,15 +17,34 @@ from src.jobs.platform.base import (
     PlatformJobRequiresAction,
     define_platform_job,
 )
-from src.models.orm.cloudflare_capacity import CloudflareInstallation
+from src.models.orm.cloudflare_capacity import (
+    CloudflareCapacityScope,
+    CloudflareInstallation,
+    CloudflareOwnedResource,
+)
 from src.models.orm.platform_jobs import PlatformJob
 from src.services.authorization.enforce import Caller, require_permission
 from src.services.platform_job_lease import LeaseLost, hold_lease
 from src.services.platform_jobs import enqueue_platform_job, find_active_platform_job
+from src.services.worker_pool.cloudflare_credentials import load_account_token
 from src.services.worker_pool.cloudflare_policy import (
     CloudflarePolicyConflict,
     cloudflare_workers_remain,
     retire_cloudflare_installation,
+)
+from src.services.worker_pool.cloudflare_provisioning import (
+    ObservationPending,
+    OwnedResourceCleanup,
+    OwnershipConflict,
+    ResourceIntent,
+    ResourceObservation,
+    ResourceTarget,
+    observe_owned,
+    resume_deletion,
+)
+from src.services.worker_pool.cloudflare_workers_rest import (
+    CloudflareManagementDenied,
+    WorkersRestCleanup,
 )
 
 DISABLE_JOB = "capacity.cloudflare_disable"
@@ -44,15 +66,70 @@ class CloudflareDisablePayload(BaseModel):
         return f"{self.installation_id}:{self.revision}:{self.action}"
 
 
-async def _disable(context: PlatformJobContext, parsed: BaseModel) -> dict[str, str]:
-    payload = CloudflareDisablePayload.model_validate(parsed)
-    await context.report("Draining Cloudflare Capacity")
+async def _hold_installation_lease(
+    db: AsyncSession, context: PlatformJobContext, installation_id: UUID,
+) -> None:
+    try:
+        await hold_lease(db, context.job_id, context.lease_token)
+    except LeaseLost as exc:
+        raise PlatformJobCancelled from exc
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"bifrost:cloudflare:provisioning:{installation_id}"},
+    )
+
+
+async def _cleanup_one(
+    db: AsyncSession, row: CloudflareInstallation, adapter: OwnedResourceCleanup,
+) -> bool:
+    # Newer generations first, then withdraw the capacity entry point before
+    # retiring launcher and runtime dependencies. Workers scripts implicitly
+    # own their namespaces. The adapter checks for those before recording absence.
+    resource = await db.scalar(select(CloudflareOwnedResource).where(
+        CloudflareOwnedResource.installation_id == row.id,
+        CloudflareOwnedResource.state != "absent",
+    ).order_by(
+        CloudflareOwnedResource.desired_revision.desc(),
+        case(
+            (CloudflareOwnedResource.target_name.endswith("-capacity"), 0),
+            (CloudflareOwnedResource.target_name.endswith("-launcher"), 1),
+            else_=2,
+        ),
+        CloudflareOwnedResource.target_name,
+    ).limit(1).with_for_update())
+    if resource is None:
+        return False
+    intent = ResourceIntent(
+        ResourceTarget(resource.installation_id, resource.account_id, resource.scope, resource.kind, resource.target_name),
+        resource.effect_id, resource.desired_revision, resource.artifact_digest,
+    )
+    token = await load_account_token(db, row)
+    if resource.state == "creating":
+        observed = await observe_owned(adapter, api_token=token, intent=intent, recorded=None)
+        if observed is None:
+            raise ObservationPending("A previous Cloudflare creation could still be in flight")
+        resource.provider_id = observed.provider_id
+        resource.provider_version = observed.provider_version
+    if resource.provider_id is None or resource.provider_version is None:
+        raise OwnershipConflict("Cloudflare cleanup has no exact provider receipt")
+    if resource.state != "deleting":
+        resource.state = "deleting"
+        return True  # Commit the deletion intent before issuing DELETE.
+    await resume_deletion(
+        adapter, api_token=token,
+        committed_deletion=ResourceObservation(intent, resource.provider_id, resource.provider_version),
+    )
+    resource.state = "absent"
+    resource.observed_at = datetime.now(UTC)
+    return True
+
+
+async def _settle_disable(
+    context: PlatformJobContext, payload: CloudflareDisablePayload, adapter: OwnedResourceCleanup,
+) -> dict[str, str]:
     while True:
         async with get_db_context() as db:
-            try:
-                await hold_lease(db, context.job_id, context.lease_token)
-            except LeaseLost as exc:
-                raise PlatformJobCancelled from exc
+            await _hold_installation_lease(db, context, payload.installation_id)
             row = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
             if row is None or row.desired_revision != payload.revision or row.desired_state != payload.desired_state:
                 return {"outcome": "superseded"}
@@ -60,14 +137,42 @@ async def _disable(context: PlatformJobContext, parsed: BaseModel) -> dict[str, 
                 raise PlatformJobRequiresAction("Cloudflare Admission Still Open", {"code": "CF_ADMISSION_OPEN"})
             if not await cloudflare_workers_remain(db, row.id):
                 if payload.action == "disconnect":
-                    try:
-                        await retire_cloudflare_installation(db, installation_id=row.id, expected_revision=payload.revision)
-                    except CloudflarePolicyConflict as exc:
-                        raise PlatformJobRequiresAction(
-                            "Cloudflare Cleanup Pending", {"code": "CF_CLEANUP_PENDING"},
-                        ) from exc
+                    if await _cleanup_one(db, row, adapter):
+                        continue
+                    unverified_scope = await db.scalar(select(CloudflareCapacityScope.scope).where(
+                        CloudflareCapacityScope.installation_id == row.id,
+                        ~select(CloudflareOwnedResource.id).where(
+                            CloudflareOwnedResource.installation_id == row.id,
+                            CloudflareOwnedResource.scope == CloudflareCapacityScope.scope,
+                            CloudflareOwnedResource.desired_revision == CloudflareCapacityScope.deployment_revision,
+                            CloudflareOwnedResource.kind == "worker_script",
+                            CloudflareOwnedResource.target_name.endswith("-capacity"),
+                            CloudflareOwnedResource.state == "absent",
+                            CloudflareOwnedResource.observed_at.is_not(None),
+                        ).correlate(CloudflareCapacityScope).exists(),
+                    ).limit(1))
+                    if unverified_scope is not None:
+                        raise ObservationPending("Cloudflare scope absence is unverified")
+                    await db.execute(delete(CloudflareCapacityScope).where(
+                        CloudflareCapacityScope.installation_id == row.id,
+                    ))
+                    await retire_cloudflare_installation(db, installation_id=row.id, expected_revision=payload.revision)
                 return {"outcome": payload.desired_state}
         await asyncio.sleep(2)
+
+
+async def _disable(context: PlatformJobContext, parsed: BaseModel) -> dict[str, str]:
+    payload = CloudflareDisablePayload.model_validate(parsed)
+    await context.report("Draining Cloudflare Capacity")
+    try:
+        async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
+            return await _settle_disable(context, payload, WorkersRestCleanup(http))
+    except OwnershipConflict:
+        raise PlatformJobRequiresAction("Verify Cloudflare Ownership", {"code": "CF_OWNERSHIP_CONFLICT"}) from None
+    except (ObservationPending, CloudflarePolicyConflict):
+        raise PlatformJobRequiresAction("Cloudflare Cleanup Pending", {"code": "CF_CLEANUP_PENDING"}) from None
+    except (CloudflareManagementDenied, ValueError):
+        raise PlatformJobRequiresAction("Reconnect Cloudflare", {"code": "CF_MANAGEMENT_CREDENTIAL"}) from None
 
 
 CLOUDFLARE_DISABLE_DEFINITION = define_platform_job(DISABLE_JOB, CloudflareDisablePayload, _disable)

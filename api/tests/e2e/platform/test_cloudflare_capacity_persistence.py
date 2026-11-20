@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import Settings
 from src.core.principal import UserPrincipal
 from src.jobs.platform import cloudflare_capacity as lifecycle_job
-from src.jobs.platform.base import PlatformJobContext
+from src.jobs.platform.base import PlatformJobContext, PlatformJobRequiresAction
 from src.models.orm.cloudflare_capacity import (
     CloudflareCapacityScope,
     CloudflareCredential,
@@ -52,9 +52,18 @@ from src.services.worker_pool.cloudflare_policy import (
     retire_cloudflare_installation,
     save_cloudflare_policy,
 )
+from src.services.worker_pool.cloudflare_provisioning import (
+    ResourceIntent,
+    ResourceTarget,
+)
 from src.services.worker_pool.cloudflare_spend import (
     WORKERS_RATE_TABLE_VERSION,
     WORKERS_RATES,
+)
+from src.services.worker_pool.cloudflare_workers_rest import (
+    OWNER_BINDING,
+    WorkersRestCleanup,
+    worker_owner_value,
 )
 
 OPERATOR_ID = UUID("20cb7fe5-78e2-48d7-8f1e-8edcac69ffab")
@@ -108,6 +117,94 @@ async def test_scale_in_job_uses_platform_authority_and_current_lease(
     running = PlatformJobContext(job.id, token, None, str(OPERATOR_ID), admin.principal.email, "")
     assert await lifecycle_job.CLOUDFLARE_DISABLE_DEFINITION.handler(running, payload) == {"outcome": "scaled_in"}
     assert installation.api_token_version == 1
+
+
+@pytest.mark.asyncio
+async def test_disconnect_resumes_owned_script_delete_until_namespace_absence(
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch,
+) -> None:
+    admin = Caller(
+        UserPrincipal(OPERATOR_ID, "operator@example.test", None),
+        AuthorizationContext(OPERATOR_ID, None, uuid4(), False, frozenset({"platform.readwrite"})),
+    )
+    resource = CloudflareOwnedResource(
+        id=uuid4(), installation_id=installation.id, account_id=installation.account_id,
+        scope="workers", kind="worker_script", target_name="test-capacity",
+        desired_revision=1, artifact_digest="c" * 64, effect_id=uuid4(), state="present",
+        provider_id="test-capacity", provider_version=str(uuid4()),
+    )
+    db_session.add(resource)
+    job, _ = await lifecycle_job.enqueue_cloudflare_disable(
+        db_session, admin, installation_id=installation.id, expected_revision=1, action="disconnect",
+    )
+    token = uuid4()
+    job.lease_token = token
+    job.status = "running"
+    await db_session.flush()
+    connection = await db_session.connection()
+
+    @asynccontextmanager
+    async def context():
+        async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as session:
+            yield session
+            await session.commit()
+
+    intent = ResourceIntent(
+        ResourceTarget(installation.id, installation.account_id, "workers", "worker_script", resource.target_name),
+        resource.effect_id, 1, resource.artifact_digest,
+    )
+    script_exists = True
+    namespace_exists = True
+    mutations = []
+
+    async def remote(request: httpx.Request) -> httpx.Response:
+        nonlocal script_exists
+        assert request.url.host == "api.cloudflare.com"
+        assert request.headers["Authorization"] == "Bearer synthetic-cloudflare-management-token"
+        if request.url.path.endswith("/settings"):
+            if not script_exists:
+                return httpx.Response(404)
+            result = {"bindings": [{
+                "name": OWNER_BINDING, "type": "plain_text", "text": worker_owner_value(intent),
+            }]}
+        elif request.url.path.endswith("/deployments"):
+            result = {"deployments": [{"versions": [{"percentage": 100, "version_id": resource.provider_version}]}]}
+        elif request.url.path.endswith("/namespaces"):
+            page = int(request.url.params["page"])
+            assert page in (1, 2)
+            result = [{"id": str(page), "script": resource.target_name if page == 2 and namespace_exists else "other"}]
+            return httpx.Response(200, json={
+                "success": True, "result": result, "result_info": {"page": page, "total_pages": 2, "total_count": 2},
+            })
+        else:
+            assert request.method == "DELETE" and request.url.path.endswith("/test-capacity")
+            await db_session.refresh(resource)
+            assert resource.state == "deleting"
+            script_exists = False
+            mutations.append("DELETE")
+            result = None
+        return httpx.Response(200, json={"success": True, "result": result})
+
+    monkeypatch.setattr(lifecycle_job, "get_db_context", context)
+    monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
+    payload = lifecycle_job.CloudflareDisablePayload.model_validate(job.payload)
+    running = PlatformJobContext(job.id, token, None, str(OPERATOR_ID), admin.principal.email, "")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as http:
+        adapter = WorkersRestCleanup(http)
+        monkeypatch.setattr(lifecycle_job, "WorkersRestCleanup", lambda _http: adapter)
+        with pytest.raises(PlatformJobRequiresAction) as pending:
+            await lifecycle_job.CLOUDFLARE_DISABLE_DEFINITION.handler(running, payload)
+        assert pending.value.result == {"code": "CF_CLEANUP_PENDING"}
+        await db_session.refresh(installation)
+        assert installation.retired_at is None and installation.api_token_version == 1
+        namespace_exists = False
+        assert await lifecycle_job.CLOUDFLARE_DISABLE_DEFINITION.handler(running, payload) == {"outcome": "disconnected"}
+    await db_session.refresh(resource)
+    await db_session.refresh(installation)
+    assert mutations == ["DELETE"]
+    assert resource.state == "absent" and resource.observed_at is not None
+    assert installation.retired_at is not None and installation.api_token_version is None
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("primary", ["static", "job", "external"])
