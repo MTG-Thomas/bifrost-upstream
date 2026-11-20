@@ -29,7 +29,7 @@ def release(tmp_path: Path) -> Path:
     manifest = {
         "manifest_version": 1,
         "source_revision": "a" * 40,
-        "runtime_sha256": "b" * 64,
+        "runtime_sha256": "fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5",
         "pyodide_version": "314.0.6",
         "compatibility_date": "2026-10-30",
         "compatibility_flags": [],
@@ -74,6 +74,15 @@ def test_release_rejects_same_size_module_substitution(release: Path) -> None:
     module = release / "capacity.mjs"
     module.write_bytes(b"X" + module.read_bytes()[1:])
     with pytest.raises(WorkersReleaseUnavailable, match="digest"):
+        load_workers_release(release)
+
+
+def test_release_rejects_manifest_with_an_unqualified_runtime(release: Path) -> None:
+    path = release / "manifest.json"
+    manifest = json.loads(path.read_bytes())
+    manifest["runtime_sha256"] = "0" * 64
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(WorkersReleaseUnavailable, match="qualified digest"):
         load_workers_release(release)
 
 

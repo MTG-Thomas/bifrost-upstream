@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 WORKERS_RELEASE_PATH = Path("/app/artifacts/cloudflare/workers")
 MAX_WORKER_BYTES = 64 * 1024 * 1024
+QUALIFIED_RUNTIME_SHA256 = "fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5"
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 WorkerRole = Literal["launcher", "capacity"]
 
@@ -90,6 +91,8 @@ def load_workers_release(path: Path = WORKERS_RELEASE_PATH) -> WorkersRelease:
     try:
         raw = (path / "manifest.json").read_bytes()
         manifest = WorkersManifest.model_validate_json(raw)
+        if manifest.runtime_sha256 != QUALIFIED_RUNTIME_SHA256:
+            raise WorkersReleaseUnavailable("Workers runtime does not match the qualified digest")
         if set(manifest.workers) != {"launcher", "capacity"}:
             raise WorkersReleaseUnavailable("Workers release must contain the launcher and capacity roles")
         modules: dict[WorkerRole, dict[str, bytes]] = {}
