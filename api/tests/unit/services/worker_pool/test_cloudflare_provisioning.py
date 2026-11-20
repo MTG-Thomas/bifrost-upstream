@@ -21,17 +21,23 @@ class FakeProvisioningAdapter:
         self.lose_create_response = False
         self.confirm_delete = True
         self.observation_pending = False
+        self.unmarked = False
+        self.replace_on_create: ResourceObservation | None = None
 
     async def observe(self, *, api_token: SecretStr, intent: ResourceIntent) -> ResourceObservation | None:
         self.calls.append("observe")
         if self.observation_pending:
             raise ObservationPending
+        if self.unmarked:
+            raise OwnershipConflict("Unmarked Cloudflare occupant requires operator action")
         return self.resource
 
-    async def create(self, *, api_token: SecretStr, intent: ResourceIntent, scope_bearer: SecretStr) -> None:
+    async def create(
+        self, *, api_token: SecretStr, intent: ResourceIntent, scope_bearer: SecretStr | None,
+    ) -> None:
         self.calls.append("create")
         assert self.resource is None
-        self.resource = ResourceObservation(intent, "provider-id", "provider-version")
+        self.resource = self.replace_on_create or ResourceObservation(intent, "provider-id", "provider-version")
         if self.lose_create_response:
             raise ObservationPending
 
@@ -74,6 +80,24 @@ async def test_unknown_observation_cannot_authorize_creation(intent: ResourceInt
         )
 
     assert adapter.calls == ["observe"]
+
+
+@pytest.mark.asyncio
+async def test_unmarked_occupant_prevents_create(intent: ResourceIntent) -> None:
+    adapter = FakeProvisioningAdapter()
+    adapter.unmarked = True
+    with pytest.raises(OwnershipConflict, match="requires operator action"):
+        await resume_creation(adapter, api_token=SecretStr("token"), scope_bearer=None, committed_intent=intent)
+    assert adapter.calls == ["observe"]
+
+
+@pytest.mark.asyncio
+async def test_foreign_result_after_create_requires_operator_action(intent: ResourceIntent) -> None:
+    adapter = FakeProvisioningAdapter()
+    adapter.replace_on_create = ResourceObservation(replace(intent, creation_effect_id=uuid4()), "id", "version")
+    with pytest.raises(OwnershipConflict):
+        await resume_creation(adapter, api_token=SecretStr("token"), scope_bearer=None, committed_intent=intent)
+    assert adapter.calls == ["observe", "create", "observe"]
 
 
 @pytest.mark.asyncio

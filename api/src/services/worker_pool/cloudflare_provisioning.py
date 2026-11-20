@@ -42,20 +42,29 @@ class OwnershipConflict(Exception):
 class ProvisioningAdapter(Protocol):
     """A single qualified path, bound to the authenticated account.
 
-    Adapter mutations must enforce their preconditions at execution time and
-    must not blindly retry. Ambiguous readbacks raise ObservationPending.
+    Adapters check exact preconditions immediately before each mutation and
+    reconcile on the same path. Worker upload has no conditional PUT, so an
+    account-side writer can still race the create. The mandatory post-PUT
+    readback detects a foreign result and requires operator action.
     """
 
     async def observe(
         self, *, api_token: SecretStr, intent: ResourceIntent
     ) -> ResourceObservation | None:
-        """Read the exact target. None confirms absence and excludes late arrivals."""
+        """Read the exact target, rejecting foreign or unmarked occupants.
+
+        None confirms absence and excludes late arrivals. Uncertain state raises
+        ObservationPending. An unmarked occupant raises OwnershipConflict.
+        """
         ...
 
     async def create(
-        self, *, api_token: SecretStr, intent: ResourceIntent, scope_bearer: SecretStr
+        self, *, api_token: SecretStr, intent: ResourceIntent, scope_bearer: SecretStr | None
     ) -> None:
-        """Create only if absent, fenced to the journaled effect and target."""
+        """Check absence and bind the effect to the exact target before sending.
+
+        Only the capacity Worker's script upload receives a scope bearer.
+        """
         ...
 
     async def delete(self, *, api_token: SecretStr, expected: ResourceObservation) -> None:
@@ -86,10 +95,12 @@ async def resume_creation(
     adapter: ProvisioningAdapter,
     *,
     api_token: SecretStr,
-    scope_bearer: SecretStr,
+    scope_bearer: SecretStr | None,
     committed_intent: ResourceIntent,
 ) -> ResourceObservation:
     """Resume a committed creation intent under the caller's mutation fence."""
+    if scope_bearer is not None and committed_intent.target.kind != "worker_script":
+        raise ValueError("A scope bearer can be installed only on a Worker script")
     observed = await observe_owned(adapter, api_token=api_token, intent=committed_intent, recorded=None)
     if observed is not None:
         return observed

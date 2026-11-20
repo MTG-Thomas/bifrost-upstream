@@ -118,6 +118,11 @@ async def test_disconnect_retires_with_receipts_and_allows_reconnect(
     assert new_id != installation_id
     assert await db_session.get(CloudflareOwnedResource, resource.id) is not None
 
+    with pytest.raises(IntegrityError, match="tombstone cannot authorize"):
+        async with db_session.begin_nested():
+            resource.state = "creating"
+            await db_session.flush()
+
 
 @pytest.mark.asyncio
 async def test_connection_requires_current_consent_and_slot_rated_bounds(db_session: AsyncSession) -> None:
@@ -179,6 +184,35 @@ async def test_resource_journal_cannot_bind_another_account(
                 scope="workers", kind="worker_script", target_name="bifrost-resource",
                 desired_revision=1, artifact_digest="c" * 64, effect_id=uuid4(), state="creating",
             ))
+            await db_session.flush()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("collision", "constraint"),
+    [
+        ("target_name", "uq_cf_resource_target"),
+        ("provider_id", "uq_cf_resource_provider"),
+        ("effect_id", "uq_cf_resource_effect"),
+    ],
+)
+async def test_resource_journal_rejects_duplicate_identity(
+    db_session: AsyncSession, installation: CloudflareInstallation, collision: str, constraint: str,
+) -> None:
+    identity = {"target_name": "worker-a", "provider_id": "opaque-id-a", "effect_id": uuid4()}
+    common = {
+        "installation_id": installation.id, "account_id": installation.account_id,
+        "scope": "workers", "kind": "worker_script", "desired_revision": 1,
+        "artifact_digest": "c" * 64, "state": "present", "provider_version": "etag-a",
+        "observed_at": datetime.now(UTC),
+    }
+    db_session.add(CloudflareOwnedResource(id=uuid4(), **common, **identity))
+    await db_session.flush()
+    next_identity = {"target_name": "worker-b", "provider_id": "opaque-id-b", "effect_id": uuid4()}
+    next_identity[collision] = identity[collision]
+    with pytest.raises(IntegrityError, match=constraint):
+        async with db_session.begin_nested():
+            db_session.add(CloudflareOwnedResource(id=uuid4(), **common, **next_identity))
             await db_session.flush()
 
 
