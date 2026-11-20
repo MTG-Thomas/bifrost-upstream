@@ -139,6 +139,7 @@ class CloudflareCapacityScope(Base):
     deployment_revision: Mapped[int] = mapped_column(primary_key=True)
     bearer_purpose: Mapped[str] = mapped_column(String(16), server_default="scope_bearer")
     bearer_version: Mapped[int]
+    capacity_cpu_ms: Mapped[int] = mapped_column(Integer, server_default="30000")
 
 
 class CloudflareWorkerReservation(Base):
@@ -250,6 +251,11 @@ class CloudflareUsageActivity(Base):
     sdk_requests: Mapped[int] = mapped_column(BigInteger, server_default="0")
     tenant_host_seconds: Mapped[int] = mapped_column(BigInteger, server_default="0")
     tenant_dispatches: Mapped[int] = mapped_column(BigInteger, server_default="0")
+    inventory_tenant_seconds: Mapped[int] = mapped_column(BigInteger, server_default="0")
+    inventory_dispatches: Mapped[int] = mapped_column(BigInteger, server_default="0")
+    inventory_warm_pings: Mapped[int] = mapped_column(BigInteger, server_default="0")
+    capacity_requests: Mapped[int] = mapped_column(BigInteger, server_default="0")
+    capacity_cpu_ms: Mapped[int] = mapped_column(BigInteger, server_default="0")
 
 
 class CloudflareUsageIncarnation(Base):

@@ -173,6 +173,7 @@ class Bridge:
                 self, {SOLUTION_UPDATE_CHECK_JOB: (SOLUTION_GIT_CAPABILITY, run_solution_update_stage)},
             )
         self.declared_slots = lease.declared_slots
+        self.meter_exhausted = False
         self._reset_freshness()
         self.pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self.jobs: dict[str, RemoteProcess] = {}
@@ -232,6 +233,7 @@ class Bridge:
         return route_id.split(":")[1]
 
     def _receive_opaque_heartbeat(self, event: dict[str, Any]) -> None:
+        self.meter_exhausted |= event.get("meter_exhausted") is True
         received = event.get("received_sequence")
         if self.declared_slots == CLOUDFLARE_DEV_SLOTS:
             occupied = event.get("slot_occupied")
@@ -312,6 +314,8 @@ class Bridge:
                             raise CredentialRouteChanged("Opaque launcher inventory is not reconciled")
                         if dispatch and self.freshness_age() > ADMISSION_FRESHNESS_SECONDS:
                             raise CredentialRouteChanged("Opaque launcher heartbeat is stale")
+                        if dispatch and self.meter_exhausted:
+                            raise CredentialRouteChanged("Cloudflare launcher workload allowance ended")
                         socket = self.socket
                     elif authorization is not None:
                         socket = self.socket
@@ -509,7 +513,13 @@ class Bridge:
             future = self.pending.get(event["reply"])
             if future is not None and not future.done():
                 if "error" in event:
-                    error = MemoryError if event.get("error_type") == "MemoryError" else RuntimeError
+                    error_type = event.get("error_type")
+                    if (self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+                            and error_type == "CloudflareLauncherMeterLimitExceeded"):
+                        self.meter_exhausted = True
+                        error = CredentialRouteChanged
+                    else:
+                        error = MemoryError if error_type == "MemoryError" else RuntimeError
                     future.set_exception(error(event["error"]))
                 else:
                     future.set_result(event["result"])
@@ -534,6 +544,7 @@ class Bridge:
                 if self.inventory_ready.is_set() or type(version) is not int or version != 1:
                     raise ProtocolError("expected one opaque inventory v1 per launcher generation")
                 if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
+                    self.meter_exhausted |= inventory.get("meter_exhausted") is True
                     live, terminals = inventory.get("routes"), inventory.get("terminal_routes")
                     if not isinstance(live, list) or not isinstance(terminals, list):
                         raise ProtocolError("Opaque inventory must include routes and terminals")
@@ -640,6 +651,9 @@ class Bridge:
 
     async def _deliver_terminal(self, event: dict[str, Any]) -> bool:
         event_id = event.get("_event_id")
+        usage = event.get("usage")
+        if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and isinstance(usage, dict):
+            self.meter_exhausted |= usage.get("exhausted") is True
         if event.get("event") == "job_exit":
             route_id = event.get("route_id")
             process = self.jobs.pop(route_id, None) if isinstance(route_id, str) else None
@@ -971,7 +985,8 @@ class ApiExecutor(PoolWorker):
         reconciliation would fail its live child. Every claim (workflow and
         agent runs, services, platform jobs) passes ``Admission.claiming``."""
         if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and (
-            self._lost or not self.bridge.connected or self.bridge.freshness_age() > ADMISSION_FRESHNESS_SECONDS
+            self._lost or self.bridge.meter_exhausted or not self.bridge.connected
+            or self.bridge.freshness_age() > ADMISSION_FRESHNESS_SECONDS
         ):
             return False
         stages = self.bridge.platform_stage_backend

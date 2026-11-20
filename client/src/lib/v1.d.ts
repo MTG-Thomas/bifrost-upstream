@@ -16667,6 +16667,8 @@ export interface components {
             workers_paid_subscription_usd: string;
             /** Rate Table Version */
             rate_table_version: string;
+            /** Coverage */
+            coverage?: string[];
             /**
              * Period Start
              * Format: date-time

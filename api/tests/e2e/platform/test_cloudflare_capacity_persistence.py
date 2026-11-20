@@ -1,5 +1,6 @@
 """Exercise the Cloudflare journal against the migrated platform database."""
 
+import asyncio
 import json
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -328,6 +329,7 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
             await session.commit()
 
     monkeypatch.setattr(enable_job, "get_db_context", context)
+    monkeypatch.setattr(cloudflare_spend, "get_db_context", context)
     monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
     observed = {}
     writes = []
@@ -382,7 +384,10 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
 
     running = PlatformJobContext(job.id, lease_token, None, str(OPERATOR_ID), "operator@example.test", "")
     payload = enable_job.CloudflareEnablePayload.model_validate(job.payload)
-    release = SimpleNamespace(digest="d" * 64)
+    release = SimpleNamespace(
+        digest="d" * 64,
+        manifest=SimpleNamespace(workers={"capacity": SimpleNamespace(cpu_ms=400)}),
+    )
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider_read)) as http:
         with pytest.raises(PlatformJobRequiresAction) as ingress_denied:
             await enable_job._settle_enable(running, payload, http, release)
@@ -938,7 +943,7 @@ async def test_supervisor_reserves_and_retires_without_restarting(
             yield session
             await session.commit()
 
-    for module in (controller, external_controller, cloudflare_supervisor):
+    for module in (controller, external_controller, cloudflare_supervisor, cloudflare_spend):
         monkeypatch.setattr(module, "get_db_context", context)
     monkeypatch.setattr(controller, "_publish_live", AsyncMock(return_value=controller.LiveControllers(
         ids=frozenset(), versions=frozenset({"test"}),
@@ -1369,7 +1374,7 @@ async def test_admission_prices_the_qualified_ledger_bounds(
     }
     # The production guard charges a floor per meter and retains amounts
     # above the cap even for a regressing or uncertain final receipt.
-    lifetime_base = Decimal("0.01681260") + elapsed * Decimal("0.00068439050") + Decimal("0.00004280")
+    lifetime_base = Decimal("0.01681260") + elapsed * Decimal("0.00068439050") + Decimal("0.02004280")
     fallback = lifetime_base + Decimal("0.000106")
     await db_session.flush()
     assert await db_session.scalar(price) == fallback
@@ -1395,6 +1400,66 @@ async def test_admission_prices_the_qualified_ledger_bounds(
 
 
 @pytest.mark.asyncio
+async def test_idle_capacity_profile_reserves_request_and_cpu_and_reports_mixed_rate_coverage(
+    db_session: AsyncSession, installation: CloudflareInstallation,
+) -> None:
+    now = await db_session.scalar(select(func.clock_timestamp()))
+    assert now is not None
+    period, _ = usage_period(now)
+    price = select(cloudflare_estimated_usage()).where(CloudflareInstallation.id == installation.id)
+    assert await db_session.scalar(price) == 0
+    async def charge() -> None:
+        await cloudflare_spend.record_capacity_request(db_session, installation.id, 400)
+
+    reserve = AsyncMock(side_effect=charge)
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        reserve.assert_awaited_once()
+        assert request.url.path == "/v1/capabilities"
+        return httpx.Response(200, json={
+            "protocol_version": 2, "scope": "workers", "worker_version": "fixture-release",
+            "runtime_profile": "cloudflare-python-v1", "memory_limit_bytes": 128 * 1024**2,
+            "max_workers": 1, "max_lifetime_seconds": 120,
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+        await external_controller.ExternalCapacityClient(
+            "https://capacity.example.test", "x" * 32, http=http, reserve_request=reserve,
+        ).profile()
+    assert await db_session.scalar(price) == Decimal("0.00000830")
+    activity = await db_session.get(CloudflareUsageActivity, (installation.id, period))
+    assert activity is not None
+    activity.tenant_dispatches = 1
+    await db_session.flush()
+    status = await get_cloudflare_capacity_status(db_session, _platform_operator())
+    assert status.installation is not None and status.installation.spend is not None
+    rows = status.installation.spend.coverage
+    assert any("control-cadence" in line for line in rows)
+    assert any("Managed capacity calls" in line for line in rows)
+    assert not any("Dynamic Worker creation" in line for line in rows)
+
+
+@pytest.mark.asyncio
+async def test_supervisor_waits_for_its_cadence_after_a_timeout(monkeypatch) -> None:
+    stop = asyncio.Event()
+
+    async def wait(*_args, **_kwargs):
+        stop.set()
+
+    cadence = AsyncMock(side_effect=wait)
+    monkeypatch.setattr(cloudflare_supervisor, "listen_for_pool_wake", AsyncMock())
+    monkeypatch.setattr(cloudflare_supervisor, "_installations", AsyncMock(side_effect=TimeoutError))
+    monkeypatch.setattr(cloudflare_supervisor, "wait_for_next_pass", cadence)
+    await cloudflare_supervisor.cloudflare_supervisor_loop(
+        stop, SimpleNamespace(redis_url="redis://fixture"), lease=SimpleNamespace(
+            holds_lease=lambda: True, seconds_remaining=lambda: 1,
+        ),
+    )
+    cadence.assert_awaited_once()
+    assert cadence.await_args.kwargs["spacing"] == 2.0
+
+
+@pytest.mark.asyncio
 async def test_tenant_residency_reserves_route_and_warm_tail_in_the_spend_query(
     db_session: AsyncSession, installation: CloudflareInstallation,
 ) -> None:
@@ -1409,19 +1474,19 @@ async def test_tenant_residency_reserves_route_and_warm_tail_in_the_spend_query(
     db_session.add(incarnation)
     await db_session.flush()
     price = select(cloudflare_estimated_usage()).where(CloudflareInstallation.id == installation.id)
+    assert not await reserve_tenant_host_usage(db_session, uuid4(), now)
     assert not await reserve_tenant_host_usage(db_session, worker_id, None)
     assert await reserve_tenant_host_usage(db_session, worker_id, now + timedelta(seconds=120))
     row = await db_session.get(CloudflareUsageActivity, (installation.id, usage_period(now)[0]))
     assert row is not None
-    assert 119 <= row.tenant_host_seconds - (20 * 60 + 45) <= 120
-    assert row.tenant_dispatches == 1
+    assert 119 <= row.inventory_tenant_seconds - 1282 <= 120
+    assert row.inventory_dispatches == 1 and row.inventory_warm_pings == 32
     incarnation.deleted_at = now
     await db_session.flush()
     with_host = await db_session.scalar(price)
-    expected = Decimal("0.0000414") + row.tenant_host_seconds * (
-        Decimal("0.0000015625") + Decimal("0.00000610") / 45
-    )
-    row.tenant_host_seconds = row.tenant_dispatches = 0
+    expected = (Decimal("0.040541628") + row.inventory_tenant_seconds * Decimal("0.0000015625")
+                + 32 * Decimal("0.002627408"))
+    row.inventory_tenant_seconds = row.inventory_dispatches = row.inventory_warm_pings = 0
     await db_session.flush()
     without_host = await db_session.scalar(price)
     assert with_host is not None and without_host is not None
@@ -1429,22 +1494,25 @@ async def test_tenant_residency_reserves_route_and_warm_tail_in_the_spend_query(
     # A route booked across rollover leaves a residency reservation in
     # the next UTC month even though its request starts in this month.
     next_period = usage_period(now)[1]
+    assert not await reserve_tenant_host_usage(db_session, worker_id, next_period)
+    incarnation.deleted_at = None
+    await db_session.flush()
     assert await reserve_tenant_host_usage(db_session, worker_id, next_period + timedelta(seconds=10))
     rollover = await db_session.get(CloudflareUsageActivity, (installation.id, next_period))
     assert rollover is not None
-    assert (rollover.tenant_host_seconds, rollover.tenant_dispatches) == (1255, 0)
+    assert (rollover.inventory_tenant_seconds, rollover.inventory_dispatches, rollover.inventory_warm_pings) == (1292, 0, 29)
     installation.policy = {**installation.policy, "meter_launcher": {}}
     await db_session.flush()
     assert await db_session.scalar(price) is None
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("delete_uid,final_match", [("wrong", True), ("owned", False)])
+@pytest.mark.parametrize("delete_uid,stored,expected", [("wrong", False, False), ("owned", False, False), ("owned", True, True)])
 async def test_canary_cannot_seal_without_a_matching_delete_receipt_and_row(
-    monkeypatch, delete_uid: str, final_match: bool,
+    monkeypatch, delete_uid: str, stored: bool, expected: bool,
 ) -> None:
     worker_id = uuid4()
-    db = SimpleNamespace(scalar=AsyncMock(side_effect=[worker_id, worker_id if final_match else None]))
+    db = SimpleNamespace(scalar=AsyncMock(side_effect=[worker_id, None, worker_id if stored else None]))
 
     @asynccontextmanager
     async def context():
@@ -1457,7 +1525,7 @@ async def test_canary_cannot_seal_without_a_matching_delete_receipt_and_row(
         get=AsyncMock(return_value=SimpleNamespace(resource_uid="owned", state="running")),
         remove=AsyncMock(return_value=SimpleNamespace(resource_uid=delete_uid, state="deleted", usage={})),
     )
-    assert not await cloudflare_canary._retire_canary(client, worker_id, "owned")
+    assert await cloudflare_canary._retire_canary(client, worker_id, "owned") is expected
     seal.assert_not_awaited()
 
 

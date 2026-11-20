@@ -65,15 +65,18 @@ from src.services.worker_pool.cloudflare_release import (
     WorkersReleaseUnavailable,
     load_workers_release,
 )
-from src.services.worker_pool.cloudflare_spend import cloudflare_estimated_usage
+from src.services.worker_pool.cloudflare_spend import (
+    capacity_request_reservation,
+    cloudflare_estimated_usage,
+)
 from src.services.worker_pool.cloudflare_workers_rest import (
     CloudflareManagementDenied,
     CloudflareRestUnavailable,
     ConfiguredWorkersScript,
     WorkersDeployment,
+    WorkersPaidUnverified,
     WorkersRestCleanup,
     WorkersRestProvisioner,
-    WorkersPaidUnverified,
 )
 from src.services.worker_pool.external_client import (
     CapacityProtocolError,
@@ -234,7 +237,11 @@ async def _settle_enable(
         raise ObservationPending("Cloudflare capacity has no confirmed public endpoint")
 
     await context.report("Checking Worker Ingress")
-    client = ExternalCapacityClient(capacity_endpoint, bearer.get_secret_value(), http=http)
+    capacity_cpu_ms = release.manifest.workers["capacity"].cpu_ms
+    client = ExternalCapacityClient(
+        capacity_endpoint, bearer.get_secret_value(), http=http,
+        reserve_request=capacity_request_reservation(payload.installation_id, capacity_cpu_ms),
+    )
     async with get_db_context() as db:
         row = await _locked_current(db, context, payload)
         if row is None:
@@ -246,6 +253,7 @@ async def _settle_enable(
             db.add(CloudflareCapacityScope(
                 installation_id=row.id, scope="workers", deployment_revision=payload.revision,
                 endpoint=capacity_endpoint, bearer_version=payload.revision,
+            capacity_cpu_ms=capacity_cpu_ms,
             ))
         elif scope.endpoint != capacity_endpoint or scope.bearer_version != payload.revision:
             raise OwnershipConflict("Cloudflare scope differs from the verified deployment")

@@ -159,7 +159,11 @@ async def _retire_canary(client: ExternalCapacityClient, worker_id: UUID, resour
             ExecutionWorker.state == "retired", ExecutionWorker.capacity_resource_deleted_at.is_(None),
         ).values(capacity_resource_deleted_at=func.clock_timestamp()).returning(ExecutionWorker.id))
         if matched is None:
-            return False
+            return await db.scalar(select(ExecutionWorker.id).where(
+                ExecutionWorker.id == worker_id, ExecutionWorker.capacity_resource_uid == resource_uid,
+                ExecutionWorker.state.in_(("retired", "lost")),
+                ExecutionWorker.capacity_resource_deleted_at.is_not(None),
+            )) is not None
         await seal_launcher_meter(db, worker_id, observed.usage)
     return True
 

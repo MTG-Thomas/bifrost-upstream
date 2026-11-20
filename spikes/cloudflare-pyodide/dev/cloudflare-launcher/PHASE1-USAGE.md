@@ -125,9 +125,9 @@ enforced per invocation, and the model does not measure concurrent or
 provider-generated CPU or establish a maximum invocation rate per second.
 
 The exact packaged launcher completed loose Python workflow
-`defd0cc3-5fdf-4716-8179-43fbae4151b8`, remained running for 170 real
-provider GETs over 340.545 seconds, then completed Solution snapshot
-workflow `7fc64336-dc58-44ec-be82-89ef4e5fe013`. The workerd harness
+`babf3418-c8b2-46fa-8479-b0a594ee541d`, remained running for 170 real
+provider GETs over 340.876 seconds, then completed Solution snapshot
+workflow `58fc9c46-def3-4dc5-904b-c705bf5497dc`. The workerd harness
 used the controller's two-second minimum interval, which is faster than
 the five-second idle sweep. It sent the same resource GET through the
 real capacity Worker, WorkerLedger and launcher, with the launcher alarm
@@ -136,11 +136,9 @@ verified both Python results and witnessed both terminal ACKs. It
 exercised the provider path at controller cadence with a local relay
 and fixtures for the API peer and placement.
 
-The packaged caps passed the same 170-poll check using Bifrost's
-production wake scheduler. That run took 340.841 seconds for the polling
-window. Loose execution `2cce230e-f440-4bbd-a620-28a91f985011` and
-Solution execution `cf3d6e6f-964f-4964-8af1-a82b374a398e` both
-succeeded. Their sealed counts matched the table and exhaustion was false.
+The run used Bifrost's production wake scheduler and the packaged caps.
+Both workflows settled successfully and the receipt recorded
+`exhausted: false`.
 
 | Launcher meter | Loose terminal | Solution terminal | Sealed incarnation | 10× cap |
 | --- | ---: | ---: | ---: | ---: |
@@ -155,7 +153,13 @@ watchdog alarms are outside the workload cap. Exhaustion declines new
 work before engine entry and leaves completed results intact. The
 launcher can reconnect while results await ACK. Excess diagnostic logs
 are suppressed independently. ACK clears each route tombstone after
-committing a compact replay fence.
+committing a compact replay fence. A terminal, inventory or heartbeat
+can close admission for its incarnation before another route is claimed.
+The launcher also refuses stale attempts before engine entry. Settlement
+headroom follows the configured slot count. The 620-write cap leaves
+532 workload writes with one slot or 292 with four. The reference used
+about 31 writes per route, so a four-slot launch can retire after about
+nine similar workflows and be replaced when demand remains.
 
 For each receipt meter, Bifrost reserves the largest of the pinned cap,
 the sealed count, and the highest terminal count. Missing counts still
@@ -174,25 +178,26 @@ one lifecycle allowance for startup and release. It reserves WorkerLedger
 and ScopeRegistry residency at 128 MB each for the launcher lifetime.
 Managed workflow dispatch
 reserves TenantHost residency through its finite route deadline, the
-20-minute warm window and the final 45-second alarm interval. It reserves
-RPCs, writes and logs for each dispatch and warm ping, including the SDK
-gateway's TenantHost diagnostics. Duration reservations follow UTC
-month boundaries even after the launcher has retired.
+20-minute warm window, a final 45-second alarm interval, 20 seconds
+for an abandoned warm RPC and 17 seconds for the final exercise and
+origin check. Bifrost rounds up each dispatch's ping count per UTC month.
+Provider request and CPU reservations are committed immediately before
+each request, including capability checks with zero live launchers.
+Hosted capacity scripts reserve the CPU limit recorded with their deployment.
 
-The estimate uses marginal rates. Provider-initiated retries and
-automatic logs, Dynamic Worker creations, exact retained storage,
-and provider account allowances and billing rounding remain outside the
-reconciliation. The static policy envelope retains wider fleet reserves.
+The estimate uses marginal rates. The static policy envelope retains wider
+fleet reserves. Provider behavior described in the exclusions below can
+affect the invoice.
 [Cloudflare Durable Object billing](https://developers.cloudflare.com/durable-objects/platform/pricing/)
 
 Repricing the previous pilot as a 60-second-deadline scenario gives
-**$0.09063056**, or **3,038.9×** its observed Worker request and CPU cost
+**$0.50868890**, or **17,056.5×** its observed Worker request and CPU cost
 of `$0.00002982382`. The ledger has 79.355808 launcher- and slot-seconds,
 3 dispatches, 43 SDK requests and 3 incarnations. The historical capture
 has no workload receipts or route-deadline reservations. This comparison
-uses the new 620/60/20 floor and assumes the local reference's 60-second
-deadline for each dispatch. The earlier receipt model estimated
-`$0.08348536` on that ledger. Stored historical charges keep their
+uses the new 620/60/20 floor, three 60-second deadlines and 54 capacity
+requests at 400 ms each. Cloudflare sampled 54 capacity requests, but the
+pilot did not retain a Bifrost request counter. Stored historical charges keep their
 deployed release pricing. The Cloudflare sample covers Worker requests
 and CPU only. This run incurred no hosted spend.
 
@@ -201,7 +206,7 @@ measured capacity module digest, both measurement sources, the measured
 inputs and the margin. The builder and API verify these against the
 shipped bytes and enforced limits. Re-qualify changed bundles before
 packaging. The rate version is
-`workers-paid-2026-11-20-control-cadence`.
+`workers-paid-2026-11-20-meter-inventory`.
 
 For a new qualification, build both candidate modules with `bundleWorker`
 from `deploy/capacity/cloudflare/build-workers.mjs` and the qualified runtime.
@@ -213,6 +218,37 @@ references and seal the counters. Run only the
 for the cadence run and supply the packaged `BIFROST_LAUNCHER_METERS` JSON
 as `BIFROST_QUALIFIED_LAUNCHER_METERS` for its acceptance check. The CPU probe
 uses Linux process counters.
+
+### Packaged Workers Meter Inventory
+
+The deployment consists of the capacity script and its WorkerLedger and
+ScopeRegistry DOs, plus the private launcher, CloudflareLauncher,
+TenantHost and TenantApi exports. The engine is a Dynamic Worker. The
+release builder checks the esbuild input graph and each input's reviewed
+source hash against `deploy/capacity/cloudflare/meter-inventory.json`.
+The Node test checks each classification below and rejects changed or
+added inputs. The embedded Python and JS runtime archive uses its pinned
+artifact digest. Changes within these inputs require review of their
+billing classifications before another package can ship.
+
+| Classification | Billable units and consuming paths | Bifrost accounting |
+| --- | --- | --- |
+| `capacity-http` | Worker request and CPU for `capacity.mjs` health, auth/refusal, capabilities, GET, prepare, start and delete. Enable canary and supervisor use the same client. The REST management and Analytics APIs are outside the Worker invocation path. | Durable request and deployment CPU limit reserved before every managed client call, including idle capabilities. Public requests made outside Bifrost are excluded. |
+| `capacity-state` | WorkerLedger HTTP, Launcher RPC and ScopeRegistry HTTP on reserve/observe/release. WorkerLedger reads and updates its intent row; ScopeRegistry reads and updates the slot set. Both DOs have duration and retained KV backed by SQLite. | Poll and lifecycle reserve for requests, row operations and duration. Scope state and journal retention have storage reserves. |
+| `launcher-control` | Launcher enrollment, topology GET/RPC, 15-second alarm, alarm deletion, hello/welcome, inventory, control/ACK, 1-second outbound heartbeat, reconnect logs and control journal reads/writes. A workload command can fragment into up to 22 inbound frames, with terminate and ACK messages in addition. | Cadence, lifecycle and lifetime reserves. Workload frames receive a separate 26-unit dispatch reserve, conservatively pricing each as a full DO request. Outgoing WebSocket messages are free. Reconnect backoff resets on acknowledged progress. |
+| `launcher-workload` | TenantHost run/warm/stop RPCs, route and slot journal, terminal persistence, ACK cleanup, SQLite meter row and application terminal logs. | Receipt for writes, DO calls and log events, with an admission cap and overage pricing. Lifetime and dispatch reserves cover reads. The stop wait is bounded, and a continuation after seal cannot issue a new charged RPC. |
+| `gateway` | TenantApi and TenantHost route SDK fetch, refresh, diagnostics, snapshot reads and third-party egress. Authentication denials can still enter the gateway. | Reserve 50 gateway invocations at the launcher CPU limit and up to 100 TenantHost RPCs per dispatch, including refresh diagnostics. WorkerLoader enforces the approved subrequest limit, and the SDK gateway has its separate release cap. External fetch subrequests carry no additional standard Worker request fee; service/gateway entries are reserved. |
+| `tenant-state` | TenantHost generation/prime/inflight/stop state, warm metadata, storage sync, deletion, 45-second alarm and rearm. Late hosts can outlive their launcher. | Per-dispatch storage/read/log/RPC reserve and full 128 MB duration through the deadline and extended warm tail. Each reserved alarm includes two DO units, eight reads and two writes for a failed ping and rearm. |
+| `dynamic-engine` | WorkerLoader lookup, engine boot and warm retry, workflow, alarm exercise, import and SDK code, generation replacement. Dynamic Workers bill requests, CPU and unique creations per day. | Reserve up to four initial engine invocations and one per warm ping, each with 30,000 ms execution CPU, 1,000 ms startup and the marginal fee for a possible new identity. Shared IDs may reduce the provider's bill. |
+| `storage-logs` | SQLite bytes for route chunks, journals, provider tombstones and tenant state. Cloudflare Observability can charge for logging volume and retained data, including tenant stdout. | Active storage allowance and 0.1 GB-month per retained incarnation per UTC month until installation retirement. Managed uploads disable provider Observability and Logpush. Bifrost keeps the receipt and conservative log reserves. Exact provider allocation, external logging configuration and legacy retained logs remain excluded. |
+| `policy-helpers` | Protocol parsing, path validation, egress host matching, response shaping and output limits inside the calling invocation. | Covered by the caller's CPU and storage bounds. These helpers use no separately billed service. |
+| `inactive-features` | Agent and summary providers, manual scheduling, diagnostics and runtime probe paths reachable only in other spike configurations. | Outside the packaged managed workload surface. External traffic, provider-generated retries or overages, and account allowances and invoice rounding remain explicit exclusions. |
+
+[Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/) ·
+[Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/) ·
+[Dynamic Workers pricing](https://developers.cloudflare.com/dynamic-workers/pricing/) ·
+[Workers resource limits](https://developers.cloudflare.com/workers/platform/limits/) ·
+[Observability pricing](https://developers.cloudflare.com/observability/pricing/)
 
 #### Hosted SDK Measurement
 

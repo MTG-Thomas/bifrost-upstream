@@ -385,6 +385,8 @@ class WorkersRestProvisioner(WorkersRestCleanup):
             "exports": {name: export.model_dump() for name, export in artifact.exports.items()},
             "bindings": bindings,
             "limits": {"cpu_ms": artifact.cpu_ms},
+            "observability": {"enabled": False},
+            "logpush": False,
             "keep_bindings": [],
         }
         return {

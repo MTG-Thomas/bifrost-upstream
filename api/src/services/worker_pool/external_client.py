@@ -1,5 +1,6 @@
 """Authenticated, idempotent physical-capacity protocol; never a job transport."""
 
+from collections.abc import Awaitable, Callable
 from uuid import UUID
 
 import httpx
@@ -27,10 +28,14 @@ class ExternalCapacityClient:
     must never restart an incarnation that has already stopped.
     """
 
-    def __init__(self, endpoint: str, token: str, *, http: httpx.AsyncClient) -> None:
+    def __init__(
+        self, endpoint: str, token: str, *, http: httpx.AsyncClient,
+        reserve_request: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         self.endpoint = self.check_configuration(endpoint, token)
         self._token = token
         self.http = http
+        self._reserve_request = reserve_request
 
     @staticmethod
     def check_configuration(endpoint: str, token: str) -> str:
@@ -51,6 +56,8 @@ class ExternalCapacityClient:
         headers = {"Authorization": f"Bearer {self._token}"}
         if scope is not None:
             headers["X-Bifrost-Capacity-Scope"] = scope
+        if self._reserve_request is not None:
+            await self._reserve_request()
         return await self.http.request(
             method, f"{self.endpoint}/v1/{path}", headers=headers, json=body,
             timeout=CAPACITY_REQUEST_SECONDS, follow_redirects=False,

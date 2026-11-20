@@ -43,6 +43,10 @@ LINUX_RUNTIME_PROFILE = "linux-process-v1"
 # Experimental physical adapter identity with operator-gated control admission.
 CLOUDFLARE_PYTHON_RUNTIME_PROFILE = "cloudflare-python-v1"
 CLOUDFLARE_MAX_LOGICAL_BYTES = 16 * 2**20
+FRAGMENT_CHUNK_BYTES = ((MAX_FRAME_BYTES - 1024) * 3) // 4
+CLOUDFLARE_MAX_CONTROL_FRAGMENTS = (
+    CLOUDFLARE_MAX_LOGICAL_BYTES + FRAGMENT_CHUNK_BYTES - 1
+) // FRAGMENT_CHUNK_BYTES
 CLOUDFLARE_INCARNATION_ENDED = 4001
 CLOUDFLARE_CREDENTIAL_PROTOCOL = 2
 CLOUDFLARE_DEV_SLOTS = 1
@@ -321,7 +325,7 @@ def fragment(envelope: ControlEnvelope) -> Iterator[ControlEnvelope]:
     """Encode one logical envelope into bounded ordered transport frames."""
     raw = envelope._encode().encode()
     # A base64 fragment plus JSON envelope must fit in MAX_FRAME_BYTES.
-    chunk_size = ((MAX_FRAME_BYTES - 1024) * 3) // 4
+    chunk_size = FRAGMENT_CHUNK_BYTES
     if len(raw) <= chunk_size:
         yield envelope
         return

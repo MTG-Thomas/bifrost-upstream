@@ -217,6 +217,8 @@ async def test_rest_upload_scopes_the_bearer_and_finalizes_the_verified_endpoint
             assert parts["capacity.mjs"] == packaged.modules["capacity"]["capacity.mjs"]
             metadata = json.loads(parts["metadata"])
             assert "synthetic-management" not in json.dumps(metadata)
+            assert metadata["observability"] == {"enabled": False}
+            assert metadata["logpush"] is False
             bindings = metadata["bindings"]
             assert {"name": "CAPACITY_TOKEN", "type": "secret_text", "text": "synthetic-bearer"} in bindings
             assert any(binding.get("script_name") == "bifrost-launcher" for binding in bindings)

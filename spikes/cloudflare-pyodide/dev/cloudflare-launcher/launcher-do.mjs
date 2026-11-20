@@ -121,6 +121,7 @@ export class CloudflareLauncher extends DurableObject {
 
   #initialize(settings) {
     this.#settings = settings;
+    this.#meter?.setSlots(settings.slots);
     const getHost = (id) => {
       const host = this.ctx.exports.TenantHost.getByName(id);
       const charge = () => {
@@ -139,8 +140,9 @@ export class CloudflareLauncher extends DurableObject {
           return host.warm(input);
         },
         stopWorkflow: (id) => {
-          this.#meter.charge({do_requests: 1}, true);
-          return host.stopWorkflow(id);
+          // Release may already have sealed the counters after its bounded
+          // stop wait. A late continuation must never emit an unpriced RPC.
+          return this.#meter.charge({do_requests: 1}, true) ? host.stopWorkflow(id) : undefined;
         },
       } : host;
     };
@@ -393,15 +395,15 @@ export class CloudflareLauncher extends DurableObject {
 
   async #receive(connection, data) {
     if (this.#connection !== connection) return;
-    await this.#core.receive(connection.session, data);
+    const progress = await this.#core.receive(connection.session, data);
     if (this.#connection !== connection) return;
     if (connection.session.generation && connection.heartbeat === null) {
       console.info('launcher_control_welcome', connection.session.generation);
       clearTimeout(connection.welcomeTimer);
-      this.#backoff = 1000;
       connection.heartbeat = setInterval(() =>
         this.#observe(connection, this.#core.tick(connection.session)), 1000);
     }
+    if (progress === 'terminal_ack') this.#backoff = 1000;
   }
 
   #observe(connection, task) {

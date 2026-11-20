@@ -30,7 +30,7 @@ function workflow(suffix = '1') {
   };
 }
 
-function peer({data = new Map(), runHost, runSummary, runAgent, beforePut, onSend, meter, slots = 1} = {}) {
+function peer({data = new Map(), runHost, runSummary, runAgent, beforePut, onSend, meter, slots = 1, stopHost} = {}) {
   let now = START;
   let order = 0;
   let session;
@@ -71,7 +71,10 @@ function peer({data = new Map(), runHost, runSummary, runAgent, beforePut, onSen
       return runHost ? runHost(route, context, signal) : COMPLETED;
     },
     runSummary, runAgent,
-    stopHost: async (route) => stopped.push(route.route_id),
+    stopHost: async (route) => {
+      stopped.push(route.route_id);
+      await stopHost?.();
+    },
     background: (promise) => background.push(promise),
   });
   return {
@@ -520,9 +523,25 @@ test('launcher exhaustion preserves success and allows redial until the terminal
   assert.equal(await api.core.canReconnect(), true);
   await connect(api, 2);
   assert.deepEqual(api.frames().at(-1), terminal);
-  await api.ack(terminal._event_id);
+  assert.equal(await api.ack('other-event-id'), undefined);
+  assert.equal(await api.ack(terminal._event_id), 'terminal_ack');
   assert.equal(await api.core.canReconnect(), false);
   assert.equal(await api.core.isStopped(), true);
+});
+
+test('release completes while a stop RPC is still stalled', async () => {
+  const run = deferred();
+  const stop = deferred();
+  const peerApi = peer({runHost: () => run.promise, stopHost: () => stop.promise});
+  await connect(peerApi);
+  await peerApi.command('workflow', workflow());
+  await peerApi.entered;
+  await peerApi.core.release();
+  assert.equal(peerApi.core.retired, true);
+  assert.equal(peerApi.stopped.length, 1);
+  stop.resolve();
+  run.resolve(COMPLETED);
+  await peerApi.finish();
 });
 
 test('reset during a host call journals uncertain before reconnect', async () => {

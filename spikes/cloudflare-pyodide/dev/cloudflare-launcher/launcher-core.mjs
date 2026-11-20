@@ -9,6 +9,7 @@ import {
 
 const CONTROL = 'control';
 const ACKNOWLEDGED = 'acknowledged';
+const STOP_SETTLEMENT_MS = 2000;
 const slotKey = (index) => index === 0 ? 'slot' : `slot:${index}`;
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const UUID_RE = new RegExp(`^${UUID}$`);
@@ -158,7 +159,13 @@ export class LauncherCore {
         if (slot?.state === 'entering') this.#stop(slot.route);
       }
       this.#slots.fill(null);
-      await Promise.all(this.#stops);
+      if (this.#stops.size) {
+        let timer;
+        await Promise.race([
+          Promise.all(this.#stops),
+          new Promise(resolve => { timer = setTimeout(resolve, STOP_SETTLEMENT_MS); }),
+        ]).finally(() => clearTimeout(timer));
+      }
     });
   }
 
@@ -271,6 +278,7 @@ export class LauncherCore {
         this.#acknowledged = acknowledged;
         await this.storage.delete(slotKey(index), `seen:${routeId}`);
         this.#slots[index] = null;
+        return 'terminal_ack';
       }
       return;
     }
@@ -305,6 +313,7 @@ export class LauncherCore {
     }
     this.#emit(session, {event: 'inventory', inventory: {
       version: 1, routes, terminal_routes: terminalRoutes,
+      ...(this.meter?.exhausted ? {meter_exhausted: true} : {}),
       ...(this.#slots.length > 1 ? {workflow_slots: this.#slots.length} : {}),
     }});
     for (const slot of this.#slots) {
@@ -319,7 +328,8 @@ export class LauncherCore {
       if (this.#session !== session || !session.generation || this.clock() < session.nextHeartbeat) return;
       const occupancy = this.#slots.length === 1 ? {slot_occupied: Boolean(this.#slots[0])} :
         {occupied_routes: this.#slots.filter(Boolean).map(({route}) => route.route_id)};
-      this.#emit(session, {event: 'heartbeat', ...occupancy, received_sequence: session.received});
+      this.#emit(session, {event: 'heartbeat', ...occupancy, received_sequence: session.received,
+        ...(this.meter?.exhausted ? {meter_exhausted: true} : {})});
       session.nextHeartbeat += 1000;
       if (session.nextHeartbeat <= this.clock()) session.nextHeartbeat = this.clock() + 1000;
     });
@@ -445,6 +455,10 @@ export class LauncherCore {
       return;
     }
     if (this.#session !== session) return;
+    if (this.meter?.exhausted) {
+      refuse(METER_ERROR, 'Cloudflare launcher meter limit reached before dispatch');
+      return;
+    }
     try {
       // A durable intent fences an interruption before the slot is saved.
       await this.storage.put(routeKey, true, 'workload');

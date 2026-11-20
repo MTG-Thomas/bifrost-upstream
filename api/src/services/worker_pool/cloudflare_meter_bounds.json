@@ -2,13 +2,13 @@
   "qualification": {
     "source_run": "22529613-b865-4cab-9f7d-49361b3568a0",
     "observed_manifest_sha256": "b4d55400c080dc014b85054f1560e8a0e4da2470d597c71ab5c501790801f112",
-    "bundle_sha256": "c9cef32a0b52cd9c93d8f7e3a150be56861395905353637eab75114b38872069",
+    "bundle_sha256": "cedf13e4b05188b861a9b732f51482260ec38b8a554e6f437026ab92743454eb",
     "capacity_module_sha256": "c4fbefd8a63eddfcb6bddd8b08a9d33c035f450320aa4687788dceb1bc869e79",
     "capacity_cpu_us": 40000,
     "sdk_requests": 4,
     "safety_margin": 10,
     "launcher_reference": {
-      "source": "local-workerd:170x2s:defd0cc3-5fdf-4716-8179-43fbae4151b8,7fc64336-dc58-44ec-be82-89ef4e5fe013",
+      "source": "local-workerd:170x2s:babf3418-c8b2-46fa-8479-b0a594ee541d,58fc9c46-def3-4dc5-904b-c705bf5497dc",
       "observed": {"sqlite_rows_written": 62, "do_requests": 6, "log_events": 2}
     }
   },

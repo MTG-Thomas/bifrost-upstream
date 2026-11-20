@@ -331,9 +331,7 @@ export function CloudflareCapacity() {
 									<div>
 										<dt className="text-muted-foreground">Usage Estimate Coverage</dt>
 										<dd>
-											{installation.spend.rate_table_version === "workers-paid-2026-11-20-control-cadence" &&
-												"Includes Bifrost launcher, control, and tenant host reservations. "}
-											Provider-generated retries and logs, Dynamic Worker creation, retained storage beyond the reserve, and account billing adjustments are outside this estimate.
+											{installation.spend.coverage?.map((line) => <div key={line}>{line}</div>)}
 										</dd>
 									</div>
 								</>

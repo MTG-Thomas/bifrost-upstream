@@ -1,10 +1,29 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
-import {qualifiedMeterLimits} from './build-workers.mjs';
+import {assertMeterInventory, bundleWorker, qualifiedMeterLimits} from './build-workers.mjs';
 
 const source = new URL('../../../api/src/services/worker_pool/cloudflare_meter_bounds.json', import.meta.url);
 const qualification = () => JSON.parse(readFileSync(source, 'utf8'));
+const meterInventory = JSON.parse(readFileSync(new URL('./meter-inventory.json', import.meta.url), 'utf8'));
+
+test('every input in the packaged Workers import graph has a reviewed billing classification', async () => {
+  for (const role of ['launcher', 'capacity']) {
+    const inputs = await bundleWorker(role, Buffer.from('export default {};'), {inventoryOnly: true});
+    const embedded = 'bifrost-runtime:generated-runtime.mjs';
+    // The production builder verifies this input from the real runtime artifact.
+    if (embedded in inputs) inputs[embedded] = 'fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5';
+    assertMeterInventory(role, inputs, meterInventory);
+    assert.throws(() => assertMeterInventory(role, {...inputs, 'unreviewed.mjs': 'unknown'}, meterInventory),
+      /Unclassified Cloudflare meter input/);
+    const [first] = Object.keys(inputs);
+    assert.throws(() => assertMeterInventory(role, {...inputs, [first]: 'changed charge site'}, meterInventory),
+      /Review the Cloudflare meter inventory/);
+  }
+  const docs = readFileSync(new URL('../../../spikes/cloudflare-pyodide/dev/cloudflare-launcher/PHASE1-USAGE.md',
+    import.meta.url), 'utf8');
+  for (const id of meterInventory.paths) assert.ok(docs.includes(`| \`${id}\` |`), id);
+});
 
 test('build uses the pinned measured capacity CPU and request inputs with the reviewed margin', () => {
   assert.deepEqual(qualifiedMeterLimits(qualification()), {

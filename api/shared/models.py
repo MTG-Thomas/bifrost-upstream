@@ -57,6 +57,7 @@ class CloudflareSpendStatus(BaseModel):
     estimated_usd: Decimal | None
     workers_paid_subscription_usd: Decimal = Field(description="Monthly Workers Paid subscription billed separately by Cloudflare")
     rate_table_version: str
+    coverage: list[str] = Field(default_factory=list)
     period_start: datetime
     period_end: datetime
     analytics: CloudflareUsageAdvisory | None = None

@@ -39,7 +39,10 @@ from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
     open_credential,
 )
-from src.services.worker_pool.cloudflare_spend import cloudflare_usage_within_limit
+from src.services.worker_pool.cloudflare_spend import (
+    capacity_request_reservation,
+    cloudflare_usage_within_limit,
+)
 from src.services.worker_pool.controller import (
     RECONCILE_SECONDS,
     SWEEP_SECONDS,
@@ -125,7 +128,10 @@ async def _reconcile_scope(
             select(cloudflare_usage_within_limit()).where(CloudflareInstallation.id == installation_id),
         ))
 
-    client = ExternalCapacityClient(endpoint, bearer.get_secret_value(), http=http)
+    client = ExternalCapacityClient(
+        endpoint, bearer.get_secret_value(), http=http,
+        reserve_request=capacity_request_reservation(installation_id, scope.capacity_cpu_ms),
+    )
     controller = controllers.get(binding)
     if controller is None:
         profile = await client.profile()
@@ -191,6 +197,7 @@ async def cloudflare_supervisor_loop(
                             except Exception:
                                 logger.warning("Managed Cloudflare scope reconciliation failed", exc_info=True)
                 except TimeoutError:
+                    await wait_for_next_pass(stop_event, wake, since=started, spacing=RECONCILE_SECONDS, sweep=SWEEP_SECONDS)
                     continue
                 except Exception:
                     logger.warning("Could not read managed Cloudflare scopes", exc_info=True)

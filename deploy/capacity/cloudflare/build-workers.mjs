@@ -93,13 +93,14 @@ const workerDefinitions = {
   },
 };
 
-export async function bundleWorker(role, runtime) {
+export async function bundleWorker(role, runtime, {inventoryOnly = false, requireInventory = false} = {}) {
   const {build} = require("esbuild");
   const {entry} = workerDefinitions[role];
   const filename = role + ".mjs";
   const result = await build({
     absWorkingDir: root, entryPoints: [resolve(spike, entry)],
     bundle: true, format: "esm", platform: "neutral", write: false,
+    metafile: inventoryOnly || requireInventory,
     outfile: filename, minify: true, legalComments: "inline", external: ["cloudflare:workers"],
     plugins: [{
       name: "qualified-workers-runtime",
@@ -118,7 +119,31 @@ export async function bundleWorker(role, runtime) {
       },
     }],
   });
+  if (inventoryOnly || requireInventory) {
+    const inputs = Object.fromEntries(await Promise.all(Object.keys(result.metafile.inputs).sort().map(async (path) => [
+      path,
+      path === "bifrost-runtime:generated-runtime.mjs" ? sha256(runtime) :
+        sha256((await readFile(resolve(root, path), "utf8")).replaceAll("\r\n", "\n")),
+    ])));
+    if (inventoryOnly) return inputs;
+    const inventory = JSON.parse(await readFile(new URL("./meter-inventory.json", import.meta.url), "utf8"));
+    assertMeterInventory(role, inputs, inventory);
+  }
   return result.outputFiles[0].contents;
+}
+
+export function assertMeterInventory(role, inputs, inventory) {
+  const entries = inventory.sources[role];
+  if (!entries || !isDeepStrictEqual(Object.keys(entries).sort(), Object.keys(inputs).sort())) {
+    throw new Error("Unclassified Cloudflare meter input in " + role);
+  }
+  for (const [path, digest] of Object.entries(inputs)) {
+    const entry = entries[path];
+    if (entry.sha256 !== digest || !Array.isArray(entry.paths) || entry.paths.length === 0 ||
+        entry.paths.some(id => !inventory.paths.includes(id))) {
+      throw new Error("Review the Cloudflare meter inventory for " + path);
+    }
+  }
 }
 
 export async function buildWorkers(runtimePath, outputPath, sourceRevision, meterBounds) {
@@ -152,7 +177,7 @@ export async function buildWorkers(runtimePath, outputPath, sourceRevision, mete
   for (const [role, definition] of Object.entries(workerDefinitions)) {
     const { entry: _entry, exports, bindings, ...metadata } = definition;
     const filename = role + ".mjs";
-    const bytes = await bundleWorker(role, runtime);
+    const bytes = await bundleWorker(role, runtime, {requireInventory: true});
     const compressedBytes = gzipSync(bytes, { level: 9 }).byteLength;
     if (bytes.byteLength > uploadLimit) throw new Error(role + " exceeds the Workers upload limit");
     artifacts.push([filename, bytes]);

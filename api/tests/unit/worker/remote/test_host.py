@@ -43,6 +43,7 @@ from src.worker.remote.protocol import (
     MAX_FRAME_BYTES,
     AuthenticationError,
     ControlEnvelope,
+    CredentialRouteChanged,
     FragmentAssembler,
     Hello,
     ProtocolError,
@@ -382,6 +383,22 @@ async def test_opaque_worker_stays_busy_until_launcher_reports_its_slot_empty() 
     assert worker.active_runs() == 1
     await heartbeat(False, 2)  # The launcher subsequently processed the ACK.
     assert worker.active_runs() == 0
+
+
+@pytest.mark.asyncio
+async def test_exhausted_cloudflare_launcher_stops_claiming_without_faking_active_runs() -> None:
+    socket = Mock(send_text=AsyncMock())
+    bridge = Bridge(socket, {"hostname": "opaque", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE},
+                    replace(LEASE, declared_slots=1))
+    worker = ApiExecutor(bridge, LEASE.worker_id)
+    bridge.reconciliation_ready.set()
+    await bridge.receive({"event": "heartbeat", "slot_occupied": False, "received_sequence": 0, "meter_exhausted": True})
+    async with worker.admission.claiming() as fits:
+        assert fits is None
+    assert worker.active_runs() == 0
+    with pytest.raises(CredentialRouteChanged, match="workload allowance ended"):
+        await bridge.request("workflow", {"route_id": "workflow:fixture:attempt"})
+    socket.send_text.assert_not_awaited()
 
 
 @pytest.mark.asyncio

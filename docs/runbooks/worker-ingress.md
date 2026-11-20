@@ -98,9 +98,14 @@ logs. Bifrost charges at least the pinned workload caps and retains
 observed usage above them. Exhaustion closes workload admission while
 terminal ACK recovery continues.
 
-Bifrost reserves TenantHost residency through each managed workflow's
-finite timeout plus the warm window and final alarm. The reservation also
-covers known RPCs, storage writes and logs. Provider-generated retries and
-logs, Dynamic Worker creation, retained storage beyond the reserve, and
-account-level allowances and invoice rounding can affect the provider bill.
-[Cloudflare Durable Object pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)
+Bifrost reserves the Worker request and configured CPU budget before each
+managed capacity call, including idle capability polling. Each workflow
+reserves control fragments, gateway calls, and TenantHost residency
+through its finite deadline and the extended warm tail. The warm allowance
+covers requests, CPU, possible Dynamic Worker creations, alarms and
+storage. Managed uploads disable provider Observability and Logpush.
+
+Capacity Settings lists the coverage of each rate contributing to the
+current month. External traffic, provider retries and overages, exact
+retained bytes, operator-enabled logging, and account billing adjustments
+can affect the invoice. [Cloudflare Durable Object pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/) · [Cloudflare Dynamic Workers pricing](https://developers.cloudflare.com/dynamic-workers/pricing/)
