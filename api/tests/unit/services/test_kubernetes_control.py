@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 import asyncio
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 from pydantic import SecretStr
@@ -13,8 +15,11 @@ from src.jobs.platform.kubernetes_client import (
     KubernetesApiError,
     KubernetesConfigurationError,
 )
+from src.scheduler.leadership import SchedulerLeadershipLease
 from src.services import kubernetes_control
 from src.services.kubernetes_control import REQUIRED_ACCESS, may_manage_jobs
+from src.services.worker_pool import cloudflare_supervisor
+from src.services.worker_pool.cloudflare_admission import ManagedCloudflareScope
 from src.services.worker_pool.manifest import resolve_worker_job_spec
 
 
@@ -76,6 +81,45 @@ async def test_manual_cloudflare_enrollment_does_not_start_an_external_provider(
     assert [task.get_name() for task in tasks] == ["cloudflare-worker-supervisor"]
     await asyncio.gather(*tasks)
     permission.assert_awaited_once_with(settings)
+
+
+async def test_cloudflare_supervisor_rechecks_job_access_and_fences_expired_leader(monkeypatch):
+    clock = 0.0
+    lease = SchedulerLeadershipLease(monotonic=lambda: clock)
+    lease.lease_token = uuid4()
+    lease._record_validity(clock)
+    scope = ManagedCloudflareScope(uuid4(), "workers", 1)
+    kubernetes_checks = iter((False, True))
+    reconciled = []
+
+    async def job_access(_settings):
+        nonlocal clock
+        try:
+            return next(kubernetes_checks)
+        except StopIteration:
+            clock += lease.lease_duration.total_seconds()
+            return True
+
+    async def reconcile(binding, _settings, _http, _controllers, *, kubernetes):
+        reconciled.append((binding, kubernetes))
+
+    @asynccontextmanager
+    async def db():
+        yield object()
+
+    monkeypatch.setattr(cloudflare_supervisor, "get_db_context", db)
+    monkeypatch.setattr(cloudflare_supervisor, "_installations", AsyncMock(return_value=[scope]))
+    monkeypatch.setattr(cloudflare_supervisor, "may_manage_jobs", job_access)
+    monkeypatch.setattr(cloudflare_supervisor, "_reconcile_scope", reconcile)
+    monkeypatch.setattr(cloudflare_supervisor, "listen_for_pool_wake", AsyncMock())
+    monkeypatch.setattr(cloudflare_supervisor, "wait_for_next_pass", AsyncMock())
+    scheduler = AsyncMock()
+    monkeypatch.setattr(cloudflare_supervisor, "schedule_cloudflare_reconcile", scheduler)
+    await cloudflare_supervisor.cloudflare_supervisor_loop(
+        asyncio.Event(), SimpleNamespace(redis_url="redis://unused"), lease=lease,
+    )
+    assert reconciled == [(scope, False), (scope, True)]
+    scheduler.assert_awaited_once()
 
 
 class _Client:

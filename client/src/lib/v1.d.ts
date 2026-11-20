@@ -2995,6 +2995,41 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
+        /** Configure Cloudflare Capacity */
+        patch: operations["capacity.cloudflare_configure"];
+        trace?: never;
+    };
+    "/api/capacity/cloudflare/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Enable Cloudflare Capacity */
+        post: operations["capacity.cloudflare_enable"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/capacity/cloudflare/reconcile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reconcile Cloudflare Capacity */
+        post: operations["capacity.cloudflare_reconcile"];
+        delete?: never;
+        options?: never;
+        head?: never;
         patch?: never;
         trace?: never;
     };
@@ -16278,7 +16313,21 @@ export interface components {
             expected_revision: number;
         };
         /** CloudflareCapacityPolicy */
-        CloudflareCapacityPolicy: {
+        "CloudflareCapacityPolicy-Input": {
+            /**
+             * Version
+             * @default 1
+             * @constant
+             */
+            version: 1;
+            workers: components["schemas"]["CloudflareWorkersPolicy"];
+            /** Monthly Limit Usd */
+            monthly_limit_usd: number | string;
+            /** Shared Managed Worker Cap */
+            shared_managed_worker_cap?: number | null;
+        };
+        /** CloudflareCapacityPolicy */
+        "CloudflareCapacityPolicy-Output": {
             /**
              * Version
              * @default 1
@@ -16295,9 +16344,36 @@ export interface components {
         CloudflareCapacityStatus: {
             /** Consent Text Version */
             consent_text_version: string;
+            /** Consent Text */
+            consent_text: string;
             installation: components["schemas"]["CloudflareInstallationStatus"] | null;
             /** Latest Job Id */
             latest_job_id?: string | null;
+        };
+        /** CloudflareConnectRequest */
+        CloudflareConnectRequest: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            action: "connect";
+            /** Account Id */
+            account_id: string;
+            /** Worker Ingress Origin */
+            worker_ingress_origin: string;
+            /** Consent Version */
+            consent_version: string;
+            /**
+             * Consent
+             * @constant
+             */
+            consent: true;
+            /**
+             * Api Token
+             * Format: password
+             */
+            api_token: string;
+            policy: components["schemas"]["CloudflareCapacityPolicy-Input"];
         };
         /** CloudflareInstallationStatus */
         CloudflareInstallationStatus: {
@@ -16326,11 +16402,42 @@ export interface components {
             desired_state: "scaled_in" | "enabled" | "disconnected";
             /** Admission Open */
             admission_open: boolean;
-            policy: components["schemas"]["CloudflareCapacityPolicy"];
+            policy: components["schemas"]["CloudflareCapacityPolicy-Output"];
             /** Fleet Envelope Usd */
             fleet_envelope_usd: string;
             /** Owned Resources Pending */
             owned_resources_pending: number;
+        };
+        /** CloudflarePolicyUpdate */
+        CloudflarePolicyUpdate: {
+            /**
+             * Installation Id
+             * Format: uuid
+             */
+            installation_id: string;
+            /** Expected Revision */
+            expected_revision: number;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            action: "policy";
+            policy: components["schemas"]["CloudflareCapacityPolicy-Input"];
+        };
+        /** CloudflareWorkerCredentialRotation */
+        CloudflareWorkerCredentialRotation: {
+            /**
+             * Installation Id
+             * Format: uuid
+             */
+            installation_id: string;
+            /** Expected Revision */
+            expected_revision: number;
+            /**
+             * Credential
+             * @enum {string}
+             */
+            credential: "control_root" | "scope_bearer";
         };
         /**
          * CloudflareWorkersPolicy
@@ -38501,6 +38608,105 @@ export interface operations {
             };
         };
     };
+    "capacity.cloudflare_configure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CloudflareConnectRequest"] | components["schemas"]["CloudflarePolicyUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CloudflareCapacityStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "capacity.cloudflare_enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CloudflareCapacityAction"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformJobAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "capacity.cloudflare_reconcile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CloudflareCapacityAction"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformJobAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     "capacity.cloudflare_scale_in": {
         parameters: {
             query?: never;
@@ -38576,7 +38782,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CloudflareAccountTokenRotation"];
+                "application/json": components["schemas"]["CloudflareAccountTokenRotation"] | components["schemas"]["CloudflareWorkerCredentialRotation"];
             };
         };
         responses: {

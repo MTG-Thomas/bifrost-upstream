@@ -6,6 +6,69 @@
           "path": [
             "capacity",
             "cloudflare",
+            "connect"
+          ],
+          "status": "exact_parity"
+        },
+        "manifest": {
+          "entity": null,
+          "status": "intentionally_unsupported"
+        },
+        "mcp": {
+          "name": "bifrost_cloudflare_policy_update",
+          "status": "exact_parity"
+        },
+        "rest": {
+          "operation_id": "capacity.cloudflare_configure",
+          "status": "exact_parity"
+        },
+        "sdk": {
+          "binding": null,
+          "status": "intentionally_unsupported"
+        }
+      },
+      "operation": {
+        "action_scopes": [
+          "platform.readwrite"
+        ],
+        "async_policy": "synchronous",
+        "audit_event": null,
+        "authorization_resolver": "platform.readwrite at Global",
+        "cli": {
+          "path": [
+            "capacity",
+            "cloudflare",
+            "connect"
+          ]
+        },
+        "exclusions": {
+          "manifest": "Capacity installations and credentials are bound to the deployment.",
+          "native_builder": "Cloudflare capacity is platform administration.",
+          "sdk": "Runtime SDKs do not administer capacity."
+        },
+        "manifest": null,
+        "mcp": {
+          "name": "bifrost_cloudflare_policy_update"
+        },
+        "native_builder": false,
+        "operation_id": "capacity.cloudflare_configure",
+        "rest": {
+          "method": "PATCH",
+          "path": "/api/capacity/cloudflare",
+          "request_model": "CloudflareConnectRequest | CloudflarePolicyUpdate",
+          "response_model": "CloudflareCapacityStatus"
+        },
+        "side_effects": [],
+        "summary": "Connect and Configure Cloudflare Capacity",
+        "target_kind": "platform"
+      }
+    },
+    {
+      "observed": {
+        "cli": {
+          "path": [
+            "capacity",
+            "cloudflare",
             "status"
           ],
           "status": "exact_parity"
@@ -204,8 +267,8 @@
           "status": "intentionally_unsupported"
         },
         "mcp": {
-          "name": null,
-          "status": "intentionally_unsupported"
+          "name": "bifrost_cloudflare_worker_credential_replace",
+          "status": "exact_parity"
         },
         "rest": {
           "operation_id": "capacity.cloudflare_rotate_account_token",
@@ -232,22 +295,149 @@
         },
         "exclusions": {
           "manifest": "Capacity credentials are bound to the deployment.",
-          "mcp": "The replacement token is entered through a protected operator input.",
           "native_builder": "Cloudflare capacity is platform administration.",
           "sdk": "Runtime SDKs do not administer capacity."
         },
         "manifest": null,
-        "mcp": null,
+        "mcp": {
+          "name": "bifrost_cloudflare_worker_credential_replace"
+        },
         "native_builder": false,
         "operation_id": "capacity.cloudflare_rotate_account_token",
         "rest": {
           "method": "POST",
           "path": "/api/capacity/cloudflare/rotate",
-          "request_model": "CloudflareAccountTokenRotation",
+          "request_model": "CloudflareAccountTokenRotation | CloudflareWorkerCredentialRotation",
           "response_model": "PlatformJobAccepted"
         },
         "side_effects": [],
-        "summary": "Rotate Cloudflare Account API Token",
+        "summary": "Rotate a Cloudflare Credential",
+        "target_kind": "platform"
+      }
+    },
+    {
+      "observed": {
+        "cli": {
+          "path": [
+            "capacity",
+            "cloudflare",
+            "enable"
+          ],
+          "status": "exact_parity"
+        },
+        "manifest": {
+          "entity": null,
+          "status": "intentionally_unsupported"
+        },
+        "mcp": {
+          "name": "bifrost_cloudflare_enable_execute",
+          "status": "exact_parity"
+        },
+        "rest": {
+          "operation_id": "capacity.cloudflare_enable",
+          "status": "exact_parity"
+        },
+        "sdk": {
+          "binding": null,
+          "status": "intentionally_unsupported"
+        }
+      },
+      "operation": {
+        "action_scopes": [
+          "platform.readwrite"
+        ],
+        "async_policy": "platform_job",
+        "audit_event": "capacity.cloudflare_enable",
+        "authorization_resolver": "platform.readwrite at Global",
+        "cli": {
+          "path": [
+            "capacity",
+            "cloudflare",
+            "enable"
+          ]
+        },
+        "exclusions": {
+          "manifest": "Capacity installations are bound to the deployment.",
+          "native_builder": "Cloudflare capacity is platform administration.",
+          "sdk": "Runtime SDKs do not administer capacity."
+        },
+        "manifest": null,
+        "mcp": {
+          "name": "bifrost_cloudflare_enable_execute"
+        },
+        "native_builder": false,
+        "operation_id": "capacity.cloudflare_enable",
+        "rest": {
+          "method": "POST",
+          "path": "/api/capacity/cloudflare/enable",
+          "request_model": "CloudflareCapacityAction",
+          "response_model": "PlatformJobAccepted"
+        },
+        "side_effects": [],
+        "summary": "Enable Cloudflare Capacity",
+        "target_kind": "platform"
+      }
+    },
+    {
+      "observed": {
+        "cli": {
+          "path": [
+            "capacity",
+            "cloudflare",
+            "reconcile"
+          ],
+          "status": "exact_parity"
+        },
+        "manifest": {
+          "entity": null,
+          "status": "intentionally_unsupported"
+        },
+        "mcp": {
+          "name": "bifrost_cloudflare_reconcile_execute",
+          "status": "exact_parity"
+        },
+        "rest": {
+          "operation_id": "capacity.cloudflare_reconcile",
+          "status": "exact_parity"
+        },
+        "sdk": {
+          "binding": null,
+          "status": "intentionally_unsupported"
+        }
+      },
+      "operation": {
+        "action_scopes": [
+          "platform.readwrite"
+        ],
+        "async_policy": "platform_job",
+        "audit_event": "capacity.cloudflare_reconcile",
+        "authorization_resolver": "platform.readwrite at Global",
+        "cli": {
+          "path": [
+            "capacity",
+            "cloudflare",
+            "reconcile"
+          ]
+        },
+        "exclusions": {
+          "manifest": "Capacity installations are bound to the deployment.",
+          "native_builder": "Cloudflare capacity is platform administration.",
+          "sdk": "Runtime SDKs do not administer capacity."
+        },
+        "manifest": null,
+        "mcp": {
+          "name": "bifrost_cloudflare_reconcile_execute"
+        },
+        "native_builder": false,
+        "operation_id": "capacity.cloudflare_reconcile",
+        "rest": {
+          "method": "POST",
+          "path": "/api/capacity/cloudflare/reconcile",
+          "request_model": "CloudflareCapacityAction",
+          "response_model": "PlatformJobAccepted"
+        },
+        "side_effects": [],
+        "summary": "Verify Cloudflare Deployment",
         "target_kind": "platform"
       }
     },
@@ -10995,10 +11185,10 @@
     }
   ],
   "counts": {
-    "cli": 186,
+    "cli": 192,
     "manifest": 16,
-    "mcp": 104,
-    "rest": 728,
+    "mcp": 108,
+    "rest": 732,
     "sdk": 21
   },
   "schema_version": 1,
@@ -11114,6 +11304,36 @@
         ],
         "reason": "Local authentication, source-control, or lifecycle command.",
         "status": "transport_only"
+      },
+      {
+        "kind": "operation",
+        "path": [
+          "capacity",
+          "cloudflare",
+          "policy"
+        ],
+        "reason": "CLI operation has not entered the canonical operation catalog yet.",
+        "status": "missing_surface"
+      },
+      {
+        "kind": "operation",
+        "path": [
+          "capacity",
+          "cloudflare",
+          "rotate-bearer"
+        ],
+        "reason": "CLI operation has not entered the canonical operation catalog yet.",
+        "status": "missing_surface"
+      },
+      {
+        "kind": "operation",
+        "path": [
+          "capacity",
+          "cloudflare",
+          "rotate-root"
+        ],
+        "reason": "CLI operation has not entered the canonical operation catalog yet.",
+        "status": "missing_surface"
       },
       {
         "kind": "operation",
@@ -14641,6 +14861,13 @@
         "method": "GET",
         "operation_id": "",
         "path": "/api/sdk/artifacts/{artifact_id}/download-url",
+        "reason": "REST operation has not entered the canonical operation catalog yet.",
+        "status": "missing_surface"
+      },
+      {
+        "method": "GET",
+        "operation_id": "",
+        "path": "/api/sdk/capacity-canary/{worker_id}",
         "reason": "REST operation has not entered the canonical operation catalog yet.",
         "status": "missing_surface"
       },

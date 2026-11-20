@@ -104,6 +104,12 @@ def test_cloudflare_routes_refuse_provider_org_membership(e2e_client, provider_o
     assert e2e_client.get(path, headers=platform_admin.headers).status_code == 200
     assert e2e_client.get(path, headers=provider_org_user.headers).status_code == 403
     body = {"installation_id": str(uuid4()), "expected_revision": 1}
+    assert e2e_client.patch(path, headers=provider_org_user.headers, json={
+        **body, "action": "policy", "policy": {
+            "workers": {"launcher_cap": 1, "slots_per_launcher": 2, "max_lifetime_seconds": 3600, "work_kinds": ["workflow"]},
+            "monthly_limit_usd": "10.00",
+        },
+    }).status_code == 403
     for action in ("scale-in", "disconnect", "enable", "reconcile"):
         assert e2e_client.post(f"{path}/{action}", headers=provider_org_user.headers, json=body).status_code == 403
     assert e2e_client.post(
@@ -480,18 +486,85 @@ async def test_disconnect_resumes_owned_script_delete_until_namespace_absence(
 
 
 @pytest.mark.asyncio
+async def test_cleanup_waits_for_an_unsettled_create_before_confirming_absence(
+    db_session: AsyncSession, installation: CloudflareInstallation,
+) -> None:
+    receipt = CloudflareOwnedResource(
+        id=uuid4(), installation_id=installation.id, account_id=installation.account_id,
+        scope="workers", kind="worker_script", target_name="settlement-capacity",
+        desired_revision=1, artifact_digest="c" * 64, effect_id=uuid4(), state="creating",
+    )
+    db_session.add(receipt)
+    await db_session.flush()
+    adapter = SimpleNamespace(observe=AsyncMock(return_value=None), verify_absent=AsyncMock())
+    assert await lifecycle_job._cleanup_one(db_session, installation, adapter) == "progressed"
+    assert receipt.observed_at is not None and receipt.state == "creating"
+    assert await lifecycle_job._cleanup_one(db_session, installation, adapter) == "settling"
+    adapter.verify_absent.assert_not_awaited()
+    receipt.observed_at -= lifecycle_job.CREATE_SETTLEMENT_WINDOW
+    assert await lifecycle_job._cleanup_one(db_session, installation, adapter) == "progressed"
+    adapter.verify_absent.assert_awaited_once()
+    assert receipt.state == "absent"
+
+
+@pytest.mark.asyncio
+async def test_cleanup_deadline_excludes_queue_time(
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch,
+) -> None:
+    admin = _platform_operator()
+    job, _ = await lifecycle_job.enqueue_cloudflare_disable(
+        db_session, admin, installation_id=installation.id, expected_revision=1, action="scale_in",
+    )
+    token = uuid4()
+    job.status = "running"
+    job.lease_token = token
+    job.created_at = datetime.now(UTC) - timedelta(days=1)
+    job.started_at = datetime.now(UTC)
+    await db_session.flush()
+    connection = await db_session.connection()
+
+    @asynccontextmanager
+    async def context():
+        async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as session:
+            yield session
+            await session.commit()
+
+    monkeypatch.setattr(lifecycle_job, "get_db_context", context)
+    # A worker remains in the drain phase. Observe the decision to wait before
+    # moving the attempt timestamp past its deadline.
+    monkeypatch.setattr(lifecycle_job, "cloudflare_workers_remain", AsyncMock(return_value=True))
+
+    class DrainWaiting(Exception):
+        pass
+
+    monkeypatch.setattr(lifecycle_job, "asyncio", SimpleNamespace(sleep=AsyncMock(side_effect=DrainWaiting)))
+    payload = lifecycle_job.CloudflareDisablePayload.model_validate(job.payload)
+    running = PlatformJobContext(job.id, token, None, str(OPERATOR_ID), admin.principal.email, "")
+    with pytest.raises(DrainWaiting):
+        await lifecycle_job._settle_disable(running, payload, SimpleNamespace())
+    job.started_at -= lifecycle_job.DRAIN_DEADLINE
+    await db_session.flush()
+    with pytest.raises(PlatformJobRequiresAction) as expired:
+        await lifecycle_job._settle_disable(running, payload, SimpleNamespace())
+    assert expired.value.result == {"code": "CF_DRAIN_TIMEOUT"}
+
+
+@pytest.mark.asyncio
 async def test_reconcile_dedupes_schedule_and_closes_admission_on_missing_deployment(
     db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch,
 ) -> None:
     installation.desired_state = "enabled"
     installation.admitted_revision = 1
+    resources = {}
     for role in ("launcher", "capacity"):
-        db_session.add(CloudflareOwnedResource(
+        resource = CloudflareOwnedResource(
             id=uuid4(), installation_id=installation.id, account_id=installation.account_id,
             scope="workers", kind="worker_script", target_name=f"reconcile-{role}",
             desired_revision=1, artifact_digest="c" * 64, effect_id=uuid4(), state="present",
-            provider_id=str(uuid4()), provider_version=str(uuid4()),
-        ))
+            provider_id=str(uuid4()), provider_version=str(uuid4()), namespace_ids={"OwnedNamespace": str(uuid4())},
+        )
+        resources[resource.target_name] = resource
+        db_session.add(resource)
     await db_session.flush()
     now = datetime.now(UTC)
     await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=now)
@@ -517,10 +590,33 @@ async def test_reconcile_dedupes_schedule_and_closes_admission_on_missing_deploy
     status_code = 503
 
     def remote(request: httpx.Request) -> httpx.Response:
-        assert request.method == "GET" and request.url.path.endswith("/settings")
-        return httpx.Response(status_code)
+        assert request.method == "GET"
+        if status_code != 200:
+            assert request.url.path.endswith("/settings")
+            return httpx.Response(status_code)
+        target, operation = request.url.path.split("/")[-2:]
+        resource = resources[target]
+        if operation == "settings":
+            result = {"bindings": [{
+                "name": OWNER_BINDING, "type": "plain_text",
+                "text": worker_owner_value(lifecycle_job._resource_intent(resource)),
+            }]}
+        else:
+            assert operation == "deployments"
+            result = {"deployments": [{
+                "id": resource.provider_id,
+                "versions": [{"percentage": 100, "version_id": resource.provider_version}],
+            }]}
+        return httpx.Response(200, json={"success": True, "result": result})
+
+    async def usage(row, *, revision, scripts):
+        assert revision == row.desired_revision
+        assert scripts == {name: value.namespace_ids for name, value in resources.items()}
+        async with context() as db:
+            await add_usage(db, row, attributed_usd=Decimal("10.00"))
 
     monkeypatch.setattr(lifecycle_job, "get_db_context", context)
+    monkeypatch.setattr(lifecycle_job, "refresh_workers_usage", usage)
     monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
     running = PlatformJobContext(job.id, token, None, "system", "", "Bifrost")
     payload = lifecycle_job.CloudflareReconcilePayload.model_validate(job.payload)
@@ -530,6 +626,12 @@ async def test_reconcile_dedupes_schedule_and_closes_admission_on_missing_deploy
         with pytest.raises(PlatformJobFailure) as unavailable:
             await lifecycle_job.CLOUDFLARE_RECONCILE_DEFINITION.handler(running, payload)
         assert unavailable.value.retryable and lifecycle_job.CLOUDFLARE_RECONCILE_DEFINITION.policy.retry_on_failure
+        status_code = 200
+        with pytest.raises(PlatformJobRequiresAction) as budget:
+            await lifecycle_job.CLOUDFLARE_RECONCILE_DEFINITION.handler(running, payload)
+        assert budget.value.result == {"code": "CF_SPEND_UNVERIFIED"}
+        status = await get_cloudflare_capacity_status(db_session, _platform_operator())
+        assert status.installation is not None and not status.installation.admission_open
         status_code = 404
         with pytest.raises(PlatformJobRequiresAction) as missing:
             await lifecycle_job.CLOUDFLARE_RECONCILE_DEFINITION.handler(running, payload)

@@ -444,7 +444,7 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # are optional and Cloudflare issue metadata and info severity are additive.
     # Additive Cloudflare capacity policy, status and action DTOs.
     # Cloudflare capacity adds a write-only rotation request and latest job ID.
-    "4ab20d8396f89c0afac3af71bbeb47d93b8e6122ae25a8455b71b73249f89344"
+    "de25a129dc7579326e145c71dfaf0c05d272d2d95eedfb6c75fa606c4d575e17"
 )
 
 

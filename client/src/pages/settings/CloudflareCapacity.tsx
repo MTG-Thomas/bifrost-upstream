@@ -67,6 +67,7 @@ function CloudflareConfigurationForm({ status, onSaved }: {
 		}
 		const sharedCap = String(fields.get("shared_cap") ?? "");
 		const policy = {
+			version: 1 as const,
 			workers: {
 				launcher_cap: Number(fields.get("launcher_cap")),
 				slots_per_launcher: Number(fields.get("slots")),

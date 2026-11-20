@@ -655,10 +655,32 @@ Options:
   --help  Show this message and exit.
 
 Commands:
-  disconnect  Drain Cloudflare workers and remove verified owned capacity.
-  rotate      Validate and replace the Cloudflare account API token.
-  scale-in    Drain Cloudflare workers and retain the connection.
-  status      Show the current Cloudflare connection and capacity policy.
+  connect        Validate an account token and connect Cloudflare.
+  disconnect     Drain Cloudflare workers and remove verified owned...
+  enable         Provision and verify Cloudflare Workers capacity.
+  policy         Update the current Cloudflare capacity policy.
+  reconcile      Verify the current Cloudflare Workers deployment.
+  rotate         Validate and replace the Cloudflare account API token.
+  rotate-bearer  Retire the previous Workers deployment and stage a new...
+  rotate-root    Rotate the derivation root after Scale In.
+  scale-in       Drain Cloudflare workers and retain the connection.
+  status         Show the current Cloudflare connection and capacity policy.
+```
+
+#### `capacity cloudflare connect`
+
+```
+Usage: capacity cloudflare connect [OPTIONS]
+
+  Validate an account token and connect Cloudflare.
+
+Options:
+  --account-id TEXT             [required]
+  --worker-ingress-origin TEXT  [required]
+  --policy FILENAME             Cloudflare capacity policy JSON file.
+                                [required]
+  --json                        Emit JSON instead of human-readable output.
+  --help                        Show this message and exit.
 ```
 
 #### `capacity cloudflare disconnect`
@@ -676,12 +698,88 @@ Options:
   --help                       Show this message and exit.
 ```
 
+#### `capacity cloudflare enable`
+
+```
+Usage: capacity cloudflare enable [OPTIONS]
+
+  Provision and verify Cloudflare Workers capacity.
+
+Options:
+  --wait                       Wait for completion through the platform job.
+  --installation-id TEXT       installation_id (UUID).  [required]
+  --expected-revision INTEGER  expected_revision  [required]
+  --json                       Emit JSON instead of human-readable output.
+  --help                       Show this message and exit.
+```
+
+#### `capacity cloudflare policy`
+
+```
+Usage: capacity cloudflare policy [OPTIONS]
+
+  Update the current Cloudflare capacity policy.
+
+Options:
+  --installation-id TEXT       installation_id (UUID).  [required]
+  --expected-revision INTEGER  expected_revision  [required]
+  --policy FILENAME            Cloudflare capacity policy JSON file.
+                               [required]
+  --json                       Emit JSON instead of human-readable output.
+  --help                       Show this message and exit.
+```
+
+#### `capacity cloudflare reconcile`
+
+```
+Usage: capacity cloudflare reconcile [OPTIONS]
+
+  Verify the current Cloudflare Workers deployment.
+
+Options:
+  --wait                       Wait for completion through the platform job.
+  --installation-id TEXT       installation_id (UUID).  [required]
+  --expected-revision INTEGER  expected_revision  [required]
+  --json                       Emit JSON instead of human-readable output.
+  --help                       Show this message and exit.
+```
+
 #### `capacity cloudflare rotate`
 
 ```
 Usage: capacity cloudflare rotate [OPTIONS]
 
   Validate and replace the Cloudflare account API token.
+
+Options:
+  --wait                       Wait for completion through the platform job.
+  --installation-id TEXT       installation_id (UUID).  [required]
+  --expected-revision INTEGER  expected_revision  [required]
+  --json                       Emit JSON instead of human-readable output.
+  --help                       Show this message and exit.
+```
+
+#### `capacity cloudflare rotate-bearer`
+
+```
+Usage: capacity cloudflare rotate-bearer [OPTIONS]
+
+  Retire the previous Workers deployment and stage a new bearer.
+
+Options:
+  --wait                       Wait for completion through the platform job.
+  --installation-id TEXT       installation_id (UUID).  [required]
+  --expected-revision INTEGER  expected_revision  [required]
+  --json                       Emit JSON instead of human-readable output.
+  --help                       Show this message and exit.
+```
+
+#### `capacity cloudflare rotate-root`
+
+```
+Usage: capacity cloudflare rotate-root [OPTIONS]
+
+  Rotate the derivation root after Scale In.
 
 Options:
   --wait                       Wait for completion through the platform job.

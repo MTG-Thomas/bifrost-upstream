@@ -73,12 +73,25 @@ describe("Cloudflare capacity service", () => {
 		expect(mocks.post).toHaveBeenCalledWith("/api/capacity/cloudflare/rotate", { body });
 	});
 
+	it.each([["rotate-root", "control_root"], ["rotate-bearer", "scope_bearer"]] as const)(
+		"queues %s using the server-generated credential path",
+		async (action, credential) => {
+			const body = { installation_id: "installation-id", expected_revision: 3 };
+			mocks.post.mockResolvedValue({ data: { job_id: "job-id", status: "queued" } });
+			await startCloudflareAction(action, body);
+			expect(mocks.post).toHaveBeenCalledWith("/api/capacity/cloudflare/rotate", {
+				body: { ...body, credential },
+			});
+		},
+	);
+
 	it("patches the observed revision and policy", async () => {
 		const body = {
 			action: "policy" as const,
 			installation_id: "installation-id",
 			expected_revision: 3,
 			policy: {
+				version: 1 as const,
 				workers: { launcher_cap: 1, slots_per_launcher: 2, max_lifetime_seconds: 3600, work_kinds: ["workflow" as const] },
 				monthly_limit_usd: "10.00",
 			},

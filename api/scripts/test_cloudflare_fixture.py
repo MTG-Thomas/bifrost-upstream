@@ -273,3 +273,4 @@ def install_enable(job_module):
 
 def install_lifecycle(job_module):
     job_module.WorkersRestCleanup = _Cloudflare
+    job_module.refresh_workers_usage = _usage

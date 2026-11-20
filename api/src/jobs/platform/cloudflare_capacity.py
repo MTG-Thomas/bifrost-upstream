@@ -50,6 +50,10 @@ from src.services.worker_pool.cloudflare_credentials import (
     open_credential,
     seal_credential,
 )
+from src.services.worker_pool.cloudflare_enable_dependencies import (
+    WorkersUsageUnverified,
+    refresh_workers_usage,
+)
 from src.services.worker_pool.cloudflare_policy import (
     CloudflarePolicyConflict,
     cloudflare_workers_remain,
@@ -65,6 +69,7 @@ from src.services.worker_pool.cloudflare_provisioning import (
     observe_owned,
     resume_deletion,
 )
+from src.services.worker_pool.cloudflare_spend import cloudflare_usage_within_limit
 from src.services.worker_pool.cloudflare_workers_rest import (
     CloudflareManagementDenied,
     CloudflareRestUnavailable,
@@ -308,6 +313,7 @@ class _InventoryReceipt:
     provider_id: str | None
     provider_version: str | None
     state: str
+    namespaces: tuple[tuple[str, str], ...]
 
 
 async def _inventory_snapshot(
@@ -324,7 +330,10 @@ async def _inventory_snapshot(
             CloudflareOwnedResource.state == "present",
         )
     rows = (await db.scalars(query.order_by(CloudflareOwnedResource.id))).all()
-    return tuple(_InventoryReceipt(_resource_intent(row), row.provider_id, row.provider_version, row.state) for row in rows)
+    return tuple(_InventoryReceipt(
+        _resource_intent(row), row.provider_id, row.provider_version, row.state,
+        tuple(sorted(row.namespace_ids.items())),
+    ) for row in rows)
 
 
 async def _observe_inventory(
@@ -351,6 +360,7 @@ async def _settle_reconcile(
 ) -> dict[str, str]:
     issue = None
     token = None
+    refreshed = False
     async with get_db_context() as db:
         await _hold_installation_lease(db, context, payload.installation_id)
         installation = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
@@ -370,13 +380,25 @@ async def _settle_reconcile(
             if len(inventory) != 2 or roles != {"launcher", "capacity"}:
                 raise ObservationPending("The admitted revision lacks a complete Workers deployment receipt")
             await _observe_inventory(adapter, token, inventory, require_present=True)
+            if not all(receipt.namespaces for receipt in inventory):
+                raise ObservationPending("The admitted revision lacks exact namespace receipts")
+            await refresh_workers_usage(
+                installation, revision=payload.revision,
+                scripts={receipt.intent.target.name: dict(receipt.namespaces) for receipt in inventory},
+            )
+            refreshed = True
         except OwnershipConflict:
             issue = ("Verify Cloudflare Ownership", "CF_OWNERSHIP_CONFLICT")
         except ObservationPending:
             issue = ("Verify Cloudflare Deployment", "CF_DEPLOYMENT_UNVERIFIED")
         except CloudflareManagementDenied:
             issue = ("Reconnect Cloudflare", "CF_MANAGEMENT_CREDENTIAL")
+        except WorkersUsageUnverified:
+            # The freshness predicate closes admission when the previous sample
+            # expires. Keep its revision so subsequent sweeps can refresh it.
+            pass
 
+    usage_ready = False
     async with get_db_context() as db:
         await _hold_installation_lease(db, context, payload.installation_id)
         installation = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
@@ -389,9 +411,16 @@ async def _settle_reconcile(
             return {"outcome": "superseded"}
         if issue is not None:
             installation.admitted_revision = None
+        else:
+            usage_ready = bool(await db.scalar(
+                select(cloudflare_usage_within_limit()).where(CloudflareInstallation.id == installation.id),
+            ))
+        if issue is not None or refreshed:
             wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
     if issue is not None:
         raise PlatformJobRequiresAction(issue[0], {"code": issue[1]})
+    if not usage_ready:
+        raise PlatformJobRequiresAction("Verify Cloudflare Spend", {"code": "CF_SPEND_UNVERIFIED"})
     return {"outcome": "verified"}
 
 
