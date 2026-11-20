@@ -82,6 +82,18 @@ async def test_worker_ingress_over_tls(
     async_session_factory, e2e_api_url, org1_user, tmp_path, monkeypatch,
 ):
     origin = f"https://{_HOST}"
+    api = urlsplit(e2e_api_url)
+    # The staging journey can leave the previous listener shutting down.
+    # Start this installation from a confirmed closed port.
+    async with asyncio.timeout(8):
+        while True:
+            try:
+                _, listener = await asyncio.open_connection(api.hostname, PORT)
+            except ConnectionRefusedError:
+                break
+            listener.close()
+            await listener.wait_closed()
+            await asyncio.sleep(0.1)
     installation = CloudflareInstallation(
         id=uuid4(), account_id="a" * 32, worker_ingress_origin=origin, policy={},
         consent_version="existing-https-v1", consent_actor="test", consent_at=datetime.now(UTC),
@@ -100,7 +112,6 @@ async def test_worker_ingress_over_tls(
         launcher_id=uuid4(), incarnation_id=uuid4(), job_uid=None, pod_uid=None,
         hostname="ingress-e2e", form="static", issued_at=int(time.time()), nonce=new_nonce(), hello_sequence=1,
     )
-    api = urlsplit(e2e_api_url)
     tls, trust = _tls(tmp_path)
     upstream_port = PORT
 
