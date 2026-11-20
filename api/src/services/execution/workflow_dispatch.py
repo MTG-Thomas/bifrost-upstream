@@ -194,9 +194,17 @@ async def _cloudflare_placement(
         workflow_id is None or message.get("workflow_id") != workflow_id
         or pending.get("script_name") or message.get("code") is not None
         or pending.get("artifact_workspace_id") is not None
-        or not get_settings().cloudflare_worker_hello_enabled
     ):
         return None, None
+    if not get_settings().cloudflare_worker_hello_enabled:
+        from src.models.orm.cloudflare_capacity import CloudflareInstallation
+
+        enabled = await db.scalar(select(CloudflareInstallation.id).where(
+            CloudflareInstallation.retired_at.is_(None),
+            CloudflareInstallation.admitted_revision.is_not(None),
+        ))
+        if enabled is None:
+            return None, None
     from src.services.execution.cloudflare_eligibility import (
         POLICY_VERSION,
         ApprovalDeclaration,

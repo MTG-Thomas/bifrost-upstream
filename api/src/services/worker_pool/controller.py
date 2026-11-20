@@ -47,6 +47,7 @@ from src.jobs.platform.kubernetes_client import (
     KubernetesJobClient,
     oom_killed,
 )
+from src.models.orm.cloudflare_capacity import CloudflareInstallation, CloudflareWorkerReservation
 from src.models.orm.execution_workers import MANAGED_WORKER_FORMS, ExecutionWorker
 from src.models.orm.executions import Execution
 from src.models.orm.package_changes import PackageChange
@@ -70,6 +71,7 @@ from src.services.work_dispatch import (
 )
 from src.services.worker_pool.calibration import measured_budget
 from src.services.worker_pool.claims import CAPACITY_LOCK, REMOTE_WORKER_HANDLER_NAMES
+from src.services.worker_pool.cloudflare_admission import ManagedCloudflareScope, PrimaryPool
 from src.services.worker_pool.demand import pending_local_platform_job_ids
 from src.services.worker_pool.eligibility import (
     cloudflare_active_claims,
@@ -180,6 +182,8 @@ class WorkerCapacityController(ABC):
         self.capacity_profile: WorkerCapacityProfile | None = None
         self.peer_profile: WorkerCapacityProfile | None = None
         self.additional_profile: WorkerCapacityProfile | None = None
+        self.managed_cloudflare_scope: ManagedCloudflareScope | None = None
+        self.cloudflare_primary: PrimaryPool | None = None
 
     @property
     def containers_scope(self) -> str | None:
@@ -191,7 +195,7 @@ class WorkerCapacityController(ABC):
 
     @property
     def dual_capacity(self) -> bool:
-        return self.peer_profile is not None or bool(getattr(self.settings, "cloudflare_capacity_url", None))
+        return self.peer_profile is not None
 
     def _counts_for_warm_floor(self, worker: ExecutionWorker) -> bool:
         return (
@@ -354,6 +358,9 @@ class WorkerCapacityController(ABC):
             ).scalar_one()
             if not locked:
                 return []
+            managed_scope = self.managed_cloudflare_scope
+            if managed_scope is not None and not await managed_scope.lock_admission(db):
+                return []
             platform_job_ids = await pending_local_platform_job_ids(db, policy, _now())
             waiting = (
                 await db.execute(
@@ -417,6 +424,10 @@ class WorkerCapacityController(ABC):
                 )
             ).scalars().all()
             linux_workers = [worker for worker in workers if worker.runtime_profile == LINUX_RUNTIME_PROFILE]
+            if managed_scope is not None and (
+                self.cloudflare_primary is None or not self.cloudflare_primary.saturated(linux_workers, _now())
+            ):
+                return []
             generation = int(await db.scalar(select(func.coalesce(func.max(PackageChange.id), 0))) or 0)
             environment = self._memory_environment(generation)
             history = (await db.scalars(select(ExecutionWorker).where(
@@ -451,6 +462,7 @@ class WorkerCapacityController(ABC):
                     platform_job_type=row.platform_job_type,
                 )
                 for row in waiting
+                if managed_scope is None or row.created_at <= _now() - timedelta(seconds=SWEEP_SECONDS)
             ]
             requests = {request.id: request for request in waiting_requests}
             free: list[FreeBudget] = []
@@ -557,13 +569,30 @@ class WorkerCapacityController(ABC):
                 needed.sort(key=new_declared.fits)
             jobs = sum(1 for worker in workers if worker.form in MANAGED_WORKER_FORMS)
             room = max(0, policy.max_workers - jobs)
+            shared_cap = await db.scalar(
+                select(CloudflareInstallation.policy["limits"]["shared_managed_worker_cap"].as_integer())
+                .where(CloudflareInstallation.retired_at.is_(None))
+            )
+            if shared_cap is not None:
+                pins = set((await db.scalars(
+                    select(CloudflareWorkerReservation.worker_id)
+                    .join(ExecutionWorker, ExecutionWorker.id == CloudflareWorkerReservation.worker_id)
+                    .where(ExecutionWorker.capacity_resource_deleted_at.is_(None))
+                )).all())
+                pinned_live = sum(worker.id in pins for worker in workers)
+                shared_room = max(0, shared_cap - jobs - (len(pins) - pinned_live))
+                if managed_scope is not None:
+                    room = shared_room
+                elif not self.dual_capacity:
+                    room = min(shared_room, max(0, policy.max_workers - jobs + pinned_live))
             scope_room = room
             if profile is not None and (cloudflare or self.dual_capacity):
                 scope_counts = await self._external_scope_counts(db, profile, peer)
                 live_in_scopes = sum(
                     worker.form == "external" and worker.capacity_scope in scope_counts for worker in workers
                 )
-                room = max(0, policy.max_workers - jobs - (sum(scope_counts.values()) - live_in_scopes))
+                if managed_scope is None:
+                    room = max(0, policy.max_workers - jobs - (sum(scope_counts.values()) - live_in_scopes))
                 scope_room = max(0, profile.max_workers - scope_counts.get(profile.scope, 0))
                 if scope_room == 0:
                     return []
@@ -608,9 +637,14 @@ class WorkerCapacityController(ABC):
                         db, resource_class="standard", memory_limit_bytes=new_declared.bytes,
                         environment=environment,
                     )
-                    for _ in range(min(room, scope_room, plan.standard + (0 if self.dual_capacity else warm)))
+                    for _ in range(min(
+                        room, scope_room, plan.standard + (0 if self.dual_capacity or managed_scope else warm),
+                    ))
                 ]
                 if launched:
+                    if managed_scope is not None:
+                        await db.flush()
+                        db.add_all(managed_scope.pin(worker_id) for worker_id in launched)
                     await db.commit()
                 return launched
             # Fast Path capacity is a fixed exclusive reservation, not an

@@ -4,6 +4,7 @@ import json
 import time
 from contextlib import asynccontextmanager
 from dataclasses import replace
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
@@ -12,6 +13,7 @@ from sqlalchemy import delete
 
 from shared.worker_control_auth import external_worker_control_key, managed_cloudflare_control_key
 from src.config import Settings
+from src.models.orm.cloudflare_capacity import CloudflareCredential, CloudflareInstallation, CloudflareWorkerReservation
 from src.models.orm.execution_workers import ExecutionWorker
 from src.services.worker_pool import claims
 from src.worker.remote import host, ownership
@@ -276,19 +278,48 @@ async def test_cloudflare_hello_checks_enrollment_on_reconnect_and_takeover(hell
 @pytest.mark.asyncio
 async def test_managed_cloudflare_hello_uses_exact_reserved_scope(hello, enrollment, enabled_settings):
     uid = uuid4().hex
+    installation_id = uuid4()
+    now = datetime.now(UTC)
     async with enrollment() as db:
         row = await db.get(ExecutionWorker, hello.incarnation_id)
         row.capacity_scope = "managed-workers"
         row.capacity_resource_uid = uid
+        db.add(CloudflareInstallation(
+            id=installation_id, account_id="a" * 32, worker_ingress_origin="https://workers.example.test",
+            consent_version="test", consent_actor="fixture", consent_at=now, policy={},
+            desired_state="scaled_in", desired_revision=1, api_token_version=1,
+        ))
+        await db.flush()
+        db.add(CloudflareCredential(
+            installation_id=installation_id, purpose="account_token", scope="", version=1,
+            account_id="a" * 32, ciphertext="synthetic", recorded_by="fixture", recorded_at=now,
+        ))
+        db.add(CloudflareWorkerReservation(
+            worker_id=hello.incarnation_id, installation_id=installation_id, scope="managed-workers",
+            deployment_revision=1,
+        ))
     enabled_settings.worker_capacity_token = None
     hello = replace(hello, resource_uid=uid)
     control_host = host.RemoteControlHost()
-    wrong = managed_cloudflare_control_key(PLATFORM_KEY, "different-scope", hello.incarnation_id, uid)
-    with pytest.raises(AuthenticationError, match="invalid hello proof"):
-        await control_host.connect(socket_for(hello, key=wrong))
-    key = managed_cloudflare_control_key(PLATFORM_KEY, "managed-workers", hello.incarnation_id, uid)
-    session, _ = await control_host.connect(socket_for(hello, key=key))
-    assert session.lease.worker_id == hello.incarnation_id
+    try:
+        wrong = managed_cloudflare_control_key(PLATFORM_KEY, "different-scope", hello.incarnation_id, uid)
+        with pytest.raises(AuthenticationError, match="invalid hello proof"):
+            await control_host.connect(socket_for(hello, key=wrong))
+        key = managed_cloudflare_control_key(PLATFORM_KEY, "managed-workers", hello.incarnation_id, uid)
+        session, _ = await control_host.connect(socket_for(hello, key=key))
+        assert session.lease.worker_id == hello.incarnation_id
+    finally:
+        async with enrollment() as db:
+            installation = await db.get(CloudflareInstallation, installation_id)
+            installation.desired_state = "disconnected"
+            installation.retired_at = now
+            installation.api_token_version = None
+            await db.flush()
+            await db.execute(delete(CloudflareWorkerReservation).where(
+                CloudflareWorkerReservation.installation_id == installation_id,
+            ))
+            await db.execute(delete(CloudflareCredential).where(CloudflareCredential.installation_id == installation_id))
+            await db.delete(installation)
 
 
 @pytest.mark.asyncio

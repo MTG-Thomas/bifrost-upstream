@@ -50,7 +50,7 @@ from src.services.worker_pool.external_client import (
     CapacityProviderUnavailable,
     ExternalCapacityClient,
 )
-from src.services.worker_pool.external_policy import validate_burst_profiles, validate_containers_profile, validate_external_policy
+from src.services.worker_pool.external_policy import validate_external_policy
 
 logger = logging.getLogger(__name__)
 
@@ -432,12 +432,7 @@ class KubernetesExecutionService:
         from src.config import get_settings
 
         settings = get_settings()
-        burst_url = getattr(settings, "cloudflare_capacity_url", None)
-        burst_token = getattr(settings, "cloudflare_capacity_token", None)
         profile = None
-        burst = None
-        containers = None
-        containers_scope = getattr(settings, "cloudflare_containers_scope", None)
         if settings.worker_capacity_url or settings.worker_capacity_token:
             # Fetch before the policy advisory lock; a slow provider must not
             # block other administrators while holding the settings lock.
@@ -451,22 +446,8 @@ class KubernetesExecutionService:
                         http=http,
                     )
                     profile = await client.profile()
-                    if burst_url and burst_token:
-                        burst = await ExternalCapacityClient(
-                            burst_url,
-                            burst_token.get_secret_value(),
-                            http=http,
-                        ).profile()
-                        validate_burst_profiles(profile, burst)
-                    if containers_scope is not None:
-                        if burst is None or not settings.cloudflare_containers_url or not settings.cloudflare_containers_token:
-                            raise ValueError("Incomplete Containers overflow configuration")
-                        containers = await ExternalCapacityClient(
-                            settings.cloudflare_containers_url,
-                            settings.cloudflare_containers_token.get_secret_value(),
-                            http=http,
-                        ).profile()
-                        validate_containers_profile(profile, burst, containers, containers_scope)
+                    if profile.runtime_profile != "linux-process-v1":
+                        raise ValueError("External primary must advertise Linux capacity")
             except (httpx.HTTPError, CapacityProtocolError, ValueError) as exc:
                 raise CapacityProviderUnavailable(
                     "Cannot verify capacity provider limits; worker settings were not saved"
@@ -502,19 +483,8 @@ class KubernetesExecutionService:
             if profile is not None:
                 validate_external_policy(
                     _policy_from(payload), profile,
-                    max_lifetime_seconds=settings.pool_max_lifetime_seconds, peer=burst, additional=containers,
+                    max_lifetime_seconds=settings.pool_max_lifetime_seconds,
                 )
-                if burst is not None:
-                    validate_external_policy(
-                        _policy_from(payload), burst,
-                        max_lifetime_seconds=settings.pool_max_lifetime_seconds, peer=profile, additional=containers,
-                    )
-                if containers is not None:
-                    validate_external_policy(
-                        _policy_from(payload), containers,
-                        max_lifetime_seconds=settings.pool_max_lifetime_seconds, peer=profile,
-                        additional=burst, containers=True,
-                    )
             return bool(changes)
 
         await _merge(self.session, mutate, updated_by=updated_by)

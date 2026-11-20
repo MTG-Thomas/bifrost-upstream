@@ -36,6 +36,7 @@ class CloudflareInstallation(Base):
         UniqueConstraint("id", "account_id", name="uq_cf_installation_account"),
         Index("uq_cf_active_installation", "singleton", unique=True, postgresql_where=text("retired_at IS NULL")),
         CheckConstraint("api_token_purpose = 'account_token' AND api_token_scope = ''", name="ck_cf_account_token_binding"),
+        CheckConstraint("retired_at IS NOT NULL OR api_token_version IS NOT NULL", name="ck_cf_active_has_account_token"),
         CheckConstraint(
             "retired_at IS NULL OR (desired_state = 'disconnected' AND api_token_version IS NULL)",
             name="ck_cf_retired_installation",
@@ -143,7 +144,7 @@ class CloudflareOwnedResource(Base):
             ["cloudflare_installations.id", "cloudflare_installations.account_id"],
             ondelete="RESTRICT",
         ),
-        UniqueConstraint("account_id", "kind", "target_name", name="uq_cf_resource_target"),
+        UniqueConstraint("installation_id", "account_id", "kind", "target_name", name="uq_cf_resource_target"),
         UniqueConstraint("account_id", "kind", "provider_id", name="uq_cf_resource_provider"),
         CheckConstraint("desired_revision > 0", name="ck_cf_resource_revision"),
         UniqueConstraint("effect_id", name="uq_cf_resource_effect"),

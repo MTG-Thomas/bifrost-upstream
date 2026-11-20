@@ -283,12 +283,16 @@ def main() -> int:
     prepared = str(uuid.uuid4())
     @suite.case("prepare: returns prepared with a stable UID")
     def _() -> None:
-        status, doc = suite.c.put(prepared, suite.reservation(prepared))
+        reservation = suite.reservation(prepared)
+        status, doc = suite.c.put(prepared, reservation)
         assert status == 200, f"status {status}"
         assert doc["state"] == "prepared", f"state {doc['state']}"
         assert doc["worker_id"] == prepared
         assert doc["scope"] == args.scope
         assert doc["resource_uid"], "missing resource_uid"
+        if args.managed_cloudflare:
+            assert doc["resource_uid"] == reservation["resource_uid"], "provider replaced the caller UID"
+            assert "control_key" not in doc and reservation["control_key"] not in json.dumps(doc), "prepare leaked a key"
 
     @suite.case("prepare: idempotent, same UID, nothing launched")
     def _() -> None:
@@ -308,8 +312,15 @@ def main() -> int:
         for field, value in (("memory_limit_bytes", 1), ("worker_version", "different-build")):
             status, _doc = suite.c.put(prepared, suite.reservation(prepared, **{field: value}))
             assert status >= 400, f"conflicting {field} accepted ({status})"
+        if args.managed_cloudflare:
+            for field, value in (("resource_uid", secrets.token_hex(16)), ("control_key", secrets.token_hex(32))):
+                status, _ = suite.c.put(prepared, suite.reservation(prepared, **{field: value}))
+                assert status == 409, f"conflicting managed {field} returned {status}"
         _s2, again = suite.c.get(prepared)
         assert again["resource_uid"] == first["resource_uid"]
+        if args.managed_cloudflare:
+            key = suite.reservation(prepared)["control_key"]
+            assert "control_key" not in again and key not in json.dumps(again), "readback leaked a key"
 
     # ---- start --------------------------------------------------------
     uid_prepared = ""

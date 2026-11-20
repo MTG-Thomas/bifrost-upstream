@@ -170,10 +170,15 @@ async def retire_cloudflare_installation(
         CloudflareCapacityScope.installation_id == installation_id,
     ).limit(1))
     unconfirmed_worker = await db.scalar(
-        select(CloudflareWorkerReservation.worker_id)
-        .join(ExecutionWorker, ExecutionWorker.id == CloudflareWorkerReservation.worker_id)
+        select(ExecutionWorker.id)
+        .outerjoin(CloudflareWorkerReservation, ExecutionWorker.id == CloudflareWorkerReservation.worker_id)
         .where(
-            CloudflareWorkerReservation.installation_id == installation_id,
+            or_(
+                CloudflareWorkerReservation.installation_id == installation_id,
+                (CloudflareWorkerReservation.worker_id.is_(None)
+                 & ExecutionWorker.capacity_scope.is_not(None)
+                 & (ExecutionWorker.runtime_profile == "cloudflare-python-v1")),
+            ),
             or_(
                 ExecutionWorker.state.not_in(("lost", "retired")),
                 ExecutionWorker.capacity_resource_deleted_at.is_(None),

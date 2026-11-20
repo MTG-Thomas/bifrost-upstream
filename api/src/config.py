@@ -39,8 +39,6 @@ class Settings(BaseSettings):
 
     worker_capacity_url: str | None = Field(default=None, description="External physical-capacity provider HTTPS endpoint")
     worker_capacity_token: SecretStr | None = Field(default=None, repr=False, exclude=True)
-    cloudflare_capacity_url: str | None = Field(default=None, description="Optional Cloudflare burst provider HTTPS endpoint")
-    cloudflare_capacity_token: SecretStr | None = Field(default=None, repr=False, exclude=True)
     cloudflare_containers_scope: str | None = Field(default=None, description="Cloudflare Containers capacity scope")
     cloudflare_containers_url: str | None = Field(default=None, description="Cloudflare Containers capacity endpoint")
     cloudflare_containers_token: SecretStr | None = Field(default=None, repr=False, exclude=True)

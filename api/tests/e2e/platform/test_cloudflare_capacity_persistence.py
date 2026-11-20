@@ -1,15 +1,20 @@
 """Exercise the Cloudflare journal against the migrated platform database."""
 
-from datetime import UTC, datetime
+import json
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
 from pydantic import SecretStr
 from shared.models import CloudflareCapacityPolicy, CloudflareWorkersPolicy
-from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import delete, select, text, update
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from src.config import Settings
 from src.models.orm.cloudflare_capacity import (
     CloudflareCapacityScope,
     CloudflareCredential,
@@ -18,6 +23,13 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareWorkerReservation,
 )
 from src.models.orm.execution_workers import ExecutionWorker
+from src.models.orm.work_dispatches import WorkDispatch
+from src.services.kubernetes_execution import KubernetesExecutionService
+from src.services.worker_pool import (
+    cloudflare_supervisor,
+    controller,
+    external_controller,
+)
 from src.services.worker_pool.cloudflare_admission import cloudflare_claim_allowed
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
@@ -40,6 +52,117 @@ from src.services.worker_pool.cloudflare_spend import (
 )
 
 OPERATOR_ID = UUID("20cb7fe5-78e2-48d7-8f1e-8edcac69ffab")
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("primary", ["static", "job", "external"])
+async def test_supervisor_reserves_and_retires_without_restarting(
+    db_session: AsyncSession, installation: CloudflareInstallation, primary: str, monkeypatch,
+) -> None:
+    connection = await db_session.connection()
+
+    @asynccontextmanager
+    async def context():
+        async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as session:
+            yield session
+            await session.commit()
+
+    for module in (controller, external_controller, cloudflare_supervisor):
+        monkeypatch.setattr(module, "get_db_context", context)
+    monkeypatch.setattr(controller, "_publish_live", AsyncMock(return_value=controller.LiveControllers(
+        ids=frozenset(), versions=frozenset({"test"}),
+    )))
+    await KubernetesExecutionService(db_session).update_policy({"max_workers": 1, "warm_workers": 0}, updated_by="test")
+    await db_session.execute(update(ExecutionWorker).where(
+        ExecutionWorker.form == primary,
+    ).values(state="retired"))
+    bearer = "test-scope-bearer-" + "a" * 30
+    db_session.add(seal_credential(
+        CredentialRef(installation.id, installation.account_id, "scope_bearer", "workers", 1),
+        SecretStr(bearer), actor=str(OPERATOR_ID), now=datetime.now(UTC),
+    ))
+    db_session.add(ExecutionWorker(
+        id=uuid4(), form=primary, state="ready",
+        capacity_scope="vm" if primary == "external" else None,
+        heartbeat_at=datetime.now(UTC), supported_handlers=["workflow.execute"],
+        memory_budget_bytes=128 * 2**20, memory_reserved_bytes=128 * 2**20,
+    ))
+    db_session.add(WorkDispatch(
+        family="workflow", handler="workflow.execute", handler_version=1, subject_id=uuid4(),
+        message={}, payload={}, cloudflare_revision="c" * 64, memory_request_bytes=64 * 2**20,
+        created_at=datetime.now(UTC) - timedelta(minutes=1),
+    ))
+    await db_session.flush()
+    db_session.add(CloudflareCapacityScope(
+        installation_id=installation.id, scope="workers", endpoint="https://capacity.example.test",
+        deployment_revision=1, bearer_version=1,
+    ))
+    await db_session.flush()
+
+    resources = {}
+    writes = []
+
+    async def remote(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "vm.example.test":
+            assert request.headers["Authorization"] == "Bearer " + "p" * 40
+            return httpx.Response(200, json={
+                "protocol_version": 1, "scope": "vm", "worker_version": "vm-build",
+                "memory_limit_bytes": 128 * 2**20, "max_workers": 1, "max_lifetime_seconds": 3600,
+            })
+        assert request.headers["Authorization"] == f"Bearer {bearer}"
+        if request.url.path == "/v1/capabilities":
+            return httpx.Response(200, json={
+                "protocol_version": 2, "scope": "workers", "worker_version": "test",
+                "runtime_profile": "cloudflare-python-v1", "memory_limit_bytes": 256 * 2**20,
+                "max_workers": 1, "max_lifetime_seconds": 3600,
+            })
+        worker_id = request.url.path.split("/")[3]
+        if request.method == "GET":
+            resource = resources.get(worker_id)
+            return httpx.Response(200, json=resource) if resource else httpx.Response(404)
+        writes.append(request.method)
+        body = json.loads(request.content)
+        if request.method == "PUT":
+            assert await db_session.get(CloudflareWorkerReservation, UUID(worker_id)) is not None
+            resources[worker_id] = {
+                "scope": "workers", "worker_id": worker_id, "worker_version": "test",
+                "resource_uid": body["resource_uid"], "state": "prepared",
+            }
+        else:
+            assert body["resource_uid"] == resources[worker_id]["resource_uid"]
+            resources[worker_id]["state"] = "starting" if request.method == "POST" else "deleted"
+        return httpx.Response(200, json=resources[worker_id])
+
+    settings = Settings(
+        _env_file=None, secret_key="synthetic-supervisor-test-key",
+        worker_capacity_url="https://vm.example.test" if primary == "external" else None,
+        worker_capacity_token="p" * 40 if primary == "external" else None,
+    )
+    controllers = {}
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as http:
+        async def sweep():
+            await cloudflare_supervisor._reconcile_scope(
+                installation.id, "workers", settings, http, controllers, kubernetes=primary == "job",
+            )
+
+        await sweep()
+        assert not writes
+        installation.desired_state = "enabled"
+        installation.admitted_revision = 1
+        await db_session.flush()
+        await sweep()
+        assert writes == ["PUT", "POST"]
+        owned = tuple(controllers.values())
+        installation.desired_state = "scaled_in"
+        installation.admitted_revision = None
+        await db_session.flush()
+        await sweep()
+        assert tuple(controllers.values()) == owned
+        assert writes == ["PUT", "POST", "DELETE"]
+        worker_id = UUID(next(iter(resources)))
+        worker = await db_session.get(ExecutionWorker, worker_id)
+        assert worker is not None
+        await db_session.refresh(worker)
+        assert worker.capacity_resource_deleted_at is not None
 
 
 @pytest.fixture
@@ -67,9 +190,54 @@ async def create_installation(
                 launcher_cap=1, slots_per_launcher=2, max_lifetime_seconds=3600, work_kinds=frozenset({"workflow"}),
             ),
             monthly_limit_usd=Decimal("10.00"),
+            shared_managed_worker_cap=8,
         ),
         bounds=WorkersReleaseMeterBounds(60, zero, zero, "fixture-release", rated_slots),
     )
+
+
+@pytest.mark.asyncio
+async def test_scope_writer_waits_for_installation_admission_lock(async_session_factory) -> None:
+    async with async_session_factory() as db:
+        installation_id = await create_installation(db, "a" * 32)
+        db.add(seal_credential(
+            CredentialRef(installation_id, "a" * 32, "scope_bearer", "workers", 1),
+            SecretStr("synthetic-scope-bearer"), actor=str(OPERATOR_ID), now=datetime.now(UTC),
+        ))
+        await db.flush()
+        db.add(CloudflareCapacityScope(
+            installation_id=installation_id, scope="workers", endpoint="https://capacity.example.test",
+            deployment_revision=1, bearer_version=1,
+        ))
+        await db.commit()
+    statement = update(CloudflareCapacityScope).where(
+        CloudflareCapacityScope.installation_id == installation_id,
+    ).values(deployment_revision=2)
+    try:
+        async with async_session_factory() as reader, async_session_factory() as writer:
+            await reader.scalar(select(CloudflareInstallation.id).where(
+                CloudflareInstallation.id == installation_id,
+            ).with_for_update(read=True))
+            await writer.execute(text("SET LOCAL lock_timeout = '100ms'"))
+            with pytest.raises(DBAPIError, match="lock timeout"):
+                await writer.execute(statement)
+            await writer.rollback()
+            await reader.rollback()
+            await writer.execute(statement)
+            await writer.commit()
+    finally:
+        async with async_session_factory() as db:
+            await db.execute(delete(CloudflareCapacityScope).where(
+                CloudflareCapacityScope.installation_id == installation_id,
+            ))
+            row = await db.get(CloudflareInstallation, installation_id)
+            assert row is not None
+            row.desired_state = "disconnected"
+            await db.flush()
+            await retire_cloudflare_installation(db, installation_id=installation_id, expected_revision=1)
+            await db.execute(delete(CloudflareCredential).where(CloudflareCredential.installation_id == installation_id))
+            await db.delete(row)
+            await db.commit()
 
 
 @pytest.mark.asyncio
@@ -117,13 +285,23 @@ async def test_disconnect_retires_with_receipts_and_allows_reconnect(
     assert installation.retired_at is not None and installation.api_token_version is None
     credential = await db_session.get(CloudflareCredential, (installation_id, "account_token", "", 1))
     assert credential is not None and credential.ciphertext is None
-    new_id = await create_installation(db_session, "b" * 32)
+    new_id = await create_installation(db_session, installation.account_id)
     assert new_id != installation_id
     assert await db_session.get(CloudflareOwnedResource, resource.id) is not None
+    db_session.add(CloudflareOwnedResource(
+        id=uuid4(), installation_id=new_id, account_id=installation.account_id,
+        scope="workers", kind="worker_script", target_name=resource.target_name,
+        desired_revision=1, artifact_digest="c" * 64, effect_id=uuid4(), state="creating",
+    ))
+    await db_session.flush()
 
     with pytest.raises(IntegrityError, match="tombstone cannot authorize"):
         async with db_session.begin_nested():
             resource.state = "creating"
+            await db_session.flush()
+    with pytest.raises(IntegrityError, match="tombstone must be retained"):
+        async with db_session.begin_nested():
+            await db_session.delete(resource)
             await db_session.flush()
 
 
@@ -231,6 +409,13 @@ async def test_claim_gate_tracks_scale_in_and_deployment_changes_without_restart
     await db_session.flush()
     assert not await cloudflare_claim_allowed(db_session, worker_id)
     assert await cloudflare_claim_allowed(db_session, uuid4())
+    orphan = ExecutionWorker(
+        id=uuid4(), form="external", state="retired", capacity_scope="old-workers",
+        runtime_profile="cloudflare-python-v1",
+    )
+    db_session.add(orphan)
+    await db_session.flush()
+    assert not await cloudflare_claim_allowed(db_session, orphan.id)
 
     installation.admitted_revision = None
     installation.desired_state = "disconnected"
@@ -242,6 +427,10 @@ async def test_claim_gate_tracks_scale_in_and_deployment_changes_without_restart
     assert worker is not None
     worker.state = "retired"
     worker.capacity_resource_deleted_at = datetime.now(UTC)
+    await db_session.flush()
+    with pytest.raises(CloudflarePolicyConflict, match="cleanup is pending"):
+        await retire_cloudflare_installation(db_session, installation_id=installation.id, expected_revision=3)
+    orphan.capacity_resource_deleted_at = datetime.now(UTC)
     await db_session.flush()
     await retire_cloudflare_installation(db_session, installation_id=installation.id, expected_revision=3)
     assert installation.retired_at is not None

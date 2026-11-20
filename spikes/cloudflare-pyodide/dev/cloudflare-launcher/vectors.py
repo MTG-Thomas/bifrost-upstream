@@ -5,7 +5,7 @@ this branch, which adds the signed runtime profile) and #1424's
 api/shared/worker_control_auth.py, then writes vectors.json. protocol.py
 imports only the standard library, so it loads without the application.
 
-    python vectors.py --main origin/main --branch HEAD --auth origin/pr-1424 --out vectors.json
+    python vectors.py --main origin/main --branch HEAD --out vectors.json
     python vectors.py ... --check vectors.json   # fails if upstream behaviour moved
 
 Re-run after fetching upstream; a changed vector means the JS side must follow.
@@ -24,7 +24,6 @@ from unittest.mock import patch
 from uuid import UUID
 
 PROTOCOL = "api/src/worker/remote/protocol.py"
-AUTH = "api/shared/worker_control_auth.py"
 
 
 def load(ref: str, path: str, name: str):
@@ -90,26 +89,16 @@ def envelope_vectors(protocol) -> dict:
     }
 
 
-def key_vectors(auth) -> list[dict]:
-    cases = [("provider-token-1", INCARNATION, "cf:launcher:1"),
-             ("provider-token-2", LAUNCHER, "a.b_c-d:e")]
-    return [{"provider_key": key, "worker_id": str(worker), "resource_uid": uid,
-             "control_key": auth.external_worker_control_key(key, worker, uid)}
-            for key, worker, uid in cases]
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--main", default="origin/main")
     parser.add_argument("--branch", default="HEAD")
-    parser.add_argument("--auth", default="origin/pr-1424")
     parser.add_argument("--check")
     parser.add_argument("--out")
     args = parser.parse_args()
     main_protocol = load(args.main, PROTOCOL, "protocol_main")
     branch_protocol = load(args.branch, PROTOCOL, "protocol_branch")
-    auth = load(args.auth, AUTH, "worker_control_auth")
-    sources = {"main": args.main, "branch": args.branch, "auth": args.auth}
+    sources = {"main": args.main, "branch": args.branch}
     vectors = {
         "sources": {name: subprocess.run(["git", "rev-parse", ref], check=True, capture_output=True,
                                          text=True).stdout.strip() for name, ref in sources.items()},
@@ -120,7 +109,6 @@ def main() -> int:
         "hello_main": hello_vectors(main_protocol, with_profile=False),
         "hello_branch_profile": hello_vectors(branch_protocol, with_profile=True),
         "envelopes": envelope_vectors(main_protocol),
-        "control_keys": key_vectors(auth),
     }
     rendered = json.dumps(vectors, indent=1, ensure_ascii=False, sort_keys=True) + "\n"
     if args.check:

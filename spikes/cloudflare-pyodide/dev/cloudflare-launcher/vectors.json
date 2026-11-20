@@ -3,20 +3,6 @@
   "incarnation_ended": 4001,
   "max_logical_bytes": 16777216
  },
- "control_keys": [
-  {
-   "control_key": "af35d3e5e051909c93b941c132d1e14e52be8efe9580c78d706e83afa439b2c6",
-   "provider_key": "provider-token-1",
-   "resource_uid": "cf:launcher:1",
-   "worker_id": "0e9d8c7b-6a59-4847-b6a5-948372615041"
-  },
-  {
-   "control_key": "af02210b2cb83ab0d9e199e8187acc85f9d73b1eef559c03103cc683f7f163b2",
-   "provider_key": "provider-token-2",
-   "resource_uid": "a.b_c-d:e",
-   "worker_id": "6f1c2d3e-4a5b-4c6d-8e7f-0a1b2c3d4e5f"
-  }
- ],
  "envelopes": {
   "big": {
    "frame_count": 2,
@@ -168,7 +154,6 @@
   }
  ],
  "sources": {
-  "auth": "d8206cb5ee9cac81c096cc677147c7eec04af331",
   "branch": "6ff1ce2c826f90fb8ddfb3ec265a41d6f857e112",
   "main": "9d6ad949a461e5b9fa6a5013b7d450a0a3ba8e41"
  }

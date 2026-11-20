@@ -49,25 +49,3 @@ def validate_external_policy(
             "reserved_fast_path_workers requires managed Kubernetes or static Fast Path workers; "
             "the external capacity provider does not advertise lane isolation"
         )
-
-
-def validate_burst_profiles(primary: WorkerCapacityProfile, burst: WorkerCapacityProfile) -> None:
-    if (
-        primary.runtime_profile != LINUX_RUNTIME_PROFILE
-        or burst.runtime_profile != CLOUDFLARE_PYTHON_RUNTIME_PROFILE
-        or primary.scope == burst.scope
-    ):
-        raise ValueError("Burst mode requires distinct primary Linux and Cloudflare scopes")
-
-
-def validate_containers_profile(
-    primary: WorkerCapacityProfile, burst: WorkerCapacityProfile,
-    containers: WorkerCapacityProfile, configured_scope: str,
-) -> None:
-    validate_burst_profiles(primary, burst)
-    if (
-        containers.runtime_profile != LINUX_RUNTIME_PROFILE
-        or containers.scope != configured_scope
-        or containers.scope in (primary.scope, burst.scope)
-    ):
-        raise ValueError("Containers overflow requires its own configured Linux scope")

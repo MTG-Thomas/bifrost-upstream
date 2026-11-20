@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+from dataclasses import replace
 from datetime import timedelta
 from typing import Any
 from uuid import UUID, uuid4
@@ -14,13 +15,15 @@ from shared.models import WorkerCapacityProfile, WorkerCapacityReservation
 from shared.worker_control_auth import managed_cloudflare_control_key
 from src.config import Settings
 from src.core.database import get_db_context
-from src.models.orm.execution_workers import ExecutionWorker
+from src.models.orm.cloudflare_capacity import CloudflareWorkerReservation
+from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
 from src.services.kubernetes_execution import KubernetesPolicy
+from src.services.worker_pool.eligibility import cloudflare_active_claims
 from src.services.worker_pool.controller import (
     RECONCILE_SECONDS, SWEEP_SECONDS, LiveControllers, WorkerCapacityController, _now, _withdraw_live,
 )
 from src.services.worker_pool.external_client import CAPACITY_REQUEST_SECONDS, CapacityProtocolError, ExternalCapacityClient
-from src.services.worker_pool.external_policy import validate_burst_profiles, validate_containers_profile, validate_external_policy
+from src.services.worker_pool.external_policy import validate_external_policy
 from src.services.worker_pool.liveness import silent_executor
 from src.services.worker_pool.recovery import announce_lost_runs, end_runs_of_lost_worker
 from src.services.worker_pool.sizing import JobSizing
@@ -49,10 +52,19 @@ class ExternalWorkerPoolController(WorkerCapacityController):
         self.cleanup_states = ("lost", "retired")
         self.runtime_profile = profile.runtime_profile
         self.burst_launch_allowed = True
+        self.shared_managed_worker_cap: int | None = None
+        self.managed_max_lifetime_seconds: int | None = None
 
     async def launch_for_demand(self, policy: KubernetesPolicy) -> list[UUID]:
         if not self.burst_launch_allowed:
             return []
+        if self.managed_cloudflare_scope is not None:
+            if self.shared_managed_worker_cap is None:
+                return []
+            return await super().launch_for_demand(replace(
+                policy, max_workers=self.shared_managed_worker_cap, warm_workers=0,
+                reserved_fast_path_workers=0,
+            ))
         try:
             return await super().launch_for_demand(policy)
         except CapacityProtocolError:
@@ -75,6 +87,11 @@ class ExternalWorkerPoolController(WorkerCapacityController):
 
     def _managed_scope(self) -> Any:
         scope = and_(ExecutionWorker.form == "external", ExecutionWorker.capacity_scope == self.profile.scope)
+        if self.managed_cloudflare_scope is not None:
+            return scope & self.managed_cloudflare_scope.owns(ExecutionWorker.id)
+        scope = scope & ~select(CloudflareWorkerReservation.worker_id).where(
+            CloudflareWorkerReservation.worker_id == ExecutionWorker.id,
+        ).exists()
         if self.dual_capacity and self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
             scope = scope & (ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE)
         return scope
@@ -93,6 +110,8 @@ class ExternalWorkerPoolController(WorkerCapacityController):
         return fields
 
     def _sizing(self, policy: KubernetesPolicy, workers: Any) -> JobSizing:
+        if self.managed_cloudflare_scope is not None:
+            return super()._sizing(policy, workers)
         try:
             validate_external_policy(
                 policy, self.profile, max_lifetime_seconds=self.settings.pool_max_lifetime_seconds,
@@ -111,21 +130,59 @@ class ExternalWorkerPoolController(WorkerCapacityController):
 
     async def reconcile(self) -> None:
         current = await self.client.profile()
+        if self.managed_cloudflare_scope is not None and current != self.profile:
+            raise CapacityProtocolError("Managed Cloudflare deployment capabilities changed")
         if current.protocol_version != self.profile.protocol_version:
             raise CapacityProtocolError("Capacity protocol changed; drain the original provider first")
         if (current.scope, current.runtime_profile) != (self.profile.scope, self.runtime_profile):
             raise CapacityProtocolError("Capacity provider scope or runtime profile changed; drain the original provider first")
         self.profile = current
         self.version = current.worker_version
-        if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and not self.settings.cloudflare_worker_hello_enabled:
+        if (self.managed_cloudflare_scope is None and self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+                and not self.settings.cloudflare_worker_hello_enabled):
             raise CapacityProtocolError("Cloudflare capacity requires Cloudflare hello opt-in")
         await super().reconcile()
+
+    async def _start_prepared(self, worker_id: UUID, uid: str) -> None:
+        scope = self.managed_cloudflare_scope
+        if scope is None:
+            await self.client.start(worker_id, self.profile.scope, uid)
+            return
+        async with get_db_context() as db:
+            if await scope.lock_admission(db):
+                await self.client.start(worker_id, scope.name, uid)
+
+    async def _retire_closed_worker(self, worker_id: UUID) -> None:
+        scope = self.managed_cloudflare_scope
+        if scope is None:
+            return
+        async with get_db_context() as db:
+            if await scope.lock_admission(db):
+                return
+            worker = await db.scalar(select(ExecutionWorker).where(
+                ExecutionWorker.id == worker_id, self._managed_scope(),
+                ExecutionWorker.state.in_(("reserved", "starting", "ready", "draining")),
+            ).with_for_update())
+            if worker is None:
+                return
+            active = await db.scalar(
+                cloudflare_active_claims().where(
+                    ExecutionWorkerClaim.worker_id == worker_id,
+                ).exists().select()
+            )
+            worker.end_reason = "cloudflare_admission_closed"
+            if worker.active_runs or worker.memory_reserved_bytes or active:
+                worker.state = "draining"
+            else:
+                worker.state = "retired"
+                worker.ended_at = _now()
 
     async def reconcile_worker(self, worker_id: UUID, policy: KubernetesPolicy) -> None:
         if not self.dual_capacity:
             self._sizing(policy, [])
-        # Provider I/O never holds a DB connection or worker row lock. UUID
-        # addressing and conditional commits make concurrent reconcilers safe.
+        # Provider I/O never holds the worker row lock. Managed sends take the
+        # installation's admission lock for their bounded request.
+        await self._retire_closed_worker(worker_id)
         async with get_db_context() as db:
             worker = await db.scalar(select(ExecutionWorker).where(
                 ExecutionWorker.id == worker_id, self._managed_scope(),
@@ -195,13 +252,16 @@ class ExternalWorkerPoolController(WorkerCapacityController):
                 reservation = WorkerCapacityReservation(
                     worker_id=worker_id, worker_version=version,
                     memory_limit_bytes=limit,
-                    max_lifetime_seconds=self.settings.pool_max_lifetime_seconds,
+                    max_lifetime_seconds=self.managed_max_lifetime_seconds or self.settings.pool_max_lifetime_seconds,
                     drain_grace_seconds=WORKER_DRAIN_GRACE_SECONDS,
                 )
                 if bounded_prepare:
                     # GET may have raced a loss while it was in flight. Refuse
                     # to send a new PUT once the reservation has ended.
                     async with get_db_context() as db:
+                        managed = self.managed_cloudflare_scope
+                        if managed is not None and not await managed.lock_admission(db):
+                            return
                         still_reserved = await db.scalar(select(ExecutionWorker.id).where(
                             ExecutionWorker.id == worker_id, self._managed_scope(),
                             ExecutionWorker.state == "reserved",
@@ -209,16 +269,16 @@ class ExternalWorkerPoolController(WorkerCapacityController):
                                 seconds=self.settings.pool_start_timeout_seconds,
                             ),
                         ))
-                    if still_reserved is None:
-                        return
-                    async with asyncio.timeout(CAPACITY_REQUEST_SECONDS):
-                        if self.profile.protocol_version == 2:
-                            if uid is None:
-                                raise CapacityProtocolError("Managed Cloudflare reservation lacks its caller UID")
-                            key = managed_cloudflare_control_key(self.settings.secret_key, self.profile.scope, worker_id, uid)
-                            resource = await self.client.prepare(reservation, self.profile.scope, managed_identity=(uid, key))
-                        else:
-                            resource = await self.client.prepare(reservation, self.profile.scope)
+                        if still_reserved is None:
+                            return
+                        async with asyncio.timeout(CAPACITY_REQUEST_SECONDS):
+                            if self.profile.protocol_version == 2:
+                                if uid is None:
+                                    raise CapacityProtocolError("Managed Cloudflare reservation lacks its caller UID")
+                                key = managed_cloudflare_control_key(self.settings.secret_key, self.profile.scope, worker_id, uid)
+                                resource = await self.client.prepare(reservation, self.profile.scope, managed_identity=(uid, key))
+                            else:
+                                resource = await self.client.prepare(reservation, self.profile.scope)
                 else:
                     resource = await self.client.prepare(reservation, self.profile.scope)
             if resource.state != "prepared":
@@ -239,7 +299,7 @@ class ExternalWorkerPoolController(WorkerCapacityController):
                 ).returning(ExecutionWorker.id))
                 await db.commit()
             if bound is not None:
-                await self.client.start(worker_id, self.profile.scope, resource.resource_uid)
+                await self._start_prepared(worker_id, resource.resource_uid)
             return
         if state not in ("starting", "ready", "draining"):
             return
@@ -255,7 +315,7 @@ class ExternalWorkerPoolController(WorkerCapacityController):
                 if self.dual_capacity:
                     self._sizing(policy, [])
                 assert uid is not None
-                await self.client.start(worker_id, self.profile.scope, uid)
+                await self._start_prepared(worker_id, uid)
                 return
         elif resource.state == "prepared":
             reason = "provider_resource_regressed"
@@ -294,21 +354,7 @@ async def external_worker_pool_loop(stop_event: asyncio.Event, settings: Setting
         client = ExternalCapacityClient(
             settings.worker_capacity_url, settings.worker_capacity_token.get_secret_value(), http=http,
         )
-        burst_client = None
-        if settings.cloudflare_capacity_url and settings.cloudflare_capacity_token:
-            burst_client = ExternalCapacityClient(
-                settings.cloudflare_capacity_url, settings.cloudflare_capacity_token.get_secret_value(), http=http,
-            )
-        containers_client = None
-        containers_scope = getattr(settings, "cloudflare_containers_scope", None)
-        if containers_scope:
-            assert settings.cloudflare_containers_url and settings.cloudflare_containers_token
-            containers_client = ExternalCapacityClient(
-                settings.cloudflare_containers_url, settings.cloudflare_containers_token.get_secret_value(), http=http,
-            )
         primary: ExternalWorkerPoolController | None = None
-        burst: ExternalWorkerPoolController | None = None
-        containers: ExternalWorkerPoolController | None = None
         wake = asyncio.Event()
         listener = asyncio.create_task(
             listen_for_pool_wake(
@@ -323,71 +369,21 @@ async def external_worker_pool_loop(stop_event: asyncio.Event, settings: Setting
         try:
             while not stop_event.is_set():
                 started = time.monotonic()
-                primary_available = False
                 try:
                     if primary is None:
                         profile = await client.profile()
-                        if burst_client is not None and profile.runtime_profile != LINUX_RUNTIME_PROFILE:
-                            raise CapacityProtocolError("Burst mode requires a primary Linux provider")
-                        if profile.scope == containers_scope:
-                            raise CapacityProtocolError("Primary provider cannot use the Containers scope")
+                        if profile.runtime_profile != LINUX_RUNTIME_PROFILE:
+                            raise CapacityProtocolError("External primary must advertise Linux capacity")
                         primary = ExternalWorkerPoolController(client, settings, profile)
-                    primary.additional_profile = containers.profile if containers is not None else None
                     if await primary.reachability.check():
                         await primary.reconcile()
-                        primary_available = True
                 except Exception:
                     logger.exception("Primary worker capacity reconciliation failed")
-                if burst_client is not None:
-                    try:
-                        if burst is None:
-                            profile = await burst_client.profile()
-                            if profile.runtime_profile != CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
-                                raise CapacityProtocolError("Burst mode requires a Cloudflare provider")
-                            if profile.scope == containers_scope:
-                                raise CapacityProtocolError("Workers provider cannot use the Containers scope")
-                            if primary is not None:
-                                validate_burst_profiles(primary.profile, profile)
-                            burst = ExternalWorkerPoolController(burst_client, settings, profile)
-                        if primary is not None:
-                            validate_burst_profiles(primary.profile, burst.profile)
-                            primary.peer_profile = burst.profile
-                            burst.peer_profile = primary.profile
-                        burst.additional_profile = containers.profile if containers is not None else None
-                        burst.burst_launch_allowed = primary_available
-                        if await burst.reachability.check():
-                            await burst.reconcile()
-                        if primary is not None:
-                            primary.peer_profile = burst.profile
-                    except Exception:
-                        logger.exception("Burst worker capacity reconciliation failed")
-                if containers_client is not None and containers is None:
-                    try:
-                        profile = await containers_client.profile()
-                        if profile.scope != containers_scope or profile.runtime_profile != LINUX_RUNTIME_PROFILE:
-                            raise CapacityProtocolError("Containers provider profile differs from the configured Linux scope")
-                        containers = ExternalWorkerPoolController(containers_client, settings, profile)
-                    except Exception:
-                        logger.exception("Containers worker capacity discovery failed")
-                if containers is not None:
-                    try:
-                        containers.burst_launch_allowed = False
-                        if primary is not None and burst is not None:
-                            assert containers_scope is not None
-                            validate_containers_profile(primary.profile, burst.profile, containers.profile, containers_scope)
-                            containers.peer_profile = primary.profile
-                            containers.additional_profile = burst.profile
-                            containers.burst_launch_allowed = primary_available
-                        if await containers.reachability.check():
-                            await containers.reconcile()
-                    except Exception:
-                        logger.exception("Containers worker capacity reconciliation failed")
                 await wait_for_next_pass(
                     stop_event, wake, since=started, spacing=RECONCILE_SECONDS, sweep=SWEEP_SECONDS,
                 )
         finally:
             listener.cancel()
             await asyncio.gather(listener, return_exceptions=True)
-            for controller in (primary, burst, containers):
-                if controller is not None:
-                    await _withdraw_live(controller.id)
+            if primary is not None:
+                await _withdraw_live(primary.id)

@@ -76,35 +76,6 @@ async def start_kubernetes_loops(
     manual_enrollment = getattr(settings, "cloudflare_worker_hello_enabled", False)
     if (capacity_url and not token) or (token and not capacity_url and not manual_enrollment):
         raise ValueError("External worker capacity requires both endpoint and dedicated token")
-    burst_url = getattr(settings, "cloudflare_capacity_url", None)
-    burst_secret = getattr(settings, "cloudflare_capacity_token", None)
-    burst_token = burst_secret.get_secret_value() if burst_secret is not None else None
-    if burst_url is not None or burst_secret is not None:
-        from src.services.worker_pool.external_client import ExternalCapacityClient
-
-        if not (capacity_url and token and manual_enrollment and burst_url and burst_token):
-            raise ValueError("Cloudflare burst capacity requires both provider credentials and Cloudflare hello opt-in")
-        if burst_token == token or (
-            ExternalCapacityClient.check_configuration(burst_url, burst_token)
-            == ExternalCapacityClient.check_configuration(capacity_url, token)
-        ):
-            raise ValueError("Cloudflare burst capacity requires a distinct endpoint and token")
-    containers_scope = getattr(settings, "cloudflare_containers_scope", None)
-    containers_url = getattr(settings, "cloudflare_containers_url", None)
-    containers_secret = getattr(settings, "cloudflare_containers_token", None)
-    if any(value is not None for value in (containers_scope, containers_url, containers_secret)):
-        from src.services.worker_pool.external_client import ExternalCapacityClient
-
-        if not (containers_scope and containers_url and containers_secret and capacity_url and token
-                and burst_url and burst_token):
-            raise ValueError("Containers overflow requires a scope, URL, token and both existing providers")
-        containers_token = containers_secret.get_secret_value()
-        if containers_token in (token, burst_token) or (
-            ExternalCapacityClient.check_configuration(containers_url, containers_token)
-            in (ExternalCapacityClient.check_configuration(capacity_url, token),
-                ExternalCapacityClient.check_configuration(burst_url, burst_token))
-        ):
-            raise ValueError("Containers overflow requires a distinct endpoint and token")
     if capacity_url and token:
         from src.services.worker_pool.external_client import ExternalCapacityClient
         from src.services.worker_pool.external_controller import external_worker_pool_loop
@@ -113,7 +84,14 @@ async def start_kubernetes_loops(
         tasks.append(asyncio.create_task(
             external_worker_pool_loop(stop_event, settings), name="external-worker-pool-controller",
         ))
-    if not await may_manage_jobs(settings):
+    manages_jobs = await may_manage_jobs(settings)
+    from src.services.worker_pool.cloudflare_supervisor import cloudflare_supervisor_loop
+
+    tasks.append(asyncio.create_task(
+        cloudflare_supervisor_loop(stop_event, settings, kubernetes=manages_jobs),
+        name="cloudflare-worker-supervisor",
+    ))
+    if not manages_jobs:
         return tasks
     from src.jobs.schedulers.kubernetes_jobs import kubernetes_build_loop
     from src.services.worker_pool.controller import worker_pool_loop

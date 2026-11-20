@@ -30,6 +30,7 @@ from src.jobs.schedulers.platform_jobs import (
     claim_platform_job,
     run_claimed_platform_job,
 )
+from src.models.orm.cloudflare_capacity import CloudflareInstallation, CloudflareWorkerReservation
 from src.models.orm.execution_workers import ExecutionWorker
 from src.services.execution.template_process import TEMPLATE_START_TIMEOUT_SECONDS
 from src.services.memory_requests import AGENT_RUN_REQUEST_BYTES, MemoryBudget
@@ -1518,8 +1519,6 @@ class RemoteControlHost:
             containers = False
             enrollment = None
             if cloudflare:
-                if not settings.cloudflare_worker_hello_enabled:
-                    raise ProtocolError("Cloudflare worker hello is disabled")
                 if signed.form != "external" or signed.resource_uid is None:
                     raise AuthenticationError("Cloudflare workers require an external capacity resource")
                 async with get_liveness_db_context() as db:
@@ -1530,7 +1529,23 @@ class RemoteControlHost:
                         ExecutionWorker.capacity_resource_uid == signed.resource_uid,
                     ))).one_or_none()
                 if binding is None:
+                    if not settings.cloudflare_worker_hello_enabled:
+                        raise ProtocolError("Cloudflare worker hello is disabled")
                     raise AuthenticationError("Cloudflare worker lacks its reserved resource binding")
+                async with get_liveness_db_context() as db:
+                    pinned = await db.scalar(
+                        select(CloudflareWorkerReservation.worker_id)
+                        .join(CloudflareInstallation, CloudflareInstallation.id == CloudflareWorkerReservation.installation_id)
+                        .where(
+                            CloudflareWorkerReservation.worker_id == signed.incarnation_id,
+                            CloudflareWorkerReservation.scope == binding.capacity_scope,
+                            CloudflareInstallation.retired_at.is_(None),
+                        )
+                    )
+                if binding.capacity_scope is not None and pinned is None:
+                    raise AuthenticationError("Cloudflare worker lacks its current installation pin")
+                if pinned is None and not settings.cloudflare_worker_hello_enabled:
+                    raise ProtocolError("Cloudflare worker hello is disabled")
                 if binding.capacity_scope is None:
                     token = settings.worker_capacity_token
                     if not token:
@@ -1539,9 +1554,12 @@ class RemoteControlHost:
                         token.get_secret_value(), signed.incarnation_id, signed.resource_uid,
                     )
                 else:
-                    control_key = managed_cloudflare_control_key(
-                        settings.secret_key, binding.capacity_scope, signed.incarnation_id, signed.resource_uid,
-                    )
+                    try:
+                        control_key = managed_cloudflare_control_key(
+                            settings.secret_key, binding.capacity_scope, signed.incarnation_id, signed.resource_uid,
+                        )
+                    except ValueError:
+                        raise AuthenticationError("Invalid managed Cloudflare resource binding") from None
             else:
                 control_key = settings.secret_key
                 containers_scope = getattr(settings, "cloudflare_containers_scope", None)

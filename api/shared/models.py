@@ -41,6 +41,7 @@ class CloudflareCapacityPolicy(BaseModel):
     version: Literal[1] = 1
     workers: CloudflareWorkersPolicy
     monthly_limit_usd: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+    shared_managed_worker_cap: int | None = Field(default=None, ge=1, le=1000)
 
 
 class GitAppManifestRequest(BaseModel):
@@ -347,8 +348,9 @@ class WorkerCapacityProfile(BaseModel):
 
     @model_validator(mode="after")
     def _managed_prepare_is_workers_only(self) -> WorkerCapacityProfile:
-        if self.protocol_version == 2 and self.runtime_profile != "cloudflare-python-v1":
-            raise ValueError("Managed prepare protocol is specific to Cloudflare Workers")
+        expected = 2 if self.runtime_profile == "cloudflare-python-v1" else 1
+        if self.protocol_version != expected:
+            raise ValueError("Capacity protocol does not match the provider runtime")
         return self
 
 

@@ -20,7 +20,7 @@ from src.services.kubernetes_execution import load_kubernetes_policy
 from src.services.execution.summary_dispatch import LINUX_ONLY_SUMMARY
 from src.services.worker_pool.cloudflare_admission import cloudflare_claim_allowed
 from src.services.worker_pool.eligibility import cloudflare_active_claims, cloudflare_dispatch_sql, containers_dispatch_sql
-from src.worker.remote.fencing import fence_remote_owner
+from src.worker.remote.fencing import current_remote_lease_ref, fence_remote_owner
 from src.worker.remote.protocol import (
     CLOUDFLARE_DEV_BUDGET_BYTES,
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
@@ -342,8 +342,12 @@ async def claim_next(
     try:
         for attempt in range(2):
             async with get_db_context() as db:
-                if not await cloudflare_claim_allowed(db, incarnation_id):
-                    return None
+                owner = current_remote_lease_ref()
+                if owner is None or owner.lease.worker_id != incarnation_id or (
+                    owner.lease.declared_slots > 0
+                ):
+                    if not await cloudflare_claim_allowed(db, incarnation_id):
+                        return None
                 if not await fence_remote_owner(db, for_update=True):
                     return None
                 picked = (await db.execute(candidate)).one_or_none()
@@ -587,7 +591,7 @@ async def begin_idle_drain(incarnation_id: UUID) -> bool:
         )
         settings = get_settings()
         containers_scope = getattr(settings, "cloudflare_containers_scope", None)
-        linux_floor = worker_row.execution_lane == "normal" and bool(getattr(settings, "cloudflare_capacity_url", None))
+        linux_floor = worker_row.execution_lane == "normal"
         containers_worker = containers_scope is not None and worker_row.capacity_scope == containers_scope
         if not sized and not containers_worker and (not linux_floor or worker_row.runtime_profile == LINUX_RUNTIME_PROFILE):
             ready = select(func.count(ExecutionWorker.id)).where(
