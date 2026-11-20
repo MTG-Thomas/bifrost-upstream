@@ -198,8 +198,6 @@ class WorkerCapacityController(ABC):
         return self.peer_profile is not None
 
     def _counts_for_warm_floor(self, worker: ExecutionWorker) -> bool:
-        if worker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and worker.capacity_scope is not None:
-            return False
         return (
             not self.dual_capacity
             or worker.execution_lane != "normal"
@@ -520,6 +518,9 @@ class WorkerCapacityController(ABC):
             active_claims = (await db.execute(
                 cloudflare_active_claims()
             )).all() if cloudflare_workers else []
+            managed_cloudflare_ids = set(await db.scalars(select(CloudflareWorkerReservation.worker_id).where(
+                CloudflareWorkerReservation.worker_id.in_([worker.id for worker in cloudflare_workers]),
+            ))) if cloudflare_workers and policy.warm_workers else set()
             active_counts = Counter(row.worker_id for row in active_claims)
             active_tenants = {row.tenant_id for row in active_claims if row.execution_id is not None}
             leased = set((await db.scalars(select(ExecutionWorker.id).where(
@@ -628,6 +629,7 @@ class WorkerCapacityController(ABC):
                 and worker.execution_lane == "normal"
                 and worker.resource_class == "standard"
                 and worker.state != "draining"
+                and worker.id not in managed_cloudflare_ids
                 and self._counts_for_warm_floor(worker)
                 and not self._outdated(worker)
                 and not self._lifetime_handoff_imminent(worker, now)

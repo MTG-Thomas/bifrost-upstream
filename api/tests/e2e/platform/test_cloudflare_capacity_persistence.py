@@ -128,9 +128,9 @@ async def test_supervisor_reserves_and_retires_without_restarting(
         ids=frozenset(), versions=frozenset({"test"}),
     )))
     await KubernetesExecutionService(db_session).update_policy({"max_workers": 1, "warm_workers": 0}, updated_by="test")
-    await db_session.execute(update(ExecutionWorker).where(
-        ExecutionWorker.form == primary,
-    ).values(state="retired"))
+    # Each case supplies the entire primary cohort. The test stack's own
+    # in-process workers would otherwise fill demand in the Job and VM cases.
+    await db_session.execute(update(ExecutionWorker).values(state="retired"))
     bearer = "test-scope-bearer-" + "a" * 30
     db_session.add(seal_credential(
         CredentialRef(installation.id, installation.account_id, "scope_bearer", "workers", 1),
