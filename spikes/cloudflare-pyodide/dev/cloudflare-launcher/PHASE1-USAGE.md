@@ -128,7 +128,7 @@ End-to-end samples include local routing, DO work and runtime overhead.
 | Idle exercise | 61.295 ms, 100 | 613 ms and one subrequest on the Dynamic Worker entrypoint |
 | Cold boot and first prime | 7,314.646 ms, four | 30,000 ms on the Dynamic Worker entrypoint. A 10× margin would exceed the existing ceiling. |
 | Arbitrary approved workflow | 109.638 ms loose / 85.358 ms Solution inclusive, four each | The smaller of the reviewed workflow budget and 30,000 ms. The reference fixtures do not establish a ceiling for other approved Python. |
-| Dynamic isolate startup | Cold exercise 4,852.122 ms inclusive, four. The split package measured 4,327.208 ms. | **Theoretical / unenforced.** Reserve 48,522 ms per possible tenant identity load, 10× the higher cold exercise sample rounded up. The deployment startup check does not apply to WorkerLoader, and its CPU option limits invocation CPU. An evicted isolate can incur startup again. |
+| Dynamic isolate startup | Cold exercise 4,852.122 ms inclusive, four. | **Unenforced.** Reserve 48,522 ms per possible isolate load. After a verified seal, use 4,852.122 ms per observed foreground load. The deployment startup check does not apply to WorkerLoader, and its CPU option limits invocation CPU. An evicted isolate can incur startup again. |
 
 The workerd tests verify the exact limit supplied to WorkerLoader for each
 child path and the release tests verify the CPU limits uploaded for capacity
@@ -151,15 +151,33 @@ tail. The first day's idle probe reuses that identity. A new loader
 identity requires a committed, idempotent generation reservation through
 the fenced control channel before loading. It books four additional
 units once for that release and identity. This fee is separate from
-CPU and Cloudflare bills once per ID and code per UTC day. Count a
-dispatch only in the UTC month when it starts. Book warm-tail usage in
-each month touched.
+CPU and Cloudflare bills once per ID and code per UTC day. After a
+verified seal, a witnessed identity opening in the booking's UTC day
+settles to one identity. The dispatch's existing tenant-day booking
+covers the first such opening, and additional witnessed identities each
+retain one unit. Unmatched bookings retain their reserve. Count a dispatch
+once, in the UTC month when it starts. Book warm-tail usage in each
+month touched.
 [Cloudflare Dynamic Worker pricing](https://developers.cloudflare.com/dynamic-workers/pricing/)
 
+The foreground receipt uses the engine isolate's first-request signal.
+Counting WorkerLoader calls or code callbacks would miscount when an
+existing identity starts another isolate from cached code. The TenantHost
+returns the identity, request class, UTC timestamp, and first-request flag
+for each observed boot, prime, and workflow invocation. The launcher records
+the evidence after Bifrost acknowledges the durable terminal. A complete,
+verified deletion receipt settles child request counts and removes unused
+boot or prime CPU reservations. One workflow keeps the approved invocation
+limit. Missing responses, uncertain terminals, and incomplete receipts
+retain the full reservation for the corresponding route. The measurement
+covers observed foreground loads. Detached exercise alarms can outlive or
+lose contact with the launcher, so their full startup and invocation
+reservations remain. [WorkerLoader API](https://developers.cloudflare.com/dynamic-workers/api-reference/)
+
 The exact packaged launcher completed loose Python workflow
-`112591af-2324-4bf4-acae-016f8f97aae3`, remained running for 170 real
-provider GETs over 340.859 seconds, then completed Solution snapshot
-workflow `91ab7ebd-3e24-4380-acdf-96cef27a9505`. The workerd harness
+`0b9c414b-d42c-4454-bb88-42abbeb2b578`, remained running for 170 real
+provider GETs over 340.861 seconds, then completed Solution snapshot
+workflow `fe3b6d8f-5515-4c25-8c80-aff9c55b8bbf`. The workerd harness
 used the controller's two-second minimum interval, which is faster than
 the five-second idle sweep. It sent the same resource GET through the
 real capacity Worker, WorkerLedger and launcher, with the launcher alarm
@@ -169,13 +187,16 @@ exercised the provider path at controller cadence with a local relay
 and fixtures for the API peer and placement.
 
 The run used Bifrost's production wake scheduler and the packaged caps.
-Both workflows settled successfully. The run witnessed two distinct
-generation reservations and the receipt recorded 20,480 SQLite bytes
-and `exhausted: false`.
+Both workflows settled successfully. Each sealed route reported two
+child calls under one identity. The boot loaded an isolate and the
+workflow reused it. The run witnessed two distinct generation bookings.
+The seal recorded 20,480 SQLite bytes and `exhausted: false`. A separate
+workerd test replaced the runtime and observed another first request
+under the same identity.
 
 | Launcher meter | Loose terminal | Solution terminal | Sealed incarnation | 10× cap |
 | --- | ---: | ---: | ---: | ---: |
-| SQLite row writes | 15 | 43 | 62 | 620 |
+| SQLite row writes | 15 | 44 | 64 | 640 |
 | DO request units | 3 | 6 | 6 | 60 |
 | Application log events | 1 | 2 | 2 | 20 |
 
@@ -189,16 +210,21 @@ are suppressed independently. ACK clears each route tombstone after
 committing a compact replay fence. A terminal, inventory or heartbeat
 can close admission for its incarnation before another route is claimed.
 The launcher also refuses stale attempts before engine entry. Settlement
-headroom follows the configured slot count. The 620-write cap leaves
-532 workload writes with one slot or 292 with four. The reference used
-about 31 writes per route, so a four-slot launch can retire after about
-nine similar workflows and be replaced when demand remains.
+headroom follows the configured slot count. The 640-write cap leaves
+552 workload writes with one slot or 312 with four. The reference used
+32 writes per route on average. A four-slot launcher has room for about
+nine similar workflows and can be replaced if demand remains.
 
-For each receipt meter, Bifrost reserves the largest of the pinned cap,
-the sealed count, and the highest terminal count. Missing counts still
-reserve the cap and over-cap cleanup remains billable. Incarnations
-retain the rate and bounds of their deployed release. Admission closes
-if a receipt-priced release has missing bounds.
+While a launcher is live or lacks a trustworthy seal, Bifrost reserves
+the greater of the pinned cap and the highest observed count. A verified
+deletion with a complete launcher meter settles writes, request units,
+and log events at their sealed counts, including over-cap cleanup. A
+regressing count keeps the reserve. The packaged private launcher has
+no default fetch or scheduled handler, so its theoretical outer Worker
+requests and CPU are released on the same seal. The named service-binding
+relay retains its per-dispatch reserve. Incarnations retain the rate and
+bounds of their deployed release. Admission closes if a receipt-priced
+release has missing bounds.
 
 Cloudflare bills DO duration by non-hibernating wall time at 128 MB per
 object, with concurrent calls sharing an object's billed duration.
@@ -223,31 +249,59 @@ fleet reserves. Provider behavior described in the exclusions below can
 affect the invoice.
 [Cloudflare Durable Object billing](https://developers.cloudflare.com/durable-objects/platform/pricing/)
 
-Repricing the previous pilot as a 60-second-deadline scenario gives
-**$0.34698373**, or **11,634.4×** its observed Worker request and CPU cost
-of `$0.00002982382`. The ledger has 79.355808 launcher- and slot-seconds,
-3 dispatches, 43 SDK requests and 3 incarnations. The historical capture
-has no workload receipts or route-deadline reservations. This comparison
-uses the 620/60/20 floor, three 60-second deadlines, a 1,000 ms approval
-per workflow, subrequest allowances of 10, 12 and 50, three distinct cold
-tenants with a same-day warm tail,
-and 54 capacity requests at 87 ms each. Cloudflare sampled 54 capacity requests, but the
-pilot did not retain a Bifrost request counter. Stored historical charges keep their
-deployed release pricing. The Cloudflare sample covers Worker requests
-and CPU only. Per replay dispatch the reserve is **$0.10054116 CPU**,
-**$0.01000000 identities**, **$0.00512008 other metered units**, and
-**$0 SQLite storage** after the included allowance. The three largest CPU
-components are startup **$0.03299496**, the Fetcher relay **$0.03240000**,
-and launcher lifetime requests **$0.03174232**.
+### Workflow Cost and Historical Replay
+
+| Local reference | Live dispatch reservation | Settled dispatch estimate |
+| --- | ---: | ---: |
+| Approved loose workflow | $0.07374581 | $0.06076049 |
+| Approved Solution snapshot workflow | $0.07374581 | $0.06076049 |
+
+These are direct dispatch costs from the local receipts and production
+pricing formula. Each fixture had a 60-second deadline, a 1,000 ms approval,
+12 allowed subrequests and one SDK request. Shared launcher lifetime
+and capacity polling belong to the fleet estimate. The seal released
+$0.00498472 in foreground CPU, $0.00000060 for two unused child calls and
+$0.008 for unused identity capacity per workflow. The remaining direct
+reserve includes $0.04813920 for the 30 possible idle pings, including
+their potential loads and relay calls. Foreground gateway and relay CPU
+contribute another $0.00746328. Shared launcher counters price at
+$0.00006610 for the sealed incarnation, down from the $0.00066100 floor.
+
+The earlier hosted pilot had 79.355808 launcher- and slot-seconds,
+3 dispatches, 43 SDK requests and 3 incarnations. It recorded no sealed
+workload receipts or route deadlines. Keep its recorded release pricing
+at $0.34698373 in the prior 60-second scenario, **11,634.4×** the observed
+$0.00002982382 for Worker requests and CPU. Repricing those inputs with
+the new 640/60/20 floor and no receipts gives **$0.34704373
+(11,636.5×)**. The scenario uses three 60-second deadlines, 1,000 ms
+approvals, subrequest allowances of 10, 12 and 50, three distinct cold
+tenants with same-day warm tails, and 54 capacity requests at 87 ms each.
+Cloudflare supplied the sampled capacity request count.
+
+For comparison, applying the local receipt shape to that historical
+workload gives **$0.21092935 (7,072.5×)**. It assumes one cold boot,
+one warm workflow, one identity, and half of the local two-workflow seal's
+launcher counts per historical incarnation. The replay removes $0.09527458
+in private launcher outer requests and CPU, $0.024 in identities,
+$0.01495415 in foreground CPU, $0.00188385 in launcher counters and
+$0.00000180 in unused child requests. This is a receipt scenario. The
+actual hosted rows still lack those receipts. The denominator covers
+sampled Worker requests and CPU. It excludes DO charges and does not
+separately attribute Dynamic Worker consumption.
 
 The release manifest pins the exact Worker bundle fingerprint, the
 measured capacity module digest, both measurement sources, the measured
 inputs and the margin. The builder and API verify these against the
 shipped bytes and enforced limits. Re-qualify changed bundles before
 packaging. The rate version is
-`workers-paid-2026-11-20-meter-lifecycle`.
+`workers-paid-2026-11-20-settled-usage`.
 
-For a new qualification, build both candidate modules with `bundleWorker`
+The latest exact package CPU check, `d04fa065-1b6a-4c52-bcf4-704265e50c5c`,
+observed 4,613.784 ms on cold exercise and 85.218 ms on warm exercise.
+The release retains the reviewed 4,852.122 ms startup input and the
+613 ms invocation cap for warm exercise.
+
+For a new qualification, build the candidate modules with `bundleWorker`
 from `deploy/capacity/cloudflare/build-workers.mjs` and the qualified runtime.
 Use `node dev/tenant-workers/qualify-cpu.mjs <package-directory> 4` on Linux
 to measure the capacity and engine paths. Then run the lifecycle test in
@@ -277,11 +331,11 @@ billing classifications before another package can ship.
 | --- | --- | --- |
 | `capacity-http` | Worker request and CPU for `capacity.mjs` health, auth/refusal, capabilities, GET, prepare, start and delete. Enable canary and supervisor use the same client. The REST management and Analytics APIs are outside the Worker invocation path. | Durable request and measured 87 ms deployment CPU limit reserved before every managed client call, including idle capabilities. Public requests made outside Bifrost are excluded. |
 | `capacity-state` | WorkerLedger HTTP, Launcher RPC and ScopeRegistry HTTP on reserve/observe/release. WorkerLedger reads and updates its intent row; ScopeRegistry reads and updates the slot set. Both DOs have duration and retained KV backed by SQLite. | Poll and lifecycle reserve for requests, row operations and duration. Scope state and journal retention have storage reserves. |
-| `launcher-control` | Launcher enrollment, topology GET/RPC, 15-second alarm, alarm deletion, hello/welcome, inventory, control/ACK, generation grants, 1-second outbound heartbeat, reconnect logs and control journal reads/writes. | Cadence, lifecycle and lifetime reserves. Per dispatch, reserve 26 DO units for command fragments, terminate and ACK, plus four for generation replies. Outgoing WebSocket messages are free. Reconnect backoff resets on acknowledged progress. |
-| `launcher-workload` | TenantHost run/warm/stop RPCs, route and slot journal, terminal persistence, ACK cleanup, SQLite meter row and application terminal logs. | Receipt for writes, DO calls and log events, with an admission cap and overage pricing. Lifetime and dispatch reserves cover reads. The stop wait is bounded, and a continuation after seal cannot issue a new charged RPC. |
-| `gateway` | The launcher Fetcher passes the request and a tenant-scoped DO stub to the private SDK gateway. Routing covers SDK fetch, refresh, diagnostics, snapshot reads and third-party egress. | Reserve gateway CPU at 1,097 ms, relay CPU at 30,000 ms, and up to 100 TenantHost RPCs per route. The service-binding invocation adds CPU but no standard Worker request fee. |
+| `launcher-control` | Launcher enrollment, topology GET/RPC, 15-second alarm, alarm deletion, hello/welcome, inventory, control/ACK, generation grants, 1-second outbound heartbeat, reconnect logs and control journal reads/writes. | Cadence, lifecycle and lifetime reserves. Release the private script's outer Worker request and CPU reserve after verified deletion with its seal. The script has no default fetch or scheduled entrypoint. Per dispatch, reserve 26 DO units for command fragments, terminate and ACK, plus four for generation replies. Outgoing WebSocket messages are free. Reconnect backoff resets on acknowledged progress. |
+| `launcher-workload` | TenantHost run/warm/stop RPCs, route and slot journal, terminal persistence, ACK cleanup, SQLite meter row and application terminal logs. | Live admission cap and settled counts for writes, DO request units, and log events. Missing or uncertain seals preserve the cap. Lifetime and dispatch reserves cover reads. The stop wait is bounded, and a continuation after seal cannot issue a new charged RPC. |
+| `gateway` | The launcher Fetcher passes the request and a tenant-scoped DO stub to the private SDK gateway. Routing covers SDK fetch, refresh, diagnostics, snapshot reads and third-party egress. | Reserve gateway CPU at 1,097 ms, relay CPU at 30,000 ms, and up to 100 TenantHost RPCs per route. The service-binding invocation adds CPU but no standard Worker request fee. API counters miss snapshot, external, and failed calls. The terminal cannot attest every relay or gateway arrival, so the reserve remains. |
 | `tenant-state` | TenantHost generation/prime/inflight/stop state, warm metadata, storage sync, deletion, 45-second alarm and rearm. Late hosts can outlive their launcher. | Per-dispatch storage/read/log/RPC reserve and full 128 MB duration through the deadline and extended warm tail. Each reserved alarm includes two DO units, eight reads and two writes for a failed ping and rearm. |
-| `dynamic-engine` | WorkerLoader lookup, engine boot and warm retry, workflow, alarm exercise, import and SDK code, generation replacement. Dynamic Workers bill requests, CPU and unique creations per day. | Reserve up to three warm calls at 30,000 ms cold or 440 ms warm, the approved execution cap and the 613 ms idle exercise. Reserve each possible isolate load's 48,522 ms startup as theoretical / unenforced. Book one identity per tenant-day and four additional units on a newly reserved generation. |
+| `dynamic-engine` | WorkerLoader lookup, engine boot and warm retry, workflow, alarm exercise, import and SDK code, generation replacement. Dynamic Workers bill requests, CPU and unique creations per day. | Reserve up to three warm calls at 30,000 ms cold or 440 ms warm, the approved execution cap, the 613 ms idle exercise, and 48,522 ms for each possible load. Settle witnessed foreground calls at their invocation caps and observed cold loads at 4,852.122 ms each. Per-load startup CPU is unenforced. Detached exercise, missing evidence and unmatched identity bookings keep their reserves. One settled identity per tenant-day can reuse the existing daily booking. |
 | `storage-logs` | SQLite bytes for route chunks, journals, provider tombstones and tenant state. Cloudflare Observability can charge for logging volume, including tenant stdout. | Keep the high-water `databaseSize` in launcher receipts. Reserve 10× the bytes from launch through verified deletion, prorated to the UTC month, and subtract the 5 GB-month included allowance from the account's aggregate. Before a receipt, reserve 0.1 GB prorated. Other DOs, provider allocation after logical cleanup, shared allowance consumption by external scripts, and operator-enabled logs remain outside the receipt. |
 | `policy-helpers` | Protocol parsing, path validation, egress host matching, response shaping and output limits inside the calling invocation. | Covered by the caller's CPU and storage bounds. These helpers use no separately billed service. |
 | `inactive-features` | Agent and summary providers, manual scheduling, diagnostics and runtime probe paths reachable only in other spike configurations. | Outside the packaged managed workload surface. External traffic, provider-generated retries or overages, and account allowances and invoice rounding remain explicit exclusions. |

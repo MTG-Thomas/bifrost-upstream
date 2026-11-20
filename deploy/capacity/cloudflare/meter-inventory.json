@@ -59,14 +59,14 @@
         ]
       },
       "spikes/cloudflare-pyodide/dev/cloudflare-launcher/launcher-core.mjs": {
-        "sha256": "3dcb02a0eb9b4bc08b660ed2a508de653be1a1b939bfbbd6fb3482d9e7c9e15b",
+        "sha256": "1dec7938d70c5607613d86bc8208c00f817ca4130639a4d3d0db67289c3b670b",
         "paths": [
           "launcher-control",
           "launcher-workload"
         ]
       },
       "spikes/cloudflare-pyodide/dev/cloudflare-launcher/launcher-do.mjs": {
-        "sha256": "6690d2831f335ba4980ce5d9be1998bcce3126ec622d0d0bbefbeb800c77245e",
+        "sha256": "8da7ee6c7d760a72b92a695bf1552c6011a622284a727bbd4e90b6e141945ef4",
         "paths": [
           "launcher-control",
           "launcher-workload",
@@ -75,7 +75,7 @@
         ]
       },
       "spikes/cloudflare-pyodide/dev/cloudflare-launcher/launcher-meter.mjs": {
-        "sha256": "fb6326c78f4e2b82c43714acbdf02406839f564dcdb6b916cd27f55c88dbe12a",
+        "sha256": "e10217d1697b15568952cdac7f254660e999db9413bee0a7da5a646fc39302de",
         "paths": [
           "launcher-workload",
           "storage-logs"
@@ -151,14 +151,14 @@
         ]
       },
       "spikes/cloudflare-pyodide/dev/tenant-workers/launcher-host.mjs": {
-        "sha256": "9773c8ff5e2c6410b2c8a6597d9fd45269377cd2d133bfcfe148a1fef90d3739",
+        "sha256": "df97e725b6486edab31a127f82f1f70139fd7f7dfcbfcdb127576af45be66a76",
         "paths": [
           "dynamic-engine",
           "tenant-state"
         ]
       },
       "spikes/cloudflare-pyodide/dev/tenant-workers/managed-launcher-entry.mjs": {
-        "sha256": "7becb9b9be26c29b3276eed5744e818ac8644363e8bfa65ad90c67382b31f6b8",
+        "sha256": "00d902b02a05abdf398de7098ca5685a15616b3f3d2cd1b3018234b4a733bf25",
         "paths": [
           "launcher-control",
           "gateway"
@@ -171,7 +171,7 @@
         ]
       },
       "spikes/cloudflare-pyodide/dev/tenant-workers/tenant-api.mjs": {
-        "sha256": "6265ad7d25cee35f53ebc9d60aa2c9509a9db2ca6ee85468c95667da949cd93b",
+        "sha256": "0862b5fafd1a43d0018ea9b24c613c323ad6314b538dfb4741924fb8cafe7f34",
         "paths": [
           "tenant-state",
           "dynamic-engine",

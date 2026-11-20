@@ -353,6 +353,7 @@ class Bridge:
                                         workflow_cpu_ms=workspace["cpu_budget_ms"],
                                         subrequests=workspace["subrequest_allowance"],
                                         tenant_id=tenant_id,
+                                        route_id=payload["route_id"],
                                     ):
                                         raise CloudflareRevisionRejected(
                                             "Managed Cloudflare workflow usage could not be reserved"

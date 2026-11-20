@@ -88,6 +88,7 @@ const workerDefinitions = {
       input("API_ORIGIN", "worker_ingress_origin"),
       { name: "BIFROST_CLOUDFLARE_MANAGED", type: "plain_text", text: "true" },
       { name: "BIFROST_METER_GENERATIONS", type: "plain_text", text: "true" },
+      { name: "BIFROST_METER_RECEIPTS", type: "plain_text", text: "true" },
       { name: "TENANT_GATEWAY", type: "service", script: "gateway" },
       { name: "RUNTIME_SHA256", type: "plain_text", text: runtimePin },
     ],

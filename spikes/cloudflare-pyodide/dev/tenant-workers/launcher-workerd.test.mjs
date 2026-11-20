@@ -110,6 +110,14 @@ const main = `
     }
   }
   export class TenantHost extends Host {
+    async meteredWarm(tenantId) {
+      this.env.BIFROST_METER_RECEIPTS = 'true';
+      try {
+        return await super.warm({tenantId, engineOnly: true});
+      } finally {
+        delete this.env.BIFROST_METER_RECEIPTS;
+      }
+    }
     async warmWithCommitFailure(input) {
       const storage = this.ctx.storage;
       Object.defineProperty(storage, 'sync', {configurable: true, value() {
@@ -197,6 +205,7 @@ const main = `
       if (action === 'managed-alarm') return Response.json(await host.runManagedAlarm(input?.success));
       if (action === 'missing-meter') return Response.json(await host.runWithoutReleaseBinding(input));
       if (action === 'warm') return Response.json(await host.warm({tenantId, ...input}));
+      if (action === 'metered-warm') return Response.json(await host.meteredWarm(tenantId));
       if (action === 'warm-commit-failure') return Response.json(await host.warmWithCommitFailure({tenantId, ...input}));
       if (action === 'exercise') return Response.json(await host.exercise({tenantId}));
       if (action === 'prime-held-ping') await host.primeHeldPing();
@@ -208,7 +217,7 @@ const main = `
   };
 `;
 
-before(async () => {
+async function startWorkerd() {
   const deps = [
     'dev/tenant-workers/tenant-api.mjs', 'dev/tenant-workers/tenant-gateway-service.mjs',
     'dev/tenant-workers/tenant-gateway.mjs', 'dev/tenant-workers/storage-path.mjs',
@@ -421,7 +430,9 @@ before(async () => {
     }}},
   }]});
   worker = await mf.getWorker('tenant');
-});
+}
+
+before(startWorkerd);
 
 after(async () => {
   for (const gate of cases.values()) gate.release.resolve();
@@ -773,3 +784,19 @@ for (const [scenario, phase] of [['cpu-limit', 'cpu_limit'], ['memory-limit', 'm
     assert.deepEqual(next, {needsWarm: true, attempt_state: 'not_started'});
   });
 }
+
+test('a replacement workerd isolate reports another load under the same WorkerLoader identity', async () => {
+  const tenant = 'reload-meter';
+  const first = (await host(tenant, 'metered-warm')).invocation;
+  const reused = (await host(tenant, 'metered-warm')).invocation;
+  assert.equal(first.cold, true);
+  assert.equal(reused.cold, false);
+  assert.equal(reused.identity, first.identity);
+  // Evict the process and all its WorkerLoader isolates without changing
+  // the tenant, code or generation in the next runtime.
+  await mf.dispose();
+  await startWorkerd();
+  const reloaded = (await host(tenant, 'metered-warm')).invocation;
+  assert.equal(reloaded.identity, first.identity);
+  assert.equal(reloaded.cold, true);
+});

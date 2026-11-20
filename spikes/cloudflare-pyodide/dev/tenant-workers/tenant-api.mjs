@@ -78,7 +78,7 @@ export class TenantHost extends DurableObject {
       await reserveIdentity(identity);
       this.#reservedIdentity = identity;
     }
-    return {generation, worker: this.env.LOADER.get(
+    return {generation, identity, worker: this.env.LOADER.get(
       identity,
       () => tenantEngineCode(this.ctx.exports.TenantApi({props: {tenantId, generation}}),
         {cpuMs, subRequests}))};
@@ -382,7 +382,7 @@ export class TenantHost extends DurableObject {
     let dispatched = false;
     try {
       const limits = routeId ? this.#releaseLimits() : null;
-      const {worker, generation} = await this.#engine(tenantId, reserveIdentity);
+      const {worker, generation, identity} = await this.#engine(tenantId, reserveIdentity);
       if (stopKey && await this.ctx.storage.get(stopKey)) return stoppedInQueue();
       if (Date.now() >= deadlineAt) return expiredInQueue(Date.now() - queuedAt);
       let stop;
@@ -408,6 +408,7 @@ export class TenantHost extends DurableObject {
         return stoppedInQueue();
       }
       const mark = Date.now();
+      const meteredAt = new Date(mark).toISOString();
       const entrypoint = limits ? worker.getEntrypoint(null, {
         limits: {cpuMs: Math.min(workspace.cpu_budget_ms, limits.cpuMs), subRequests: workspace.subrequest_allowance},
       }) : worker.getEntrypoint();
@@ -459,6 +460,7 @@ export class TenantHost extends DurableObject {
       const {imported, ...child} = output.child ?? {};
       await this.#learnImports(imported);
       return {output: output.upstream_result, queueWaitMs, attempt_state: 'completed',
+        ...this.#invocation(identity, 'workflow', output.child?.first_request, meteredAt),
         timings: {child_ms: childMs,
           child: output.child ? {...child, imported: Array.isArray(imported) ? imported.length : 0} : null,
           api_calls: this.#calls.get(handle)}};
@@ -514,8 +516,9 @@ export class TenantHost extends DurableObject {
   async #ping(tenantId, {exercise = false, reserveIdentity} = {}) {
     const limits = this.env.BIFROST_METER_ENGINE_CPU_MS !== undefined ||
       this.env.BIFROST_CLOUDFLARE_MANAGED === 'true' ? this.#releaseLimits() : null;
-    const cpuMs = limits && (exercise ? limits.exerciseMs : this.#childIsReady() ? limits.warmMs : limits.bootMs);
-    const {worker, generation} = await this.#engine(tenantId, reserveIdentity);
+    const warm = this.#childIsReady();
+    const cpuMs = limits && (exercise ? limits.exerciseMs : warm ? limits.warmMs : limits.bootMs);
+    const {worker, generation, identity} = await this.#engine(tenantId, reserveIdentity);
     const modules = await this.#primeList();
     const mark = Date.now();
     try {
@@ -537,12 +540,20 @@ export class TenantHost extends DurableObject {
       // this ping was in flight, its answer vouches for nothing.
       if (generation === this.#generation) this.#readyGeneration = generation;
       return {child_ms: Date.now() - mark, first_request: firstRequest,
+        ...(exercise ? {} : this.#invocation(identity, warm ? 'prime' : 'boot', firstRequest, new Date(mark).toISOString())),
         prime_listed: modules.length, primed, prime_skipped: primeSkipped,
         ...(exercise ? {exercise: exercised ?? null} : {})};
     } catch (error) {
       if (generation === this.#generation) await this.#retireChild();
       throw error;
     }
+  }
+
+  #invocation(identity, kind, cold, started_at) {
+    if (this.env.BIFROST_METER_RECEIPTS !== 'true' || typeof cold !== 'boolean') return {};
+    // The first-request bit comes from the child isolate, including when
+    // WorkerLoader starts another isolate from already-cached code.
+    return {invocation: {identity, kind, cold, started_at}};
   }
 
   async #warmOrigin() {

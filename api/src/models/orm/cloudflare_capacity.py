@@ -245,6 +245,17 @@ class CloudflareEngineUsageKey(Base):
 
     installation_id: Mapped[UUID] = mapped_column(ForeignKey("cloudflare_installations.id"), primary_key=True)
     usage_key: Mapped[str] = mapped_column(String(256), primary_key=True)
+    booked_by: Mapped[UUID | None]
+    booked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CloudflareDispatchMeter(Base):
+    __tablename__ = "cloudflare_dispatch_meters"
+
+    worker_id: Mapped[UUID] = mapped_column(ForeignKey("cloudflare_usage_incarnations.worker_id"), primary_key=True)
+    route_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    tenant_id: Mapped[str] = mapped_column(String(32))
 
 
 class CloudflareUsageActivity(Base):
@@ -270,6 +281,8 @@ class CloudflareUsageActivity(Base):
     qualified_creations: Mapped[int] = mapped_column(BigInteger, server_default="0")
     qualified_legacy_events: Mapped[int] = mapped_column(BigInteger, server_default="0")
     generation_control_requests: Mapped[int] = mapped_column(BigInteger, server_default="0")
+    released_cpu_us: Mapped[int] = mapped_column(BigInteger, server_default="0")
+    released_engine_requests: Mapped[int] = mapped_column(BigInteger, server_default="0")
 
 
 class CloudflareUsageIncarnation(Base):
@@ -286,7 +299,7 @@ class CloudflareUsageIncarnation(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     slots: Mapped[int | None] = mapped_column(SmallInteger)
     meter_terminal: Mapped[dict[str, int] | None] = mapped_column(JSONB)
-    meter_final: Mapped[dict[str, int | bool] | None] = mapped_column(JSONB)
+    meter_final: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     meter_uncertain: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     meter_release_digest: Mapped[str | None] = mapped_column(String(100))
     meter_rate_version: Mapped[str | None] = mapped_column(String(64))

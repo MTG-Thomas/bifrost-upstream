@@ -11,7 +11,7 @@ export const SQLITE_HEADROOM = sqliteHeadroom(MAX_WORKFLOW_SLOTS);
 const ROUTE_ENTRY_WRITES = 16;
 const ROUTE_ENTRY_REQUESTS = 5; // initial run, up to 3 warm calls, confirmed run
 
-export function launcherMeter(sql, binding) {
+export function launcherMeter(sql, binding, {settle = false} = {}) {
   if (binding === undefined) return null;
   const caps = JSON.parse(binding);
   if (Object.keys(caps).length !== METER_NAMES.length ||
@@ -71,9 +71,14 @@ export function launcherMeter(sql, binding) {
       save({...state, counts: {...state.counts, log_events: state.counts.log_events + 1}});
       return true;
     },
+    recordRoute(routeId, invocations) {
+      if (settle && !state.final && !state.routes?.[routeId]) {
+        save({...state, routes: {...state.routes, [routeId]: invocations}});
+      }
+    },
     seal() {
       if (!state.final) save({...state, final: true});
-      return this.snapshot();
+      return {...this.snapshot(), ...(settle ? {routes: state.routes ?? {}} : {})};
     },
   };
 }

@@ -455,7 +455,7 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # MIN_CLI_VERSION remains unchanged.
     # Cloudflare spend coverage is additive. The CLI minimum stays unchanged.
     # The optional SQLite size in capacity receipts leaves existing clients compatible.
-    "29804d82b2d3240fc5fd60d282a2e17a203fb702c3f24f90f35121f1c2f56b39"
+    "15291d015a185addd35be7a415af6ef60de1f936ff9d1a767fab92166b346c56"
 )
 
 

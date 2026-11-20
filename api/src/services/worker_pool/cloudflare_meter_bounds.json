@@ -2,11 +2,11 @@
   "qualification": {
     "source_run": "22529613-b865-4cab-9f7d-49361b3568a0",
     "observed_manifest_sha256": "b4d55400c080dc014b85054f1560e8a0e4da2470d597c71ab5c501790801f112",
-    "bundle_sha256": "9b051159dc096af1a6ecb3d4a53494a1efdde1c2b7bb8801d0c485c5b1851d93",
+    "bundle_sha256": "d7a02086531eb672e9a6669a9e9ccd06230f53560612630acfd362c50e4aa891",
     "capacity_module_sha256": "c4fbefd8a63eddfcb6bddd8b08a9d33c035f450320aa4687788dceb1bc869e79",
     "cpu_reference": {
       "source_run": "46eb01a8-f3d7-415f-8092-be70e73ed6a0",
-      "requalification_run": "c4b78516-4347-46c0-b841-a53ad3df1ff3",
+      "requalification_run": "d04fa065-1b6a-4c52-bcf4-704265e50c5c",
       "startup_reserve_ms": 48522,
       "samples": {
         "capacity_profile": {"samples": 100, "p99_us": 1691},
@@ -25,8 +25,8 @@
     "sdk_requests": 4,
     "safety_margin": 10,
     "launcher_reference": {
-      "source": "local-workerd:170x2s:112591af-2324-4bf4-acae-016f8f97aae3,91ab7ebd-3e24-4380-acdf-96cef27a9505",
-      "observed": {"sqlite_rows_written": 62, "do_requests": 6, "log_events": 2}
+      "source": "local-workerd:170x2s:0b9c414b-d42c-4454-bb88-42abbeb2b578,fe3b6d8f-5515-4c25-8c80-aff9c55b8bbf",
+      "observed": {"sqlite_rows_written": 64, "do_requests": 6, "log_events": 2}
     }
   },
   "cleanup_margin_seconds": 300,

@@ -50,6 +50,8 @@ let mf;
 let storage;
 let base;
 let provider;
+let apiSdkCalls = 0;
+let capacityCalls = 0;
 const hellos = new Map();
 const sockets = new Map();
 const canaries = new Map();
@@ -65,6 +67,7 @@ const reconcileSeconds = Number(/^POOL_RECONCILE_SPACING_SECONDS = (\d+(?:\.\d+)
 const sha256 = input => createHash('sha256').update(input).digest('hex');
 
 async function referenceAttempt(record, solution) {
+  const beforeSdk = apiSdkCalls;
   const id = randomUUID();
   const now = Date.now();
   const workflow_deadline = new Date(now + 60_000).toISOString();
@@ -101,7 +104,7 @@ async function referenceAttempt(record, solution) {
   assert.equal(terminal.attempt_state, 'completed', JSON.stringify(terminal));
   assert.equal(terminal.result.success, true, JSON.stringify(terminal));
   assert.deepEqual(terminal.result.result, {case: caseName, table_count: 0, ...(solution ? {install_value: 'solution'} : {})});
-  return {id, usage: terminal.usage};
+  return {id, route_id, sdk_requests: apiSdkCalls - beforeSdk, usage: terminal.usage};
 }
 
 async function observeAtControllerCadence(path) {
@@ -145,6 +148,7 @@ const server = createServer(async (req, res) => {
     }
     if (measuredLauncher && req.url === '/api/sdk/tables/list' && req.method === 'POST') {
       assert.equal(req.headers.authorization, 'Bearer fixture-only-access');
+      apiSdkCalls++;
       res.writeHead(200, {'content-type': 'application/json'}).end('[]');
       return;
     }
@@ -171,6 +175,7 @@ const server = createServer(async (req, res) => {
         .filter(({hello}) => hello.hello.hello_sequence === 1).map((_, i) => `${worker_id}:${i + 1}`)}));
       return;
     }
+    if (req.url.startsWith('/v1/')) capacityCalls++;
     const body = req.method === 'GET' ? undefined : await buffer(req);
     const response = await provider.fetch(base + req.url, {method: req.method, headers: req.headers, body});
     res.writeHead(response.status, Object.fromEntries(response.headers));
@@ -258,6 +263,7 @@ async function start() {
             ...(measuredGateway ? {
               TENANT_GATEWAY: {type: 'worker', worker: 'gateway'},
               BIFROST_METER_GENERATIONS: {type: 'text', value: 'true'},
+              BIFROST_METER_RECEIPTS: {type: 'text', value: 'true'},
             } : {}),
             BIFROST_LAUNCHER_METERS: {type: 'text', value: process.env.BIFROST_QUALIFIED_LAUNCHER_METERS ??
               '{"sqlite_rows_written":10000,"do_requests":1000,"log_events":100}'},
@@ -294,6 +300,8 @@ after(async () => {
 });
 
 test('prepare, start, signed hello, observe and delete use isolated workerd Workers', async () => {
+  const startedAt = Date.now();
+  const initialCapacityCalls = capacityCalls;
   const id = randomUUID();
   const path = `workers/${id}`;
   const uid = randomBytes(16).toString('hex');
@@ -349,8 +357,16 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
   if (references) {
     assert.ok(references.every(attempt => attempt.usage));
     assert.ok(deleted.usage);
-    if (measuredGateway) assert.equal(seen.generations.size, 2);
+    if (measuredGateway) {
+      assert.equal(seen.generations.size, 2);
+      for (const {route_id} of references) {
+        const calls = deleted.usage.routes[route_id];
+        assert.deepEqual(calls.map(({kind, cold}) => [kind, cold]), [['boot', true], ['workflow', false]]);
+        assert.equal(calls[0].identity, calls[1].identity);
+      }
+    }
     console.info('launcher-reference', JSON.stringify({attempts: references, final: deleted.usage,
+      lifetime_seconds: (Date.now() - startedAt) / 1000, capacity_requests: capacityCalls - initialCapacityCalls,
       sha256: sha256(readFileSync(measuredLauncher))}));
   }
 });

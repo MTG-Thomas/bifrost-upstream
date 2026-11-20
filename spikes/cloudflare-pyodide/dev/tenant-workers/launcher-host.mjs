@@ -59,7 +59,30 @@ export function createLauncherWorkflowRunner(getHost, {warmRpcMs = ENGINE_BOOT_T
     warmTail = next.catch(() => {});
     return next;
   };
-  return (input) => runLauncherWorkflow(getHost, queueWarm, input);
+  return async (input) => {
+    if (!input.receipt) return runLauncherWorkflow(getHost, queueWarm, input);
+    const invocations = [];
+    let complete = true;
+    const traced = (tenant) => {
+      const host = getHost(tenant);
+      const call = async (method, request) => {
+        try {
+          const result = await host[method](request);
+          if (result.invocation) invocations.push(result.invocation);
+          else if (!result.needsWarm && result.terminal?.attempt_state !== 'not_started') complete = false;
+          return result;
+        } catch (error) {
+          // A retry can succeed after the previous invocation consumed a
+          // startup. A missing result never gives a discount.
+          complete = false;
+          throw error;
+        }
+      };
+      return {run: request => call('run', request), warm: request => call('warm', request)};
+    };
+    const outcome = await runLauncherWorkflow(traced, queueWarm, input);
+    return complete && outcome.attempt_state === 'completed' ? {...outcome, invocations} : outcome;
+  };
 }
 
 // Warm-up may be retried, but a run RPC is repeated only after an explicit

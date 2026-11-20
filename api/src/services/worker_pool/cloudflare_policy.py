@@ -49,6 +49,7 @@ from src.services.worker_pool.cloudflare_spend import (
     WORKERS_RATE_TABLE_VERSION,
     cloudflare_estimated_usage,
     launcher_lifetime_rate,
+    launcher_root_rate,
     spend_coverage,
     usage_period,
     valid_cpu_limits,
@@ -75,6 +76,7 @@ class WorkersReleaseMeterBounds:
     max_slots_per_launcher: int
     launcher_caps: Mapping[str, int]
     cpu_limits_ms: Mapping[str, int]
+    startup_p99_us: int
 
 
 def release_meter_bounds(release: WorkersRelease) -> WorkersReleaseMeterBounds:
@@ -83,6 +85,7 @@ def release_meter_bounds(release: WorkersRelease) -> WorkersReleaseMeterBounds:
         bounds.cleanup_margin_seconds, bounds.per_launcher_second, bounds.per_fleet_fixed,
         release.digest, release.manifest.max_slots_per_launcher,
         bounds.qualification.launcher_caps, bounds.qualification.cpu_limits_ms,
+        bounds.qualification.cpu_reference.samples.cold_exercise.p99_us,
     )
 
 
@@ -173,6 +176,8 @@ def _price_policy(
         raise ValueError("Workers release needs positive caps for all launcher meters")
     if not valid_cpu_limits(bounds.cpu_limits_ms):
         raise ValueError("Workers release needs positive CPU limits for all qualified paths")
+    if not 0 < bounds.startup_p99_us <= bounds.cpu_limits_ms["startup"] * 1000:
+        raise ValueError("Workers release needs a measured startup cost within its live reservation")
     digest = sha256(json.dumps({
         "cleanup_margin_seconds": bounds.cleanup_margin_seconds,
         "max_slots_per_launcher": bounds.max_slots_per_launcher,
@@ -180,6 +185,7 @@ def _price_policy(
         "per_fleet_fixed": {k: str(v.normalize()) for k, v in bounds.per_fleet_fixed.items()},
         "launcher_caps": dict(bounds.launcher_caps),
         "cpu_limits_ms": dict(bounds.cpu_limits_ms),
+        "startup_p99_us": bounds.startup_p99_us,
     }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     envelope = workers_fleet_envelope_usd(
         launcher_cap=policy.workers.launcher_cap,
@@ -202,6 +208,8 @@ def _price_policy(
             "caps": dict(bounds.launcher_caps),
             "second_usd": str(launcher_lifetime_rate(bounds.per_launcher_second)),
             "cpu_ms": dict(bounds.cpu_limits_ms),
+            "startup_p99_us": bounds.startup_p99_us,
+            "root_second_usd": str(launcher_root_rate(bounds.per_launcher_second)),
         },
     }
 

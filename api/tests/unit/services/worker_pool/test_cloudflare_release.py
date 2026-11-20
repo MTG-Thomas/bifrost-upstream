@@ -62,6 +62,7 @@ def release(tmp_path: Path, monkeypatch) -> Path:
             "bindings": [
                 {"name": "TENANT_GATEWAY", "type": "service", "script": "gateway"},
                 {"name": "BIFROST_METER_GENERATIONS", "type": "plain_text", "text": "true"},
+                {"name": "BIFROST_METER_RECEIPTS", "type": "plain_text", "text": "true"},
                 {"name": "BIFROST_METER_SDK_REQUESTS", "type": "plain_text", "text": "40"},
                 {"name": "BIFROST_METER_ENGINE_CPU_MS", "type": "plain_text", "text": str(cpu["workflow"])},
                 *({"name": f"BIFROST_METER_{name.upper()}_CPU_MS", "type": "plain_text", "text": str(cpu[name])}

@@ -104,7 +104,9 @@ export class CloudflareLauncher extends DurableObject {
 
   constructor(ctx, env) {
     super(ctx, env);
-    this.#meter = launcherMeter(ctx.storage.sql, env.BIFROST_LAUNCHER_METERS);
+    this.#meter = launcherMeter(ctx.storage.sql, env.BIFROST_LAUNCHER_METERS, {
+      settle: env.BIFROST_METER_RECEIPTS === 'true',
+    });
     this.#storage = confirmedStorage(ctx, this.#meter);
     this.#managed = env.BIFROST_CLOUDFLARE_MANAGED === 'true';
     if (this.#managed) {
@@ -236,6 +238,7 @@ export class CloudflareLauncher extends DurableObject {
       },
       runHost: (route, context, signal, reserveIdentity) => runWorkflow({
         route, context, publicUrl: this.#settings.publicUrl, signal,
+        receipt: this.env.BIFROST_METER_RECEIPTS === 'true',
         ...(this.env.BIFROST_METER_GENERATIONS === 'true' ? {reserveIdentity} : {}),
       }),
       stopHost: async (route) => getHost(await launcherTenantId(route)).stopWorkflow(route.route_id),

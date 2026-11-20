@@ -1,5 +1,5 @@
 import {WorkerEntrypoint} from 'cloudflare:workers';
-export {CloudflareLauncher, TenantHost, default} from './launcher-entry.mjs';
+export {CloudflareLauncher, TenantHost} from './launcher-entry.mjs';
 
 // WorkerLoader needs a Fetcher carrying the tenant props. This adapter sends
 // only this tenant's object capability to the private routing service.

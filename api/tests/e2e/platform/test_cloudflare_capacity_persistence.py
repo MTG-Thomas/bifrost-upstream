@@ -1094,7 +1094,9 @@ async def create_installation(
             monthly_limit_usd=Decimal("10.00"),
             shared_managed_worker_cap=8,
         ),
-        bounds=WorkersReleaseMeterBounds(60, zero, zero, "fixture-release", rated_slots, TEST_LAUNCHER_CAPS, TEST_CPU_LIMITS),
+        bounds=WorkersReleaseMeterBounds(
+            60, zero, zero, "fixture-release", rated_slots, TEST_LAUNCHER_CAPS, TEST_CPU_LIMITS, 500_000,
+        ),
     )
 
 
@@ -1535,7 +1537,8 @@ async def test_qualified_dispatch_prices_pinned_cpu_and_keeps_sdk_events_attribu
     assert now is not None
     assert not await reserve_tenant_host_usage(db_session, worker_id, now)
     assert await reserve_tenant_host_usage(
-        db_session, worker_id, now + timedelta(seconds=120), workflow_cpu_ms=123, subrequests=12, tenant_id="fixture",
+        db_session, worker_id, now + timedelta(seconds=120), workflow_cpu_ms=123, subrequests=12,
+        tenant_id="f" * 32, route_id="fixture-1",
     )
     assert await cloudflare_spend.reserve_engine_generation(db_session, worker_id, "tenant-generation-0")
     assert await cloudflare_spend.reserve_engine_generation(db_session, worker_id, "tenant-generation-0")
@@ -1566,7 +1569,8 @@ async def test_qualified_dispatch_prices_pinned_cpu_and_keeps_sdk_events_attribu
     incarnation.deleted_at = None
     await db_session.flush()
     assert await reserve_tenant_host_usage(
-        db_session, worker_id, now + timedelta(seconds=120), workflow_cpu_ms=123, subrequests=12, tenant_id="fixture",
+        db_session, worker_id, now + timedelta(seconds=120), workflow_cpu_ms=123, subrequests=12,
+        tenant_id="f" * 32, route_id="fixture-2",
     )
     await db_session.refresh(row)
     assert row.qualified_creations in (5, 6)
@@ -1578,13 +1582,78 @@ async def test_qualified_dispatch_prices_pinned_cpu_and_keeps_sdk_events_attribu
     previous_rollover = await db_session.get(CloudflareUsageActivity, (installation.id, next_period))
     previous_pings = previous_rollover.qualified_warm_pings if previous_rollover is not None else 0
     assert await reserve_tenant_host_usage(
-        db_session, worker_id, next_period + timedelta(seconds=10), workflow_cpu_ms=123, subrequests=12, tenant_id="fixture",
+        db_session, worker_id, next_period + timedelta(seconds=10), workflow_cpu_ms=123, subrequests=12,
+        tenant_id="f" * 32, route_id="fixture-rollover",
     )
     rollover = await db_session.get(CloudflareUsageActivity, (installation.id, next_period))
     assert rollover is not None and rollover.qualified_dispatches == 0
     await db_session.refresh(rollover)
     assert rollover.qualified_warm_pings == previous_pings + 29 and rollover.qualified_creations == 1
     assert rollover.generation_control_requests == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("evidence", ["complete", "reloaded", "missing", "uncertain", "incomplete", "regressing"])
+async def test_foreground_pricing_keeps_reserves_until_a_confirmed_seal(
+    db_session: AsyncSession, installation: CloudflareInstallation, evidence: str,
+) -> None:
+    now = await db_session.scalar(select(func.clock_timestamp()))
+    assert now is not None
+    period, _ = usage_period(now)
+    worker_id = uuid4()
+    tenant_id = "e" * 32
+    identity = f"tenant-eng-tenant-py-{tenant_id}-fixture"
+    row = CloudflareUsageIncarnation(
+        worker_id=worker_id, installation_id=installation.id, started_at=now - timedelta(seconds=75), slots=1,
+        meter_rate_version=WORKERS_RATE_TABLE_VERSION, meter_release_digest="f" * 64,
+        meter_bounds={**installation.policy["meter_launcher"], "second_usd": "0.0013", "root_second_usd": "0.0012"},
+    )
+    db_session.add(row)
+    await db_session.flush()
+    assert await reserve_tenant_host_usage(
+        db_session, worker_id, now + timedelta(seconds=10), workflow_cpu_ms=500, subrequests=10,
+        tenant_id=tenant_id, route_id="fixture",
+    )
+    assert await cloudflare_spend.reserve_engine_generation(db_session, worker_id, identity)
+    event = {"sqlite_rows_written": 12, "do_requests": 3, "log_events": 1}
+    await cloudflare_spend.record_launcher_terminal_meter(
+        db_session, worker_id, {**event, "sqlite_rows_written": 13 if evidence == "regressing" else 12},
+        uncertain=evidence == "uncertain",
+    )
+    price = select(cloudflare_estimated_usage()).where(CloudflareInstallation.id == installation.id)
+    payload = CloudflareLauncherUsage.model_validate({
+        **event, "routes": {} if evidence == "incomplete" else {"fixture": [
+            {"identity": identity, "kind": "boot", "cold": True, "started_at": now},
+            {"identity": identity, "kind": "workflow", "cold": evidence == "reloaded", "started_at": now},
+        ]},
+    })
+    await cloudflare_spend.seal_launcher_meter(db_session, worker_id, payload)
+    assert row.meter_final is None
+    row.deleted_at = now
+    await db_session.flush()
+    reserved = await db_session.scalar(price)
+    assert reserved is not None
+    await cloudflare_spend.seal_launcher_meter(db_session, worker_id, None if evidence == "missing" else payload)
+    await cloudflare_spend.seal_launcher_meter(db_session, worker_id, payload if evidence != "missing" else None)
+    await db_session.flush()
+    activity = await db_session.get(CloudflareUsageActivity, (installation.id, period))
+    assert activity is not None
+    settled = await db_session.scalar(price)
+    assert settled is not None
+    lifetime = Decimal(str((now - max(row.started_at, period)).total_seconds()))
+    counter_and_root_release = Decimal("0.00009295") + lifetime * Decimal("0.0012")
+    if evidence in ("complete", "reloaded"):
+        extra_load_us = 500_000 if evidence == "reloaded" else 0
+        assert activity.released_cpu_us == 7_500_000 - extra_load_us
+        assert activity.released_engine_requests == 2
+        assert activity.qualified_creations in (1, 2)
+        assert reserved - settled == counter_and_root_release + Decimal("0.00815060") - extra_load_us * Decimal("2e-11")
+    elif evidence == "incomplete":
+        assert activity.released_cpu_us == activity.released_engine_requests == 0
+        assert reserved - settled == counter_and_root_release
+    else:
+        assert activity.released_cpu_us == activity.released_engine_requests == 0
+        assert reserved == settled
 
 
 @pytest.mark.asyncio
@@ -1824,7 +1893,7 @@ async def test_policy_save_fences_old_admission_and_rejects_an_unsafe_budget(
     )
     zero = dict.fromkeys(WORKERS_RATES, Decimal(0))
     fixed = {**zero, "sqlite_rows_written": Decimal(5_000_000)}
-    bounds = WorkersReleaseMeterBounds(60, zero, fixed, "fixture-release", 2, TEST_LAUNCHER_CAPS, TEST_CPU_LIMITS)
+    bounds = WorkersReleaseMeterBounds(60, zero, fixed, "fixture-release", 2, TEST_LAUNCHER_CAPS, TEST_CPU_LIMITS, 500_000)
     with pytest.raises(CloudflareBudgetTooLow):
         await save_cloudflare_policy(
             db_session, installation_id=installation.id, expected_revision=1, policy=policy, bounds=bounds,

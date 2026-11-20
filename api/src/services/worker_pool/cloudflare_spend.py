@@ -11,7 +11,7 @@ from types import MappingProxyType
 from uuid import UUID
 
 from pydantic import ValidationError
-from shared.models import CloudflareLauncherUsage
+from shared.models import CloudflareEngineInvocation, CloudflareLauncherUsage
 from sqlalchemy import (
     Boolean,
     Numeric,
@@ -24,6 +24,7 @@ from sqlalchemy import (
     or_,
     select,
     text,
+    update,
 )
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,6 +33,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from src.core.database import get_db_context
 from src.models.orm.cloudflare_capacity import (
+    CloudflareDispatchMeter,
     CloudflareEngineUsageKey,
     CloudflareInstallation,
     CloudflareUsageActivity,
@@ -68,8 +70,10 @@ WORKERS_RECEIPT_RATE_TABLE_VERSION = "workers-paid-2026-11-20-launcher-receipts"
 WORKERS_CADENCE_RATE_TABLE_VERSION = "workers-paid-2026-11-20-control-cadence"
 WORKERS_INVENTORY_RATE_TABLE_VERSION = "workers-paid-2026-11-20-meter-inventory"
 WORKERS_QUALIFIED_RATE_TABLE_VERSION = "workers-paid-2026-11-20-qualified-cpu"
-WORKERS_RATE_TABLE_VERSION = "workers-paid-2026-11-20-meter-lifecycle"
-_QUALIFIED_RATE_VERSIONS = (WORKERS_QUALIFIED_RATE_TABLE_VERSION, WORKERS_RATE_TABLE_VERSION)
+WORKERS_LIFECYCLE_RATE_TABLE_VERSION = "workers-paid-2026-11-20-meter-lifecycle"
+WORKERS_RATE_TABLE_VERSION = "workers-paid-2026-11-20-settled-usage"
+_LIFECYCLE_RATE_VERSIONS = (WORKERS_LIFECYCLE_RATE_TABLE_VERSION, WORKERS_RATE_TABLE_VERSION)
+_QUALIFIED_RATE_VERSIONS = (WORKERS_QUALIFIED_RATE_TABLE_VERSION, *_LIFECYCLE_RATE_VERSIONS)
 _INVENTORY_RATE_VERSIONS = (WORKERS_INVENTORY_RATE_TABLE_VERSION, *_QUALIFIED_RATE_VERSIONS)
 _RECEIPT_RATE_VERSIONS = (
     WORKERS_RECEIPT_RATE_TABLE_VERSION, WORKERS_CADENCE_RATE_TABLE_VERSION, *_INVENTORY_RATE_VERSIONS,
@@ -163,13 +167,16 @@ _QUALIFIED_PING_USD = _TENANT_PING_DO_USD + 2 * _WORKER_REQUEST_USD
 CPU_LIMIT_PATHS = ("capacity", "gateway", "workflow", "boot", "warm", "exercise", "startup")
 
 
+def launcher_root_rate(bounds: Mapping[str, Decimal]) -> Decimal:
+    return bounds["worker_requests"] * (_CPU_MS_PER_ACTIVITY * _WORKER_CPU_MS_USD + _WORKER_REQUEST_USD)
+
+
 def launcher_lifetime_rate(bounds: Mapping[str, Decimal]) -> Decimal:
     # Launcher, WorkerLedger and ScopeRegistry each reserve one memory class.
-    launcher_cpu = bounds["worker_requests"] * _CPU_MS_PER_ACTIVITY * _WORKER_CPU_MS_USD
-    return launcher_cpu + _DURATION_USD_PER_SECOND + _CONTROL_CADENCE_USD + 3 * _INVENTORY_DURATION_DELTA + sum(
+    return launcher_root_rate(bounds) + _DURATION_USD_PER_SECOND + _CONTROL_CADENCE_USD + 3 * _INVENTORY_DURATION_DELTA + sum(
         bounds[meter] * rate.usd / rate.unit
         for meter, rate in WORKERS_RATES.items()
-        if meter not in LAUNCHER_RECEIPT_METERS and meter not in ("do_gb_seconds", "worker_cpu_ms")
+        if meter not in LAUNCHER_RECEIPT_METERS and meter not in ("do_gb_seconds", "worker_cpu_ms", "worker_requests")
     )
 
 
@@ -218,7 +225,8 @@ _COVERAGE = {
     WORKERS_CADENCE_RATE_TABLE_VERSION: "Launcher receipts, control cadence and historical tenant host reserves.",
     WORKERS_INVENTORY_RATE_TABLE_VERSION: "Launcher receipts, control cadence and inventory reserves at the historical CPU ceilings.",
     WORKERS_QUALIFIED_RATE_TABLE_VERSION: "Launcher receipts, control cadence and historical qualified CPU reserves.",
-    WORKERS_RATE_TABLE_VERSION: "Launcher receipts, control cadence, qualified CPU limits and Dynamic Worker creation reserves.",
+    WORKERS_LIFECYCLE_RATE_TABLE_VERSION: "Launcher receipts, control cadence, qualified CPU and Dynamic Worker creation reserves.",
+    WORKERS_RATE_TABLE_VERSION: "Live reserves and settled foreground engine usage, launcher counters, and identity receipts.",
 }
 
 
@@ -248,9 +256,9 @@ async def spend_coverage(db: AsyncSession, account_id: str, period_start: dateti
         versions.add(WORKERS_CADENCE_RATE_TABLE_VERSION)
     if rated_activity[1]:
         versions.add(WORKERS_INVENTORY_RATE_TABLE_VERSION)
-    if rated_activity[3]:
-        versions.add(WORKERS_RATE_TABLE_VERSION)
     coverage = [f"{rate}\u00a0– {_COVERAGE[rate]}" for rate in sorted(versions) if rate in _COVERAGE]
+    if rated_activity[3] and not versions.intersection(_QUALIFIED_RATE_VERSIONS):
+        coverage.append("Retained tenant usage includes qualified dispatch and warm-tail reservations.")
     if rated_activity[2]:
         coverage.append("Managed capacity calls include request and deployment CPU reservations.")
     if not coverage and version in _COVERAGE:
@@ -271,31 +279,48 @@ def _has_cpu_limits(bounds):
                   for name in CPU_LIMIT_PATHS))
 
 
+def _has_settlement_bounds(bounds):
+    return and_(
+        bounds["startup_p99_us"].as_integer().between(1, bounds["cpu_ms"]["startup"].as_integer() * 1000),
+        cast(bounds["root_second_usd"].as_string(), Numeric).between(
+            0, cast(bounds["second_usd"].as_string(), Numeric),
+        ),
+    )
+
+
 def _incarnation_cost_sql(installation: type[CloudflareInstallation]):
     usage = CloudflareUsageIncarnation
     now = func.statement_timestamp()
     period = func.date_trunc("month", now, "UTC")
     seconds = func.extract("epoch", func.least(func.coalesce(usage.deleted_at, now), now)
                            - func.greatest(usage.started_at, period))
+    version = usage.meter_rate_version
+    settled = and_(
+        version == WORKERS_RATE_TABLE_VERSION, usage.deleted_at.is_not(None), ~usage.meter_uncertain,
+        func.jsonb_typeof(usage.meter_final["routes"]) == "object",
+    )
     line_items = []
     for name in LAUNCHER_RECEIPT_METERS:
-        units = func.greatest(
-            usage.meter_bounds["caps"][name].as_numeric(20, 0),
+        actual = func.greatest(
             usage.meter_final[name].as_numeric(20, 0),
             usage.meter_terminal[name].as_numeric(20, 0),
         )
+        units = case((settled, actual), else_=func.greatest(usage.meter_bounds["caps"][name].as_numeric(20, 0), actual))
         rate = WORKERS_RATES[name]
         # Do not let the integer-scale counter coerce the fractional price.
         line_items.append(units * literal(rate.usd / rate.unit, type_=Numeric(24, 12)))
-    version = usage.meter_rate_version
     lifetime_rate = cast(usage.meter_bounds["second_usd"].as_string(), Numeric)
+    # The receipt release is private and has no default fetch or scheduled
+    # entrypoint. Its named Fetcher relay is reserved independently.
+    lifetime_rate -= case((settled, cast(usage.meter_bounds["root_second_usd"].as_string(), Numeric)), else_=0)
     slot_delta = case(
         (version.in_(_INVENTORY_RATE_VERSIONS), usage.slots * literal(_INVENTORY_DURATION_DELTA, type_=Numeric(24, 12))),
         else_=0,
     )
     receipt_price = case(
         (usage.meter_release_digest.is_not(None) & _has_launcher_caps(usage.meter_bounds) & (lifetime_rate > 0)
-         & or_(version.not_in(_QUALIFIED_RATE_VERSIONS), _has_cpu_limits(usage.meter_bounds)),
+         & or_(version.not_in(_QUALIFIED_RATE_VERSIONS), _has_cpu_limits(usage.meter_bounds))
+         & or_(version != WORKERS_RATE_TABLE_VERSION, _has_settlement_bounds(usage.meter_bounds)),
          seconds * (lifetime_rate + slot_delta) + sum(line_items) + case(
              (version.in_((*_INVENTORY_RATE_VERSIONS, WORKERS_CADENCE_RATE_TABLE_VERSION)), _CONTROL_LIFECYCLE_USD),
              else_=0,
@@ -356,7 +381,7 @@ async def record_launcher_terminal_meter(
     if row is None or row.deleted_at is not None:
         return
     try:
-        receipt = CloudflareLauncherUsage.model_validate(raw).model_dump(exclude={"exhausted"}, exclude_none=True)
+        receipt = CloudflareLauncherUsage.model_validate(raw).model_dump(exclude={"exhausted", "routes"}, exclude_none=True)
     except ValidationError:
         row.meter_uncertain = True
         return
@@ -371,15 +396,20 @@ async def seal_launcher_meter(db: AsyncSession, worker_id: UUID, receipt: Cloudf
     row = await db.get(CloudflareUsageIncarnation, worker_id, with_for_update=True)
     if row is None or row.meter_final is not None:
         return
-    counts = receipt.model_dump()
+    if row.meter_rate_version == WORKERS_RATE_TABLE_VERSION and row.deleted_at is None:
+        return
+    counts = receipt.model_dump(mode="json", exclude_none=True)
     if any(counts[name] < (row.meter_terminal or {}).get(name, 0) for name in LAUNCHER_RECEIPT_METERS):
         row.meter_uncertain = True
     row.meter_final = counts
+    if row.meter_rate_version == WORKERS_RATE_TABLE_VERSION and not row.meter_uncertain and receipt.routes:
+        await _settle_foreground(db, row, receipt.routes)
 
 
 async def reserve_tenant_host_usage(
     db: AsyncSession, worker_id: UUID, deadline: datetime | None, *,
     workflow_cpu_ms: int | None = None, subrequests: int | None = None, tenant_id: str | None = None,
+    route_id: str | None = None,
 ) -> bool:
     """Persist an upper residency reservation before a route can reach the host."""
     usage = await db.get(CloudflareUsageIncarnation, worker_id)
@@ -390,7 +420,7 @@ async def reserve_tenant_host_usage(
     if deadline is None:
         return False
     qualified = usage.meter_rate_version in _QUALIFIED_RATE_VERSIONS
-    lifecycle_meter = usage.meter_rate_version == WORKERS_RATE_TABLE_VERSION
+    lifecycle_meter = usage.meter_rate_version in _LIFECYCLE_RATE_VERSIONS
     cpu = usage.meter_bounds.get("cpu_ms") if qualified and usage.meter_bounds else None
     if qualified and (not valid_cpu_limits(cpu) or type(workflow_cpu_ms) is not int or workflow_cpu_ms < 1
                       or type(subrequests) is not int or not 0 <= subrequests <= 50):
@@ -398,6 +428,15 @@ async def reserve_tenant_host_usage(
     now = await db.scalar(select(func.clock_timestamp()))
     assert now is not None
     now = now.astimezone(UTC)
+    if usage.meter_rate_version == WORKERS_RATE_TABLE_VERSION:
+        if not tenant_id or not route_id:
+            return False
+        meter = CloudflareDispatchMeter
+        reserved = await db.scalar(insert(meter).values(
+            worker_id=worker_id, route_id=route_id, period_start=usage_period(now)[0], tenant_id=tenant_id,
+        ).on_conflict_do_nothing().returning(meter.route_id))
+        if reserved is None:
+            return True
     # Reserve warm residency and the last possible alarm after the warm window.
     # Keep the portions on either side of UTC rollover in their own periods.
     inventory_rate = usage.meter_rate_version in _INVENTORY_RATE_VERSIONS
@@ -463,12 +502,13 @@ async def reserve_tenant_host_usage(
 
 async def _reserve_engine_identity(
     db: AsyncSession, installation_id: UUID, key: str, period: datetime, units: int,
-) -> None:
+    *, booked_by: UUID | None = None, booked_at: datetime | None = None,
+) -> bool:
     journal = CloudflareEngineUsageKey
     claimed = await db.scalar(insert(journal).values(
-        installation_id=installation_id, usage_key=key,
+        installation_id=installation_id, usage_key=key, booked_by=booked_by, booked_at=booked_at,
     ).on_conflict_do_nothing().returning(journal.usage_key))
-    if claimed is not None:
+    if claimed is not None and units:
         activity = CloudflareUsageActivity
         await db.execute(insert(activity).values(
             installation_id=installation_id, period_start=period, qualified_creations=units,
@@ -476,20 +516,74 @@ async def _reserve_engine_identity(
             index_elements=[activity.installation_id, activity.period_start],
             set_={"qualified_creations": activity.qualified_creations + units},
         ))
+    return claimed is not None
 
 
 async def reserve_engine_generation(db: AsyncSession, worker_id: UUID, identity: str) -> bool:
     usage = await db.get(CloudflareUsageIncarnation, worker_id)
     if (usage is None or usage.deleted_at is not None or usage.meter_release_digest is None
-            or usage.meter_rate_version != WORKERS_RATE_TABLE_VERSION):
+            or usage.meter_rate_version not in _LIFECYCLE_RATE_VERSIONS):
         return False
     now = await db.scalar(select(func.clock_timestamp()))
     assert now is not None
     period, _ = usage_period(now)
     await _reserve_engine_identity(
         db, usage.installation_id, f"generation:{usage.meter_release_digest}:{identity}", period, 4,
+        booked_by=worker_id, booked_at=now,
     )
     return True
+
+
+async def _settle_foreground(
+    db: AsyncSession, usage: CloudflareUsageIncarnation, observed: dict[str, list[CloudflareEngineInvocation]],
+) -> None:
+    bounds = usage.meter_bounds or {}
+    cpu, startup_us = bounds.get("cpu_ms"), bounds.get("startup_p99_us")
+    if not valid_cpu_limits(cpu) or type(startup_us) is not int or not 0 < startup_us <= cpu["startup"] * 1000:
+        return
+    assert cpu is not None
+    records = await db.scalars(select(CloudflareDispatchMeter).where(
+        CloudflareDispatchMeter.worker_id == usage.worker_id,
+        CloudflareDispatchMeter.route_id.in_(observed),
+    ))
+    generations = set()
+    activity = CloudflareUsageActivity
+    for record in records:
+        invocations = observed[record.route_id]
+        kinds = [call.kind for call in invocations]
+        if (kinds[-1:] != ["workflow"] or kinds.count("workflow") != 1
+                or any(not call.identity.startswith(f"tenant-eng-tenant-py-{record.tenant_id}-") for call in invocations)):
+            continue
+        possible = (4 * cpu["startup"] + 3 * max(cpu["boot"], cpu["warm"])) * 1000
+        actual = sum(
+            startup_us * call.cold + (cpu["boot"] if call.kind == "boot" else cpu["warm"] if call.kind == "prime" else 0) * 1000
+            for call in invocations
+        )
+        await db.execute(update(activity).where(
+            activity.installation_id == usage.installation_id, activity.period_start == record.period_start,
+        ).values(released_cpu_us=activity.released_cpu_us + possible - actual,
+                 released_engine_requests=activity.released_engine_requests + 4 - len(invocations)))
+        generations.update(
+            (record.tenant_id, call.identity, call.started_at.astimezone(UTC).date()) for call in invocations
+        )
+    # A billed identity is a key plus code on each UTC day. Release unused
+    # generation headroom once for this incarnation and only for its own
+    # witnessed, same-day opening.
+    for tenant, identity, day in sorted(generations):
+        identity_key = f"generation:{usage.meter_release_digest}:{identity}"
+        booking = await db.get(CloudflareEngineUsageKey, (usage.installation_id, identity_key))
+        if (booking is None or booking.booked_by != usage.worker_id or booking.booked_at is None
+                or booking.booked_at.astimezone(UTC).date() != day):
+            continue
+        period, _ = usage_period(booking.booked_at)
+        day_key = f"day:{tenant}:{day}"
+        shared = await db.get(CloudflareEngineUsageKey, (usage.installation_id, day_key))
+        covered = shared is not None and await _reserve_engine_identity(
+            db, usage.installation_id, f"settled:{day_key}", period, 0,
+        )
+        await db.execute(update(activity).where(
+            activity.installation_id == usage.installation_id, activity.period_start == period,
+        ).values(qualified_creations=activity.qualified_creations - (4 if covered else 3)))
 
 
 def valid_cpu_limits(cpu: object) -> bool:
@@ -566,7 +660,8 @@ def cloudflare_estimated_usage() -> ColumnElement[Decimal | None]:
     known_policy = or_(
         policy_version.in_((WORKERS_LEGACY_RATE_TABLE_VERSION, WORKERS_CALIBRATED_RATE_TABLE_VERSION)),
         policy_version.in_(_RECEIPT_RATE_VERSIONS) & _has_launcher_caps(bounds)
-        & or_(policy_version.not_in(_QUALIFIED_RATE_VERSIONS), _has_cpu_limits(bounds)),
+        & or_(policy_version.not_in(_QUALIFIED_RATE_VERSIONS), _has_cpu_limits(bounds))
+        & or_(policy_version != WORKERS_RATE_TABLE_VERSION, _has_settlement_bounds(bounds)),
     )
     owner = aliased(CloudflareInstallation)
     activity = CloudflareUsageActivity
@@ -585,6 +680,8 @@ def cloudflare_estimated_usage() -> ColumnElement[Decimal | None]:
         + activity.qualified_warm_pings * literal(_QUALIFIED_PING_USD, type_=Numeric(24, 12))
         + activity.qualified_creations * literal(_DYNAMIC_CREATION_USD, type_=Numeric(24, 12))
         + activity.generation_control_requests * literal(_DO_REQUEST_USD, type_=Numeric(24, 12))
+        - activity.released_cpu_us * literal(_WORKER_CPU_MS_USD / 1000, type_=Numeric(30, 20))
+        - activity.released_engine_requests * literal(_WORKER_REQUEST_USD, type_=Numeric(24, 12))
         - activity.qualified_legacy_events * literal(_CPU_MS_PER_ACTIVITY * _WORKER_CPU_MS_USD, type_=Numeric(24, 12)),
     ), 0)).select_from(activity).join(
         owner, owner.id == activity.installation_id,

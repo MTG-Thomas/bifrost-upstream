@@ -15,7 +15,7 @@ from shared.models import CloudflareLauncherCounts
 WORKERS_RELEASE_PATH = Path("/app/artifacts/cloudflare/workers")
 MAX_WORKER_BYTES = 64 * 1024 * 1024
 QUALIFIED_RUNTIME_SHA256 = "fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5"
-QUALIFIED_METER_BOUNDS_SHA256 = "a79a86c6c3ee7f856760c655aba7aea7ee68da38025503b9d258afbaffc748e3"
+QUALIFIED_METER_BOUNDS_SHA256 = "86826cd82ec3ab61c4579d4cdcc62d7253458d3bd890a547522c3c13783cdbf2"
 WORKFLOW_CPU_CEILING_MS = 30_000
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 WorkerRole = Literal["launcher", "gateway", "capacity"]
@@ -216,6 +216,7 @@ def load_workers_release(path: Path = WORKERS_RELEASE_PATH) -> WorkersRelease:
             or not any(binding.name == "TENANT_GATEWAY" and binding.type == "service" and binding.script == "gateway"
                        for binding in launcher.bindings)
             or resource_limits.get("BIFROST_METER_GENERATIONS") != "true"
+            or resource_limits.get("BIFROST_METER_RECEIPTS") != "true"
             or resource_limits.get("BIFROST_METER_SDK_REQUESTS") != str(qualifier.sdk_request_limit)
             or resource_limits.get("BIFROST_METER_ENGINE_CPU_MS") != str(cpu["workflow"])
             or any(resource_limits.get(f"BIFROST_METER_{name.upper()}_CPU_MS") != str(cpu[name])

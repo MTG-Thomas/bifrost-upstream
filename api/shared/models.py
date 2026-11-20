@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import (
@@ -473,10 +473,22 @@ class CloudflareLauncherCounts(BaseModel):
     log_events: int = Field(strict=True, ge=0, le=2**53 - 1)
 
 
+class CloudflareEngineInvocation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    identity: str = Field(min_length=1, max_length=128)
+    kind: Literal["boot", "prime", "workflow"]
+    cold: bool = Field(strict=True)
+    started_at: AwareDatetime
+
+
 class CloudflareLauncherUsage(CloudflareLauncherCounts):
-    sqlite_database_bytes: int | None = Field(default=None, ge=0, exclude_if=lambda value: value is None)
     """Terminal or deletion receipt including workload admission state."""
 
+    sqlite_database_bytes: int | None = Field(default=None, ge=0, exclude_if=lambda value: value is None)
+    routes: dict[str, Annotated[list[CloudflareEngineInvocation], Field(min_length=1, max_length=4)]] | None = Field(
+        default=None, max_length=128, exclude_if=lambda value: value is None,
+    )
     exhausted: bool = Field(default=False, strict=True)
 
 

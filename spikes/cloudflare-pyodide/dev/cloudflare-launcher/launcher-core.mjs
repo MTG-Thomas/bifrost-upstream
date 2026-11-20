@@ -270,7 +270,9 @@ export class LauncherCore {
       const index = this.#slots.findIndex((slot) =>
         slot?.state === 'terminal' && slot.terminal._event_id === message.payload.event_id);
       if (index !== -1) {
-        const routeId = this.#slots[index].route.route_id;
+        const {route, invocations} = this.#slots[index];
+        const routeId = route.route_id;
+        if (invocations) this.meter?.recordRoute(routeId, invocations);
         // Persist the compact replay fence before removing the bulky slot
         // and its tombstone. A reset between writes can only replay the ACK.
         const acknowledged = new Set(this.#acknowledged).add(routeId);
@@ -559,13 +561,13 @@ export class LauncherCore {
     this.background(stop);
   }
 
-  async #settle(index, route, {attempt_state, result}) {
+  async #settle(index, route, {attempt_state, result, invocations}) {
     const event = route.kind === 'workflow' ? 'result' : route.kind === 'agent_run' ? 'cloudflare_agent_result' : 'summary_result';
     if (this.meter?.log()) console.info('launcher_workload_terminal', route.kind, attempt_state);
     const terminal = {event, route_id: route.route_id, runtime_handle: route.runtime_handle,
       _event_id: this.newId(), attempt_state, result};
     if (this.meter) terminal.usage = this.meter.snapshot();
-    await this.#saveSlot(index, {route, state: 'terminal', terminal});
+    await this.#saveSlot(index, {route, state: 'terminal', terminal, ...(invocations ? {invocations} : {})});
     this.#emitCurrent(terminal);
   }
 
