@@ -52,6 +52,19 @@ export function expiryCapacityRelay(origin, send = fetch) {
         body: request.body ? await request.arrayBuffer() : undefined});
       return new Response(response.body, {status: response.status,
         headers: {'content-type': response.headers.get('content-type') ?? 'application/json'}});
+      },
+    };
+  }
+
+export function deferContainerStarts(provider, enabled) {
+  return {
+    fetch(request) {
+      if (request.method === 'POST'
+          && /^\/v1\/workers\/[^/]+\/start$/.test(new URL(request.url).pathname)
+          && !enabled()) {
+        return new Response(null, {status: 503});
+      }
+      return provider.fetch(request);
     },
   };
 }

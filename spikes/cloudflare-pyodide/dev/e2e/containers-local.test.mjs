@@ -1,6 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {expiryCapacityRelay, localLinuxProvider, OVERFLOW_MEMORY_MIB, vmHoldMemoryMiB} from './containers-local.mjs';
+import {deferContainerStarts, expiryCapacityRelay, localLinuxProvider, OVERFLOW_MEMORY_MIB, vmHoldMemoryMiB}
+  from './containers-local.mjs';
+
+test('Containers discovery works before the VM hold while starts wait for the hold', async () => {
+  let claimed = false;
+  const provider = deferContainerStarts({fetch: () => new Response(null, {status: 204})}, () => claimed);
+  const base = 'https://fixture.invalid';
+  const start = new Request(base + '/v1/workers/id/start', {method: 'POST'});
+  assert.equal((await provider.fetch(new Request(base + '/v1/capabilities'))).status, 204);
+  assert.equal((await provider.fetch(start)).status, 503);
+  claimed = true;
+  assert.equal((await provider.fetch(start)).status, 204);
+});
 
 test('local provider advertises the configured memory budget', async () => {
   const token = 'local-fixture-token'.repeat(2);

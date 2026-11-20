@@ -14,8 +14,8 @@ import {supervisorModules} from '../tenant-workers/supervisor-digest.mjs';
 import {stageRuntimeLoader} from '../stage-runtime-loader.mjs';
 import {hostedRelayPath, relayHeaders, relayHttp} from './relay-http.mjs';
 import {capacityWorker} from './capacity-miniflare.mjs';
-import {expiryCapacityRelay, localLinuxProvider, localSolutionGit, OVERFLOW_MEMORY_MIB, serveContainersProviders,
-  vmHoldMemoryMiB} from './containers-local.mjs';
+import {deferContainerStarts, expiryCapacityRelay, localLinuxProvider, localSolutionGit, OVERFLOW_MEMORY_MIB,
+  serveContainersProviders, vmHoldMemoryMiB} from './containers-local.mjs';
 
 const root = new URL('../', import.meta.url);
 const require = createRequire(new URL('tenant-workers/package.json', root));
@@ -71,6 +71,7 @@ function managedRows(scope = 'phase6-local', {includeRetired = false} = {}) {
   return sql(`SELECT coalesce(json_agg(json_build_object('id',id,'state',state,'uid',capacity_resource_uid,
     'launcher_bound',remote_launcher_id=id,'profile',runtime_profile,'hello',remote_hello_sequence,
     'budget',memory_limit_bytes,'available',memory_budget_bytes,'active',active_runs,
+    'pressured',memory_pressured,
     'deleted',capacity_resource_deleted_at IS NOT NULL,'end',end_reason,
     'created_at',created_at,'ready_at',ready_at,'ended_at',ended_at,
     'deleted_at',capacity_resource_deleted_at)), '[]'::json)
@@ -630,6 +631,7 @@ async function containersChecks() {
   const privateAuth = 'Basic ' + Buffer.from('x-access-token:' + privateToken).toString('base64');
   let privateFetches = 0;
   let vmProfileRead = false;
+  let vmHoldClaimed = false;
   execFileSync('docker', ['pause', ...launchers]);
   try {
     if (git) {
@@ -649,7 +651,7 @@ async function containersChecks() {
           return response;
         },
       },
-      ...(hosted ? {} : {containers,
+      ...(hosted ? {} : {containers: deferContainerStarts(containers, () => vmHoldClaimed),
       git: {
         fetch(request) {
           assert.equal(request.headers.has('authorization'), false);
@@ -709,7 +711,7 @@ async function containersChecks() {
       ))
     `), 60_000);
     const primary = await until('VM primary ready with measured budget', () =>
-      managedRows('vm').find((row) => row.state === 'ready' && row.available > 256 * 2 ** 20), 90_000);
+      managedRows('vm').find((row) => row.state === 'ready' && !row.pressured && row.available > 256 * 2 ** 20), 90_000);
     const hold = await api('/api/workflows/' + config.workflows.vm,
       {memory_request_mib: vmHoldMemoryMiB(primary.available)}, config.admin, 'PATCH');
     assert.equal(hold.status, 200);
@@ -728,6 +730,7 @@ async function containersChecks() {
     }
     const vmRun = await submit('vm');
     await until('VM primary claims held work', () => runRow(vmRun)?.claim?.[0].worker === primary.id);
+    vmHoldClaimed = true;
     if (git) {
       const solution = await api('/api/solutions', {slug: 'container-update', name: 'Container Update'});
       assert.ok([200, 201].includes(solution.status));
