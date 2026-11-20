@@ -454,7 +454,8 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Cloudflare capacity and workflow approval add request and status DTOs.
     # MIN_CLI_VERSION remains unchanged.
     # Cloudflare spend coverage is additive. The CLI minimum stays unchanged.
-    "6c802e2f497fc4921b25fbc71595084cc21adf9ca95e6e29984a4e0ad85a4b02"
+    # The optional SQLite size in capacity receipts leaves existing clients compatible.
+    "29804d82b2d3240fc5fd60d282a2e17a203fb702c3f24f90f35121f1c2f56b39"
 )
 
 

@@ -45,7 +45,9 @@ export function launcherMeter(sql, binding) {
     setSlots(count) { slots = count; },
     get exhausted() { return admissionLimit(); },
     get final() { return state.final === true; },
-    snapshot() { return {...state.counts, exhausted: Boolean(admissionLimit())}; },
+    snapshot() {
+      return {...state.counts, sqlite_database_bytes: sql.databaseSize, exhausted: Boolean(admissionLimit())};
+    },
     charge(units, essential = false) {
       if (state.final || (state.exhausted && !essential)) return false;
       const counts = {...state.counts};

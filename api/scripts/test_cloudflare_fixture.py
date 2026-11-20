@@ -37,7 +37,7 @@ TOKEN = SecretStr("browser-fixture-cloudflare-token")
 HOST = "workers.browser-fixture.test"
 ROOT = Path("/tmp/bifrost/solution-repo-fixtures/cloudflare")
 CAPACITY = "https://capacity.browser-fixture.test"
-EXPORTS = {"launcher": ("CloudflareLauncher", "TenantHost"), "capacity": ("ScopeRegistry", "WorkerLedger")}
+EXPORTS = cloudflare_release.WORKER_EXPORTS
 
 
 def _release():
@@ -64,6 +64,8 @@ def _release():
                              "gzip_bytes": 64, "mime_type": "application/javascript+module"}],
                 "exports": {name: {"type": "durable-object", "storage": "sqlite"} for name in classes},
                 "bindings": [
+                    {"name": "TENANT_GATEWAY", "type": "service", "script": "gateway"},
+                    {"name": "BIFROST_METER_GENERATIONS", "type": "plain_text", "text": "true"},
                     {"name": "BIFROST_METER_SDK_REQUESTS", "type": "plain_text", "text": str(qualification.sdk_request_limit)},
                     {"name": "BIFROST_METER_ENGINE_CPU_MS", "type": "plain_text", "text": str(cpu["workflow"])},
                     *({"name": f"BIFROST_METER_{name.upper()}_CPU_MS", "type": "plain_text", "text": str(cpu[name])}
@@ -72,10 +74,10 @@ def _release():
                         qualification.launcher_caps, sort_keys=True, separators=(",", ":"),
                     )},
                 ] if role == "launcher" else [],
-                "cpu_ms": cpu["gateway" if role == "launcher" else "capacity"],
+                "cpu_ms": cpu["workflow" if role == "launcher" else role],
                 "public_endpoint": role == "capacity", "preview_urls": False,
             }
-        modules = [manifest["workers"][role]["modules"][0] for role in ("launcher", "capacity")]
+        modules = [manifest["workers"][role]["modules"][0] for role in EXPORTS]
         bounds["qualification"]["capacity_module_sha256"] = modules[-1]["sha256"]
         bounds["qualification"]["bundle_sha256"] = sha256("\n".join(
             f'{module["name"]}:{module["sha256"]}' for module in modules
@@ -125,7 +127,7 @@ class _Cloudflare(WorkersRestCleanup):
         name = expected.intent.target.name
         assert await self.observe(api_token=api_token, intent=expected.intent) == expected
         capacity = name.endswith("-capacity")
-        classes = EXPORTS["capacity" if capacity else "launcher"]
+        classes = next(classes for role, classes in EXPORTS.items() if name.endswith("-" + role))
         return ConfiguredWorkersScript(CAPACITY if capacity else None, {
             exported: sha256(f"{name}:{exported}".encode()).hexdigest()[:32] for exported in classes
         })

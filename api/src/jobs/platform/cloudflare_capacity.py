@@ -406,6 +406,7 @@ async def _settle_reconcile(
             return {"outcome": "superseded"}
         token_version = installation.api_token_version
         admitted_revision = installation.admitted_revision
+        scope = await db.get(CloudflareCapacityScope, (installation.id, "workers", payload.revision))
         inventory = await _inventory_snapshot(db, installation.id, revision=payload.revision)
         usage_identities = await usage_script_identities(db, installation.id)
         try:
@@ -416,10 +417,13 @@ async def _settle_reconcile(
     if token is not None:
         try:
             roles = {receipt.intent.target.name.rsplit("-", 1)[-1] for receipt in inventory}
-            if len(inventory) != 2 or roles != {"launcher", "capacity"}:
+            expected_roles = {"launcher", "capacity"}
+            if scope is not None and scope.gateway_required:
+                expected_roles.add("gateway")
+            if len(inventory) != len(expected_roles) or roles != expected_roles:
                 raise ObservationPending("The admitted revision lacks a complete Workers deployment receipt")
             await _observe_inventory(adapter, token, inventory)
-            if not all(receipt.namespaces for receipt in inventory):
+            if not all(receipt.namespaces for receipt in inventory if not receipt.intent.target.name.endswith("-gateway")):
                 raise ObservationPending("The admitted revision lacks exact namespace receipts")
             checked_at = datetime.now(UTC)
             start, _ = usage_period(checked_at)

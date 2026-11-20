@@ -52,7 +52,7 @@ export function qualifiedMeterLimits(bounds) {
         value => Number.isSafeInteger(value) && value > 0) || measurement.safety_margin <= 1) {
     throw new Error("Workers meter bounds require pinned positive qualification measurements");
   }
-  if (!cpu || !/^[a-f0-9-]{36}$/.test(cpu.source_run ?? "") || cpu.startup_reserve_ms !== 1000 ||
+  if (!cpu || ![cpu.source_run, cpu.requalification_run].every(value => /^[a-f0-9-]{36}$/.test(value ?? "")) ||
       Object.keys(cpu.samples ?? {}).length !== cpuSamplePaths.length || cpuSamplePaths.some(name =>
         ![cpu.samples[name]?.samples, cpu.samples[name]?.p99_us].every(
           value => Number.isSafeInteger(value) && value > 0))) {
@@ -63,8 +63,11 @@ export function qualifiedMeterLimits(bounds) {
   ));
   const capacityCpuMs = cap("capacity_profile", "capacity_observe", "capacity_prepare", "capacity_start", "capacity_delete");
   const launcherCpuMs = cap("loose", "solution");
+  if (cpu.startup_reserve_ms !== Math.ceil(cpu.samples.cold_exercise.p99_us * measurement.safety_margin / 1000)) {
+    throw new Error("Workers startup reserve must match the uncapped cold exercise measurement");
+  }
   const sdkRequests = Math.min(50, measurement.sdk_requests * measurement.safety_margin);
-  if (Number(bounds.per_launcher_second.worker_cpu_ms) !== theoreticalCpuMs + launcherCpuMs + capacityCpuMs) {
+  if (Number(bounds.per_launcher_second.worker_cpu_ms) !== 2 * theoreticalCpuMs + launcherCpuMs + capacityCpuMs) {
     throw new Error("Workers CPU bounds differ from the measured deployment limits and workflow ceiling");
   }
   const launcherMeters = Object.fromEntries(Object.entries(launcher.observed).sort().map(([name, value]) =>
@@ -78,14 +81,24 @@ export function qualifiedMeterLimits(bounds) {
 
 const workerDefinitions = {
   launcher: {
-    entry: "dev/tenant-workers/launcher-entry.mjs",
+    entry: "dev/tenant-workers/managed-launcher-entry.mjs",
     exports: ["CloudflareLauncher", "TenantHost"],
     bindings: [
       { name: "LOADER", type: "worker_loader" },
       input("API_ORIGIN", "worker_ingress_origin"),
       { name: "BIFROST_CLOUDFLARE_MANAGED", type: "plain_text", text: "true" },
-      { name: "SDK_SCOPE", type: "plain_text", text: "sdk" },
+      { name: "BIFROST_METER_GENERATIONS", type: "plain_text", text: "true" },
+      { name: "TENANT_GATEWAY", type: "service", script: "gateway" },
       { name: "RUNTIME_SHA256", type: "plain_text", text: runtimePin },
+    ],
+    public_endpoint: false,
+  },
+  gateway: {
+    entry: "dev/tenant-workers/gateway-entry.mjs",
+    exports: [],
+    bindings: [
+      input("API_ORIGIN", "worker_ingress_origin"),
+      { name: "SDK_SCOPE", type: "plain_text", text: "sdk" },
     ],
     public_endpoint: false,
   },
@@ -211,7 +224,7 @@ export async function buildWorkers(runtimePath, outputPath, sourceRevision, mete
         plain("BIFROST_METER_EXERCISE_CPU_MS", limits.exerciseCpuMs),
         plain("BIFROST_LAUNCHER_METERS", JSON.stringify(limits.launcherMeters)),
       ] : bindings,
-      cpu_ms: role === "capacity" ? limits.capacityCpuMs : limits.launcherCpuMs,
+      cpu_ms: {capacity: limits.capacityCpuMs, gateway: limits.launcherCpuMs, launcher: theoreticalCpuMs}[role],
       preview_urls: false,
     };
   }

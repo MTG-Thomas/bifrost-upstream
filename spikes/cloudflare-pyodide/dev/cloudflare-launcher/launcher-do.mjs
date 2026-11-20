@@ -234,8 +234,9 @@ export class CloudflareLauncher extends DurableObject {
         }
         connection.socket.send(frame);
       },
-      runHost: (route, context, signal) => runWorkflow({
+      runHost: (route, context, signal, reserveIdentity) => runWorkflow({
         route, context, publicUrl: this.#settings.publicUrl, signal,
+        ...(this.env.BIFROST_METER_GENERATIONS === 'true' ? {reserveIdentity} : {}),
       }),
       stopHost: async (route) => getHost(await launcherTenantId(route)).stopWorkflow(route.route_id),
       background: (task) => this.#observe(this.#connection, task),

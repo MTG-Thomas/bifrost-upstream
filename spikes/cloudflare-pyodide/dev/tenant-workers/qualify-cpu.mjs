@@ -65,8 +65,16 @@ for (let batch = 0; batch < lifecycleCases; batch++) {
         TenantHost: {type: 'durable-object', storage: 'sqlite'}, TenantApi: {type: 'worker'},
       },
       env: {...bindings, API_ORIGIN: {type: 'text', value: 'https://test-api.invalid'},
+        // Qualify CPU in the host and child independently of control delivery.
+        BIFROST_METER_GENERATIONS: {type: 'text', value: 'false'},
+        TENANT_GATEWAY: {type: 'worker', worker: 'gateway'},
         LOADER: {type: 'worker-loader'}, HOSTS: {type: 'durable-object', worker: 'launcher', exportName: 'TenantHost'}},
       manifest: {mainModule: 'launcher.mjs', modules: {'launcher.mjs': {type: 'esm', contents: launcher.toString()}}},
+    }},
+    {config: {name: 'gateway', compatibilityDate: '2026-10-30',
+      env: {API_ORIGIN: {type: 'text', value: 'https://test-api.invalid'}, SDK_SCOPE: {type: 'text', value: 'sdk'}},
+      manifest: {mainModule: 'gateway.mjs', modules: {'gateway.mjs': {type: 'esm',
+        contents: readFileSync(join(packagePath, 'gateway.mjs'), 'utf8')}}},
     }},
     {config: {name: 'origin', compatibilityDate: '2026-10-30', manifest: {
       mainModule: 'origin.mjs', modules: {'origin.mjs': {type: 'esm', contents: `

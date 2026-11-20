@@ -59,14 +59,14 @@
         ]
       },
       "spikes/cloudflare-pyodide/dev/cloudflare-launcher/launcher-core.mjs": {
-        "sha256": "3b838294e285c45e7eddffb56d39176e83972a20b73ecbd8762f7e86108a205f",
+        "sha256": "3dcb02a0eb9b4bc08b660ed2a508de653be1a1b939bfbbd6fb3482d9e7c9e15b",
         "paths": [
           "launcher-control",
           "launcher-workload"
         ]
       },
       "spikes/cloudflare-pyodide/dev/cloudflare-launcher/launcher-do.mjs": {
-        "sha256": "5f8d93e56432aec12f2c5eeab7948d1179944779784c0b935184b9a793ff9a80",
+        "sha256": "6690d2831f335ba4980ce5d9be1998bcce3126ec622d0d0bbefbeb800c77245e",
         "paths": [
           "launcher-control",
           "launcher-workload",
@@ -75,7 +75,7 @@
         ]
       },
       "spikes/cloudflare-pyodide/dev/cloudflare-launcher/launcher-meter.mjs": {
-        "sha256": "72d30b74cc7a061c79c07e4a68d152d482b0fd3df5bdb2caf46f43a82dc69884",
+        "sha256": "fb6326c78f4e2b82c43714acbdf02406839f564dcdb6b916cd27f55c88dbe12a",
         "paths": [
           "launcher-workload",
           "storage-logs"
@@ -151,10 +151,17 @@
         ]
       },
       "spikes/cloudflare-pyodide/dev/tenant-workers/launcher-host.mjs": {
-        "sha256": "50a89818083bbb79cd328440b0a368ff74aab50b47d91fefbc9da25f81ad7ae9",
+        "sha256": "9773c8ff5e2c6410b2c8a6597d9fd45269377cd2d133bfcfe148a1fef90d3739",
         "paths": [
           "dynamic-engine",
           "tenant-state"
+        ]
+      },
+      "spikes/cloudflare-pyodide/dev/tenant-workers/managed-launcher-entry.mjs": {
+        "sha256": "7becb9b9be26c29b3276eed5744e818ac8644363e8bfa65ad90c67382b31f6b8",
+        "paths": [
+          "launcher-control",
+          "gateway"
         ]
       },
       "spikes/cloudflare-pyodide/dev/tenant-workers/storage-path.mjs": {
@@ -164,7 +171,7 @@
         ]
       },
       "spikes/cloudflare-pyodide/dev/tenant-workers/tenant-api.mjs": {
-        "sha256": "fbf40dcc6842bede3913e5825845030102c15b43234e1f8eab658e7c4c8de1ac",
+        "sha256": "6265ad7d25cee35f53ebc9d60aa2c9509a9db2ca6ee85468c95667da949cd93b",
         "paths": [
           "tenant-state",
           "dynamic-engine",
@@ -173,11 +180,17 @@
         ]
       },
       "spikes/cloudflare-pyodide/dev/tenant-workers/tenant-dispatch.mjs": {
-        "sha256": "32b02d0d4afd71f77bc436270dde33cc18ed188e0dc587a839137a77fcb82b25",
+        "sha256": "c400bfab102122338dab7729bb47345d85f094cd52ab44627f30aa0998c9fd63",
         "paths": [
           "tenant-state",
           "dynamic-engine",
           "policy-helpers"
+        ]
+      },
+      "spikes/cloudflare-pyodide/dev/tenant-workers/tenant-gateway-service.mjs": {
+        "sha256": "8c631434b80bade6928cfae5281f7828a2fb77fc9d78e8891ed0d0d8f2e95c5e",
+        "paths": [
+          "gateway"
         ]
       },
       "spikes/cloudflare-pyodide/dev/tenant-workers/tenant-gateway.mjs": {
@@ -198,6 +211,32 @@
         "paths": [
           "inactive-features",
           "dynamic-engine"
+        ]
+      }
+    },
+    "gateway": {
+      "spikes/cloudflare-pyodide/dev/executor/policy.mjs": {
+        "sha256": "0bcddeb9978b575ffe718229cd4292a1372da67a6aa3825ff9c2736f527737e8",
+        "paths": [
+          "policy-helpers"
+        ]
+      },
+      "spikes/cloudflare-pyodide/dev/tenant-workers/attempt-credentials.mjs": {
+        "sha256": "dadd075980ec8192d452ac892c6fd75bfd3bdc0ef099da9115d84aca071f64ae",
+        "paths": [
+          "gateway"
+        ]
+      },
+      "spikes/cloudflare-pyodide/dev/tenant-workers/gateway-entry.mjs": {
+        "sha256": "03de3313d9db3bf2bdd62a81ab89d4a8c77f01c357d8bb169309d19e5b47b564",
+        "paths": [
+          "gateway"
+        ]
+      },
+      "spikes/cloudflare-pyodide/dev/tenant-workers/tenant-gateway-service.mjs": {
+        "sha256": "8c631434b80bade6928cfae5281f7828a2fb77fc9d78e8891ed0d0d8f2e95c5e",
+        "paths": [
+          "gateway"
         ]
       }
     },

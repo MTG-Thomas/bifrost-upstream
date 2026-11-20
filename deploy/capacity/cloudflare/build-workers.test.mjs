@@ -8,7 +8,7 @@ const qualification = () => JSON.parse(readFileSync(source, 'utf8'));
 const meterInventory = JSON.parse(readFileSync(new URL('./meter-inventory.json', import.meta.url), 'utf8'));
 
 test('every input in the packaged Workers import graph has a reviewed billing classification', async () => {
-  for (const role of ['launcher', 'capacity']) {
+  for (const role of ['launcher', 'gateway', 'capacity']) {
     const inputs = await bundleWorker(role, Buffer.from('export default {};'), {inventoryOnly: true});
     const embedded = 'bifrost-runtime:generated-runtime.mjs';
     // The production builder verifies this input from the real runtime artifact.

@@ -5,7 +5,7 @@ function terminal(attempt_state, error_type, error) {
   return {attempt_state, result: {success: false, error_type, error}};
 }
 
-async function boundedWarm(getHost, tenantId, {deadline, signal, beforeRun, now, queueWarm}) {
+async function boundedWarm(getHost, tenantId, {deadline, signal, beforeRun, now, queueWarm, reserveIdentity}) {
   const check = () => {
     if (beforeRun()) throw new Error('Attempt ended before warm-up');
   };
@@ -19,7 +19,7 @@ async function boundedWarm(getHost, tenantId, {deadline, signal, beforeRun, now,
   });
   try {
     return await Promise.race([queueWarm((rpcCheck) => warmHost(getHost, tenantId, {
-      check: () => { check(); rpcCheck(); }, engineOnly: true,
+      check: () => { check(); rpcCheck(); }, engineOnly: true, reserveIdentity,
     })), abort]);
   } finally {
     clearTimeout(timer);
@@ -64,7 +64,7 @@ export function createLauncherWorkflowRunner(getHost, {warmRpcMs = ENGINE_BOOT_T
 
 // Warm-up may be retried, but a run RPC is repeated only after an explicit
 // needsWarm refusal. Every call carries the same absolute wire deadline.
-async function runLauncherWorkflow(getHost, queueWarm, {route, context, publicUrl, signal, now = Date.now}) {
+async function runLauncherWorkflow(getHost, queueWarm, {route, context, publicUrl, signal, reserveIdentity, now = Date.now}) {
   const deadline = route.workflow_deadline === null ? Infinity : Date.parse(route.workflow_deadline);
   const beforeRun = () => {
     if (now() >= deadline) return {terminal: {phase: 'attempt-deadline', attempt_state: 'not_started'}};
@@ -73,12 +73,12 @@ async function runLauncherWorkflow(getHost, queueWarm, {route, context, publicUr
   };
   const tenantId = await launcherTenantId(route);
   const attempt = {tenantId, executionId: route.subject_id, context, publicUrl, routeId: route.route_id,
-    workflowDeadline: route.workflow_deadline};
+    workflowDeadline: route.workflow_deadline, ...(reserveIdentity ? {reserveIdentity} : {})};
   let hosted;
   try {
     hosted = await hostAttempt(() => getHost(tenantId), attempt, {
       beforeRun,
-      warm: (get, tenant) => boundedWarm(get, tenant, {deadline, signal, beforeRun, now, queueWarm}),
+      warm: (get, tenant) => boundedWarm(get, tenant, {deadline, signal, beforeRun, now, queueWarm, reserveIdentity}),
     });
   } catch (error) {
     if (error?.attemptState === 'not_started' && error?.name === 'CloudflareLauncherMeterLimitExceeded') {

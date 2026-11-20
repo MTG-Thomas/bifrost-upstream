@@ -415,9 +415,11 @@ export class LauncherCore {
           return;
         }
         return this.#dispatch(session, payload, accept, refuse, AGENT_ROUTE, agentRoute);
-      case 'cloudflare_agent_reply': {
+      case 'cloudflare_agent_reply':
+      case 'cloudflare_generation_reply': {
         const request = this.#agentRequests.get(payload.request_id);
-        if (request?.event.route_id === payload.route_id) {
+        const reply = action === 'cloudflare_agent_reply' ? 'cloudflare_agent_request' : 'cloudflare_generation_request';
+        if (request?.event.route_id === payload.route_id && request.event.event === reply) {
           if (payload.ok === true || payload.result?.refused === true) request.resolve(payload.result);
           else request.reject(new Error('Cloudflare agent request refused'));
         }
@@ -527,7 +529,9 @@ export class LauncherCore {
 
   async #hostOutcome(route, context, signal) {
     try {
-      const outcome = route.kind === 'workflow' ? await this.runHost(route, context, signal) :
+      const outcome = route.kind === 'workflow' ? await this.runHost(route, context, signal,
+        (identity) => this.#requestControl(route, 'cloudflare_generation_request', {identity},
+          AbortSignal.any([signal, AbortSignal.timeout(4000)]))) :
         route.kind === 'agent_run' ? await this.runAgent(route,
           (operation, data, active) => this.#requestAgent(route, operation, data, active), signal) :
           await this.runSummary(route, context, signal);
@@ -566,10 +570,14 @@ export class LauncherCore {
   }
 
   async #requestAgent(route, operation, data, signal) {
+    return this.#requestControl(route, 'cloudflare_agent_request', {operation, data}, signal);
+  }
+
+  async #requestControl(route, kind, fields, signal) {
     signal.throwIfAborted();
     const id = this.newId();
-    const event = {event: 'cloudflare_agent_request', request_id: id,
-      route_id: route.route_id, runtime_handle: route.runtime_handle, operation, data};
+    const event = {event: kind, request_id: id,
+      route_id: route.route_id, runtime_handle: route.runtime_handle, ...fields};
     const reply = Promise.withResolvers();
     const abort = () => reply.reject(signal.reason);
     this.#agentRequests.set(id, {event, ...reply});

@@ -474,6 +474,7 @@ class CloudflareLauncherCounts(BaseModel):
 
 
 class CloudflareLauncherUsage(CloudflareLauncherCounts):
+    sqlite_database_bytes: int | None = Field(default=None, ge=0, exclude_if=lambda value: value is None)
     """Terminal or deletion receipt including workload admission state."""
 
     exhausted: bool = Field(default=False, strict=True)

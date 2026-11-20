@@ -140,6 +140,7 @@ class CloudflareCapacityScope(Base):
     bearer_purpose: Mapped[str] = mapped_column(String(16), server_default="scope_bearer")
     bearer_version: Mapped[int]
     capacity_cpu_ms: Mapped[int] = mapped_column(Integer, server_default="30000")
+    gateway_required: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
 
 
 class CloudflareWorkerReservation(Base):
@@ -239,6 +240,13 @@ class CloudflareStagedToken(Base):
     ciphertext: Mapped[str] = mapped_column(Text)
 
 
+class CloudflareEngineUsageKey(Base):
+    __tablename__ = "cloudflare_engine_usage_keys"
+
+    installation_id: Mapped[UUID] = mapped_column(ForeignKey("cloudflare_installations.id"), primary_key=True)
+    usage_key: Mapped[str] = mapped_column(String(256), primary_key=True)
+
+
 class CloudflareUsageActivity(Base):
     __tablename__ = "cloudflare_usage_activity"
     __table_args__ = (
@@ -261,6 +269,7 @@ class CloudflareUsageActivity(Base):
     qualified_warm_pings: Mapped[int] = mapped_column(BigInteger, server_default="0")
     qualified_creations: Mapped[int] = mapped_column(BigInteger, server_default="0")
     qualified_legacy_events: Mapped[int] = mapped_column(BigInteger, server_default="0")
+    generation_control_requests: Mapped[int] = mapped_column(BigInteger, server_default="0")
 
 
 class CloudflareUsageIncarnation(Base):

@@ -46,7 +46,7 @@ def test_policy_window_rolls_at_the_utc_month_boundary() -> None:
 
 
 def test_qualified_cpu_charges_exact_caps_and_the_approved_workflow_budget() -> None:
-    caps = {"workflow": 30_000, "boot": 2_000, "warm": 440, "exercise": 613, "startup": 1_000, "gateway": 1_097}
-    assert qualified_cpu_reserve(caps, 250, 12, 1, 30) == 104_714
-    assert qualified_cpu_reserve(caps, 40_000, 0, 1, 0) == 40_000
-    assert qualified_cpu_reserve(caps, 250, 12, 0, 1) == 2_710
+    caps = {"workflow": 30_000, "boot": 2_000, "warm": 440, "exercise": 613, "startup": 48_522, "gateway": 1_097}
+    assert qualified_cpu_reserve(caps, 250, 12, 1, 30) == 2_980_462
+    assert qualified_cpu_reserve(caps, 40_000, 0, 1, 0) == 230_088
+    assert qualified_cpu_reserve(caps, 250, 12, 0, 1) == 80_232

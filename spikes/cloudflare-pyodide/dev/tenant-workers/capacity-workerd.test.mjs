@@ -56,6 +56,7 @@ const canaries = new Map();
 const upgrades = new WebSocketServer({noServer: true});
 const measuredBundle = process.env.BIFROST_QUALIFIED_CAPACITY_BUNDLE;
 const measuredLauncher = process.env.BIFROST_QUALIFIED_LAUNCHER_BUNDLE;
+const measuredGateway = process.env.BIFROST_QUALIFIED_GATEWAY_BUNDLE;
 const controllerPolls = Number(process.env.BIFROST_QUALIFIED_CONTROLLER_POLLS ?? 0);
 const controllerSource = new URL('../../../../api/src/services/pool_cadence.py', import.meta.url);
 const reconcileSeconds = Number(/^POOL_RECONCILE_SPACING_SECONDS = (\d+(?:\.\d+)?)$/m.exec(
@@ -193,6 +194,12 @@ server.on('upgrade', (req, socket, head) => {
         if (message.payload?.event === 'heartbeat') record.heartbeat = message.payload;
         if (measuredLauncher && ['event', 'fragment'].includes(message.kind)) {
           const terminal = assembler.feed(message)?.payload;
+          if (terminal?.event === 'cloudflare_generation_request') {
+            record.generations.add(terminal.identity);
+            record.send('command', {id: randomUUID(), action: 'cloudflare_generation_reply', payload: {
+              route_id: terminal.route_id, request_id: terminal.request_id, ok: true, result: {},
+            }});
+          }
           if (terminal?.event === 'result') {
             record.send('ack', {event_id: terminal._event_id});
             record.terminalAckSequence = sequence;
@@ -210,6 +217,7 @@ server.on('upgrade', (req, socket, head) => {
       records.push(record);
       record.terminals = new Map();
       record.replies = new Map();
+      record.generations = new Set();
       record.send = (type, payload) => {
         for (const frame of fragment(envelope(records.length, sequence + 1, type, payload))) {
           sequence = frame.sequence;
@@ -247,12 +255,22 @@ async function start() {
             BIFROST_METER_WARM_CPU_MS: {type: 'text', value: process.env.BIFROST_QUALIFIED_WARM_CPU_MS ?? '30000'},
             BIFROST_METER_EXERCISE_CPU_MS: {type: 'text', value: process.env.BIFROST_QUALIFIED_EXERCISE_CPU_MS ?? '30000'},
             BIFROST_METER_SDK_REQUESTS: {type: 'text', value: '40'},
+            ...(measuredGateway ? {
+              TENANT_GATEWAY: {type: 'worker', worker: 'gateway'},
+              BIFROST_METER_GENERATIONS: {type: 'text', value: 'true'},
+            } : {}),
             BIFROST_LAUNCHER_METERS: {type: 'text', value: process.env.BIFROST_QUALIFIED_LAUNCHER_METERS ??
               '{"sqlite_rows_written":10000,"do_requests":1000,"log_events":100}'},
           } : {MeterProbe: {type: 'durable-object', worker: 'launcher', exportName: 'MeterProbe'}})},
         manifest: {mainModule: 'entry.mjs', modulesRoot: fileURLToPath(root), modules: measuredLauncher
           ? {'entry.mjs': {type: 'esm', contents: readFileSync(measuredLauncher, 'utf8')}} : modules}},
     },
+    ...(measuredGateway ? [{config: {name: 'gateway', compatibilityDate: '2026-10-30',
+      env: {API_ORIGIN: {type: 'text', value: 'https://test-api.invalid'}, SDK_SCOPE: {type: 'text', value: 'sdk'}},
+      manifest: {mainModule: 'gateway.mjs', modules: {'gateway.mjs': {
+        type: 'esm', contents: readFileSync(measuredGateway, 'utf8'),
+      }}},
+    }}] : []),
     {config: {name: 'relay', compatibilityDate: '2026-10-30', manifest: {
       mainModule: 'relay.mjs', modules: {'relay.mjs': {type: 'esm', contents: relaySource}},
     }}},
@@ -331,6 +349,7 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
   if (references) {
     assert.ok(references.every(attempt => attempt.usage));
     assert.ok(deleted.usage);
+    if (measuredGateway) assert.equal(seen.generations.size, 2);
     console.info('launcher-reference', JSON.stringify({attempts: references, final: deleted.usage,
       sha256: sha256(readFileSync(measuredLauncher))}));
   }
@@ -347,6 +366,7 @@ for (const [meter, count, counted] of [
     assert.equal(receipt.exhausted, meter !== 'log_events');
     assert.equal(receipt.sealed.exhausted, meter !== 'log_events');
     assert.equal(receipt.sealed[meter], counted);
+    assert.ok(receipt.sealed.sqlite_database_bytes > 0);
   });
 }
 

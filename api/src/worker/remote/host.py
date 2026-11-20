@@ -13,6 +13,8 @@ import logging
 import time
 from contextlib import AbstractAsyncContextManager, nullcontext
 from datetime import datetime
+from hashlib import sha256
+from re import fullmatch
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -48,6 +50,7 @@ from src.services.worker_pool.claims import (
 from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
 from src.services.worker_pool.cloudflare_spend import (
     record_launcher_terminal_meter,
+    reserve_engine_generation,
     reserve_tenant_host_usage,
 )
 from src.worker.admission import Admission
@@ -336,6 +339,9 @@ class Bridge:
                         if action == "workflow" and self.managed_cloudflare:
                             deadline = payload.get("workflow_deadline")
                             workspace = payload["context"]["cloudflare_workspace"]
+                            org_id = payload["active_execution"].get("org_id")
+                            tenant = "launcher:platform" if org_id is None else f"launcher:org:{org_id}"
+                            tenant_id = sha256(tenant.encode()).hexdigest()[:32]
                             # Commit the reservation before sending any frame. A
                             # failed socket send can leave a conservative charge.
                             with remote_owner_context(LeaseRef(self.lease)):
@@ -346,6 +352,7 @@ class Bridge:
                                         db, self.lease.worker_id, datetime.fromisoformat(deadline) if deadline else None,
                                         workflow_cpu_ms=workspace["cpu_budget_ms"],
                                         subrequests=workspace["subrequest_allowance"],
+                                        tenant_id=tenant_id,
                                     ):
                                         raise CloudflareRevisionRejected(
                                             "Managed Cloudflare workflow usage could not be reserved"
@@ -590,6 +597,10 @@ class Bridge:
                 self._terminal_replay_changed.set()
             else:
                 await self._deliver_terminal(event)
+        elif event.get("event") == "cloudflare_generation_request":
+            if not self.managed_cloudflare or not self.reconciliation_ready.is_set():
+                raise ProtocolError("Unexpected Cloudflare generation request")
+            await self._reserve_generation(event)
         elif event.get("event") == "draining":
             # The router tells this session's executor to drain after the
             # transport event is accepted. It is not a pool result.
@@ -607,6 +618,31 @@ class Bridge:
             self.results.add(task)
             task.add_done_callback(self.results.discard)
             task.add_done_callback(_observe_task)
+
+    async def _reserve_generation(self, event: dict[str, Any]) -> None:
+        route_id, identity, request_id = (event.get(key) for key in ("route_id", "identity", "request_id"))
+        if (
+            not isinstance(route_id, str) or route_id not in self._opaque_routes
+            or not isinstance(identity, str)
+            or len(identity) > 128
+            or not fullmatch(r"tenant-eng-tenant-py-[a-f0-9]{32}-[a-f0-9]{16}-cpu(?:default|\d+)-sr(?:default|\d+)-g\d+", identity)
+            or not isinstance(request_id, str) or not fullmatch(r"[A-Za-z0-9_-]{43}", request_id)
+        ):
+            raise ProtocolError("Invalid Cloudflare generation reservation")
+        lease = self.lease
+
+        async def reserve() -> None:
+            with remote_owner_context(LeaseRef(lease)):
+                async with get_db_context() as db:
+                    accepted = await fence_remote_owner(db) and await reserve_engine_generation(db, lease.worker_id, identity)
+                await self.request("cloudflare_generation_reply", {
+                    "request_id": request_id, "route_id": route_id, "ok": accepted, "result": {},
+                }, expected_generation=lease.session_generation)
+
+        task = asyncio.create_task(reserve())
+        self.results.add(task)
+        task.add_done_callback(self.results.discard)
+        task.add_done_callback(_observe_task)
 
     async def wait_for_opaque_terminals(
         self, receipts: set[str], lease: RemoteOwnerLease,

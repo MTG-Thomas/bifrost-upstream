@@ -30,7 +30,9 @@ function engine() {
     async fetch(request) {
       const body = await request.json();
       if (body.action === 'ping') {
-        if (body.exercise) return new Response('fixture ping failure', {status: 503});
+        if (body.exercise && !body.modules.includes('exercise_success')) {
+          return new Response('fixture ping failure', {status: 503});
+        }
         if (body.modules.includes('hold_ping')) {
           const gate = await fetch('https://approved.invalid/held-ping');
           await gate.body?.cancel();
@@ -93,6 +95,7 @@ function engine() {
         result = response.status;
         await response.body?.cancel();
       }
+      if (body.context.scenario === 'large-output') result = 'x'.repeat(768 * 1024);
       return Response.json({upstream_result: {status: 'Success', result}});
     },
   };
@@ -148,17 +151,22 @@ const main = `
         this.env.LOADER = loader;
       }
     }
-    async runManagedAlarm() {
+    async runManagedAlarm(success) {
       this.env.BIFROST_CLOUDFLARE_MANAGED = 'true';
+      const loader = this.env.LOADER;
+      let loads = 0;
+      this.env.LOADER = {get(...args) { loads++; return loader.get(...args); }};
       await this.ctx.storage.deleteAlarm();
+      if (success) await this.ctx.storage.put('prime', {engine: 'test-engine', modules: ['exercise_success']});
       try {
         await super.alarm();
       } catch (error) {
-        return {error: error.message, alarm: await this.ctx.storage.getAlarm()};
+        return {error: error.message, alarm: await this.ctx.storage.getAlarm(), loads};
       } finally {
+        this.env.LOADER = loader;
         delete this.env.BIFROST_CLOUDFLARE_MANAGED;
       }
-      return {alarm: await this.ctx.storage.getAlarm()};
+      return {alarm: await this.ctx.storage.getAlarm(), loads};
     }
     async runWithoutReleaseBinding({binding, route}) {
       const value = this.env[binding];
@@ -186,7 +194,7 @@ const main = `
       if (action === 'run') return Response.json(await host.run(input));
       if (action === 'cpu-witness') return Response.json(await host.withCpuWitness(
         input.action, input.action === 'run' ? input.payload : {tenantId}));
-      if (action === 'managed-alarm') return Response.json(await host.runManagedAlarm());
+      if (action === 'managed-alarm') return Response.json(await host.runManagedAlarm(input?.success));
       if (action === 'missing-meter') return Response.json(await host.runWithoutReleaseBinding(input));
       if (action === 'warm') return Response.json(await host.warm({tenantId, ...input}));
       if (action === 'warm-commit-failure') return Response.json(await host.warmWithCommitFailure({tenantId, ...input}));
@@ -202,7 +210,8 @@ const main = `
 
 before(async () => {
   const deps = [
-    'dev/tenant-workers/tenant-api.mjs', 'dev/tenant-workers/tenant-gateway.mjs', 'dev/tenant-workers/storage-path.mjs',
+    'dev/tenant-workers/tenant-api.mjs', 'dev/tenant-workers/tenant-gateway-service.mjs',
+    'dev/tenant-workers/tenant-gateway.mjs', 'dev/tenant-workers/storage-path.mjs',
     'dev/tenant-workers/tenant-dispatch.mjs',
     'dev/tenant-workers/attempt-credentials.mjs', 'dev/executor/policy.mjs',
     'dev/executor/output-budget.mjs', 'dev/executor/gateway-injection.mjs',
@@ -731,9 +740,27 @@ test('boot, warm priming and exercise pass separate CPU limits to WorkerLoader',
 test('a failed managed keep-warm alarm does not attempt a new engine generation', async () => {
   const tenant = 'idle-generation-measurement';
   assert.equal((await host(tenant, 'warm')).first_request, true);
-  assert.deepEqual(await host(tenant, 'managed-alarm'), {error: 'Tenant engine ping failed', alarm: null});
-  assert.deepEqual(await host(tenant, 'managed-alarm'), {alarm: null});
+  assert.deepEqual(await host(tenant, 'managed-alarm'), {error: 'Tenant engine ping failed', alarm: null, loads: 1});
+  assert.deepEqual(await host(tenant, 'managed-alarm'), {alarm: null, loads: 0});
   assert.deepEqual(await host(tenant, 'run', route(tenant)), {needsWarm: true, attempt_state: 'not_started'});
+});
+
+test('a successful managed keep-warm exercise rearms without changing the engine', async () => {
+  const tenant = 'managed-alarm-success';
+  assert.equal((await host(tenant, 'warm')).first_request, true);
+  const witness = await host(tenant, 'managed-alarm', {success: true});
+  assert.equal(witness.loads, 1);
+  assert.ok(witness.alarm > Date.now());
+  assert.equal((await host(tenant, 'warm')).first_request, false);
+});
+
+test('TenantHost keeps a large valid child result intact over workerd RPC', async () => {
+  const tenant = 'large-output';
+  await host(tenant, 'warm');
+  const result = await host(tenant, 'run', route(tenant, {scenario: 'large-output'}));
+  assert.equal(result.attempt_state, 'completed');
+  assert.equal(result.output.result.length, 768 * 1024);
+  assert.ok(result.output.result.endsWith('xxxxx'));
 });
 
 for (const [scenario, phase] of [['cpu-limit', 'cpu_limit'], ['memory-limit', 'memory_limit']]) {

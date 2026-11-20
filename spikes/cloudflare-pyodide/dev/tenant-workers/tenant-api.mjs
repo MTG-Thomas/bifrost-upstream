@@ -17,17 +17,15 @@
 // rewrites the virtual API host, strips cookies, and refuses any path outside
 // the SDK capability surface (apiTarget).
 import {DurableObject, WorkerEntrypoint} from 'cloudflare:workers';
-import {apiTarget} from '../executor/policy.mjs';
 import {engineDigest, mergePrimeList, tenantEngineCode} from './generic-worker-code.mjs';
 import {readBudgetedJson} from '../executor/output-budget.mjs';
 import {DUMMY_CREDENTIAL} from '../executor/gateway-injection.mjs';
 import {egressHostAllowed, isHttpsEgressUrl} from '../executor/egress-hosts.mjs';
-import {AttemptCredentials, isRefreshChallenge, refreshReply, refreshRequestHandle} from './attempt-credentials.mjs';
+import {AttemptCredentials, isRefreshChallenge} from './attempt-credentials.mjs';
+import {routeTenantRequest} from './tenant-gateway-service.mjs';
 import {createTenantGateway} from './tenant-gateway.mjs';
 import {ENGINE_BOOT_TIMEOUT_MS, runtimeErrorClass} from './tenant-dispatch.mjs';
 
-const HANDLE_RE = /^run_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const VIRTUAL_API_ORIGIN = 'https://test-api.invalid';
 const MAX_NOTED_CALLS = 64;
 // Warm-pool policy: a tenant that ran in the last WARM_WINDOW_MS keeps a
 // resident child. This is the knob that trades idle cost for latency, the
@@ -61,8 +59,9 @@ export class TenantHost extends DurableObject {
   // an attempt (see run()), and a late answer from a retired generation can
   // never vouch for its replacement.
   #readyGeneration = null;
+  #reservedIdentity = null;
 
-  async #engine(tenantId) {
+  async #engine(tenantId, reserveIdentity) {
     const engineId = `tenant-eng-${tenantId}-${(await engineDigest(this.env.RUNTIME_SHA256)).slice(0, 16)}`;
     // The 15 MB runtime is decoded only here, i.e. only when a child is
     // actually created, never on the warm path.
@@ -73,8 +72,14 @@ export class TenantHost extends DurableObject {
     // the loader and rides in the outbound gateway's props, so a retired child
     // that is still running can never act for a later attempt.
     const generation = await this.#currentGeneration();
+    const identity = `${engineId}-cpu${cpuMs ?? 'default'}-sr${subRequests ?? 'default'}-g${generation}`;
+    if (this.env.BIFROST_METER_GENERATIONS === 'true' && this.#reservedIdentity !== identity) {
+      if (typeof reserveIdentity !== 'function') throw new Error('Cloudflare generation needs a usage reservation');
+      await reserveIdentity(identity);
+      this.#reservedIdentity = identity;
+    }
     return {generation, worker: this.env.LOADER.get(
-      `${engineId}-cpu${cpuMs ?? 'default'}-sr${subRequests ?? 'default'}-g${generation}`,
+      identity,
       () => tenantEngineCode(this.ctx.exports.TenantApi({props: {tenantId, generation}}),
         {cpuMs, subRequests}))};
   }
@@ -289,7 +294,8 @@ export class TenantHost extends DurableObject {
     await this.ctx.storage.sync();
   }
 
-  async run({tenantId, executionId, context, publicUrl, egressHosts = [], dispatchedAt, routeId, workflowDeadline}) {
+  async run({tenantId, executionId, context, publicUrl, egressHosts = [], dispatchedAt, routeId, workflowDeadline,
+    reserveIdentity}) {
     const stopKey = routeId ? `stopped:${routeId}` : null;
     const stoppedInQueue = () => ({terminal: {phase: 'attempt-stopped', attempt_state: 'not_started', api_calls: []}});
     // Booting a child inside a fresh host can reset the host
@@ -376,7 +382,7 @@ export class TenantHost extends DurableObject {
     let dispatched = false;
     try {
       const limits = routeId ? this.#releaseLimits() : null;
-      const {worker, generation} = await this.#engine(tenantId);
+      const {worker, generation} = await this.#engine(tenantId, reserveIdentity);
       if (stopKey && await this.ctx.storage.get(stopKey)) return stoppedInQueue();
       if (Date.now() >= deadlineAt) return expiredInQueue(Date.now() - queuedAt);
       let stop;
@@ -505,11 +511,11 @@ export class TenantHost extends DurableObject {
   // "unknown handle") before anything reaches the API. That keeps the engine's
   // pre-first-call path hot between real attempts. Both ping variants
   // hold #exclusive through priming and any required retirement.
-  async #ping(tenantId, {exercise = false} = {}) {
+  async #ping(tenantId, {exercise = false, reserveIdentity} = {}) {
     const limits = this.env.BIFROST_METER_ENGINE_CPU_MS !== undefined ||
       this.env.BIFROST_CLOUDFLARE_MANAGED === 'true' ? this.#releaseLimits() : null;
     const cpuMs = limits && (exercise ? limits.exerciseMs : this.#childIsReady() ? limits.warmMs : limits.bootMs);
-    const {worker, generation} = await this.#engine(tenantId);
+    const {worker, generation} = await this.#engine(tenantId, reserveIdentity);
     const modules = await this.#primeList();
     const mark = Date.now();
     try {
@@ -566,8 +572,8 @@ export class TenantHost extends DurableObject {
 
   // Pre-warm: a dispatcher that knows an attempt is coming can pay the boot
   // ahead of it. Opens the same warm window an attempt does.
-  async warm({tenantId, engineOnly = false}) {
-    const boot = await this.#exclusive(() => this.#ping(tenantId));
+  async warm({tenantId, engineOnly = false, reserveIdentity}) {
+    const boot = await this.#exclusive(() => this.#ping(tenantId, {reserveIdentity}));
     await this.#rememberWarm(tenantId);
     if (engineOnly) {
       this.ctx.waitUntil(this.#warmOrigin());
@@ -607,47 +613,12 @@ export class TenantHost extends DurableObject {
 }
 
 export class TenantApi extends WorkerEntrypoint {
-  async fetch(request) {
+  fetch(request) {
     const tenantId = this.ctx.props?.tenantId;
     if (typeof tenantId !== 'string' || tenantId === '') {
       return new Response('unknown tenant', {status: 401});
     }
     const host = this.ctx.exports.TenantHost.getByName(tenantId);
-    const url = new URL(request.url);
-    // The host checks the current attempt's HTTPS allowlist and forwards the
-    // workflow's own headers, without the run token.
-    if (url.origin !== VIRTUAL_API_ORIGIN) return host.egress(request, this.ctx.props?.generation);
-    if (request.method === 'POST' && url.pathname === '/auth/refresh') return this.#refresh(host, request);
-
-    // Every refusal is noted against the attempt in flight, so a call the
-    // gateway turned away is visible in the breakdown instead of vanishing.
-    const deny = async (status, reason) => {
-      await host.noteEgress({method: request.method, path: url.pathname, status, denied: reason});
-      return new Response(reason, {status});
-    };
-    const authorization = request.headers.get('Authorization') ?? '';
-    const handle = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
-    if (!HANDLE_RE.test(handle)) return deny(401, 'opaque handle required');
-    let target;
-    try {
-      target = apiTarget(request.url, this.env.API_ORIGIN, {scope: this.env.SDK_SCOPE, method: request.method});
-    } catch {
-      return deny(403, 'API capability denied');
-    }
-    // RPC carries strings, not URL objects.
-    return host.forward(handle, request, String(target));
-  }
-
-  // The SDK refreshing its "token", i.e. the handle it holds in both slots.
-  // Never forwarded: the host refreshes the real tokens if the API challenged
-  // the current one, and the reply hands back the same handle.
-  async #refresh(host, request) {
-    const handle = await refreshRequestHandle(request);
-    const outcome = HANDLE_RE.test(handle ?? '') ? await host.refresh(handle) : 'gone';
-    const reply = refreshReply(outcome, handle);
-    if (outcome !== 'gone') {
-      await host.noteCall(handle, {method: 'POST', path: '/auth/refresh', status: reply.status, refresh: outcome});
-    }
-    return reply;
+    return routeTenantRequest(request, host, this.ctx.props?.generation, this.env);
   }
 }

@@ -48,10 +48,7 @@ def release(tmp_path: Path, monkeypatch) -> Path:
     raw_bounds = manifest["meter_bounds"]
     qualification = cloudflare_release.MeterBounds.model_validate(raw_bounds).qualification
     cpu = qualification.cpu_limits_ms
-    for role, exports in (
-        ("launcher", ("CloudflareLauncher", "TenantHost")),
-        ("capacity", ("ScopeRegistry", "WorkerLedger")),
-    ):
+    for role, exports in cloudflare_release.WORKER_EXPORTS.items():
         name = f"{role}.mjs"
         content = f"export default '{role}';".encode()
         (tmp_path / name).write_bytes(content)
@@ -63,6 +60,8 @@ def release(tmp_path: Path, monkeypatch) -> Path:
             }],
             "exports": {value: {"type": "durable-object", "storage": "sqlite"} for value in exports},
             "bindings": [
+                {"name": "TENANT_GATEWAY", "type": "service", "script": "gateway"},
+                {"name": "BIFROST_METER_GENERATIONS", "type": "plain_text", "text": "true"},
                 {"name": "BIFROST_METER_SDK_REQUESTS", "type": "plain_text", "text": "40"},
                 {"name": "BIFROST_METER_ENGINE_CPU_MS", "type": "plain_text", "text": str(cpu["workflow"])},
                 *({"name": f"BIFROST_METER_{name.upper()}_CPU_MS", "type": "plain_text", "text": str(cpu[name])}
@@ -73,11 +72,11 @@ def release(tmp_path: Path, monkeypatch) -> Path:
                     sort_keys=True, separators=(",", ":"),
                 )},
             ] if role == "launcher" else [],
-            "cpu_ms": cpu["gateway" if role == "launcher" else "capacity"],
+            "cpu_ms": cpu["workflow" if role == "launcher" else role],
             "public_endpoint": role == "capacity",
             "preview_urls": False,
         }
-    modules = [manifest["workers"][role]["modules"][0] for role in ("launcher", "capacity")]
+    modules = [manifest["workers"][role]["modules"][0] for role in cloudflare_release.WORKER_EXPORTS]
     raw_bounds["qualification"]["capacity_module_sha256"] = modules[-1]["sha256"]
     raw_bounds["qualification"]["bundle_sha256"] = sha256("\n".join(
         f'{module["name"]}:{module["sha256"]}' for module in modules
@@ -265,6 +264,7 @@ async def test_rest_upload_scopes_the_bearer_and_finalizes_the_verified_endpoint
                 launcher_cap=1, slots_per_launcher=1, max_lifetime_seconds=60,
                 work_kinds=frozenset({"workflow"}),
             ),
+            gateway_name="bifrost-gateway",
         ))
         token = SecretStr("synthetic-management")
         observed = await resume_creation(

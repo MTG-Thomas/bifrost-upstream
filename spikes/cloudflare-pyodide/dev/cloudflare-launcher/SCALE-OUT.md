@@ -54,10 +54,11 @@ Set `QUALIFIED_WORKERS_METER_BOUNDS` to the exact JSON in `api/src/services/work
 
 The Phase 1 calibration applies a 10× margin to measured CPU and gateway
 requests. The package sets separate CPU limits for the capacity Worker,
-launcher gateway, warm priming, and idle exercise. Cold boot retains the
-30,000 ms ceiling. Execution honors each approval up to that ceiling.
-The admission ledger prices Worker CPU by request and dispatch and keeps
-the separate DO residency and Dynamic Worker identity reserves. [Measured release calibration](PHASE1-USAGE.md#measured-release-calibration)
+private gateway, warm priming, and idle exercise. Cold boot and the
+launcher/DO script retain the 30,000 ms ceiling. Execution honors each
+approval up to that ceiling. The admission ledger prices Worker CPU
+by request and dispatch, models unenforced Dynamic Worker startup,
+and books identity fees once per tenant-day and generation opening. [Measured release calibration](PHASE1-USAGE.md#measured-release-calibration)
 
 **Deploy path decision.** Choose REST/OCI if the packaged runner proves the complete lifecycle through documented interfaces or standard registry operations, including retry after lost responses, least-privilege permissions and exact cleanup. If a necessary lifecycle operation fails that gate or has no supported direct operation (image tag deletion is a specific candidate), qualify a pinned `cf` client inside the trusted runner as the deliberate deployment path. Include any required pinned build adapter in the runner image and use the same immutable artifacts and resource inventory. Require structured outputs/readback, protected token injection, tool provenance, exact resource fences, explicit app creation and cleanup. Keep one deployment adapter per qualified release/scope. A failed or ambiguous mutation never triggers an automatic switch of adapters. Keep a scope gated if neither path passes. `cf` implements managed registry tag listing/deletion independently of Wrangler. [cf registry implementation](https://github.com/cloudflare/cf/blob/main/CLAUDE.md) · [Wrangler image commands](https://developers.cloudflare.com/workers/wrangler/commands/containers/)
 

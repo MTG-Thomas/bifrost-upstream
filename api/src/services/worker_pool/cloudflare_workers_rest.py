@@ -320,6 +320,7 @@ class WorkersDeployment:
     launcher_name: str
     capacity_name: str
     policy: CloudflareWorkersPolicy
+    gateway_name: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -340,6 +341,8 @@ class WorkersRestProvisioner(WorkersRestCleanup):
             return "launcher"
         if intent.target.name == self._deployment.capacity_name:
             return "capacity"
+        if intent.target.name == self._deployment.gateway_name:
+            return "gateway"
         raise OwnershipConflict("Cloudflare upload intent has an unknown deployment target")
 
     def _render_upload(
@@ -371,9 +374,12 @@ class WorkersRestProvisioner(WorkersRestCleanup):
                     raise OwnershipConflict("Cloudflare release declares an invalid dynamic binding")
                 value["text"] = values[binding.source]
             if binding.script is not None:
-                if role != "capacity" or binding.type != "durable_object_namespace":
+                if (role, binding.type, binding.script) == ("capacity", "durable_object_namespace", "launcher"):
+                    value["script_name"] = deployment.launcher_name
+                elif (role, binding.type, binding.script) == ("launcher", "service", "gateway"):
+                    value.update(service=deployment.gateway_name, environment="production")
+                else:
                     raise OwnershipConflict("Cloudflare release declares an invalid cross-script binding")
-                value["script_name"] = deployment.launcher_name
             bindings.append(value)
         bindings.append({"name": OWNER_BINDING, "type": "plain_text", "text": worker_owner_value(intent)})
         if len({row["name"] for row in bindings}) != len(bindings):
@@ -454,7 +460,7 @@ class WorkersRestProvisioner(WorkersRestCleanup):
                 raise ObservationPending("Cloudflare Worker endpoint update did not confirm the requested settings")
         if await observe_owned(self, api_token=api_token, intent=intent, recorded=expected) is None:
             raise ObservationPending("Cloudflare uploaded Worker has disappeared")
-        if role == "launcher":
+        if role != "capacity":
             return ConfiguredWorkersScript(None, namespaces)
         response = await self._request(
             api_token, intent.target.account_id, "GET", "workers/subdomain",

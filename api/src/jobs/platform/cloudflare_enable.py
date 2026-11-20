@@ -118,7 +118,7 @@ async def _journal(
     else:
         bearer = open_credential(bearer_ref, bearer_row)
     identifiers = []
-    for name in (deployment.launcher_name, deployment.capacity_name):
+    for name in (deployment.gateway_name, deployment.launcher_name, deployment.capacity_name):
         resource = await db.scalar(select(CloudflareOwnedResource).where(
             CloudflareOwnedResource.installation_id == installation.id,
             CloudflareOwnedResource.kind == "worker_script",
@@ -208,6 +208,7 @@ async def _settle_enable(
             deployment = WorkersDeployment(
                 release, row.worker_ingress_origin, f"{prefix}-launcher", f"{prefix}-capacity",
                 CloudflareCapacityPolicy.model_validate(row.policy["limits"]).workers,
+                gateway_name=f"{prefix}-gateway",
             )
             bearer, identifiers = await _journal(db, row, deployment, actor=context.requested_by_user_id)
             break
@@ -254,6 +255,7 @@ async def _settle_enable(
                 installation_id=row.id, scope="workers", deployment_revision=payload.revision,
                 endpoint=capacity_endpoint, bearer_version=payload.revision,
             capacity_cpu_ms=capacity_cpu_ms,
+                gateway_required=True,
             ))
         elif scope.endpoint != capacity_endpoint or scope.bearer_version != payload.revision:
             raise OwnershipConflict("Cloudflare scope differs from the verified deployment")

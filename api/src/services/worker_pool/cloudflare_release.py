@@ -15,10 +15,15 @@ from shared.models import CloudflareLauncherCounts
 WORKERS_RELEASE_PATH = Path("/app/artifacts/cloudflare/workers")
 MAX_WORKER_BYTES = 64 * 1024 * 1024
 QUALIFIED_RUNTIME_SHA256 = "fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5"
-QUALIFIED_METER_BOUNDS_SHA256 = "735eb7b9aef4edfa2f1b25be475120f010a58fa857f9d2df69649ead8daeade0"
+QUALIFIED_METER_BOUNDS_SHA256 = "a79a86c6c3ee7f856760c655aba7aea7ee68da38025503b9d258afbaffc748e3"
 WORKFLOW_CPU_CEILING_MS = 30_000
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
-WorkerRole = Literal["launcher", "capacity"]
+WorkerRole = Literal["launcher", "gateway", "capacity"]
+WORKER_EXPORTS: dict[WorkerRole, frozenset[str]] = {
+    "launcher": frozenset({"CloudflareLauncher", "TenantHost"}),
+    "gateway": frozenset(),
+    "capacity": frozenset({"ScopeRegistry", "WorkerLedger"}),
+}
 
 
 class WorkersReleaseUnavailable(Exception):
@@ -46,13 +51,13 @@ class WorkerBinding(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(pattern=r"^[A-Z][A-Z0-9_]*$")
-    type: Literal["worker_loader", "durable_object_namespace", "secret_text", "plain_text"]
+    type: Literal["worker_loader", "durable_object_namespace", "secret_text", "plain_text", "service"]
     source: Literal[
         "worker_ingress_origin", "scope_bearer", "launcher_cap", "max_lifetime_seconds",
         "slots_per_launcher", "worker_version",
     ] | None = None
     class_name: str | None = None
-    script: Literal["launcher"] | None = None
+    script: Literal["launcher", "gateway"] | None = None
     text: str | None = None
 
 
@@ -102,8 +107,9 @@ class CpuReference(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source_run: UUID
+    requalification_run: UUID
     samples: CpuSamplePaths
-    startup_reserve_ms: Literal[1000]
+    startup_reserve_ms: int = Field(gt=0)
 
 
 class MeterQualification(BaseModel):
@@ -195,8 +201,8 @@ def load_workers_release(path: Path = WORKERS_RELEASE_PATH) -> WorkersRelease:
             raise WorkersReleaseUnavailable("Workers runtime does not match the qualified digest")
         if meter_bounds_digest(manifest.meter_bounds) != QUALIFIED_METER_BOUNDS_SHA256:
             raise WorkersReleaseUnavailable("Workers meter bounds do not match the pinned digest")
-        if set(manifest.workers) != {"launcher", "capacity"}:
-            raise WorkersReleaseUnavailable("Workers release must contain the launcher and capacity roles")
+        if set(manifest.workers) != set(WORKER_EXPORTS):
+            raise WorkersReleaseUnavailable("Workers release must contain the launcher, gateway and capacity roles")
         qualifier = manifest.meter_bounds.qualification
         cpu = qualifier.cpu_limits_ms
         launcher = manifest.workers["launcher"]
@@ -204,7 +210,12 @@ def load_workers_release(path: Path = WORKERS_RELEASE_PATH) -> WorkersRelease:
         serialized_caps = json.dumps(qualifier.launcher_caps, sort_keys=True, separators=(",", ":"))
         if (
             manifest.workers["capacity"].cpu_ms != cpu["capacity"]
-            or launcher.cpu_ms != cpu["gateway"]
+            or launcher.cpu_ms != WORKFLOW_CPU_CEILING_MS
+            or manifest.workers["gateway"].cpu_ms != cpu["gateway"]
+            or cpu["startup"] != (qualifier.cpu_reference.samples.cold_exercise.p99_us * qualifier.safety_margin + 999) // 1000
+            or not any(binding.name == "TENANT_GATEWAY" and binding.type == "service" and binding.script == "gateway"
+                       for binding in launcher.bindings)
+            or resource_limits.get("BIFROST_METER_GENERATIONS") != "true"
             or resource_limits.get("BIFROST_METER_SDK_REQUESTS") != str(qualifier.sdk_request_limit)
             or resource_limits.get("BIFROST_METER_ENGINE_CPU_MS") != str(cpu["workflow"])
             or any(resource_limits.get(f"BIFROST_METER_{name.upper()}_CPU_MS") != str(cpu[name])
@@ -215,7 +226,7 @@ def load_workers_release(path: Path = WORKERS_RELEASE_PATH) -> WorkersRelease:
         modules: dict[WorkerRole, dict[str, bytes]] = {}
         seen: set[str] = set()
         for role, worker in manifest.workers.items():
-            expected_exports = {"CloudflareLauncher", "TenantHost"} if role == "launcher" else {"ScopeRegistry", "WorkerLedger"}
+            expected_exports = WORKER_EXPORTS[role]
             if set(worker.exports) != expected_exports or worker.public_endpoint != (role == "capacity"):
                 raise WorkersReleaseUnavailable("Workers exports or endpoint visibility do not match the managed release")
             if sum(module.bytes for module in worker.modules) > MAX_WORKER_BYTES:
@@ -235,7 +246,7 @@ def load_workers_release(path: Path = WORKERS_RELEASE_PATH) -> WorkersRelease:
             modules[role] = payload
         fingerprint = sha256("\n".join(
             f"{name}:{sha256(payload).hexdigest()}"
-            for role in ("launcher", "capacity") for name, payload in modules[role].items()
+            for role in WORKER_EXPORTS for name, payload in modules[role].items()
         ).encode()).hexdigest()
         if fingerprint != qualifier.bundle_sha256:
             raise WorkersReleaseUnavailable("Workers bundle differs from the qualified fingerprint")
