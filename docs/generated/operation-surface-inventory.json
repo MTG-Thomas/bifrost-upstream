@@ -95,7 +95,7 @@
           "platform.readwrite"
         ],
         "async_policy": "platform_job",
-        "audit_event": null,
+        "audit_event": "capacity.cloudflare_scale_in",
         "authorization_resolver": "platform.readwrite at Global",
         "cli": {
           "path": [
@@ -158,7 +158,7 @@
           "platform.readwrite"
         ],
         "async_policy": "platform_job",
-        "audit_event": null,
+        "audit_event": "capacity.cloudflare_disconnect",
         "authorization_resolver": "platform.readwrite at Global",
         "cli": {
           "path": [
@@ -186,6 +186,68 @@
         },
         "side_effects": [],
         "summary": "Disconnect Cloudflare Capacity",
+        "target_kind": "platform"
+      }
+    },
+    {
+      "observed": {
+        "cli": {
+          "path": [
+            "capacity",
+            "cloudflare",
+            "rotate"
+          ],
+          "status": "exact_parity"
+        },
+        "manifest": {
+          "entity": null,
+          "status": "intentionally_unsupported"
+        },
+        "mcp": {
+          "name": null,
+          "status": "intentionally_unsupported"
+        },
+        "rest": {
+          "operation_id": "capacity.cloudflare_rotate_account_token",
+          "status": "exact_parity"
+        },
+        "sdk": {
+          "binding": null,
+          "status": "intentionally_unsupported"
+        }
+      },
+      "operation": {
+        "action_scopes": [
+          "platform.readwrite"
+        ],
+        "async_policy": "platform_job",
+        "audit_event": "capacity.cloudflare_rotate_account_token",
+        "authorization_resolver": "platform.readwrite at Global",
+        "cli": {
+          "path": [
+            "capacity",
+            "cloudflare",
+            "rotate"
+          ]
+        },
+        "exclusions": {
+          "manifest": "Capacity credentials are bound to the deployment.",
+          "mcp": "The replacement token is entered through a protected operator input.",
+          "native_builder": "Cloudflare capacity is platform administration.",
+          "sdk": "Runtime SDKs do not administer capacity."
+        },
+        "manifest": null,
+        "mcp": null,
+        "native_builder": false,
+        "operation_id": "capacity.cloudflare_rotate_account_token",
+        "rest": {
+          "method": "POST",
+          "path": "/api/capacity/cloudflare/rotate",
+          "request_model": "CloudflareAccountTokenRotation",
+          "response_model": "PlatformJobAccepted"
+        },
+        "side_effects": [],
+        "summary": "Rotate Cloudflare Account API Token",
         "target_kind": "platform"
       }
     },
@@ -10933,10 +10995,10 @@
     }
   ],
   "counts": {
-    "cli": 185,
+    "cli": 186,
     "manifest": 16,
     "mcp": 104,
-    "rest": 727,
+    "rest": 728,
     "sdk": 21
   },
   "schema_version": 1,

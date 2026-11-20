@@ -388,12 +388,13 @@ async def test_supervisor_reserves_and_retires_without_restarting(
         CredentialRef(installation.id, installation.account_id, "scope_bearer", "workers", 1),
         SecretStr(bearer), actor=str(OPERATOR_ID), now=datetime.now(UTC),
     ))
-    db_session.add(ExecutionWorker(
+    primary_worker = ExecutionWorker(
         id=uuid4(), form=primary, state="ready",
         capacity_scope="vm" if primary == "external" else None,
         heartbeat_at=datetime.now(UTC), supported_handlers=["workflow.execute"],
         memory_budget_bytes=128 * 2**20, memory_reserved_bytes=128 * 2**20,
-    ))
+    )
+    db_session.add(primary_worker)
     db_session.add(WorkDispatch(
         family="workflow", handler="workflow.execute", handler_version=1, subject_id=uuid4(),
         message={}, payload={}, cloudflare_revision="c" * 64, memory_request_bytes=64 * 2**20,
@@ -457,8 +458,19 @@ async def test_supervisor_reserves_and_retires_without_restarting(
         assert not writes
         installation.desired_state = "enabled"
         installation.admitted_revision = 1
+        if primary == "static":
+            primary_worker.memory_reserved_bytes = 0
+            installation.policy = {
+                **installation.policy,
+                "limits": {**installation.policy["limits"], "shared_managed_worker_cap": None},
+            }
         await add_usage(db_session, installation)
         await db_session.flush()
+        if primary == "static":
+            await sweep()
+            assert not writes
+            primary_worker.memory_reserved_bytes = 128 * 2**20
+            await db_session.flush()
         await sweep()
         assert writes == ["PUT", "POST"]
         owned = tuple(controllers.values())

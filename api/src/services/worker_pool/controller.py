@@ -574,7 +574,7 @@ class WorkerCapacityController(ABC):
                 # Give Linux-only work first use of any remaining Linux budget.
                 needed.sort(key=new_declared.fits)
             jobs = sum(1 for worker in workers if worker.form in MANAGED_WORKER_FORMS)
-            room = max(0, policy.max_workers - jobs)
+            room = policy.max_workers if managed_scope is not None else max(0, policy.max_workers - jobs)
             shared_cap = await db.scalar(
                 select(CloudflareInstallation.policy["limits"]["shared_managed_worker_cap"].as_integer())
                 .where(

@@ -656,6 +656,7 @@ Options:
 
 Commands:
   disconnect  Drain Cloudflare workers and remove verified owned capacity.
+  rotate      Validate and replace the Cloudflare account API token.
   scale-in    Drain Cloudflare workers and retain the connection.
   status      Show the current Cloudflare connection and capacity policy.
 ```
@@ -666,6 +667,21 @@ Commands:
 Usage: capacity cloudflare disconnect [OPTIONS]
 
   Drain Cloudflare workers and remove verified owned capacity.
+
+Options:
+  --wait                       Wait for completion through the platform job.
+  --installation-id TEXT       installation_id (UUID).  [required]
+  --expected-revision INTEGER  expected_revision  [required]
+  --json                       Emit JSON instead of human-readable output.
+  --help                       Show this message and exit.
+```
+
+#### `capacity cloudflare rotate`
+
+```
+Usage: capacity cloudflare rotate [OPTIONS]
+
+  Validate and replace the Cloudflare account API token.
 
 Options:
   --wait                       Wait for completion through the platform job.

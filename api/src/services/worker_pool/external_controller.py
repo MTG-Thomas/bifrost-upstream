@@ -52,17 +52,14 @@ class ExternalWorkerPoolController(WorkerCapacityController):
         self.cleanup_states = ("lost", "retired")
         self.runtime_profile = profile.runtime_profile
         self.burst_launch_allowed = True
-        self.shared_managed_worker_cap: int | None = None
         self.managed_max_lifetime_seconds: int | None = None
 
     async def launch_for_demand(self, policy: KubernetesPolicy) -> list[UUID]:
         if not self.burst_launch_allowed:
             return []
         if self.managed_cloudflare_scope is not None:
-            if self.shared_managed_worker_cap is None:
-                return []
             return await super().launch_for_demand(replace(
-                policy, max_workers=self.shared_managed_worker_cap, warm_workers=0,
+                policy, max_workers=self.profile.max_workers, warm_workers=0,
                 reserved_fast_path_workers=0,
             ))
         try:

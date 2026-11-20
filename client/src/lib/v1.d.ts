@@ -3032,6 +3032,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/capacity/cloudflare/rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Rotate Cloudflare Account Token */
+        post: operations["capacity.cloudflare_rotate_account_token"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/branding": {
         parameters: {
             query?: never;
@@ -16235,6 +16252,21 @@ export interface components {
              */
             failed: number;
         };
+        /** CloudflareAccountTokenRotation */
+        CloudflareAccountTokenRotation: {
+            /**
+             * Installation Id
+             * Format: uuid
+             */
+            installation_id: string;
+            /** Expected Revision */
+            expected_revision: number;
+            /**
+             * Api Token
+             * Format: password
+             */
+            api_token: string;
+        };
         /** CloudflareCapacityAction */
         CloudflareCapacityAction: {
             /**
@@ -16264,6 +16296,8 @@ export interface components {
             /** Consent Text Version */
             consent_text_version: string;
             installation: components["schemas"]["CloudflareInstallationStatus"] | null;
+            /** Latest Job Id */
+            latest_job_id?: string | null;
         };
         /** CloudflareInstallationStatus */
         CloudflareInstallationStatus: {
@@ -38510,6 +38544,39 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["CloudflareCapacityAction"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformJobAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "capacity.cloudflare_rotate_account_token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CloudflareAccountTokenRotation"];
             };
         };
         responses: {
