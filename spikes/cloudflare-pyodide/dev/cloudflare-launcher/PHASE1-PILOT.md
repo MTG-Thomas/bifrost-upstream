@@ -298,3 +298,98 @@ timeout, protocol, and transport errors when a route produces no
 HTTP response. The focused backend run passed 95 tests and the full
 capacity workerd suite passed eight tests, including its 17-case
 shared provider conformance run.
+
+## Ingress review and deletion settlement
+
+The retained records from the first pilot show a failed ingress route
+without an HTTP response and a later successful independent check.
+They do not retain the transport exception. The exact cause of that
+first refusal remains unknown. The first Disconnect similarly left one
+resource in `deleting`; the subsequent readback found both scripts
+and all namespaces absent. The retained journal does not distinguish
+stale script readback from delayed namespace disappearance.
+
+The follow-up used release manifest
+`b4d55400c080dc014b85054f1560e8a0e4da2470d597c71ab5c501790801f112`
+and installation `55d6357a-a4c3-4f57-8369-572545515528`. Deliberately
+returning 404 for one allowed route produced Action Required with
+`ingress_http / unexpected_status / 404` in job
+`e90690a7-4a38-44f5-988b-7cf314b3d5a7`. After restoring the route,
+job `8039a014-8d90-4717-a0fb-08050726d142` recorded
+`ingress_http / connect_timeout`. A diagnostic socket probe also
+found IPv6 errno 101 on both advertised IPv6 addresses. HTTPX and
+httpcore wrapped the error and suppressed its context. The probe
+now checks that context for a missing-route errno. It still refuses
+TCP timeouts, connection refusals, and TLS EOF.
+
+After that fix, job `22529613-b865-4cab-9f7d-49361b3568a0` opened
+admission. Worker `a4ff9d63-5dcf-4d0a-bbea-31eee300437b` recorded
+hello, a generation-1 proof, a generation-1 ACK, and verified deletion.
+The loose workflow `85d6948e-bb29-4513-b2f0-459f14b31c13` and the
+Solution workflow `8694ea6d-d661-4d1e-a11e-5794e44f0e17` again ran
+on separate Workers and settled `Success`.
+
+One Disconnect job, `01b82b93-8d8e-47d2-8f5a-d56a4344ea7f`,
+completed and verified both scripts absent. Product state showed no
+installation or credential ciphertext. The regression simulates a
+visible namespace after script DELETE and observes 2- and 4-second
+backoffs within one job. The hosted run verifies one-job cleanup.
+Independent `cf` and Docker readback found no trial resources.
+The follow-up estimate was $0.08. [Measured inputs](PHASE1-USAGE.md#measured-release-calibration)
+
+## Calibrated release verification
+
+The packaged candidate `460a9e91d` used release manifest
+`08cc31907f879f6208dbb5fed88dbf29e021ffc42a81b12e1691f5b17a0eca7e`.
+Connect created installation `c26cd7bd-e84d-4b47-b756-13339c5f1332`
+under the $25 usage limit. The envelope was $13.60, down from
+$14.17 for the same two one-slot launchers. The connector ran from
+17:20:36 to 17:26:05 UTC within a 25-minute window. The account's
+$25 notification guard remained active. The pilot used no
+Containers or LLM requests.
+
+Enable `2b3bd935-7b00-4d96-819e-c59b77b6481a` opened admission.
+Canary `23c640f1-ddc6-413c-ac2b-3475cac6bbd4` recorded its scoped
+proof and ACK in generation 1 and retired with verified physical
+deletion. Cloudflare's settings confirmed 425 ms CPU for the
+capacity Worker, 30,000 ms for the launcher, and launcher bindings
+of 40 gateway requests and 30,000 ms engine CPU.
+
+With 24 MiB remaining on each primary worker, loose workflow
+`c5ac8321-82ec-4b12-abb4-35dacb590f24` and Solution workflow
+`303d966c-bd55-4dc4-899b-acaccf3d4009` settled `Success`.
+Their Workers claims were `fe358e0b-c0a0-47c3-9043-4412312e0783`
+and `327601eb-827c-44d1-a4bb-5d7f23653482`. The limit probe
+`40e92637-3ee6-4458-bb73-1d6a7baa78da` had an approval allowance
+of 50 and a loop of 43 SDK calls that caught SDK errors. It settled
+`Failed` under Workers claim `75f55c6a-3fb5-4aaa-ad23-d5288e270029`
+with the release SDK limit error. The API ledger recorded four
+requests for the two successes and 39 for the probe. The launcher
+budget also counts requests served by its local source snapshot.
+
+For the 17:20:36–17:23:22 UTC sample, GraphQL reported 41 launcher
+requests and 18,657 µs CPU, and 54 capacity requests and 47,534 µs
+CPU. Sample intervals were 1.64 and 1, respectively. The marginal
+Worker proxy was $0.00002982382. The product displayed $0.10, about
+3,353× the proxy. On the same 79.356 launcher-seconds and slot-seconds,
+three dispatches and 43 API SDK requests, the old formula gives
+$0.14235 and the new one $0.09541, a 33% reduction. The workload mix
+and sample differ from the earlier pilot. The Durable Object queries
+returned no rows for this run or the delayed reference query.
+SQLite and log enforcement remain unqualified, and their
+theoretical bounds stay in the estimate. Total estimated pilot
+spend across rounds was $0.36. [Cloudflare Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/)
+
+Scale In `ceb31900-03e4-4ad5-8e09-734a0c7a8aa7` succeeded.
+Disconnect `a7d15a5b-edf6-4ab8-9702-b7906c99cbce` completed in
+one job, verified both scripts absent, and cleared the installation,
+scopes, staged credentials and credential ciphertext. Independent
+`cf` readback found zero trial Workers, Durable Object namespaces,
+Container apps, registry images, management tokens, DNS records,
+live tunnels and connectors. Docker verified both hosted debug
+projects and their test projects absent.
+
+The focused backend run passed 82 tests, including the Alembic
+single-head check. The two workerd suites passed 28 tests and the
+release CI validation passed six tests. Focused Ruff and Pyright
+also passed.

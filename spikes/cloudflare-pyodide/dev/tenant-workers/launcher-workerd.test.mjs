@@ -120,6 +120,23 @@ const main = `
       return attempt;
     }
     async waitForRun(id) { await this.#signal(id).promise; }
+    async runWithCpuWitness(input) {
+      const loader = this.env.LOADER;
+      let limit;
+      this.env.LOADER = {get(...args) {
+        const worker = loader.get(...args);
+        return {getEntrypoint(name, options) {
+          limit = options.limits.cpuMs;
+          return worker.getEntrypoint(name, options);
+        }};
+      }};
+      try {
+        const result = await super.run(input);
+        return {limit, result};
+      } finally {
+        this.env.LOADER = loader;
+      }
+    }
     async primeHeldPing() {
       await this.ctx.storage.put('prime', {engine: 'test-engine', modules: ['hold_ping']});
     }
@@ -135,6 +152,7 @@ const main = `
       const {tenantId, action, input} = await request.json();
       const host = ctx.exports.TenantHost.getByName(tenantId);
       if (action === 'run') return Response.json(await host.run(input));
+      if (action === 'cpu-witness') return Response.json(await host.runWithCpuWitness(input));
       if (action === 'warm') return Response.json(await host.warm({tenantId, ...input}));
       if (action === 'warm-commit-failure') return Response.json(await host.warmWithCommitFailure({tenantId, ...input}));
       if (action === 'exercise') return Response.json(await host.exercise({tenantId}));
@@ -294,6 +312,7 @@ before(async () => {
       exports: {TenantHost: {type: 'durable-object', storage: 'sqlite'}, TenantApi: {type: 'worker'}},
       env: {LOADER: {type: 'worker-loader'}, API_ORIGIN: {type: 'text', value: 'https://upstream.invalid'},
         BIFROST_METER_SDK_REQUESTS: {type: 'text', value: '3'},
+        BIFROST_METER_ENGINE_CPU_MS: {type: 'text', value: '125'},
         ATTEMPT_DEADLINE_MS: {type: 'text', value: '1'}},
       manifest: {mainModule, modulesRoot: fileURLToPath(root), modules: {
         [mainModule]: {type: 'esm', contents: main},
@@ -621,6 +640,18 @@ test('the release SDK meter stops the fourth request even with a larger workflow
   assert.equal(result.terminal.phase, 'sdk-meter-limit');
   assert.equal(result.terminal.attempt_state, 'completed');
   assert.equal(origins.slice(before).filter(url => url.endsWith('/count')).length, 3);
+});
+
+test('the WorkerLoader receives the smaller of the release CPU limit and the workflow approval', async () => {
+  const tenant = 'meter-cpu';
+  await host(tenant, 'warm');
+  for (const [approved, expected] of [[200, 125], [50, 50]]) {
+    const input = route(tenant, {routeId: `cpu-${approved}`});
+    input.context.cloudflare_workspace.cpu_budget_ms = approved;
+    const {limit, result} = await host(tenant, 'cpu-witness', input);
+    assert.equal(limit, expected);
+    assert.equal(result.output.status, 'Success');
+  }
 });
 
 for (const [scenario, phase] of [['cpu-limit', 'cpu_limit'], ['memory-limit', 'memory_limit']]) {
