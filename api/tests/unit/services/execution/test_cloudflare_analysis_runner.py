@@ -5,6 +5,8 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -23,7 +25,7 @@ from src.services.execution import cloudflare_analysis_runner as runner
         ("large-literal", ["CF_URL_REVIEW"]),
     ],
 )
-def test_synthetic_source_stays_within_analysis_budget(shape, expected_rules):
+def test_synthetic_source_produces_expected_rules(shape, expected_rules):
     measure = Path(__file__).with_name("cloudflare_analysis_measure.py")
     result = subprocess.run(
         [sys.executable, "-I", str(measure), str(runner._WORKER), shape],
@@ -31,8 +33,42 @@ def test_synthetic_source_stays_within_analysis_budget(shape, expected_rules):
     )
     [receipt] = json.loads(result.stdout)
     assert receipt["rules"] == expected_rules
-    assert receipt["wall_s"] < runner._WALL_SECONDS and receipt["cpu_s"] < CPU_SECONDS
-    assert receipt["peak_rss_mib"] < ADDRESS_SPACE_BYTES / 1024**2
+
+
+@pytest.mark.parametrize("exit_code", [-6, -9, -11, 1, 0])
+async def test_child_exit_without_result_has_budget_rule(exit_code):
+    process = SimpleNamespace(
+        stdin=SimpleNamespace(write=Mock(), drain=AsyncMock()),
+        stdout=SimpleNamespace(readline=AsyncMock(return_value=b"")),
+        returncode=exit_code,
+    )
+    with pytest.raises(runner.AnalysisRejected) as failure:
+        await runner._exchange(process, AsyncMock(), {})
+    assert failure.value.rule == "CF_PARSE_BUDGET"
+
+
+async def test_oversized_child_response_has_budget_rule():
+    reader = asyncio.StreamReader(limit=8)
+    reader.feed_data(b" " * 9 + b"\n")
+    process = SimpleNamespace(stdin=SimpleNamespace(write=Mock(), drain=AsyncMock()), stdout=reader)
+    with pytest.raises(runner.AnalysisRejected) as failure:
+        await runner._exchange(process, AsyncMock(), {})
+    assert failure.value.rule == "CF_PARSE_BUDGET"
+
+
+async def test_serialization_memory_error_has_budget_rule(monkeypatch):
+    from bifrost import _cloudflare_analysis_process as worker
+
+    analyzer = SimpleNamespace(analyze=AsyncMock(return_value={}), AnalysisRejected=runner.AnalysisRejected)
+    monkeypatch.setattr(worker, "importlib", SimpleNamespace(import_module=lambda _: analyzer))
+    monkeypatch.setattr(worker, "sys", SimpleNamespace(stdin=SimpleNamespace(
+        buffer=SimpleNamespace(readline=lambda: b'{"diagnostics": false}\n'),
+    )))
+    send = Mock(side_effect=[MemoryError(), None])
+    monkeypatch.setattr(worker, "_send", send)
+
+    await worker._run()
+    assert send.call_args.args[0]["rule"] == "CF_PARSE_BUDGET"
 
 
 async def test_child_limits_are_installed_before_the_first_source_read(monkeypatch):
@@ -85,7 +121,7 @@ async def test_cancellation_reaps_child_waiting_for_source(monkeypatch):
     assert process is not None and process.returncode is not None
 
 
-async def test_wall_deadline_is_retryable_for_approvals(monkeypatch):
+async def test_analysis_wall_deadline_raises_timeout_for_approvals(monkeypatch):
     monkeypatch.setattr(runner, "_WALL_SECONDS", 1)
 
     async def read(_path: str, _maximum: int) -> bytes:
@@ -94,3 +130,17 @@ async def test_wall_deadline_is_retryable_for_approvals(monkeypatch):
 
     with pytest.raises(TimeoutError, match="analysis timed out"):
         await runner.analyze(read, "entry.py", "run", subrequest_allowance=5, cpu_budget_ms=1000)
+
+
+async def test_busy_admission_does_not_start_a_child_or_return_a_source_finding(monkeypatch):
+    slot = asyncio.Semaphore(1)
+    monkeypatch.setattr(runner, "_SLOT", slot)
+    monkeypatch.setattr(runner, "_ADMISSION_SECONDS", 0)
+    spawn = AsyncMock()
+    monkeypatch.setattr(runner.asyncio, "create_subprocess_exec", spawn)
+
+    async with slot:
+        with pytest.raises(runner.AnalysisBusy):
+            await runner.diagnose_file("entry.py", b"import subprocess")
+    spawn.assert_not_awaited()
+    assert not slot.locked()

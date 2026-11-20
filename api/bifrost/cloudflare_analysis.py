@@ -291,7 +291,7 @@ def _url_literal(node: ast.expr, constants: dict[str, str]) -> _URL | None:
             continue
         visited += 1
         if visited > _MAX_URL_PARTS:
-            return _URL("", False)
+            return _URL("".join(parts), False)
         if isinstance(item, ast.FormattedValue) and item.conversion == -1 and item.format_spec is None:
             item = item.value
         if isinstance(item, ast.BinOp) and isinstance(item.op, ast.Add):
@@ -304,7 +304,7 @@ def _url_literal(node: ast.expr, constants: dict[str, str]) -> _URL | None:
         if not isinstance(part, str):
             return _URL("".join(parts), False) if parts else None
         if len(part) > remaining:
-            return _URL("", False)
+            return _URL("".join(parts) + part[:remaining], False)
         remaining -= len(part)
         parts.append(part)
     return _URL("".join(parts))
@@ -329,7 +329,8 @@ def _check_tokens(source: str) -> None:
         # EOF failures can refer to a synthetic line beyond the file.
         content = source.rstrip("\r\n")
         last_line = 1 + content.count("\n") + content.count("\r") - content.count("\r\n")
-        raise SyntaxError(message, (None, min(line, last_line), column + 1, None)) from exc
+        offset = column + 1 if sys.version_info < (3, 12) else max(1, column)
+        raise SyntaxError(message, (None, min(line, last_line), offset, None)) from exc
 
 
 def _api_path_allowed(method: str, path: str) -> bool:
@@ -636,7 +637,9 @@ class _Analysis:
         _check_tokens(source)
         try:
             syntax = ast.parse(source, filename=path)
-        except (MemoryError, ValueError) as exc:
+        except MemoryError as exc:
+            raise AnalysisRejected("Workspace source exceeded the analysis memory limit", "CF_PARSE_BUDGET") from exc
+        except ValueError as exc:
             raise AnalysisRejected("Workspace source could not be analyzed as Python") from exc
         del source, content
         if entry_functions:
@@ -1122,10 +1125,3 @@ async def diagnose(
         refusal.locate(path)
         findings.append(Finding.from_refusal(refusal))
     return list(dict.fromkeys(findings))
-
-
-async def diagnose_file(path: str, source: bytes) -> list[Finding]:
-    async def read(_path: str, _maximum: int) -> bytes:
-        return source
-
-    return await diagnose(read, path, single_file=True)

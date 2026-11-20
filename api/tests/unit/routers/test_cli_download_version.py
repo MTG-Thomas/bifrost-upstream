@@ -41,6 +41,7 @@ def test_build_cli_artifact_stamps_and_filters_package(tmp_path: Path) -> None:
 
     assert "bifrost/lucide_icon_names.json" in names
     assert "bifrost/cloudflare_sdk_routes.json" in names
+    assert "bifrost/_cloudflare_analysis_process.py" not in names
     assert "bifrost/_logging.py" not in names
 
 

@@ -335,7 +335,7 @@ async def cloudflare_validation_issues(
     from bifrost.cloudflare_analysis import AnalysisRejected, placement_findings
     from src.core.storage.contracts import StorageError
     from src.services.editor.file_filter import normalize_workspace_file_path
-    from src.services.execution.cloudflare_analysis_runner import diagnose
+    from src.services.execution.cloudflare_analysis_runner import AnalysisBusy, diagnose
     from src.services.repo_storage import RepoStorage
 
     path = normalize_workspace_file_path(request.path)
@@ -361,7 +361,10 @@ async def cloudflare_validation_issues(
                     raise AnalysisRejected("Workspace source could not be read") from exc
                 return None
 
-        findings = await diagnose(read, path, single_file=storage is None)
+        try:
+            findings = await diagnose(read, path, single_file=storage is None)
+        except AnalysisBusy:
+            return []
     return [
         ValidationIssue(
             severity=finding.severity, message=finding.message, line=finding.line, column=finding.column,

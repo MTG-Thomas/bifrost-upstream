@@ -144,6 +144,8 @@ async def test_lease_loss_prevents_acceptance(scenario, worker):
     (ObservationChanged("Expected an active workflow"), "superseded"),
     (AnalysisRejected("Unresolved import: requests"), "review_required"),
     (SourceUnresolved("Indexed source missing"), "retryable"),
+    (TimeoutError("Analysis deadline expired"), "retryable"),
+    (reapproval.AnalysisBusy(), "retryable"),
 ])
 async def test_analysis_failure_outcomes(scenario, worker, error, outcome):
     _, _, payload, context = scenario
@@ -152,6 +154,8 @@ async def test_analysis_failure_outcomes(scenario, worker, error, outcome):
         with pytest.raises(PlatformJobFailure) as failure:
             await reapproval._run_reapproval(context, payload)
         assert failure.value.retryable
+        expected = "cloudflare_analysis_busy" if isinstance(error, reapproval.AnalysisBusy) else "cloudflare_source_unavailable"
+        assert failure.value.code == expected
     else:
         result = await reapproval._run_reapproval(context, payload)
         assert result["outcome"] == outcome

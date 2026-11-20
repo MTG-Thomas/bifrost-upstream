@@ -649,13 +649,15 @@ class SolutionDeployer:
                 outbound = bool(solution.allow_outbound_access)
 
                 async def collect() -> list[dict] | None:
-                    import asyncio
+                    from src.services.execution.cloudflare_analysis_runner import AnalysisBusy
 
                     try:
-                        reports = await asyncio.to_thread(lambda: asyncio.run(cloudflare_preflight(
+                        reports = await cloudflare_preflight(
                             rb.workflows, rb.python_files, rb.agents, outbound=outbound,
-                        )))
+                        )
                         return [report.to_dict() for report in reports]
+                    except AnalysisBusy:
+                        return None
                     except Exception:  # noqa: BLE001 - diagnostics are advisory
                         logger.exception("Cloudflare diagnostics failed for Solution %s", sid)
                         return None

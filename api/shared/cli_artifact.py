@@ -9,6 +9,7 @@ import tarfile
 from pathlib import Path
 
 _EXCLUDED_FILES = {
+    "_cloudflare_analysis_process.py",  # Linux API analysis worker
     "_internal.py",  # Platform-only permission checks
     "_logging.py",  # Platform-only logging
 }

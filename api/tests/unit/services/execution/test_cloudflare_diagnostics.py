@@ -7,8 +7,15 @@ from types import SimpleNamespace
 import pytest
 
 from bifrost import cloudflare_analysis as analysis
-from bifrost.cloudflare_analysis import diagnose, diagnose_file, placement_findings
+from bifrost.cloudflare_analysis import diagnose, placement_findings
 from bifrost.cloudflare_report import count_rules, inspect_bundle
+
+
+async def diagnose_file(path: str, source: bytes):
+    async def read(_path, _maximum):
+        return source
+
+    return await diagnose(read, path, single_file=True)
 
 
 @pytest.mark.parametrize(("snippet", "rule", "line", "hint"), [
@@ -42,8 +49,21 @@ async def test_diagnostics_rules(snippet, rule, line, hint):
     assert (finding.severity, finding.path, finding.line) == ("warning", "entry.py", line)
     if line is not None:
         assert finding.column is not None and finding.column > 0
+    if snippet == "def broken(\r\n":
+        assert finding.column == 1
     assert hint in finding.hint
     assert finding.message.startswith("Won't burst to Cloudflare")
+
+
+async def test_tokenizer_crlf_preserves_column(monkeypatch):
+    monkeypatch.setattr(analysis, "sys", SimpleNamespace(version_info=(3, 15)))
+
+    def fail(_readline):
+        raise tokenize.TokenError("invalid syntax", (1, 6))
+
+    monkeypatch.setattr(analysis.tokenize, "generate_tokens", fail)
+    [finding] = await diagnose_file("entry.py", b"bad =)\r\n")
+    assert (finding.rule_id, finding.line, finding.column) == ("CF_SOURCE", 1, 6)
 
 
 async def test_imported_unicode_failure_names_the_imported_module():
@@ -59,6 +79,8 @@ async def test_forwarded_sdk_routes_have_no_gateway_warning():
 roles.list()
 users.update(user_id, name="example")
 api.get(f"/api/users/{user_id}")
+api.get("/api/users/a^b@example.test")
+api.get("/api/users/a%5Eb@example.test")
 executions.get_current_logs()
 files.move(source, destination)
 files.move_many(moves)
@@ -78,6 +100,15 @@ def test_url_resolution_uses_one_prefix_budget(monkeypatch, expression):
     assert literal.host() is None
 
 
+@pytest.mark.parametrize("limit", ["_MAX_URL_PREFIX", "_MAX_URL_PARTS"])
+def test_url_overflow_retains_a_complete_authority(monkeypatch, limit):
+    monkeypatch.setattr(analysis, limit, 30 if limit == "_MAX_URL_PREFIX" else 2)
+    node = ast.parse('f"https://example.test/{tail}"', mode="eval").body
+    literal = analysis._url_literal(node, {"tail": "a" * 40})
+    assert literal is not None and not literal.complete
+    assert literal.host() == "example.test"
+
+
 async def test_dense_source_is_checked_below_old_file_threshold(monkeypatch):
     monkeypatch.setattr(analysis, "_MAX_TOKEN_WEIGHT", 28)
     [finding] = await diagnose_file("entry.py", b"values = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]\n")
@@ -93,14 +124,14 @@ def test_legacy_fstring_token_charges_source_weight(monkeypatch):
         analysis._check_tokens(token.string)
 
 
-@pytest.mark.parametrize("failure", [MemoryError, ValueError])
-async def test_parser_resource_errors_have_source_refusals(monkeypatch, failure):
+@pytest.mark.parametrize(("failure", "rule"), [(MemoryError, "CF_PARSE_BUDGET"), (ValueError, "CF_SOURCE")])
+async def test_parser_errors_have_specific_refusals(monkeypatch, failure, rule):
     def fail(*_args, **_kwargs):
         raise failure
 
     monkeypatch.setattr(analysis.ast, "parse", fail)
     [finding] = await diagnose_file("entry.py", b"def run(): pass\n")
-    assert (finding.rule_id, finding.path) == ("CF_SOURCE", "entry.py")
+    assert (finding.rule_id, finding.path) == (rule, "entry.py")
 
 
 async def test_transitive_source_and_single_file_boundary():

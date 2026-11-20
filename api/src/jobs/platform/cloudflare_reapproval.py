@@ -29,6 +29,7 @@ from bifrost.cloudflare_analysis import (
     SourceUnresolved,
     digest,
 )
+from src.services.execution.cloudflare_analysis_runner import AnalysisBusy
 from src.services.execution.cloudflare_eligibility import (
     ApprovalDeclaration,
     ObservationChanged,
@@ -135,6 +136,8 @@ async def _run_reapproval(context: PlatformJobContext, payload: ReapprovalPayloa
         )
     except ObservationChanged:
         return {"outcome": "superseded"}
+    except AnalysisBusy as exc:
+        raise PlatformJobFailure("cloudflare_analysis_busy", "Cloudflare analysis is busy", retryable=True) from exc
     except (StorageError, TimeoutError, SourceUnresolved) as exc:
         raise PlatformJobFailure(
             "cloudflare_source_unavailable", "Could not resolve workspace sources", retryable=True,

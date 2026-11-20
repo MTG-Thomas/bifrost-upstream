@@ -37,15 +37,14 @@ async def _run() -> None:
             result = [asdict(finding) for finding in await analysis.diagnose(read, **options)]
         else:
             result = await analysis.analyze(read, **options)
+        _send({"result": result})
     except analysis.AnalysisRejected as exc:
         _send({
             "error": str(exc), "rule": exc.rule, "detail": exc.detail,
             "path": exc.path, "line": exc.line, "column": exc.column,
         })
     except MemoryError:
-        _send({"error": "Workspace source exceeded the analysis memory limit", "rule": "CF_SOURCE"})
-    else:
-        _send({"result": result})
+        _send({"error": "Workspace source exceeded the analysis memory limit", "rule": "CF_PARSE_BUDGET"})
 
 
 if __name__ == "__main__":

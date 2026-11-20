@@ -10,8 +10,17 @@ test('the staged gateway policy matches the SDK analyzer policy', () => {
   assert.deepEqual(SDK_ROUTE_POLICY, JSON.parse(readFileSync(canonical, 'utf8')));
 });
 test('runtime API capability retains a fixed destination and query', () => {
-  assert.equal(apiTarget('https://test-api.invalid/api/sdk/modules/a.py?hash=1', 'https://dev.invalid').href,
+  assert.equal(apiTarget('https://test-api.invalid/api/sdk/modules/a.py?hash=1', 'https://dev.invalid', {method: 'GET'}).href,
     'https://dev.invalid/api/sdk/modules/a.py?hash=1');
+});
+test('missing request method is refused in both scopes', () => {
+  const url = 'https://test-api.invalid/api/tables';
+  assert.throws(() => apiTarget(url, 'https://dev.invalid'), /API capability denied/);
+  assert.throws(() => apiTarget(url, 'https://dev.invalid', {scope: 'all'}), /API capability denied/);
+});
+test('encoded email caret remains in the user identifier', () => {
+  const url = 'https://test-api.invalid/api/users/a^b@example.test';
+  assert.equal(apiTarget(url, 'https://dev.invalid', {method: 'GET'}).pathname, '/api/users/a%5Eb@example.test');
 });
 test('supervisor public metadata and SDK transport cannot be selected by the request', () => {
   const body = {execution_id: 'run', context: {parameters: {n: 7}},
@@ -28,9 +37,9 @@ test('invalid trusted metadata is rejected before runtime construction', () => {
   }
 });
 test('agent run control plane rides the same authenticated bridge', () => {
-  assert.equal(apiTarget('https://test-api.invalid/api/agent-runs/enqueue', 'https://dev.invalid').href,
+  assert.equal(apiTarget('https://test-api.invalid/api/agent-runs/enqueue', 'https://dev.invalid', {method: 'GET'}).href,
     'https://dev.invalid/api/agent-runs/enqueue');
-  assert.equal(apiTarget('https://test-api.invalid/api/agent-runs/0192dead-beef', 'https://dev.invalid').href,
+  assert.equal(apiTarget('https://test-api.invalid/api/agent-runs/0192dead-beef', 'https://dev.invalid', {method: 'GET'}).href,
     'https://dev.invalid/api/agent-runs/0192dead-beef');
 });
 test('SDK resource roots used by real workspace workflows are reachable', () => {
@@ -39,7 +48,7 @@ test('SDK resource roots used by real workspace workflows are reachable', () => 
     '/api/events/emit', '/api/forms/submit', '/api/agents', '/api/agent-runs', '/api/sdk/modules/a.py',
     '/api/roles', `/api/roles/${id}/users`, '/api/users', `/api/users/${id}`, '/api/users/person@example.test',
     `/api/platform-jobs/${id}`]) {
-    assert.equal(apiTarget(`https://test-api.invalid${path}`, 'https://dev.invalid').href,
+    assert.equal(apiTarget(`https://test-api.invalid${path}`, 'https://dev.invalid', {method: 'GET'}).href,
       `https://dev.invalid${path}`);
   }
 });
@@ -63,20 +72,20 @@ test('external fetch, control endpoints and origin ambiguity are rejected before
     'https://test-api.invalid/api/tables-admin', 'https://test-api.invalid/api/organizations-admin',
     'https://test-api.invalid/api/roles-other', 'https://test-api.invalid/api/users-other',
     'https://test-api.invalid/api/agent-runs-other', 'https://test-api.invalid/api']) {
-    assert.throws(() => apiTarget(url, 'https://dev.invalid'));
+    assert.throws(() => apiTarget(url, 'https://dev.invalid', {method: 'GET'}));
   }
   for (const origin of ['http://dev.invalid', 'https://user:password@dev.invalid', 'https://dev.invalid/path', 'https://dev.invalid?x=1']) {
-    assert.throws(() => apiTarget('https://test-api.invalid/api/tables', origin));
+    assert.throws(() => apiTarget('https://test-api.invalid/api/tables', origin, {method: 'GET'}));
   }
 });
 
 test('lab scope admits every /api/ path but still only the virtual host', () => {
-  assert.throws(() => apiTarget('https://test-api.invalid/api/workflows', 'https://dev.invalid'),
+  assert.throws(() => apiTarget('https://test-api.invalid/api/workflows', 'https://dev.invalid', {method: 'GET'}),
     /API capability denied/, 'default scope keeps dispatch routes out');
   assert.equal(apiTarget('https://test-api.invalid/api/workflows?x=1', 'https://dev.invalid',
-    {scope: 'all'}).href, 'https://dev.invalid/api/workflows?x=1');
-  assert.throws(() => apiTarget('https://test-api.invalid/admin', 'https://dev.invalid', {scope: 'all'}),
+    {scope: 'all', method: 'GET'}).href, 'https://dev.invalid/api/workflows?x=1');
+  assert.throws(() => apiTarget('https://test-api.invalid/admin', 'https://dev.invalid', {scope: 'all', method: 'GET'}),
     /API capability denied/);
-  assert.throws(() => apiTarget('https://evil.invalid/api/workflows', 'https://dev.invalid', {scope: 'all'}),
+  assert.throws(() => apiTarget('https://evil.invalid/api/workflows', 'https://dev.invalid', {scope: 'all', method: 'GET'}),
     /API capability denied/);
 });

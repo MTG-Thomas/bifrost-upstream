@@ -1625,7 +1625,7 @@ async def put_file_content_editor(
 
         if get_settings().cloudflare_diagnostics_enabled:
             from src.services.editor.file_filter import normalize_workspace_file_path
-            from src.services.execution.cloudflare_analysis_runner import diagnose_file
+            from src.services.execution.cloudflare_analysis_runner import AnalysisBusy, diagnose_file
 
             try:
                 path = normalize_workspace_file_path(request.path)
@@ -1638,6 +1638,8 @@ async def put_file_content_editor(
                         )
                         for finding in findings
                     )
+            except AnalysisBusy:
+                pass
             except Exception:  # noqa: BLE001 - the save has already succeeded
                 logger.exception("Cloudflare editor diagnostics failed for %s", log_safe(request.path))
 

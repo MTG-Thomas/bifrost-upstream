@@ -15,6 +15,14 @@ from src.models.contracts.workflows import (
 from src.routers import files, workflows
 from src.services import file_storage, workflow_validation
 from src.services.execution import cloudflare_analysis_runner
+
+
+async def test_validation_skips_source_diagnostics_when_analysis_is_busy(monkeypatch):
+    monkeypatch.setattr(
+        cloudflare_analysis_runner, "diagnose", AsyncMock(side_effect=cloudflare_analysis_runner.AnalysisBusy()),
+    )
+    request = WorkflowValidationRequest(path="workflows/example.py", content="import subprocess")
+    assert await workflow_validation.cloudflare_validation_issues(request, can_read_workspace=False) == []
 from src.services.file_storage.models import WriteResult
 
 

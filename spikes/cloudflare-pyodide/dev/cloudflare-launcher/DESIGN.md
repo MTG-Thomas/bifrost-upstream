@@ -957,13 +957,21 @@ at 4,096 characters or 4,096 visited parts and reports an incomplete target. Sco
 inspection budgets 200,000 retained lookup entries and 500,000 copy-work
 entries over the bundle.
 
-Linux API and PlatformJob analysis use a fresh subprocess with one slot per
-parent process. The child caps address space at 128 MiB and CPU time at
+Linux API and PlatformJob analysis share a one-child pool on the parent
+event loop. One slot keeps the peak child address-space budget at 128 MiB
+per process without introducing caller-specific queues. Callers wait up to
+two seconds for admission. A busy pool skips advisory analysis and sends
+reapproval through retry backoff without a source finding.
+The child caps address space at 128 MiB and CPU time at
 8 seconds soft and 9 seconds hard before it reads source. The parent owns
 authorized source lookup and pin checks, exchanges bounded source and result
-messages, and enforces a 20-second wall deadline that includes admission and
-source reads. A timeout or cancellation terminates and reaps the child.
+messages, and enforces a separate 20-second wall deadline after admission
+that includes source reads. A timeout or cancellation terminates and reaps the child.
 Offline SDK analysis uses the same static input and accumulation limits.
+
+The organizations, integrations, and files route families retain their
+existing prefix rules. They are the next candidates for method- and
+path-specific allowlists.
 The estimates are static sizing signals. A call site may execute
 many times and CPU varies with inputs. TenantHost and the platform apply the
 actual limits. Inline code, Fast Path and artifact-workspace dispatches are

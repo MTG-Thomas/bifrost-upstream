@@ -1,5 +1,6 @@
 """Solution runtime source is eligible only after successful finalization."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -50,17 +51,30 @@ async def test_deploy_publishes_source_generation_only_after_finalize(db_session
 
 
 
-@pytest.mark.parametrize("mode", ["report", "failure", "discard"])
+@pytest.mark.parametrize("mode", ["report", "failure", "busy", "discard"])
 async def test_deploy_defers_advisory_diagnostics_and_scans_shared_module_once(
     db_session, monkeypatch, caplog, mode,
 ):
     from src import config
     from src.services import solution_deploy_preflight
+    from src.services.execution import cloudflare_analysis_runner as runner
 
     monkeypatch.setattr(config, "get_settings", lambda: SimpleNamespace(cloudflare_diagnostics_enabled=True))
-    scan = AsyncMock(wraps=solution_deploy_preflight.diagnose)
+    main_loop = asyncio.get_running_loop()
+    entered = asyncio.Event()
+    slot = asyncio.Semaphore(1)
+    monkeypatch.setattr(runner, "_SLOT", slot)
+
+    async def scan_on_main_loop(*args, **kwargs):
+        assert asyncio.get_running_loop() is main_loop
+        entered.set()
+        return await runner.diagnose(*args, **kwargs)
+
+    scan = AsyncMock(side_effect=scan_on_main_loop)
     if mode == "failure":
         scan.side_effect = RuntimeError("fixture diagnostic failure")
+    elif mode == "busy":
+        scan.side_effect = runner.AnalysisBusy()
     monkeypatch.setattr(solution_deploy_preflight, "diagnose", scan)
 
     solution = Solution(id=uuid4(), slug=f"diagnostics-{uuid4().hex}", name="Diagnostics fixture")
@@ -86,11 +100,27 @@ async def test_deploy_defers_advisory_diagnostics_and_scans_shared_module_once(
         return
 
     assert result.collect_cloudflare_diagnostics is not None
-    diagnostics = await result.collect_cloudflare_diagnostics()
+    if mode == "report":
+        async with slot:
+            deploy_scan = asyncio.create_task(result.collect_cloudflare_diagnostics())
+            try:
+                await asyncio.wait_for(entered.wait(), timeout=runner._ADMISSION_SECONDS)
+                editor_scan = asyncio.create_task(runner.diagnose_file(path, b"import subprocess"))
+            except BaseException:
+                deploy_scan.cancel()
+                await asyncio.gather(deploy_scan, return_exceptions=True)
+                raise
+        diagnostics, findings = await asyncio.gather(deploy_scan, editor_scan)
+        assert [finding.rule_id for finding in findings] == ["CF_PROCESS"]
+    else:
+        diagnostics = await result.collect_cloudflare_diagnostics()
     scan.assert_awaited_once()
     if mode == "failure":
         assert diagnostics is None
         assert "Cloudflare diagnostics failed" in caplog.text
+    elif mode == "busy":
+        assert diagnostics is None
+        assert "Cloudflare diagnostics failed" not in caplog.text
     else:
         assert diagnostics is not None
         assert [report["function_name"] for report in diagnostics] == ["first", "second"]

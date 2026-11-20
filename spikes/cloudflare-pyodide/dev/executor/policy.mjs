@@ -15,7 +15,7 @@ export const SDK_ROUTE_POLICY = {
   ],
   "identifiers": {
     "uuid": "[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}",
-    "email": "[A-Za-z0-9.!$&'*+=^_~-]+(?:@|%40)[A-Za-z0-9.-]+"
+    "email": "(?:[A-Za-z0-9.!$&'*+=^_~-]|%5[Ee])+(?:@|%40)[A-Za-z0-9.-]+"
   },
   "routes": {
     "/auth/refresh": [
@@ -73,7 +73,8 @@ function isChildApiPath(pathname, method) {
 // `scope: 'all'` admits every /api/ path (and /auth/refresh). It exists for the
 // capability lab only, to separate "the platform cannot" from "this gateway's
 // policy does not"; the default stays the narrow SDK surface above.
-export function apiTarget(url, origin, {scope = 'sdk', method = 'GET'} = {}) {
+export function apiTarget(url, origin, {scope = 'sdk', method} = {}) {
+  if (typeof method !== 'string' || !method) throw new TypeError('API capability denied');
   const incoming = new URL(url);
   const allowed = scope === 'all'
     ? incoming.pathname === '/auth/refresh' || incoming.pathname.startsWith('/api/')
