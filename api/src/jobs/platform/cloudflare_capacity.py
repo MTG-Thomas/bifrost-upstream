@@ -151,15 +151,18 @@ async def _management_token(db: AsyncSession, installation: CloudflareInstallati
 
 
 async def _cleanup_one(
-    db: AsyncSession, row: CloudflareInstallation, adapter: OwnedResourceCleanup,
+    db: AsyncSession, row: CloudflareInstallation, adapter: OwnedResourceCleanup, *, before_revision: int | None = None,
 ) -> Literal["complete", "progressed", "settling"]:
     # Newer generations first, then withdraw the capacity entry point before
     # retiring launcher and runtime dependencies. Workers scripts implicitly
     # own their namespaces. The adapter checks for those before recording absence.
-    resource = await db.scalar(select(CloudflareOwnedResource).where(
+    query = select(CloudflareOwnedResource).where(
         CloudflareOwnedResource.installation_id == row.id,
         CloudflareOwnedResource.state != "absent",
-    ).order_by(
+    )
+    if before_revision is not None:
+        query = query.where(CloudflareOwnedResource.desired_revision < before_revision)
+    resource = await db.scalar(query.order_by(
         CloudflareOwnedResource.desired_revision.desc(),
         case(
             (CloudflareOwnedResource.target_name.endswith("-capacity"), 0),
@@ -265,9 +268,14 @@ async def _require_legacy_cleanup(db: AsyncSession) -> None:
         })
 
 
-async def _remove_verified_scopes(db: AsyncSession, row: CloudflareInstallation) -> None:
+async def _remove_verified_scopes(
+    db: AsyncSession, row: CloudflareInstallation, *, before_revision: int | None = None,
+) -> None:
+    scopes = [CloudflareCapacityScope.installation_id == row.id]
+    if before_revision is not None:
+        scopes.append(CloudflareCapacityScope.deployment_revision < before_revision)
     unverified_scope = await db.scalar(select(CloudflareCapacityScope.scope).where(
-        CloudflareCapacityScope.installation_id == row.id,
+        *scopes,
         ~select(CloudflareOwnedResource.id).where(
             CloudflareOwnedResource.installation_id == row.id,
             CloudflareOwnedResource.scope == CloudflareCapacityScope.scope,
@@ -280,7 +288,7 @@ async def _remove_verified_scopes(db: AsyncSession, row: CloudflareInstallation)
     ).limit(1))
     if unverified_scope is not None:
         raise ObservationPending("Cloudflare scope absence is unverified")
-    await db.execute(delete(CloudflareCapacityScope).where(CloudflareCapacityScope.installation_id == row.id))
+    await db.execute(delete(CloudflareCapacityScope).where(*scopes))
 
 
 async def _retire(db: AsyncSession, row: CloudflareInstallation, payload: CloudflareDisablePayload) -> None:
@@ -348,6 +356,19 @@ async def _observe_inventory(
             raise ObservationPending("An owned Cloudflare Worker has disappeared")
 
 
+async def usage_script_identities(db: AsyncSession, installation_id: UUID) -> dict[str, dict[str, str]]:
+    """Include retained receipts so prior deployment usage counts in the same billing period."""
+    identities = await db.execute(select(
+        CloudflareOwnedResource.target_name, CloudflareOwnedResource.namespace_ids,
+    ).where(
+        CloudflareOwnedResource.installation_id == installation_id,
+        CloudflareOwnedResource.scope == "workers",
+        CloudflareOwnedResource.kind == "worker_script",
+        CloudflareOwnedResource.provider_id.is_not(None),
+    ))
+    return {name: namespaces for name, namespaces in identities}
+
+
 def _current_reconcile(installation: CloudflareInstallation | None, revision: int) -> bool:
     return (
         installation is not None and installation.retired_at is None
@@ -369,6 +390,7 @@ async def _settle_reconcile(
         token_version = installation.api_token_version
         admitted_revision = installation.admitted_revision
         inventory = await _inventory_snapshot(db, installation.id, revision=payload.revision)
+        usage_identities = await usage_script_identities(db, installation.id)
         try:
             token = await _management_token(db, installation)
         except CloudflareManagementDenied:
@@ -383,8 +405,7 @@ async def _settle_reconcile(
             if not all(receipt.namespaces for receipt in inventory):
                 raise ObservationPending("The admitted revision lacks exact namespace receipts")
             await refresh_workers_usage(
-                installation, revision=payload.revision,
-                scripts={receipt.intent.target.name: dict(receipt.namespaces) for receipt in inventory},
+                installation, revision=payload.revision, scripts=usage_identities,
             )
             refreshed = True
         except OwnershipConflict:
@@ -407,6 +428,7 @@ async def _settle_reconcile(
             or installation.api_token_version != token_version
             or installation.admitted_revision != admitted_revision
             or await _inventory_snapshot(db, installation.id, revision=payload.revision) != inventory
+            or await usage_script_identities(db, installation.id) != usage_identities
         ):
             return {"outcome": "superseded"}
         if issue is not None:

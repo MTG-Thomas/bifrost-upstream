@@ -495,16 +495,22 @@ async def test_cleanup_waits_for_an_unsettled_create_before_confirming_absence(
         desired_revision=1, artifact_digest="c" * 64, effect_id=uuid4(), state="creating",
     )
     db_session.add(receipt)
+    db_session.add(CloudflareOwnedResource(
+        id=uuid4(), installation_id=installation.id, account_id=installation.account_id,
+        scope="workers", kind="worker_script", target_name="current-capacity",
+        desired_revision=2, artifact_digest="d" * 64, effect_id=uuid4(), state="creating",
+    ))
     await db_session.flush()
     adapter = SimpleNamespace(observe=AsyncMock(return_value=None), verify_absent=AsyncMock())
-    assert await lifecycle_job._cleanup_one(db_session, installation, adapter) == "progressed"
+    assert await lifecycle_job._cleanup_one(db_session, installation, adapter, before_revision=2) == "progressed"
     assert receipt.observed_at is not None and receipt.state == "creating"
-    assert await lifecycle_job._cleanup_one(db_session, installation, adapter) == "settling"
+    assert await lifecycle_job._cleanup_one(db_session, installation, adapter, before_revision=2) == "settling"
     adapter.verify_absent.assert_not_awaited()
     receipt.observed_at -= lifecycle_job.CREATE_SETTLEMENT_WINDOW
-    assert await lifecycle_job._cleanup_one(db_session, installation, adapter) == "progressed"
+    assert await lifecycle_job._cleanup_one(db_session, installation, adapter, before_revision=2) == "progressed"
     adapter.verify_absent.assert_awaited_once()
     assert receipt.state == "absent"
+    assert await lifecycle_job._cleanup_one(db_session, installation, adapter, before_revision=2) == "complete"
 
 
 @pytest.mark.asyncio

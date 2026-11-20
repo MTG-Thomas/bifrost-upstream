@@ -88,6 +88,8 @@ Register `capacity.cloudflare_enable`, `capacity.cloudflare_reconcile` and `capa
 
 **Retire Legacy Cloudflare Workers** reports older Workers reservations with no installation pin. Recover the matching capacity endpoint and its scope bearer from the original enrollment. Send `GET /v1/workers/{worker_id}` with that bearer and `X-Bifrost-Capacity-Scope`, and compare the returned `resource_uid` with the job record. Release the same worker by sending `DELETE` to that URL with the same scope and a JSON body containing the matching `resource_uid`. Keep the same UID's `deleted` readback. A missing endpoint or an ambiguous UID requires recovery of the original enrollment record before proceeding. Have the platform database operator record verified retirement for the exact unpinned worker and retain the readback with the incident. Retry the Cloudflare job after all listed workers have verified retirement.
 
+In Phase 1, scope bearer rotation begins after Scale In. It verifies deletion of the previous deployment before staging the next bearer for Enable. Enable retires any remaining older revisions before provisioning, and usage checks include retained receipts for those revisions. Account-token rotation keeps its encrypted predecessor through readback validation until the replacement has made a verified provider write.
+
 ## Workload Eligibility and Evidence
 
 The [spike results](DESIGN.md) and [27-kind PlatformJob inventory](POOL-WORKER-VIABILITY.md) describe the proof at this source baseline. Hosted evidence below comes from different trials. The final mixed tenant workflow overlap ran in Workers-only mode.

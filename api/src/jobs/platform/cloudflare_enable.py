@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from shared.models import CloudflareCapacityPolicy
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import get_db_context
@@ -19,10 +19,13 @@ from src.jobs.platform.base import (
     define_platform_job,
 )
 from src.jobs.platform.cloudflare_capacity import (
+    _cleanup_one,
     _hold_installation_lease,
     _management_token,
+    _remove_verified_scopes,
     _require_legacy_cleanup,
     _resource_intent,
+    usage_script_identities,
 )
 from src.models.orm.cloudflare_capacity import (
     CloudflareCapacityScope,
@@ -78,6 +81,7 @@ from src.services.worker_pool.cloudflare_workers_rest import (
     CloudflareRestUnavailable,
     ConfiguredWorkersScript,
     WorkersDeployment,
+    WorkersRestCleanup,
     WorkersRestProvisioner,
 )
 from src.services.worker_pool.external_client import (
@@ -182,20 +186,37 @@ async def _settle_enable(
         await _require_legacy_cleanup(db)
         installation = row
     await check_paid(installation.account_id)
-    async with get_db_context() as db:
-        row = await _locked_current(db, context, payload)
-        if row is None:
-            return {"outcome": "superseded"}
-        prefix = f"bifrost-{row.id.hex}-{payload.revision:x}"
-        deployment = WorkersDeployment(
-            release, row.worker_ingress_origin, f"{prefix}-launcher", f"{prefix}-capacity",
-            CloudflareCapacityPolicy.model_validate(row.policy["limits"]).workers,
-        )
-        bearer, identifiers = await _journal(db, row, deployment, actor=context.requested_by_user_id)
+    cleanup_adapter = WorkersRestCleanup(http)
+    while True:
+        async with get_db_context() as db:
+            row = await _locked_current(db, context, payload)
+            if row is None:
+                return {"outcome": "superseded"}
+            if await cloudflare_workers_remain(db, row.id):
+                raise PlatformJobRequiresAction("Wait for Cloudflare Workers to Retire", {"code": "CF_PRIOR_WORKERS_LIVE"})
+            cleanup = await _cleanup_one(db, row, cleanup_adapter, before_revision=payload.revision)
+            if cleanup == "progressed":
+                continue
+            if cleanup == "settling":
+                raise PlatformJobRequiresAction("Wait for Cloudflare Creation to Settle", {"code": "CF_CLEANUP_PENDING"})
+            await _remove_verified_scopes(db, row, before_revision=payload.revision)
+            await db.execute(update(CloudflareCredential).where(
+                CloudflareCredential.installation_id == row.id,
+                CloudflareCredential.purpose == "scope_bearer",
+                CloudflareCredential.scope == "workers",
+                CloudflareCredential.version < payload.revision,
+                CloudflareCredential.ciphertext.is_not(None),
+            ).values(ciphertext=None))
+            prefix = f"bifrost-{row.id.hex}-{payload.revision:x}"
+            deployment = WorkersDeployment(
+                release, row.worker_ingress_origin, f"{prefix}-launcher", f"{prefix}-capacity",
+                CloudflareCapacityPolicy.model_validate(row.policy["limits"]).workers,
+            )
+            bearer, identifiers = await _journal(db, row, deployment, actor=context.requested_by_user_id)
+            break
 
     await context.report("Deploying Cloudflare Workers")
     adapter = WorkersRestProvisioner(http, deployment)
-    scripts = {}
     capacity_endpoint = None
     for identifier in identifiers:
         async with get_db_context() as db:
@@ -210,7 +231,6 @@ async def _settle_enable(
                 adapter, resource, token=await _management_token(db, row),
                 bearer=bearer if is_capacity else None,
             )
-            scripts[resource.target_name] = result.namespaces
             if result.confirmed_write:
                 await confirm_account_token_write(db, row)
             if is_capacity:
@@ -234,6 +254,7 @@ async def _settle_enable(
             ))
         elif scope.endpoint != capacity_endpoint or scope.bearer_version != payload.revision:
             raise OwnershipConflict("Cloudflare scope differs from the verified deployment")
+        scripts = await usage_script_identities(db, row.id)
 
     async def canary(origin: str):
         return await run_workers_canary(context, payload.installation_id, payload.revision, origin, client, deployment)

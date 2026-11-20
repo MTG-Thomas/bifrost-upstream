@@ -267,6 +267,7 @@ def install_enable(job_module):
     job_module.require_workers_paid = _paid
     job_module.refresh_workers_usage = _usage
     job_module.WorkersRestProvisioner = _Cloudflare
+    job_module.WorkersRestCleanup = _Cloudflare
     job_module.ExternalCapacityClient = Launcher
     job_module.probe_worker_ingress = probe
 
