@@ -101,6 +101,7 @@ async def test_rest_upload_scopes_the_bearer_and_finalizes_the_verified_endpoint
     bindings = []
     endpoint = {}
     mutations = []
+    namespaces = {"ScopeRegistry": "1" * 32, "WorkerLedger": "2" * 32}
 
     async def read_provider(request: httpx.Request) -> httpx.Response:
         nonlocal bindings, endpoint
@@ -130,6 +131,9 @@ async def test_rest_upload_scopes_the_bearer_and_finalizes_the_verified_endpoint
             result = {"bindings": bindings}
         elif request.url.path.endswith("/deployments"):
             result = {"deployments": [{"id": deployment, "versions": [{"version_id": version, "percentage": 100}]}]}
+        elif request.url.path.endswith("/namespaces"):
+            result = [{"script": target.name, "class": name, "id": identity, "preview": False}
+                      for name, identity in namespaces.items()]
         elif request.url.path.endswith("/workers/subdomain"):
             result = {"subdomain": "test-account"}
         else:
@@ -149,8 +153,9 @@ async def test_rest_upload_scopes_the_bearer_and_finalizes_the_verified_endpoint
             adapter, api_token=token, scope_bearer=SecretStr("synthetic-bearer"), committed_intent=intent,
         )
         assert observed.provider_version == version
-        assert await adapter.configure_endpoint(api_token=token, expected=observed) == (
-            "https://bifrost-capacity.test-account.workers.dev"
-        )
+        configured = await adapter.configure_endpoint(api_token=token, expected=observed)
+        assert configured.endpoint == "https://bifrost-capacity.test-account.workers.dev"
+        assert configured.namespaces == namespaces
+        assert await adapter.configure_endpoint(api_token=token, expected=observed) == configured
     assert mutations == ["PUT", "POST"]
     assert endpoint == {"enabled": True, "previews_enabled": False}

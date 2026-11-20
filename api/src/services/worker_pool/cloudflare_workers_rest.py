@@ -149,13 +149,15 @@ class WorkersRestCleanup:
                 allow_missing=True, params={"force": "true"},
             )
 
-    async def verify_absent(self, *, api_token: SecretStr, target: ResourceTarget) -> None:
-        path = _script_path(target)
+    async def _script_namespaces(self, token: SecretStr, target: ResourceTarget) -> list[dict[str, Any]]:
+        """Exhaust account pagination before trusting any script namespace inventory."""
+        _script_path(target)
         seen: set[str] = set()
+        owned: list[dict[str, Any]] = []
         total = None
         for page in range(1, 101):
             response = await self._request(
-                api_token, target.account_id, "GET", "workers/durable_objects/namespaces",
+                token, target.account_id, "GET", "workers/durable_objects/namespaces",
                 params={"page": page, "per_page": 100},
             )
             rows = response["result"] if response is not None else None
@@ -173,7 +175,7 @@ class WorkersRestCleanup:
                     raise ObservationPending("Cloudflare namespace inventory has invalid identity")
                 seen.add(row["id"])
                 if row["script"] == target.name:
-                    raise ObservationPending("Cloudflare Worker's namespace is still present")
+                    owned.append(row)
             reported_total = info.get("total_count", total)
             pages = info.get("total_pages")
             if (
@@ -187,15 +189,20 @@ class WorkersRestCleanup:
             more = (pages is not None and page < pages) or (total is not None and len(seen) < total)
             if not more and (pages is not None or total is not None or len(rows) < 100):
                 if total is None or total == len(seen):
-                    if await self._request(
-                        api_token, target.account_id, "GET", f"{path}/settings", allow_missing=True,
-                    ) is not None:
-                        raise OwnershipConflict("Cloudflare Worker reappeared during absence verification")
-                    return
+                    return owned
                 break
             if not rows:
                 break
         raise ObservationPending("Cloudflare namespace inventory is incomplete")
+
+    async def verify_absent(self, *, api_token: SecretStr, target: ResourceTarget) -> None:
+        path = _script_path(target)
+        if await self._script_namespaces(api_token, target):
+            raise ObservationPending("Cloudflare Worker's namespace is still present")
+        if await self._request(
+            api_token, target.account_id, "GET", f"{path}/settings", allow_missing=True,
+        ) is not None:
+            raise OwnershipConflict("Cloudflare Worker reappeared during absence verification")
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +214,12 @@ class WorkersDeployment:
     launcher_name: str
     capacity_name: str
     policy: CloudflareWorkersPolicy
+
+
+@dataclass(frozen=True, slots=True)
+class ConfiguredWorkersScript:
+    endpoint: str | None
+    namespaces: dict[str, str]
 
 
 class WorkersRestProvisioner(WorkersRestCleanup):
@@ -294,26 +307,40 @@ class WorkersRestProvisioner(WorkersRestCleanup):
         if observed is None:
             raise ObservationPending("Cloudflare upload could not be observed")
 
-    async def configure_endpoint(self, *, api_token: SecretStr, expected: ResourceObservation) -> str | None:
-        """Finish endpoint configuration for an uploaded or recovered deployment."""
+    async def configure_endpoint(
+        self, *, api_token: SecretStr, expected: ResourceObservation,
+    ) -> ConfiguredWorkersScript:
+        """Verify the exported classes and finish an uploaded deployment."""
         intent = expected.intent
         role = self._worker_role(intent)
         path = _script_path(intent.target)
         if await observe_owned(self, api_token=api_token, intent=intent, recorded=expected) is None:
             raise ObservationPending("Cloudflare uploaded Worker has disappeared")
+        namespaces: dict[str, str] = {}
+        for row in await self._script_namespaces(api_token, intent.target):
+            if row.get("preview") is True:
+                continue
+            class_name = row.get("class")
+            if not isinstance(class_name, str) or class_name in namespaces:
+                raise OwnershipConflict("Cloudflare Worker has ambiguous namespace bindings")
+            namespaces[class_name] = row["id"]
+        if namespaces.keys() != self._deployment.release.manifest.workers[role].exports.keys():
+            raise ObservationPending("Cloudflare namespace exports differ from the packaged release")
         settings = {"enabled": role == "capacity", "previews_enabled": False}
-        await self._request(
-            api_token, intent.target.account_id, "POST", f"{path}/subdomain",
-            json_body=settings,
-        )
-        response = await self._request(api_token, intent.target.account_id, "GET", f"{path}/subdomain")
+        response = await self._request(api_token, intent.target.account_id, "GET", f"{path}/subdomain", allow_missing=True)
         readback = response["result"] if response is not None else None
         if not isinstance(readback, dict) or any(readback.get(key) is not value for key, value in settings.items()):
-            raise ObservationPending("Cloudflare Worker endpoint settings could not be verified")
+            if await observe_owned(self, api_token=api_token, intent=intent, recorded=expected) is None:
+                raise ObservationPending("Cloudflare uploaded Worker has disappeared")
+            await self._request(api_token, intent.target.account_id, "POST", f"{path}/subdomain", json_body=settings)
+            response = await self._request(api_token, intent.target.account_id, "GET", f"{path}/subdomain")
+            readback = response["result"] if response is not None else None
+            if not isinstance(readback, dict) or any(readback.get(key) is not value for key, value in settings.items()):
+                raise ObservationPending("Cloudflare Worker endpoint settings could not be verified")
         if await observe_owned(self, api_token=api_token, intent=intent, recorded=expected) is None:
             raise ObservationPending("Cloudflare uploaded Worker has disappeared")
         if role == "launcher":
-            return None
+            return ConfiguredWorkersScript(None, namespaces)
         response = await self._request(
             api_token, intent.target.account_id, "GET", "workers/subdomain",
         )
@@ -321,4 +348,4 @@ class WorkersRestProvisioner(WorkersRestCleanup):
         subdomain = account.get("subdomain") if isinstance(account, dict) else None
         if not isinstance(subdomain, str) or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", subdomain):
             raise ObservationPending("Cloudflare account's Workers subdomain could not be verified")
-        return f"https://{intent.target.name}.{subdomain}.workers.dev"
+        return ConfiguredWorkersScript(f"https://{intent.target.name}.{subdomain}.workers.dev", namespaces)
