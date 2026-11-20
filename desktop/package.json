@@ -20,5 +20,8 @@
     "electron": "45.2.2",
     "electron-builder": "26.18.0",
     "typescript": "5.9.3"
+  },
+  "overrides": {
+    "minimatch@^10.2.5": "^11.0.1"
   }
 }
