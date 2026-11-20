@@ -15,11 +15,12 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 from pydantic import SecretStr
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from src.config import get_settings
 from src.models.orm.cloudflare_capacity import (
     CloudflareCredential,
     CloudflareInstallation,
+    CloudflareUsageActivity,
 )
 from src.models.orm.execution_workers import ExecutionWorker
 from src.services import worker_ingress_probes as probes
@@ -158,6 +159,11 @@ async def test_worker_ingress_over_tls(
             result = await probes.probe_worker_ingress(installation, runtime_canary=signed_canary)
             assert result.ready, [route for route in result.routes if not route.passed]
             assert canary_calls == 1
+            async with async_session_factory() as db:
+                activity = (await db.execute(select(CloudflareUsageActivity).where(
+                    CloudflareUsageActivity.installation_id == installation.id,
+                ))).scalar_one()
+                assert activity.sdk_requests == 1
             refusals = {route.path: route.status for route in result.routes if route.path in {
                 "/auth/login", "/api/packages", "/openapi.json", "/__fixture/v1/chat/completions",
                 "/api/auth/login", "/admin/x", "/docs",
@@ -190,6 +196,9 @@ async def test_worker_ingress_over_tls(
                 await db.delete(worker)
             await db.execute(delete(CloudflareCredential).where(
                 CloudflareCredential.installation_id == installation.id,
+            ))
+            await db.execute(delete(CloudflareUsageActivity).where(
+                CloudflareUsageActivity.installation_id == installation.id,
             ))
             await db.delete(installation)
             await db.commit()

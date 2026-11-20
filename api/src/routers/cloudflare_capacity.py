@@ -26,10 +26,6 @@ from src.models.contracts.platform_jobs import PlatformJobAccepted
 from src.services.audit import emit_audit
 from src.services.authorization.enforce import load_caller, require_operation
 from src.services.authorization.evaluator import GLOBAL
-from src.services.worker_pool.cloudflare_enable_dependencies import (
-    WorkersPaidUnverified,
-    require_workers_paid,
-)
 from src.services.worker_pool.cloudflare_policy import (
     CONSENT_TEXT_VERSION,
     CloudflareInstallationExists,
@@ -48,6 +44,7 @@ from src.services.worker_pool.cloudflare_workers_rest import (
     CloudflareManagementDenied,
     CloudflareRestUnavailable,
     WorkersRestCleanup,
+    WorkersPaidUnverified,
 )
 
 router = APIRouter(prefix="/api/capacity/cloudflare", tags=["Capacity"])
@@ -74,8 +71,7 @@ async def configure_cloudflare_capacity(
             if body.consent_version != CONSENT_TEXT_VERSION:
                 raise CloudflarePolicyConflict("Review the current Cloudflare consent text.")
             async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
-                await WorkersRestCleanup(http).verify_workers_entitlement(body.account_id, body.api_token)
-            await require_workers_paid(body.account_id)
+                await WorkersRestCleanup(http).verify_workers_paid(body.account_id, body.api_token)
             installation_id = await create_cloudflare_installation(
                 db, account_id=body.account_id, worker_ingress_origin=body.worker_ingress_origin,
                 consent_version=body.consent_version, actor_id=caller.principal.user_id,

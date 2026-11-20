@@ -1,18 +1,18 @@
 """Installation-local desired state and Cloudflare resource journal."""
 
 from datetime import datetime
-from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
-    Numeric,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -77,6 +77,8 @@ class CloudflareInstallation(Base):
     desired_state: Mapped[str] = mapped_column(String(16))
     admitted_revision: Mapped[int | None]
     retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    usage_incomplete_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    usage_advisory: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     api_token_purpose: Mapped[str] = mapped_column(String(16), server_default="account_token")
     api_token_scope: Mapped[str] = mapped_column(String(64), server_default="")
     api_token_version: Mapped[int | None]
@@ -215,25 +217,28 @@ class CloudflareOwnedResource(Base):
     observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class CloudflareCapacityUsage(Base):
-    __tablename__ = "cloudflare_capacity_usage"
+class CloudflareUsageActivity(Base):
+    __tablename__ = "cloudflare_usage_activity"
     __table_args__ = (
-        ForeignKeyConstraint(
-            ["installation_id", "account_id"],
-            ["cloudflare_installations.id", "cloudflare_installations.account_id"],
-            ondelete="RESTRICT",
-        ),
-        CheckConstraint("deployment_revision > 0", name="ck_cf_usage_revision"),
-        CheckConstraint("period_start <= measured_at AND measured_at < period_end", name="ck_cf_usage_period"),
-        CheckConstraint("attributed_usd >= 0 AND attributed_usd < 'Infinity'::numeric", name="ck_cf_usage_amount"),
+        CheckConstraint("dispatched_runs >= 0 AND sdk_requests >= 0", name="ck_cf_usage_activity_nonnegative"),
     )
 
-    installation_id: Mapped[UUID] = mapped_column(primary_key=True)
-    account_id: Mapped[str] = mapped_column(String(32))
-    deployment_revision: Mapped[int]
-    rate_table_version: Mapped[str] = mapped_column(String(64))
-    bounds_digest: Mapped[str] = mapped_column(String(64))
-    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    measured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    attributed_usd: Mapped[Decimal] = mapped_column(Numeric(20, 6))
+    installation_id: Mapped[UUID] = mapped_column(ForeignKey("cloudflare_installations.id"), primary_key=True)
+    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    dispatched_runs: Mapped[int] = mapped_column(BigInteger, server_default="0")
+    sdk_requests: Mapped[int] = mapped_column(BigInteger, server_default="0")
+
+
+class CloudflareUsageIncarnation(Base):
+    __tablename__ = "cloudflare_usage_incarnations"
+    __table_args__ = (
+        CheckConstraint("slots BETWEEN 1 AND 4", name="ck_cf_usage_slots"),
+        CheckConstraint("deleted_at >= started_at", name="ck_cf_usage_lifetime"),
+        Index("ix_cf_usage_incarnation_installation", "installation_id", "deleted_at"),
+    )
+
+    worker_id: Mapped[UUID] = mapped_column(primary_key=True)
+    installation_id: Mapped[UUID] = mapped_column(ForeignKey("cloudflare_installations.id"))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    slots: Mapped[int | None] = mapped_column(SmallInteger)

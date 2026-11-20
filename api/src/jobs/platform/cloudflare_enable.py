@@ -25,7 +25,6 @@ from src.jobs.platform.cloudflare_capacity import (
     _remove_verified_scopes,
     _require_legacy_cleanup,
     _resource_intent,
-    usage_script_identities,
 )
 from src.models.orm.cloudflare_capacity import (
     CloudflareCapacityScope,
@@ -50,14 +49,6 @@ from src.services.worker_pool.cloudflare_credentials import (
     open_credential,
     seal_credential,
 )
-from src.services.worker_pool.cloudflare_enable_dependencies import (
-    CheckWorkersPaid,
-    RefreshWorkersUsage,
-    WorkersPaidUnverified,
-    WorkersUsageUnverified,
-    refresh_workers_usage,
-    require_workers_paid,
-)
 from src.services.worker_pool.cloudflare_policy import (
     CloudflarePolicyConflict,
     cloudflare_workers_remain,
@@ -75,7 +66,7 @@ from src.services.worker_pool.cloudflare_release import (
     WorkersReleaseUnavailable,
     load_workers_release,
 )
-from src.services.worker_pool.cloudflare_spend import cloudflare_usage_within_limit
+from src.services.worker_pool.cloudflare_spend import cloudflare_estimated_usage
 from src.services.worker_pool.cloudflare_workers_rest import (
     CloudflareManagementDenied,
     CloudflareRestUnavailable,
@@ -83,6 +74,7 @@ from src.services.worker_pool.cloudflare_workers_rest import (
     WorkersDeployment,
     WorkersRestCleanup,
     WorkersRestProvisioner,
+    WorkersPaidUnverified,
 )
 from src.services.worker_pool.external_client import (
     CapacityProtocolError,
@@ -170,7 +162,7 @@ async def _install_script(
 
 async def _settle_enable(
     context: PlatformJobContext, payload: CloudflareEnablePayload, http: httpx.AsyncClient,
-    release: WorkersRelease, *, check_paid: CheckWorkersPaid, refresh_usage: RefreshWorkersUsage,
+    release: WorkersRelease,
 ) -> dict[str, str]:
     async with get_db_context() as db:
         row = await _locked_current(db, context, payload)
@@ -178,15 +170,18 @@ async def _settle_enable(
             return {"outcome": "superseded"}
         if row.policy.get("bounds_release") != release.digest:
             raise PlatformJobRequiresAction("Review Policy for the Packaged Workers Release", {"code": "CF_POLICY_RELEASE_CHANGED"})
-        if row.admitted_revision == payload.revision and await db.scalar(
-            select(cloudflare_usage_within_limit()).where(CloudflareInstallation.id == row.id),
-        ):
-            return {"outcome": "enabled"}
-        row.admitted_revision = None
-        await _require_legacy_cleanup(db)
         installation = row
-    await check_paid(installation.account_id)
+        management_token = await _management_token(db, row)
     cleanup_adapter = WorkersRestCleanup(http)
+    await cleanup_adapter.verify_workers_paid(installation.account_id, management_token)
+    async with get_db_context() as db:
+        row = await _locked_current(db, context, payload)
+        if row is None or row.api_token_version != installation.api_token_version:
+            return {"outcome": "superseded"}
+        await _require_budget(db, row)
+        if row.admitted_revision == payload.revision:
+            return {"outcome": "enabled"}
+        await _require_legacy_cleanup(db)
     while True:
         async with get_db_context() as db:
             row = await _locked_current(db, context, payload)
@@ -254,7 +249,6 @@ async def _settle_enable(
             ))
         elif scope.endpoint != capacity_endpoint or scope.bearer_version != payload.revision:
             raise OwnershipConflict("Cloudflare scope differs from the verified deployment")
-        scripts = await usage_script_identities(db, row.id)
 
     async def canary(origin: str):
         return await run_workers_canary(context, payload.installation_id, payload.revision, origin, client, deployment)
@@ -263,16 +257,22 @@ async def _settle_enable(
     if not ingress.ready:
         raise PlatformJobRequiresAction("Verify the Worker Ingress and Runtime", {"code": "CF_WORKER_INGRESS_UNVERIFIED"})
     await context.report("Checking Cloudflare Spend")
-    await refresh_usage(installation, revision=payload.revision, scripts=scripts)
     async with get_db_context() as db:
         row = await _locked_current(db, context, payload)
         if row is None:
             return {"outcome": "superseded"}
-        if not await db.scalar(select(cloudflare_usage_within_limit()).where(CloudflareInstallation.id == row.id)):
-            raise WorkersUsageUnverified
+        await _require_budget(db, row)
         row.admitted_revision = payload.revision
         wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
     return {"outcome": "enabled"}
+
+
+async def _require_budget(db: AsyncSession, row: CloudflareInstallation) -> None:
+    cost = await db.scalar(select(cloudflare_estimated_usage()).where(CloudflareInstallation.id == row.id))
+    if cost is None:
+        raise PlatformJobRequiresAction("Verify Cloudflare Spend", {"code": "CF_SPEND_UNVERIFIED"})
+    if cost >= CloudflareCapacityPolicy.model_validate(row.policy["limits"]).monthly_limit_usd:
+        raise PlatformJobRequiresAction("Cloudflare Budget Reached", {"code": "CF_BUDGET_REACHED"})
 
 
 async def _enable(context: PlatformJobContext, parsed: BaseModel) -> dict[str, str]:
@@ -281,15 +281,11 @@ async def _enable(context: PlatformJobContext, parsed: BaseModel) -> dict[str, s
     try:
         release = load_workers_release()
         async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
-            return await _settle_enable(
-                context, payload, http, release, check_paid=require_workers_paid, refresh_usage=refresh_workers_usage,
-            )
+            return await _settle_enable(context, payload, http, release)
     except WorkersReleaseUnavailable:
         raise PlatformJobRequiresAction("Install a Qualified Workers Release", {"code": "CF_RELEASE_UNAVAILABLE"}) from None
     except WorkersPaidUnverified:
         raise PlatformJobRequiresAction("Verify Workers Paid", {"code": "CF_WORKERS_PAID_UNVERIFIED"}) from None
-    except WorkersUsageUnverified:
-        raise PlatformJobRequiresAction("Verify Cloudflare Spend", {"code": "CF_SPEND_UNVERIFIED"}) from None
     except OwnershipConflict:
         raise PlatformJobRequiresAction("Verify Cloudflare Ownership", {"code": "CF_OWNERSHIP_CONFLICT"}) from None
     except (ObservationPending, CapacityProtocolError):

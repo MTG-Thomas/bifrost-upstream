@@ -4,6 +4,8 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 import httpx
@@ -30,6 +32,10 @@ class CloudflareManagementDenied(Exception):
     """The provider refused the scoped management credential."""
 
 
+class WorkersPaidUnverified(Exception):
+    """The account lacks the active Workers Paid entitlement witness."""
+
+
 class CloudflareRestUnavailable(Exception):
     """A bounded REST operation can be retried under its journal fence."""
 
@@ -51,6 +57,56 @@ def worker_owner_value(intent: ResourceIntent) -> str:
 class WorkersRestCleanup:
     def __init__(self, http: httpx.AsyncClient) -> None:
         self._http = http
+
+    async def advisory_workers_requests(
+        self, account_id: str, api_token: SecretStr, scripts: set[str], start: datetime, end: datetime,
+    ) -> Decimal | None:
+        """Return sampled Workers counts only. Analytics never qualifies admission."""
+        if not scripts or len(scripts) > 100 or start >= end:
+            return None
+        try:
+            async with asyncio.timeout(4):
+                response = await self._http.post(
+                    f"{API}/graphql", headers={"Authorization": f"Bearer {api_token.get_secret_value()}"},
+                    json={
+                        "query": """query Advisory($account: string!, $scripts: [string!]!, $start: Time!, $end: Time!) {
+                          viewer { accounts(filter: {accountTag: $account}) {
+                            workersInvocationsAdaptive(limit: 100,
+                              filter: {scriptName_in: $scripts, datetime_geq: $start, datetime_lt: $end}) {
+                              dimensions { scriptName } sum { requests }
+                            }
+                          } }
+                        }""",
+                        "variables": {"account": account_id, "scripts": sorted(scripts),
+                                      "start": start.isoformat(), "end": end.isoformat()},
+                    },
+                )
+            if not response.is_success:
+                return None
+            body = response.json()
+            if body.get("errors"):
+                return None
+            accounts = body["data"]["viewer"]["accounts"]
+            if len(accounts) != 1:
+                return None
+            rows = accounts[0]["workersInvocationsAdaptive"]
+            if not rows:
+                return None
+            seen = set()
+            total = Decimal(0)
+            for row in rows:
+                name = row["dimensions"]["scriptName"]
+                requests = row["sum"]["requests"]
+                if name not in scripts or name in seen or type(requests) not in (float, int):
+                    return None
+                count = Decimal(str(requests))
+                if not count.is_finite() or count < 0:
+                    return None
+                seen.add(name)
+                total += count
+            return total
+        except (httpx.HTTPError, TimeoutError, AttributeError, IndexError, KeyError, TypeError, ValueError):
+            return None
 
     async def _request(
         self, token: SecretStr, account: str, method: str, path: str, *,
@@ -96,20 +152,21 @@ class WorkersRestCleanup:
         if not isinstance(record, dict) or record.get("id") != account_id:
             raise CloudflareManagementDenied
 
-    async def verify_workers_entitlement(self, account_id: str, candidate: SecretStr) -> None:
+    async def verify_workers_paid(self, account_id: str, candidate: SecretStr) -> None:
         await self.verify_account(account_id, candidate)
         response = await self._request(candidate, account_id, "GET", "entitlements")
         entries = response["result"] if response is not None else None
-        if not isinstance(entries, list) or not any(
-            isinstance(entry, dict)
-            and entry.get("id") == "workers.enabled"
-            and entry.get("deleted_date") == ""
-            and isinstance(allocation := entry.get("allocation"), dict)
-            and allocation.get("type") == "bool"
-            and allocation.get("value") is True
-            for entry in entries
-        ):
-            raise CloudflareManagementDenied
+        if not isinstance(entries, list):
+            raise WorkersPaidUnverified
+        for feature in ("workers.enabled", "containers.enabled"):
+            active = [
+                entry for entry in entries
+                if isinstance(entry, dict) and entry.get("id") == feature and entry.get("deleted_date") == ""
+            ]
+            if len(active) != 1 or not isinstance(allocation := active[0].get("allocation"), dict) or (
+                allocation.get("type") != "bool" or allocation.get("value") is not True
+            ):
+                raise WorkersPaidUnverified
 
     async def observe(
         self, *, api_token: SecretStr, intent: ResourceIntent,

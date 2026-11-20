@@ -16,8 +16,10 @@ from shared.models import (
     CloudflareCapacityPolicy,
     CloudflareCapacityStatus,
     CloudflareInstallationStatus,
+    CloudflareSpendStatus,
+    CloudflareUsageAdvisory,
 )
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -46,7 +48,8 @@ from src.services.worker_pool.cloudflare_release import (
 )
 from src.services.worker_pool.cloudflare_spend import (
     WORKERS_RATE_TABLE_VERSION,
-    cloudflare_usage_within_limit,
+    cloudflare_estimated_usage,
+    usage_period,
     workers_fleet_envelope_usd,
 )
 
@@ -96,10 +99,7 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
     row = (await db.execute(
         select(
             CloudflareInstallation,
-            and_(
-                CloudflareInstallation.admitted_revision.is_not(None),
-                cloudflare_usage_within_limit(),
-            ).label("admission_open"),
+            cloudflare_estimated_usage().label("estimated_usage"),
             select(func.count()).select_from(CloudflareOwnedResource).where(
                 CloudflareOwnedResource.installation_id == CloudflareInstallation.id,
                 or_(CloudflareOwnedResource.state != "absent", CloudflareOwnedResource.observed_at.is_(None)),
@@ -108,7 +108,22 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
     )).tuples().one_or_none()
     if row is None:
         return CloudflareCapacityStatus(consent_text_version=CONSENT_TEXT_VERSION, consent_text=CONSENT_TEXT, installation=None)
-    installation, admission_open, owned_resources_pending = row
+    installation, estimate, owned_resources_pending = row
+    policy = CloudflareCapacityPolicy.model_validate(installation.policy["limits"])
+    period_start, period_end = usage_period(datetime.now(UTC))
+    advisory = (
+        CloudflareUsageAdvisory.model_validate(installation.usage_advisory)
+        if installation.usage_advisory else None
+    )
+    spend = CloudflareSpendStatus(
+        state="ledger_unavailable" if estimate is None else (
+            "budget_reached" if estimate >= policy.monthly_limit_usd else "ready"
+        ),
+        estimated_usd=estimate.quantize(Decimal("0.01")) if estimate is not None else None,
+        rate_table_version=WORKERS_RATE_TABLE_VERSION,
+        period_start=period_start, period_end=period_end,
+        analytics=advisory if advisory is not None and advisory.period_start == period_start else None,
+    )
     latest_job_id = await db.scalar(select(PlatformJob.id).where(
         PlatformJob.resource_type == "cloudflare_installation",
         PlatformJob.resource_id == str(installation.id),
@@ -130,10 +145,11 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
             "consent_at": installation.consent_at,
             "desired_revision": installation.desired_revision,
             "desired_state": installation.desired_state,
-            "admission_open": admission_open,
-            "policy": installation.policy["limits"],
+            "admission_open": installation.admitted_revision is not None and spend.state == "ready",
+            "policy": policy,
             "fleet_envelope_usd": installation.policy["fleet_envelope_usd"],
             "owned_resources_pending": owned_resources_pending,
+            "spend": spend,
         }),
     )
 

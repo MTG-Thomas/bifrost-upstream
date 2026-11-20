@@ -311,6 +311,21 @@ export function CloudflareCapacity() {
 								</dt>
 								<dd>{installation.fleet_envelope_usd} USD</dd>
 							</div>
+							{installation.spend && (
+								<>
+									<div>
+										<dt className="text-muted-foreground">Estimated Spend This UTC Month</dt>
+										<dd>{installation.spend.estimated_usd === null ? "Spend Ledger Unavailable" : `${installation.spend.estimated_usd} USD`}</dd>
+										{installation.spend.state === "budget_reached" && <dd>Budget Reached</dd>}
+									</div>
+									<div>
+										<dt className="text-muted-foreground">Cloudflare Analytics Advisory</dt>
+										<dd>{installation.spend.analytics?.request_difference != null
+											? `${installation.spend.analytics.worker_requests} sampled Worker requests, ${installation.spend.analytics.request_difference} difference from the Bifrost request estimate`
+											: "No Attributable Sample"}</dd>
+									</div>
+								</>
+							)}
 						</dl>
 						{canWrite && (
 							<div className="flex flex-wrap gap-2">

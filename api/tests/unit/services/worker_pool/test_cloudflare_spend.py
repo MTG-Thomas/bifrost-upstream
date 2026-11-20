@@ -1,13 +1,12 @@
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
-from uuid import uuid4
 
 import pytest
 from src.services.worker_pool.cloudflare_spend import (
     WORKERS_RATES,
-    UsageSample,
-    cloudflare_spend_status,
+    WorkersLedgerUsage,
+    usage_period,
     workers_fleet_envelope_usd,
 )
 
@@ -38,25 +37,21 @@ def test_unbounded_meter_rejects_cost_estimate() -> None:
         )
 
 
-def test_spend_guard_requires_attributable_current_sample_below_limit() -> None:
-    now = datetime(2026, 11, 20, tzinfo=UTC)
-    installation_id = uuid4()
-    account_id = "a" * 32
-    sample = UsageSample(
-        installation_id, account_id, now - timedelta(days=30), now + timedelta(days=1),
-        now, Decimal("9.99"),
+def test_self_meter_prices_each_ledger_counter_at_the_published_marginal_rate() -> None:
+    usage = WorkersLedgerUsage(Decimal(1000), Decimal(2000), 11, 17)
+    assert usage.estimate() == Decimal("5.02150010")
+    with pytest.raises(ValueError, match="current rate version"):
+        usage.estimate("prior-version")
+    with pytest.raises(ValueError, match="inconsistent"):
+        replace(usage, slot_seconds=Decimal(4001)).estimate()
+    with pytest.raises(ValueError, match="inconsistent"):
+        replace(usage, dispatched_runs=-1).estimate()
+
+
+def test_policy_window_rolls_at_the_utc_month_boundary() -> None:
+    start = datetime(2026, 12, 1, tzinfo=UTC)
+    next_start = datetime(2027, 1, 1, tzinfo=UTC)
+    assert usage_period(next_start - timedelta(microseconds=1)) == (start, next_start)
+    assert usage_period(datetime(2026, 12, 31, 19, tzinfo=timezone(timedelta(hours=-5)))) == (
+        next_start, datetime(2027, 2, 1, tzinfo=UTC),
     )
-
-    def status(candidate: UsageSample | None) -> str:
-        return cloudflare_spend_status(
-            candidate, installation_id=installation_id, account_id=account_id,
-            monthly_limit_usd=Decimal(10), now=now,
-        )
-
-    assert status(sample) == "ready"
-    assert status(replace(sample, attributed_usd=Decimal("10.00"))) == "budget_reached"
-    assert status(None) == "spend_data_stale"
-    assert status(replace(sample, account_id="b" * 32)) == "spend_data_stale"
-    assert status(replace(sample, measured_at=now + timedelta(seconds=1))) == "spend_data_stale"
-    assert status(replace(sample, measured_at=now - timedelta(minutes=16))) == "spend_data_stale"
-    assert status(replace(sample, measured_at=now - timedelta(seconds=1), period_end=now)) == "spend_data_stale"

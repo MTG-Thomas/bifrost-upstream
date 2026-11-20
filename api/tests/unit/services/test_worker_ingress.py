@@ -128,7 +128,7 @@ def endpoint(monkeypatch):
         else:
             await websocket.close(code=1008)
 
-    return ingress.WorkerIngress(app, origin=origin), sdk, origin
+    return ingress.WorkerIngress(app, origin=origin, meter=AsyncMock(return_value=True)), sdk, origin
 
 
 @pytest.mark.asyncio

@@ -44,6 +44,23 @@ class CloudflareCapacityPolicy(BaseModel):
     shared_managed_worker_cap: int | None = Field(default=None, ge=1, le=1000)
 
 
+class CloudflareUsageAdvisory(BaseModel):
+    checked_at: datetime
+    period_start: datetime
+    worker_requests: Decimal | None = None
+    ledger_request_proxy: Decimal | None = None
+    request_difference: Decimal | None = None
+
+
+class CloudflareSpendStatus(BaseModel):
+    state: Literal["ready", "budget_reached", "ledger_unavailable"]
+    estimated_usd: Decimal | None
+    rate_table_version: str
+    period_start: datetime
+    period_end: datetime
+    analytics: CloudflareUsageAdvisory | None = None
+
+
 class CloudflareInstallationStatus(BaseModel):
     installation_id: UUID
     account_id: str
@@ -56,6 +73,7 @@ class CloudflareInstallationStatus(BaseModel):
     policy: CloudflareCapacityPolicy
     fleet_envelope_usd: Decimal
     owned_resources_pending: int
+    spend: CloudflareSpendStatus | None = None
 
 
 class CloudflareCapacityStatus(BaseModel):

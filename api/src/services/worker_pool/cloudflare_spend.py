@@ -2,18 +2,19 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime
 from decimal import ROUND_CEILING, Decimal
 from types import MappingProxyType
-from typing import Literal
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import Boolean, Numeric, case, column, func, select
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
 from src.models.orm.cloudflare_capacity import (
-    CloudflareCapacityUsage,
     CloudflareInstallation,
+    CloudflareUsageActivity,
 )
 
 
@@ -51,7 +52,17 @@ WORKERS_RATES = MappingProxyType({
     "transfer_gb": MeterRate(1, Decimal(0)),
 })
 WORKERS_PAID_MINIMUM_USD = Decimal("5.00")
-MAX_USAGE_AGE = timedelta(minutes=15)
+# Estimate at the published marginal rates, with no account-wide free tiers.
+# Each resident 128 MiB object is estimated separately. Work and gateway
+# activity use the packaged Worker CPU cap and one request as pricing proxies.
+_CPU_MS_PER_ACTIVITY = 30_000
+_OBJECT_GIB = Decimal("0.125")
+_DURATION_USD_PER_SECOND = _OBJECT_GIB * WORKERS_RATES["do_gb_seconds"].usd / WORKERS_RATES["do_gb_seconds"].unit
+_ACTIVITY_USD = (
+    WORKERS_RATES["worker_requests"].cost(Decimal(1))
+    + WORKERS_RATES["worker_cpu_ms"].cost(Decimal(_CPU_MS_PER_ACTIVITY))
+    + WORKERS_RATES["do_requests"].usd / WORKERS_RATES["do_requests"].unit
+)
 
 
 def workers_fleet_envelope_usd(
@@ -83,54 +94,82 @@ def workers_fleet_envelope_usd(
     return gross.quantize(Decimal("0.01"), rounding=ROUND_CEILING)
 
 
+def usage_period(now: datetime) -> tuple[datetime, datetime]:
+    """Calendar months in UTC define Bifrost's policy window."""
+    if now.tzinfo is None:
+        raise ValueError("Cloudflare usage requires a timezone-aware clock")
+    start = now.astimezone(UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    end = start.replace(year=start.year + 1, month=1) if start.month == 12 else start.replace(month=start.month + 1)
+    return start, end
+
+
+def _cost(launcher_seconds, slot_seconds, dispatched_runs, sdk_requests):
+    return (
+        WORKERS_PAID_MINIMUM_USD
+        + _DURATION_USD_PER_SECOND * (launcher_seconds + slot_seconds)
+        + _ACTIVITY_USD * (dispatched_runs + sdk_requests)
+    )
+
+
 @dataclass(frozen=True, slots=True)
-class UsageSample:
-    installation_id: UUID
-    account_id: str
-    period_start: datetime
-    period_end: datetime
-    measured_at: datetime
-    attributed_usd: Decimal
+class WorkersLedgerUsage:
+    launcher_seconds: Decimal
+    slot_seconds: Decimal
+    dispatched_runs: int
+    sdk_requests: int
+
+    def estimate(self, rate_version: str = WORKERS_RATE_TABLE_VERSION) -> Decimal:
+        if rate_version != WORKERS_RATE_TABLE_VERSION:
+            raise ValueError("Cloudflare usage requires the current rate version")
+        if not self.launcher_seconds.is_finite() or not self.slot_seconds.is_finite() or not (
+            0 <= self.launcher_seconds <= self.slot_seconds <= 4 * self.launcher_seconds
+            and self.dispatched_runs >= 0 and self.sdk_requests >= 0
+        ):
+            raise ValueError("Cloudflare usage ledger is inconsistent")
+        return _cost(self.launcher_seconds, self.slot_seconds, self.dispatched_runs, self.sdk_requests)
 
 
-def cloudflare_spend_status(
-    sample: UsageSample | None,
-    *,
-    installation_id: UUID,
-    account_id: str,
-    monthly_limit_usd: Decimal,
-    now: datetime,
-) -> Literal["ready", "spend_data_stale", "budget_reached"]:
-    """Close admission on unattributed, stale, future, or prior-period usage."""
-    if (
-        sample is None
-        or (sample.installation_id, sample.account_id) != (installation_id, account_id)
-        or not (sample.period_start <= sample.measured_at <= now < sample.period_end)
-        or now - sample.measured_at > MAX_USAGE_AGE
-        or not sample.attributed_usd.is_finite()
-        or sample.attributed_usd < 0
-    ):
-        return "spend_data_stale"
-    if not monthly_limit_usd.is_finite() or monthly_limit_usd <= sample.attributed_usd:
-        return "budget_reached"
-    return "ready"
+def _totals(installation_id, as_of):
+    return func.cloudflare_usage_totals(installation_id, as_of).table_valued(
+        column("launcher_seconds", Numeric), column("slot_seconds", Numeric),
+        column("dispatched_runs", Numeric), column("sdk_requests", Numeric),
+        column("complete", Boolean),
+    )
+
+
+async def read_workers_usage(db: AsyncSession, installation_id: UUID, as_of: datetime) -> WorkersLedgerUsage | None:
+    totals = _totals(installation_id, as_of)
+    row = (await db.execute(select(totals))).one()
+    if not row.complete:
+        return None
+    return WorkersLedgerUsage(row.launcher_seconds, row.slot_seconds, int(row.dispatched_runs), int(row.sdk_requests))
+
+
+def cloudflare_estimated_usage() -> ColumnElement[Decimal | None]:
+    """Price the live account ledger in the same database snapshot as admission."""
+    installation = CloudflareInstallation
+    totals = _totals(installation.id, func.statement_timestamp())
+    return select(case(
+        (totals.c.complete & (installation.policy["rate_table_version"].as_string() == WORKERS_RATE_TABLE_VERSION),
+         _cost(totals.c.launcher_seconds, totals.c.slot_seconds, totals.c.dispatched_runs, totals.c.sdk_requests)),
+    )).select_from(totals).correlate(installation).scalar_subquery()
 
 
 def cloudflare_usage_within_limit() -> ColumnElement[bool]:
-    """Correlate fresh usage evidence with the current installation and policy."""
-    usage = CloudflareCapacityUsage
-    installation = CloudflareInstallation
-    now = func.statement_timestamp()
-    return select(usage.installation_id).where(
-        usage.installation_id == installation.id,
-        usage.account_id == installation.account_id,
-        usage.deployment_revision == installation.desired_revision,
-        usage.rate_table_version == WORKERS_RATE_TABLE_VERSION,
-        usage.rate_table_version == installation.policy["rate_table_version"].as_string(),
-        usage.bounds_digest == installation.policy["bounds_digest"].as_string(),
-        usage.period_start <= usage.measured_at,
-        usage.measured_at <= now,
-        usage.measured_at >= now - MAX_USAGE_AGE,
-        now < usage.period_end,
-        usage.attributed_usd < installation.policy["limits"]["monthly_limit_usd"].as_numeric(20, 6),
-    ).correlate(installation).exists()
+    return func.coalesce(
+        cloudflare_estimated_usage() < CloudflareInstallation.policy["limits"]["monthly_limit_usd"].as_numeric(20, 6),
+        False,
+    )
+
+
+async def record_sdk_gateway_request(db: AsyncSession, installation_id: UUID) -> None:
+    activity = CloudflareUsageActivity
+    await db.execute(insert(activity).values(
+        installation_id=installation_id, period_start=func.date_trunc("month", func.clock_timestamp(), "UTC"),
+        sdk_requests=1,
+    ).on_conflict_do_update(
+        index_elements=[activity.installation_id, activity.period_start],
+        set_={"sdk_requests": activity.sdk_requests + 1},
+    ))
+
+

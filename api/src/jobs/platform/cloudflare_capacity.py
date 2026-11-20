@@ -50,10 +50,6 @@ from src.services.worker_pool.cloudflare_credentials import (
     open_credential,
     seal_credential,
 )
-from src.services.worker_pool.cloudflare_enable_dependencies import (
-    WorkersUsageUnverified,
-    refresh_workers_usage,
-)
 from src.services.worker_pool.cloudflare_policy import (
     CloudflarePolicyConflict,
     cloudflare_workers_remain,
@@ -69,7 +65,7 @@ from src.services.worker_pool.cloudflare_provisioning import (
     observe_owned,
     resume_deletion,
 )
-from src.services.worker_pool.cloudflare_spend import cloudflare_usage_within_limit
+from src.services.worker_pool.cloudflare_spend import cloudflare_estimated_usage, read_workers_usage, usage_period
 from src.services.worker_pool.cloudflare_workers_rest import (
     CloudflareManagementDenied,
     CloudflareRestUnavailable,
@@ -377,11 +373,11 @@ def _current_reconcile(installation: CloudflareInstallation | None, revision: in
 
 
 async def _settle_reconcile(
-    context: PlatformJobContext, payload: CloudflareReconcilePayload, adapter: OwnedResourceCleanup,
+    context: PlatformJobContext, payload: CloudflareReconcilePayload, adapter: WorkersRestCleanup,
 ) -> dict[str, str]:
     issue = None
     token = None
-    refreshed = False
+    advisory = None
     async with get_db_context() as db:
         await _hold_installation_lease(db, context, payload.installation_id)
         installation = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
@@ -404,22 +400,27 @@ async def _settle_reconcile(
             await _observe_inventory(adapter, token, inventory, require_present=True)
             if not all(receipt.namespaces for receipt in inventory):
                 raise ObservationPending("The admitted revision lacks exact namespace receipts")
-            await refresh_workers_usage(
-                installation, revision=payload.revision, scripts=usage_identities,
+            checked_at = datetime.now(UTC)
+            start, _ = usage_period(checked_at)
+            sampled = await adapter.advisory_workers_requests(
+                installation.account_id, token, set(usage_identities), start, checked_at,
             )
-            refreshed = True
+            advisory = {"checked_at": checked_at.isoformat(), "period_start": start.isoformat()}
+            if sampled is not None:
+                async with get_db_context() as db:
+                    ledger = await read_workers_usage(db, installation.id, checked_at)
+                if ledger is not None:
+                    local = ledger.dispatched_runs + ledger.sdk_requests
+                    advisory.update(worker_requests=str(sampled), ledger_request_proxy=str(local),
+                                    request_difference=str(sampled - local))
         except OwnershipConflict:
             issue = ("Verify Cloudflare Ownership", "CF_OWNERSHIP_CONFLICT")
         except ObservationPending:
             issue = ("Verify Cloudflare Deployment", "CF_DEPLOYMENT_UNVERIFIED")
         except CloudflareManagementDenied:
             issue = ("Reconnect Cloudflare", "CF_MANAGEMENT_CREDENTIAL")
-        except WorkersUsageUnverified:
-            # The freshness predicate closes admission when the previous sample
-            # expires. Keep its revision so subsequent sweeps can refresh it.
-            pass
 
-    usage_ready = False
+    estimated_usage = None
     async with get_db_context() as db:
         await _hold_installation_lease(db, context, payload.installation_id)
         installation = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
@@ -434,14 +435,14 @@ async def _settle_reconcile(
         if issue is not None:
             installation.admitted_revision = None
         else:
-            usage_ready = bool(await db.scalar(
-                select(cloudflare_usage_within_limit()).where(CloudflareInstallation.id == installation.id),
-            ))
-        if issue is not None or refreshed:
-            wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
+            installation.usage_advisory = advisory
+            estimated_usage = await db.scalar(
+                select(cloudflare_estimated_usage()).where(CloudflareInstallation.id == installation.id),
+            )
+        wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
     if issue is not None:
         raise PlatformJobRequiresAction(issue[0], {"code": issue[1]})
-    if not usage_ready:
+    if estimated_usage is None:
         raise PlatformJobRequiresAction("Verify Cloudflare Spend", {"code": "CF_SPEND_UNVERIFIED"})
     return {"outcome": "verified"}
 

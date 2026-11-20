@@ -22,9 +22,10 @@ from starlette.routing import Match
 from starlette.types import Message, Receive, Scope, Send
 from uvicorn.protocols.http.h11_impl import H11Protocol
 
-from src.core.database import get_session_factory
+from src.core.database import get_db_context, get_session_factory
 from src.core.security import decode_expired_access_token, decode_token
 from src.models.orm.cloudflare_capacity import CloudflareInstallation
+from src.services.worker_pool.cloudflare_spend import record_sdk_gateway_request
 from src.worker.remote.protocol import MAX_FRAME_BYTES
 
 PORT = 8001
@@ -213,6 +214,18 @@ async def _installation_origin() -> str | None:
         ))
 
 
+async def _meter_gateway(origin: str) -> bool:
+    async with asyncio.timeout(3), get_db_context() as db:
+        installation_id = await db.scalar(select(CloudflareInstallation.id).where(
+            CloudflareInstallation.worker_ingress_origin == origin,
+            CloudflareInstallation.retired_at.is_(None),
+        ))
+        if installation_id is None:
+            return False
+        await record_sdk_gateway_request(db, installation_id)
+    return True
+
+
 def _access_claims(scope: Scope) -> dict | None:
     headers = _header_values(scope, b"authorization")
     if len(headers) != 1 or len(headers[0]) > 8192:
@@ -238,9 +251,11 @@ def _refresh_claims(body: bytes) -> dict | None:
 class WorkerIngress:
     def __init__(
         self, app: FastAPI, *, origin: Callable[[], Awaitable[str | None]] = _installation_origin,
+        meter: Callable[[str], Awaitable[bool]] = _meter_gateway,
     ) -> None:
         self.app = app
         self.origin = origin
+        self.meter = meter
         self.cached_origin: str | None = None
         self.origin_until = 0.0
         self.origin_lock = asyncio.Lock()
@@ -311,7 +326,7 @@ class WorkerIngress:
             await _respond(scope, send, 429)
             return
         try:
-            await self._serve_http(scope, receive, send, limit)
+            await self._serve_http(scope, receive, send, limit, origin)
         finally:
             budget.active -= 1
 
@@ -347,7 +362,7 @@ class WorkerIngress:
         finally:
             (active or self.pending_hello).active -= 1
 
-    async def _serve_http(self, scope: Scope, receive: Receive, send: Send, limit: int) -> None:
+    async def _serve_http(self, scope: Scope, receive: Receive, send: Send, limit: int, origin: str) -> None:
         body = bytearray()
         try:
             async with asyncio.timeout(_BODY_TIMEOUT):
@@ -380,12 +395,25 @@ class WorkerIngress:
                 return
             self.refresh.active -= 1
             try:
-                await self._forward(scope, receive, send, replay)
+                await self._metered_forward(scope, receive, send, replay, origin)
             finally:
                 budget.active -= 1
                 self.refresh.active += 1
             return
-        await self._forward(scope, receive, send, replay)
+        if scope.get("worker_ingress_capacity_canary"):
+            await self._forward(scope, receive, send, replay)
+        else:
+            await self._metered_forward(scope, receive, send, replay, origin)
+
+    async def _metered_forward(self, scope: Scope, receive: Receive, send: Send, body: bytes, origin: str) -> None:
+        try:
+            metered = await self.meter(origin)
+        except (TimeoutError, SQLAlchemyError):
+            metered = False
+        if not metered:
+            await _respond(scope, send, 503, allowed=True)
+            return
+        await self._forward(scope, receive, send, body)
 
     async def _forward(self, scope: Scope, receive: Receive, send: Send, body: bytes) -> None:
         replay: bytes | None = body

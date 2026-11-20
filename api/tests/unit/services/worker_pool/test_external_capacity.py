@@ -20,9 +20,10 @@ from sqlalchemy import delete, select
 from src.models.enums import ExecutionStatus
 from src.models.orm.cloudflare_capacity import (
     CloudflareCapacityScope,
-    CloudflareCapacityUsage,
     CloudflareCredential,
     CloudflareInstallation,
+    CloudflareUsageActivity,
+    CloudflareUsageIncarnation,
     CloudflareWorkerReservation,
 )
 from src.models.orm.execution_workers import ExecutionWorker
@@ -182,12 +183,6 @@ async def managed_pool(db, capacity):
             installation_id=installation_id, scope=scope_name, endpoint="https://capacity.invalid",
             deployment_revision=1, bearer_version=1,
         ))
-        session.add(CloudflareCapacityUsage(
-            installation_id=installation_id, account_id=account_id, deployment_revision=1,
-            rate_table_version=WORKERS_RATE_TABLE_VERSION, bounds_digest="b" * 64,
-            period_start=now - timedelta(days=1), period_end=now + timedelta(days=1),
-            measured_at=now, attributed_usd=5,
-        ))
         session.add(ExecutionWorker(
             id=uuid4(), form="static", state="ready", heartbeat_at=now, memory_pressured=True,
         ))
@@ -207,9 +202,8 @@ async def managed_pool(db, capacity):
         await session.execute(delete(CloudflareCapacityScope).where(
             CloudflareCapacityScope.installation_id == installation_id,
         ))
-        await session.execute(delete(CloudflareCapacityUsage).where(
-            CloudflareCapacityUsage.installation_id == installation_id,
-        ))
+        for meter in (CloudflareUsageActivity, CloudflareUsageIncarnation):
+            await session.execute(delete(meter).where(meter.installation_id == installation_id))
         await session.execute(delete(CloudflareCredential).where(CloudflareCredential.installation_id == installation_id))
         await session.delete(row)
 

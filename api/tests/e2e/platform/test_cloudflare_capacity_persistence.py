@@ -28,13 +28,13 @@ from src.jobs.platform.base import (
 from src.models.orm.audit import AuditLog
 from src.models.orm.cloudflare_capacity import (
     CloudflareCapacityScope,
-    CloudflareCapacityUsage,
     CloudflareCredential,
     CloudflareInstallation,
     CloudflareOwnedResource,
+    CloudflareUsageActivity,
     CloudflareWorkerReservation,
 )
-from src.models.orm.execution_workers import ExecutionWorker
+from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
 from src.models.orm.platform_jobs import PlatformJob
 from src.models.orm.work_dispatches import WorkDispatch
 from src.services import worker_ingress_probes as ingress_probes
@@ -47,6 +47,7 @@ from src.services.authorization.context import (
 )
 from src.services.authorization.enforce import Caller
 from src.services.kubernetes_execution import KubernetesExecutionService
+from src.services.work_dispatch import WAKE_WORKFLOW
 from src.services.worker_pool import (
     cloudflare_supervisor,
     controller,
@@ -81,6 +82,8 @@ from src.services.worker_pool.cloudflare_provisioning import (
 from src.services.worker_pool.cloudflare_spend import (
     WORKERS_RATE_TABLE_VERSION,
     WORKERS_RATES,
+    read_workers_usage,
+    usage_period,
 )
 from src.services.worker_pool.cloudflare_workers_rest import (
     OWNER_BINDING,
@@ -179,29 +182,35 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
     )))
     canary = AsyncMock(side_effect=[ingress_probes.RuntimeCanary(True, False), ingress_probes.RuntimeCanary(True, True)])
     monkeypatch.setattr(enable_job, "run_workers_canary", canary)
-    paid = AsyncMock()
+    paid_reads = []
 
-    async def sample(row, *, revision, scripts):
-        assert revision == row.desired_revision
-        assert set(scripts) == set(writes)
-        async with context() as db:
-            await add_usage(db, row)
+    def provider_read(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET" and request.url.host == "api.cloudflare.com"
+        assert request.headers["Authorization"] == "Bearer synthetic-cloudflare-management-token"
+        account_path = f"/client/v4/accounts/{installation.account_id}"
+        paid_reads.append(request.url.path)
+        if request.url.path == account_path:
+            return httpx.Response(200, json={"success": True, "result": {"id": installation.account_id}})
+        assert request.url.path == account_path + "/entitlements"
+        return httpx.Response(200, json={"success": True, "result": [
+            {"id": feature, "deleted_date": "", "allocation": {"type": "bool", "value": True}}
+            for feature in ("workers.enabled", "containers.enabled")
+        ]})
 
-    usage = AsyncMock(side_effect=sample)
     running = PlatformJobContext(job.id, lease_token, None, str(OPERATOR_ID), "operator@example.test", "")
     payload = enable_job.CloudflareEnablePayload.model_validate(job.payload)
     release = SimpleNamespace(digest="d" * 64)
-    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(500))) as http:
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider_read)) as http:
         with pytest.raises(PlatformJobRequiresAction) as denied:
-            await enable_job._settle_enable(running, payload, http, release, check_paid=paid, refresh_usage=usage)
+            await enable_job._settle_enable(running, payload, http, release)
         assert denied.value.result == {"code": "CF_WORKER_INGRESS_UNVERIFIED"}
-        usage.assert_not_awaited()
         await db_session.refresh(installation)
         assert installation.admitted_revision is None
         assert await enable_job._settle_enable(
-            running, payload, http, release, check_paid=paid, refresh_usage=usage,
+            running, payload, http, release,
         ) == {"outcome": "enabled"}
     assert len(writes) == 2 and canary.await_count == 2
+    assert sum(path.endswith("/entitlements") for path in paid_reads) == 2
     await db_session.refresh(installation)
     assert installation.admitted_revision == 1
 
@@ -606,6 +615,14 @@ async def test_reconcile_dedupes_schedule_and_closes_admission_on_missing_deploy
     status_code = 503
 
     def remote(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/graphql"):
+            body = json.loads(request.content)
+            assert body["variables"]["scripts"] == sorted(resources)
+            return httpx.Response(200, json={"data": {"viewer": {"accounts": [{
+                "workersInvocationsAdaptive": [
+                    {"dimensions": {"scriptName": name}, "sum": {"requests": 3}} for name in resources
+                ],
+            }]}}})
         assert request.method == "GET"
         if status_code != 200:
             assert request.url.path.endswith("/settings")
@@ -625,14 +642,7 @@ async def test_reconcile_dedupes_schedule_and_closes_admission_on_missing_deploy
             }]}
         return httpx.Response(200, json={"success": True, "result": result})
 
-    async def usage(row, *, revision, scripts):
-        assert revision == row.desired_revision
-        assert scripts == {name: value.namespace_ids for name, value in resources.items()}
-        async with context() as db:
-            await add_usage(db, row, attributed_usd=Decimal("10.00"))
-
     monkeypatch.setattr(lifecycle_job, "get_db_context", context)
-    monkeypatch.setattr(lifecycle_job, "refresh_workers_usage", usage)
     monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
     running = PlatformJobContext(job.id, token, None, "system", "", "Bifrost")
     payload = lifecycle_job.CloudflareReconcilePayload.model_validate(job.payload)
@@ -643,11 +653,11 @@ async def test_reconcile_dedupes_schedule_and_closes_admission_on_missing_deploy
             await lifecycle_job.CLOUDFLARE_RECONCILE_DEFINITION.handler(running, payload)
         assert unavailable.value.retryable and lifecycle_job.CLOUDFLARE_RECONCILE_DEFINITION.policy.retry_on_failure
         status_code = 200
-        with pytest.raises(PlatformJobRequiresAction) as budget:
-            await lifecycle_job.CLOUDFLARE_RECONCILE_DEFINITION.handler(running, payload)
-        assert budget.value.result == {"code": "CF_SPEND_UNVERIFIED"}
+        assert await lifecycle_job.CLOUDFLARE_RECONCILE_DEFINITION.handler(running, payload) == {"outcome": "verified"}
         status = await get_cloudflare_capacity_status(db_session, _platform_operator())
-        assert status.installation is not None and not status.installation.admission_open
+        assert status.installation is not None and status.installation.admission_open
+        assert status.installation.spend is not None and status.installation.spend.analytics is not None
+        assert status.installation.spend.analytics.request_difference == Decimal(6)
         status_code = 404
         with pytest.raises(PlatformJobRequiresAction) as missing:
             await lifecycle_job.CLOUDFLARE_RECONCILE_DEFINITION.handler(running, payload)
@@ -759,7 +769,6 @@ async def test_supervisor_reserves_and_retires_without_restarting(
                 **installation.policy,
                 "limits": {**installation.policy["limits"], "shared_managed_worker_cap": None},
             }
-        await add_usage(db_session, installation)
         await db_session.flush()
         if primary == "static":
             await sweep()
@@ -796,21 +805,6 @@ async def installation(db_session: AsyncSession) -> CloudflareInstallation:
     row = await db_session.get(CloudflareInstallation, installation_id)
     assert row is not None
     return row
-
-
-async def add_usage(
-    db_session: AsyncSession, installation: CloudflareInstallation, *, attributed_usd: Decimal = Decimal(5),
-) -> CloudflareCapacityUsage:
-    now = datetime.now(UTC)
-    sample = CloudflareCapacityUsage(
-        installation_id=installation.id, account_id=installation.account_id,
-        deployment_revision=installation.desired_revision, rate_table_version=WORKERS_RATE_TABLE_VERSION,
-        bounds_digest=installation.policy["bounds_digest"], period_start=now - timedelta(days=1),
-        period_end=now + timedelta(days=1), measured_at=now, attributed_usd=attributed_usd,
-    )
-    db_session.add(sample)
-    await db_session.flush()
-    return sample
 
 
 async def create_installation(
@@ -1001,7 +995,7 @@ async def test_claim_gate_tracks_scale_in_and_deployment_changes_without_restart
     worker_id = uuid4()
     db_session.add(ExecutionWorker(
         id=worker_id, form="external", state="ready", capacity_scope="workers",
-        runtime_profile="cloudflare-python-v1",
+        runtime_profile="cloudflare-python-v1", memory_limit_bytes=256 * 2**20,
     ))
     db_session.add(seal_credential(
         CredentialRef(installation.id, installation.account_id, "scope_bearer", "workers", 1),
@@ -1023,19 +1017,28 @@ async def test_claim_gate_tracks_scale_in_and_deployment_changes_without_restart
     installation.desired_state = "enabled"
     installation.admitted_revision = 1
     await db_session.flush()
-    assert not await cloudflare_claim_allowed(db_session, worker_id)
-    sample = await add_usage(db_session, installation)
     assert await cloudflare_claim_allowed(db_session, worker_id)
-    sample.attributed_usd = Decimal(10)
+    db_session.add(ExecutionWorkerClaim(worker_id=worker_id, family=WAKE_WORKFLOW, subject_id=uuid4()))
+    await db_session.flush()
+    start, _ = usage_period(datetime.now(UTC))
+    activity = await db_session.get(CloudflareUsageActivity, (installation.id, start))
+    assert activity is not None and activity.dispatched_runs == 1
+    activity.sdk_requests = 100_000
     await db_session.flush()
     assert not await cloudflare_claim_allowed(db_session, worker_id)
-    sample.attributed_usd = Decimal(5)
-    sample.measured_at -= timedelta(minutes=16)
+    status = await get_cloudflare_capacity_status(db_session, _platform_operator())
+    assert status.installation is not None and status.installation.spend is not None
+    assert status.installation.spend.state == "budget_reached"
+    activity.sdk_requests = 0
+    installation.usage_incomplete_until = datetime.now(UTC) + timedelta(days=1)
     await db_session.flush()
     assert not await cloudflare_claim_allowed(db_session, worker_id)
-    sample.measured_at = datetime.now(UTC)
+    installation.usage_incomplete_until = None
     await db_session.flush()
     assert await cloudflare_claim_allowed(db_session, worker_id)
+    ledger = await read_workers_usage(db_session, installation.id, datetime.now(UTC))
+    assert ledger is not None and ledger.launcher_seconds > 0
+    assert ledger.slot_seconds == ledger.launcher_seconds * 2
 
     policy = installation.policy
     limits = policy["limits"]

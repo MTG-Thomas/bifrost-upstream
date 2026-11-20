@@ -17,14 +17,12 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from pydantic import SecretStr
 from shared.models import WorkerCapacityProfile, WorkerCapacityResource
-from src.core.database import get_db_context
-from src.models.orm.cloudflare_capacity import CloudflareCapacityUsage
 from src.services import worker_ingress_probes as probes
 from src.services.worker_ingress import ALLOW_MARKER, CONTROL_PATH, INGRESS_HEADER, PORT
 from src.services.worker_pool.cloudflare_provisioning import ResourceObservation
 from src.services.worker_pool.cloudflare_release import QUALIFIED_RUNTIME_SHA256, load_workers_release
-from src.services.worker_pool.cloudflare_spend import WORKERS_RATE_TABLE_VERSION, WORKERS_RATES
-from src.services.worker_pool.cloudflare_workers_rest import ConfiguredWorkersScript
+from src.services.worker_pool.cloudflare_spend import WORKERS_RATES
+from src.services.worker_pool.cloudflare_workers_rest import ConfiguredWorkersScript, WorkersRestCleanup
 from src.worker.remote.protocol import ControlEnvelope, Hello, new_nonce, sign_hello
 from websockets.asyncio.client import connect
 
@@ -65,15 +63,27 @@ def _release():
         return load_workers_release(path)
 
 
-class _Cloudflare:
+class _Cloudflare(WorkersRestCleanup):
     def __init__(self, _http, deployment=None):
         self.deployment = deployment
 
-    async def verify_workers_entitlement(self, account_id, token):
+    async def _request(self, token, account_id, method, path, **kwargs):
         assert (account_id, token) == (ACCOUNT, TOKEN)
+        assert method == "GET"
+        if path == "":
+            return {"result": {"id": account_id}}
+        assert path == "entitlements"
+        return {"result": [
+            {"id": name, "deleted_date": "", "allocation": {"type": "bool", "value": True}}
+            for name in ("workers.enabled", "containers.enabled")
+        ]}
+
+    async def advisory_workers_requests(self, account_id, api_token, scripts, start, end):
+        assert (account_id, api_token) == (ACCOUNT, TOKEN)
+        return None
 
     async def observe(self, *, api_token, intent):
-        await self.verify_workers_entitlement(intent.target.account_id, api_token)
+        assert (intent.target.account_id, api_token) == (ACCOUNT, TOKEN)
         script = ROOT / intent.target.name
         if not script.exists():
             return None
@@ -103,24 +113,8 @@ class _Cloudflare:
         return True
 
     async def verify_absent(self, *, api_token, target, namespace_ids=frozenset()):
-        await self.verify_workers_entitlement(target.account_id, api_token)
+        assert (target.account_id, api_token) == (ACCOUNT, TOKEN)
         assert not (ROOT / target.name).exists()
-
-
-async def _paid(account_id):
-    assert account_id == ACCOUNT
-
-
-async def _usage(installation, *, revision, scripts):
-    assert len(scripts) == 2 and all(len(namespaces) == 2 for namespaces in scripts.values())
-    now = datetime.now(UTC)
-    async with get_db_context() as db:
-        await db.merge(CloudflareCapacityUsage(
-            installation_id=installation.id, account_id=ACCOUNT, deployment_revision=revision,
-            rate_table_version=WORKERS_RATE_TABLE_VERSION, bounds_digest=installation.policy["bounds_digest"],
-            period_start=now - timedelta(minutes=1), period_end=now + timedelta(days=1),
-            measured_at=now, attributed_usd=0,
-        ))
 
 
 def _tls(path):
@@ -165,7 +159,6 @@ async def _forward(reader, writer):
 def install_api(router_module):
     router_module.load_workers_release = _release
     router_module.WorkersRestCleanup = _Cloudflare
-    router_module.require_workers_paid = _paid
 
 
 def install_enable(job_module):
@@ -264,8 +257,6 @@ def install_enable(job_module):
             return self.resource
 
     job_module.load_workers_release = _release
-    job_module.require_workers_paid = _paid
-    job_module.refresh_workers_usage = _usage
     job_module.WorkersRestProvisioner = _Cloudflare
     job_module.WorkersRestCleanup = _Cloudflare
     job_module.ExternalCapacityClient = Launcher
@@ -274,4 +265,3 @@ def install_enable(job_module):
 
 def install_lifecycle(job_module):
     job_module.WorkersRestCleanup = _Cloudflare
-    job_module.refresh_workers_usage = _usage
