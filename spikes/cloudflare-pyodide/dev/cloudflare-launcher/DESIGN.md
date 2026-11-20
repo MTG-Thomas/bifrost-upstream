@@ -759,7 +759,7 @@ bundle. Every file passes a streaming 75,000-weight token guard before AST
 construction. On Python versions before 3.12, this guard also charges
 f-string tokens by source length. Each imported path is loaded once per
 bundle and the node ceiling is 100,000 per bundle. URL resolution stops
-at 4 KiB or 4,096 visited parts and reports an incomplete target. Scope
+at 4,096 characters or 4,096 visited parts and reports an incomplete target. Scope
 inspection budgets 200,000 retained lookup entries and 500,000 copy-work
 entries over the bundle.
 
