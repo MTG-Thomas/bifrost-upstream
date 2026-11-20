@@ -14,7 +14,8 @@ import {supervisorModules} from '../tenant-workers/supervisor-digest.mjs';
 import {stageRuntimeLoader} from '../stage-runtime-loader.mjs';
 import {hostedRelayPath, relayHeaders, relayHttp} from './relay-http.mjs';
 import {capacityWorker} from './capacity-miniflare.mjs';
-import {localLinuxProvider, localSolutionGit, serveContainersProviders, vmHoldMemoryMiB} from './containers-local.mjs';
+import {localLinuxProvider, localSolutionGit, OVERFLOW_MEMORY_MIB, serveContainersProviders,
+  vmHoldMemoryMiB} from './containers-local.mjs';
 
 const root = new URL('../', import.meta.url);
 const require = createRequire(new URL('tenant-workers/package.json', root));
@@ -725,6 +726,9 @@ async function containersChecks() {
     const hold = await api('/api/workflows/' + config.workflows.vm,
       {memory_request_mib: vmHoldMemoryMiB(primary.available)}, config.admin, 'PATCH');
     assert.equal(hold.status, 200);
+    const overflow = await api('/api/workflows/' + config.workflows.linux,
+      {memory_request_mib: OVERFLOW_MEMORY_MIB}, config.admin, 'PATCH');
+    assert.equal(overflow.status, 200);
     async function submit(key) {
       const reply = await api('/api/workflows/execute', {
         workflow_id: config.workflows[key], input_data: {}, sync: false,
