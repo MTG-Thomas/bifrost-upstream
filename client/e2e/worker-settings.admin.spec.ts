@@ -10,7 +10,7 @@ test("an admin saves worker scaling outside Kubernetes", async ({ page, api }) =
 	const changed = original === 86400 ? original - 1 : original + 1;
 	try {
 		await page.goto("/settings/ai");
-		await page.getByRole("button", { name: "Workers", exact: true }).click();
+		await page.getByRole("button", { name: "Capacity", exact: true }).click();
 		await page.getByRole("button", { name: "Scaling & Isolation", exact: true }).click();
 		await expect(page.getByLabel("Max Workers", { exact: true })).toBeEnabled();
 		await expect(page.getByLabel("Isolate Build Jobs")).toBeDisabled();

@@ -142,7 +142,7 @@ async def test_disconnect_resumes_owned_script_delete_until_namespace_absence(
         id=uuid4(), installation_id=installation.id, account_id=installation.account_id,
         scope="workers", kind="worker_script", target_name="test-capacity",
         desired_revision=1, artifact_digest="c" * 64, effect_id=uuid4(), state="present",
-        provider_id="test-capacity", provider_version=str(uuid4()),
+        provider_id=str(uuid4()), provider_version=str(uuid4()),
     )
     db_session.add(resource)
     job, _ = await lifecycle_job.enqueue_cloudflare_disable(
@@ -179,7 +179,10 @@ async def test_disconnect_resumes_owned_script_delete_until_namespace_absence(
                 "name": OWNER_BINDING, "type": "plain_text", "text": worker_owner_value(intent),
             }]}
         elif request.url.path.endswith("/deployments"):
-            result = {"deployments": [{"versions": [{"percentage": 100, "version_id": resource.provider_version}]}]}
+            result = {"deployments": [{
+                "id": resource.provider_id,
+                "versions": [{"percentage": 100, "version_id": resource.provider_version}],
+            }]}
         elif request.url.path.endswith("/namespaces"):
             page = int(request.url.params["page"])
             assert page in (1, 2)

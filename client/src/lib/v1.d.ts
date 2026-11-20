@@ -2981,6 +2981,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/capacity/cloudflare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Cloudflare Capacity */
+        get: operations["capacity.cloudflare_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/capacity/cloudflare/scale-in": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Scale In Cloudflare Capacity */
+        post: operations["capacity.cloudflare_scale_in"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/capacity/cloudflare/disconnect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Disconnect Cloudflare Capacity */
+        post: operations["capacity.cloudflare_disconnect"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/branding": {
         parameters: {
             query?: never;
@@ -16183,6 +16234,83 @@ export interface components {
              * @description Number of executions that failed to clean up
              */
             failed: number;
+        };
+        /** CloudflareCapacityAction */
+        CloudflareCapacityAction: {
+            /**
+             * Installation Id
+             * Format: uuid
+             */
+            installation_id: string;
+            /** Expected Revision */
+            expected_revision: number;
+        };
+        /** CloudflareCapacityPolicy */
+        CloudflareCapacityPolicy: {
+            /**
+             * Version
+             * @default 1
+             * @constant
+             */
+            version: 1;
+            workers: components["schemas"]["CloudflareWorkersPolicy"];
+            /** Monthly Limit Usd */
+            monthly_limit_usd: string;
+            /** Shared Managed Worker Cap */
+            shared_managed_worker_cap?: number | null;
+        };
+        /** CloudflareCapacityStatus */
+        CloudflareCapacityStatus: {
+            /** Consent Text Version */
+            consent_text_version: string;
+            installation: components["schemas"]["CloudflareInstallationStatus"] | null;
+        };
+        /** CloudflareInstallationStatus */
+        CloudflareInstallationStatus: {
+            /**
+             * Installation Id
+             * Format: uuid
+             */
+            installation_id: string;
+            /** Account Id */
+            account_id: string;
+            /** Worker Ingress Origin */
+            worker_ingress_origin: string;
+            /** Consent Version */
+            consent_version: string;
+            /**
+             * Consent At
+             * Format: date-time
+             */
+            consent_at: string;
+            /** Desired Revision */
+            desired_revision: number;
+            /**
+             * Desired State
+             * @enum {string}
+             */
+            desired_state: "scaled_in" | "enabled" | "disconnected";
+            /** Admission Open */
+            admission_open: boolean;
+            policy: components["schemas"]["CloudflareCapacityPolicy"];
+            /** Fleet Envelope Usd */
+            fleet_envelope_usd: string;
+            /** Owned Resources Pending */
+            owned_resources_pending: number;
+        };
+        /**
+         * CloudflareWorkersPolicy
+         * @description Launch limits for the Phase 1 Workers scope.
+         */
+        CloudflareWorkersPolicy: {
+            /** Launcher Cap */
+            launcher_cap: number;
+            /** Slots Per Launcher */
+            slots_per_launcher: number;
+            /** Max Lifetime Seconds */
+            max_lifetime_seconds: number;
+            /** Work Kinds */
+            work_kinds: "workflow"[];
         };
         /**
          * CommitHistoryResponse
@@ -38307,6 +38435,92 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "capacity.cloudflare_status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CloudflareCapacityStatus"];
+                };
+            };
+        };
+    };
+    "capacity.cloudflare_scale_in": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CloudflareCapacityAction"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformJobAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "capacity.cloudflare_disconnect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CloudflareCapacityAction"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformJobAccepted"];
+                };
             };
             /** @description Validation Error */
             422: {

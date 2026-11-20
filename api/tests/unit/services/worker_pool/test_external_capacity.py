@@ -218,7 +218,8 @@ async def test_managed_prepare_uses_the_uid_committed_before_provider_io(db, cap
     provider = capacity.provider
     pool = managed_pool
     policy = replace(capacity.policy, max_workers=1)
-    await _set_request(db.sessions, await _accept_pool_run(), 1, approved=True)
+    age = timedelta(seconds=controller.SWEEP_SECONDS + 1)
+    await _set_request(db.sessions, await _accept_pool_run(), 1, age=age, approved=True)
     [worker_id] = await pool.launch_for_demand(policy)
     async with db.context() as session:
         reserved = await session.get(ExecutionWorker, worker_id)
@@ -255,10 +256,11 @@ async def test_prepared_uid_is_committed_before_start(db, capacity):
 
 async def test_cloudflare_reserves_only_approved_fitting_dispatches_before_hello(db, capacity, managed_pool):
     pool = managed_pool
+    age = timedelta(seconds=controller.SWEEP_SECONDS + 1)
     for amount, approved in ((1, False), (CLOUDFLARE_DEV_BUDGET_BYTES + 1, True)):
-        await _set_request(db.sessions, await _accept_pool_run(), amount, approved=approved)
+        await _set_request(db.sessions, await _accept_pool_run(), amount, age=age, approved=approved)
     assert await pool.launch_for_demand(capacity.policy) == []
-    await _set_request(db.sessions, await _accept_pool_run(), 1, approved=True)
+    await _set_request(db.sessions, await _accept_pool_run(), 1, age=age, approved=True)
     [worker_id] = await pool.launch_for_demand(capacity.policy)
     assert await pool.launch_for_demand(capacity.policy) == []  # pending declared slot covers the run
 

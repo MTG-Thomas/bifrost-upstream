@@ -4,6 +4,195 @@
       "observed": {
         "cli": {
           "path": [
+            "capacity",
+            "cloudflare",
+            "status"
+          ],
+          "status": "exact_parity"
+        },
+        "manifest": {
+          "entity": null,
+          "status": "intentionally_unsupported"
+        },
+        "mcp": {
+          "name": "bifrost_cloudflare_capacity_get",
+          "status": "exact_parity"
+        },
+        "rest": {
+          "operation_id": "capacity.cloudflare_status",
+          "status": "exact_parity"
+        },
+        "sdk": {
+          "binding": null,
+          "status": "intentionally_unsupported"
+        }
+      },
+      "operation": {
+        "action_scopes": [
+          "platform.read"
+        ],
+        "async_policy": "synchronous",
+        "audit_event": null,
+        "authorization_resolver": "platform.read at Global",
+        "cli": {
+          "path": [
+            "capacity",
+            "cloudflare",
+            "status"
+          ]
+        },
+        "exclusions": {
+          "manifest": "Capacity installations are bound to the deployment.",
+          "native_builder": "Cloudflare capacity is platform administration.",
+          "sdk": "Runtime SDKs do not administer capacity."
+        },
+        "manifest": null,
+        "mcp": {
+          "name": "bifrost_cloudflare_capacity_get"
+        },
+        "native_builder": false,
+        "operation_id": "capacity.cloudflare_status",
+        "rest": {
+          "method": "GET",
+          "path": "/api/capacity/cloudflare",
+          "request_model": null,
+          "response_model": "CloudflareCapacityStatus"
+        },
+        "side_effects": [],
+        "summary": "Read Cloudflare capacity status",
+        "target_kind": "platform"
+      }
+    },
+    {
+      "observed": {
+        "cli": {
+          "path": [
+            "capacity",
+            "cloudflare",
+            "scale-in"
+          ],
+          "status": "exact_parity"
+        },
+        "manifest": {
+          "entity": null,
+          "status": "intentionally_unsupported"
+        },
+        "mcp": {
+          "name": "bifrost_cloudflare_scale_in_execute",
+          "status": "exact_parity"
+        },
+        "rest": {
+          "operation_id": "capacity.cloudflare_scale_in",
+          "status": "exact_parity"
+        },
+        "sdk": {
+          "binding": null,
+          "status": "intentionally_unsupported"
+        }
+      },
+      "operation": {
+        "action_scopes": [
+          "platform.readwrite"
+        ],
+        "async_policy": "platform_job",
+        "audit_event": null,
+        "authorization_resolver": "platform.readwrite at Global",
+        "cli": {
+          "path": [
+            "capacity",
+            "cloudflare",
+            "scale-in"
+          ]
+        },
+        "exclusions": {
+          "manifest": "Capacity installations are bound to the deployment.",
+          "native_builder": "Cloudflare capacity is platform administration.",
+          "sdk": "Runtime SDKs do not administer capacity."
+        },
+        "manifest": null,
+        "mcp": {
+          "name": "bifrost_cloudflare_scale_in_execute"
+        },
+        "native_builder": false,
+        "operation_id": "capacity.cloudflare_scale_in",
+        "rest": {
+          "method": "POST",
+          "path": "/api/capacity/cloudflare/scale-in",
+          "request_model": "CloudflareCapacityAction",
+          "response_model": "PlatformJobAccepted"
+        },
+        "side_effects": [],
+        "summary": "Scale In Cloudflare Capacity",
+        "target_kind": "platform"
+      }
+    },
+    {
+      "observed": {
+        "cli": {
+          "path": [
+            "capacity",
+            "cloudflare",
+            "disconnect"
+          ],
+          "status": "exact_parity"
+        },
+        "manifest": {
+          "entity": null,
+          "status": "intentionally_unsupported"
+        },
+        "mcp": {
+          "name": "bifrost_cloudflare_disconnect_execute",
+          "status": "exact_parity"
+        },
+        "rest": {
+          "operation_id": "capacity.cloudflare_disconnect",
+          "status": "exact_parity"
+        },
+        "sdk": {
+          "binding": null,
+          "status": "intentionally_unsupported"
+        }
+      },
+      "operation": {
+        "action_scopes": [
+          "platform.readwrite"
+        ],
+        "async_policy": "platform_job",
+        "audit_event": null,
+        "authorization_resolver": "platform.readwrite at Global",
+        "cli": {
+          "path": [
+            "capacity",
+            "cloudflare",
+            "disconnect"
+          ]
+        },
+        "exclusions": {
+          "manifest": "Capacity installations are bound to the deployment.",
+          "native_builder": "Cloudflare capacity is platform administration.",
+          "sdk": "Runtime SDKs do not administer capacity."
+        },
+        "manifest": null,
+        "mcp": {
+          "name": "bifrost_cloudflare_disconnect_execute"
+        },
+        "native_builder": false,
+        "operation_id": "capacity.cloudflare_disconnect",
+        "rest": {
+          "method": "POST",
+          "path": "/api/capacity/cloudflare/disconnect",
+          "request_model": "CloudflareCapacityAction",
+          "response_model": "PlatformJobAccepted"
+        },
+        "side_effects": [],
+        "summary": "Disconnect Cloudflare Capacity",
+        "target_kind": "platform"
+      }
+    },
+    {
+      "observed": {
+        "cli": {
+          "path": [
             "users",
             "defaults",
             "get"
@@ -10744,10 +10933,10 @@
     }
   ],
   "counts": {
-    "cli": 182,
+    "cli": 185,
     "manifest": 16,
-    "mcp": 101,
-    "rest": 724,
+    "mcp": 104,
+    "rest": 727,
     "sdk": 21
   },
   "schema_version": 1,

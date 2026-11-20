@@ -19,9 +19,9 @@ from src.services.worker_pool.cloudflare_policy import (
 router = APIRouter(prefix="/api/capacity/cloudflare", tags=["Capacity"])
 
 
-@router.get("", response_model=CloudflareCapacityStatus)
+@router.get("", response_model=CloudflareCapacityStatus, operation_id="capacity.cloudflare_status")
 async def get_cloudflare_capacity(db: DbSession, user: CurrentActiveUser) -> CloudflareCapacityStatus:
-    await authorize_operation(db, user, "GET /api/capacity/cloudflare", GLOBAL)
+    await authorize_operation(db, user, "capacity.cloudflare_status", GLOBAL)
     return await get_cloudflare_capacity_status(db)
 
 
@@ -40,14 +40,20 @@ async def _disable(
     return PlatformJobAccepted(job_id=job.id, status=job.status, notification_id=job.notification_id, reused=reused)
 
 
-@router.post("/scale-in", response_model=PlatformJobAccepted, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/scale-in", response_model=PlatformJobAccepted, status_code=status.HTTP_202_ACCEPTED,
+    operation_id="capacity.cloudflare_scale_in",
+)
 async def scale_in_cloudflare_capacity(
     body: CloudflareCapacityAction, response: Response, db: DbSession, user: CurrentActiveUser,
 ) -> PlatformJobAccepted:
     return await _disable(body, response, db, user, "scale_in")
 
 
-@router.post("/disconnect", response_model=PlatformJobAccepted, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/disconnect", response_model=PlatformJobAccepted, status_code=status.HTTP_202_ACCEPTED,
+    operation_id="capacity.cloudflare_disconnect",
+)
 async def disconnect_cloudflare_capacity(
     body: CloudflareCapacityAction, response: Response, db: DbSession, user: CurrentActiveUser,
 ) -> PlatformJobAccepted:

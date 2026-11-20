@@ -129,6 +129,9 @@
 | DELETE | `/api/branding/logo/{logo_type}` |
 | GET | `/api/branding/logo/{logo_type}` |
 | POST | `/api/branding/logo/{logo_type}` |
+| GET | `/api/capacity/cloudflare` |
+| POST | `/api/capacity/cloudflare/disconnect` |
+| POST | `/api/capacity/cloudflare/scale-in` |
 | GET | `/api/chat/artifacts` |
 | DELETE | `/api/chat/artifacts/{attachment_id}` |
 | PATCH | `/api/chat/artifacts/{attachment_id}` |

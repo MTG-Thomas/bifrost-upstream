@@ -30,7 +30,7 @@ test("an admin reserves Fast Path capacity and explicitly keeps a long App workf
 
 		await page.goto("/settings/ai");
 		await page
-			.getByRole("button", { name: "Workers", exact: true })
+			.getByRole("button", { name: "Capacity", exact: true })
 			.click();
 		await page
 			.getByRole("button", { name: "Scaling & Isolation", exact: true })

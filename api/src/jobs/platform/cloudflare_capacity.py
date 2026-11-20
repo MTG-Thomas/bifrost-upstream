@@ -188,9 +188,9 @@ async def enqueue_cloudflare_disable(
     action: Literal["scale_in", "disconnect"],
 ) -> tuple[PlatformJob, bool]:
     if action == "scale_in":
-        require_operation(caller, "POST /api/capacity/cloudflare/scale-in", GLOBAL)
+        require_operation(caller, "capacity.cloudflare_scale_in", GLOBAL)
     else:
-        require_operation(caller, "POST /api/capacity/cloudflare/disconnect", GLOBAL)
+        require_operation(caller, "capacity.cloudflare_disconnect", GLOBAL)
     actor = caller.principal
     payload = CloudflareDisablePayload(installation_id=installation_id, revision=expected_revision + 1, action=action)
     row = await db.get(CloudflareInstallation, installation_id, with_for_update=True, populate_existing=True)

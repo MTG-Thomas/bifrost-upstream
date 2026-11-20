@@ -24,6 +24,7 @@ import { RequiredInstructionsSettings } from "@/pages/settings/RequiredInstructi
 import { MCP } from "@/pages/settings/MCP";
 import { Maintenance } from "@/pages/settings/Maintenance";
 import { KubernetesSettings } from "@/pages/settings/KubernetesSettings";
+import { CloudflareCapacity } from "@/pages/settings/CloudflareCapacity";
 import { BaseRoleDefaultsSettings } from "@/pages/settings/BaseRoleDefaultsSettings";
 import { cn } from "@/lib/utils";
 import {
@@ -167,7 +168,7 @@ function findActiveSectionId(sections: SettingsSection[], currentTab: string) {
 
 const workerSection: SettingsSection = {
 	id: "workers",
-	label: "Workers",
+	label: "Capacity",
 	icon: Container,
 	items: [
 		{
@@ -175,6 +176,12 @@ const workerSection: SettingsSection = {
 			label: "Scaling & Isolation",
 			icon: Container,
 			content: KubernetesSettings,
+		},
+		{
+			value: "cloudflare-capacity",
+			label: "Scale Out With Cloudflare",
+			icon: Container,
+			content: CloudflareCapacity,
 		},
 	],
 };

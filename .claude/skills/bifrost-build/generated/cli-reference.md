@@ -628,6 +628,80 @@ Options:
   --help                          Show this message and exit.
 ```
 
+## `capacity`
+
+```
+Usage: capacity [OPTIONS] COMMAND [ARGS]...
+
+  Manage platform worker capacity.
+
+Options:
+  --json  Emit JSON instead of human-readable output.
+  --help  Show this message and exit.
+
+Commands:
+  cloudflare  Read and manage Cloudflare capacity.
+```
+
+### `capacity cloudflare`
+
+```
+Usage: capacity cloudflare [OPTIONS] COMMAND [ARGS]...
+
+  Read and manage Cloudflare capacity.
+
+Options:
+  --json  Emit JSON instead of human-readable output.
+  --help  Show this message and exit.
+
+Commands:
+  disconnect  Drain Cloudflare workers and remove verified owned capacity.
+  scale-in    Drain Cloudflare workers and retain the connection.
+  status      Show the current Cloudflare connection and capacity policy.
+```
+
+#### `capacity cloudflare disconnect`
+
+```
+Usage: capacity cloudflare disconnect [OPTIONS]
+
+  Drain Cloudflare workers and remove verified owned capacity.
+
+Options:
+  --wait                       Wait for completion through the platform job.
+  --installation-id TEXT       installation_id (UUID).  [required]
+  --expected-revision INTEGER  expected_revision  [required]
+  --json                       Emit JSON instead of human-readable output.
+  --help                       Show this message and exit.
+```
+
+#### `capacity cloudflare scale-in`
+
+```
+Usage: capacity cloudflare scale-in [OPTIONS]
+
+  Drain Cloudflare workers and retain the connection.
+
+Options:
+  --wait                       Wait for completion through the platform job.
+  --installation-id TEXT       installation_id (UUID).  [required]
+  --expected-revision INTEGER  expected_revision  [required]
+  --json                       Emit JSON instead of human-readable output.
+  --help                       Show this message and exit.
+```
+
+#### `capacity cloudflare status`
+
+```
+Usage: capacity cloudflare status [OPTIONS]
+
+  Show the current Cloudflare connection and capacity policy.
+
+Options:
+  --json  Emit JSON instead of human-readable output.
+  --help  Show this message and exit.
+```
+
 ## `claims`
 
 ```

@@ -442,7 +442,8 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Linux runtime, so existing CLI shapes and the minimum stay unchanged.
     # Workflow validation is now fingerprinted for CLI and MCP. Request fields
     # are optional and Cloudflare issue metadata and info severity are additive.
-    "436ba7d1f2aaf5a842c11c2c88962b465fdc83a2dbaed8a828bb9b289f4593c8"
+    # Additive Cloudflare capacity policy, status and action DTOs.
+    "9a843de8f06671174c52b81fa9b55145dd1470b9d7301ce46c2fff52718ee96c"
 )
 
 

@@ -186,7 +186,7 @@ describe("Settings", () => {
 		});
 
 		await user.click(
-			await screen.findByRole("button", { name: /^workers$/i }),
+			await screen.findByRole("button", { name: /^capacity$/i }),
 		);
 		await user.click(
 			screen.getByRole("button", { name: /^scaling & isolation$/i }),

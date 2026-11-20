@@ -48,6 +48,7 @@ from src.services.mcp_server.tools import (  # noqa: E402
     code_editor as code_editor_mod,
     code_execution as code_execution_mod,
     claims as claims_mod,
+    cloudflare_capacity as cloudflare_capacity_mod,
     configs as configs_mod,
     events as events_mod,
     execution as execution_mod,
@@ -76,6 +77,7 @@ PARITY_HANDLERS: dict[str, set[str]] = {
     },
     "code_editor": {"bifrost_file_search"},
     "code_execution": {"bifrost_execute_code"},
+    "cloudflare_capacity": {"bifrost_cloudflare_capacity_get", "_submit"},
     "agents": {
         "bifrost_agent_list",
         "bifrost_agent_get",
@@ -199,6 +201,7 @@ MODULES = {
     "code_execution": code_execution_mod,
     "roles": roles_mod,
     "claims": claims_mod,
+    "cloudflare_capacity": cloudflare_capacity_mod,
     "configs": configs_mod,
     "organizations": organizations_mod,
     "integrations": integrations_mod,

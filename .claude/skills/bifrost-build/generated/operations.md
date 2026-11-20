@@ -7,6 +7,9 @@ caller's own items.
 
 | Intent | CLI | MCP | Scope |
 |---|---|---|---|
+| `capacity.cloudflare_status` | `bifrost capacity cloudflare status` | `bifrost_cloudflare_capacity_get` | `platform.read` |
+| `capacity.cloudflare_scale_in` | `bifrost capacity cloudflare scale-in` | `bifrost_cloudflare_scale_in_execute` | `platform.readwrite` |
+| `capacity.cloudflare_disconnect` | `bifrost capacity cloudflare disconnect` | `bifrost_cloudflare_disconnect_execute` | `platform.readwrite` |
 | `users.defaults.get` | `bifrost users defaults get` | `bifrost_base_role_default_get` | `roleassignments.read`, `settings.read`, `organizations.read` |
 | `users.defaults.update` | `bifrost users defaults set` | `bifrost_base_role_default_update` | `settings.readwrite`, `organizations.readwrite`, `userlifecycle.readwrite` |
 | `productupdates.get` | — | — | `settings.read` |

@@ -17,6 +17,7 @@ from src.services.worker_pool.cloudflare_provisioning import (
 
 API = "https://api.cloudflare.com/client/v4"
 OWNER_BINDING = "BIFROST_CAPACITY_OWNER"
+_CF_UUID = re.compile(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}")
 
 
 class CloudflareManagementDenied(Exception):
@@ -88,14 +89,16 @@ class WorkersRestCleanup:
         history = result.get("deployments") if isinstance(result, dict) else None
         current = history[0] if isinstance(history, list) and history else None
         versions = current.get("versions") if isinstance(current, dict) else None
+        deployment_id = current.get("id") if isinstance(current, dict) else None
         if (
-            not isinstance(versions, list) or len(versions) != 1
+            not isinstance(deployment_id, str) or not _CF_UUID.fullmatch(deployment_id)
+            or not isinstance(versions, list) or len(versions) != 1
             or not isinstance(versions[0], dict) or versions[0].get("percentage") != 100
             or not isinstance(versions[0].get("version_id"), str)
-            or not re.fullmatch(r"[a-f0-9-]{36}", versions[0]["version_id"])
+            or not _CF_UUID.fullmatch(versions[0]["version_id"])
         ):
             raise OwnershipConflict("Cloudflare Worker does not have one exact active version")
-        return ResourceObservation(intent, target.name, versions[0]["version_id"])
+        return ResourceObservation(intent, deployment_id, versions[0]["version_id"])
 
     async def delete(self, *, api_token: SecretStr, expected: ResourceObservation) -> None:
         # Workers DELETE is by script name. Account-side writers outside the

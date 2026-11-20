@@ -21,6 +21,7 @@ from .admin import admin_group
 from .agents import agents_group
 from .apps import apps_group
 from .audit import audit_group
+from .capacity import capacity_group
 from .claims import claims_group
 from .configs import configs_group
 from .events import events_group
@@ -58,6 +59,7 @@ ENTITY_GROUPS: dict[str, click.Group] = {
     "policy-rule": policy_rule_group,
     "services": services_group,
     "audit": audit_group,
+    "capacity": capacity_group,
     "users": users_group,
     "retention": retention_group,
     "admin": admin_group,

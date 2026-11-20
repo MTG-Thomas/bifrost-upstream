@@ -137,6 +137,59 @@ _CONFIG_MANIFEST_EXCLUSION = (
 
 OPERATION_CATALOG: tuple[OperationDefinition, ...] = (
     OperationDefinition(
+        operation_id="capacity.cloudflare_status",
+        summary="Read Cloudflare capacity status",
+        target_kind=OperationTargetKind.PLATFORM,
+        rest=RestOperationBinding(method="GET", path="/api/capacity/cloudflare", response_model="CloudflareCapacityStatus"),
+        cli=CliOperationBinding(path=("capacity", "cloudflare", "status")),
+        mcp=McpOperationBinding(name="bifrost_cloudflare_capacity_get"),
+        action_scopes=("platform.read",),
+        authorization_resolver="platform.read at Global",
+        exclusions={
+            "native_builder": "Cloudflare capacity is platform administration.",
+            "manifest": "Capacity installations are bound to the deployment.",
+            "sdk": "Runtime SDKs do not administer capacity.",
+        },
+    ),
+    OperationDefinition(
+        operation_id="capacity.cloudflare_scale_in",
+        summary="Scale In Cloudflare Capacity",
+        target_kind=OperationTargetKind.PLATFORM,
+        rest=RestOperationBinding(
+            method="POST", path="/api/capacity/cloudflare/scale-in",
+            request_model="CloudflareCapacityAction", response_model="PlatformJobAccepted",
+        ),
+        cli=CliOperationBinding(path=("capacity", "cloudflare", "scale-in")),
+        mcp=McpOperationBinding(name="bifrost_cloudflare_scale_in_execute"),
+        action_scopes=("platform.readwrite",),
+        authorization_resolver="platform.readwrite at Global",
+        async_policy=OperationAsyncPolicy.PLATFORM_JOB,
+        exclusions={
+            "native_builder": "Cloudflare capacity is platform administration.",
+            "manifest": "Capacity installations are bound to the deployment.",
+            "sdk": "Runtime SDKs do not administer capacity.",
+        },
+    ),
+    OperationDefinition(
+        operation_id="capacity.cloudflare_disconnect",
+        summary="Disconnect Cloudflare Capacity",
+        target_kind=OperationTargetKind.PLATFORM,
+        rest=RestOperationBinding(
+            method="POST", path="/api/capacity/cloudflare/disconnect",
+            request_model="CloudflareCapacityAction", response_model="PlatformJobAccepted",
+        ),
+        cli=CliOperationBinding(path=("capacity", "cloudflare", "disconnect")),
+        mcp=McpOperationBinding(name="bifrost_cloudflare_disconnect_execute"),
+        action_scopes=("platform.readwrite",),
+        authorization_resolver="platform.readwrite at Global",
+        async_policy=OperationAsyncPolicy.PLATFORM_JOB,
+        exclusions={
+            "native_builder": "Cloudflare capacity is platform administration.",
+            "manifest": "Capacity installations are bound to the deployment.",
+            "sdk": "Runtime SDKs do not administer capacity.",
+        },
+    ),
+    OperationDefinition(
         operation_id="users.defaults.get",
         summary="Read the default base role for newly provisioned accounts",
         target_kind=OperationTargetKind.COLLECTION,
