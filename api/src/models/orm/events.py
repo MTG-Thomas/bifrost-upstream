@@ -379,6 +379,13 @@ class Event(Base):
     __table_args__ = (
         Index("ix_events_event_source_id", "event_source_id"),
         Index("ix_events_received_at", "received_at"),
+        # Per-source time windows: event-source counts and the source event
+        # list (filter by source, order/bound by received_at).
+        Index(
+            "ix_events_event_source_id_received_at",
+            "event_source_id",
+            "received_at",
+        ),
         Index("ix_events_status", "status"),
         Index("ix_events_event_type", "event_type"),
         Index(

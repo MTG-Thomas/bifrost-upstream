@@ -8,11 +8,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import or_ as sa_or
 from sqlalchemy import true as sa_true
 from sqlalchemy.sql import ColumnElement
 
-from shared.policies.compile import compile_to_sql
+from shared.policies.compile import compile_to_sql, fold_or
 from shared.policies.evaluate import evaluate
 from src.models.contracts.policies import TablePolicies
 
@@ -52,9 +51,7 @@ def compile_read_filter(
         fragments.append(compile_to_sql(policy.when, user))
     if not fragments:
         return None
-    if len(fragments) == 1:
-        return fragments[0]
-    return sa_or(*fragments)
+    return fold_or(fragments)
 
 
 def is_subscribe_authorized(policies: TablePolicies, user: Any) -> bool:
