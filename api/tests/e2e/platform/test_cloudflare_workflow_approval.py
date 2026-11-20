@@ -1,8 +1,6 @@
 """Durable approval review and exact-snapshot verification with PostgreSQL and S3."""
 
 import asyncio
-import json
-from argparse import Namespace
 from uuid import uuid4
 
 import httpx
@@ -10,13 +8,17 @@ import pytest
 from sqlalchemy import delete, select
 
 from bifrost.cloudflare_analysis import AnalysisRejected
-from scripts import cloudflare_workflow_approval as approval_cli
 from src.config import get_settings
 from src.core.redis_client import pending_execution_record
 from src.jobs.platform.cloudflare_reapproval import CLOUDFLARE_REAPPROVAL_DEFINITION
 from src.models.orm import CloudflareApproval, Organization, PlatformJob, Workflow
 from src.models.orm.audit import AuditLog
-from src.services.authorization.tokens import RuntimeSubject, issue_run_refresh_token
+from src.services.authorization.tokens import (
+    HumanSubject,
+    RuntimeSubject,
+    issue_access_token,
+    issue_run_refresh_token,
+)
 from src.services.execution import workflow_dispatch
 from src.services.execution.cloudflare_eligibility import (
     POLICY_VERSION,
@@ -69,49 +71,81 @@ async def test_api_identity_sdk_operations_apply_run_permissions(async_engine, e
 
 
 @pytest.mark.e2e
-async def test_operator_cli_reviews_wildcard_and_binds_it_to_the_accepted_digest(db_session, capsys):
-    workflow_id = uuid4()
-    path = f"workflows/wildcard_{workflow_id.hex}.py"
-    db_session.add(Workflow(id=workflow_id, name="Wildcard review fixture", path=path, function_name="run"))
-    index = FileIndexService(db_session)
-    args = Namespace(command="propose", workflow_id=workflow_id, subrequest_allowance=5,
-                     cpu_budget_ms=100, https_host=[], operator="test operator")
+async def test_workflow_approval_rest_reviews_wildcard_and_fences_two_accepts(async_engine, e2e_api_url):
+    async with committed_world(async_engine) as world:
+        org = await world.organization()
+        admin = await world.person(org)
+        await world.platform_admin(admin)
+        reader = await world.person(org)
+        role = await world.role("workflows.read")
+        await world.assign(reader, role.id, ("organization", org.id))
+        outsider = await world.person(await world.organization())
+        provider = await world.person(await world.organization(provider=True))
+        workflow = await world.workflow(org)
+        workflow.path = f"workflows/wildcard_{workflow.id.hex}.py"
+        workflow.function_name = "run"
+        path = workflow.path
+        index = FileIndexService(world.session)
+        endpoint = f"/api/workflows/{workflow.id}/cloudflare-approval"
+        options = {"subrequest_allowance": 5, "cpu_budget_ms": 100}
+        wildcard = {**options, "https_hosts": ["*.halopsa.com"]}
 
-    try:
-        await index.write(path, b"from js import fetch\nasync def run(tenant):\n"
-                                b"    return await fetch(f'https://{tenant}.halopsa.com/api')\n")
-        await db_session.commit()
-        await approval_cli.run(args)
-        unreviewed = json.loads(capsys.readouterr().out)
-        assert unreviewed["unresolved_url_calls"] == 1
-        assert unreviewed["https_hosts"] == []
+        async def headers(user):
+            access = await issue_access_token(HumanSubject(user.id))
+            return {"Authorization": f"Bearer {access.token}"}
 
-        args.https_host = ["*.github.io"]
-        with pytest.raises(AnalysisRejected, match="registrable domain outside the PSL private roots"):
-            await approval_cli.run(args)
+        async def write_source(route):
+            await index.write(path, (
+                "from js import fetch\nasync def run(tenant):\n"
+                f"    return await fetch(f'https://{{tenant}}.halopsa.com/{route}')\n"
+            ).encode())
+            await world.session.commit()
 
-        args.https_host = ["*.halopsa.com"]
-        await approval_cli.run(args)
-        reviewed = json.loads(capsys.readouterr().out)
-        assert next(iter(reviewed)) == "wildcard_https_hosts"
-        assert reviewed["wildcard_https_hosts"] == reviewed["https_hosts"] == ["*.halopsa.com"]
+        try:
+            await write_source("original")
+            async with httpx.AsyncClient(base_url=e2e_api_url, timeout=30) as client:
+                admin_headers, reader_headers = await headers(admin), await headers(reader)
+                provider_headers = await headers(provider)
+                assert (await client.get(endpoint, headers=await headers(outsider))).status_code == 404
+                review = await client.post(f"{endpoint}/propose", json=options, headers=reader_headers)
+                review.raise_for_status()
+                assert review.json()["proposal"]["https_hosts"] == []
+                assert review.json()["diagnostics"][0]["rule_id"] == "CF_URL_REVIEW"
+                forbidden = await client.post(f"{endpoint}/propose", json=wildcard, headers=reader_headers)
+                assert forbidden.status_code == 403
+                private_root = await client.post(
+                    f"{endpoint}/propose", json={**options, "https_hosts": ["*.github.io"]}, headers=admin_headers,
+                )
+                assert private_root.json()["status"] == "ineligible"
 
-        args.command = "accept"
-        args.review_sha256 = unreviewed["review_sha256"]
-        with pytest.raises(AnalysisRejected, match="generated proposal has changed"):
-            await approval_cli.run(args)
-        assert await current_approval(db_session, workflow_id) is None
+                async def proposal():
+                    response = await client.post(f"{endpoint}/propose", json=wildcard, headers=admin_headers)
+                    response.raise_for_status()
+                    result = response.json()["proposal"]
+                    assert result["wildcard_https_hosts"] == ["*.halopsa.com"]
+                    return {**wildcard, "review_sha256": result["review_sha256"]}
 
-        args.review_sha256 = reviewed["review_sha256"]
-        await approval_cli.run(args)
-        accepted = await current_approval(db_session, workflow_id)
-        assert accepted is not None and accepted.revision == args.review_sha256
-        assert accepted.declaration["https_hosts"] == ["*.halopsa.com"]
-    finally:
-        await db_session.rollback()
-        await db_session.execute(delete(Workflow).where(Workflow.id == workflow_id))
-        await index.delete(path)
-        await db_session.commit()
+                stale = await proposal()
+                await write_source("changed")
+                latest = await proposal()
+
+                async def accept(body, actor):
+                    return await client.post(f"{endpoint}/accept", json=body, headers=actor)
+
+                assert (await accept(latest, reader_headers)).status_code == 403
+                refused, accepted = await asyncio.gather(accept(stale, admin_headers), accept(latest, provider_headers))
+                assert refused.status_code == 409
+                assert accepted.status_code == 200, accepted.text
+                state = (await client.get(endpoint, headers=reader_headers)).json()
+                assert state["status"] == "approved"
+                assert state["current_revision"] == latest["review_sha256"]
+                assert (await client.delete(endpoint, headers=reader_headers)).status_code == 403
+                revoked = await client.delete(endpoint, headers=provider_headers)
+                assert revoked.json()["status"] == "pending_review"
+        finally:
+            await world.session.rollback()
+            await index.delete(path)
+            await world.session.commit()
 
 
 @pytest.mark.e2e

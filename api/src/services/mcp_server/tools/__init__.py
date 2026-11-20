@@ -9,14 +9,16 @@ from src.services.mcp_server.tools import (
     apps,
     base_role_defaults,
     claims,
-    code_execution,
+    cloudflare_approval,
     code_editor,
+    code_execution,
     configs,
     docs,
     events,
     execution,
     files,
     forms,
+    gateway,
     integrations,
     knowledge,
     organizations,
@@ -26,10 +28,8 @@ from src.services.mcp_server.tools import (
     sdk,
     tables,
     workflow,
-    cloudflare_approval,
     workflow_conversion,
 )
-from src.services.mcp_server.tools import gateway
 
 TOOL_MODULES = [
     agents,

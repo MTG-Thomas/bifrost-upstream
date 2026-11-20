@@ -62,7 +62,7 @@ def manual(project, admin, send, prior_enrollment):
         or not hmac.compare_digest(previous["controlKey"], key)
     ):
         raise SystemExit("The prior enrollment does not match the prepared trial key and identity")
-    workflows, approval = seed_workflows(project, admin, send, True)
+    workflows, approval = seed_workflows(admin, send, True)
     enroll_manual(project, incarnation, launcher, resource, build)
     return {
         "workflows": workflows, "incarnation": str(incarnation), "launcher": str(launcher),
@@ -95,17 +95,17 @@ def placement(admin, send, project, provision, *, workers_only=False, container_
     tenants, workflows, loose, solution, results = [], {}, [], [], {}
     if not container_expiry:
         tenants = [send("/api/organizations", {"name": f"Phase 7 Tenant {label}"}, admin)["id"] for label in ("A", "B")]
-        workflows, loose = seed_workflows(project, admin, send, False,
+        workflows, loose = seed_workflows(admin, send, False,
                                           tenant_fixtures=(("phase6-a", tenants[0]),), hosted_tenants=True)
         installed, solution, results = seed_solution_workflows(
-            project, admin, send, (("phase6-b", tenants[1]),), hosted=True,
+            admin, send, (("phase6-b", tenants[1]),), hosted=True,
         )
         workflows.update(installed)
     if workers_only:
         send("/api/admin/kubernetes/policy", {
             "warm_workers": 1, "max_workers": 1, "idle_seconds": 120,
         }, admin, method="PUT")
-        runtime_workflows, runtime_approvals = seed_workflows(project, admin, send, True)
+        runtime_workflows, runtime_approvals = seed_workflows(admin, send, True)
         workflows.update(runtime_workflows)
         loose += runtime_approvals
     else:

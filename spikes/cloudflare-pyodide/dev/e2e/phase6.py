@@ -26,7 +26,7 @@ def mount_private_fixture(root: Path) -> None:
     ))
 
 
-def seed_solution_workflows(project, admin, send, tenant_fixtures, *, hosted=False):
+def seed_solution_workflows(admin, send, tenant_fixtures, *, hosted=False):
     if hosted:
         content = (HERE / "fixture-hosted.py").read_text().replace("phase5b_fixture", FUNCTION)
     else:
@@ -69,7 +69,7 @@ def seed_solution_workflows(project, admin, send, tenant_fixtures, *, hosted=Fal
         else:
             raise SystemExit("Fixture Solution deploy did not settle")
         workflow_id = workflows[scenario] = str(uuid5(UUID(install), str(manifest_id)))
-        approval = approve_workflow(project, workflow_id, content.encode(), 12, 1000, solution_id=install)
+        approval = approve_workflow(send, admin, workflow_id, content.encode(), 12, 1000, solution_id=install)
         assert approval["organization_id"] == tenant
         assert approval["solution"]["version"] == "1.0.0"
         assert approval["module_sha256"] == {"phase6_support/values.py": sha256(helper.encode())}
@@ -138,9 +138,9 @@ def run(runtime: Path, solution: bool, containers: bool) -> None:
     # Register in the actual owner organizations and accept their approvals.
     tenant_fixtures = tuple(zip(("phase6-a", "phase6-b"), tenants, strict=True))
     if solution:
-        workflows, approval, results = seed_solution_workflows(project, admin, send, tenant_fixtures)
+        workflows, approval, results = seed_solution_workflows(admin, send, tenant_fixtures)
     else:
-        workflows, approval = seed_workflows(project, admin, send, False, tenant_fixtures=tenant_fixtures)
+        workflows, approval = seed_workflows(admin, send, False, tenant_fixtures=tenant_fixtures)
         results = {}
     seed_linux_workflows(admin, send, workflows, containers)
     print(json.dumps({"project": project, "workflows": workflows, "tenants": tenants,

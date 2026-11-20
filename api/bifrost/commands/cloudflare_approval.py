@@ -5,7 +5,10 @@ from typing import Any
 import click
 
 from bifrost.client import BifrostClient
-from bifrost.contracts.cloudflare_approval import CloudflareApprovalAccept, CloudflareApprovalOptions
+from bifrost.contracts.cloudflare_approval import (
+    CloudflareApprovalAccept,
+    CloudflareApprovalOptions,
+)
 from bifrost.dto_flags import assemble_body, build_cli_flags
 from bifrost.refs import RefResolver
 
@@ -29,7 +32,7 @@ async def status(ctx: click.Context, ref: str, *, client: BifrostClient, resolve
 
 @approval_group.command("propose")
 @click.argument("ref")
-@_apply_flags(build_cli_flags(CloudflareApprovalOptions))
+@_apply_flags(build_cli_flags(CloudflareApprovalOptions, exclude=set(), verb_ref_lookups={}))
 @click.pass_context
 @pass_resolver
 @run_async
@@ -44,7 +47,7 @@ async def propose(ctx: click.Context, ref: str, *, client: BifrostClient, resolv
 
 @approval_group.command("accept")
 @click.argument("ref")
-@_apply_flags(build_cli_flags(CloudflareApprovalAccept))
+@_apply_flags(build_cli_flags(CloudflareApprovalAccept, exclude=set(), verb_ref_lookups={}))
 @click.pass_context
 @pass_resolver
 @run_async

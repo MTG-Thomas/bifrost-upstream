@@ -1,4 +1,4 @@
-import { apiClient } from "@/lib/api-client";
+import { apiClient, handleApiError } from "@/lib/api-client";
 import type { components } from "@/lib/v1";
 
 export type ApprovalState = components["schemas"]["CloudflareApprovalState"];
@@ -9,7 +9,7 @@ const path = "/api/workflows/{workflow_id}/cloudflare-approval";
 
 function result(response: { data?: ApprovalState; error?: unknown }): ApprovalState {
 	if (!response.data) {
-		throw new Error("The approval request failed. Refresh the status before retrying.");
+		handleApiError(response.error);
 	}
 	return response.data;
 }

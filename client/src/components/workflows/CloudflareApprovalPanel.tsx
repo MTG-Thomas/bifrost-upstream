@@ -25,7 +25,9 @@ export function CloudflareApprovalPanel({ workflowId }: { workflowId: string }) 
 	const id = useId();
 	const queryClient = useQueryClient();
 	const queryKey = ["cloudflare-approval", workflowId];
-	const status = useQuery({ queryKey, queryFn: () => getCloudflareApproval(workflowId) });
+	const status = useQuery({
+		queryKey, queryFn: () => getCloudflareApproval(workflowId), retry: false,
+	});
 	const [review, setReview] = useState<{ state: ApprovalState; options: ApprovalOptions }>();
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState("");
@@ -90,7 +92,7 @@ export function CloudflareApprovalPanel({ workflowId }: { workflowId: string }) 
 					<fieldset disabled={busy} className="grid gap-3 sm:grid-cols-2">
 						<div className="space-y-1.5">
 							<Label htmlFor={`${id}-subrequests`}>Subrequest Allowance</Label>
-							<Input id={`${id}-subrequests`} name="subrequests" type="number" min={0} required
+							<Input id={`${id}-subrequests`} name="subrequests" type="number" min={0} max={50} required
 								defaultValue={state.current_declaration?.subrequest_allowance ?? 10} />
 						</div>
 						<div className="space-y-1.5">
@@ -120,7 +122,7 @@ export function CloudflareApprovalPanel({ workflowId }: { workflowId: string }) 
 			))}
 			{declaration && (
 				<div className="space-y-3 rounded-md border p-3 text-sm">
-					<h4 className="font-semibold">{proposal ? "Reviewed Proposal" : "Current Approval"}</h4>
+					<h4 className="font-semibold">{proposal ? "Approval Proposal" : "Current Approval"}</h4>
 					<dl className="space-y-2">
 						<div><dt>Packages</dt><dd>{declaration.packages.join(", ") || "None"}</dd></div>
 						<div><dt>HTTPS Allowlist</dt><dd>{declaration.https_hosts.join(", ") || "None"}</dd></div>

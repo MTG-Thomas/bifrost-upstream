@@ -7,7 +7,12 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bifrost.cloudflare_analysis import POLICY_VERSION, AnalysisRejected, Finding, SourceUnresolved
+from bifrost.cloudflare_analysis import (
+    POLICY_VERSION,
+    AnalysisRejected,
+    Finding,
+    SourceUnresolved,
+)
 from src.core.principal import UserPrincipal
 from src.core.storage.contracts import StorageError
 from src.models.contracts.cloudflare_approval import (
@@ -19,7 +24,11 @@ from src.models.contracts.cloudflare_approval import (
     CloudflareApprovalState,
 )
 from src.models.orm import Solution, Workflow
-from src.services.authorization.enforce import load_caller, require_permission, user_reach
+from src.services.authorization.enforce import (
+    load_caller,
+    require_permission,
+    user_reach,
+)
 from src.services.execution.cloudflare_eligibility import (
     ApprovalProposal,
     ObservationChanged,
@@ -29,6 +38,7 @@ from src.services.execution.cloudflare_eligibility import (
     propose_approval,
     revoke_approval,
     solution_approval_scope,
+    workflow_review_scope,
 )
 
 
@@ -145,13 +155,13 @@ async def review_approval(
     workflow, _ = await _authorized_workflow(
         db, user, workflow_id, manage=accepting or bool(options.https_hosts),
     )
-    source_scope = (workflow.organization_id, workflow.solution_id, workflow.path, workflow.function_name)
+    scope = workflow_review_scope(workflow)
     candidate = None
     diagnostic = None
     try:
         candidate = await propose_approval(
             workflow_id, subrequest_allowance=options.subrequest_allowance,
-            cpu_budget_ms=options.cpu_budget_ms, https_hosts=options.https_hosts, analysed_pins={},
+            cpu_budget_ms=options.cpu_budget_ms, https_hosts=options.https_hosts, analysed_pins={}, expected_scope=scope,
         )
     except (StorageError, TimeoutError, SourceUnresolved):
         diagnostic = _temporary()
@@ -164,9 +174,28 @@ async def review_approval(
         db, user, workflow_id, manage=accepting or bool(options.https_hosts),
     )
     state = await _state(db, workflow, can_manage)
-    if source_scope != (workflow.organization_id, workflow.solution_id, workflow.path, workflow.function_name):
+    if workflow_review_scope(workflow) != scope:
         candidate = None
-        diagnostic = _diagnostic(AnalysisRejected("Workflow scope or source changed during review"))
+        state.status = "revision_changed"
+        diagnostic = _diagnostic(AnalysisRejected("Workflow scope changed during review"))
+    if candidate is not None:
+        declaration = candidate.declaration
+        solution = declaration.solution
+        if (
+            (candidate.organization_id, solution.install_id if solution else None,
+             declaration.entry_path, declaration.function_name)
+            != scope
+            or _placement_refusal(workflow) is not None
+            or (solution is not None and await solution_approval_scope(
+                db, solution.install_id, candidate.organization_id,
+            ) != solution)
+            or candidate.previous_revision != state.current_revision
+            or await indexed_pins(db, set(declaration.manifest), install_id=workflow.solution_id)
+            != declaration.manifest
+        ):
+            candidate = None
+            state.status = "revision_changed"
+            diagnostic = _diagnostic(AnalysisRejected("Workflow scope, source or approval changed during review"))
     if diagnostic is not None:
         state.diagnostics = [diagnostic]
         if diagnostic.rule_id == "CF_ANALYSIS_UNAVAILABLE":

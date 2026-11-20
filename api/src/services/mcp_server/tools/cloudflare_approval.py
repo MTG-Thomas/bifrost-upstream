@@ -7,46 +7,44 @@ from src.services.mcp_server.tool_result import ToolResult, error_result, succes
 from src.services.mcp_server.tools._http_bridge import call_rest
 
 
-async def _call(
-    context: Any, workflow_id: str, method: str, action: str = "", body: dict[str, Any] | None = None,
-) -> ToolResult:
-    try:
-        workflow_uuid = UUID(workflow_id)
-    except ValueError:
-        return error_result("workflow_id must be a UUID")
-    code, result = await call_rest(
-        context, method, f"/api/workflows/{workflow_uuid}/cloudflare-approval{action}", json_body=body,
-    )
+def _result(code: int, result: Any) -> ToolResult:
     if code != 200:
         return error_result(f"Cloudflare workflow approval returned HTTP {code}", {"body": result})
     return success_result("Cloudflare workflow approval", result)
 
 
-async def bifrost_workflow_cloudflare_approval_status(context: Any, workflow_id: str) -> ToolResult:
-    return await _call(context, workflow_id, "GET")
+async def bifrost_workflow_cloudflare_approval_status(context: Any, workflow_id: UUID) -> ToolResult:
+    return _result(*await call_rest(context, "GET", f"/api/workflows/{workflow_id}/cloudflare-approval"))
 
 
 async def bifrost_workflow_cloudflare_approval_propose(
-    context: Any, workflow_id: str, subrequest_allowance: int, cpu_budget_ms: int,
+    context: Any, workflow_id: UUID, subrequest_allowance: int, cpu_budget_ms: int,
     https_hosts: list[str] | None = None,
 ) -> ToolResult:
-    return await _call(context, workflow_id, "POST", "/propose", {
-        "subrequest_allowance": subrequest_allowance, "cpu_budget_ms": cpu_budget_ms, "https_hosts": https_hosts or [],
-    })
+    return _result(*await call_rest(
+        context, "POST", f"/api/workflows/{workflow_id}/cloudflare-approval/propose",
+        json_body={
+            "subrequest_allowance": subrequest_allowance, "cpu_budget_ms": cpu_budget_ms,
+            "https_hosts": https_hosts or [],
+        },
+    ))
 
 
 async def bifrost_workflow_cloudflare_approval_accept(
-    context: Any, workflow_id: str, subrequest_allowance: int, cpu_budget_ms: int, review_sha256: str,
+    context: Any, workflow_id: UUID, subrequest_allowance: int, cpu_budget_ms: int, review_sha256: str,
     https_hosts: list[str] | None = None,
 ) -> ToolResult:
-    return await _call(context, workflow_id, "POST", "/accept", {
-        "subrequest_allowance": subrequest_allowance, "cpu_budget_ms": cpu_budget_ms,
-        "https_hosts": https_hosts or [], "review_sha256": review_sha256,
-    })
+    return _result(*await call_rest(
+        context, "POST", f"/api/workflows/{workflow_id}/cloudflare-approval/accept",
+        json_body={
+            "subrequest_allowance": subrequest_allowance, "cpu_budget_ms": cpu_budget_ms,
+            "https_hosts": https_hosts or [], "review_sha256": review_sha256,
+        },
+    ))
 
 
-async def bifrost_workflow_cloudflare_approval_revoke(context: Any, workflow_id: str) -> ToolResult:
-    return await _call(context, workflow_id, "DELETE")
+async def bifrost_workflow_cloudflare_approval_revoke(context: Any, workflow_id: UUID) -> ToolResult:
+    return _result(*await call_rest(context, "DELETE", f"/api/workflows/{workflow_id}/cloudflare-approval"))
 
 
 TOOLS = [
@@ -58,7 +56,9 @@ TOOLS = [
 
 
 def register_tools(mcp: Any, get_context_fn: Any) -> None:
-    from src.services.mcp_server.generators.fastmcp_generator import register_tool_with_context
+    from src.services.mcp_server.generators.fastmcp_generator import (
+        register_tool_with_context,
+    )
 
     functions = {
         "bifrost_workflow_cloudflare_approval_status": bifrost_workflow_cloudflare_approval_status,

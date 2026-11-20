@@ -959,12 +959,13 @@ tags. Private handoffs and raw logs were removed.
 
 ### Phase 3 workspace approval and placement
 
-A server operator runs these commands inside the API container, from `/app`:
+Use **Cloudflare Approval** in Workflow Settings or run these commands with an authenticated Bifrost CLI:
 
 ```sh
-python -m scripts.cloudflare_workflow_approval propose WORKFLOW_UUID --subrequest-allowance 10 --cpu-budget-ms 1000 --https-host '*.halopsa.com'
-python -m scripts.cloudflare_workflow_approval accept WORKFLOW_UUID --subrequest-allowance 10 --cpu-budget-ms 1000 --https-host '*.halopsa.com' --review-sha256 REVIEW_SHA256 --operator OPERATOR_LABEL
-python -m scripts.cloudflare_workflow_approval revoke WORKFLOW_UUID
+bifrost workflows cloudflare-approval propose WORKFLOW_UUID --subrequest-allowance 10 --cpu-budget-ms 1000 --https-hosts '*.halopsa.com'
+bifrost workflows cloudflare-approval accept WORKFLOW_UUID --subrequest-allowance 10 --cpu-budget-ms 1000 --https-hosts '*.halopsa.com' --review-sha256 REVIEW_SHA256
+bifrost workflows cloudflare-approval status WORKFLOW_UUID
+bifrost workflows cloudflare-approval revoke WORKFLOW_UUID
 ```
 
 Review the complete proposal and the pinned source against the expected inputs,
@@ -972,8 +973,10 @@ dependencies, HTTPS destinations, and resource usage. The digest covers the poli
 version, workflow and owning organization, prior approval, entry and module
 SHA-256 pins, canonical manifest digest, packages, HTTPS allowlist, and both
 estimates and limits. Accept regenerates the proposal and checks the reviewed
-digest. PostgreSQL stores the accepted revision and operator label. The command
-requires trusted server access and has no HTTP or tenant-facing surface.
+digest. PostgreSQL stores the accepted revision and the authenticated operator ID.
+Platform admins and provider-organization operators can accept or revoke.
+Users with workflow read access can review proposals. Operator-supplied HTTPS
+hosts require Global operator authority.
 Revocation clears the current approval and makes later runs Linux-only.
 Earlier approvals and derived children remain inactive in history with their
 lineage intact. A queued reanalysis becomes superseded and a queued dispatch

@@ -133,7 +133,7 @@ def local_api(hosted):
     return origin, project, admin, send
 
 
-def seed_workflows(project, admin, send, hosted, *, tenant_fixtures=(), hosted_tenants=False):
+def seed_workflows(admin, send, hosted, *, tenant_fixtures=(), hosted_tenants=False):
     fixtures = (
         ("hosted", "phase5b_fixture", "fixture-hosted.py", 10, 1000, None),
         ("allowance", "phase5b_allowance", "fixture-hosted.py", 4, 1000, None),
@@ -163,32 +163,22 @@ def seed_workflows(project, admin, send, hosted, *, tenant_fixtures=(), hosted_t
             raise SystemExit("Fixture workflow was registered in the wrong tenant")
         workflow_id = workflows[kind] = workflow["id"]
         send(f"/api/workflows/{workflow_id}", {"timeout_seconds": 60}, admin, method="PATCH")
-        approval.append(approve_workflow(project, workflow_id, content, allowance, cpu))
+        approval.append(approve_workflow(send, admin, workflow_id, content, allowance, cpu))
     return workflows, approval
 
 
-def approve_workflow(project, workflow_id, content, allowance, cpu, *, solution_id=None):
-    # Keep database diagnostics on stderr and the proposal JSON on stdout.
-    operator = ["docker", "exec", f"{project}-api-1", "python", "-c", """
-import contextlib
-import sys
-output = sys.stdout
-with contextlib.redirect_stdout(sys.stderr):
-    from scripts import cloudflare_workflow_approval as operator
-    operator.print = lambda *args, **kwargs: print(*args, file=output, **kwargs)
-    operator.main()
-"""]
-    arguments = [
-        workflow_id, "--subrequest-allowance", str(allowance), "--cpu-budget-ms", str(cpu),
-    ]
-    proposal = json.loads(command(*operator, "propose", *arguments))
-    if (proposal["workflow_id"] != workflow_id or proposal["entry_sha256"] != sha256(content)
+def approve_workflow(send, admin, workflow_id, content, allowance, cpu, *, solution_id=None):
+    path = f"/api/workflows/{workflow_id}/cloudflare-approval"
+    options = {"subrequest_allowance": allowance, "cpu_budget_ms": cpu}
+    state = send(f"{path}/propose", options, admin)
+    proposal = state["proposal"]
+    if (proposal is None or proposal["workflow_id"] != workflow_id or proposal["entry_sha256"] != sha256(content)
         or (proposal.get("solution") or {}).get("install_id") != solution_id):
-        raise SystemExit("Generated proposal does not match the disposable fixture")
-    return json.loads(command(
-        *operator, "accept", *arguments, "--review-sha256", proposal["review_sha256"],
-        "--operator", "phase5/6 disposable fixture",
-    ))
+        raise SystemExit(f"Generated proposal does not match the disposable fixture: {state['diagnostics']}")
+    accepted = send(f"{path}/accept", {**options, "review_sha256": proposal["review_sha256"]}, admin)
+    if accepted["status"] != "approved" or accepted["current_revision"] != proposal["review_sha256"]:
+        raise SystemExit("The disposable fixture approval was not accepted")
+    return accepted["proposal"]
 
 
 def postgres(project, sql):
@@ -360,7 +350,7 @@ def run(runtime, hosted, resume, reset_route, from_reset, summary=False, agent=F
     elif resume:
         workflows, approval, incarnation, launcher, port = resume_enrollment(project, reset_route)
     else:
-        workflows, approval = seed_workflows(project, admin, send, hosted)
+        workflows, approval = seed_workflows(admin, send, hosted)
         incarnation, launcher = uuid4(), uuid4()
     resource = f"{'phase5b' if hosted else 'phase5a'}:do:{incarnation}"
     build = "phase5b-hosted" if hosted else "phase5a-local"

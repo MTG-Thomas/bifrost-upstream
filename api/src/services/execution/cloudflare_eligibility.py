@@ -21,7 +21,10 @@ from bifrost.cloudflare_analysis import (
 )
 from src.core.database import get_db_context
 from src.core.storage.contracts import StorageError
-from src.models.contracts.cloudflare_approval import ApprovalDeclaration, SolutionApprovalScope
+from src.models.contracts.cloudflare_approval import (
+    ApprovalDeclaration,
+    SolutionApprovalScope,
+)
 from src.models.orm import (
     CloudflareApproval,
     FileIndex,
@@ -33,6 +36,11 @@ from src.services.execution.cloudflare_analysis_runner import analyze
 from src.services.execution.cloudflare_hosts import reviewed_https_allowlist
 from src.services.repo_storage import RepoStorage
 from src.services.solutions.storage import SolutionStorage
+
+
+def workflow_review_scope(workflow: Workflow) -> tuple[UUID | None, UUID | None, str, str]:
+    return workflow.organization_id, workflow.solution_id, workflow.path, workflow.function_name
+
 
 @dataclass(frozen=True)
 class ApprovalProposal:
@@ -133,11 +141,14 @@ async def propose_approval(
     expected_pins: dict[str, str | None] | None = None,
     analysed_pins: dict[str, str | None] | None = None,
     https_hosts: list[str] | None = None,
+    expected_scope: tuple[UUID | None, UUID | None, str, str] | None = None,
 ) -> ApprovalProposal:
     async with get_db_context() as db:
         workflow = await db.get(Workflow, workflow_id)
         if workflow is None or not workflow.is_active:
             raise ObservationChanged("Expected an active workflow")
+        if expected_scope is not None and workflow_review_scope(workflow) != expected_scope:
+            raise ObservationChanged("Workflow scope changed before analysis")
         if workflow.type != "workflow":
             raise AnalysisRejected("Only workflows can be approved", "CF_EXECUTABLE_TYPE")
         if workflow.execution_lane == "fast_path":

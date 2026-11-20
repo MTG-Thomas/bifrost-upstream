@@ -1551,6 +1551,9 @@ class TestConsistency:
         # MCP connection definitions can be Global, while gateway resources
         # are organization-backed.
         ("mcp", CurrentGate.AUTHENTICATED),
+        # Workflow reads are organization-scoped. Cloudflare accept/revoke
+        # controls runtime placement under a Global operator gate.
+        ("workflows", CurrentGate.AUTHENTICATED),
         # Solution deployment is Global; Solution-owned resources are scoped
         # to the installation organization.
         ("solutions", CurrentGate.AUTHENTICATED),
@@ -1942,6 +1945,7 @@ _ELEVATED_SITES: dict[str, tuple[int, str | tuple[str, ...]]] = {
     "bifrost.cli._run_direct": (2, "actor_facts"),
     "bifrost.solution_dev.function_host.set_dev_execution_context": (2, "actor_facts"),
     "shared.claims.preresolve._load_source_policies": (1, "internal_authorized_resource"),
+    "src.services.execution.cloudflare_approval._authorized_workflow": (2, "route"),
     "shared.event_emission.emit_topic_event": (1, "current_role_derivation"),
     # Both form routes authorize the persisted form before this provider lookup;
     # callers cannot select a provider outside that form's configured fields.
