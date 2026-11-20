@@ -759,6 +759,85 @@ Estimated incremental cost was about $0.01. The Container reservation
 lasted about 31 seconds, all model requests used the stub, and the invoice
 was unavailable. The production canary was outside the trial resource set.
 
+#### Workers-only follow-up, 2026-11-19 and 2026-11-20 UTC
+
+The qualification branch was rebased onto `da0c9e0ce`. The harness kept
+the `chat-` and `hosted-` fixture modes, the stub endpoint override, and the
+local Containers Git stage. All 484 tests in 72 Node suites passed, and
+Python AST parsing passed for all eight e2e harness files. The Workers pass
+used runtime SHA-256
+`fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5`.
+
+The first debug project, `bifrost-debug-5077039e`, stopped during
+`alembic upgrade head`. The chat outbox and platform remote-stage
+migrations had the same parent and created two heads. A merge revision
+joined the independent migrations, and the single-head regression test
+passed. Project `bifrost-debug-2381b91d` timed out while reading the
+Solution deployment job. It submitted no workflow executions.
+
+The trial used `bifrost-hq-da0c9e0ce` in Midtown Technology Group. The
+Workers were `-launcher` and `-workers`, with two slots and one managed
+incarnation. Tunnel `4851be07-ee2d-4d0e-9b6a-1c73d62b3364` and DNS record
+`fbf5e86a6d46f5a2658f8cb1e77b23a2` restricted ingress to worker control,
+tables list, runtime log writes and refresh. Login and OpenAPI returned 404.
+
+The independent natural inactivity probe used one `lite` instance on
+`bifrost-hq-da0c9e0ce-container` (app
+`a03225b8-4e4f-412f-826e-222c5bcaabb4`), with image
+`bifrost-hq-da0c9e0ce:adb5a624c` at digest
+`sha256:46f9188cf01c7880137555f7b55f824fe20b5873033f01a82e2bae7ff8c5b35c`.
+Its only start request reserved `c15dc15f-933b-4b17-a717-756ac0930679`
+at 17:31:06 UTC. Workers Logs said there was no Container instance
+available to the Durable Object. Application readback showed zero active
+or assigned instances and instance
+`717c8ad28b3337c1fc4f49548b3377f342da251965a39605f8af77fd115b9cb8`
+was inactive with no location. The provider confirmed deletion after
+that single start request. The trial could not measure natural expiry
+because the process never started.
+
+The follow-up rebased onto `9e11fb44d` and kept the warm-state fix as
+`9ce2f0aba`. The parent already made the chat outbox follow remote
+platform stage, so the qualification merge revision was dropped. The
+single-head test passed and a fresh database reported
+`20261119_cf_chat_outbox`. All 485 Node tests across 73 files passed.
+Python AST parsing passed for all ten e2e harness files.
+
+Project `bifrost-debug-5b16e602` started with zero other Bifrost stacks
+and 16 GiB available. The resumed run reused the isolated Workers,
+tunnel and DNS from this follow-up. The unauthenticated tables request
+returned 401, and login and OpenAPI returned 404. Workers incarnation
+`098ddfc0-d43d-44c8-8575-016bfa189452` advertised 256 MiB and reached
+ready 1.52 s after reservation. All four runs used this incarnation,
+with a distinct claim, one dispatch and one terminal ACK per run.
+
+| Check | Execution | Evidence |
+|---|---|---|
+| Approved loose workflow | `088f69c6-8010-44a3-8d15-a3f8c0cc72c0` | `Success` with claim `c3c903cf-fced-4ea3-8c29-e88ffa137e49`. One log record and the expected result were recorded. |
+| Approved Solution-installed workflow | `b882201c-6714-4560-aca6-b7f40a7b4545` | `Success` with claim `0b0cc105-c669-4492-a287-6fa7010f714a`. One log record and `install_value=phase6-b` from the installed module were recorded. |
+| Two-slot overlap | Same loose and Solution runs | Distinct tenants. Both SDK calls returned upstream 200 and were still held when both database rows read `Running` at 01:06:38.081 UTC. Their database running intervals overlapped by 5.19 s. |
+| CPU limit | `9c837430-4163-4491-867a-7128636287bc` | Python completed an SDK read (HTTP 200) before the CPU loop. The 1,000 ms budget settled as `Failed`, with `CpuLimitExceeded` / `uncertain` and claim `f986ee96-31ba-4e08-9cb7-5f64b8b92709`. |
+| In-flight DO restart | `4eecde08-c9e0-48ca-8b52-8c7188052920` | The SDK call was held before immediate activation of version `7ba267e0-3fb1-4b2c-ab35-e1faeebb87bd` (deployment `a8f315fc-529a-4477-a13b-eda31bc10e4f`). Hello and generation advanced from 1 to 2. Inventory reported zero active routes and the retained terminal, which was replayed and ACKed as `LauncherReset` / `uncertain`. The single claim `5dbd0a68-e399-47f5-bdf6-d0895b1bc38c` was retained without redispatch. |
+
+The reset terminal arrived 26.42 s after the held-call activation cue.
+Workers Logs returned 50 launcher events for the trial window, including
+launcher RPC and trace `2ffb614759d42ef9dc27da000ef05cd7`. The relay
+captured the CPU and reset classifications and their ACKs, and Postgres
+confirmed their final states. The warm-state fix passed live for both
+workflow types. No additional Workers runtime defect surfaced.
+
+The account's existing $25 Workers notification guard was enabled.
+Estimated incremental Workers cost was about $0.01. The timer probe
+showed no allocated Container runtime, and the run made no LLM calls.
+An itemized billing record was unavailable.
+
+`cf` readback found zero trial Workers, Durable Object namespaces,
+Container apps, registry images, DNS records and live tunnels. The
+tunnel tombstone showed deletion at 01:09:51 UTC and zero connectors.
+Docker readback found zero containers, networks, volumes and image tags
+for `107e1767`, `5077039e`, `2381b91d` and `5b16e602`, and zero local
+timer image tags. The connector was stopped and the private handoffs and
+raw logs were removed from the three owned archives.
+
 ### Multi-slot managed launchers
 
 - The authenticated provider profile declares `memory_limit_bytes` as one to
