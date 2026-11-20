@@ -352,11 +352,14 @@ async def _observe_inventory(
 
 
 async def usage_script_identities(db: AsyncSession, installation_id: UUID) -> dict[str, dict[str, str]]:
-    """Include retained receipts so prior deployment usage counts in the same billing period."""
+    """Compare the ledger against retained Workers receipts for the same account."""
+    account = select(CloudflareInstallation.account_id).where(
+        CloudflareInstallation.id == installation_id,
+    ).scalar_subquery()
     identities = await db.execute(select(
         CloudflareOwnedResource.target_name, CloudflareOwnedResource.namespace_ids,
     ).where(
-        CloudflareOwnedResource.installation_id == installation_id,
+        CloudflareOwnedResource.account_id == account,
         CloudflareOwnedResource.scope == "workers",
         CloudflareOwnedResource.kind == "worker_script",
         CloudflareOwnedResource.provider_id.is_not(None),

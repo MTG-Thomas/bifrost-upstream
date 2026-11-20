@@ -1045,6 +1045,8 @@ async def test_disconnect_retires_with_receipts_and_allows_reconnect(
 
     resource.state = "absent"
     resource.observed_at = datetime.now(UTC)
+    resource.provider_id = str(uuid4())
+    resource.provider_version = str(uuid4())
     await db_session.flush()
     await retire_cloudflare_installation(db_session, installation_id=installation_id, expected_revision=2)
     assert installation.retired_at is not None and installation.api_token_version is None
@@ -1053,6 +1055,7 @@ async def test_disconnect_retires_with_receipts_and_allows_reconnect(
     new_id = await create_installation(db_session, installation.account_id)
     assert new_id != installation_id
     assert await db_session.get(CloudflareOwnedResource, resource.id) is not None
+    assert await lifecycle_job.usage_script_identities(db_session, new_id) == {resource.target_name: {}}
     db_session.add(CloudflareOwnedResource(
         id=uuid4(), installation_id=new_id, account_id=installation.account_id,
         scope="workers", kind="worker_script", target_name=resource.target_name,

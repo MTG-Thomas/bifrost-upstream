@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { expect, it, vi } from "vitest";
 
@@ -134,4 +134,35 @@ it("recovers Action Required from the last visible job on page load", async () =
 	);
 	expect(await screen.findByText("Reconnect Cloudflare")).toBeVisible();
 	expect(mocks.subscribe).toHaveBeenCalledWith("previous-job", expect.any(Function));
+});
+
+it("confirms deployment deletion before rotating the scope bearer", async () => {
+	mocks.start.mockClear();
+	mocks.get.mockResolvedValue({
+		installation: {
+			installation_id: "installation-id",
+			desired_revision: 4,
+			desired_state: "scaled_in",
+			worker_ingress_origin: "https://workers.example.test",
+			fleet_envelope_usd: "10.50",
+			policy: { monthly_limit_usd: "30.00", workers: { launcher_cap: 1, slots_per_launcher: 2 } },
+		},
+	});
+	mocks.start.mockResolvedValue({ job_id: "job-id", status: "queued" });
+	render(
+		<QueryClientProvider client={new QueryClient()}>
+			<CloudflareCapacity />
+		</QueryClientProvider>,
+	);
+	fireEvent.click(await screen.findByRole("button", { name: "Rotate Scope Bearer" }));
+	const dialog = within(screen.getByRole("alertdialog", { name: "Rotate Cloudflare Scope Bearer" }));
+	expect(dialog.getByText(/delete the previous Workers deployment/)).toBeVisible();
+	expect(mocks.start).not.toHaveBeenCalled();
+	await act(async () => {
+		fireEvent.click(dialog.getByRole("button", { name: "Rotate Scope Bearer" }));
+	});
+	expect(mocks.start).toHaveBeenCalledWith("rotate-bearer", {
+		installation_id: "installation-id",
+		expected_revision: 4,
+	});
 });
