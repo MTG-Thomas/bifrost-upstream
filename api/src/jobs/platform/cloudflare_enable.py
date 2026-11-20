@@ -255,7 +255,15 @@ async def _settle_enable(
 
     ingress = await probe_worker_ingress(installation, runtime_canary=canary)
     if not ingress.ready:
-        raise PlatformJobRequiresAction("Verify the Worker Ingress and Runtime", {"code": "CF_WORKER_INGRESS_UNVERIFIED"})
+        failure = ingress.failure
+        stage = failure.stage.replace("_", " ")
+        reason = failure.error_class.replace("_", " ")
+        if failure.status is not None:
+            reason += f", HTTP {failure.status}"
+        raise PlatformJobRequiresAction(
+            f"Cloudflare Canary Failed ({stage}, {reason})",
+            {"code": "CF_WORKER_INGRESS_UNVERIFIED", "canary_failure": failure.as_result()},
+        )
     await context.report("Checking Cloudflare Spend")
     async with get_db_context() as db:
         row = await _locked_current(db, context, payload)

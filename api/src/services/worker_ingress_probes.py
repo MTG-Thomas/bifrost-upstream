@@ -52,11 +52,45 @@ class RouteProbe:
 
 
 @dataclass(frozen=True, slots=True)
+class CanaryFailure:
+    stage: str
+    error_class: str
+    status: int | None = None
+
+    def as_result(self) -> dict[str, str | int]:
+        result: dict[str, str | int] = {"stage": self.stage, "error_class": self.error_class}
+        if self.status is not None:
+            result["status"] = self.status
+        return result
+
+    @classmethod
+    def from_result(cls, value: object) -> "CanaryFailure":
+        allowed = {
+            "ingress": ("unreachable", "route_refused", "websocket_failed"),
+            "hello": ("timeout", "lease_changed"),
+            "launcher": ("unavailable", "unexpected", "connection_lost"),
+            "proof": ("invalid_command", "unavailable"),
+            "sdk_fetch": ("timeout", "fetch_error"),
+            "sdk_response": ("http_status", "missing_ingress_marker"),
+            "ack": ("timeout", "invalid_reply", "missing_sdk_receipt"),
+        }
+        if isinstance(value, dict) and set(value) <= {"stage", "error_class", "status"}:
+            stage, error, status = value.get("stage"), value.get("error_class"), value.get("status")
+            if (
+                isinstance(stage, str) and isinstance(error, str) and error in allowed.get(stage, ())
+                and (status is None or (type(status) is int and 100 <= status <= 599))
+            ):
+                return cls(stage, error, status)
+        return cls("ack", "invalid_reply")
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeCanary:
     """Evidence from the enable job's reserved runtime and no-effect SDK check."""
 
     signed_hello: bool
     scoped_sdk: bool
+    failure: CanaryFailure | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +113,20 @@ class WorkerIngressProbeResult:
     def ready(self) -> bool:
         canary = self.runtime_canary
         return self.reachable and canary is not None and canary.signed_hello and canary.scoped_sdk
+
+    @property
+    def failure(self) -> CanaryFailure:
+        if self.runtime_canary is not None and self.runtime_canary.failure is not None:
+            return self.runtime_canary.failure
+        if self.reachable:
+            signed = self.runtime_canary is not None and self.runtime_canary.signed_hello
+            return CanaryFailure("ack" if signed else "hello", "timeout")
+        if not self.tls:
+            return CanaryFailure("ingress", "unreachable")
+        failed = next((route for route in self.routes if not route.passed), None)
+        if failed is not None:
+            return CanaryFailure("ingress", "route_refused", failed.status)
+        return CanaryFailure("ingress", "websocket_failed")
 
 
 async def _public_addresses(host: str) -> tuple[str, ...]:

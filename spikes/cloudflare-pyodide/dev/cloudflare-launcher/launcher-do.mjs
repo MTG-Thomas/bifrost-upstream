@@ -168,13 +168,24 @@ export class CloudflareLauncher extends DurableObject {
       runCapacityCanary: this.#managed ? async (generation, proof) => {
         const workerId = settings.identity.incarnationId;
         const url = new URL(`/api/sdk/capacity-canary/${workerId}`, settings.publicUrl);
-        const response = await fetch(url, {
-          headers: {Authorization: `Bearer ${proof}`, 'X-Bifrost-Canary-Generation': String(generation)},
-          redirect: 'error', signal: AbortSignal.timeout(DIAL_TIMEOUT_MS),
-        });
-        if (response.status !== 204 || !response.headers.get('x-bifrost-worker-ingress')?.endsWith('; allowed')) {
-          throw new Error('Capacity canary ingress refused the SDK request');
+        let response;
+        try {
+          response = await fetch(url, {
+            headers: {Authorization: `Bearer ${proof}`, 'X-Bifrost-Canary-Generation': String(generation)},
+            // Workerd supports manual redirects. The proof stays on this origin.
+            redirect: 'manual', signal: AbortSignal.timeout(DIAL_TIMEOUT_MS),
+          });
+        } catch (error) {
+          return {stage: 'sdk_fetch', error_class:
+            ['AbortError', 'TimeoutError'].includes(error?.name) ? 'timeout' : 'fetch_error'};
         }
+        if (response.status !== 204) {
+          return {stage: 'sdk_response', error_class: 'http_status', status: response.status};
+        }
+        if (response.headers.get('x-bifrost-worker-ingress') !== 'v1; allowed') {
+          return {stage: 'sdk_response', error_class: 'missing_ingress_marker', status: 204};
+        }
+        return null;
       } : undefined,
       send: (session, frame) => {
         const connection = this.#connection;

@@ -1512,14 +1512,32 @@ class RemoteControlHost:
 
     def _start_capacity_canary(self, session: RemoteSession) -> None:
         async def probe() -> None:
-            from src.services.worker_pool.cloudflare_canary import cloudflare_sdk_canary_proof
+            from src.services.worker_ingress_probes import CanaryFailure
+            from src.services.worker_pool.cloudflare_canary import cloudflare_sdk_canary_proof, record_canary_failure
 
             generation = session.lease.session_generation
             worker_id = session.lease.worker_id
             proof = await cloudflare_sdk_canary_proof(worker_id, generation)
-            if proof is not None:
-                await session.bridge.request("capacity_canary", {"proof": proof}, expected_generation=generation)
-                await cloudflare_sdk_canary_proof(worker_id, generation, acknowledged=True)
+            if proof is None:
+                await record_canary_failure(worker_id, generation, CanaryFailure("proof", "unavailable"))
+                return
+            try:
+                reply = await session.bridge.request("capacity_canary", {"proof": proof}, expected_generation=generation)
+            except TimeoutError:
+                failure = CanaryFailure("ack", "timeout")
+            except (ConnectionError, CredentialRouteChanged):
+                failure = CanaryFailure("launcher", "connection_lost")
+            except RuntimeError:
+                failure = CanaryFailure("ack", "invalid_reply")
+            else:
+                if reply == {}:
+                    if await cloudflare_sdk_canary_proof(worker_id, generation, acknowledged=True) is not None:
+                        return
+                    failure = CanaryFailure("ack", "missing_sdk_receipt")
+                else:
+                    detail = reply.get("failure") if isinstance(reply, dict) and set(reply) == {"failure"} else None
+                    failure = CanaryFailure.from_result(detail)
+            await record_canary_failure(worker_id, generation, failure)
 
         task = asyncio.create_task(probe(), name=f"capacity-canary:{session.lease.worker_id}")
         session.reconciliation_tasks.add(task)

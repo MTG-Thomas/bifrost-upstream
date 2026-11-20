@@ -359,17 +359,22 @@ export class LauncherCore {
       case 'workflow':
         return this.#dispatch(session, payload, accept, refuse, WORKFLOW_ROUTE, workflowRoute);
       case 'capacity_canary':
-        if (!this.runCapacityCanary || !/^[a-f0-9]{64}$/.test(payload.proof ?? '')) {
-          refuse('ValueError', 'Invalid capacity canary');
+        if (!this.runCapacityCanary) {
+          accept({failure: {stage: 'launcher', error_class: 'unavailable'}});
+          return;
+        }
+        if (!/^[a-f0-9]{64}$/.test(payload.proof ?? '')) {
+          accept({failure: {stage: 'proof', error_class: 'invalid_command'}});
           return;
         }
         this.background((async () => {
+          let failure;
           try {
-            await this.runCapacityCanary(session.generation, payload.proof);
-            accept({});
+            failure = await this.runCapacityCanary(session.generation, payload.proof);
           } catch {
-            refuse('RuntimeError', 'Capacity canary failed');
+            failure = {stage: 'launcher', error_class: 'unexpected'};
           }
+          accept(failure ? {failure} : {});
         })());
         return;
       case 'cloudflare_summary':

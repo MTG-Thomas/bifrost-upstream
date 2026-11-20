@@ -252,6 +252,14 @@ async def test_canary_proof_requires_current_lease_worker_generation_and_revisio
     proof_for = cloudflare_canary.cloudflare_sdk_canary_proof
     proof = await proof_for(worker.id, 7)
     assert proof is not None and await proof_for(worker.id, 8, received=proof) is None
+    assert await proof_for(worker.id, 7, acknowledged=True) is None
+    failure = ingress_probes.CanaryFailure("sdk_response", "http_status", 404)
+    await cloudflare_canary.record_canary_failure(worker.id, 8, failure)
+    await db_session.refresh(job)
+    assert job.result is None
+    await cloudflare_canary.record_canary_failure(worker.id, 7, failure)
+    await db_session.refresh(job)
+    assert job.result == {"canary_worker": str(worker.id), "canary_generation": 7, "canary_failure": failure.as_result()}
     assert await proof_for(worker.id, 7, received="a" * 64) is None
     assert await proof_for(worker.id, 7, received=proof) == proof
     assert await proof_for(worker.id, 7, acknowledged=True) == proof
@@ -268,6 +276,9 @@ async def test_canary_proof_requires_current_lease_worker_generation_and_revisio
     job.lease_expires_at = now - timedelta(seconds=1)
     await db_session.flush()
     assert await proof_for(worker.id, 7) is None
+    await cloudflare_canary.record_canary_failure(worker.id, 7, ingress_probes.CanaryFailure("ack", "timeout"))
+    await db_session.refresh(job)
+    assert job.result is not None and job.result["canary_failure"] == failure.as_result()
 
 
 @pytest.mark.asyncio
@@ -319,7 +330,10 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
         installation.worker_ingress_origin, True, True, True,
         (ingress_probes.RouteProbe("GET", "/api/sdk/context", 401, True),),
     )))
-    canary = AsyncMock(side_effect=[ingress_probes.RuntimeCanary(True, False), ingress_probes.RuntimeCanary(True, True)])
+    canary = AsyncMock(side_effect=[
+        ingress_probes.RuntimeCanary(True, False, ingress_probes.CanaryFailure("sdk_response", "http_status", 404)),
+        ingress_probes.RuntimeCanary(True, True),
+    ])
     monkeypatch.setattr(enable_job, "run_workers_canary", canary)
     paid_reads = []
 
@@ -342,7 +356,11 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider_read)) as http:
         with pytest.raises(PlatformJobRequiresAction) as denied:
             await enable_job._settle_enable(running, payload, http, release)
-        assert denied.value.result == {"code": "CF_WORKER_INGRESS_UNVERIFIED"}
+        assert denied.value.result == {
+            "code": "CF_WORKER_INGRESS_UNVERIFIED",
+            "canary_failure": {"stage": "sdk_response", "error_class": "http_status", "status": 404},
+        }
+        assert denied.value.phase == "Cloudflare Canary Failed (sdk response, http status, HTTP 404)"
         await db_session.refresh(installation)
         assert installation.admitted_revision is None
         assert await enable_job._settle_enable(

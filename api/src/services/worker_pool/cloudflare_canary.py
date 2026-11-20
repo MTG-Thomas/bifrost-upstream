@@ -24,7 +24,7 @@ from src.models.orm.execution_workers import ExecutionWorker
 from src.models.orm.platform_jobs import PlatformJob
 from src.services.platform_job_lease import LeaseLost, hold_lease
 from src.services.worker_ingress import seal_capacity_canary
-from src.services.worker_ingress_probes import RuntimeCanary
+from src.services.worker_ingress_probes import CanaryFailure, RuntimeCanary
 from src.services.worker_pool.cloudflare_admission import ManagedCloudflareScope
 from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
 from src.services.worker_pool.cloudflare_policy import cloudflare_workers_remain
@@ -99,9 +99,27 @@ async def cloudflare_sdk_canary_proof(
             if not hmac.compare_digest(expected, received):
                 return None
             binding.canary_sdk_at = datetime.now(UTC)
-        if acknowledged and binding.canary_sdk_at is not None:
+        if acknowledged:
+            if binding.canary_sdk_at is None:
+                return None
             binding.canary_ack_at = datetime.now(UTC)
         return expected
+
+
+async def record_canary_failure(worker_id: UUID, generation: int, failure: CanaryFailure) -> None:
+    """Store only a redacted outcome on the current Enable job lease."""
+    pin = CloudflareWorkerReservation
+    worker = ExecutionWorker
+    async with get_db_context() as db:
+        await db.execute(update(PlatformJob).where(
+            select(pin.worker_id).join(worker, worker.id == pin.worker_id).where(
+                pin.worker_id == worker_id, worker.remote_session_generation == generation,
+                _active_lease(),
+            ).correlate(PlatformJob).exists(),
+        ).values(result={
+            "canary_worker": str(worker_id), "canary_generation": generation,
+            "canary_failure": failure.as_result(),
+        }))
 
 
 async def _retire_canary(client: ExternalCapacityClient, worker_id: UUID, resource_uid: str) -> bool:
@@ -152,7 +170,7 @@ async def run_workers_canary(
             or row.retired_at is not None or row.control_root_version is None
             or row.admitted_revision is not None
         ):
-            return RuntimeCanary(False, False)
+            return RuntimeCanary(False, False, CanaryFailure("hello", "lease_changed"))
         if await cloudflare_workers_remain(db, row.id, before_revision=revision):
             raise PlatformJobRequiresAction("Wait for Cloudflare Workers to Retire", {"code": "CF_PRIOR_WORKERS_LIVE"})
         db.add(ExecutionWorker(
@@ -169,6 +187,7 @@ async def run_workers_canary(
         key = await load_managed_control_key(db, pin, resource_uid)
 
     signed = scoped = False
+    failure = None
     try:
         await client.prepare(WorkerCapacityReservation(
             worker_id=worker_id, worker_version=profile.worker_version, memory_limit_bytes=profile.memory_limit_bytes,
@@ -182,27 +201,36 @@ async def run_workers_canary(
                 raise PlatformJobCancelled from exc
             row = await db.get(CloudflareInstallation, installation_id, with_for_update={"read": True})
             if row is None or row.desired_revision != revision or row.desired_state != "enabled":
-                return RuntimeCanary(False, False)
+                return RuntimeCanary(False, False, CanaryFailure("hello", "lease_changed"))
             await client.start(worker_id, "workers", resource_uid)
         try:
             async with asyncio.timeout(CANARY_DEADLINE_SECONDS):
                 while not scoped:
                     async with get_db_context() as db:
                         proof = (await db.execute(select(
-                            ExecutionWorker.remote_hello_sequence, CloudflareWorkerReservation.canary_ack_at,
+                            ExecutionWorker.remote_hello_sequence, ExecutionWorker.remote_session_generation,
+                            CloudflareWorkerReservation.canary_ack_at, PlatformJob.result,
                         ).join(
                             CloudflareWorkerReservation, CloudflareWorkerReservation.worker_id == ExecutionWorker.id,
                         ).join(PlatformJob, _active_lease()).where(ExecutionWorker.id == worker_id))).one_or_none()
                     if proof is None:
+                        failure = CanaryFailure("hello", "lease_changed")
                         break
                     signed = proof.remote_hello_sequence > 0
                     scoped = signed and proof.canary_ack_at is not None
+                    checkpoint = proof.result or {}
+                    if (
+                        not scoped and checkpoint.get("canary_worker") == str(worker_id)
+                        and checkpoint.get("canary_generation") == proof.remote_session_generation
+                    ):
+                        failure = CanaryFailure.from_result(checkpoint.get("canary_failure"))
+                        break
                     if not scoped:
                         await asyncio.sleep(0.5)
         except TimeoutError:
-            pass
+            failure = CanaryFailure("ack" if signed else "hello", "timeout")
     finally:
         retired = await _retire_canary(client, worker_id, resource_uid)
     if not retired and signed and scoped:
         raise ObservationPending("The runtime canary has no verified deletion receipt")
-    return RuntimeCanary(signed, scoped)
+    return RuntimeCanary(signed, scoped, failure)

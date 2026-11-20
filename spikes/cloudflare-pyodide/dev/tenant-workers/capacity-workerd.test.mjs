@@ -11,7 +11,7 @@ import {buffer} from 'node:stream/consumers';
 import {after, before, test} from 'node:test';
 import {setTimeout as delay} from 'node:timers/promises';
 import {fileURLToPath} from 'node:url';
-import {signHello} from '../cloudflare-launcher/protocol.mjs';
+import {envelope, signHello} from '../cloudflare-launcher/protocol.mjs';
 import {capacityWorker} from '../e2e/capacity-miniflare.mjs';
 
 const {Miniflare} = createRequire(import.meta.resolve('wrangler'))('miniflare');
@@ -37,6 +37,7 @@ let base;
 let provider;
 const hellos = new Map();
 const sockets = new Map();
+const canaries = new Map();
 const upgrades = new WebSocketServer({noServer: true});
 
 function request(path, method = 'GET', body, headers = auth) {
@@ -55,6 +56,15 @@ async function next(predicate) {
 
 const server = createServer(async (req, res) => {
   try {
+    const canary = canaries.get(req.url);
+    if (canary) {
+      assert.equal(req.method, 'GET');
+      assert.equal(req.headers.authorization, 'Bearer ' + 'a'.repeat(64));
+      assert.equal(req.headers['x-bifrost-canary-generation'], '1');
+      canary.requests += 1;
+      res.writeHead(canary.status, canary.headers).end();
+      return;
+    }
     if (req.url === '/hook' && req.headers.authorization === auth.Authorization) {
       const {action, worker_id} = JSON.parse(await buffer(req));
       if (action === 'restart-provider') {
@@ -91,6 +101,7 @@ server.on('upgrade', (req, socket, head) => {
       const message = JSON.parse(raw);
       if (record) {
         if (message.payload?.event === 'inventory') record.inventory = message;
+        if (message.payload?.reply === 'canary-test') record.canary = message.payload;
         return;
       }
       const id = message.hello.incarnation_id;
@@ -194,3 +205,40 @@ test('shared capacity conformance exercises the real local HTTP provider', async
   assert.equal(code, 0, out.toString() + err.toString());
   assert.match(out.toString(), /17\/17 passed, 0 failed, 0 skipped/);
 });
+
+for (const {name, status, headers, proof, expected} of [
+  {name: 'accepts authenticated 204', status: 204, headers: {'x-bifrost-worker-ingress': 'v1; allowed'}, expected: {}},
+  {name: 'rejects ingress 404', status: 404, expected: {stage: 'sdk_response', error_class: 'http_status', status: 404}},
+  {name: 'reports proof refusal', status: 401, expected: {stage: 'sdk_response', error_class: 'http_status', status: 401}},
+  {name: 'does not follow redirects', status: 302, headers: {Location: '/unexpected'},
+    expected: {stage: 'sdk_response', error_class: 'http_status', status: 302}},
+  {name: 'rejects a response without its ingress marker', status: 204,
+    expected: {stage: 'sdk_response', error_class: 'missing_ingress_marker', status: 204}},
+  {name: 'refuses a malformed proof before fetch', status: 204, proof: 'invalid',
+    expected: {stage: 'proof', error_class: 'invalid_command'}},
+]) {
+  test(`the workerd SDK canary ${name}`, async () => {
+    const worker_id = randomUUID();
+    const resource_uid = randomBytes(16).toString('hex');
+    const path = `workers/${worker_id}`;
+    const trace = {status, headers, requests: 0};
+    canaries.set(`/api/sdk/capacity-canary/${worker_id}`, trace);
+    try {
+      assert.equal((await request(path, 'PUT', {
+        worker_id, worker_version: settings.version, memory_limit_bytes: 128 * 1024 ** 2,
+        max_lifetime_seconds: 60, drain_grace_seconds: 5, resource_uid, control_key: randomBytes(32).toString('hex'),
+      })).status, 200);
+      assert.equal((await request(path + '/start', 'POST', {resource_uid})).status, 200);
+      const record = await next(() => hellos.get(worker_id)?.find(item => item.inventory));
+      sockets.get(worker_id).send(JSON.stringify(envelope(1, 1, 'command', {
+        id: 'canary-test', action: 'capacity_canary', payload: {proof: proof ?? 'a'.repeat(64)},
+      })));
+      const reply = await next(() => record.canary);
+      assert.deepEqual(reply.result, Object.keys(expected).length ? {failure: expected} : {});
+      assert.equal(trace.requests, proof ? 0 : 1);
+    } finally {
+      canaries.delete(`/api/sdk/capacity-canary/${worker_id}`);
+      await request(path, 'DELETE', {resource_uid});
+    }
+  });
+}
