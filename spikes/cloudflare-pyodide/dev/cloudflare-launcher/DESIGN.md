@@ -2,8 +2,9 @@
 
 Status: phases 5a and 5b passed on the fork, 2026-11-18. Phase 7 verified
 hosted agent and summary settlement, three-scope claim placement, and Linux
-workflow execution and idle release on Containers. See the resumed run for
-Workers workflow and hosted runtime results. Targets upstream
+workflow execution and idle release on Containers. See the
+[Workers-only follow-up](#workers-only-follow-up-2026-11-19-and-2026-11-20-utc)
+for hosted Workers workflow and runtime results. Targets upstream
 `main` (Jack's merged
 capacity core, #1423) and stays compatible with the direction of #1424
 (API-owned compute, derived worker keys) and #1425 (Cloudflare Containers
@@ -657,21 +658,18 @@ adds the hosted peers to the existing real-API fixture. Source base
 | Workers capacity discovery | Authenticated HTTP 200, protocol v1, `cloudflare-python-v1`, 256 MiB declared capacity for two slots, one maximum managed incarnation, 600-second maximum lifetime. Anonymous capabilities returned 401. |
 | Containers capacity discovery | Authenticated HTTP 200, protocol v1, 1 GiB and one maximum worker. The hosted application accepted the pinned image and one `basic` instance. The image was 1.12 GB locally and the local overflow harness had qualified the workload at 1 GiB. |
 | Tunnel ingress | Cloudflare read back the dedicated hostname and anchored allowlist, with catch-all HTTP 404. DNS stayed absent and no connector registered. |
-| CT128 admission | Running Bifrost test stacks occupied the first two launch checks. A different debug stack and its reservation occupied the final check. The gated archive never started its debug stack. |
+| Dev host admission | Running Bifrost test stacks occupied the first two launch checks. A different debug stack and its reservation occupied the final check. The gated archive never started its debug stack. |
 | Workflows, agent, and summary | Unrun. No hosted control hello, execution, claim, result, or model-provider call. |
 | Three scopes and hosted runtime behavior | Unrun. No Bifrost Container assignment, requirements bootstrap, workload cold start, inactivity expiry, idle retirement, CPU-limit classification, DO recovery or scheduling latency was measured in this pass. |
 
-The trial used the Midtown Technology Group account and the
-`bifrost-hq-9ac5ef5b1` prefix. The five deployed Workers used suffixes
+The trial used the designated Cloudflare account and the
+`bifrost-hq-<trial>` prefix. The five deployed Workers used suffixes
 `-launcher`, `-workers`, `-containers`, `-summary` and `-agent`. The
-Container application `bifrost-hq-9ac5ef5b1-container`
-(`a03ea905-8092-41f0-9156-cb7adde53a7b`) used registry tag
-`bifrost-hq-9ac5ef5b1:fe504a900` and digest
-`sha256:7f148e55fc9f692625399aba0125f7a7e176dbeecc92ac5877b0b4e8c1efa810`.
-The tunnel `6f418fb0-0f40-4051-ae75-5c423419d18e` was deleted at 16:21:44 UTC.
+Container application used a digest-pinned trial image. The trial tunnel
+was deleted at 16:21:44 UTC.
 Cloudflare readback returned zero trial Workers, Durable Object namespaces,
 Container apps, registry images, live tunnels, DNS records and connectors.
-CT128 readback returned zero trial project containers, networks, volumes,
+Dev host readback returned zero trial project containers, networks, volumes,
 image tags and connector processes. The temporary registry credential and
 private API files were removed.
 
@@ -680,7 +678,7 @@ Workers Logs query filtered to the two capacity providers returned four
 records during the preflight window.
 Estimated incremental usage was below $0.01 for provider probes and
 provisioning. No workload instance or LLM request was observed, and the
-invoice was unavailable at teardown. The CT128 Docker CLI used the legacy
+invoice was unavailable at teardown. The dev host Docker CLI used the legacy
 builder, so the private archive supplied the tracked LICENSE at mode 0644
 in place of Dockerfile `COPY --chmod=644`. No runtime source fix was
 identified in this preflight.
@@ -689,20 +687,16 @@ identified in this preflight.
 
 The harness was rebased onto `cb2b3dceb`, including the local Containers Git
 stage. Three `dev/e2e` Node tests passed after conflict resolution. The trial
-used `bifrost-hq-cb2b3dceb` in Midtown Technology Group, with private
+used `bifrost-hq-<trial>` in the designated account, with private
 `-summary`, `-agent`, `-manual` and `-launcher` Workers, plus the authenticated
 `-workers` and `-containers` capacity providers. The one-instance `basic`
-application `bifrost-hq-cb2b3dceb-container` had ID
-`a03f1761-7779-4f02-9b17-abba5604d299`. Its image was
-`bifrost-hq-cb2b3dceb:e9acacb83` at digest
-`sha256:788e976a585e6a5074fc87f0c88d9e05329d3dcefb71219946dce3e27eec9681`.
-Tunnel `9449d689-aa3e-4bc5-b62e-748b0b628d82` and proxied DNS record
-`5a47d2b633331c573267f77948cf732b` served the anchored ingress rules. Login
+application used a digest-pinned trial image. The trial tunnel and proxied
+DNS record served the anchored ingress rules. Login
 and OpenAPI returned 404. The unauthenticated tables POST returned 401.
 
-The first CT128 launch admitted one concurrent project with 16 GiB available
-on `pve-t340`. The recovery archive `hosted-30cb36a44` also cleared that
-gate. The main evidence comes from its project `bifrost-debug-91c75ece`.
+The first debug launch admitted one concurrent project with 16 GiB available
+on the dev host. The recovery archive also cleared that gate and supplied the
+main evidence.
 The compiled runtime was the Phase 5b artifact, with SHA-256
 `fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5`.
 
@@ -712,8 +706,8 @@ The compiled runtime was the Phase 5b artifact, with SHA-256
 | Autonomous agent | `0fd9066a-7011-4392-9721-7c887e255ae0` | Same manual incarnation, one stub call, `llm_request` then `llm_response`, one usage record and completed output `fixture text`. Its automatic follow-on summary was refused by the narrower stub fixture. |
 | VM primary | `6ceae7ee-39ed-4d6d-b895-01a51ca804fa` | VM incarnation `ce04068f-0428-4d40-a8e5-b82ef7a13848` held the primary claim while both overflow scopes admitted work. |
 | Approved loose workflow | `ccf5c4ef-3434-41cc-8157-3ca85bd87aa1` | One claim `fe8c45b3-9fe8-4be5-8c98-0c95449b7d83` on the two-slot Workers incarnation `dd484a48-e2d1-4d16-bb0b-584283728e28`. It failed before engine entry with `TenantHostNotReady`, then retired idle. The approved Solution fixture was installed and pinned. The overlap check did not dispatch it because the loose fixture did not enter its hold. |
-| Linux subprocess | `67be76b1-a472-4147-9cab-ca8e8aeda2b6` | One claim `d94ccb68-f140-457d-b561-48bdcb5dd94a` on Containers incarnation `91f54b5e-532f-4a7f-b2eb-0c5a380d5245`, with protocol-2 credentials and accepted derived hello 1. The workflow returned `stdout=containers` and reported denied access to the supervisor environment. Its assertions required non-root UID and absence of control and platform secrets. The requirements heartbeat reported 1/1. |
-| Container start and release | Same Linux run | Reservation to ready was 4.52 s, and enqueue to workflow start was 44.10 s including placement. Idle retirement occurred 15.32 s after settlement and the deletion receipt 2.06 s later. Cloudflare instance `8e95c56402f04d63ad6e2f003623ed12be15a66f03253dcf16d2893e3276ab97` read back `inactive` at 17:08:00 UTC. Natural Cloudflare inactivity expiry was outside this release proof. |
+| Linux subprocess | `67be76b1-a472-4147-9cab-ca8e8aeda2b6` | One claim `d94ccb68-f140-457d-b561-48bdcb5dd94a` on the trial Containers incarnation, with protocol-2 credentials and accepted derived hello 1. The workflow returned `stdout=containers` and reported denied access to the supervisor environment. Its assertions required non-root UID and absence of control and platform secrets. The requirements heartbeat reported 1/1. |
+| Container start and release | Same Linux run | Reservation to ready was 4.52 s, and enqueue to workflow start was 44.10 s including placement. Idle retirement occurred 15.32 s after settlement and the deletion receipt 2.06 s later. The trial instance read back `inactive` at 17:08:00 UTC. Natural Cloudflare inactivity expiry was outside this release proof. |
 
 Managed Workers reservation to ready was 1.64 s, and the loose run spent
 8.33 s from enqueue to claim. The first manual readiness window elapsed
@@ -731,13 +725,15 @@ these setup repairs.
 Workers Logs for manual diagnostic execution
 `9b2ed966-cb81-401b-8af6-acb6a219ebd1` recorded a successful
 `phase7_warm_ping_http 200` followed by a code-update reset inside
-`TenantHost.#rememberWarm` (trace `63cb56b1a2630c74f64314e89f20e49e`).
+`TenantHost.#rememberWarm`.
 The hosted workflow failed before entry. Engine-only warm had detached
 the storage write from the readiness response. The fix awaits the warm
-state write and keeps origin warming asynchronous. The focused workerd test
-passed with the origin response held, and verified the tenant and alarm
-state after warm returned. Cloudflare deployed the fix as manual Worker
-version `fd4364a9-dedb-4fcf-96a5-7ced00b68cea`. The final observer failed
+state write and keeps origin warming asynchronous. The local follow-up
+also awaits storage `sync()` after the ping succeeds. The workerd test
+injects a commit failure after the ping and verifies that `warm` rejects.
+A separate test holds the origin response while `warm` completes.
+Cloudflare deployed the ordering fix as a trial manual Worker version.
+The final observer failed
 to re-admit the launcher before the hosted window closed, so there is no
 successful hosted workflow on the fixed version in this run.
 
@@ -753,7 +749,7 @@ The trial tunnel read back no connectors and a deletion timestamp of
 17:18:58 UTC. Cloudflare returned zero matching Workers, Durable Object
 namespaces, Container apps, registry images, live tunnels and DNS records.
 Docker returned zero matching containers, networks, volumes, and images
-for both debug projects. CT128 had no trial connector processes. Both
+for both debug projects. The dev host had no trial connector processes. Both
 archives' private handoffs, token files and raw debug logs were removed.
 Estimated incremental cost was about $0.01. The Container reservation
 lasted about 31 seconds, all model requests used the stub, and the invoice
@@ -768,30 +764,24 @@ Python AST parsing passed for all eight e2e harness files. The Workers pass
 used runtime SHA-256
 `fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5`.
 
-The first debug project, `bifrost-debug-5077039e`, stopped during
+The first debug project stopped during
 `alembic upgrade head`. The chat outbox and platform remote-stage
 migrations had the same parent and created two heads. A merge revision
 joined the independent migrations, and the single-head regression test
-passed. Project `bifrost-debug-2381b91d` timed out while reading the
+passed. The second debug project timed out while reading the
 Solution deployment job. It submitted no workflow executions.
 
-The trial used `bifrost-hq-da0c9e0ce` in Midtown Technology Group. The
-Workers were `-launcher` and `-workers`, with two slots and one managed
-incarnation. Tunnel `4851be07-ee2d-4d0e-9b6a-1c73d62b3364` and DNS record
-`fbf5e86a6d46f5a2658f8cb1e77b23a2` restricted ingress to worker control,
+The designated account used the `bifrost-hq-<trial>` prefix, with
+`-launcher` and `-workers` suffixes, two slots and one managed incarnation.
+The trial tunnel and DNS record restricted ingress to worker control,
 tables list, runtime log writes and refresh. Login and OpenAPI returned 404.
 
-The independent natural inactivity probe used one `lite` instance on
-`bifrost-hq-da0c9e0ce-container` (app
-`a03225b8-4e4f-412f-826e-222c5bcaabb4`), with image
-`bifrost-hq-da0c9e0ce:adb5a624c` at digest
-`sha256:46f9188cf01c7880137555f7b55f824fe20b5873033f01a82e2bae7ff8c5b35c`.
-Its only start request reserved `c15dc15f-933b-4b17-a717-756ac0930679`
-at 17:31:06 UTC. Workers Logs said there was no Container instance
-available to the Durable Object. Application readback showed zero active
-or assigned instances and instance
-`717c8ad28b3337c1fc4f49548b3377f342da251965a39605f8af77fd115b9cb8`
-was inactive with no location. The provider confirmed deletion after
+The independent natural inactivity probe reserved one `lite` instance
+on the trial application using a digest-pinned image. Its only start
+request was at 17:31:06 UTC. Workers Logs said there was no Container
+instance available to the Durable Object. Application readback showed zero
+active or assigned instances and an inactive reservation with no location.
+The provider confirmed deletion after
 that single start request. The trial could not measure natural expiry
 because the process never started.
 
@@ -802,7 +792,7 @@ single-head test passed and a fresh database reported
 `20261119_cf_chat_outbox`. All 485 Node tests across 73 files passed.
 Python AST parsing passed for all ten e2e harness files.
 
-Project `bifrost-debug-5b16e602` started with zero other Bifrost stacks
+The final debug project started with zero other Bifrost stacks
 and 16 GiB available. The resumed run reused the isolated Workers,
 tunnel and DNS from this follow-up. The unauthenticated tables request
 returned 401, and login and OpenAPI returned 404. Workers incarnation
@@ -816,14 +806,22 @@ with a distinct claim, one dispatch and one terminal ACK per run.
 | Approved Solution-installed workflow | `b882201c-6714-4560-aca6-b7f40a7b4545` | `Success` with claim `0b0cc105-c669-4492-a287-6fa7010f714a`. One log record and `install_value=phase6-b` from the installed module were recorded. |
 | Two-slot overlap | Same loose and Solution runs | Distinct tenants. Both SDK calls returned upstream 200 and were still held when both database rows read `Running` at 01:06:38.081 UTC. Their database running intervals overlapped by 5.19 s. |
 | CPU limit | `9c837430-4163-4491-867a-7128636287bc` | Python completed an SDK read (HTTP 200) before the CPU loop. The 1,000 ms budget settled as `Failed`, with `CpuLimitExceeded` / `uncertain` and claim `f986ee96-31ba-4e08-9cb7-5f64b8b92709`. |
-| In-flight DO restart | `4eecde08-c9e0-48ca-8b52-8c7188052920` | The SDK call was held before immediate activation of version `7ba267e0-3fb1-4b2c-ab35-e1faeebb87bd` (deployment `a8f315fc-529a-4477-a13b-eda31bc10e4f`). Hello and generation advanced from 1 to 2. Inventory reported zero active routes and the retained terminal, which was replayed and ACKed as `LauncherReset` / `uncertain`. The single claim `5dbd0a68-e399-47f5-bdf6-d0895b1bc38c` was retained without redispatch. |
+| In-flight DO restart | `4eecde08-c9e0-48ca-8b52-8c7188052920` | The SDK call was held before immediate activation of the replacement Worker version. Hello and generation advanced from 1 to 2. Inventory reported zero active routes and the retained terminal, which was replayed and ACKed as `LauncherReset` / `uncertain`. The single claim `5dbd0a68-e399-47f5-bdf6-d0895b1bc38c` was retained without redispatch. |
 
 The reset terminal arrived 26.42 s after the held-call activation cue.
 Workers Logs returned 50 launcher events for the trial window, including
-launcher RPC and trace `2ffb614759d42ef9dc27da000ef05cd7`. The relay
+launcher RPC. The relay
 captured the CPU and reset classifications and their ACKs, and Postgres
 confirmed their final states. The warm-state fix passed live for both
-workflow types. No additional Workers runtime defect surfaced.
+workflow types. The subsequent storage durability change was tested locally.
+
+In Workers-only mode, the API points its primary capacity URL at the
+Workers provider. `BIFROST_WORKER_CAPACITY_TOKEN` therefore holds that
+provider's credential. It authenticates the capacity API and derives
+keys for its own incarnations. The launcher receives only the derived
+key. This mode configures no VM capacity provider, separate VM token,
+or manual launcher. The three-scope harness gives the VM and Workers
+providers independent random credentials.
 
 The account's existing $25 Workers notification guard was enabled.
 Estimated incremental Workers cost was about $0.01. The timer probe
@@ -834,7 +832,7 @@ An itemized billing record was unavailable.
 Container apps, registry images, DNS records and live tunnels. The
 tunnel tombstone showed deletion at 01:09:51 UTC and zero connectors.
 Docker readback found zero containers, networks, volumes and image tags
-for `107e1767`, `5077039e`, `2381b91d` and `5b16e602`, and zero local
+for the four trial projects, and zero local
 timer image tags. The connector was stopped and the private handoffs and
 raw logs were removed from the three owned archives.
 

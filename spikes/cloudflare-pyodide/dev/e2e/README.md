@@ -274,11 +274,13 @@ zero containers, networks, volumes and task images for both trial projects.
 
 ## Phase 7 hosted three-scope qualification
 
-Use a private, newly initialized `/opt/bifrost-tests/hosted-<sha>` archive.
-Run `phase7.py prepare <trial-host>` before starting the debug stack. Start
-only with at most one other Bifrost test or debug stack on CT128 and at least
-8 GiB available in `free -g` on `pve-t340`. Count the chat reservation as one
-stack. Use short SSH checks a few minutes apart if the gate is busy. Use
+Use a private, newly initialized `<test-root>/hosted-<sha>` archive.
+Set `PHASE7_ZONE` to the dedicated DNS zone in the harness and deployment
+environments. Run `phase7.py prepare <trial-host>` before starting the debug
+stack. Start only with at most one other Bifrost test or debug stack on the
+dev guest and at least 8 GiB available in `free -g` on its host. Count the
+chat reservation as one stack. Use short SSH checks a few minutes apart if
+the gate is busy. Use
 `BIFROST_FORCE_PORT=1 ./debug.sh up` with a detached owner and a private log.
 Use Node 26, the pinned packaged runtime, and the staged runtime loader files
 from Phase 5b.
@@ -309,6 +311,7 @@ bindings. Upload the replacement using `cf workers versions create` before
 the reset fixture reaches its hold. At `redeploy-requested`, activate that
 version immediately. The harness verifies a summary and autonomous run
 against the stub, CPU settlement, DO recovery and retired hello fencing.
+The harness removes its enrollment file on exit, including after retirement.
 
 For the placement pass, use `phase7.py run <generated-runtime.mjs> --placement
 <private-provider-handoff.json>`. The handoff has `workersUrl`,

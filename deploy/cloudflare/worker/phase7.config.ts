@@ -2,6 +2,11 @@ import {bindings, defineConfig, defineContainer, exports} from 'cf/config';
 
 const root = process.env.PHASE7_NAME ?? '';
 if (!/^bifrost-hq-[a-f0-9]{9}$/.test(root)) throw new Error('Set a dedicated PHASE7_NAME');
+const zone = process.env.PHASE7_ZONE ?? '';
+const label = '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?';
+if (zone.length > 253 || zone !== zone.trim() || !new RegExp(`^(?:${label}\\.)+${label}$`).test(zone)) {
+  throw new Error('Set PHASE7_ZONE to the dedicated trial DNS zone');
+}
 const image = process.env.PHASE7_IMAGE ?? '';
 if (!new RegExp('^registry\\.cloudflare\\.com/[a-f0-9]{32}/' + root + '@sha256:[a-f0-9]{64}$').test(image)) {
   throw new Error('Set the digest of the dedicated trial image');
@@ -40,7 +45,7 @@ export default defineConfig({
       MAX_LIFETIME_SECONDS: {type: 'text', value: '600'},
       STARTING_GRACE_MS: {type: 'text', value: '30000'},
       WORKER_CONTAINER_ENV: {type: 'text', value: JSON.stringify({
-        BIFROST_API_URL: 'https://' + root + '.midtowntg.com', HOME: '/home/bifrost',
+        BIFROST_API_URL: `https://${root}.${zone}`, HOME: '/home/bifrost',
       })},
     },
     observability: {enabled: true, headSamplingRate: 1},

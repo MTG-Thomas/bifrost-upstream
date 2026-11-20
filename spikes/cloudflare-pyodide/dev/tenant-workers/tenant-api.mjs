@@ -528,18 +528,13 @@ export class TenantHost extends DurableObject {
   // Pre-warm: a dispatcher that knows an attempt is coming can pay the boot
   // ahead of it. Opens the same warm window an attempt does.
   async warm({tenantId, engineOnly = false}) {
-    try {
-      const boot = await this.#exclusive(() => this.#ping(tenantId));
-      if (engineOnly) {
-        this.ctx.waitUntil(this.#warmOrigin());
-        return boot;
-      }
-      return {...boot, ...await this.#warmOrigin()};
-    } finally {
-      // A hosted child boot can reset this object before its next storage
-      // operation. Surface that reset to the caller before reporting readiness.
-      await this.#rememberWarm(tenantId);
+    const boot = await this.#exclusive(() => this.#ping(tenantId));
+    await this.#rememberWarm(tenantId);
+    if (engineOnly) {
+      this.ctx.waitUntil(this.#warmOrigin());
+      return boot;
     }
+    return {...boot, ...await this.#warmOrigin()};
   }
 
   async #rememberWarm(tenantId) {
@@ -547,6 +542,7 @@ export class TenantHost extends DurableObject {
     if (await this.ctx.storage.getAlarm() === null) {
       await this.ctx.storage.setAlarm(Date.now() + WARM_PING_MS, UNGATED);
     }
+    await this.ctx.storage.sync();
   }
 
   async alarm() {

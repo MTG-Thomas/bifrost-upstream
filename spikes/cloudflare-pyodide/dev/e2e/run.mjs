@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {execFileSync, spawn, spawnSync} from 'node:child_process';
 import {createHash, randomBytes} from 'node:crypto';
-import {appendFileSync, readFileSync, utimesSync, writeFileSync} from 'node:fs';
+import {appendFileSync, readFileSync, unlinkSync, utimesSync, writeFileSync} from 'node:fs';
 import {mkdir} from 'node:fs/promises';
 import {createServer} from 'node:http';
 import {createServer as createTlsServer} from 'node:https';
@@ -66,14 +66,14 @@ function workerRow() {
     WHERE id = '${config.incarnation}'`);
 }
 
-function managedRows(scope = 'phase6-local') {
+function managedRows(scope = 'phase6-local', {includeRetired = false} = {}) {
   return sql(`SELECT coalesce(json_agg(json_build_object('id',id,'state',state,'uid',capacity_resource_uid,
     'launcher_bound',remote_launcher_id=id,'profile',runtime_profile,'hello',remote_hello_sequence,
     'budget',memory_limit_bytes,'available',memory_budget_bytes,'active',active_runs,
     'deleted',capacity_resource_deleted_at IS NOT NULL,'end',end_reason,
     'created_at',created_at,'ready_at',ready_at,'ended_at',ended_at,
     'deleted_at',capacity_resource_deleted_at)), '[]'::json)
-    FROM execution_workers WHERE capacity_scope = '${scope}'`);
+    FROM execution_workers WHERE capacity_scope = '${scope}'${includeRetired ? '' : " AND state <> 'retired'"}`);
 }
 
 function runRow(id) {
@@ -458,7 +458,9 @@ async function startRun(scenario, hold = true, tenant) {
     const workers = managedRows();
     assert.equal(workers.length, 1, 'one managed Workers incarnation for the placement trial');
     assert.equal(workers[0].state, 'ready');
-    config.incarnation = workers[0].id;
+    // Hosted placement first asks for burst capacity when a workflow queues.
+    if (config.qualification.placement) config.incarnation ??= workers[0].id;
+    assert.equal(workers[0].id, config.incarnation);
   }
   assert.equal(row.claim[0].worker, config.incarnation);
   evidence('claimed', {scenario, id, route: dispatch.route, row});
@@ -613,7 +615,7 @@ async function containersChecks() {
     version: devVersion(), archive: process.cwd(),
   };
   const hosted = config.qualification?.placement;
-  const vmToken = createHash('sha256').update(config.phase6.token + ':vm').digest('hex');
+  const vmToken = randomBytes(32).toString('hex');
   const containersToken = hosted?.containersToken ??
     createHash('sha256').update(config.phase6.token + ':containers').digest('hex');
   const vm = localLinuxProvider({...common, scope: 'vm', token: vmToken, vmEnv});
@@ -814,7 +816,7 @@ asyncio.run(run())
     approved?.gate.release.resolve();
     const localOutcome = hosted ? null : await settle('phase6-a', approved, 'Success');
     const released = await until('Containers idle retirement and provider-confirmed deletion', () =>
-      managedRows('containers').find((row) => row.id === container.id && row.state === 'retired'
+      managedRows('containers', {includeRetired: true}).find((row) => row.id === container.id && row.state === 'retired'
         && row.deleted && (hosted || !containers.running(row.id))), 90_000);
     evidence('containers-release', {row: released});
     const workflowOutcome = hosted ? await hostedWorkflows : {row: localOutcome};
@@ -912,14 +914,18 @@ async function hostedWorkersQualification() {
     config.incarnation = launcher.id;
     assert.equal(launcher.budget, 256 * 2 ** 20);
     evidence('hosted-managed-ready', {launcher});
-    const loose = await startRun('phase6-a', true, config.phase6.tenants[0]);
-    const solution = await startRun('phase6-b', true, config.phase6.tenants[1]);
-    assert.equal(loose.claim[0].worker, solution.claim[0].worker);
-    assert.equal(runRow(loose.id).status, 'Running');
-    assert.equal(runRow(solution.id).status, 'Running');
-    evidence('hosted-two-slot-overlap', {worker: launcher.id, loose: loose.id, solution: solution.id});
-    loose.gate.release.resolve();
-    solution.gate.release.resolve();
+    let loose;
+    let solution;
+    try {
+      loose = await startRun('phase6-a', true, config.phase6.tenants[0]);
+      solution = await startRun('phase6-b', true, config.phase6.tenants[1]);
+      assert.equal(runRow(loose.id).status, 'Running');
+      assert.equal(runRow(solution.id).status, 'Running');
+      evidence('hosted-two-slot-overlap', {worker: launcher.id, loose: loose.id, solution: solution.id});
+    } finally {
+      gates.get('phase6-a')?.release.resolve();
+      gates.get('phase6-b')?.release.resolve();
+    }
     await settle('phase6-a', loose, 'Success');
     await settle('phase6-b', solution, 'Success');
     await hostedCpuCheck();
@@ -1332,10 +1338,7 @@ async function chatChecks({workersConversation, linuxConversation}) {
 }
 
 async function hostedAgentAndRuntimeChecks() {
-  const {incarnation, launcher, resource, build, controlKey} = config;
-  writeFileSync('.phase7-enrollment.json', JSON.stringify({
-    incarnation, launcher, resource, build, controlKey,
-  }), {flag: 'wx', mode: 0o600});
+  const {incarnation} = config;
   evidence('hosted-relay-ready', {port: proxy.address().port});
   await until('hosted agent launcher ready', () => workerRow().state === 'ready', 180_000);
   const staticHandlers = sql(`
@@ -1397,6 +1400,18 @@ async function hostedAgentAndRuntimeChecks() {
   }
 }
 
+async function withHostedEnrollment() {
+  const {incarnation, launcher, resource, build, controlKey} = config;
+  const enrollment = '.phase7-enrollment.json';
+  writeFileSync(enrollment, JSON.stringify({incarnation, launcher, resource, build, controlKey}),
+    {flag: 'wx', mode: 0o600});
+  try {
+    await hostedAgentAndRuntimeChecks();
+  } finally {
+    unlinkSync(enrollment);
+  }
+}
+
 await new Promise((resolve, reject) => {
   proxy.once('error', reject);
   proxy.listen(config.port, '127.0.0.1', resolve);
@@ -1404,7 +1419,7 @@ await new Promise((resolve, reject) => {
 try {
   if (config.qualification?.workersOnly) await hostedWorkersQualification();
   else if (config.qualification?.placement) await containersChecks();
-  else if (config.qualification) await hostedAgentAndRuntimeChecks();
+  else if (config.qualification) await withHostedEnrollment();
   else if (config.agent) await agentChecks();
   else if (config.summary) await summaryChecks();
   else if (config.phase6?.containers) await containersChecks();

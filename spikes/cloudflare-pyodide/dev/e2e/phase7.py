@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hosted checks against a private, disposable CT128 debug API."""
+"""Hosted checks against a private, disposable debug API."""
 
 import argparse
 import hmac
@@ -20,8 +20,12 @@ from phase6 import seed_linux_workflows, seed_solution_workflows
 
 
 def prepare_hosted(hostname, workers_only=False):
-    if not re.fullmatch(r"bifrost-hq-[a-f0-9]{9}\.midtowntg\.com", hostname):
-        raise SystemExit("Use the dedicated trial hostname in midtowntg.com")
+    zone = os.environ.get("PHASE7_ZONE", "")
+    label = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    if len(zone) > 253 or not re.fullmatch(rf"(?:{label}\.)+{label}", zone):
+        raise SystemExit("Set PHASE7_ZONE to the dedicated trial DNS zone")
+    if not re.fullmatch(r"bifrost-hq-[a-f0-9]{9}\." + re.escape(zone), hostname):
+        raise SystemExit("Use the dedicated trial hostname under PHASE7_ZONE")
     prepare(hosted=True, phase6=True, summary=not workers_only, agent=not workers_only, qualification=True)
     endpoint = f"https://{hostname}/__fixture/v1"
     ca = ROOT / ".phase7-ca.pem"

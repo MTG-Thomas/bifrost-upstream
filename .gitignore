@@ -19,6 +19,7 @@ keyvault-certs/
 
 # Node
 node_modules/
+.phase7-*
 
 # ==================== PYTHON ====================
 

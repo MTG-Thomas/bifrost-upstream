@@ -98,8 +98,16 @@ const main = `
     }
   }
   export class TenantHost extends Host {
-    async warmState() {
-      return {tenant: await this.ctx.storage.get('tenantId'), alarm: await this.ctx.storage.getAlarm()};
+    async warmWithCommitFailure(input) {
+      const storage = this.ctx.storage;
+      Object.defineProperty(storage, 'sync', {configurable: true, value() {
+        throw new Error('injected warm-state commit failure');
+      }});
+      try {
+        return await super.warm(input);
+      } finally {
+        delete storage.sync;
+      }
     }
     #started = new Map();
     #signal(id) {
@@ -128,7 +136,7 @@ const main = `
       const host = ctx.exports.TenantHost.getByName(tenantId);
       if (action === 'run') return Response.json(await host.run(input));
       if (action === 'warm') return Response.json(await host.warm({tenantId, ...input}));
-      if (action === 'warm-state') return Response.json(await host.warmState());
+      if (action === 'warm-commit-failure') return Response.json(await host.warmWithCommitFailure({tenantId, ...input}));
       if (action === 'exercise') return Response.json(await host.exercise({tenantId}));
       if (action === 'prime-held-ping') await host.primeHeldPing();
       if (action === 'wait') await host.waitForRun(input);
@@ -478,13 +486,16 @@ test('launcher warm-up finishes while the origin health request is still held', 
     const result = await warm;
     assert.ok(Number.isFinite(result.child_ms));
     assert.equal(result.origin_status, undefined);
-    const state = await host('slow-origin', 'warm-state', {}, t.signal);
-    assert.equal(state.tenant, 'slow-origin');
-    assert.ok(Number.isFinite(state.alarm));
   } finally {
     origin.release.resolve();
     nextOrigin = undefined;
   }
+});
+
+test('launcher warm-up rejects when warm state cannot commit after a successful ping', async () => {
+  const tenant = 'warm-commit-failure';
+  await assert.rejects(host(tenant, 'warm-commit-failure', {engineOnly: true}), /injected warm-state commit failure/);
+  assert.equal((await host(tenant, 'warm', {engineOnly: true})).first_request, false);
 });
 
 test('a failed exercise retires the child before the next workflow can enter', async () => {
