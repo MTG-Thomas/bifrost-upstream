@@ -85,12 +85,6 @@ async def start_kubernetes_loops(
             external_worker_pool_loop(stop_event, settings), name="external-worker-pool-controller",
         ))
     manages_jobs = await may_manage_jobs(settings)
-    from src.services.worker_pool.cloudflare_supervisor import cloudflare_supervisor_loop
-
-    tasks.append(asyncio.create_task(
-        cloudflare_supervisor_loop(stop_event, settings, kubernetes=manages_jobs),
-        name="cloudflare-worker-supervisor",
-    ))
     if not manages_jobs:
         return tasks
     from src.jobs.schedulers.kubernetes_jobs import kubernetes_build_loop

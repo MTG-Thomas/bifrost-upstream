@@ -106,10 +106,27 @@ def test_every_catalog_callback_resolves() -> None:
 
 @pytest.mark.asyncio
 async def test_leader_installs_the_full_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.services import kubernetes_control
+    from src.services.worker_pool import cloudflare_supervisor
+
     monkeypatch.setattr(control_module, "publish_task_states", AsyncMock())
+    monkeypatch.setattr(kubernetes_control, "may_manage_jobs", AsyncMock(return_value=True))
+    started = asyncio.Event()
+    stopped = asyncio.Event()
+
+    async def supervise(_stop, _settings, *, kubernetes):
+        assert kubernetes
+        started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            stopped.set()
+
+    monkeypatch.setattr(cloudflare_supervisor, "cloudflare_supervisor_loop", supervise)
     control = _control(FakeLease())
     await control._start_leader_services()
     try:
+        await asyncio.wait_for(started.wait(), timeout=1)
         scheduler = control._scheduler
         assert scheduler is not None
         assert {job.id for job in scheduler.get_jobs()} == set(LEGACY_SCHEDULES)
@@ -127,6 +144,7 @@ async def test_leader_installs_the_full_catalog(monkeypatch: pytest.MonkeyPatch)
         assert str(deferred.next_run_time.tzinfo) in {"UTC", "utc"}
     finally:
         await control._stop_leader_services()
+    assert stopped.is_set()
 
 
 @pytest.mark.asyncio

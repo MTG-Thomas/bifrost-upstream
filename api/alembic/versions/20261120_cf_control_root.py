@@ -27,8 +27,8 @@ def upgrade() -> None:
             ["installation_id", "purpose", "scope", "version"], deferrable=name == "installation",
             initially="DEFERRED" if name == "installation" else None,
         )
-    # Older pilot reservations can still be drained. New reservations must
-    # have a root and cannot authenticate with the earlier platform key.
+    # Older pilot reservations cannot re-authenticate. Their last connection
+    # can settle before retirement; a reconnect requires a root-pinned worker.
     op.execute("""
         ALTER TABLE cloudflare_worker_reservations
         ADD CONSTRAINT ck_cf_reservation_has_root CHECK (control_root_version IS NOT NULL) NOT VALID

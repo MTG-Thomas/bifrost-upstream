@@ -47,7 +47,6 @@ class ManagedCloudflareScope:
                 CloudflareInstallation.id == self.installation_id,
                 CloudflareInstallation.retired_at.is_(None),
                 CloudflareInstallation.desired_state == "enabled",
-                CloudflareInstallation.control_root_version.is_not(None),
                 cloudflare_usage_within_limit(),
                 CloudflareInstallation.admitted_revision == self.revision,
                 CloudflareInstallation.policy["limits"]["workers"]["work_kinds"].contains(["workflow"]),

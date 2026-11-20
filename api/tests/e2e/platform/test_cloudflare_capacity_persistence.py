@@ -18,7 +18,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import Settings
 from src.core.principal import UserPrincipal
 from src.jobs.platform import cloudflare_capacity as lifecycle_job
-from src.jobs.platform.base import PlatformJobContext, PlatformJobRequiresAction
+from src.jobs.platform.base import (
+    PlatformJobContext,
+    PlatformJobFailure,
+    PlatformJobRequiresAction,
+)
 from src.models.orm.cloudflare_capacity import (
     CloudflareCapacityScope,
     CloudflareCapacityUsage,
@@ -28,6 +32,7 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareWorkerReservation,
 )
 from src.models.orm.execution_workers import ExecutionWorker
+from src.models.orm.platform_jobs import PlatformJob
 from src.models.orm.work_dispatches import WorkDispatch
 from src.services.authorization.context import (
     AuthorizationContext,
@@ -42,7 +47,10 @@ from src.services.worker_pool import (
     controller,
     external_controller,
 )
-from src.services.worker_pool.cloudflare_admission import cloudflare_claim_allowed
+from src.services.worker_pool.cloudflare_admission import (
+    ManagedCloudflareScope,
+    cloudflare_claim_allowed,
+)
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
     open_credential,
@@ -199,6 +207,8 @@ async def test_disconnect_resumes_owned_script_delete_until_namespace_absence(
             })
         else:
             assert request.method == "DELETE" and request.url.path.endswith("/test-capacity")
+            if request.url.params.get("force") != "true":
+                return httpx.Response(400, json={"success": False, "errors": [{"message": "Worker owns a namespace"}]})
             await db_session.refresh(resource)
             assert resource.state == "deleting"
             script_exists = False
@@ -225,6 +235,65 @@ async def test_disconnect_resumes_owned_script_delete_until_namespace_absence(
     assert mutations == ["DELETE"]
     assert resource.state == "absent" and resource.observed_at is not None
     assert installation.retired_at is not None and installation.api_token_version is None
+
+
+@pytest.mark.asyncio
+async def test_reconcile_dedupes_schedule_and_closes_admission_on_missing_deployment(
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch,
+) -> None:
+    installation.desired_state = "enabled"
+    installation.admitted_revision = 1
+    for role in ("launcher", "capacity"):
+        db_session.add(CloudflareOwnedResource(
+            id=uuid4(), installation_id=installation.id, account_id=installation.account_id,
+            scope="workers", kind="worker_script", target_name=f"reconcile-{role}",
+            desired_revision=1, artifact_digest="c" * 64, effect_id=uuid4(), state="present",
+            provider_id=str(uuid4()), provider_version=str(uuid4()),
+        ))
+    await db_session.flush()
+    now = datetime.now(UTC)
+    await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=now)
+    await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=now)
+    jobs = (await db_session.scalars(select(PlatformJob).where(
+        PlatformJob.job_type == lifecycle_job.RECONCILE_JOB,
+        PlatformJob.resource_id == str(installation.id),
+    ))).all()
+    assert len(jobs) == 1 and jobs[0].payload_version == 1
+    job = jobs[0]
+    token = uuid4()
+    job.lease_token = token
+    job.status = "running"
+    await db_session.flush()
+    connection = await db_session.connection()
+
+    @asynccontextmanager
+    async def context():
+        async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as session:
+            yield session
+            await session.commit()
+
+    status_code = 503
+
+    def remote(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET" and request.url.path.endswith("/settings")
+        return httpx.Response(status_code)
+
+    monkeypatch.setattr(lifecycle_job, "get_db_context", context)
+    monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
+    running = PlatformJobContext(job.id, token, None, "system", "", "Bifrost")
+    payload = lifecycle_job.CloudflareReconcilePayload.model_validate(job.payload)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as http:
+        adapter = WorkersRestCleanup(http)
+        monkeypatch.setattr(lifecycle_job, "WorkersRestCleanup", lambda _http: adapter)
+        with pytest.raises(PlatformJobFailure) as unavailable:
+            await lifecycle_job.CLOUDFLARE_RECONCILE_DEFINITION.handler(running, payload)
+        assert unavailable.value.retryable and lifecycle_job.CLOUDFLARE_RECONCILE_DEFINITION.policy.retry_on_failure
+        status_code = 404
+        with pytest.raises(PlatformJobRequiresAction) as missing:
+            await lifecycle_job.CLOUDFLARE_RECONCILE_DEFINITION.handler(running, payload)
+        assert missing.value.result == {"code": "CF_DEPLOYMENT_UNVERIFIED"}
+    await db_session.refresh(installation)
+    assert installation.admitted_revision is None
 
 
 @pytest.mark.asyncio
@@ -315,7 +384,8 @@ async def test_supervisor_reserves_and_retires_without_restarting(
     async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as http:
         async def sweep():
             await cloudflare_supervisor._reconcile_scope(
-                installation.id, "workers", settings, http, controllers, kubernetes=primary == "job",
+                ManagedCloudflareScope(installation.id, "workers", 1),
+                settings, http, controllers, kubernetes=primary == "job",
             )
 
         await sweep()
@@ -329,7 +399,15 @@ async def test_supervisor_reserves_and_retires_without_restarting(
         owned = tuple(controllers.values())
         installation.desired_state = "scaled_in"
         installation.admitted_revision = None
+        installation.desired_revision = 2
+        db_session.add(CloudflareCapacityScope(
+            installation_id=installation.id, scope="workers", endpoint="https://new-capacity.example.test",
+            deployment_revision=2, bearer_version=1,
+        ))
         await db_session.flush()
+        assert set(await cloudflare_supervisor._installations()) == {
+            ManagedCloudflareScope(installation.id, "workers", revision) for revision in (1, 2)
+        }
         await sweep()
         assert tuple(controllers.values()) == owned
         assert writes == ["PUT", "POST", "DELETE"]
@@ -402,7 +480,7 @@ async def test_scope_writer_waits_for_installation_admission_lock(async_session_
         await db.commit()
     statement = update(CloudflareCapacityScope).where(
         CloudflareCapacityScope.installation_id == installation_id,
-    ).values(deployment_revision=2)
+    ).values(bearer_version=1)
     try:
         async with async_session_factory() as reader, async_session_factory() as writer:
             await reader.scalar(select(CloudflareInstallation.id).where(
@@ -530,7 +608,7 @@ async def test_scope_bearer_reference_is_versioned_and_scope_bound(
     await db_session.flush()
     db_session.expunge_all()
 
-    scope = await db_session.get(CloudflareCapacityScope, (ref.installation_id, ref.scope))
+    scope = await db_session.get(CloudflareCapacityScope, (ref.installation_id, ref.scope, 1))
     assert scope is not None and scope.bearer_version == ref.version
     credential = await db_session.get(CloudflareCredential, (ref.installation_id, ref.purpose, ref.scope, ref.version))
     assert credential is not None and open_credential(ref, credential) == value
@@ -605,7 +683,10 @@ async def test_claim_gate_tracks_scale_in_and_deployment_changes_without_restart
 
     installation.admitted_revision = 2
     installation.desired_state = "enabled"
-    scope.deployment_revision = 2
+    db_session.add(CloudflareCapacityScope(
+        installation_id=scope.installation_id, scope=scope.scope, endpoint="https://new-capacity.example.test",
+        deployment_revision=2, bearer_version=scope.bearer_version,
+    ))
     await db_session.flush()
     assert not await cloudflare_claim_allowed(db_session, worker_id)
     await db_session.delete(scope)

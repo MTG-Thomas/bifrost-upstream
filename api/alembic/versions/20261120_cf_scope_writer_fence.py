@@ -56,6 +56,19 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Downgrade only while the old account-wide uniqueness still holds."""
+    op.execute("""
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM cloudflare_owned_resources
+                GROUP BY account_id, kind, target_name HAVING COUNT(*) > 1
+            ) THEN
+                RAISE EXCEPTION 'Cannot downgrade Cloudflare receipt keys with same-account tombstones';
+            END IF;
+        END;
+        $$;
+    """)
     op.execute("DROP TRIGGER cf_retain_resource_tombstone ON cloudflare_owned_resources")
     op.execute("DROP FUNCTION cf_retain_resource_tombstone()")
     op.execute("DROP TRIGGER cf_lock_scope_installation ON cloudflare_capacity_scopes")

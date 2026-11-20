@@ -133,7 +133,7 @@ class CloudflareCapacityScope(Base):
     )
     scope: Mapped[str] = mapped_column(String(64), primary_key=True)
     endpoint: Mapped[str] = mapped_column(String(255))
-    deployment_revision: Mapped[int]
+    deployment_revision: Mapped[int] = mapped_column(primary_key=True)
     bearer_purpose: Mapped[str] = mapped_column(String(16), server_default="scope_bearer")
     bearer_version: Mapped[int]
 

@@ -306,9 +306,8 @@ class PoolWorker:
         """Start static-executor Kubernetes control loops when this host owns them."""
         if not self.static or not self.hosts_remote_work:
             return []
-        # On an install whose executor container may manage Jobs (the builds
-        # runbook binds that Role to the scheduler), it runs the Kubernetes
-        # loops; elsewhere this starts nothing.
+        # Static executor hosts can drive permitted Kubernetes or explicitly
+        # configured VM capacity. Platform control owns Cloudflare supervision.
         async with get_db_context() as db:
             await import_kubernetes_policy_from_env(db, os.environ)
         return await start_kubernetes_loops(self._platform_stop, self.settings)

@@ -577,7 +577,10 @@ class WorkerCapacityController(ABC):
             room = max(0, policy.max_workers - jobs)
             shared_cap = await db.scalar(
                 select(CloudflareInstallation.policy["limits"]["shared_managed_worker_cap"].as_integer())
-                .where(CloudflareInstallation.retired_at.is_(None))
+                .where(
+                    CloudflareInstallation.retired_at.is_(None),
+                    CloudflareInstallation.admitted_revision.is_not(None),
+                )
             )
             if shared_cap is not None:
                 pins = set((await db.scalars(
@@ -598,7 +601,7 @@ class WorkerCapacityController(ABC):
                     worker.form == "external" and worker.capacity_scope in scope_counts for worker in workers
                 )
                 if managed_scope is None:
-                    room = max(0, policy.max_workers - jobs - (sum(scope_counts.values()) - live_in_scopes))
+                    room = min(room, max(0, policy.max_workers - jobs - (sum(scope_counts.values()) - live_in_scopes)))
                 scope_room = max(0, profile.max_workers - scope_counts.get(profile.scope, 0))
                 if scope_room == 0:
                     return []

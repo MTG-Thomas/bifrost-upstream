@@ -135,6 +135,7 @@ class ControlPlane:
         self._on_failure = on_failure
         self._stop_event = asyncio.Event()
         self._scheduler: AsyncIOScheduler | None = None
+        self._cloudflare_supervisor: asyncio.Task[None] | None = None
         self._tasks: list[asyncio.Task[None]] = []
         self.running = False
 
@@ -328,6 +329,15 @@ class ControlPlane:
             )
         scheduler.start()
         self._scheduler = scheduler
+        from src.services.kubernetes_control import may_manage_jobs
+        from src.services.worker_pool.cloudflare_supervisor import cloudflare_supervisor_loop
+
+        self._cloudflare_supervisor = asyncio.create_task(
+            cloudflare_supervisor_loop(
+                self._stop_event, self.settings, kubernetes=await may_manage_jobs(self.settings),
+            ), name="cloudflare-worker-supervisor",
+        )
+        self._cloudflare_supervisor.add_done_callback(self._task_done)
         await self._publish_task_states()
         logger.info(
             "Trigger leader installed scheduled tasks",
@@ -336,6 +346,12 @@ class ControlPlane:
 
     async def _stop_leader_services(self) -> None:
         """Stop triggers and cancel running callbacks before surrendering."""
+        supervisor = self._cloudflare_supervisor
+        self._cloudflare_supervisor = None
+        if supervisor is not None:
+            supervisor.remove_done_callback(self._task_done)
+            supervisor.cancel()
+            await asyncio.gather(supervisor, return_exceptions=True)
         if self._scheduler is None:
             return
         scheduler = self._scheduler
