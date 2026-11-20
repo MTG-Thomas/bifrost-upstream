@@ -1,11 +1,26 @@
 import json
+from email import policy as email_policy
+from email.parser import BytesParser
 from hashlib import sha256
 from pathlib import Path
+from uuid import uuid4
 
+import httpx
 import pytest
+from pydantic import SecretStr
+from shared.models import CloudflareWorkersPolicy
+from src.services.worker_pool.cloudflare_provisioning import (
+    ResourceIntent,
+    ResourceTarget,
+    resume_creation,
+)
 from src.services.worker_pool.cloudflare_release import (
     WorkersReleaseUnavailable,
     load_workers_release,
+)
+from src.services.worker_pool.cloudflare_workers_rest import (
+    WorkersDeployment,
+    WorkersRestProvisioner,
 )
 
 
@@ -69,3 +84,73 @@ def test_release_rejects_a_module_path_outside_the_package(release: Path) -> Non
     path.write_text(json.dumps(manifest))
     with pytest.raises(WorkersReleaseUnavailable, match="missing or invalid"):
         load_workers_release(release)
+
+
+async def test_rest_upload_scopes_the_bearer_and_finalizes_the_verified_endpoint(release: Path) -> None:
+    path = release / "manifest.json"
+    manifest = json.loads(path.read_bytes())
+    manifest["workers"]["capacity"]["bindings"] = [
+        {"name": "CAPACITY_TOKEN", "type": "secret_text", "source": "scope_bearer"},
+        {"name": "CLOUDFLARE_LAUNCHER", "type": "durable_object_namespace", "class_name": "CloudflareLauncher", "script": "launcher"},
+    ]
+    path.write_text(json.dumps(manifest))
+    packaged = load_workers_release(release)
+    target = ResourceTarget(uuid4(), "a" * 32, "workers", "worker_script", "bifrost-capacity")
+    intent = ResourceIntent(target, uuid4(), 1, packaged.digest)
+    deployment, version = str(uuid4()), str(uuid4())
+    bindings = []
+    endpoint = {}
+    mutations = []
+
+    async def read_provider(request: httpx.Request) -> httpx.Response:
+        nonlocal bindings, endpoint
+        assert request.headers["Authorization"] == "Bearer synthetic-management"
+        if request.method == "PUT":
+            mutations.append("PUT")
+            content_type = request.headers["Content-Type"].encode()
+            message = BytesParser(policy=email_policy.default).parsebytes(
+                b"Content-Type: " + content_type + b"\r\n\r\n" + await request.aread(),
+            )
+            parts = {part.get_param("name", header="content-disposition"): part.get_payload(decode=True)
+                     for part in message.iter_parts()}
+            assert parts["capacity.mjs"] == packaged.modules["capacity"]["capacity.mjs"]
+            metadata = json.loads(parts["metadata"])
+            assert "synthetic-management" not in json.dumps(metadata)
+            bindings = metadata["bindings"]
+            assert {"name": "CAPACITY_TOKEN", "type": "secret_text", "text": "synthetic-bearer"} in bindings
+            assert any(binding.get("script_name") == "bifrost-launcher" for binding in bindings)
+            result = {"id": target.name}
+        elif request.method == "POST":
+            mutations.append("POST")
+            endpoint = json.loads(await request.aread())
+            result = {}
+        elif request.url.path.endswith("/settings"):
+            if not bindings:
+                return httpx.Response(404)
+            result = {"bindings": bindings}
+        elif request.url.path.endswith("/deployments"):
+            result = {"deployments": [{"id": deployment, "versions": [{"version_id": version, "percentage": 100}]}]}
+        elif request.url.path.endswith("/workers/subdomain"):
+            result = {"subdomain": "test-account"}
+        else:
+            result = endpoint
+        return httpx.Response(200, json={"success": True, "result": result})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(read_provider)) as client:
+        adapter = WorkersRestProvisioner(client, WorkersDeployment(
+            packaged, "https://workers.example.test", "bifrost-launcher", target.name,
+            CloudflareWorkersPolicy(
+                launcher_cap=1, slots_per_launcher=1, max_lifetime_seconds=60,
+                work_kinds=frozenset({"workflow"}),
+            ),
+        ))
+        token = SecretStr("synthetic-management")
+        observed = await resume_creation(
+            adapter, api_token=token, scope_bearer=SecretStr("synthetic-bearer"), committed_intent=intent,
+        )
+        assert observed.provider_version == version
+        assert await adapter.configure_endpoint(api_token=token, expected=observed) == (
+            "https://bifrost-capacity.test-account.workers.dev"
+        )
+    assert mutations == ["PUT", "POST"]
+    assert endpoint == {"enabled": True, "previews_enabled": False}
