@@ -36,6 +36,10 @@ class WorkersPaidUnverified(Exception):
     """The account lacks the active Workers Paid entitlement witness."""
 
 
+class WorkersWriteUnverified(Exception):
+    """The candidate could not prove it can write the installed Workers."""
+
+
 class CloudflareRestUnavailable(Exception):
     """A bounded REST operation can be retried under its journal fence."""
 
@@ -156,17 +160,48 @@ class WorkersRestCleanup:
         await self.verify_account(account_id, candidate)
         response = await self._request(candidate, account_id, "GET", "entitlements")
         entries = response["result"] if response is not None else None
-        if not isinstance(entries, list):
-            raise WorkersPaidUnverified
         for feature in ("workers.enabled", "containers.enabled"):
             active = [
-                entry for entry in entries
+                entry.get("allocation") for entry in (entries if isinstance(entries, list) else ())
                 if isinstance(entry, dict) and entry.get("id") == feature and entry.get("deleted_date") == ""
             ]
-            if len(active) != 1 or not isinstance(allocation := active[0].get("allocation"), dict) or (
-                allocation.get("type") != "bool" or allocation.get("value") is not True
+            if not active or any(
+                not isinstance(allocation, dict) or allocation.get("type") != "bool" or allocation.get("value") is not True
+                for allocation in active
             ):
-                raise WorkersPaidUnverified
+                raise WorkersPaidUnverified(
+                    f"Cloudflare did not report an active {feature} entitlement. "
+                    "Bifrost requires both active Workers and Containers entitlements to verify Workers Paid.",
+                )
+
+    async def verify_workers_write(self, api_token: SecretStr, expected: ResourceObservation) -> bool:
+        """Reassert unchanged endpoint settings on an exactly owned Worker."""
+        intent = expected.intent
+        if await observe_owned(self, api_token=api_token, intent=intent, recorded=expected) is None:
+            return False
+        account = intent.target.account_id
+        path = f"{_script_path(intent.target)}/subdomain"
+        response = await self._request(api_token, account, "GET", path)
+        before = response["result"] if response is not None else None
+        if not isinstance(before, dict) or type(before.get("enabled")) is not bool or before.get("previews_enabled") is not False:
+            raise WorkersWriteUnverified("Cloudflare did not confirm the owned Worker's existing endpoint settings.")
+        settings = {"enabled": before["enabled"], "previews_enabled": False}
+        # Cloudflare has no conditional mutation. Recheck the deployment just
+        # before reasserting the observed values, then verify settings and owner.
+        if await observe_owned(self, api_token=api_token, intent=intent, recorded=expected) is None:
+            return False
+        try:
+            await self._request(api_token, account, "POST", path, json_body=settings)
+        except CloudflareManagementDenied:
+            raise WorkersWriteUnverified(
+                "The replacement token can read an owned Worker but could not update its endpoint. "
+                "Check Workers Scripts Write for the selected account.",
+            ) from None
+        response = await self._request(api_token, account, "GET", path)
+        after = response["result"] if response is not None else None
+        if not isinstance(after, dict) or any(after.get(key) is not value for key, value in settings.items()):
+            raise WorkersWriteUnverified("Cloudflare did not confirm unchanged endpoint settings after the write.")
+        return await observe_owned(self, api_token=api_token, intent=intent, recorded=expected) is not None
 
     async def observe(
         self, *, api_token: SecretStr, intent: ResourceIntent,

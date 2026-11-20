@@ -374,14 +374,29 @@ async def test_account_rotation_switches_only_a_valid_same_account_version(
 
     monkeypatch.setattr(lifecycle_job, "get_db_context", context)
     monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
-    accepted = False
+    replacement_version = 2
+    subdomain_writes = 0
 
     def remote(request: httpx.Request) -> httpx.Response:
+        nonlocal subdomain_writes
         assert not locked
-        assert request.method == "GET"
         assert request.headers["Authorization"] == "Bearer " + candidate.get_secret_value()
         path = request.url.path
-        if path.endswith("/settings"):
+        if path.endswith("/subdomain"):
+            result = {"enabled": True, "previews_enabled": False}
+            if request.method == "POST":
+                subdomain_writes += 1
+                assert json.loads(request.content) == result
+                if replacement_version == 3:
+                    return httpx.Response(403)
+            else:
+                assert request.method == "GET"
+        elif path.endswith("/entitlements"):
+            result = [
+                {"id": feature, "deleted_date": "", "allocation": {"type": "bool", "value": True}}
+                for feature in ("workers.enabled", "containers.enabled", "containers.enabled")
+            ]
+        elif path.endswith("/settings"):
             result = {"bindings": [{
                 "name": OWNER_BINDING, "type": "plain_text",
                 "text": worker_owner_value(lifecycle_job._resource_intent(receipt)),
@@ -393,7 +408,7 @@ async def test_account_rotation_switches_only_a_valid_same_account_version(
             }]}
         else:
             assert path == f"/client/v4/accounts/{installation.account_id}"
-            result = {"id": installation.account_id if accepted else "b" * 32}
+            result = {"id": "b" * 32 if replacement_version == 2 else installation.account_id}
         return httpx.Response(200, json={
             "success": True, "result": result,
         })
@@ -401,7 +416,7 @@ async def test_account_rotation_switches_only_a_valid_same_account_version(
     async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as http:
         adapter = WorkersRestCleanup(http)
         monkeypatch.setattr(lifecycle_job, "WorkersRestCleanup", lambda _http: adapter)
-        for replacement_version in (2, 3):
+        for replacement_version in (2, 3, 4):
             ref, _ = await stage_account_token(
                 db_session, actor_id=OPERATOR_ID, account_id=installation.account_id, purpose="rotate", token=candidate,
             )
@@ -421,19 +436,28 @@ async def test_account_rotation_switches_only_a_valid_same_account_version(
             payload = lifecycle_job.CloudflareRotateAccountPayload.model_validate(job.payload)
             running = PlatformJobContext(job.id, token, None, str(OPERATOR_ID), admin.principal.email, "")
             handler = lifecycle_job.CLOUDFLARE_ROTATE_ACCOUNT_DEFINITION.handler
-            if replacement_version == 2:
+            if replacement_version in (2, 3):
                 with pytest.raises(PlatformJobRequiresAction) as denied:
                     await handler(running, payload)
-                assert denied.value.result == {"code": "CF_MANAGEMENT_CREDENTIAL"}
+                assert denied.value.result == {"code": {
+                    2: "CF_MANAGEMENT_CREDENTIAL",
+                    3: "CF_WORKERS_WRITE_UNVERIFIED",
+                }[replacement_version]}
                 job.status = "requires_action"
-                rejected = await db_session.get(CloudflareCredential, (installation.id, "account_token", "", 2))
+                rejected = await db_session.get(
+                    CloudflareCredential, (installation.id, "account_token", "", replacement_version),
+                )
                 assert rejected is not None and rejected.ciphertext is None
-                accepted = True
+                previous = await db_session.get(CloudflareCredential, (installation.id, "account_token", "", 1))
+                assert previous is not None and previous.ciphertext is not None
             else:
-                assert await handler(running, payload) == {"outcome": "rotated", "credential_version": 3}
+                assert await handler(running, payload) == {"outcome": "rotated", "credential_version": 4}
             await db_session.refresh(installation)
-    assert installation.api_token_version == 3 and installation.control_root_version == 1
-    previous = await db_session.get(CloudflareCredential, (installation.id, "account_token", "", 1))
+    assert subdomain_writes == 2
+    assert installation.api_token_version == 4 and installation.control_root_version == 1
+    previous = await db_session.get(
+        CloudflareCredential, (installation.id, "account_token", "", 1), populate_existing=True,
+    )
     assert previous is not None and previous.ciphertext is None
     audit = await db_session.scalar(select(AuditLog).where(
         AuditLog.resource_id == installation.id, AuditLog.action == "capacity.cloudflare_account_token_rotated",
@@ -982,7 +1006,7 @@ async def test_scope_writer_waits_for_installation_admission_lock(async_session_
         async with async_session_factory() as reader, async_session_factory() as writer:
             await reader.scalar(select(CloudflareInstallation.id).where(
                 CloudflareInstallation.id == installation_id,
-            ).with_for_update(read=True))
+            ).with_for_update(key_share=True))
             await writer.execute(text("SET LOCAL lock_timeout = '100ms'"))
             with pytest.raises(DBAPIError, match="lock timeout"):
                 await writer.execute(statement)
@@ -1163,6 +1187,37 @@ async def test_ledger_splits_open_incarnation_at_utc_rollover(
     jan = await read_workers_usage(db_session, installation.id, boundary + timedelta(seconds=4))
     assert dec is not None and (dec.launcher_seconds, dec.slot_seconds, dec.dispatched_runs, dec.sdk_requests) == (8, 24, 5, 9)
     assert jan is not None and (jan.launcher_seconds, jan.slot_seconds, jan.dispatched_runs, jan.sdk_requests) == (4, 12, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_admission_prices_the_qualified_ledger_bounds(
+    db_session: AsyncSession, installation: CloudflareInstallation,
+) -> None:
+    start, _ = usage_period(datetime.now(UTC))
+    elapsed = min(1000, int((datetime.now(UTC) - start).total_seconds()))
+    db_session.add_all([
+        CloudflareUsageIncarnation(
+            worker_id=uuid4(), installation_id=installation.id, started_at=start,
+            deleted_at=start + timedelta(seconds=elapsed), slots=2,
+        ),
+        CloudflareUsageIncarnation(
+            worker_id=uuid4(), installation_id=installation.id, started_at=start - timedelta(hours=1),
+            deleted_at=start - timedelta(seconds=1), slots=4,
+        ),
+        CloudflareUsageActivity(
+            installation_id=installation.id, period_start=start, dispatched_runs=11, sdk_requests=17,
+        ),
+    ])
+    await db_session.flush()
+    price = select(cloudflare_estimated_usage()).where(CloudflareInstallation.id == installation.id)
+    # Per-second launcher and slot charges from the qualified bounds and
+    # published rates. The out-of-period closed incarnation contributes zero.
+    assert await db_session.scalar(price) == (
+        Decimal("5.01681260") + elapsed * Decimal("0.001447353")
+    )
+    installation.policy = {**installation.policy, "rate_table_version": "previous-rate-table"}
+    await db_session.flush()
+    assert await db_session.scalar(price) is None
 
 
 @pytest.mark.asyncio

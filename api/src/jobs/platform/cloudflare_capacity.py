@@ -70,7 +70,9 @@ from src.services.worker_pool.cloudflare_spend import cloudflare_estimated_usage
 from src.services.worker_pool.cloudflare_workers_rest import (
     CloudflareManagementDenied,
     CloudflareRestUnavailable,
+    WorkersPaidUnverified,
     WorkersRestCleanup,
+    WorkersWriteUnverified,
 )
 
 DISABLE_JOB = "capacity.cloudflare_disable"
@@ -340,14 +342,14 @@ async def _inventory_snapshot(
 
 
 async def _observe_inventory(
-    adapter: OwnedResourceCleanup, token: SecretStr, inventory: tuple[_InventoryReceipt, ...], *, require_present: bool,
+    adapter: OwnedResourceCleanup, token: SecretStr, inventory: tuple[_InventoryReceipt, ...],
 ) -> None:
     for receipt in inventory:
         if receipt.provider_id is None or receipt.provider_version is None:
             raise OwnershipConflict("Cloudflare Worker has no exact deployment receipt")
         observation = ResourceObservation(receipt.intent, receipt.provider_id, receipt.provider_version)
         remote = await observe_owned(adapter, api_token=token, intent=receipt.intent, recorded=observation)
-        if remote is None and require_present:
+        if remote is None:
             raise ObservationPending("An owned Cloudflare Worker has disappeared")
 
 
@@ -399,7 +401,7 @@ async def _settle_reconcile(
             roles = {receipt.intent.target.name.rsplit("-", 1)[-1] for receipt in inventory}
             if len(inventory) != 2 or roles != {"launcher", "capacity"}:
                 raise ObservationPending("The admitted revision lacks a complete Workers deployment receipt")
-            await _observe_inventory(adapter, token, inventory, require_present=True)
+            await _observe_inventory(adapter, token, inventory)
             if not all(receipt.namespaces for receipt in inventory):
                 raise ObservationPending("The admitted revision lacks exact namespace receipts")
             checked_at = datetime.now(UTC)
@@ -515,10 +517,25 @@ async def _rotate_account_token(context: PlatformJobContext, parsed: BaseModel) 
     try:
         async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
             adapter = WorkersRestCleanup(http)
-            await adapter.verify_account(account_id, bearer)
-            await _observe_inventory(adapter, bearer, inventory, require_present=False)
+            await adapter.verify_workers_paid(account_id, bearer)
+            writes_verified = False
+            for receipt in inventory:
+                if receipt.provider_id is None or receipt.provider_version is None:
+                    raise OwnershipConflict("Cloudflare Worker has no exact deployment receipt")
+                expected = ResourceObservation(receipt.intent, receipt.provider_id, receipt.provider_version)
+                if await adapter.verify_workers_write(bearer, expected):
+                    writes_verified = True
+            if not writes_verified:
+                raise WorkersWriteUnverified(
+                    "There is no live owned Worker for a write check. Enable with the current token, "
+                    "or finish Disconnect and connect again with the replacement token.",
+                )
     except CloudflareManagementDenied:
         denial = ("Submit a Replacement Cloudflare API Token", "CF_MANAGEMENT_CREDENTIAL")
+    except WorkersPaidUnverified as exc:
+        denial = (str(exc), "CF_WORKERS_PAID_UNVERIFIED")
+    except WorkersWriteUnverified as exc:
+        denial = (str(exc), "CF_WORKERS_WRITE_UNVERIFIED")
     except (ObservationPending, OwnershipConflict):
         denial = ("Verify Cloudflare Ownership", "CF_DEPLOYMENT_UNVERIFIED")
     except CloudflareRestUnavailable:

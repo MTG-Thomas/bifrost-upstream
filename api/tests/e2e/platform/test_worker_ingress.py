@@ -21,16 +21,22 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareCredential,
     CloudflareInstallation,
     CloudflareUsageActivity,
+    CloudflareUsageIncarnation,
+    CloudflareWorkerReservation,
 )
-from src.models.orm.execution_workers import ExecutionWorker
+from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
 from src.services import worker_ingress_probes as probes
+from src.services.authorization.tokens import RuntimeSubject, issue_run_refresh_token
 from src.services.worker_ingress import ALLOW_MARKER, CONTROL_PATH, INGRESS_HEADER, PORT
+from src.services.work_dispatch import WAKE_WORKFLOW
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
     seal_credential,
 )
 from src.worker.remote.protocol import Hello, new_nonce, sign_hello
 from websockets.asyncio.client import connect
+
+from tests.unit.authorization.committed_runs import committed_world
 
 pytestmark = [pytest.mark.e2e, pytest.mark.asyncio]
 
@@ -79,7 +85,7 @@ async def _relay(downstream, client, api_host, upstream_port):
 
 
 async def test_worker_ingress_over_tls(
-    async_session_factory, e2e_api_url, org1_user, tmp_path, monkeypatch,
+    async_engine, async_session_factory, e2e_api_url, org1_user, tmp_path, monkeypatch,
 ):
     origin = f"https://{_HOST}"
     api = urlsplit(e2e_api_url)
@@ -112,6 +118,7 @@ async def test_worker_ingress_over_tls(
         launcher_id=uuid4(), incarnation_id=uuid4(), job_uid=None, pod_uid=None,
         hostname="ingress-e2e", form="static", issued_at=int(time.time()), nonce=new_nonce(), hello_sequence=1,
     )
+    cloud_worker_id = uuid4()
     tls, trust = _tls(tmp_path)
     upstream_port = PORT
 
@@ -171,10 +178,59 @@ async def test_worker_ingress_over_tls(
             assert result.ready, [route for route in result.routes if not route.passed]
             assert canary_calls == 1
             async with async_session_factory() as db:
-                activity = (await db.execute(select(CloudflareUsageActivity).where(
+                activity = await db.scalar(select(CloudflareUsageActivity).where(
                     CloudflareUsageActivity.installation_id == installation.id,
-                ))).scalar_one()
-                assert activity.sdk_requests == 1
+                ))
+                assert activity is None
+
+            async with committed_world(async_engine) as world:
+                org = await world.organization()
+                user = await world.person(org)
+                unpinned = await world.execution(run_user=user, organization=org)
+                pinned = await world.execution(run_user=user, organization=org)
+                db = world.session
+                db.add_all([
+                    seal_credential(
+                        CredentialRef(installation.id, installation.account_id, "control_root", "", 1),
+                        SecretStr("0" * 64), actor="test", now=installation.consent_at,
+                    ),
+                    ExecutionWorker(
+                        id=cloud_worker_id, form="external", state="ready", capacity_scope="workers",
+                        runtime_profile="cloudflare-python-v1", memory_limit_bytes=128 * 2**20,
+                    ),
+                ])
+                await db.flush()
+                db.add(CloudflareWorkerReservation(
+                    worker_id=cloud_worker_id, installation_id=installation.id, scope="workers",
+                    deployment_revision=1, control_root_version=1,
+                ))
+                await db.flush()
+                db.add(ExecutionWorkerClaim(worker_id=cloud_worker_id, family=WAKE_WORKFLOW, subject_id=pinned.id))
+                await db.commit()
+
+                async with httpx.AsyncClient(
+                    base_url=f"https://127.0.0.1:{port}", verify=trust, trust_env=False, headers={"Host": _HOST},
+                ) as client:
+                    refused = await client.get(
+                        "/api/sdk/context", extensions={"sni_hostname": _HOST},
+                        headers={"Authorization": "Bearer invalid"},
+                    )
+                    assert refused.status_code == 401
+                    for run, expected_requests in ((unpinned, 0), (pinned, 2)):
+                        minted = await client.post(
+                            "/auth/refresh", extensions={"sni_hostname": _HOST},
+                            json={"refresh_token": issue_run_refresh_token(RuntimeSubject("workflow_execution", run.id))},
+                        )
+                        assert minted.status_code == 200, minted.text
+                        response = await client.get(
+                            "/api/sdk/context", extensions={"sni_hostname": _HOST},
+                            headers={"Authorization": f"Bearer {minted.json()['access_token']}"},
+                        )
+                        assert response.status_code == 200, response.text
+                        requests = await db.scalar(select(CloudflareUsageActivity.sdk_requests).where(
+                            CloudflareUsageActivity.installation_id == installation.id,
+                        ))
+                        assert requests == expected_requests
             refusals = {route.path: route.status for route in result.routes if route.path in {
                 "/auth/login", "/api/packages", "/openapi.json", "/__fixture/v1/chat/completions",
                 "/api/auth/login", "/admin/x", "/docs",
@@ -202,9 +258,12 @@ async def test_worker_ingress_over_tls(
             assert canary_calls == 1
     finally:
         async with async_session_factory() as db:
-            worker = await db.get(ExecutionWorker, hello.incarnation_id)
-            if worker is not None:
-                await db.delete(worker)
+            await db.execute(delete(ExecutionWorker).where(
+                ExecutionWorker.id.in_((hello.incarnation_id, cloud_worker_id)),
+            ))
+            await db.execute(delete(CloudflareUsageIncarnation).where(
+                CloudflareUsageIncarnation.installation_id == installation.id,
+            ))
             await db.execute(delete(CloudflareCredential).where(
                 CloudflareCredential.installation_id == installation.id,
             ))

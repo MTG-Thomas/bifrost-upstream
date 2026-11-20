@@ -1,13 +1,15 @@
 """Cloudflare Workers spend envelope and observed admission guard."""
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import ROUND_CEILING, Decimal
+from pathlib import Path
 from types import MappingProxyType
 from uuid import UUID
 
-from sqlalchemy import Boolean, Numeric, case, column, func, select
+from sqlalchemy import Boolean, Numeric, case, column, func, literal, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
@@ -15,7 +17,9 @@ from sqlalchemy.sql.elements import ColumnElement
 from src.models.orm.cloudflare_capacity import (
     CloudflareInstallation,
     CloudflareUsageActivity,
+    CloudflareWorkerReservation,
 )
+from src.models.orm.execution_workers import ExecutionWorkerClaim
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +62,11 @@ WORKERS_PAID_MINIMUM_USD = Decimal("5.00")
 _CPU_MS_PER_ACTIVITY = 30_000
 _OBJECT_GIB = Decimal("0.125")
 _DURATION_USD_PER_SECOND = _OBJECT_GIB * WORKERS_RATES["do_gb_seconds"].usd / WORKERS_RATES["do_gb_seconds"].unit
+_LAUNCHER_BOUNDS = json.loads(Path(__file__).with_name("cloudflare_meter_bounds.json").read_text())["per_launcher_second"]
+_LAUNCHER_USD_PER_SECOND = sum(
+    Decimal(_LAUNCHER_BOUNDS[meter]) * rate.usd / rate.unit
+    for meter, rate in WORKERS_RATES.items()
+)
 _ACTIVITY_USD = (
     WORKERS_RATES["worker_requests"].cost(Decimal(1))
     + WORKERS_RATES["worker_cpu_ms"].cost(Decimal(_CPU_MS_PER_ACTIVITY))
@@ -106,7 +115,8 @@ def usage_period(now: datetime) -> tuple[datetime, datetime]:
 def _cost(launcher_seconds, slot_seconds, dispatched_runs, sdk_requests):
     return (
         WORKERS_PAID_MINIMUM_USD
-        + _DURATION_USD_PER_SECOND * (launcher_seconds + slot_seconds)
+        + _LAUNCHER_USD_PER_SECOND * launcher_seconds
+        + _DURATION_USD_PER_SECOND * slot_seconds
         + _ACTIVITY_USD * (dispatched_runs + sdk_requests)
     )
 
@@ -117,16 +127,6 @@ class WorkersLedgerUsage:
     slot_seconds: Decimal
     dispatched_runs: int
     sdk_requests: int
-
-    def estimate(self, rate_version: str = WORKERS_RATE_TABLE_VERSION) -> Decimal:
-        if rate_version != WORKERS_RATE_TABLE_VERSION:
-            raise ValueError("Cloudflare usage requires the current rate version")
-        if not self.launcher_seconds.is_finite() or not self.slot_seconds.is_finite() or not (
-            0 <= self.launcher_seconds <= self.slot_seconds <= 4 * self.launcher_seconds
-            and self.dispatched_runs >= 0 and self.sdk_requests >= 0
-        ):
-            raise ValueError("Cloudflare usage ledger is inconsistent")
-        return _cost(self.launcher_seconds, self.slot_seconds, self.dispatched_runs, self.sdk_requests)
 
 
 def _totals(installation_id, as_of):
@@ -162,11 +162,22 @@ def cloudflare_usage_within_limit() -> ColumnElement[bool]:
     )
 
 
-async def record_sdk_gateway_request(db: AsyncSession, installation_id: UUID) -> None:
+async def record_sdk_gateway_request(db: AsyncSession, *, origin: str, execution_id: UUID) -> None:
+    """Attribute only the current assignment of an authenticated workflow run."""
+    claim = ExecutionWorkerClaim
+    worker_id = select(claim.worker_id).where(
+        claim.family == "workflow_execution", claim.subject_id == execution_id,
+    ).order_by(claim.claimed_at.desc(), claim.id.desc()).limit(1).scalar_subquery()
+    pin, installation = CloudflareWorkerReservation, CloudflareInstallation
+    attribution = select(
+        pin.installation_id, func.date_trunc("month", func.clock_timestamp(), "UTC"), literal(1),
+    ).join(installation, installation.id == pin.installation_id).where(
+        pin.worker_id == worker_id, installation.worker_ingress_origin == origin,
+        installation.retired_at.is_(None),
+    )
     activity = CloudflareUsageActivity
-    await db.execute(insert(activity).values(
-        installation_id=installation_id, period_start=func.date_trunc("month", func.clock_timestamp(), "UTC"),
-        sdk_requests=1,
+    await db.execute(insert(activity).from_select(
+        ["installation_id", "period_start", "sdk_requests"], attribution,
     ).on_conflict_do_update(
         index_elements=[activity.installation_id, activity.period_start],
         set_={"sdk_requests": activity.sdk_requests + 1},

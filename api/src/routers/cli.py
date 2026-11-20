@@ -188,21 +188,12 @@ async def acknowledge_capacity_canary(worker_id: UUID, request: Request) -> Resp
     """A scoped SDK read for one signed Cloudflare session and active Enable lease."""
     from src.services.worker_pool.cloudflare_canary import cloudflare_sdk_canary_proof
 
-    if not request.scope.get("worker_ingress_capacity_canary"):
+    canary = request.scope.get("worker_ingress_capacity_canary")
+    if canary is None:
         raise HTTPException(404, "Not Found")
-    scheme, _, proof = request.headers.get("Authorization", "").partition(" ")
-    generation = request.headers.get("X-Bifrost-Canary-Generation", "")
-    if (
-        scheme != "Bearer" or len(proof) != 64 or not proof.isascii()
-        or not 0 < len(generation) <= 19 or not generation.isascii() or not generation.isdecimal()
-        or not 0 < int(generation) <= 2**63 - 1
-        or not await cloudflare_sdk_canary_proof(worker_id, int(generation), received=proof)
-    ):
+    generation, proof = canary
+    if not await cloudflare_sdk_canary_proof(worker_id, generation, received=proof):
         raise HTTPException(401, "Invalid Capacity Canary Credential")
-    budget = request.scope["worker_ingress_canary_budget"](str(worker_id))
-    if budget is None:
-        raise HTTPException(429, "Capacity Canary Budget Reached")
-    budget.active -= 1
     return Response(status_code=204, headers={"Cache-Control": "no-store"})
 
 

@@ -86,8 +86,11 @@ backoff without writing replacement zeroes.
 
 **Product decision.** Bifrost meters its own durable ledger. It prices
 incarnation lifetimes, provisioned slot-seconds, committed cloud dispatch
-assignments and authenticated SDK gateway requests at versioned published
-rates. Admission uses the current UTC calendar month and closes at the
+assignments and SDK gateway requests authenticated to a live workflow run
+currently assigned to a managed Cloudflare Worker. It prices launcher-seconds
+using the complete pinned release bounds for CPU, requests, duration,
+storage and logging at versioned published marginal rates. Admission uses
+the current UTC calendar month and closes at the
 budget or if ledger evidence is unavailable or inconsistent. Policy save
 also validates the static envelope. The estimate can differ from the invoice.
 
@@ -123,6 +126,22 @@ feature check, require `containers.enabled`, a boolean-true allocation and an
 empty deletion date. Cloudflare lists **Account Read** for this endpoint.
 `workers.enabled` establishes feature access. Connect and Enable require active boolean-true `containers.enabled` as evidence of Workers Paid. Account Settings Read alone is sufficient.
 [Account entitlements API](https://developers.cloudflare.com/api/resources/accounts/subresources/entitlements/methods/list/)
+
+The trial covered one Paid account with Containers access. Paid or Enterprise
+accounts without that entitlement will receive **Action Required** and cannot
+enable this release. The trial did not test a Free account. A Free-account
+negative control and any alternative Enterprise entitlement need separate
+hosted qualification.
+
+Account token replacement checks the same entitlements and reasserts the
+current endpoint settings of exactly owned Workers with the candidate token.
+The documented endpoint update requires Workers write authority.
+Bifrost keeps the active credential until it verifies a write and confirms
+the same ownership and deployment. With no live owned deployment to check,
+use the current token to Enable, or Disconnect and connect with the new
+credential. An unconsumed staged credential can survive a failed Connect
+until it expires after ten minutes.
+[Update Worker Script Subdomain](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/subdomain/methods/create/)
 
 ## Spend and teardown
 

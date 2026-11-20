@@ -1,11 +1,9 @@
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
 from src.services.worker_pool.cloudflare_spend import (
     WORKERS_RATES,
-    WorkersLedgerUsage,
     usage_period,
     workers_fleet_envelope_usd,
 )
@@ -35,17 +33,6 @@ def test_unbounded_meter_rejects_cost_estimate() -> None:
             per_launcher_second={},
             per_fleet_fixed=dict.fromkeys(WORKERS_RATES, Decimal(0)),
         )
-
-
-def test_self_meter_prices_each_ledger_counter_at_the_published_marginal_rate() -> None:
-    usage = WorkersLedgerUsage(Decimal(1000), Decimal(2000), 11, 17)
-    assert usage.estimate() == Decimal("5.02150010")
-    with pytest.raises(ValueError, match="current rate version"):
-        usage.estimate("prior-version")
-    with pytest.raises(ValueError, match="inconsistent"):
-        replace(usage, slot_seconds=Decimal(4001)).estimate()
-    with pytest.raises(ValueError, match="inconsistent"):
-        replace(usage, dispatched_runs=-1).estimate()
 
 
 def test_policy_window_rolls_at_the_utc_month_boundary() -> None:

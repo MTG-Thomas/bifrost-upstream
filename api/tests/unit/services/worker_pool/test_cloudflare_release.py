@@ -21,6 +21,8 @@ from src.services.worker_pool.cloudflare_release import (
 )
 from src.services.worker_pool.cloudflare_workers_rest import (
     WorkersDeployment,
+    WorkersPaidUnverified,
+    WorkersRestCleanup,
     WorkersRestProvisioner,
 )
 
@@ -104,6 +106,23 @@ def test_release_rejects_a_module_path_outside_the_package(release: Path) -> Non
     path.write_text(json.dumps(manifest))
     with pytest.raises(WorkersReleaseUnavailable, match="missing or invalid"):
         load_workers_release(release)
+
+
+async def test_paid_check_identifies_the_missing_entitlement() -> None:
+    account = "a" * 32
+
+    def remote(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        if request.url.path.endswith("/entitlements"):
+            result = [{"id": "workers.enabled", "deleted_date": "", "allocation": {"type": "bool", "value": True}}]
+        else:
+            assert request.url.path.endswith(account)
+            result = {"id": account}
+        return httpx.Response(200, json={"success": True, "result": result})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as http:
+        with pytest.raises(WorkersPaidUnverified, match="active containers.enabled entitlement"):
+            await WorkersRestCleanup(http).verify_workers_paid(account, SecretStr("synthetic-account-token"))
 
 
 async def test_rest_upload_scopes_the_bearer_and_finalizes_the_verified_endpoint(release: Path) -> None:

@@ -336,6 +336,8 @@ async def _authenticate_runtime_payload(
         result = await authenticate_runtime_token(db, claims)
         if result.refresh_required:
             request.state.runtime_refresh_required_token = token
+        if result.principal is not None and claims.credential_kind == "workflow_execution":
+            await meter_worker_ingress(request, claims.sub)
         return result.principal
     if getattr(request.state, "runtime_token", None) == token:
         principal = request.state.runtime_principal
@@ -344,6 +346,12 @@ async def _authenticate_runtime_payload(
     if principal is not None:
         log_legacy_runtime_token_accepted(payload)
     return principal
+
+
+async def meter_worker_ingress(request: Request, execution_id: UUID) -> None:
+    meter = request.scope.get("worker_ingress_meter")
+    if meter is not None:
+        await meter(execution_id)
 
 
 async def get_original_human_user(

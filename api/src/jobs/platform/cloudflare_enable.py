@@ -284,8 +284,8 @@ async def _enable(context: PlatformJobContext, parsed: BaseModel) -> dict[str, s
             return await _settle_enable(context, payload, http, release)
     except WorkersReleaseUnavailable:
         raise PlatformJobRequiresAction("Install a Qualified Workers Release", {"code": "CF_RELEASE_UNAVAILABLE"}) from None
-    except WorkersPaidUnverified:
-        raise PlatformJobRequiresAction("Verify Workers Paid", {"code": "CF_WORKERS_PAID_UNVERIFIED"}) from None
+    except WorkersPaidUnverified as exc:
+        raise PlatformJobRequiresAction(str(exc), {"code": "CF_WORKERS_PAID_UNVERIFIED"}) from None
     except OwnershipConflict:
         raise PlatformJobRequiresAction("Verify Cloudflare Ownership", {"code": "CF_OWNERSHIP_CONFLICT"}) from None
     except (ObservationPending, CapacityProtocolError):

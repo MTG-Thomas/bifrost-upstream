@@ -167,4 +167,5 @@ class ExecutionWorkerClaim(Base):
 
     __table_args__ = (
         Index("ix_execution_worker_claims_worker_subject", "worker_id", "subject_id"),
+        Index("ix_execution_worker_claims_run_assignment", "family", "subject_id", "claimed_at", "id"),
     )

@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -21,14 +21,16 @@ from bifrost.cloudflare_analysis import _api_path_allowed
 from bifrost import _runtime_io, client as sdk_client
 from bifrost.commands import agents as agent_commands
 from bifrost.executions import executions
+from src.routers.cli import acknowledge_capacity_canary
 from src.services import worker_ingress as ingress
+from src.services.worker_pool import cloudflare_canary
 
 
 async def test_listener_survives_transient_installation_read_error(monkeypatch):
     transitions = []
     stopped = asyncio.Event()
     origin_url = "https://workers.example.test"
-    results = iter((origin_url, SQLAlchemyError(), None, origin_url, None, None))
+    results = iter((origin_url, None, origin_url, None, SQLAlchemyError(), None))
 
     async def read_origin():
         result = next(results, None)
@@ -59,6 +61,41 @@ async def test_listener_survives_transient_installation_read_error(monkeypatch):
     async with ingress.watch_worker_ingress(FastAPI()):
         await asyncio.wait_for(stopped.wait(), 2)
     assert transitions == ["open", ("closed", 6)]
+
+
+async def test_canary_rejects_unproven_and_over_budget_requests_before_database(monkeypatch):
+    api = FastAPI()
+    api.add_api_route("/api/sdk/capacity-canary/{worker_id}", acknowledge_capacity_canary)
+    origin = AsyncMock(return_value="https://workers.example.test")
+    check = AsyncMock(return_value="accepted")
+    monkeypatch.setattr(cloudflare_canary, "cloudflare_sdk_canary_proof", check)
+    monkeypatch.setattr(ingress, "monotonic", lambda: 10.0)
+    app = ingress.WorkerIngress(api, origin=origin)
+    app.capacity_canary = ingress._IdentityBudgets(1, 1)
+    worker_id = uuid4()
+    generation = 1
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://workers.example.test",
+    ) as client:
+        async def request(worker: UUID, proof: str) -> int:
+            response = await client.get(f"/api/sdk/capacity-canary/{worker}", headers={
+                "Authorization": f"Bearer {proof}", "X-Bifrost-Canary-Generation": str(generation),
+            })
+            return response.status_code
+
+        assert await request(worker_id, "a" * 64) == 401
+        proof = ingress.seal_capacity_canary(worker_id, generation, "b" * 32)
+        assert await request(uuid4(), proof) == 401
+        origin.assert_not_called()
+        check.assert_not_called()
+        assert await request(worker_id, proof) == 204
+        app.origin_until = 0
+        assert await request(worker_id, proof) == 429
+        origin.assert_awaited_once()
+        check.assert_awaited_once_with(worker_id, generation, received=proof)
+        other = uuid4()
+        assert await request(other, ingress.seal_capacity_canary(other, generation, "c" * 32)) == 204
 
 
 def test_versioned_allowlist_matches_sdk_and_registered_api_routes():
@@ -168,7 +205,7 @@ def endpoint(monkeypatch):
         else:
             await websocket.close(code=1008)
 
-    return ingress.WorkerIngress(app, origin=origin, meter=AsyncMock(return_value=True)), sdk, origin
+    return ingress.WorkerIngress(app, origin=origin), sdk, origin
 
 
 @pytest.mark.asyncio

@@ -81,8 +81,10 @@ async def configure_cloudflare_capacity(
         return await configure_cloudflare(db, caller, body)
     except WorkersReleaseUnavailable:
         raise HTTPException(503, "Install a qualified Workers release with metering ceilings.") from None
-    except (WorkersPaidUnverified, CloudflareManagementDenied):
-        raise HTTPException(422, "Workers Paid and Workers entitlement must be verified for the selected account.") from None
+    except WorkersPaidUnverified as exc:
+        raise HTTPException(422, str(exc)) from None
+    except CloudflareManagementDenied:
+        raise HTTPException(422, "Cloudflare refused account or entitlement read access. Check Account Settings Read for the selected account.") from None
     except (CloudflareRestUnavailable, ObservationPending):
         raise HTTPException(503, "Cloudflare account verification is temporarily unavailable.") from None
     except (CloudflareInstallationExists, CloudflarePolicyConflict) as exc:

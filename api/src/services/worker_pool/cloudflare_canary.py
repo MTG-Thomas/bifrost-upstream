@@ -23,6 +23,7 @@ from src.models.orm.cloudflare_capacity import (
 from src.models.orm.execution_workers import ExecutionWorker
 from src.models.orm.platform_jobs import PlatformJob
 from src.services.platform_job_lease import LeaseLost, hold_lease
+from src.services.worker_ingress import seal_capacity_canary
 from src.services.worker_ingress_probes import RuntimeCanary
 from src.services.worker_pool.cloudflare_admission import ManagedCloudflareScope
 from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
@@ -91,7 +92,9 @@ async def cloudflare_sdk_canary_proof(
         if resource_uid is None or binding.canary_lease_token is None:
             return None
         key = await load_managed_control_key(db, binding, resource_uid)
-        expected = _proof(key, worker_id, binding.canary_lease_token, generation)
+        expected = seal_capacity_canary(
+            worker_id, generation, _proof(key, worker_id, binding.canary_lease_token, generation)[:32],
+        )
         if received is not None:
             if not hmac.compare_digest(expected, received):
                 return None
@@ -117,7 +120,7 @@ async def _retire_canary(client: ExternalCapacityClient, worker_id: UUID, resour
     async with get_db_context() as db:
         await db.execute(update(ExecutionWorker).where(
             ExecutionWorker.id == worker_id, ExecutionWorker.capacity_resource_uid == resource_uid,
-        ).values(capacity_resource_deleted_at=datetime.now(UTC)))
+        ).values(capacity_resource_deleted_at=func.clock_timestamp()))
     return True
 
 

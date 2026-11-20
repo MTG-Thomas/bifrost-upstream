@@ -53,7 +53,7 @@ from src.models.contracts.passkeys import (
     SetupPasskeyVerifyResponse,
 )
 from src.config import get_settings
-from src.core.auth import CurrentActiveUser, get_original_human_user
+from src.core.auth import CurrentActiveUser, get_original_human_user, meter_worker_ingress
 from src.core.db_deps import DbSession
 from src.core.log_safety import log_safe
 from src.core.principal import UserPrincipal
@@ -929,6 +929,8 @@ async def refresh_token(
                     detail="Run is no longer live",
                     headers={"WWW-Authenticate": "Bearer"},
                 )
+            if issued.claims.credential_kind == "workflow_execution":
+                await meter_worker_ingress(request, issued.claims.sub)
             return Token(access_token=issued.token, refresh_token=token_data.refresh_token)
 
     # Rate limiting

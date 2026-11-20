@@ -1,6 +1,7 @@
 """Restricted, proxy-facing ingress for external workflow runtimes."""
 
 import asyncio
+import hmac
 import json
 import logging
 import re
@@ -14,7 +15,7 @@ from uuid import UUID
 
 import h11
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.routing import APIRoute, APIWebSocketRoute
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
@@ -22,6 +23,7 @@ from starlette.routing import Match
 from starlette.types import Message, Receive, Scope, Send
 from uvicorn.protocols.http.h11_impl import H11Protocol
 
+from src.config import get_settings
 from src.core.database import get_db_context, get_session_factory
 from src.core.security import decode_expired_access_token, decode_token
 from src.models.orm.cloudflare_capacity import CloudflareInstallation
@@ -208,22 +210,40 @@ class _IdentityBudgets:
 
 
 async def _installation_origin() -> str | None:
-    async with get_session_factory()() as db:
+    async with asyncio.timeout(3), get_session_factory()() as db:
         return await db.scalar(select(CloudflareInstallation.worker_ingress_origin).where(
             CloudflareInstallation.retired_at.is_(None)
         ))
 
 
-async def _meter_gateway(origin: str) -> bool:
+async def _meter_gateway(origin: str, execution_id: UUID) -> None:
     async with asyncio.timeout(3), get_db_context() as db:
-        installation_id = await db.scalar(select(CloudflareInstallation.id).where(
-            CloudflareInstallation.worker_ingress_origin == origin,
-            CloudflareInstallation.retired_at.is_(None),
-        ))
-        if installation_id is None:
-            return False
-        await record_sdk_gateway_request(db, installation_id)
-    return True
+        await record_sdk_gateway_request(db, origin=origin, execution_id=execution_id)
+
+
+def seal_capacity_canary(worker_id: UUID, generation: int, proof: str) -> str:
+    """Bind a lease proof to its ingress identity before consulting the database."""
+    subject = f"bifrost:worker-ingress:canary:v1:{worker_id}:{generation}:{proof}"
+    signature = hmac.digest(get_settings().secret_key.encode(), subject.encode(), "sha256").hex()
+    return proof + signature[:32]
+
+
+def _canary_identity(scope: Scope) -> tuple[UUID, int, str] | None:
+    authorization = _header_values(scope, b"authorization")
+    generation_header = _header_values(scope, b"x-bifrost-canary-generation")
+    if len(authorization) != 1 or len(generation_header) != 1:
+        return None
+    credential = re.fullmatch(rb"Bearer ([0-9a-f]{64})", authorization[0])
+    if credential is None or not re.fullmatch(rb"[0-9]{1,19}", generation_header[0]):
+        return None
+    worker_id = UUID(scope["path"].removeprefix(_CANARY_PREFIX))
+    generation = int(generation_header[0])
+    proof = credential[1].decode()
+    if not 0 < generation <= 2**63 - 1 or not hmac.compare_digest(
+        proof, seal_capacity_canary(worker_id, generation, proof[:32]),
+    ):
+        return None
+    return worker_id, generation, proof
 
 
 def _access_claims(scope: Scope) -> dict | None:
@@ -251,11 +271,9 @@ def _refresh_claims(body: bytes) -> dict | None:
 class WorkerIngress:
     def __init__(
         self, app: FastAPI, *, origin: Callable[[], Awaitable[str | None]] = _installation_origin,
-        meter: Callable[[str], Awaitable[bool]] = _meter_gateway,
     ) -> None:
         self.app = app
         self.origin = origin
-        self.meter = meter
         self.cached_origin: str | None = None
         self.origin_until = 0.0
         self.origin_lock = asyncio.Lock()
@@ -279,12 +297,31 @@ class WorkerIngress:
         if len(host) != 1 or not allows_request(self.app, scope):
             await _respond(scope, send, 404)
             return
+        if scope["type"] == "http" and scope["path"].startswith(_CANARY_PREFIX):
+            identity = _canary_identity(scope)
+            if identity is None:
+                await _respond(scope, send, 401, allowed=True)
+                return
+            worker_id, generation, proof = identity
+            budget = self.capacity_canary.take(str(worker_id))
+            if budget is None:
+                await _respond(scope, send, 429)
+                return
+            try:
+                scope = {**scope, "worker_ingress_capacity_canary": (generation, proof)}
+                await self._serve(scope, receive, send, host[0])
+            finally:
+                budget.active -= 1
+            return
+        await self._serve(scope, receive, send, host[0])
+
+    async def _serve(self, scope: Scope, receive: Receive, send: Send, host: bytes) -> None:
         try:
             origin = await self._origin()
         except (TimeoutError, SQLAlchemyError):
             await _respond(scope, send, 503)
             return
-        if origin is None or b"https://" + host[0].lower() != origin.rstrip("/").encode():
+        if origin is None or b"https://" + host.lower() != origin.rstrip("/").encode():
             await _respond(scope, send, 404)
             return
         scope = {
@@ -299,16 +336,26 @@ class WorkerIngress:
         if scope["type"] == "websocket":
             await self._serve_control(scope, receive, send)
             return
-        canary = scope["path"].startswith(_CANARY_PREFIX) and scope["method"] == "GET"
+        canary = "worker_ingress_capacity_canary" in scope
         limit = 0 if canary else (8192 if scope["path"] == _REFRESH_PATH else _BODY_LIMIT)
         if not 0 <= _content_length(scope) <= limit:
             await _respond(scope, send, 413)
             return
         if canary:
-            scope["worker_ingress_capacity_canary"] = True
-            scope["worker_ingress_canary_budget"] = self.capacity_canary.take
-            await self._serve_http(scope, receive, send, limit, origin)
+            await self._serve_http(scope, receive, send, limit)
             return
+        metered = False
+
+        async def meter(execution_id: UUID) -> None:
+            nonlocal metered
+            if not metered:
+                try:
+                    await _meter_gateway(origin, execution_id)
+                except (TimeoutError, SQLAlchemyError):
+                    raise HTTPException(503, "Cloudflare Usage Ledger Unavailable") from None
+                metered = True
+
+        scope["worker_ingress_meter"] = meter
         refresh = scope["path"] == _REFRESH_PATH
         if refresh:
             budget = self.refresh if self.refresh.take() else None
@@ -329,7 +376,7 @@ class WorkerIngress:
             await _respond(scope, send, 429)
             return
         try:
-            await self._serve_http(scope, receive, send, limit, origin)
+            await self._serve_http(scope, receive, send, limit)
         finally:
             budget.active -= 1
 
@@ -365,7 +412,7 @@ class WorkerIngress:
         finally:
             (active or self.pending_hello).active -= 1
 
-    async def _serve_http(self, scope: Scope, receive: Receive, send: Send, limit: int, origin: str) -> None:
+    async def _serve_http(self, scope: Scope, receive: Receive, send: Send, limit: int) -> None:
         body = bytearray()
         try:
             async with asyncio.timeout(_BODY_TIMEOUT):
@@ -383,7 +430,7 @@ class WorkerIngress:
         except TimeoutError:
             await _respond(scope, send, 408)
             return
-        replay: bytes | None = bytes(body)
+        replay = bytes(body)
         del body
         if scope["path"] == _REFRESH_PATH:
             claims = _refresh_claims(replay)
@@ -398,25 +445,12 @@ class WorkerIngress:
                 return
             self.refresh.active -= 1
             try:
-                await self._metered_forward(scope, receive, send, replay, origin)
+                await self._forward(scope, receive, send, replay)
             finally:
                 budget.active -= 1
                 self.refresh.active += 1
             return
-        if scope.get("worker_ingress_capacity_canary"):
-            await self._forward(scope, receive, send, replay)
-        else:
-            await self._metered_forward(scope, receive, send, replay, origin)
-
-    async def _metered_forward(self, scope: Scope, receive: Receive, send: Send, body: bytes, origin: str) -> None:
-        try:
-            metered = await self.meter(origin)
-        except (TimeoutError, SQLAlchemyError):
-            metered = False
-        if not metered:
-            await _respond(scope, send, 503, allowed=True)
-            return
-        await self._forward(scope, receive, send, body)
+        await self._forward(scope, receive, send, replay)
 
     async def _forward(self, scope: Scope, receive: Receive, send: Send, body: bytes) -> None:
         replay: bytes | None = body
@@ -535,7 +569,6 @@ async def watch_worker_ingress(app: FastAPI) -> AsyncIterator[None]:
                             try:
                                 current_absent = await _installation_origin() is None
                             except (SQLAlchemyError, TimeoutError):
-                                absent = False
                                 logger.warning("Could not refresh the worker ingress installation", exc_info=True)
                             else:
                                 # A reconnect can occupy the singleton between

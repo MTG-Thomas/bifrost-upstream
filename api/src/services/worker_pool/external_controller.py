@@ -9,7 +9,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import httpx
-from sqlalchemy import and_, select, update
+from sqlalchemy import and_, func, select, update
 
 from shared.models import WorkerCapacityProfile, WorkerCapacityReservation
 from src.config import Settings
@@ -233,7 +233,7 @@ class ExternalWorkerPoolController(WorkerCapacityController):
                     ExecutionWorker.state.in_(self.cleanup_states),
                     ExecutionWorker.capacity_resource_uid == uid,
                     ExecutionWorker.capacity_resource_deleted_at.is_(None),
-                ).values(capacity_resource_deleted_at=_now()))
+                ).values(capacity_resource_deleted_at=func.clock_timestamp()))
                 await db.commit()
             return
         if resource is not None and resource.worker_version != version:
