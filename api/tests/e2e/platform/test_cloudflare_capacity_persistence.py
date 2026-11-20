@@ -90,6 +90,7 @@ from src.services.worker_pool.cloudflare_provisioning import (
     ResourceTarget,
 )
 from src.services.worker_pool.cloudflare_spend import (
+    WORKERS_LEGACY_RATE_TABLE_VERSION,
     WORKERS_RATE_TABLE_VERSION,
     WORKERS_RATES,
     cloudflare_estimated_usage,
@@ -1056,7 +1057,11 @@ async def test_usage_envelope_migration_preserves_saved_policy(
     migration = scripts.get_revision("20261120_cf_usage_only_envelope")
     assert migration is not None
     module = migration.module
-    original = {**installation.policy, "fleet_envelope_usd": "13.31"}
+    original = {
+        **installation.policy,
+        "rate_table_version": WORKERS_LEGACY_RATE_TABLE_VERSION,
+        "fleet_envelope_usd": "13.31",
+    }
     installation.policy = original
     await db_session.flush()
     connection = await db_session.connection()
@@ -1307,6 +1312,12 @@ async def test_admission_prices_the_qualified_ledger_bounds(
     assert await db_session.scalar(price) == (
         Decimal("0.01681260") + elapsed * Decimal("0.000855853")
     )
+    installation.policy = {**installation.policy, "legacy_meter_month": start.strftime("%Y-%m")}
+    await db_session.flush()
+    assert await db_session.scalar(price) == (
+        Decimal("0.01681260") + elapsed * Decimal("0.001447353")
+    )
+    installation.policy = {key: value for key, value in installation.policy.items() if key != "legacy_meter_month"}
     installation.policy = {**installation.policy, "rate_table_version": "previous-rate-table"}
     await db_session.flush()
     assert await db_session.scalar(price) is None
