@@ -75,6 +75,10 @@ export default defineConfig({
       // Staging only: when set, the supervisor fetches modules from this real
       // Bifrost API instead of an attempt-supplied store.
       API_ORIGIN: {type: 'text', value: process.env.STAGING_API_ORIGIN ?? ''},
+      ...((managedLauncher || launcherEnabled) ? {
+        BIFROST_METER_ENGINE_CPU_MS: {type: 'text' as const, value: '30000'},
+        BIFROST_METER_SDK_REQUESTS: {type: 'text' as const, value: '40'},
+      } : {}),
       ...(managedLauncher ? {BIFROST_CLOUDFLARE_MANAGED: {type: 'text' as const, value: 'true'}} :
         launcherEnabled ? Object.fromEntries([
         'BIFROST_CLOUDFLARE_LAUNCHER_ENABLED', 'BIFROST_WORKER_INCARNATION_ID', 'BIFROST_WORKER_LAUNCHER_ID',

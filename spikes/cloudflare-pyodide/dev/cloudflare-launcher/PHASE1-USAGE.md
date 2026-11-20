@@ -87,9 +87,9 @@ backoff without writing replacement zeroes.
 **Product decision.** Bifrost meters its own durable ledger. It prices
 incarnation lifetimes, provisioned slot-seconds, committed cloud dispatch
 assignments and SDK gateway requests authenticated to a live workflow run
-currently assigned to a managed Cloudflare Worker. It prices launcher-seconds
-using pinned release bounds for CPU, requests, duration, storage and logging
-at versioned published marginal rates. Admission uses
+currently assigned to a managed Cloudflare Worker. It also prices sealed
+per-incarnation launcher counters. The deployed release determines which rule
+prices each incarnation. Admission uses
 the current UTC calendar month and closes at the
 budget or if ledger evidence is unavailable or inconsistent. Policy save
 also validates the static envelope. Both checks cover Bifrost-attributable
@@ -102,6 +102,95 @@ a full spend reconciliation. Missing or divergent samples never gate admission.
 
 ### Measured release calibration
 
+The current release keeps the hosted SDK sample of four API gateway requests
+as the input to the 40-request attempt limit. It renews the capacity CPU
+sample against the byte-identical packaged capacity module. The Linux
+workerd process used 40,000 µs, including one scheduling tick of rounding
+headroom, over prepare, start, signed hello, status and deletion in an
+isolated lifecycle test. With a 10× margin, the capacity script CPU limit is
+400 ms per request. Snapshot reads are served by the pinned module store.
+Third-party egress and snapshot reads consume the workflow's approved
+subrequest allowance. Gateway fetches and refreshes count against both
+allowances. The workflow can handle a 429 at its approval limit. A 429 at
+the release gateway limit marks the attempt failed and reports the limit.
+
+The Worker and dynamic engine retain a 30,000 ms CPU cap for each request.
+The child cap applies to warm and exercise calls as well as execution. The
+execution request also honors a smaller workflow approval. The ledger keeps
+the 30,400 ms launcher-second proxy by adding one launcher-class and one
+capacity-class request at their caps. The separate execution/SDK activity
+proxy prices each recorded activity at a 30,000 ms Worker cap. These
+assumptions are reservations for admission. Request-class limits are
+enforced per invocation, and the model does not measure concurrent or
+provider-generated CPU or establish a maximum invocation rate per second.
+
+The exact packaged launcher ran the loose Python reference workflow
+`8846c12c-104d-4324-aba2-8905a5375e73` and the Solution snapshot reference
+`3505ac02-de64-432f-81e4-132671c5aba9` on its two slots under workerd. The
+test supplied the approved module snapshots, served the upstream SDK
+response locally and verified both workflow results, including the Solution
+helper value. The relay acknowledged both terminal events. This qualified
+the packaged launcher meter without a hosted deployment or a Bifrost
+placement run.
+
+| Launcher meter | Loose terminal | Solution terminal | Sealed incarnation | 10× cap |
+| --- | ---: | ---: | ---: | ---: |
+| SQLite row writes | 57 | 66 | 94 | 940 |
+| DO request units | 13 | 14 | 16 | 160 |
+| Application log events | 2 | 2 | 3 | 30 |
+
+Terminal reports are cumulative snapshots. The sealed count includes
+terminal and ACK bookkeeping, the launcher's own meter journal, allowance
+for index and alarm writes, and release bookkeeping. The measurement
+uses the sealed incarnation as a conservative single reference input.
+The launcher stops admitting work when a meter is exhausted, reserves
+capacity for settlement, and reports the limiting meter in the execution
+error. A missing, incomplete, regressing or uncertain final receipt
+reserves all three caps. Open incarnations also reserve the caps.
+Pricing retains each incarnation's deployed release, rate version and
+pinned bounds across policy changes and month boundaries.
+
+Cloudflare bills DO duration by non-hibernating wall time at 128 MB per
+object, with concurrent calls sharing an object's billed duration.
+Bifrost charges the launcher's entire reservation-to-verified-deletion
+lifetime at 0.125 GB, an upper bound for active time of that launcher in
+its owned lifetime. It keeps a separate slot-residency proxy for the
+tenant hosts. The launcher counts its own controlled traffic. The
+Cloudflare bill may also include shared capacity objects, tenant-host
+activity after launcher retirement, incoming platform retries, mandatory
+cleanup, automatic logs, storage and Dynamic Worker creation. The estimate
+does not reconcile those units or represent an invoice cap. Static
+policy validation retains conservative bounds for the wider fleet.
+[Cloudflare Durable Object billing](https://developers.cloudflare.com/durable-objects/platform/pricing/)
+
+Repricing the previous pilot ledger under the new rules gives
+**$0.08348536**, or **2,799.3×** its observed Worker request and CPU cost
+of `$0.00002982382`. The ledger has 79.355808 launcher- and slot-seconds,
+3 dispatches, 43 SDK requests and 3 incarnations, each of which falls back
+to the full 940/160/30 cap because that release never emitted receipts.
+The prior estimate was `$0.095413612894224`. This is a counterfactual
+calibration. Existing historical rows keep their deployed-release pricing.
+The comparison denominator excludes Durable Objects and other meters that
+Cloudflare Analytics could not attribute to the pilot.
+
+The release manifest pins the exact Worker bundle fingerprint, the
+measured capacity module digest, both measurement sources, the measured
+inputs and the margin. The builder and API verify these against the
+shipped bytes and enforced limits. Re-qualify changed bundles before
+packaging. The rate version is
+`workers-paid-2026-11-20-launcher-receipts`.
+
+For a new qualification, build both candidate modules with `bundleWorker`
+from `deploy/capacity/cloudflare/build-workers.mjs` and the qualified runtime.
+Run the lifecycle test in `dev/tenant-workers/capacity-workerd.test.mjs`
+first with `BIFROST_QUALIFIED_CAPACITY_BUNDLE` alone to measure capacity CPU.
+Then set `BIFROST_QUALIFIED_LAUNCHER_BUNDLE` as well to run the two Python
+references and seal the counters. Run only the
+`prepare, start, signed hello` test for those measurements. The CPU probe
+uses Linux process counters.
+
+#### Hosted SDK Measurement
+
 The hosted reference used manifest
 `b4d55400c080dc014b85054f1560e8a0e4da2470d597c71ab5c501790801f112`,
 Enable job `22529613-b865-4cab-9f7d-49361b3568a0`, and workflow
@@ -110,39 +199,8 @@ executions `85d6948e-bb29-4513-b2f0-459f14b31c13` and
 covered 17:01:25–17:08:40 UTC. Cloudflare reported 103 capacity Worker
 requests, 42,499 µs CPU and 1,105 µs p99. The sample interval was
 1.17. The Bifrost ledger counted four SDK requests across the two
-completed workflows. The earlier pilot also observed low Worker CPU
-and no attributable Durable Object rows in its window.
-
-The capacity CPU cap uses the entire measured capacity CPU sample as
-a conservative input per invocation. The SDK cap uses the aggregate
-request count as an upper input per attempt. A 10× margin gives
-425 ms capacity CPU and 40 gateway requests per attempt. The gateway
-enforces the smaller of this ceiling and the approved allowance. It
-marks the attempt failed if the release ceiling blocks a call, even
-if user code handles the HTTP 429. The launcher and dynamic engine
-retain the 30,000 ms CPU ceiling because this sample does not isolate
-cold engine or Durable Object CPU. The dynamic execution entrypoint
-also honors smaller workflow approvals.
-
-The calibrated version prices capacity and launcher CPU at 30,425 ms
-per launcher-second under the existing activity model. Other priced
-meters retain their prior conservative bounds. The launcher can
-cap its application operations. Cloudflare's SQLite index and alarm
-writes, platform-generated logs, shared object residency and billed
-storage include provider work outside a workflow's request budget.
-The pilot did not qualify lower bounds for those meters. Worker CPU
-and requests also exclude Dynamic Worker creations from the comparison.
-The aggregate sample, the cap, and the ledger use different units
-and are all recorded for review.
-
-Packaging requires positive priced bounds, the source run, the
-observed manifest digest, the measured inputs and the margin.
-The bundle fingerprint rejects changes to the launcher or capacity
-bytes until the release is re-qualified. The API verifies the
-pinned bounds and upload limits before accepting the package. The
-rate table version is `workers-paid-2026-11-20-calibrated`. Existing
-installations keep the prior rate until policy adoption, and their
-transition month retains old pricing for previously incurred usage.
+completed workflows. That release used a 425 ms capacity CPU ceiling
+and the `workers-paid-2026-11-20-calibrated` rate.
 
 ## Item 2. Workers Paid and Containers entitlement
 

@@ -1,5 +1,6 @@
 import {normalizeEgressPattern} from '../executor/egress-hosts.mjs';
 import {isStoragePath} from '../tenant-workers/storage-path.mjs';
+import {METER_ERROR} from './launcher-meter.mjs';
 import {
   CLOUDFLARE_HANDLERS, CLOUDFLARE_INCARNATION_ENDED, CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
   CREDENTIAL_PROTOCOL, FragmentAssembler, ProtocolError, encodeEnvelope, envelope, fragment,
@@ -104,7 +105,7 @@ export class LauncherCore {
   #released = false;
 
   constructor({identity, secret, clock, storage, send, runHost, stopHost, runSummary, runAgent,
-    runCapacityCanary, background, slots = 1, newId = newNonce}) {
+    runCapacityCanary, background, meter, slots = 1, newId = newNonce}) {
     this.#slots = Array(slots).fill(null);
     this.identity = identity;
     this.secret = secret;
@@ -118,6 +119,7 @@ export class LauncherCore {
     this.stopHost = stopHost;
     this.background = background;
     this.newId = newId;
+    this.meter = meter;
   }
 
   get retired() {
@@ -136,7 +138,10 @@ export class LauncherCore {
   }
 
   isStopped() {
-    return this.#serialize(async () => this.retired || (await this.storage.get(CONTROL))?.state === 'retired');
+    return this.#serialize(async () => {
+      await this.#load();
+      return this.retired || Boolean(this.meter?.exhausted && this.#slots.every(slot => !slot));
+    });
   }
 
   release() {
@@ -146,6 +151,7 @@ export class LauncherCore {
         await Promise.all(this.#slots.map((_, index) => this.storage.get(slotKey(index))));
       this.#released = true;
       this.#session = null;
+      if (slots.some(Boolean)) this.meter?.markUncertain();
       for (const slot of slots) {
         if (slot?.state === 'entering') this.#stop(slot.route);
       }
@@ -165,7 +171,7 @@ export class LauncherCore {
   }
 
   async #saveSlot(index, slot) {
-    await this.storage.put(slotKey(index), slot);
+    await this.storage.put(slotKey(index), slot, slot.state === 'terminal');
     this.#slots[index] = slot;
   }
 
@@ -412,7 +418,13 @@ export class LauncherCore {
     }
     const routeKey = `seen:${payload.route_id}`;
     if (await this.storage.get(routeKey)) throw new ProtocolError('execution route already seen');
-    await this.storage.put(routeKey, true);
+    try {
+      await this.storage.put(routeKey, true, false);
+    } catch (error) {
+      if (error?.name !== METER_ERROR) throw error;
+      refuse(METER_ERROR, 'Cloudflare launcher meter limit reached before dispatch');
+      return;
+    }
     const route = makeRoute(payload, this.newId(), this.clock());
     if (!route) {
       refuse('ValueError', 'Invalid Cloudflare dispatch');
@@ -430,7 +442,13 @@ export class LauncherCore {
       return;
     }
     if (this.#session !== session) return;
-    await this.#saveSlot(index, {route, state: 'accepted'});
+    try {
+      await this.#saveSlot(index, {route, state: 'accepted'});
+    } catch (error) {
+      if (error?.name !== METER_ERROR) throw error;
+      refuse(METER_ERROR, 'Cloudflare launcher meter limit reached before dispatch');
+      return;
+    }
     let replied = false;
     try {
       replied = accept({runtime_handle: route.runtime_handle});
@@ -460,7 +478,13 @@ export class LauncherCore {
         await this.#settle(index, route, failure('not_started', 'LauncherRetired', 'The incarnation ended'));
         return null;
       }
-      await this.#saveSlot(index, {route, state: 'entering'});
+      try {
+        await this.#saveSlot(index, {route, state: 'entering'});
+      } catch (error) {
+        if (error?.name !== METER_ERROR) throw error;
+        await this.#settle(index, route, failure('not_started', METER_ERROR, 'Cloudflare launcher meter limit reached'));
+        return null;
+      }
       if (this.#expired(route)) {
         await this.#settle(index, route, timeout(route));
         return null;
@@ -511,10 +535,21 @@ export class LauncherCore {
   }
 
   async #settle(index, route, {attempt_state, result}) {
+    if (attempt_state === 'uncertain') this.meter?.markUncertain();
     const event = route.kind === 'workflow' ? 'result' : route.kind === 'agent_run' ? 'cloudflare_agent_result' : 'summary_result';
-    const terminal = {event, route_id: route.route_id, runtime_handle: route.runtime_handle,
+    let terminal = {event, route_id: route.route_id, runtime_handle: route.runtime_handle,
       _event_id: this.newId(), attempt_state, result};
-    await this.#saveSlot(index, {route, state: 'terminal', terminal});
+    const limited = () => ({...terminal, ...failure(attempt_state, METER_ERROR,
+      `Cloudflare launcher meter limit reached: ${this.meter.exhausted}`)});
+    if (this.meter?.exhausted) terminal = limited();
+    if (this.meter) terminal.usage = this.meter.snapshot();
+    try {
+      await this.#saveSlot(index, {route, state: 'terminal', terminal});
+    } catch (error) {
+      if (error?.name !== METER_ERROR) throw error;
+      terminal = {...limited(), usage: this.meter.snapshot()};
+      await this.#saveSlot(index, {route, state: 'terminal', terminal});
+    }
     this.#emitCurrent(terminal);
   }
 

@@ -9,32 +9,49 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import httpx
+from shared.models import WorkerCapacityProfile, WorkerCapacityReservation
 from sqlalchemy import and_, func, select, update
 
-from shared.models import WorkerCapacityProfile, WorkerCapacityReservation
 from src.config import Settings
 from src.core.database import get_db_context
 from src.models.orm.cloudflare_capacity import CloudflareWorkerReservation
 from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
-from src.services.worker_pool.cloudflare_canary import active_cloudflare_canary
 from src.services.kubernetes_execution import KubernetesPolicy
-from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
-from src.services.worker_pool.eligibility import cloudflare_active_claims
-from src.services.worker_pool.controller import (
-    RECONCILE_SECONDS, SWEEP_SECONDS, LiveControllers, WorkerCapacityController, _now, _withdraw_live,
-)
-from src.services.worker_pool.external_client import CAPACITY_REQUEST_SECONDS, CapacityProtocolError, ExternalCapacityClient
-from src.services.worker_pool.external_policy import validate_external_policy
-from src.services.worker_pool.liveness import silent_executor
-from src.services.worker_pool.recovery import announce_lost_runs, end_runs_of_lost_worker
-from src.services.worker_pool.sizing import JobSizing
-from src.worker.remote.protocol import CLOUDFLARE_PYTHON_RUNTIME_PROFILE, LINUX_RUNTIME_PROFILE, WORKER_DRAIN_GRACE_SECONDS
 from src.services.work_dispatch import (
     DISPATCH_WAKE_FAMILIES,
     WAKE_PLATFORM_JOB,
     WAKE_SERVICE,
     listen_for_pool_wake,
     wait_for_next_pass,
+)
+from src.services.worker_pool.cloudflare_canary import active_cloudflare_canary
+from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
+from src.services.worker_pool.cloudflare_spend import seal_launcher_meter
+from src.services.worker_pool.controller import (
+    RECONCILE_SECONDS,
+    SWEEP_SECONDS,
+    LiveControllers,
+    WorkerCapacityController,
+    _now,
+    _withdraw_live,
+)
+from src.services.worker_pool.eligibility import cloudflare_active_claims
+from src.services.worker_pool.external_client import (
+    CAPACITY_REQUEST_SECONDS,
+    CapacityProtocolError,
+    ExternalCapacityClient,
+)
+from src.services.worker_pool.external_policy import validate_external_policy
+from src.services.worker_pool.liveness import silent_executor
+from src.services.worker_pool.recovery import (
+    announce_lost_runs,
+    end_runs_of_lost_worker,
+)
+from src.services.worker_pool.sizing import JobSizing
+from src.worker.remote.protocol import (
+    CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+    LINUX_RUNTIME_PROFILE,
+    WORKER_DRAIN_GRACE_SECONDS,
 )
 
 logger = logging.getLogger(__name__)
@@ -224,16 +241,18 @@ class ExternalWorkerPoolController(WorkerCapacityController):
                 # Absence does not fence that delayed mutation; retain cleanup.
                 return
             if resource is not None and resource.state != "deleted":
-                await self.client.remove(worker_id, self.profile.scope, resource.resource_uid)
+                resource = await self.client.remove(worker_id, self.profile.scope, resource.resource_uid)
             # GET absence/a deleted tombstone or a validated DELETE response confirms
             # cleanup. Persist only for this still-terminal, unchanged incarnation.
             async with get_db_context() as db:
-                await db.execute(update(ExecutionWorker).where(
+                matched = await db.scalar(update(ExecutionWorker).where(
                     ExecutionWorker.id == worker_id, self._managed_scope(),
                     ExecutionWorker.state.in_(self.cleanup_states),
                     ExecutionWorker.capacity_resource_uid == uid,
                     ExecutionWorker.capacity_resource_deleted_at.is_(None),
-                ).values(capacity_resource_deleted_at=func.clock_timestamp()))
+                ).values(capacity_resource_deleted_at=func.clock_timestamp()).returning(ExecutionWorker.id))
+                if matched is not None and runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and resource is not None:
+                    await seal_launcher_meter(db, worker_id, resource.usage)
                 await db.commit()
             return
         if resource is not None and resource.worker_version != version:

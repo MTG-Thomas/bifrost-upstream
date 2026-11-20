@@ -33,9 +33,14 @@ export function qualifiedMeterLimits(bounds) {
     }
   }
   const measurement = bounds.qualification;
+  const launcher = measurement?.launcher_reference;
   if (!measurement || !/^[a-f0-9-]{36}$/.test(measurement.source_run ?? "") ||
       !/^[a-f0-9]{64}$/.test(measurement.observed_manifest_sha256 ?? "") ||
+      !/^[a-f0-9]{64}$/.test(measurement.capacity_module_sha256 ?? "") ||
       !/^[a-f0-9]{64}$/.test(measurement.bundle_sha256 ?? "") ||
+      !launcher?.source || Object.keys(launcher.observed ?? {}).length !== 3 ||
+      ["sqlite_rows_written", "do_requests", "log_events"].some(name =>
+        !Number.isSafeInteger(launcher.observed[name]) || launcher.observed[name] < 1) ||
       ![measurement.capacity_cpu_us, measurement.sdk_requests, measurement.safety_margin].every(
         value => Number.isSafeInteger(value) && value > 0) || measurement.safety_margin <= 1) {
     throw new Error("Workers meter bounds require pinned positive qualification measurements");
@@ -46,7 +51,12 @@ export function qualifiedMeterLimits(bounds) {
       Number(bounds.per_launcher_second.worker_cpu_ms) !== theoreticalCpuMs + capacityCpuMs) {
     throw new Error("Workers CPU bounds differ from the measured limit and launcher ceiling");
   }
-  return {capacityCpuMs, sdkRequests, engineCpuMs: theoreticalCpuMs};
+  const launcherMeters = Object.fromEntries(Object.entries(launcher.observed).sort().map(([name, value]) =>
+    [name, value * measurement.safety_margin]));
+  if (launcherMeters.sqlite_rows_written < 100 || launcherMeters.do_requests < 10) {
+    throw new Error("Launcher meter bounds must cover reserved retirement operations");
+  }
+  return {capacityCpuMs, sdkRequests, engineCpuMs: theoreticalCpuMs, launcherMeters};
 }
 
 const workerDefinitions = {
@@ -81,6 +91,34 @@ const workerDefinitions = {
   },
 };
 
+export async function bundleWorker(role, runtime) {
+  const {build} = require("esbuild");
+  const {entry} = workerDefinitions[role];
+  const filename = role + ".mjs";
+  const result = await build({
+    absWorkingDir: root, entryPoints: [resolve(spike, entry)],
+    bundle: true, format: "esm", platform: "neutral", write: false,
+    outfile: filename, minify: true, legalComments: "inline", external: ["cloudflare:workers"],
+    plugins: [{
+      name: "qualified-workers-runtime",
+      setup(builder) {
+        builder.onResolve({ filter: /^\.\.\/runtime\/runtime-code\.mjs$/ }, () => ({
+          path: resolve(spike, "backend/runtime-code.mjs"),
+        }));
+        builder.onResolve({ filter: /^\.\/generated-runtime\.mjs$/ }, ({ importer }) => {
+          if (dirname(importer) === resolve(spike, "backend")) {
+            return { path: "generated-runtime.mjs", namespace: "bifrost-runtime" };
+          }
+        });
+        builder.onLoad({ filter: /.*/, namespace: "bifrost-runtime" }, () => ({
+          contents: runtime, loader: "js",
+        }));
+      },
+    }],
+  });
+  return result.outputFiles[0].contents;
+}
+
 export async function buildWorkers(runtimePath, outputPath, sourceRevision, meterBounds) {
   if (!/^[0-9a-f]{40}$/.test(sourceRevision)) throw new Error("An exact source commit is required");
   const runtime = await readFile(runtimePath);
@@ -92,7 +130,6 @@ export async function buildWorkers(runtimePath, outputPath, sourceRevision, mete
     throw new Error("Supply the pinned Workers meter bounds from cloudflare_meter_bounds.json");
   }
   const limits = qualifiedMeterLimits(pinnedBounds);
-  const { build } = require("esbuild");
   const output = resolve(outputPath);
   const release = {
     manifest_version: 1,
@@ -111,30 +148,9 @@ export async function buildWorkers(runtimePath, outputPath, sourceRevision, mete
   };
   const artifacts = [];
   for (const [role, definition] of Object.entries(workerDefinitions)) {
-    const { entry, exports, bindings, ...metadata } = definition;
+    const { entry: _entry, exports, bindings, ...metadata } = definition;
     const filename = role + ".mjs";
-    const result = await build({
-      absWorkingDir: root, entryPoints: [resolve(spike, entry)],
-      bundle: true, format: "esm", platform: "neutral", write: false,
-      outfile: filename, minify: true, legalComments: "inline", external: ["cloudflare:workers"],
-      plugins: [{
-        name: "qualified-workers-runtime",
-        setup(builder) {
-          builder.onResolve({ filter: /^\.\.\/runtime\/runtime-code\.mjs$/ }, () => ({
-            path: resolve(spike, "backend/runtime-code.mjs"),
-          }));
-          builder.onResolve({ filter: /^\.\/generated-runtime\.mjs$/ }, ({ importer }) => {
-            if (dirname(importer) === resolve(spike, "backend")) {
-              return { path: "generated-runtime.mjs", namespace: "bifrost-runtime" };
-            }
-          });
-          builder.onLoad({ filter: /.*/, namespace: "bifrost-runtime" }, () => ({
-            contents: runtime, loader: "js",
-          }));
-        },
-      }],
-    });
-    const bytes = result.outputFiles[0].contents;
+    const bytes = await bundleWorker(role, runtime);
     const compressedBytes = gzipSync(bytes, { level: 9 }).byteLength;
     if (bytes.byteLength > uploadLimit) throw new Error(role + " exceeds the Workers upload limit");
     artifacts.push([filename, bytes]);
@@ -149,10 +165,14 @@ export async function buildWorkers(runtimePath, outputPath, sourceRevision, mete
       bindings: role === "launcher" ? [...bindings,
         plain("BIFROST_METER_SDK_REQUESTS", limits.sdkRequests),
         plain("BIFROST_METER_ENGINE_CPU_MS", limits.engineCpuMs),
+        plain("BIFROST_LAUNCHER_METERS", JSON.stringify(limits.launcherMeters)),
       ] : bindings,
       cpu_ms: role === "capacity" ? limits.capacityCpuMs : definition.cpu_ms,
       preview_urls: false,
     };
+  }
+  if (release.workers.capacity.modules[0].sha256 !== pinnedBounds.qualification.capacity_module_sha256) {
+    throw new Error("Workers capacity module differs from the measured bytes");
   }
   const fingerprint = sha256(artifacts.map(([name, bytes]) => name + ":" + sha256(bytes)).join("\n"));
   if (fingerprint !== pinnedBounds.qualification.bundle_sha256) {

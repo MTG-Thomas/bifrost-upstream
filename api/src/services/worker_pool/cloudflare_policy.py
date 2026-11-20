@@ -44,10 +44,10 @@ from src.services.worker_pool.cloudflare_credentials import (
 )
 from src.services.worker_pool.cloudflare_release import WorkersRelease
 from src.services.worker_pool.cloudflare_spend import (
-    WORKERS_LEGACY_RATE_TABLE_VERSION,
     WORKERS_PAID_SUBSCRIPTION_USD,
     WORKERS_RATE_TABLE_VERSION,
     cloudflare_estimated_usage,
+    launcher_lifetime_rate,
     usage_period,
     workers_fleet_envelope_usd,
 )
@@ -70,6 +70,7 @@ class WorkersReleaseMeterBounds:
     per_fleet_fixed: Mapping[str, Decimal]
     release: str
     max_slots_per_launcher: int
+    launcher_caps: Mapping[str, int] | None = None
 
 
 def release_meter_bounds(release: WorkersRelease) -> WorkersReleaseMeterBounds:
@@ -77,6 +78,7 @@ def release_meter_bounds(release: WorkersRelease) -> WorkersReleaseMeterBounds:
     return WorkersReleaseMeterBounds(
         bounds.cleanup_margin_seconds, bounds.per_launcher_second, bounds.per_fleet_fixed,
         release.digest, release.manifest.max_slots_per_launcher,
+        bounds.qualification.launcher_caps,
     )
 
 
@@ -109,9 +111,7 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
     installation, estimate, as_of, owned_resources_pending = row
     policy = CloudflareCapacityPolicy.model_validate(installation.policy["limits"])
     period_start, period_end = usage_period(as_of)
-    rate = installation.policy.get("rate_table_version", WORKERS_RATE_TABLE_VERSION)
-    if rate == WORKERS_RATE_TABLE_VERSION and installation.policy.get("legacy_meter_month") == period_start.strftime("%Y-%m"):
-        rate = WORKERS_LEGACY_RATE_TABLE_VERSION
+    rate = installation.policy.get("rate_table_version")
     advisory = (
         CloudflareUsageAdvisory.model_validate(installation.usage_advisory)
         if installation.usage_advisory else None
@@ -122,7 +122,7 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
         ),
         estimated_usd=estimate.quantize(Decimal("0.01")) if estimate is not None else None,
         workers_paid_subscription_usd=WORKERS_PAID_SUBSCRIPTION_USD,
-        rate_table_version=rate,
+        rate_table_version=rate if estimate is not None and isinstance(rate, str) else "unavailable",
         period_start=period_start, period_end=period_end,
         analytics=advisory if advisory is not None and advisory.period_start == period_start else None,
     )
@@ -184,6 +184,10 @@ def _price_policy(
         "fleet_envelope_usd": str(envelope),
         "bounds_digest": digest,
         "bounds_release": bounds.release,
+        "meter_launcher": {
+            "caps": dict(bounds.launcher_caps or {}),
+            "second_usd": str(launcher_lifetime_rate(bounds.per_launcher_second)),
+        },
     }
 
 
@@ -323,10 +327,6 @@ async def save_cloudflare_policy(
     row = result.scalar_one_or_none()
     if row is None or row.desired_revision != expected_revision or row.desired_state == "disconnected":
         raise CloudflarePolicyConflict("Cloudflare installation changed. Reload its current policy.")
-    current_month = datetime.now(UTC).strftime("%Y-%m")
-    if (row.policy.get("rate_table_version") == WORKERS_LEGACY_RATE_TABLE_VERSION
-            or row.policy.get("legacy_meter_month") == current_month):
-        desired["legacy_meter_month"] = current_month
     if row.policy != desired:
         row.policy = desired
         row.admitted_revision = None

@@ -463,6 +463,15 @@ class WorkerCapacityReservation(BaseModel):
     drain_grace_seconds: int = Field(ge=0, le=3600, strict=True)
 
 
+class CloudflareLauncherUsage(BaseModel):
+    """Cumulative application-controlled counters for one launcher."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    sqlite_rows_written: int = Field(strict=True, ge=0, le=2**53 - 1)
+    do_requests: int = Field(strict=True, ge=0, le=2**53 - 1)
+    log_events: int = Field(strict=True, ge=0, le=2**53 - 1)
+
+
 class WorkerCapacityResource(BaseModel):
     """Provider state; canonical enrollment and work status remain in Postgres."""
 
@@ -473,6 +482,7 @@ class WorkerCapacityResource(BaseModel):
     resource_uid: str = Field(min_length=1, max_length=255, pattern=r"^[a-zA-Z0-9._:-]+$")
     state: Literal["prepared", "starting", "running", "stopped", "deleted"]
     out_of_memory: bool = Field(default=False, strict=True)
+    usage: CloudflareLauncherUsage | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class SolutionAppBuildCandidate(BaseModel):

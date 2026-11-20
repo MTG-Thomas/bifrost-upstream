@@ -43,11 +43,18 @@ function engine() {
       if (scenario === 'cpu-limit') throw new Error('Worker exceeded CPU time limit: private detail');
       if (scenario === 'memory-limit') throw new Error('Worker exceeded its memory limit: private detail');
       let result;
-      if (scenario === 'snapshot') {
+      if (scenario === 'snapshot' || scenario === 'meter-snapshot') {
         const headers = {Authorization: `Bearer ${engine_token}`};
         const pinned = await fetch('https://test-api.invalid/api/sdk/modules/wf.py', {headers});
         const absent = await fetch('https://test-api.invalid/api/sdk/modules/missing.py', {headers});
         result = {content: (await pinned.json()).content, missing: absent.status};
+        if (scenario === 'meter-snapshot') {
+          for (let index = 0; index < 2; index++) {
+            const repeated = await fetch('https://test-api.invalid/api/sdk/modules/wf.py', {headers});
+            if (!repeated.ok) throw new Error('Pinned snapshot read was rejected');
+            await repeated.body?.cancel();
+          }
+        }
       } else if (scenario === 'identity-sdk') {
         const headers = {Authorization: `Bearer ${engine_token}`, Cookie: 'session=child'};
         const users = await fetch('https://test-api.invalid/api/users?limit=1', {headers});
@@ -63,10 +70,12 @@ function engine() {
         const response = await fetch('https://models.dev/api.json', {headers});
         result = {status: response.status, etag: response.headers.get('etag'),
           catalog: response.status === 200 ? await response.json() : null};
-      } else if (scenario === 'budget' || scenario === 'meter-budget') {
+      } else if (['budget', 'meter-budget', 'meter-egress'].includes(scenario)) {
         const statuses = [];
         for (let index = 0; index < (scenario === 'budget' ? 2 : 4); index++) {
-          const response = await fetch('https://approved.invalid/count');
+          const response = scenario === 'meter-budget' ? await fetch('https://test-api.invalid/api/users?limit=1', {
+            headers: {Authorization: `Bearer ${engine_token}`},
+          }) : await fetch('https://approved.invalid/count');
           statuses.push(response.status);
           await response.body?.cancel();
         }
@@ -137,6 +146,15 @@ const main = `
         this.env.LOADER = loader;
       }
     }
+    async runWithoutReleaseBinding({binding, route}) {
+      const value = this.env[binding];
+      delete this.env[binding];
+      try {
+        return await super.run(route);
+      } finally {
+        this.env[binding] = value;
+      }
+    }
     async primeHeldPing() {
       await this.ctx.storage.put('prime', {engine: 'test-engine', modules: ['hold_ping']});
     }
@@ -153,6 +171,7 @@ const main = `
       const host = ctx.exports.TenantHost.getByName(tenantId);
       if (action === 'run') return Response.json(await host.run(input));
       if (action === 'cpu-witness') return Response.json(await host.runWithCpuWitness(input));
+      if (action === 'missing-meter') return Response.json(await host.runWithoutReleaseBinding(input));
       if (action === 'warm') return Response.json(await host.warm({tenantId, ...input}));
       if (action === 'warm-commit-failure') return Response.json(await host.warmWithCommitFailure({tenantId, ...input}));
       if (action === 'exercise') return Response.json(await host.exercise({tenantId}));
@@ -190,6 +209,7 @@ before(async () => {
         };
       `},
         ...Object.fromEntries(['cloudflare-launcher/launcher-do.mjs', 'cloudflare-launcher/launcher-core.mjs',
+          'cloudflare-launcher/launcher-meter.mjs',
           'cloudflare-launcher/agent-loop.mjs', 'cloudflare-launcher/agent-provider.mjs',
           'cloudflare-launcher/protocol.mjs', 'tenant-workers/launcher-host.mjs', 'tenant-workers/tenant-dispatch.mjs',
           'tenant-workers/tenant-registry.mjs', 'tenant-workers/storage-path.mjs',
@@ -639,7 +659,29 @@ test('the release SDK meter stops the fourth request even with a larger workflow
   const result = await host('meter-budget', 'run', route('meter-budget', {scenario: 'meter-budget', allowance: 8}));
   assert.equal(result.terminal.phase, 'sdk-meter-limit');
   assert.equal(result.terminal.attempt_state, 'completed');
-  assert.equal(origins.slice(before).filter(url => url.endsWith('/count')).length, 3);
+  assert.equal(result.terminal.limit, 3);
+  assert.equal(origins.slice(before).filter(url => url.includes('/api/users?')).length, 3);
+  const approvalFirst = await host('meter-budget', 'run', route('meter-budget', {
+    routeId: 'approval-first', scenario: 'meter-budget', allowance: 3}));
+  assert.deepEqual(approvalFirst.output.result, [200, 200, 200, 429]);
+  const egress = await host('meter-budget', 'run', route('meter-budget', {
+    routeId: 'meter-egress', scenario: 'meter-egress', allowance: 8}));
+  assert.deepEqual(egress.output.result, [200, 200, 200, 200]);
+  const snapshot = await host('meter-budget', 'run', route('meter-budget', {
+    routeId: 'meter-snapshot', scenario: 'meter-snapshot', allowance: 8}));
+  assert.deepEqual(snapshot.output.result, {content: 'pinned = True\n', missing: 404});
+});
+
+test('a routed workflow cannot enter the engine with either release binding missing', async () => {
+  const tenant = 'missing-meter';
+  await host(tenant, 'warm', {engineOnly: true});
+  const before = origins.filter(url => url.includes('/api/users?')).length;
+  for (const binding of ['BIFROST_METER_ENGINE_CPU_MS', 'BIFROST_METER_SDK_REQUESTS']) {
+    await assert.rejects(host(tenant, 'missing-meter', {
+      binding, route: route(tenant, {routeId: binding, scenario: 'meter-budget'}),
+    }), /meter bindings are missing or invalid/);
+  }
+  assert.equal(origins.filter(url => url.includes('/api/users?')).length, before);
 });
 
 test('the WorkerLoader receives the smaller of the release CPU limit and the workflow approval', async () => {

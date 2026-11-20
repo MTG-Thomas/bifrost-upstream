@@ -63,6 +63,7 @@ export function createEngine({ profile, store, runtime, clock = { now: () => Dat
             resource_uid: row.resource_uid,
             state: row.state,
             out_of_memory: Boolean(row.out_of_memory),
+            ...(row.state === STATE.DELETED && row.usage ? {usage: row.usage} : {}),
         };
     }
 
@@ -290,6 +291,7 @@ export function createEngine({ profile, store, runtime, clock = { now: () => Dat
                 try {
                     const observation = await runtime.destroy(row);
                     if (observation.state !== STATE.DELETED) throw new Error("launcher not stopped");
+                    row.usage = observation.usage;
                 } catch (error) {
                     throw new ProtocolError(502, `delete outcome unknown: ${error.name}`);
                 }

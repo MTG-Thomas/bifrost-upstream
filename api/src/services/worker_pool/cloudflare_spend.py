@@ -9,14 +9,18 @@ from pathlib import Path
 from types import MappingProxyType
 from uuid import UUID
 
-from sqlalchemy import Boolean, Numeric, case, column, func, literal, select
+from pydantic import ValidationError
+from shared.models import CloudflareLauncherUsage
+from sqlalchemy import Boolean, Numeric, case, cast, column, func, literal, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 from sqlalchemy.sql.elements import ColumnElement
 
 from src.models.orm.cloudflare_capacity import (
     CloudflareInstallation,
     CloudflareUsageActivity,
+    CloudflareUsageIncarnation,
     CloudflareWorkerReservation,
 )
 from src.models.orm.execution_workers import ExecutionWorkerClaim
@@ -42,7 +46,8 @@ class MeterRate:
 # https://developers.cloudflare.com/durable-objects/platform/pricing/
 # https://developers.cloudflare.com/observability/pricing/
 WORKERS_LEGACY_RATE_TABLE_VERSION = "workers-paid-2026-11-20"
-WORKERS_RATE_TABLE_VERSION = "workers-paid-2026-11-20-calibrated"
+WORKERS_CALIBRATED_RATE_TABLE_VERSION = "workers-paid-2026-11-20-calibrated"
+WORKERS_RATE_TABLE_VERSION = "workers-paid-2026-11-20-launcher-receipts"
 WORKERS_RATES = MappingProxyType({
     "worker_requests": MeterRate(1_000_000, Decimal("0.30")),
     "worker_cpu_ms": MeterRate(1_000_000, Decimal("0.02")),
@@ -65,18 +70,30 @@ _OBJECT_GIB = Decimal("0.125")
 _DURATION_USD_PER_SECOND = _OBJECT_GIB * WORKERS_RATES["do_gb_seconds"].usd / WORKERS_RATES["do_gb_seconds"].unit
 _METER_BOUNDS = json.loads(Path(__file__).with_name("cloudflare_meter_bounds.json").read_text())
 _LAUNCHER_BOUNDS = _METER_BOUNDS["per_launcher_second"]
+_QUALIFICATION = _METER_BOUNDS["qualification"]
+_LAUNCHER_CAPS = {
+    name: count * _QUALIFICATION["safety_margin"]
+    for name, count in _QUALIFICATION["launcher_reference"]["observed"].items()
+}
+_RECEIPT_METERS = frozenset(_LAUNCHER_CAPS)
 _LAUNCHER_USD_PER_SECOND = sum(
-    Decimal(_LAUNCHER_BOUNDS[meter]) * rate.usd / rate.unit
+    (Decimal(30_425) if meter == "worker_cpu_ms" else Decimal(_LAUNCHER_BOUNDS[meter])) * rate.usd / rate.unit
     for meter, rate in WORKERS_RATES.items()
 )
-_LEGACY_CPU_PREMIUM_PER_SECOND = WORKERS_RATES["worker_cpu_ms"].cost(
-    Decimal(60_000) - Decimal(_LAUNCHER_BOUNDS["worker_cpu_ms"]),
-)
+_LEGACY_CPU_PREMIUM_PER_SECOND = WORKERS_RATES["worker_cpu_ms"].cost(Decimal(60_000 - 30_425))
 _ACTIVITY_USD = (
     WORKERS_RATES["worker_requests"].cost(Decimal(1))
     + WORKERS_RATES["worker_cpu_ms"].cost(Decimal(_CPU_MS_PER_ACTIVITY))
     + WORKERS_RATES["do_requests"].usd / WORKERS_RATES["do_requests"].unit
 )
+
+
+def launcher_lifetime_rate(bounds: Mapping[str, Decimal]) -> Decimal:
+    return _DURATION_USD_PER_SECOND + sum(
+        bounds[meter] * rate.usd / rate.unit
+        for meter, rate in WORKERS_RATES.items()
+        if meter not in _RECEIPT_METERS and meter != "do_gb_seconds"
+    )
 
 
 def workers_fleet_envelope_usd(
@@ -131,6 +148,86 @@ def _legacy_cost(launcher_seconds, slot_seconds, dispatched_runs, sdk_requests):
     )
 
 
+def _reported_cost(launcher_seconds, slot_seconds, dispatched_runs, sdk_requests, meter_cost):
+    return (launcher_lifetime_rate({name: Decimal(value) for name, value in _LAUNCHER_BOUNDS.items()})
+            * launcher_seconds + _DURATION_USD_PER_SECOND * slot_seconds
+            + _ACTIVITY_USD * (dispatched_runs + sdk_requests) + meter_cost)
+
+
+def launcher_meter_cost(receipt: CloudflareLauncherUsage | None, *, uncertain: bool = False) -> Decimal:
+    """Use only sealed counters. Unknown usage reserves the complete allowance."""
+    return sum((
+        Decimal(_LAUNCHER_CAPS[name] if uncertain or receipt is None else min(_LAUNCHER_CAPS[name], getattr(receipt, name)))
+        * WORKERS_RATES[name].usd / WORKERS_RATES[name].unit
+        for name in sorted(_RECEIPT_METERS)
+    ), Decimal(0))
+
+
+def _incarnation_cost_sql(installation: type[CloudflareInstallation]):
+    usage = CloudflareUsageIncarnation
+    now = func.statement_timestamp()
+    period = func.date_trunc("month", now, "UTC")
+    seconds = func.extract("epoch", func.least(func.coalesce(usage.deleted_at, now), now)
+                           - func.greatest(usage.started_at, period))
+    line_items = []
+    for name in sorted(_RECEIPT_METERS):
+        cap = func.coalesce(usage.meter_bounds["caps"][name].as_numeric(20, 0), _LAUNCHER_CAPS[name])
+        units = case(
+            (usage.deleted_at.is_not(None) & ~usage.meter_uncertain,
+             func.least(func.coalesce(usage.meter_final[name].as_numeric(20, 0), cap), cap)),
+            else_=cap,
+        )
+        rate = WORKERS_RATES[name]
+        # Do not let the integer-scale counter coerce the fractional price.
+        line_items.append(units * literal(rate.usd / rate.unit, type_=Numeric(24, 12)))
+    lifetime_rate = cast(usage.meter_bounds["second_usd"].as_string(), Numeric)
+    version = usage.meter_rate_version
+    priced = case(
+        (usage.meter_release_digest.is_not(None) & (version == WORKERS_RATE_TABLE_VERSION) & lifetime_rate.is_not(None),
+         seconds * lifetime_rate + sum(line_items)),
+        (usage.meter_release_digest.is_not(None) & (version == WORKERS_CALIBRATED_RATE_TABLE_VERSION),
+         seconds * _LAUNCHER_USD_PER_SECOND),
+        else_=seconds * (_LAUNCHER_USD_PER_SECOND + _LEGACY_CPU_PREMIUM_PER_SECOND),
+    )
+    owner = aliased(CloudflareInstallation)
+    return select(func.coalesce(func.sum(priced), 0)).select_from(usage).join(
+        owner, owner.id == usage.installation_id,
+    ).where(
+        owner.account_id == installation.account_id,
+        or_(usage.deleted_at.is_(None), usage.deleted_at > period),
+        usage.started_at <= now,
+    ).correlate(installation).scalar_subquery()
+
+
+async def record_launcher_terminal_meter(
+    db: AsyncSession, worker_id: UUID, raw: object, *, uncertain: bool,
+) -> None:
+    row = await db.get(CloudflareUsageIncarnation, worker_id, with_for_update=True)
+    if row is None or row.deleted_at is not None:
+        return
+    try:
+        receipt = CloudflareLauncherUsage.model_validate(raw).model_dump()
+    except ValidationError:
+        row.meter_uncertain = True
+        return
+    row.meter_uncertain |= uncertain
+    row.meter_terminal = {
+        name: max(value, (row.meter_terminal or {}).get(name, 0)) for name, value in receipt.items()
+    }
+
+
+async def seal_launcher_meter(db: AsyncSession, worker_id: UUID, receipt: CloudflareLauncherUsage | None) -> None:
+    if receipt is None:
+        return
+    row = await db.get(CloudflareUsageIncarnation, worker_id, with_for_update=True)
+    if row is None or row.meter_final is not None:
+        return
+    counts = receipt.model_dump()
+    if any(value < (row.meter_terminal or {}).get(name, 0) for name, value in counts.items()):
+        row.meter_uncertain = True
+    row.meter_final = counts
+
+
 @dataclass(frozen=True, slots=True)
 class WorkersLedgerUsage:
     launcher_seconds: Decimal
@@ -159,15 +256,13 @@ def cloudflare_estimated_usage() -> ColumnElement[Decimal | None]:
     """Price the live account ledger in the same database snapshot as admission."""
     installation = CloudflareInstallation
     totals = _totals(installation.id, func.statement_timestamp())
-    usage = totals.c.launcher_seconds, totals.c.slot_seconds, totals.c.dispatched_runs, totals.c.sdk_requests
-    version = installation.policy["rate_table_version"].as_string()
-    legacy_period = installation.policy["legacy_meter_month"].as_string() == func.to_char(
-        func.timezone("UTC", func.statement_timestamp()), "YYYY-MM",
+    known_policy = installation.policy["rate_table_version"].as_string().in_(
+        (WORKERS_LEGACY_RATE_TABLE_VERSION, WORKERS_CALIBRATED_RATE_TABLE_VERSION, WORKERS_RATE_TABLE_VERSION),
     )
     return select(case(
-        (totals.c.complete & ((version == WORKERS_LEGACY_RATE_TABLE_VERSION)
-                              | ((version == WORKERS_RATE_TABLE_VERSION) & legacy_period)), _legacy_cost(*usage)),
-        (totals.c.complete & (version == WORKERS_RATE_TABLE_VERSION), _cost(*usage)),
+        (totals.c.complete & known_policy,
+         _incarnation_cost_sql(installation) + _DURATION_USD_PER_SECOND * totals.c.slot_seconds
+         + _ACTIVITY_USD * (totals.c.dispatched_runs + totals.c.sdk_requests)),
     )).select_from(totals).correlate(installation).scalar_subquery()
 
 

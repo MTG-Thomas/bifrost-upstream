@@ -30,7 +30,7 @@ function workflow(suffix = '1') {
   };
 }
 
-function peer({data = new Map(), runHost, runSummary, runAgent, beforePut, onSend, slots = 1} = {}) {
+function peer({data = new Map(), runHost, runSummary, runAgent, beforePut, onSend, meter, slots = 1} = {}) {
   let now = START;
   let order = 0;
   let session;
@@ -43,7 +43,7 @@ function peer({data = new Map(), runHost, runSummary, runAgent, beforePut, onSen
   const entered = deferred();
   const assembler = new FragmentAssembler();
   const core = new LauncherCore({
-    identity: IDENTITY, secret: SECRET, clock: () => now, slots,
+    identity: IDENTITY, secret: SECRET, clock: () => now, meter, slots,
     newId: () => `id-${String(++order).padStart(24, '0')}`,
     storage: {
       get: async (key) => structuredClone(data.get(key)),
@@ -500,6 +500,25 @@ test('one slot holds through terminal settlement and refuses a second engine ent
   await api.command('workflow', workflow('4'));
   await api.finish();
   assert.equal(api.calls.length, 2);
+});
+
+test('launcher meter exhaustion publishes a typed terminal and releases after its ACK', async () => {
+  const usage = {sqlite_rows_written: 31, do_requests: 7, log_events: 3};
+  const meter = {exhausted: null, snapshot: () => usage};
+  const api = peer({meter, runHost() {
+    meter.exhausted = 'log_events';
+    return COMPLETED;
+  }});
+  await connect(api);
+  await api.command('workflow', workflow());
+  await api.finish();
+  const terminal = api.frames().at(-1);
+  assert.equal(terminal.result.error_type, 'CloudflareLauncherMeterLimitExceeded');
+  assert.match(terminal.result.error, /log_events/);
+  assert.deepEqual(terminal.usage, usage);
+  assert.equal(await api.core.isStopped(), false);
+  await api.ack(terminal._event_id);
+  assert.equal(await api.core.isStopped(), true);
 });
 
 test('reset during a host call journals uncertain before reconnect', async () => {

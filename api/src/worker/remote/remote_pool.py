@@ -1368,7 +1368,10 @@ class ThinRemoteProcessPool(ProcessPoolManager):
             error_type = result.get("error_type")
             # Preserve known stop and resource-limit reasons on replay, even
             # when a new API owner has no in-memory stop.
-            if error_type not in ("CancelledError", "TimeoutError", "CpuLimitExceeded", "MemoryLimitExceeded"):
+            if error_type not in (
+                "CancelledError", "TimeoutError", "CpuLimitExceeded", "MemoryLimitExceeded",
+                "CloudflareLauncherMeterLimitExceeded",
+            ):
                 error_type = "WorkflowAttemptUncertain"
             result = {
                 **result,

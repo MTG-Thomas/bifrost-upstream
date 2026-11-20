@@ -29,6 +29,7 @@ from src.services.worker_pool.cloudflare_admission import ManagedCloudflareScope
 from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
 from src.services.worker_pool.cloudflare_policy import cloudflare_workers_remain
 from src.services.worker_pool.cloudflare_provisioning import ObservationPending
+from src.services.worker_pool.cloudflare_spend import seal_launcher_meter
 from src.services.worker_pool.cloudflare_workers_rest import WorkersDeployment
 from src.services.worker_pool.external_client import (
     CapacityProtocolError,
@@ -144,13 +145,14 @@ async def _retire_canary(client: ExternalCapacityClient, worker_id: UUID, resour
         if observed is None or observed.resource_uid != resource_uid:
             return False
         if observed.state != "deleted":
-            await client.remove(worker_id, "workers", resource_uid)
+            observed = await client.remove(worker_id, "workers", resource_uid)
     except (httpx.HTTPError, CapacityProtocolError):
         return False
     async with get_db_context() as db:
         await db.execute(update(ExecutionWorker).where(
             ExecutionWorker.id == worker_id, ExecutionWorker.capacity_resource_uid == resource_uid,
         ).values(capacity_resource_deleted_at=func.clock_timestamp()))
+        await seal_launcher_meter(db, worker_id, observed.usage if observed is not None else None)
     return True
 
 

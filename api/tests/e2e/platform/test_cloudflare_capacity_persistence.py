@@ -17,7 +17,11 @@ from alembic.operations import Operations
 from alembic.script import ScriptDirectory
 from fastapi import HTTPException
 from pydantic import SecretStr
-from shared.models import CloudflareCapacityPolicy, CloudflareWorkersPolicy
+from shared.models import (
+    CloudflareCapacityPolicy,
+    CloudflareLauncherUsage,
+    CloudflareWorkersPolicy,
+)
 from sqlalchemy import delete, select, text, update
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import DBAPIError, IntegrityError
@@ -57,8 +61,9 @@ from src.services.authorization.enforce import Caller
 from src.services.kubernetes_execution import KubernetesExecutionService
 from src.services.work_dispatch import WAKE_WORKFLOW
 from src.services.worker_pool import (
-    cloudflare_supervisor,
     cloudflare_canary,
+    cloudflare_spend,
+    cloudflare_supervisor,
     controller,
     external_controller,
 )
@@ -90,10 +95,14 @@ from src.services.worker_pool.cloudflare_provisioning import (
     ResourceTarget,
 )
 from src.services.worker_pool.cloudflare_spend import (
+    WORKERS_CALIBRATED_RATE_TABLE_VERSION,
     WORKERS_LEGACY_RATE_TABLE_VERSION,
     WORKERS_RATE_TABLE_VERSION,
     WORKERS_RATES,
+    _reported_cost,
     cloudflare_estimated_usage,
+    launcher_lifetime_rate,
+    launcher_meter_cost,
     read_workers_usage,
     usage_period,
 )
@@ -1323,11 +1332,13 @@ async def test_admission_prices_the_qualified_ledger_bounds(
 ) -> None:
     start, _ = usage_period(datetime.now(UTC))
     elapsed = min(1000, int((datetime.now(UTC) - start).total_seconds()))
+    current = CloudflareUsageIncarnation(
+        worker_id=uuid4(), installation_id=installation.id, started_at=start,
+        deleted_at=start + timedelta(seconds=elapsed), slots=2,
+        meter_release_digest="a" * 64, meter_rate_version=WORKERS_CALIBRATED_RATE_TABLE_VERSION,
+    )
     db_session.add_all([
-        CloudflareUsageIncarnation(
-            worker_id=uuid4(), installation_id=installation.id, started_at=start,
-            deleted_at=start + timedelta(seconds=elapsed), slots=2,
-        ),
+        current,
         CloudflareUsageIncarnation(
             worker_id=uuid4(), installation_id=installation.id, started_at=start - timedelta(hours=1),
             deleted_at=start - timedelta(seconds=1), slots=4,
@@ -1343,15 +1354,36 @@ async def test_admission_prices_the_qualified_ledger_bounds(
     assert await db_session.scalar(price) == (
         Decimal("0.01681260") + elapsed * Decimal("0.000855853")
     )
-    installation.policy = {**installation.policy, "legacy_meter_month": start.strftime("%Y-%m")}
+    current.meter_release_digest = None
     await db_session.flush()
     assert await db_session.scalar(price) == (
         Decimal("0.01681260") + elapsed * Decimal("0.001447353")
     )
-    installation.policy = {key: value for key, value in installation.policy.items() if key != "legacy_meter_month"}
+    receipt = CloudflareLauncherUsage(sqlite_rows_written=12, do_requests=8, log_events=3)
+    current.meter_release_digest = "b" * 64
+    current.meter_rate_version = WORKERS_RATE_TABLE_VERSION
+    bounds = json.loads(Path(cloudflare_spend.__file__).with_name("cloudflare_meter_bounds.json").read_bytes())
+    current.meter_bounds = {
+        "caps": {name: count * 10 for name, count in bounds["qualification"]["launcher_reference"]["observed"].items()},
+        "second_usd": str(launcher_lifetime_rate({name: Decimal(value) for name, value in bounds["per_launcher_second"].items()})),
+    }
+    current.meter_final = receipt.model_dump()
+    await db_session.flush()
+    assert await db_session.scalar(price) == _reported_cost(elapsed, elapsed * 2, 11, 17, launcher_meter_cost(receipt))
+    current.meter_final = None
+    await db_session.flush()
+    assert await db_session.scalar(price) == _reported_cost(elapsed, elapsed * 2, 11, 17, launcher_meter_cost(None))
+    current.meter_final = receipt.model_dump()
+    current.meter_uncertain = True
+    await db_session.flush()
+    assert await db_session.scalar(price) == _reported_cost(elapsed, elapsed * 2, 11, 17, launcher_meter_cost(None))
     installation.policy = {**installation.policy, "rate_table_version": "previous-rate-table"}
     await db_session.flush()
     assert await db_session.scalar(price) is None
+    status = await get_cloudflare_capacity_status(db_session, _platform_operator())
+    assert status.installation is not None
+    assert status.installation.spend.state == "ledger_unavailable"
+    assert status.installation.spend.rate_table_version == "unavailable"
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import {spawn} from 'node:child_process';
-import {randomBytes, randomUUID} from 'node:crypto';
+import {execFileSync, spawn} from 'node:child_process';
+import {createHash, randomBytes, randomUUID} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import {mkdtemp, rm} from 'node:fs/promises';
 import {createServer} from 'node:http';
@@ -11,7 +11,7 @@ import {buffer} from 'node:stream/consumers';
 import {after, before, test} from 'node:test';
 import {setTimeout as delay} from 'node:timers/promises';
 import {fileURLToPath} from 'node:url';
-import {envelope, signHello} from '../cloudflare-launcher/protocol.mjs';
+import {envelope, fragment, FragmentAssembler, signHello} from '../cloudflare-launcher/protocol.mjs';
 import {capacityWorker} from '../e2e/capacity-miniflare.mjs';
 
 const {Miniflare} = createRequire(import.meta.resolve('wrangler'))('miniflare');
@@ -22,6 +22,7 @@ const root = new URL('../', import.meta.url);
 const ingressPolicy = JSON.parse(readFileSync(new URL('../../../../api/src/services/worker_ingress_routes.json', import.meta.url), 'utf8'));
 const modules = Object.fromEntries([
   'cloudflare-launcher/launcher-do.mjs', 'cloudflare-launcher/launcher-core.mjs',
+  'cloudflare-launcher/launcher-meter.mjs',
   'cloudflare-launcher/agent-loop.mjs', 'cloudflare-launcher/agent-provider.mjs',
   'cloudflare-launcher/protocol.mjs', 'tenant-workers/launcher-host.mjs',
   'tenant-workers/tenant-dispatch.mjs', 'tenant-workers/tenant-registry.mjs',
@@ -29,7 +30,19 @@ const modules = Object.fromEntries([
   'executor/egress-hosts.mjs', 'executor/egress-psl.generated.mjs',
 ].map((path) => [path, {type: 'esm', contents: readFileSync(new URL(path, root), 'utf8')}]));
 modules['entry.mjs'] = {type: 'esm', contents: `
+  import {DurableObject} from 'cloudflare:workers';
+  import {launcherMeter} from './cloudflare-launcher/launcher-meter.mjs';
   export {CloudflareLauncher} from './cloudflare-launcher/launcher-do.mjs';
+  export class MeterProbe extends DurableObject {
+    witness(name, count) {
+      const meter = launcherMeter(this.ctx.storage.sql,
+        '{"sqlite_rows_written":100,"do_requests":10,"log_events":2}');
+      const accepted = meter.charge({[name]: count});
+      const rejected = meter.charge({[name]: 1});
+      return JSON.stringify({accepted, rejected, counted: meter.snapshot()[name],
+        exhausted: meter.exhausted, sealed: !!meter.seal()});
+    }
+  }
   export default {fetch() { return new Response(null, {status: 404}); }};
 `};
 let mf;
@@ -40,6 +53,59 @@ const hellos = new Map();
 const sockets = new Map();
 const canaries = new Map();
 const upgrades = new WebSocketServer({noServer: true});
+const measuredBundle = process.env.BIFROST_QUALIFIED_CAPACITY_BUNDLE;
+const measuredLauncher = process.env.BIFROST_QUALIFIED_LAUNCHER_BUNDLE;
+
+const sha256 = input => createHash('sha256').update(input).digest('hex');
+
+async function referenceAttempt(record, solution) {
+  const id = randomUUID();
+  const now = Date.now();
+  const workflow_deadline = new Date(now + 60_000).toISOString();
+  const file_path = 'workflows/reference.py';
+  const function_name = 'phase5a_fixture';
+  const caseName = solution ? 'solution' : 'loose';
+  let source = readFileSync(new URL('../e2e/fixture.py', import.meta.url), 'utf8');
+  const sources = {[file_path]: source};
+  if (solution) {
+    source = source.replace('import logging', 'import logging\nfrom phase6_support.values import INSTALL_VALUE')
+      .replace('"table_count": len(rows)', '"table_count": len(rows), "install_value": INSTALL_VALUE');
+    Object.assign(sources, {[file_path]: source, 'phase6_support/values.py': 'INSTALL_VALUE = "solution"\n'});
+  }
+  const org = randomUUID();
+  const solution_id = solution ? randomUUID() : null;
+  const route_id = `workflow:${id}:${randomUUID()}`;
+  const command = randomUUID();
+  const result = Promise.withResolvers();
+  record.terminals.set(route_id, result);
+  record.replies.set(command, result);
+  record.send('command', {id: command, action: 'workflow', payload: {
+    route_id, execution_id: id, started_at: new Date(now).toISOString(), workflow_deadline,
+    timeout_seconds: 60, memory_request_bytes: 64 * 1024 ** 2,
+    active_execution: {execution_id: id, sync: true, org_id: org},
+    context: {workflow_deadline, file_path, function_name, name: function_name, content_hash: sha256(source),
+      parameters: {case: caseName}, engine_token: 'fixture-only-access', transient: true, no_cache: true,
+      organization_id: org, organization: null, solution_id,
+      caller: {user_id: org, email: 'fixture@example.invalid', name: 'Qualifying fixture'},
+      cloudflare_workspace: {manifest: Object.fromEntries(Object.entries(sources).map(([file, value]) =>
+        [file, sha256(value)])), sources, packages: [], https_hosts: ['phase5-fixture.invalid'],
+        cpu_budget_ms: 1_000, subrequest_allowance: 12, solution_id}},
+  }});
+  const terminal = await result.promise;
+  assert.equal(terminal.attempt_state, 'completed', JSON.stringify(terminal));
+  assert.equal(terminal.result.success, true, JSON.stringify(terminal));
+  assert.deepEqual(terminal.result.result, {case: caseName, table_count: 0, ...(solution ? {install_value: 'solution'} : {})});
+  return {id, usage: terminal.usage};
+}
+
+function localWorkerdCpu() {
+  const children = readFileSync(`/proc/${process.pid}/task/${process.pid}/children`, 'utf8').trim().split(/\s+/);
+  const ids = children.filter(pid => readFileSync(`/proc/${pid}/comm`, 'utf8').trim() === 'workerd');
+  assert.equal(ids.length, 1, 'The measurement needs exactly one local workerd process');
+  const stat = readFileSync(`/proc/${ids[0]}/stat`, 'utf8');
+  const fields = stat.slice(stat.lastIndexOf(') ') + 2).split(' ');
+  return Number(fields[11]) + Number(fields[12]);
+}
 
 function request(path, method = 'GET', body, headers = auth) {
   return fetch(base + '/v1/' + path, {method, body: body && JSON.stringify(body), headers});
@@ -64,6 +130,15 @@ const server = createServer(async (req, res) => {
       assert.equal(req.headers['x-bifrost-canary-generation'], '1');
       canary.requests += 1;
       res.writeHead(canary.status, canary.headers).end();
+      return;
+    }
+    if (measuredLauncher && req.url === '/api/sdk/tables/list' && req.method === 'POST') {
+      assert.equal(req.headers.authorization, 'Bearer fixture-only-access');
+      res.writeHead(200, {'content-type': 'application/json'}).end('[]');
+      return;
+    }
+    if (measuredLauncher && req.url.startsWith('/hold/')) {
+      res.end('released');
       return;
     }
     if (req.url === '/hook' && req.headers.authorization === auth.Authorization) {
@@ -98,17 +173,39 @@ server.on('upgrade', (req, socket, head) => {
   if (req.url !== '/api/worker-control') return socket.destroy();
   upgrades.handleUpgrade(req, socket, head, (ws) => {
     let record;
+    let sequence = 0;
+    const assembler = new FragmentAssembler();
     ws.on('message', (raw) => {
       const message = JSON.parse(raw);
       if (record) {
         if (message.payload?.event === 'inventory') record.inventory = message;
         if (message.payload?.reply === 'canary-test') record.canary = message.payload;
+        if (message.payload?.event === 'heartbeat') record.heartbeat = message.payload;
+        if (measuredLauncher && ['event', 'fragment'].includes(message.kind)) {
+          const terminal = assembler.feed(message)?.payload;
+          if (terminal?.event === 'result') {
+            record.send('ack', {event_id: terminal._event_id});
+            record.terminalAckSequence = sequence;
+            record.terminals.get(terminal.route_id)?.resolve(terminal);
+          }
+          if (terminal?.reply && terminal?.error_type) {
+            record.replies.get(terminal.reply)?.reject(new Error(JSON.stringify(terminal)));
+          }
+        }
         return;
       }
       const id = message.hello.incarnation_id;
       record = {hello: message};
       const records = hellos.get(id) ?? [];
       records.push(record);
+      record.terminals = new Map();
+      record.replies = new Map();
+      record.send = (type, payload) => {
+        for (const frame of fragment(envelope(records.length, sequence + 1, type, payload))) {
+          sequence = frame.sequence;
+          ws.send(JSON.stringify(frame));
+        }
+      };
       hellos.set(id, records);
       sockets.set(id, ws);
       ws.send(JSON.stringify({event: 'welcome', session_generation: records.length}));
@@ -118,18 +215,29 @@ server.on('upgrade', (req, socket, head) => {
 
 async function start() {
   const relaySource = `export default {fetch(request) {
-    if (new URL(request.url).origin !== 'https://test-api.invalid') return new Response(null, {status: 403});
+    if (!['https://test-api.invalid', 'https://phase5-fixture.invalid'].includes(new URL(request.url).origin)) {
+      return new Response(null, {status: 403});
+    }
     return fetch(new Request(${JSON.stringify(base)} + new URL(request.url).pathname, request));
   }};`;
   mf = new Miniflare({cf: false, resourcePersistencePath: storage, workers: [
-    capacityWorker(settings),
+    capacityWorker({...settings, bundle: measuredBundle, slots: measuredLauncher ? 2 : 1}),
     {
       dev: {outboundService: {type: 'worker', worker: 'relay'}},
       config: {name: 'launcher', compatibilityDate: '2026-10-30',
-        exports: {CloudflareLauncher: {type: 'durable-object', storage: 'sqlite'}},
+        exports: {CloudflareLauncher: {type: 'durable-object', storage: 'sqlite'}, ...(measuredLauncher
+          ? {TenantHost: {type: 'durable-object', storage: 'sqlite'}, TenantApi: {type: 'worker'}}
+          : {MeterProbe: {type: 'durable-object', storage: 'sqlite'}})},
         env: {API_ORIGIN: {type: 'text', value: 'https://test-api.invalid'},
-          BIFROST_CLOUDFLARE_MANAGED: {type: 'text', value: 'true'}},
-        manifest: {mainModule: 'entry.mjs', modulesRoot: fileURLToPath(root), modules}},
+          BIFROST_CLOUDFLARE_MANAGED: {type: 'text', value: 'true'}, ...(measuredLauncher ? {
+            LOADER: {type: 'worker-loader'},
+            RUNTIME_SHA256: {type: 'text', value: 'fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5'},
+            BIFROST_METER_ENGINE_CPU_MS: {type: 'text', value: '30000'},
+            BIFROST_METER_SDK_REQUESTS: {type: 'text', value: '40'},
+            BIFROST_LAUNCHER_METERS: {type: 'text', value: '{"sqlite_rows_written":10000,"do_requests":1000,"log_events":100}'},
+          } : {MeterProbe: {type: 'durable-object', worker: 'launcher', exportName: 'MeterProbe'}})},
+        manifest: {mainModule: 'entry.mjs', modulesRoot: fileURLToPath(root), modules: measuredLauncher
+          ? {'entry.mjs': {type: 'esm', contents: readFileSync(measuredLauncher, 'utf8')}} : modules}},
     },
     {config: {name: 'relay', compatibilityDate: '2026-10-30', manifest: {
       mainModule: 'relay.mjs', modules: {'relay.mjs': {type: 'esm', contents: relaySource}},
@@ -154,12 +262,13 @@ after(async () => {
 });
 
 test('prepare, start, signed hello, observe and delete use isolated workerd Workers', async () => {
+  const beforeCpu = measuredBundle ? localWorkerdCpu() : null;
   const id = randomUUID();
   const path = `workers/${id}`;
   const uid = randomBytes(16).toString('hex');
   const key = randomBytes(32).toString('hex');
   const reservation = {worker_id: id, worker_version: settings.version,
-    memory_limit_bytes: 128 * 1024 ** 2, max_lifetime_seconds: 60, drain_grace_seconds: 5,
+    memory_limit_bytes: (measuredLauncher ? 256 : 128) * 1024 ** 2, max_lifetime_seconds: 60, drain_grace_seconds: 5,
     resource_uid: uid, control_key: key};
   assert.equal((await request(path, 'PUT', reservation, {...auth, Authorization: `Bearer ${key}`})).status, 401);
   assert.equal((await request(path, 'PUT', reservation, {...auth, 'X-Bifrost-Capacity-Scope': 'foreign'})).status, 404);
@@ -184,11 +293,45 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
   assert.equal(identity.runtime_profile, 'cloudflare-python-v1');
   assert.equal(seen.inventory.payload.event, 'inventory');
   assert.equal((await (await request(path)).json()).state, 'running');
-  assert.equal((await (await request(path, 'DELETE', {resource_uid})).json()).state, 'deleted');
+  const references = measuredLauncher
+    ? await Promise.all([referenceAttempt(seen, false), referenceAttempt(seen, true)])
+    : null;
+  if (references) {
+    // A later empty heartbeat witnesses that both terminal ACKs cleared
+    // their slots before the provider was asked to seal the incarnation.
+    await next(() => seen.heartbeat?.occupied_routes?.length === 0 &&
+      seen.heartbeat.received_sequence >= seen.terminalAckSequence);
+  }
+  const deleted = await (await request(path, 'DELETE', {resource_uid})).json();
+  assert.equal(deleted.state, 'deleted');
   await next(() => sockets.get(id).readyState === 3);
   assert.equal((await request(path + '/start', 'POST', {resource_uid})).status, 409);
   assert.equal(hellos.get(id).length, 1);
+  if (beforeCpu !== null && !references) {
+    const hz = Number(execFileSync('getconf', ['CLK_TCK'], {encoding: 'utf8'}));
+    const cpuUs = Math.ceil(((localWorkerdCpu() - beforeCpu) + 1) * 1000000 / hz);
+    console.info('capacity-module-cpu', JSON.stringify({
+      cpuUs, sha256: createHash('sha256').update(readFileSync(measuredBundle)).digest('hex'),
+    }));
+  }
+  if (references) {
+    assert.ok(references.every(attempt => attempt.usage));
+    assert.ok(deleted.usage);
+    console.info('launcher-reference', JSON.stringify({attempts: references, final: deleted.usage,
+      sha256: sha256(readFileSync(measuredLauncher))}));
+  }
 });
+
+for (const [meter, count, counted] of [
+  ['sqlite_rows_written', 19, 21], ['do_requests', 6, 6], ['log_events', 2, 2],
+]) {
+  test(`workerd counts and refuses launcher ${meter} at the workload ceiling`, async () => {
+    const probes = await mf.getDurableObjectNamespace('MeterProbe', 'launcher');
+    assert.deepEqual(JSON.parse(await probes.getByName(meter).witness(meter, count)), {
+      accepted: true, rejected: false, counted, exhausted: meter, sealed: false,
+    });
+  });
+}
 
 for (const {name, status, headers, proof, expected} of [
   {name: 'accepts authenticated 204', status: 204,

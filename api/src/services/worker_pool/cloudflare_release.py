@@ -1,20 +1,21 @@
 """Verify the immutable Workers release carried in the API image."""
 
+import json
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from hashlib import sha256
-import json
 from pathlib import Path
 from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from shared.models import CloudflareLauncherUsage
 
 WORKERS_RELEASE_PATH = Path("/app/artifacts/cloudflare/workers")
 MAX_WORKER_BYTES = 64 * 1024 * 1024
 QUALIFIED_RUNTIME_SHA256 = "fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5"
-QUALIFIED_METER_BOUNDS_SHA256 = "94258247e9ba953962e6ce80ee7aac584ab3c3b3f678a7a549f71f5667f8ea21"
+QUALIFIED_METER_BOUNDS_SHA256 = "ec57811a7e51bfa202f7af644b26f4550c40b7e88394ae7f723e37cbfdaf1aa6"
 LAUNCHER_CPU_CEILING_MS = 30_000
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 WorkerRole = Literal["launcher", "capacity"]
@@ -67,15 +68,24 @@ class WorkerArtifact(BaseModel):
     preview_urls: Literal[False]
 
 
+class LauncherReference(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: str = Field(min_length=1)
+    observed: CloudflareLauncherUsage
+
+
 class MeterQualification(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source_run: UUID
     observed_manifest_sha256: Digest
+    capacity_module_sha256: Digest
     bundle_sha256: Digest
     capacity_cpu_us: int = Field(gt=0)
     sdk_requests: int = Field(gt=0)
     safety_margin: int = Field(gt=1)
+    launcher_reference: LauncherReference
 
     @property
     def capacity_cpu_ms(self) -> int:
@@ -85,6 +95,10 @@ class MeterQualification(BaseModel):
     def sdk_request_limit(self) -> int:
         return min(50, self.sdk_requests * self.safety_margin)
 
+    @property
+    def launcher_caps(self) -> dict[str, int]:
+        return {name: count * self.safety_margin for name, count in self.launcher_reference.observed.model_dump().items()}
+
 
 class MeterBounds(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -93,6 +107,10 @@ class MeterBounds(BaseModel):
     cleanup_margin_seconds: int = Field(gt=0, le=3600)
     per_launcher_second: dict[str, Decimal]
     per_fleet_fixed: dict[str, Decimal]
+
+
+def meter_bounds_digest(bounds: MeterBounds) -> str:
+    return sha256(json.dumps(bounds.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 class WorkersManifest(BaseModel):
@@ -127,20 +145,20 @@ def load_workers_release(path: Path = WORKERS_RELEASE_PATH) -> WorkersRelease:
         manifest = WorkersManifest.model_validate_json(raw)
         if manifest.runtime_sha256 != QUALIFIED_RUNTIME_SHA256:
             raise WorkersReleaseUnavailable("Workers runtime does not match the qualified digest")
-        if sha256(json.dumps(
-            manifest.meter_bounds.model_dump(mode="json"), sort_keys=True, separators=(",", ":"),
-        ).encode()).hexdigest() != QUALIFIED_METER_BOUNDS_SHA256:
+        if meter_bounds_digest(manifest.meter_bounds) != QUALIFIED_METER_BOUNDS_SHA256:
             raise WorkersReleaseUnavailable("Workers meter bounds do not match the pinned digest")
         if set(manifest.workers) != {"launcher", "capacity"}:
             raise WorkersReleaseUnavailable("Workers release must contain the launcher and capacity roles")
         qualifier = manifest.meter_bounds.qualification
         launcher = manifest.workers["launcher"]
         resource_limits = {binding.name: binding.text for binding in launcher.bindings if binding.type == "plain_text"}
+        serialized_caps = json.dumps(qualifier.launcher_caps, sort_keys=True, separators=(",", ":"))
         if (
             manifest.workers["capacity"].cpu_ms != qualifier.capacity_cpu_ms
             or launcher.cpu_ms != LAUNCHER_CPU_CEILING_MS
             or resource_limits.get("BIFROST_METER_SDK_REQUESTS") != str(qualifier.sdk_request_limit)
             or resource_limits.get("BIFROST_METER_ENGINE_CPU_MS") != str(LAUNCHER_CPU_CEILING_MS)
+            or resource_limits.get("BIFROST_LAUNCHER_METERS") != serialized_caps
         ):
             raise WorkersReleaseUnavailable("Workers resource limits do not match the measured release")
         modules: dict[WorkerRole, dict[str, bytes]] = {}
@@ -164,6 +182,15 @@ def load_workers_release(path: Path = WORKERS_RELEASE_PATH) -> WorkersRelease:
             if worker.main_module not in payload:
                 raise WorkersReleaseUnavailable("Workers entry module is missing")
             modules[role] = payload
+        fingerprint = sha256("\n".join(
+            f"{name}:{sha256(payload).hexdigest()}"
+            for role in ("launcher", "capacity") for name, payload in modules[role].items()
+        ).encode()).hexdigest()
+        if fingerprint != qualifier.bundle_sha256:
+            raise WorkersReleaseUnavailable("Workers bundle differs from the qualified fingerprint")
+        capacity = manifest.workers["capacity"]
+        if sha256(modules["capacity"][capacity.main_module]).hexdigest() != qualifier.capacity_module_sha256:
+            raise WorkersReleaseUnavailable("Workers capacity module differs from the measured bytes")
     except (OSError, ValidationError):
         raise WorkersReleaseUnavailable("Workers release is missing or invalid") from None
     return WorkersRelease(manifest=manifest, digest=sha256(raw).hexdigest(), modules=modules)

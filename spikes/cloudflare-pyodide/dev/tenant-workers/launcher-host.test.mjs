@@ -173,7 +173,7 @@ test('host transport failure stays uncertain and is never retried', async () => 
 
 for (const [phase, error_type, error] of [
   ['cpu_limit', 'CpuLimitExceeded',
-    'Stopped by Cloudflare: the executor exceeded its CPU time limit (cpu_budget_ms=1000).'],
+    'Stopped by Cloudflare: the executor exceeded its effective CPU time limit.'],
   ['memory_limit', 'MemoryLimitExceeded',
     'Stopped by Cloudflare: the executor exceeded the platform memory limit.'],
 ]) {

@@ -29,7 +29,7 @@ from src.services.worker_pool.cloudflare_workers_rest import (
 
 
 @pytest.fixture
-def release(tmp_path: Path) -> Path:
+def release(tmp_path: Path, monkeypatch) -> Path:
     manifest = {
         "manifest_version": 1,
         "source_revision": "a" * 40,
@@ -45,6 +45,7 @@ def release(tmp_path: Path) -> Path:
         "meter_bounds": json.loads(Path(cloudflare_release.__file__).with_name("cloudflare_meter_bounds.json").read_bytes()),
         "workers": {},
     }
+    raw_bounds = manifest["meter_bounds"]
     for role, exports in (
         ("launcher", ("CloudflareLauncher", "TenantHost")),
         ("capacity", ("ScopeRegistry", "WorkerLedger")),
@@ -62,11 +63,25 @@ def release(tmp_path: Path) -> Path:
             "bindings": [
                 {"name": "BIFROST_METER_SDK_REQUESTS", "type": "plain_text", "text": "40"},
                 {"name": "BIFROST_METER_ENGINE_CPU_MS", "type": "plain_text", "text": "30000"},
+                {"name": "BIFROST_LAUNCHER_METERS", "type": "plain_text", "text": json.dumps(
+                    {name: value * raw_bounds["qualification"]["safety_margin"]
+                     for name, value in raw_bounds["qualification"]["launcher_reference"]["observed"].items()},
+                    sort_keys=True, separators=(",", ":"),
+                )},
             ] if role == "launcher" else [],
-            "cpu_ms": 30_000 if role == "launcher" else 425,
+            "cpu_ms": 30_000 if role == "launcher" else (
+                raw_bounds["qualification"]["capacity_cpu_us"] * raw_bounds["qualification"]["safety_margin"] + 999
+            ) // 1000,
             "public_endpoint": role == "capacity",
             "preview_urls": False,
         }
+    modules = [manifest["workers"][role]["modules"][0] for role in ("launcher", "capacity")]
+    raw_bounds["qualification"]["capacity_module_sha256"] = modules[-1]["sha256"]
+    raw_bounds["qualification"]["bundle_sha256"] = sha256("\n".join(
+        f'{module["name"]}:{module["sha256"]}' for module in modules
+    ).encode()).hexdigest()
+    monkeypatch.setattr(cloudflare_release, "QUALIFIED_METER_BOUNDS_SHA256",
+                        cloudflare_release.meter_bounds_digest(cloudflare_release.MeterBounds.model_validate(raw_bounds)))
     (tmp_path / "manifest.json").write_text(json.dumps(manifest))
     return tmp_path
 
@@ -78,10 +93,40 @@ def test_release_loads_the_verified_bytes(release: Path) -> None:
     assert loaded.modules["capacity"]["capacity.mjs"] == (release / "capacity.mjs").read_bytes()
 
 
+def test_repository_meter_bounds_match_the_api_pin() -> None:
+    path = Path(cloudflare_release.__file__).with_name("cloudflare_meter_bounds.json")
+    bounds = cloudflare_release.MeterBounds.model_validate_json(path.read_bytes())
+    assert cloudflare_release.meter_bounds_digest(bounds) == cloudflare_release.QUALIFIED_METER_BOUNDS_SHA256
+
+
 def test_release_rejects_same_size_module_substitution(release: Path) -> None:
     module = release / "capacity.mjs"
     module.write_bytes(b"X" + module.read_bytes()[1:])
     with pytest.raises(WorkersReleaseUnavailable, match="digest"):
+        load_workers_release(release)
+
+
+def test_release_rejects_bundle_even_with_updated_module_digest(release: Path) -> None:
+    path = release / "manifest.json"
+    manifest = json.loads(path.read_bytes())
+    module = release / "capacity.mjs"
+    content = b"X" + module.read_bytes()[1:]
+    module.write_bytes(content)
+    manifest["workers"]["capacity"]["modules"][0]["sha256"] = sha256(content).hexdigest()
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(WorkersReleaseUnavailable, match="qualified fingerprint"):
+        load_workers_release(release)
+
+
+def test_release_rejects_capacity_bytes_without_a_matching_measurement(release: Path, monkeypatch) -> None:
+    path = release / "manifest.json"
+    manifest = json.loads(path.read_bytes())
+    bounds = manifest["meter_bounds"]
+    bounds["qualification"]["capacity_module_sha256"] = "0" * 64
+    monkeypatch.setattr(cloudflare_release, "QUALIFIED_METER_BOUNDS_SHA256",
+                        cloudflare_release.meter_bounds_digest(cloudflare_release.MeterBounds.model_validate(bounds)))
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(WorkersReleaseUnavailable, match="measured bytes"):
         load_workers_release(release)
 
 

@@ -93,7 +93,7 @@ async function runLauncherWorkflow(getHost, queueWarm, {route, context, publicUr
     if (phase === 'attempt-stopped') return terminal(attempt_state, 'CancelledError', 'Workflow stopped');
     if (phase === 'sdk-meter-limit') {
       return terminal(attempt_state, 'CloudflareSDKRequestLimitExceeded',
-        'Stopped by Bifrost: the workflow exceeded the Cloudflare release SDK request limit.');
+        `Cloudflare release gateway request limit reached (${hosted.terminal.limit} requests per attempt).`);
     }
     if (phase === 'cpu_limit') {
       return terminal(attempt_state, 'CpuLimitExceeded',

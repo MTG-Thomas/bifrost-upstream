@@ -1,7 +1,7 @@
 import {readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 
-export function capacityWorker({token, scope, version, maxWorkers, slots = 1}) {
+export function capacityWorker({token, scope, version, maxWorkers, slots = 1, bundle}) {
   const source = new URL('../cloudflare-launcher/', import.meta.url);
   const modulesRoot = fileURLToPath(source);
   const exports = Object.fromEntries(['ScopeRegistry', 'WorkerLedger'].map((name) =>
@@ -17,8 +17,10 @@ export function capacityWorker({token, scope, version, maxWorkers, slots = 1}) {
   ]) {
     env[name] = {type: 'durable-object', worker, exportName};
   }
-  const modules = Object.fromEntries(['capacity.mjs', 'capacity-core.mjs', 'protocol.mjs'].map((name) =>
-    [name, {type: 'esm', contents: readFileSync(new URL(name, source), 'utf8')}]));
+  const modules = bundle
+    ? {'capacity.mjs': {type: 'esm', contents: readFileSync(bundle, 'utf8')}}
+    : Object.fromEntries(['capacity.mjs', 'capacity-core.mjs', 'protocol.mjs'].map((name) =>
+      [name, {type: 'esm', contents: readFileSync(new URL(name, source), 'utf8')}]));
   return {config: {name: 'capacity', compatibilityDate: '2026-10-30', exports, env,
     manifest: {mainModule: 'capacity.mjs', modulesRoot, modules}}};
 }

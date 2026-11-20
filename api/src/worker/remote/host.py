@@ -45,6 +45,7 @@ from src.services.worker_pool.claims import (
     report_worker_handlers,
 )
 from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
+from src.services.worker_pool.cloudflare_spend import record_launcher_terminal_meter
 from src.worker.admission import Admission
 from src.worker.pool_main import PoolWorker
 from src.worker.remote.agent_route import AgentRoute, RemoteAgentConsumer
@@ -684,6 +685,14 @@ class Bridge:
             else:
                 with remote_owner_context(terminal_ref):
                     await deliver(event)
+                    if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and event.get("event") == "result":
+                        async with get_db_context() as db:
+                            if not await fence_remote_owner(db):
+                                raise ConnectionError("Remote API ownership was replaced before metering")
+                            await record_launcher_terminal_meter(
+                                db, terminal_ref.lease.worker_id, event.get("usage"),
+                                uncertain=event.get("attempt_state") == "uncertain",
+                            )
                     if isinstance(event_id, str):
                         await self.acknowledge(event_id)
 

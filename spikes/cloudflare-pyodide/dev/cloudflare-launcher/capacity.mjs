@@ -90,8 +90,8 @@ export class WorkerLedger {
           return {state: STATE.STARTING};
         },
         async destroy(row) {
-          await launcher(row).releaseManaged(row.resource_uid);
-          return {state: STATE.DELETED};
+          const usage = await launcher(row).releaseManaged(row.resource_uid);
+          return {state: STATE.DELETED, usage};
         },
         async observe(row) {
           return launcher(row).observeManaged(row.resource_uid);

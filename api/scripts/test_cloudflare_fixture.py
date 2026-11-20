@@ -19,11 +19,16 @@ from pydantic import SecretStr
 from shared.models import WorkerCapacityProfile, WorkerCapacityResource
 from src.services import worker_ingress_probes as probes
 from src.services.worker_ingress import ALLOW_MARKER, CONTROL_PATH, INGRESS_HEADER, PORT
-from src.services.worker_pool import cloudflare_release
-from src.services.worker_pool import cloudflare_connection
+from src.services.worker_pool import cloudflare_connection, cloudflare_release
 from src.services.worker_pool.cloudflare_provisioning import ResourceObservation
-from src.services.worker_pool.cloudflare_release import QUALIFIED_RUNTIME_SHA256, load_workers_release
-from src.services.worker_pool.cloudflare_workers_rest import ConfiguredWorkersScript, WorkersRestCleanup
+from src.services.worker_pool.cloudflare_release import (
+    QUALIFIED_RUNTIME_SHA256,
+    load_workers_release,
+)
+from src.services.worker_pool.cloudflare_workers_rest import (
+    ConfiguredWorkersScript,
+    WorkersRestCleanup,
+)
 from src.worker.remote.protocol import ControlEnvelope, Hello, new_nonce, sign_hello
 from websockets.asyncio.client import connect
 
@@ -46,6 +51,8 @@ def _release():
     }
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory)
+        bounds = manifest["meter_bounds"]
+        qualification = cloudflare_release.MeterQualification.model_validate(bounds["qualification"])
         for role, classes in EXPORTS.items():
             module = f"{role}.mjs"
             body = f"export default '{role}';".encode()
@@ -58,12 +65,22 @@ def _release():
                 "bindings": [
                     {"name": "BIFROST_METER_SDK_REQUESTS", "type": "plain_text", "text": "40"},
                     {"name": "BIFROST_METER_ENGINE_CPU_MS", "type": "plain_text", "text": "30000"},
+                    {"name": "BIFROST_LAUNCHER_METERS", "type": "plain_text", "text": json.dumps(
+                        qualification.launcher_caps, sort_keys=True, separators=(",", ":"),
+                    )},
                 ] if role == "launcher" else [],
-                "cpu_ms": 30_000 if role == "launcher" else 425,
+                "cpu_ms": 30_000 if role == "launcher" else qualification.capacity_cpu_ms,
                 "public_endpoint": role == "capacity", "preview_urls": False,
             }
+        modules = [manifest["workers"][role]["modules"][0] for role in ("launcher", "capacity")]
+        bounds["qualification"]["capacity_module_sha256"] = modules[-1]["sha256"]
+        bounds["qualification"]["bundle_sha256"] = sha256("\n".join(
+            f'{module["name"]}:{module["sha256"]}' for module in modules
+        ).encode()).hexdigest()
+        digest = cloudflare_release.meter_bounds_digest(cloudflare_release.MeterBounds.model_validate(bounds))
         (path / "manifest.json").write_text(json.dumps(manifest))
-        return load_workers_release(path)
+        with patch.object(cloudflare_release, "QUALIFIED_METER_BOUNDS_SHA256", digest):
+            return load_workers_release(path)
 
 
 class _Cloudflare(WorkersRestCleanup):

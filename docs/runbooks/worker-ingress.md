@@ -15,6 +15,8 @@ route. The probe validates the entire DNS answer. It skips a family only
 when every address in that family reports a missing TCP route or address
 family. Connection refusal, timeouts, TLS failures, and ingress-policy
 failures all fail Enable.
+The Linux API containers classify POSIX socket errors. Windows network
+errors 1231 and 1232 are outside that runtime.
 
 - **Docker Compose** — Attach the proxy to the Bifrost network and target
   `http://api:8001`. Compose exposes the port to the network without publishing

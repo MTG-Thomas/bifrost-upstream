@@ -2,10 +2,12 @@ from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
+from shared.models import CloudflareLauncherUsage
 from src.services.worker_pool.cloudflare_spend import (
     WORKERS_RATES,
     _cost,
     _legacy_cost,
+    launcher_meter_cost,
     usage_period,
     workers_fleet_envelope_usd,
 )
@@ -33,6 +35,16 @@ def test_monthly_usage_charges_only_ledger_activity() -> None:
 
 def test_measured_capacity_cpu_ceiling_prices_launcher_seconds() -> None:
     assert _legacy_cost(1, 0, 0, 0) - _cost(1, 0, 0, 0) == Decimal("0.00059150")
+
+
+def test_sealed_launcher_receipt_prices_counted_units() -> None:
+    receipt = CloudflareLauncherUsage(sqlite_rows_written=12, do_requests=8, log_events=3)
+    assert launcher_meter_cost(receipt) == Decimal("0.000015")
+    assert launcher_meter_cost(receipt, uncertain=True) == launcher_meter_cost(None)
+    assert launcher_meter_cost(None) > launcher_meter_cost(receipt)
+    assert launcher_meter_cost(CloudflareLauncherUsage(
+        sqlite_rows_written=1_000_000, do_requests=1_000_000, log_events=1_000_000,
+    )) == launcher_meter_cost(None)
 
 
 def test_unbounded_meter_rejects_cost_estimate() -> None:

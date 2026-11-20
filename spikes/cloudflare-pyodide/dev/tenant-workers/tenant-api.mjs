@@ -131,7 +131,7 @@ export class TenantHost extends DurableObject {
   // the allowance is gone every later API call would be refused anyway, so
   // the refresh is refused for the rest of the attempt.
   async #refreshUpstream(refreshToken) {
-    if (!this.#reserveSubrequest()) return 'refused';
+    if (!this.#reserveSubrequest() || !this.#reserveGateway()) return 'refused';
     let response;
     try {
       response = await fetch(new URL('/auth/refresh', this.env.API_ORIGIN), {
@@ -176,6 +176,10 @@ export class TenantHost extends DurableObject {
         }));
       }
     }
+    if (!this.#reserveGateway()) {
+      await request.body?.cancel();
+      return new Response('Cloudflare release gateway request limit reached', {status: 429});
+    }
     const headers = new Headers(request.headers);
     headers.set('Authorization', `Bearer ${token}`);
     headers.delete('cookie');
@@ -217,16 +221,29 @@ export class TenantHost extends DurableObject {
   #reserveSubrequest() {
     const current = this.#current;
     if (!current?.routeId) return true;
+    if (current.remainingSubrequests === 0) return false;
+    current.remainingSubrequests--;
+    return true;
+  }
+
+  #reserveGateway() {
+    const current = this.#current;
+    if (!current?.routeId) return true;
     if (current.remainingMeterRequests === 0) {
       current.meterExceeded = true;
       return false;
     }
-    if (current.remainingSubrequests === 0) {
-      return false;
-    }
-    current.remainingSubrequests--;
-    if (current.remainingMeterRequests !== undefined) current.remainingMeterRequests--;
+    current.remainingMeterRequests--;
     return true;
+  }
+
+  #releaseLimits() {
+    const requests = Number(this.env.BIFROST_METER_SDK_REQUESTS);
+    const cpuMs = Number(this.env.BIFROST_METER_ENGINE_CPU_MS);
+    if (![requests, cpuMs].every(limit => Number.isSafeInteger(limit) && limit > 0)) {
+      throw new Error('Cloudflare routed execution meter bindings are missing or invalid');
+    }
+    return {requests, cpuMs};
   }
 
   // The outbound gateway reports each SDK call (path without query, status,
@@ -355,6 +372,7 @@ export class TenantHost extends DurableObject {
     this.#calls.set(handle, []);
     let dispatched = false;
     try {
+      const limits = routeId ? this.#releaseLimits() : null;
       const {worker, generation} = await this.#engine(tenantId);
       if (stopKey && await this.ctx.storage.get(stopKey)) return stoppedInQueue();
       if (Date.now() >= deadlineAt) return expiredInQueue(Date.now() - queuedAt);
@@ -362,8 +380,7 @@ export class TenantHost extends DurableObject {
       const stopped = new Promise((resolve) => { stop = resolve; });
       this.#current = {handle, generation, deadlineAt, routeId, stop, stopped: false,
         remainingSubrequests: routeId ? workspace.subrequest_allowance : undefined,
-        remainingMeterRequests: routeId && this.env.BIFROST_METER_SDK_REQUESTS
-          ? Number(this.env.BIFROST_METER_SDK_REQUESTS) : undefined,
+        remainingMeterRequests: limits?.requests,
         egress: new Set((routeId ? workspace.https_hosts : egressHosts).map((h) => h.toLowerCase())),
         snapshot: routeId ? createTenantGateway({store: workspace.sources, manifest: workspace.manifest,
           solutionId: workspace.solution_id}) : null};
@@ -382,10 +399,8 @@ export class TenantHost extends DurableObject {
         return stoppedInQueue();
       }
       const mark = Date.now();
-      const cpuMs = routeId ? Math.min(workspace.cpu_budget_ms,
-        Number(this.env.BIFROST_METER_ENGINE_CPU_MS) || workspace.cpu_budget_ms) : undefined;
-      const entrypoint = routeId ? worker.getEntrypoint(null, {
-        limits: {cpuMs, subRequests: workspace.subrequest_allowance},
+      const entrypoint = limits ? worker.getEntrypoint(null, {
+        limits: {cpuMs: Math.min(workspace.cpu_budget_ms, limits.cpuMs), subRequests: workspace.subrequest_allowance},
       }) : worker.getEntrypoint();
       const request = new Request('https://attempt.invalid/', {
         method: 'POST',
@@ -416,7 +431,7 @@ export class TenantHost extends DurableObject {
       }
       if (this.#current.meterExceeded) {
         await response.body?.cancel();
-        return terminal('sdk-meter-limit', 'completed', undefined, this.#calls.get(handle));
+        return {terminal: {phase: 'sdk-meter-limit', attempt_state: 'completed', limit: limits.requests}};
       }
       const childMs = Date.now() - mark;
       let output;
@@ -445,7 +460,8 @@ export class TenantHost extends DurableObject {
         await this.#retireChild();
         // RPC exceptions can lose their classification. Return only the
         // allowlisted platform class, with no exception text.
-        if (this.#current?.meterExceeded) return {terminal: {phase: 'sdk-meter-limit', attempt_state: 'uncertain'}};
+        if (this.#current?.meterExceeded) return {terminal: {phase: 'sdk-meter-limit', attempt_state: 'uncertain',
+          limit: this.#releaseLimits().requests}};
         if (error_class === 'cpu_limit' || error_class === 'memory_limit') {
           return {terminal: {phase: error_class, attempt_state: 'uncertain'}};
         }
@@ -491,7 +507,11 @@ export class TenantHost extends DurableObject {
     const modules = await this.#primeList();
     const mark = Date.now();
     try {
-      const response = await worker.getEntrypoint().fetch(new Request('https://attempt.invalid/', {
+      const entrypoint = this.env.BIFROST_METER_ENGINE_CPU_MS !== undefined ||
+        this.env.BIFROST_CLOUDFLARE_MANAGED === 'true'
+        ? worker.getEntrypoint(null, {limits: {cpuMs: this.#releaseLimits().cpuMs}})
+        : worker.getEntrypoint();
+      const response = await entrypoint.fetch(new Request('https://attempt.invalid/', {
         method: 'POST', signal: AbortSignal.timeout(ENGINE_BOOT_TIMEOUT_MS),
         body: JSON.stringify({action: 'ping', modules,
           ...(exercise ? {exercise: {handle: `run_${crypto.randomUUID()}`}} : {})}),
