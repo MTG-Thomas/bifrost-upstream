@@ -29,7 +29,12 @@ from src.models.orm.cloudflare_capacity import (
 )
 from src.models.orm.execution_workers import ExecutionWorker
 from src.models.orm.work_dispatches import WorkDispatch
-from src.services.authorization.context import AuthorizationContext
+from src.services.authorization.context import (
+    AuthorizationContext,
+    Boundary,
+    BoundaryKind,
+    RoleGrant,
+)
 from src.services.authorization.enforce import Caller
 from src.services.kubernetes_execution import KubernetesExecutionService
 from src.services.worker_pool import (
@@ -70,6 +75,14 @@ from src.services.worker_pool.cloudflare_workers_rest import (
 OPERATOR_ID = UUID("20cb7fe5-78e2-48d7-8f1e-8edcac69ffab")
 
 
+def _platform_operator() -> Caller:
+    role = RoleGrant(uuid4(), frozenset({"platform.readwrite"}), (Boundary(BoundaryKind.PLATFORM),))
+    return Caller(
+        UserPrincipal(OPERATOR_ID, "operator@example.test", None),
+        AuthorizationContext(OPERATOR_ID, None, uuid4(), False, frozenset(), (role,)),
+    )
+
+
 def test_cloudflare_routes_refuse_provider_org_membership(e2e_client, provider_org_user, platform_admin) -> None:
     path = "/api/capacity/cloudflare"
     assert e2e_client.get(path, headers=platform_admin.headers).status_code == 200
@@ -95,10 +108,7 @@ async def test_scale_in_job_uses_platform_authority_and_current_lease(
     assert denied.value.status_code == 403
     assert installation.desired_revision == 1
 
-    admin = Caller(
-        UserPrincipal(OPERATOR_ID, "operator@example.test", None),
-        AuthorizationContext(OPERATOR_ID, None, uuid4(), False, frozenset({"platform.readwrite"})),
-    )
+    admin = _platform_operator()
     installation.desired_state = "enabled"
     installation.admitted_revision = 1
     job, reused = await lifecycle_job.enqueue_cloudflare_disable(
@@ -134,10 +144,7 @@ async def test_scale_in_job_uses_platform_authority_and_current_lease(
 async def test_disconnect_resumes_owned_script_delete_until_namespace_absence(
     db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch,
 ) -> None:
-    admin = Caller(
-        UserPrincipal(OPERATOR_ID, "operator@example.test", None),
-        AuthorizationContext(OPERATOR_ID, None, uuid4(), False, frozenset({"platform.readwrite"})),
-    )
+    admin = _platform_operator()
     resource = CloudflareOwnedResource(
         id=uuid4(), installation_id=installation.id, account_id=installation.account_id,
         scope="workers", kind="worker_script", target_name="test-capacity",
