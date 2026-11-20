@@ -28,6 +28,7 @@ from src.models.contracts.platform_jobs import PlatformJobAccepted
 from src.services.audit import emit_audit
 from src.services.authorization.enforce import load_caller, require_operation
 from src.services.authorization.evaluator import GLOBAL
+from src.services.operation_catalog import operation_route
 from src.services.worker_pool.cloudflare_connection import configure_cloudflare
 from src.services.worker_pool.cloudflare_credentials import stage_account_token
 from src.services.worker_pool.cloudflare_policy import (
@@ -46,7 +47,7 @@ from src.services.worker_pool.cloudflare_workers_rest import (
 router = APIRouter(prefix="/api/capacity/cloudflare", tags=["Capacity"])
 
 
-@router.get("", response_model=CloudflareCapacityStatus, operation_id="capacity.cloudflare_status")
+@router.get("", response_model=CloudflareCapacityStatus, **operation_route("capacity.cloudflare_status"))
 async def get_cloudflare_capacity(db: DbSession, user: CurrentActiveUser) -> CloudflareCapacityStatus:
     caller = await load_caller(db, user)
     require_operation(caller, "capacity.cloudflare_status", GLOBAL)
@@ -55,7 +56,7 @@ async def get_cloudflare_capacity(db: DbSession, user: CurrentActiveUser) -> Clo
 
 @router.post(
     "/credential", response_model=CloudflareStagedCredential, status_code=status.HTTP_201_CREATED,
-    operation_id="capacity.cloudflare_credential_stage",
+    **operation_route("capacity.cloudflare_credential_stage"),
 )
 async def stage_cloudflare_credential(
     body: CloudflareStageCredentialRequest, db: DbSession, user: CurrentActiveUser,
@@ -69,7 +70,7 @@ async def stage_cloudflare_credential(
     return CloudflareStagedCredential(credential_ref=ref, expires_at=expires_at)
 
 
-@router.patch("", response_model=CloudflareCapacityStatus, operation_id="capacity.cloudflare_configure")
+@router.patch("", response_model=CloudflareCapacityStatus, **operation_route("capacity.cloudflare_configure"))
 async def configure_cloudflare_capacity(
     body: Annotated[CloudflareConnectRequest | CloudflarePolicyUpdate, Body(discriminator="action")],
     db: DbSession,
@@ -95,7 +96,7 @@ async def configure_cloudflare_capacity(
 
 @router.post(
     "/enable", response_model=PlatformJobAccepted, status_code=status.HTTP_202_ACCEPTED,
-    operation_id="capacity.cloudflare_enable",
+    **operation_route("capacity.cloudflare_enable"),
 )
 async def enable_cloudflare_capacity(
     body: CloudflareCapacityAction, response: Response, db: DbSession, user: CurrentActiveUser,
@@ -113,7 +114,7 @@ async def enable_cloudflare_capacity(
 
 @router.post(
     "/reconcile", response_model=PlatformJobAccepted, status_code=status.HTTP_202_ACCEPTED,
-    operation_id="capacity.cloudflare_reconcile",
+    **operation_route("capacity.cloudflare_reconcile"),
 )
 async def reconcile_cloudflare_capacity(
     body: CloudflareCapacityAction, response: Response, db: DbSession, user: CurrentActiveUser,
@@ -146,7 +147,7 @@ async def _disable(
 
 @router.post(
     "/scale-in", response_model=PlatformJobAccepted, status_code=status.HTTP_202_ACCEPTED,
-    operation_id="capacity.cloudflare_scale_in",
+    **operation_route("capacity.cloudflare_scale_in"),
 )
 async def scale_in_cloudflare_capacity(
     body: CloudflareCapacityAction, response: Response, db: DbSession, user: CurrentActiveUser,
@@ -156,7 +157,7 @@ async def scale_in_cloudflare_capacity(
 
 @router.post(
     "/disconnect", response_model=PlatformJobAccepted, status_code=status.HTTP_202_ACCEPTED,
-    operation_id="capacity.cloudflare_disconnect",
+    **operation_route("capacity.cloudflare_disconnect"),
 )
 async def disconnect_cloudflare_capacity(
     body: CloudflareCapacityAction, response: Response, db: DbSession, user: CurrentActiveUser,
@@ -166,7 +167,7 @@ async def disconnect_cloudflare_capacity(
 
 @router.post(
     "/rotate", response_model=PlatformJobAccepted, status_code=status.HTTP_202_ACCEPTED,
-    operation_id="capacity.cloudflare_rotate_account_token",
+    **operation_route("capacity.cloudflare_rotate_account_token"),
 )
 async def rotate_cloudflare_account_token(
     body: CloudflareAccountTokenRotation | CloudflareAccountTokenReferenceRotation | CloudflareWorkerCredentialRotation,

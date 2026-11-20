@@ -235,6 +235,7 @@ class TestSubgroupRegistration:
             "users",
             "retention",
             "admin",
+            "capacity",
         }
 
     def test_dispatch_unknown_subgroup_exits_1(self) -> None:

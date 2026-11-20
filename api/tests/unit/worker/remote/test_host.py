@@ -99,7 +99,7 @@ async def test_external_fast_path_hello_is_refused_before_admission() -> None:
         issued_at=int(time.time()), nonce="n" * 32, hello_sequence=1,
         resource_uid="external-capacity-1", execution_lane="fast_path",
     )
-    socket = AsyncMock()
+    socket = AsyncMock(scope={})
     socket.receive_text.return_value = json.dumps({
         "event": "hello", "hello": sign_hello("test-control-key", hello).to_dict(),
         "sample": {"current": 1, "limit": 100},
@@ -138,7 +138,7 @@ async def test_containers_hello_uses_only_the_reserved_scope_key(
         resource_uid=uid, runtime_profile=profile,
     )
     key = external_worker_control_key(token, LEASE.worker_id, uid) if use_derived_key else legacy_key
-    socket = AsyncMock()
+    socket = AsyncMock(scope={})
     socket.receive_text.return_value = json.dumps({
         "event": "hello", "hello": sign_hello(key, hello).to_dict(),
         "sample": {"current": 1, "limit": 100}, "version": "test-build",
@@ -1186,7 +1186,7 @@ async def test_fast_path_hello_requires_lane_aware_handler() -> None:
         job_uid=None, pod_uid=None, hostname="old-fast", form="static",
         issued_at=int(time.time()), nonce="n" * 32, hello_sequence=1, execution_lane="fast_path",
     )
-    socket = AsyncMock()
+    socket = AsyncMock(scope={})
     socket.receive_text.return_value = json.dumps({
         "event": "hello", "hello": sign_hello("test-control-key", hello).to_dict(),
         "sample": {"current": 1, "limit": 100},

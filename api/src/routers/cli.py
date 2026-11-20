@@ -188,7 +188,7 @@ async def acknowledge_capacity_canary(worker_id: UUID, request: Request) -> Resp
     """A scoped SDK read for one signed Cloudflare session and active Enable lease."""
     from src.services.worker_pool.cloudflare_canary import cloudflare_sdk_canary_proof
 
-    canary = request.scope.get("worker_ingress_capacity_canary")
+    canary = getattr(request.state, "worker_ingress_capacity_canary", None)
     if canary is None:
         raise HTTPException(404, "Not Found")
     generation, proof = canary

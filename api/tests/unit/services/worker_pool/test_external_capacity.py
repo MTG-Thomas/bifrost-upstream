@@ -16,7 +16,7 @@ from pydantic import SecretStr
 from shared.models import WorkerCapacityProfile, WorkerCapacityReservation
 from shared.solution_git_stage import SOLUTION_GIT_CAPABILITY
 from shared.worker_control_auth import managed_cloudflare_control_key
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from src.models.enums import ExecutionStatus
 from src.models.orm.cloudflare_capacity import (
     CloudflareCapacityScope,
@@ -894,13 +894,16 @@ async def test_cleanup_survives_provider_outage_beyond_one_hour_and_controller_r
     restarted = ExternalWorkerPoolController(capacity.client, SETTINGS, capacity.provider.profile)
     monkeypatch.setattr(restarted, "launch_for_demand", AsyncMock(return_value=[]))
     monkeypatch.setattr(restarted, "replace_outdated", AsyncMock())
+    async with db.context() as session:
+        before_cleanup = await session.scalar(select(func.clock_timestamp()))
     await restarted.reconcile()
     assert resource["state"] == "deleted"
     async with db.context() as session:
         worker = await session.get(ExecutionWorker, worker_id)
         assert worker.state == terminal_state
         assert worker.capacity_resource_uid == resource["resource_uid"]
-        assert worker.capacity_resource_deleted_at == later
+        after_cleanup = await session.scalar(select(func.clock_timestamp()))
+        assert before_cleanup <= worker.capacity_resource_deleted_at <= after_cleanup
     before = sum(path.endswith(str(worker_id)) for _, path in capacity.provider.requests)
     await restarted.reconcile()
     assert sum(path.endswith(str(worker_id)) for _, path in capacity.provider.requests) == before

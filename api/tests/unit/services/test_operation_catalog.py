@@ -1149,6 +1149,38 @@ WORKSPACE_FILE_OPERATIONS = {
 }
 
 CANONICAL_OPERATIONS = {
+    "capacity.cloudflare_configure": (
+        "PATCH", "/api/capacity/cloudflare", ("capacity", "cloudflare", "connect"),
+        "bifrost_cloudflare_policy_update", False,
+    ),
+    "capacity.cloudflare_credential_stage": (
+        "POST", "/api/capacity/cloudflare/credential", ("capacity", "cloudflare", "stage-credential"),
+        None, False,
+    ),
+    "capacity.cloudflare_status": (
+        "GET", "/api/capacity/cloudflare", ("capacity", "cloudflare", "status"),
+        "bifrost_cloudflare_capacity_get", False,
+    ),
+    "capacity.cloudflare_scale_in": (
+        "POST", "/api/capacity/cloudflare/scale-in", ("capacity", "cloudflare", "scale-in"),
+        "bifrost_cloudflare_scale_in_execute", False,
+    ),
+    "capacity.cloudflare_disconnect": (
+        "POST", "/api/capacity/cloudflare/disconnect", ("capacity", "cloudflare", "disconnect"),
+        "bifrost_cloudflare_disconnect_execute", False,
+    ),
+    "capacity.cloudflare_rotate_account_token": (
+        "POST", "/api/capacity/cloudflare/rotate", ("capacity", "cloudflare", "rotate"),
+        "bifrost_cloudflare_worker_credential_replace", False,
+    ),
+    "capacity.cloudflare_enable": (
+        "POST", "/api/capacity/cloudflare/enable", ("capacity", "cloudflare", "enable"),
+        "bifrost_cloudflare_enable_execute", False,
+    ),
+    "capacity.cloudflare_reconcile": (
+        "POST", "/api/capacity/cloudflare/reconcile", ("capacity", "cloudflare", "reconcile"),
+        "bifrost_cloudflare_reconcile_execute", False,
+    ),
     "users.defaults.get": (
         "GET", "/api/base-role-defaults", ("users", "defaults", "get"),
         "bifrost_base_role_default_get", False,

@@ -13,7 +13,7 @@ def test_catalog_metadata_matches_each_materialized_definition() -> None:
 
     metadata = list_platform_job_metadata()
 
-    assert len(metadata) == 27
+    assert len(metadata) == 32
     assert {item.job_type for item in metadata} == {
         "agent.summary_backfill",
         "application.deploy",
@@ -22,6 +22,11 @@ def test_catalog_metadata_matches_each_materialized_definition() -> None:
         "artifact.retention_cleanup",
         "audit.archive",
         "audit.query",
+        "capacity.cloudflare_disable",
+        "capacity.cloudflare_enable",
+        "capacity.cloudflare_reconcile",
+        "capacity.cloudflare_rotate_account_token",
+        "capacity.cloudflare_rotate_worker_credential",
         "embedding.reindex",
         "files.move",
         "model_catalog.refresh",

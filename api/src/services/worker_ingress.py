@@ -308,7 +308,8 @@ class WorkerIngress:
                 await _respond(scope, send, 429)
                 return
             try:
-                scope = {**scope, "worker_ingress_capacity_canary": (generation, proof)}
+                state = {**scope.get("state", {}), "worker_ingress_capacity_canary": (generation, proof)}
+                scope = {**scope, "state": state}
                 await self._serve(scope, receive, send, host[0])
             finally:
                 budget.active -= 1
@@ -336,7 +337,7 @@ class WorkerIngress:
         if scope["type"] == "websocket":
             await self._serve_control(scope, receive, send)
             return
-        canary = "worker_ingress_capacity_canary" in scope
+        canary = "worker_ingress_capacity_canary" in scope.get("state", {})
         limit = 0 if canary else (8192 if scope["path"] == _REFRESH_PATH else _BODY_LIMIT)
         if not 0 <= _content_length(scope) <= limit:
             await _respond(scope, send, 413)

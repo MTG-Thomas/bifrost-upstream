@@ -19,6 +19,7 @@ from src.config import Settings
 from src.models.orm.cloudflare_capacity import (
     CloudflareCredential,
     CloudflareInstallation,
+    CloudflareUsageIncarnation,
     CloudflareWorkerReservation,
 )
 from src.models.orm.execution_workers import ExecutionWorker
@@ -67,7 +68,7 @@ def socket_for(hello, *, key=None, **fields):
         **fields,
     }
     return Mock(
-        accept=AsyncMock(), receive_text=AsyncMock(return_value=json.dumps(frame)),
+        scope={}, accept=AsyncMock(), receive_text=AsyncMock(return_value=json.dumps(frame)),
         send_text=AsyncMock(), close=AsyncMock(),
     )
 
@@ -337,6 +338,9 @@ async def test_managed_cloudflare_hello_uses_exact_reserved_scope(hello, enrollm
             await db.flush()
             await db.execute(delete(CloudflareWorkerReservation).where(
                 CloudflareWorkerReservation.installation_id == installation_id,
+            ))
+            await db.execute(delete(CloudflareUsageIncarnation).where(
+                CloudflareUsageIncarnation.installation_id == installation_id,
             ))
             await db.execute(delete(CloudflareCredential).where(CloudflareCredential.installation_id == installation_id))
             await db.delete(installation)
