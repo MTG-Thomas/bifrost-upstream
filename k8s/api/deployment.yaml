@@ -54,8 +54,10 @@ spec:
               exec:
                 command: ["sleep", "5"]
           ports:
-            - containerPort: 8000
-              name: http
+            - name: http
+              containerPort: 8000
+            - name: worker-ingress
+              containerPort: 8001
           envFrom:
             - configMapRef:
                 name: bifrost-config

@@ -1589,6 +1589,9 @@ class RemoteControlHost:
                             token.get_secret_value(), signed.incarnation_id, signed.resource_uid,
                         )
             hello = verify_hello(control_key, signed)
+            admit_ingress = socket.scope.get("worker_ingress_authenticate")
+            if admit_ingress is not None and not admit_ingress(hello.incarnation_id):
+                raise AuthenticationError("Worker ingress incarnation quota exceeded")
             if "runtime_profile" in initial:
                 raise ProtocolError("physical runtime profile must be inside signed hello")
             if not cloudflare and hello.runtime_profile not in (None, LINUX_RUNTIME_PROFILE):
