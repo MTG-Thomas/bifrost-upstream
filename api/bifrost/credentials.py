@@ -4,7 +4,9 @@ Bifrost SDK Credentials Storage
 Multi-record credential storage for the CLI. Supports per-URL credentials
 across multiple Bifrost instances simultaneously, with three backends:
 
-- EnvBackend (read-only): BIFROST_API_URL + BIFROST_ACCESS_TOKEN + BIFROST_REFRESH_TOKEN
+- EnvBackend (read-only): BIFROST_API_URL + BIFROST_ACCESS_TOKEN, with
+  BIFROST_REFRESH_TOKEN when the session can refresh. An access token alone
+  is a workload exchange session and is not refreshed.
 - KeyringBackend: OS-native credential storage via the `keyring` library
 - JsonBackend: ~/.bifrost/credentials.json as a dict-of-URLs
 - User config: ~/.bifrost/config.json stores the default connection pointer
@@ -14,6 +16,7 @@ come from an explicit process tuple or the global URL-keyed persistent store;
 dotenv files never own credentials.
 """
 
+import base64
 import json
 import os
 import platform
@@ -175,6 +178,22 @@ class Backend(Protocol):
         raise NotImplementedError
 
 
+def _jwt_expires_at(token: str) -> str:
+    """Read ``exp`` from a JWT payload without verifying it.
+
+    Used only to decide when an access-token-only session should be treated
+    as expired locally. Authentication still belongs to the API.
+    """
+    try:
+        payload = token.split(".", 2)[1]
+        padded = payload + "=" * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(padded))
+        exp = int(claims["exp"])
+        return datetime.fromtimestamp(exp, timezone.utc).isoformat()
+    except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return datetime.now(timezone.utc).isoformat()
+
+
 class EnvBackend:
     """Read-only backend that returns credentials assembled from env vars."""
 
@@ -184,16 +203,20 @@ class EnvBackend:
             return None
         access = os.environ.get("BIFROST_ACCESS_TOKEN", "")
         refresh = os.environ.get("BIFROST_REFRESH_TOKEN", "")
-        if not access or not refresh:
+        if not access:
             return None
-        # Env-sourced credentials have no recorded expiry; use a far-future
-        # placeholder so is_token_expired() doesn't trigger automatic refresh.
-        # Refresh-on-401 still works in client.py.
+        if refresh:
+            # Env-sourced human credentials have no recorded expiry; use a
+            # far-future placeholder so is_token_expired() doesn't trigger
+            # automatic refresh. Refresh-on-401 still works in client.py.
+            expires_at = "2099-01-01T00:00:00+00:00"
+        else:
+            expires_at = _jwt_expires_at(access)
         return Credentials(
             api_url=env_url,
             access_token=access,
             refresh_token=refresh,
-            expires_at="2099-01-01T00:00:00+00:00",
+            expires_at=expires_at,
         )
 
     def save(self, creds: Credentials) -> None:
@@ -205,7 +228,7 @@ class EnvBackend:
 
     def list_urls(self) -> list[str]:
         env_url = os.environ.get("BIFROST_API_URL", "").rstrip("/")
-        if env_url and os.environ.get("BIFROST_ACCESS_TOKEN") and os.environ.get("BIFROST_REFRESH_TOKEN"):
+        if env_url and os.environ.get("BIFROST_ACCESS_TOKEN"):
             return [env_url]
         return []
 
