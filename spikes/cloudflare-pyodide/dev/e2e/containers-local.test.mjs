@@ -25,10 +25,14 @@ test('expiry relay forwards scoped reservations until independent observation be
   assert.equal(outbound[0].headers.get('x-bifrost-capacity-scope'), 'containers');
   assert.equal(outbound[0].headers.has('host'), false);
   assert.equal(outbound[0].redirect, 'manual');
+  await relay.fetch(new Request(path, {method: 'DELETE', headers}));
+  assert.equal(relay.deletesForwarded, 1);
 
   relay.stopForwarding();
   assert.equal((await relay.fetch(new Request(path, {headers}))).status, 503);
+  assert.equal(relay.deletesBlocked, 0);
   assert.equal((await relay.fetch(new Request(path, {method: 'DELETE', headers}))).status, 503);
-  assert.equal(outbound.length, 1);
-  assert.equal(relay.deletesForwarded, 0);
+  assert.equal(outbound.length, 2);
+  assert.equal(relay.deletesForwarded, 1);
+  assert.equal(relay.deletesBlocked, 1);
 });

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {execFileSync, spawn, spawnSync} from 'node:child_process';
 import {createHash, randomBytes} from 'node:crypto';
-import {appendFileSync, existsSync, readFileSync, unlinkSync, utimesSync, writeFileSync} from 'node:fs';
+import {appendFileSync, existsSync, readFileSync, rmSync, unlinkSync, utimesSync, writeFileSync} from 'node:fs';
 import {mkdir} from 'node:fs/promises';
 import {createServer} from 'node:http';
 import {createServer as createTlsServer} from 'node:https';
@@ -708,9 +708,11 @@ async function containersChecks() {
     const hold = await api('/api/workflows/' + config.workflows.vm,
       {memory_request_mib: vmHoldMemoryMiB(primary.available)}, config.admin, 'PATCH');
     assert.equal(hold.status, 200);
-    const overflow = await api('/api/workflows/' + config.workflows.linux,
-      {memory_request_mib: OVERFLOW_MEMORY_MIB}, config.admin, 'PATCH');
-    assert.equal(overflow.status, 200);
+    if (expiry) {
+      const overflow = await api('/api/workflows/' + config.workflows.linux,
+        {memory_request_mib: OVERFLOW_MEMORY_MIB}, config.admin, 'PATCH');
+      assert.equal(overflow.status, 200);
+    }
     async function submit(key) {
       const reply = await api('/api/workflows/execute', {
         workflow_id: config.workflows[key], input_data: {}, sync: false,
@@ -821,16 +823,27 @@ asyncio.run(run())
     assert.equal(Number(workerStatus.requirements_total), 1);
     evidence('containers-workflow', {primary, vmRun, linux, linuxRow, container, requirements: 1});
     if (expiry) {
+      const receipt = '.phase7-expiry-observed';
+      rmSync(receipt, {force: true});
       expiryRelay.stopForwarding();
       assert.equal(expiryRelay.deletesForwarded, 0);
       assert.equal(container.state, 'ready');
       assert.equal(container.deleted, false);
       assert.ok(!runRow(vmRun).completed, 'VM primary remained occupied through overflow settlement');
       evidence('container-expiry-wait', {id: linux, incarnation: container.id, deletesForwarded: expiryRelay.deletesForwarded});
-      await until('independent Cloudflare instance stop receipt', () => existsSync('.phase7-expiry-observed'), 420_000);
-      evidence('container-expiry-bifrost', {id: linux, row: runRow(linux),
-        incarnation: managedRows('containers', {includeRetired: true}).find(({id}) => id === container.id),
-        deletesForwarded: expiryRelay.deletesForwarded});
+      await until('independent Cloudflare instance stop receipt', () => existsSync(receipt), 420_000);
+      const incarnation = await until('Bifrost records Container retirement', () => {
+        const current = managedRows('containers', {includeRetired: true}).find(({id}) => id === container.id);
+        return current?.state === 'retired' && current;
+      });
+      const row = runRow(linux);
+      assert.equal(incarnation.end, 'stopped');
+      assert.equal(incarnation.deleted, false);
+      assert.equal(row?.status, 'Success');
+      assert.deepEqual(row.claim, linuxRow.claim);
+      assert.equal(expiryRelay.deletesForwarded, 0);
+      evidence('container-expiry-bifrost', {id: linux, row, incarnation,
+        deletesForwarded: expiryRelay.deletesForwarded, deletesBlocked: expiryRelay.deletesBlocked});
       return;
     }
     approved?.gate.release.resolve();

@@ -855,7 +855,7 @@ one-instance cap. Before submitting any work, `cf` reported one healthy
 slot and zero starting, scheduling or assigned instances. The first Linux
 workflow was claimed by the held VM because its default memory request still
 fit. It failed its Container-specific assertion. The hosted application
-still had zero assignments. The harness now requests 256 MiB for overflow,
+still had zero assignments. The expiry harness requests 256 MiB for overflow,
 using the same requirement as the local placement sizing test.
 
 The larger request stayed pending while the held VM had about 128 MiB free.

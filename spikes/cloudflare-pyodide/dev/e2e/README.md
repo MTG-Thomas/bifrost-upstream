@@ -315,7 +315,9 @@ The harness removes its enrollment file on exit, including after retirement.
 
 For the placement pass, use `phase7.py run <generated-runtime.mjs> --placement
 <private-provider-handoff.json>`. The handoff has `workersUrl`,
-`containersUrl`, `workersToken` and `containersToken`. Use HTTPS Workers
+`containersUrl`, `workersToken`, `containersToken`, and
+`containersMode: "standard"`. The standard provider Worker name ends in
+`-containers`. Use HTTPS Workers
 endpoints and mode 0600. The harness seeds one approved loose workflow and
 one approved Solution workflow in separate organizations and holds both
 inside SDK calls on the same two-slot incarnation. It holds the sole VM
@@ -329,7 +331,9 @@ have separate evidence requirements.
 For a natural inactivity probe, deploy the trial Containers provider with
 `PHASE7_CONTAINER_EXPIRY=1` and run
 `phase7.py run <generated-runtime.mjs> --container-expiry <handoff>`.
-Use the same preparation and hosted handoff as for placement. This mode holds
+Use the same preparation as for placement, with `containersMode: "expiry"`
+and the `-expiry` Worker URL in the handoff. The expiry Worker and Container
+app use separate names. This mode holds
 the VM primary and submits a Linux overflow workflow. The trial Container DO
 sets a two-minute platform inactivity timeout and omits its exit monitor
 so the DO can go inactive. Standard capacity behavior remains in the
@@ -341,8 +345,11 @@ application and instance readback to record the hosted instance while it is
 active and again after it stops. The readback must go through the account
 API so it does not wake the trial DO. Create the private
 `.phase7-expiry-observed` marker in the archive only after the same
-instance is inactive. The harness then emits the Bifrost settlement and
-the count of forwarded deletion requests before teardown.
+instance is inactive and the harness has emitted `container-expiry-wait`.
+The harness removes any stale marker before emitting that event. Before
+teardown it checks that Bifrost retired the incarnation as `stopped`, with
+the original successful claim and no provider deletion receipt. It records
+blocked and forwarded deletes separately.
 
 The November 20, 2026 UTC hosted run settled Linux overflow execution
 `a18733f5-5b88-4ead-947b-24d2bebd14fd` while the VM hold was still running.

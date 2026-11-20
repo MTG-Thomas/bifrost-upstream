@@ -28,13 +28,18 @@ export function vmHoldMemoryMiB(budgetBytes) {
 
 export function expiryCapacityRelay(origin, send = fetch) {
   let quiet = false;
-  let deletes = 0;
+  let forwardedDeletes = 0;
+  let blockedDeletes = 0;
   return {
     stopForwarding() { quiet = true; },
-    get deletesForwarded() { return deletes; },
+    get deletesForwarded() { return forwardedDeletes; },
+    get deletesBlocked() { return blockedDeletes; },
     async fetch(request) {
-      if (quiet) return new Response(null, {status: 503});
-      if (request.method === 'DELETE') deletes += 1;
+      if (quiet) {
+        if (request.method === 'DELETE') blockedDeletes += 1;
+        return new Response(null, {status: 503});
+      }
+      if (request.method === 'DELETE') forwardedDeletes += 1;
       const url = new URL(request.url);
       const target = new URL(origin);
       target.pathname = url.pathname;

@@ -80,6 +80,14 @@ def placement(admin, send, project, provision, *, workers_only=False, container_
     for key in url_keys:
         if not re.fullmatch(r"https://bifrost-hq-[a-f0-9]{9}-[a-z]+\.[a-z0-9-]+\.workers\.dev", hosted[key]):
             raise SystemExit("Use the dedicated hosted capacity providers")
+    if not workers_only:
+        mode = "expiry" if container_expiry else "standard"
+        suffix = "expiry" if container_expiry else "containers"
+        if hosted.get("containersMode") != mode or not re.fullmatch(
+            rf"https://bifrost-hq-[a-f0-9]{{9}}-{suffix}\.[a-z0-9-]+\.workers\.dev",
+            hosted["containersUrl"],
+        ):
+            raise SystemExit(f"Containers handoff must identify the {mode} provider")
     token_keys = ("workersToken",) if workers_only else ("workersToken", "containersToken")
     for key in token_keys:
         if not re.fullmatch(r"[a-f0-9]{64}", hosted[key]):
@@ -145,7 +153,7 @@ if __name__ == "__main__":
     mode = runner.add_mutually_exclusive_group()
     mode.add_argument("--placement", type=Path, help="Private hosted provider handoff JSON")
     mode.add_argument("--workers-only", type=Path, help="Private Workers provider handoff JSON")
-    mode.add_argument("--container-expiry", type=Path, help="Private hosted provider handoff JSON")
+    mode.add_argument("--container-expiry", type=Path, help="Private handoff for the natural Container inactivity probe")
     mode.add_argument("--reuse-enrollment", type=Path, help="Private, previously deployed identity for a fresh dev database")
     args = parser.parse_args()
     if args.command == "prepare":
