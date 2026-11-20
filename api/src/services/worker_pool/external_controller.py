@@ -16,6 +16,7 @@ from src.config import Settings
 from src.core.database import get_db_context
 from src.models.orm.cloudflare_capacity import CloudflareWorkerReservation
 from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
+from src.services.worker_pool.cloudflare_canary import active_cloudflare_canary
 from src.services.kubernetes_execution import KubernetesPolicy
 from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
 from src.services.worker_pool.eligibility import cloudflare_active_claims
@@ -85,7 +86,7 @@ class ExternalWorkerPoolController(WorkerCapacityController):
     def _managed_scope(self) -> Any:
         scope = and_(ExecutionWorker.form == "external", ExecutionWorker.capacity_scope == self.profile.scope)
         if self.managed_cloudflare_scope is not None:
-            return scope & self.managed_cloudflare_scope.owns(ExecutionWorker.id)
+            return scope & self.managed_cloudflare_scope.owns(ExecutionWorker.id) & ~active_cloudflare_canary(ExecutionWorker.id)
         scope = scope & ~select(CloudflareWorkerReservation.worker_id).where(
             CloudflareWorkerReservation.worker_id == ExecutionWorker.id,
         ).exists()

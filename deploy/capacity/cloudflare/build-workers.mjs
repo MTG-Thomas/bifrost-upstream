@@ -50,7 +50,7 @@ const workerDefinitions = {
   },
 };
 
-export async function buildWorkers(runtimePath, outputPath, sourceRevision) {
+export async function buildWorkers(runtimePath, outputPath, sourceRevision, meterBounds) {
   if (!/^[0-9a-f]{40}$/.test(sourceRevision)) throw new Error("An exact source commit is required");
   const runtime = await readFile(runtimePath);
   if (sha256(runtime) !== runtimePin) throw new Error("The qualified Workers runtime digest does not match");
@@ -68,6 +68,7 @@ export async function buildWorkers(runtimePath, outputPath, sourceRevision) {
     runtime_profile: "cloudflare-python-v1",
     capabilities: [["workflow.execute", 1]],
     max_slots_per_launcher: 4,
+    ...(meterBounds === undefined ? {} : {meter_bounds: meterBounds}),
     workers: {},
   };
   const artifacts = [];
@@ -121,5 +122,6 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   if (!runtime || !output || !revision || extra.length) {
     throw new Error("Usage: node build-workers.mjs <qualified-runtime.mjs> <new-output-directory> <source-sha>");
   }
-  await buildWorkers(runtime, output, revision);
+  const bounds = process.env.BIFROST_RELEASE_WORKERS_METER_BOUNDS;
+  await buildWorkers(runtime, output, revision, bounds ? JSON.parse(bounds) : undefined);
 }

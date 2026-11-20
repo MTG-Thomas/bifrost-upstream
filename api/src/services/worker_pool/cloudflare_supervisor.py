@@ -22,6 +22,8 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareCredential,
     CloudflareInstallation,
 )
+from src.scheduler.leadership import SchedulerLeadershipLease
+from src.services.kubernetes_control import may_manage_jobs
 from src.services.kubernetes_execution import load_kubernetes_policy
 from src.services.work_dispatch import (
     WAKE_CLOUDFLARE_CAPACITY,
@@ -160,7 +162,7 @@ async def _reconcile_scope(
 
 
 async def cloudflare_supervisor_loop(
-    stop_event: asyncio.Event, settings: Settings, *, kubernetes: bool,
+    stop_event: asyncio.Event, settings: Settings, *, lease: SchedulerLeadershipLease,
 ) -> None:
     controllers: dict[ManagedCloudflareScope, ExternalWorkerPoolController] = {}
     next_inventory = 0.0
@@ -170,26 +172,32 @@ async def cloudflare_supervisor_loop(
             settings.redis_url, {WAKE_CLOUDFLARE_CAPACITY: wake, WAKE_WORKFLOW: wake},
         ))
         try:
-            while not stop_event.is_set():
+            while not stop_event.is_set() and lease.holds_lease():
                 started = time.monotonic()
                 try:
-                    scopes = await _installations()
-                    for binding in list(controllers):
-                        if binding not in scopes:
-                            await _withdraw_live(controllers.pop(binding).id)
-                    for binding in scopes:
-                        try:
-                            await _reconcile_scope(
-                                binding, settings, http, controllers, kubernetes=kubernetes,
-                            )
-                        except Exception:
-                            logger.warning("Managed Cloudflare scope reconciliation failed", exc_info=True)
+                    async with asyncio.timeout(lease.seconds_remaining()):
+                        scopes = await _installations()
+                        kubernetes = await may_manage_jobs(settings) if scopes else False
+                        for binding in list(controllers):
+                            if binding not in scopes:
+                                await _withdraw_live(controllers.pop(binding).id)
+                        for binding in scopes:
+                            if not lease.holds_lease():
+                                return
+                            try:
+                                await _reconcile_scope(
+                                    binding, settings, http, controllers, kubernetes=kubernetes,
+                                )
+                            except Exception:
+                                logger.warning("Managed Cloudflare scope reconciliation failed", exc_info=True)
+                except TimeoutError:
+                    continue
                 except Exception:
                     logger.warning("Could not read managed Cloudflare scopes", exc_info=True)
-                if started >= next_inventory:
+                if started >= next_inventory and lease.holds_lease():
                     next_inventory = started + RECONCILE_INTERVAL_SECONDS
                     try:
-                        async with get_db_context() as db:
+                        async with asyncio.timeout(lease.seconds_remaining()), get_db_context() as db:
                             await schedule_cloudflare_reconcile(db, now=datetime.now(UTC))
                     except Exception:
                         logger.warning("Could not schedule Cloudflare inventory reconciliation", exc_info=True)

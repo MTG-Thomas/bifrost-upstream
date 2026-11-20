@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
 from typing import Annotated, Literal
@@ -62,6 +63,14 @@ class WorkerArtifact(BaseModel):
     preview_urls: Literal[False]
 
 
+class MeterBounds(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cleanup_margin_seconds: int = Field(gt=0, le=3600)
+    per_launcher_second: dict[str, Decimal]
+    per_fleet_fixed: dict[str, Decimal]
+
+
 class WorkersManifest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -76,6 +85,7 @@ class WorkersManifest(BaseModel):
     runtime_profile: Literal["cloudflare-python-v1"]
     capabilities: tuple[tuple[Literal["workflow.execute"], Literal[1]], ...] = Field(min_length=1, max_length=1)
     max_slots_per_launcher: int = Field(ge=1, le=4)
+    meter_bounds: MeterBounds | None = None
     workers: dict[WorkerRole, WorkerArtifact]
 
 

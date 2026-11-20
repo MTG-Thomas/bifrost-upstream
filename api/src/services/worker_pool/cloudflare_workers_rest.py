@@ -1,5 +1,6 @@
 """Cloudflare Workers provisioning and retirement on the qualified REST path."""
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass
@@ -149,7 +150,9 @@ class WorkersRestCleanup:
                 allow_missing=True, params={"force": "true"},
             )
 
-    async def _script_namespaces(self, token: SecretStr, target: ResourceTarget) -> list[dict[str, Any]]:
+    async def _script_namespaces(
+        self, token: SecretStr, target: ResourceTarget, *, namespace_ids: frozenset[str] = frozenset(),
+    ) -> list[dict[str, Any]]:
         """Exhaust account pagination before trusting any script namespace inventory."""
         _script_path(target)
         seen: set[str] = set()
@@ -169,13 +172,15 @@ class WorkersRestCleanup:
                 raise ObservationPending("Cloudflare namespace inventory is incomplete")
             for row in rows:
                 if (
-                    not isinstance(row, dict) or not isinstance(row.get("script"), str)
-                    or not isinstance(row.get("id"), str) or not row["id"] or row["id"] in seen
+                    not isinstance(row, dict) or not isinstance(row.get("id"), str)
+                    or not row["id"] or row["id"] in seen
                 ):
                     raise ObservationPending("Cloudflare namespace inventory has invalid identity")
                 seen.add(row["id"])
-                if row["script"] == target.name:
+                if row["id"] in namespace_ids or row.get("script") == target.name:
                     owned.append(row)
+                elif not isinstance(row.get("script"), str) and not namespace_ids:
+                    raise ObservationPending("Cloudflare namespace is unassigned and no exact namespace receipt exists")
             reported_total = info.get("total_count", total)
             pages = info.get("total_pages")
             if (
@@ -195,9 +200,11 @@ class WorkersRestCleanup:
                 break
         raise ObservationPending("Cloudflare namespace inventory is incomplete")
 
-    async def verify_absent(self, *, api_token: SecretStr, target: ResourceTarget) -> None:
+    async def verify_absent(
+        self, *, api_token: SecretStr, target: ResourceTarget, namespace_ids: frozenset[str] = frozenset(),
+    ) -> None:
         path = _script_path(target)
-        if await self._script_namespaces(api_token, target):
+        if await self._script_namespaces(api_token, target, namespace_ids=namespace_ids):
             raise ObservationPending("Cloudflare Worker's namespace is still present")
         if await self._request(
             api_token, target.account_id, "GET", f"{path}/settings", allow_missing=True,
@@ -299,7 +306,11 @@ class WorkersRestProvisioner(WorkersRestCleanup):
         # so the caller must retain its effect receipt if confirmation is lost.
         if await observe_owned(self, api_token=api_token, intent=intent, recorded=None) is not None:
             raise OwnershipConflict("Cloudflare Worker already exists at the intended target")
-        payload = await self._request(api_token, intent.target.account_id, "PUT", path, files=files)
+        try:
+            async with asyncio.timeout(30):
+                payload = await self._request(api_token, intent.target.account_id, "PUT", path, files=files)
+        except TimeoutError:
+            raise CloudflareRestUnavailable("Cloudflare upload deadline elapsed") from None
         worker = payload["result"] if payload is not None else None
         if not isinstance(worker, dict) or worker.get("id") != intent.target.name:
             raise ObservationPending("Cloudflare upload returned an unconfirmed script identity")

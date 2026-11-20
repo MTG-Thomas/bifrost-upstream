@@ -3,7 +3,7 @@
 from typing import Any
 from uuid import UUID
 
-from shared.models import CloudflareCapacityAction
+from shared.models import CloudflareCapacityAction, CloudflareCapacityPolicy, CloudflarePolicyUpdate
 
 from src.services.mcp_server.tool_result import ToolResult, error_result, success_result
 from src.services.mcp_server.tools._http_bridge import call_rest
@@ -34,10 +34,33 @@ async def bifrost_cloudflare_disconnect_execute(context: Any, installation_id: U
     return await _submit(context, "disconnect", installation_id, expected_revision)
 
 
+async def bifrost_cloudflare_enable_execute(context: Any, installation_id: UUID, expected_revision: int) -> ToolResult:
+    return await _submit(context, "enable", installation_id, expected_revision)
+
+
+async def bifrost_cloudflare_reconcile_execute(context: Any, installation_id: UUID, expected_revision: int) -> ToolResult:
+    return await _submit(context, "reconcile", installation_id, expected_revision)
+
+
+async def bifrost_cloudflare_policy_update(
+    context: Any, installation_id: UUID, expected_revision: int, policy: CloudflareCapacityPolicy,
+) -> ToolResult:
+    request = CloudflarePolicyUpdate(
+        action="policy", installation_id=installation_id, expected_revision=expected_revision, policy=policy,
+    )
+    status, body = await call_rest(context, "PATCH", _PATH, json_body=request.model_dump(mode="json"))
+    if status != 200:
+        return error_result(f"Cloudflare policy request failed (HTTP {status})", {"body": body})
+    return success_result("Cloudflare Capacity", body)
+
+
 _TOOLS = (
     (bifrost_cloudflare_capacity_get, "Cloudflare Capacity Status", "Read the Global Cloudflare connection and policy."),
     (bifrost_cloudflare_scale_in_execute, "Scale In Cloudflare", "Drain Cloudflare workers and retain the connection."),
     (bifrost_cloudflare_disconnect_execute, "Disconnect Cloudflare", "Drain capacity and remove owned resources."),
+    (bifrost_cloudflare_enable_execute, "Enable Cloudflare", "Provision and verify Cloudflare Workers capacity."),
+    (bifrost_cloudflare_reconcile_execute, "Reconcile Cloudflare", "Verify the current Cloudflare Workers deployment."),
+    (bifrost_cloudflare_policy_update, "Update Cloudflare Policy", "Update the current Cloudflare capacity policy."),
 )
 TOOLS = [(tool.__name__, title, description) for tool, title, description in _TOOLS]
 

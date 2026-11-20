@@ -103,7 +103,8 @@ export class LauncherCore {
   #agentRequests = new Map();
   #released = false;
 
-  constructor({identity, secret, clock, storage, send, runHost, stopHost, runSummary, runAgent, background, slots = 1, newId = newNonce}) {
+  constructor({identity, secret, clock, storage, send, runHost, stopHost, runSummary, runAgent,
+    runCapacityCanary, background, slots = 1, newId = newNonce}) {
     this.#slots = Array(slots).fill(null);
     this.identity = identity;
     this.secret = secret;
@@ -113,6 +114,7 @@ export class LauncherCore {
     this.runHost = runHost;
     this.runSummary = runSummary;
     this.runAgent = runAgent;
+    this.runCapacityCanary = runCapacityCanary;
     this.stopHost = stopHost;
     this.background = background;
     this.newId = newId;
@@ -356,6 +358,20 @@ export class LauncherCore {
       }
       case 'workflow':
         return this.#dispatch(session, payload, accept, refuse, WORKFLOW_ROUTE, workflowRoute);
+      case 'capacity_canary':
+        if (!this.runCapacityCanary || !/^[a-f0-9]{64}$/.test(payload.proof ?? '')) {
+          refuse('ValueError', 'Invalid capacity canary');
+          return;
+        }
+        this.background((async () => {
+          try {
+            await this.runCapacityCanary(session.generation, payload.proof);
+            accept({});
+          } catch {
+            refuse('RuntimeError', 'Capacity canary failed');
+          }
+        })());
+        return;
       case 'cloudflare_summary':
         if (!this.runSummary) {
           refuse('ValueError', 'Cloudflare summaries are disabled');

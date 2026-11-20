@@ -329,12 +329,11 @@ class ControlPlane:
             )
         scheduler.start()
         self._scheduler = scheduler
-        from src.services.kubernetes_control import may_manage_jobs
         from src.services.worker_pool.cloudflare_supervisor import cloudflare_supervisor_loop
 
         self._cloudflare_supervisor = asyncio.create_task(
             cloudflare_supervisor_loop(
-                self._stop_event, self.settings, kubernetes=await may_manage_jobs(self.settings),
+                self._stop_event, self.settings, lease=self.lease,
             ), name="cloudflare-worker-supervisor",
         )
         self._cloudflare_supervisor.add_done_callback(self._task_done)

@@ -47,7 +47,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from fastapi.responses import (
     FileResponse,
     RedirectResponse,
@@ -181,6 +181,25 @@ async def get_dev_context(
         raise HTTPException(status_code=e.status_code, detail=e.detail) from None
 
     return DeveloperContextResponse(**data)
+
+
+@router.get("/capacity-canary/{worker_id}", status_code=204, include_in_schema=False)
+async def acknowledge_capacity_canary(worker_id: UUID, request: Request) -> Response:
+    """A scoped SDK read for one signed Cloudflare session and active Enable lease."""
+    from src.services.worker_pool.cloudflare_canary import cloudflare_sdk_canary_proof
+
+    if not request.scope.get("worker_ingress_capacity_canary"):
+        raise HTTPException(404, "Not Found")
+    scheme, _, proof = request.headers.get("Authorization", "").partition(" ")
+    generation = request.headers.get("X-Bifrost-Canary-Generation", "")
+    if (
+        scheme != "Bearer" or len(proof) != 64 or not proof.isascii()
+        or not 0 < len(generation) <= 19 or not generation.isascii() or not generation.isdecimal()
+        or not 0 < int(generation) <= 2**63 - 1
+        or not await cloudflare_sdk_canary_proof(worker_id, int(generation), received=proof)
+    ):
+        raise HTTPException(401, "Invalid Capacity Canary Credential")
+    return Response(status_code=204, headers={"Cache-Control": "no-store"})
 
 
 # =============================================================================

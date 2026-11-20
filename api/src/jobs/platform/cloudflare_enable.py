@@ -1,0 +1,304 @@
+"""Provision and admit one exact, verified Workers deployment."""
+
+import secrets
+from datetime import UTC, datetime
+from typing import Protocol
+from uuid import UUID, uuid4
+
+import httpx
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from shared.models import CloudflareCapacityPolicy
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.core.database import get_db_context
+from src.jobs.platform.base import (
+    PlatformJobContext,
+    PlatformJobFailure,
+    PlatformJobRequiresAction,
+    define_platform_job,
+)
+from src.jobs.platform.cloudflare_capacity import (
+    _hold_installation_lease,
+    _management_token,
+    _require_legacy_cleanup,
+    _resource_intent,
+)
+from src.models.orm.cloudflare_capacity import (
+    CloudflareCapacityScope,
+    CloudflareCredential,
+    CloudflareInstallation,
+    CloudflareOwnedResource,
+)
+from src.models.orm.platform_jobs import PlatformJob
+from src.services.audit import emit_audit
+from src.services.authorization.enforce import Caller, require_operation
+from src.services.authorization.evaluator import GLOBAL
+from src.services.platform_jobs import enqueue_platform_job
+from src.services.work_dispatch import (
+    WAKE_CLOUDFLARE_CAPACITY,
+    wake_pool_workers_after_commit,
+)
+from src.services.worker_ingress_probes import probe_worker_ingress
+from src.services.worker_pool.cloudflare_canary import run_workers_canary
+from src.services.worker_pool.cloudflare_credentials import (
+    CredentialRef,
+    open_credential,
+    seal_credential,
+)
+from src.services.worker_pool.cloudflare_enable_dependencies import (
+    CheckWorkersPaid,
+    RefreshWorkersUsage,
+    WorkersPaidUnverified,
+    WorkersUsageUnverified,
+    refresh_workers_usage,
+    require_workers_paid,
+)
+from src.services.worker_pool.cloudflare_policy import (
+    CloudflarePolicyConflict,
+    cloudflare_workers_remain,
+)
+from src.services.worker_pool.cloudflare_provisioning import (
+    ObservationPending,
+    OwnershipConflict,
+    ProvisioningAdapter,
+    ResourceObservation,
+    observe_owned,
+    resume_creation,
+)
+from src.services.worker_pool.cloudflare_release import (
+    WorkersRelease,
+    WorkersReleaseUnavailable,
+    load_workers_release,
+)
+from src.services.worker_pool.cloudflare_spend import cloudflare_usage_within_limit
+from src.services.worker_pool.cloudflare_workers_rest import (
+    CloudflareManagementDenied,
+    CloudflareRestUnavailable,
+    ConfiguredWorkersScript,
+    WorkersDeployment,
+    WorkersRestProvisioner,
+)
+from src.services.worker_pool.external_client import (
+    CapacityProtocolError,
+    ExternalCapacityClient,
+)
+
+ENABLE_JOB = "capacity.cloudflare_enable"
+
+
+class CloudflareEnablePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    installation_id: UUID
+    revision: int = Field(gt=0)
+
+
+class WorkersProvisioner(ProvisioningAdapter, Protocol):
+    async def configure_endpoint(
+        self, *, api_token: SecretStr, expected: ResourceObservation,
+    ) -> ConfiguredWorkersScript: ...
+
+
+async def _locked_current(db: AsyncSession, context: PlatformJobContext, payload: CloudflareEnablePayload) -> CloudflareInstallation | None:
+    await _hold_installation_lease(db, context, payload.installation_id)
+    row = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
+    if row is None or row.retired_at is not None or row.desired_revision != payload.revision or row.desired_state != "enabled":
+        return None
+    return row
+
+
+async def _journal(
+    db: AsyncSession, installation: CloudflareInstallation, deployment: WorkersDeployment, *, actor: str,
+) -> tuple[SecretStr, tuple[UUID, ...]]:
+    revision = installation.desired_revision
+    bearer_ref = CredentialRef(installation.id, installation.account_id, "scope_bearer", "workers", revision)
+    bearer_row = await db.get(CloudflareCredential, (installation.id, "scope_bearer", "workers", revision))
+    if bearer_row is None:
+        bearer = SecretStr(secrets.token_urlsafe(48))
+        db.add(seal_credential(bearer_ref, bearer, actor=actor, now=datetime.now(UTC)))
+    else:
+        bearer = open_credential(bearer_ref, bearer_row)
+    identifiers = []
+    for name in (deployment.launcher_name, deployment.capacity_name):
+        resource = await db.scalar(select(CloudflareOwnedResource).where(
+            CloudflareOwnedResource.installation_id == installation.id,
+            CloudflareOwnedResource.kind == "worker_script",
+            CloudflareOwnedResource.target_name == name,
+        ))
+        if resource is None:
+            resource = CloudflareOwnedResource(
+                id=uuid4(), installation_id=installation.id, account_id=installation.account_id,
+                scope="workers", kind="worker_script", target_name=name, desired_revision=revision,
+                artifact_digest=deployment.release.digest, effect_id=uuid4(), state="creating",
+            )
+            db.add(resource)
+        elif resource.state not in ("creating", "present") or resource.artifact_digest != deployment.release.digest:
+            raise OwnershipConflict("The current deployment intent is incompatible with the release")
+        identifiers.append(resource.id)
+    return bearer, tuple(identifiers)
+
+
+async def _install_script(
+    adapter: WorkersProvisioner, resource: CloudflareOwnedResource, *,
+    token: SecretStr, bearer: SecretStr | None,
+) -> ConfiguredWorkersScript:
+    intent = _resource_intent(resource)
+    if resource.state == "creating":
+        observed = await resume_creation(adapter, api_token=token, scope_bearer=bearer, committed_intent=intent)
+    elif resource.state == "present" and resource.provider_id and resource.provider_version:
+        recorded = ResourceObservation(intent, resource.provider_id, resource.provider_version)
+        observed = await observe_owned(adapter, api_token=token, intent=intent, recorded=recorded)
+        if observed is None:
+            raise ObservationPending("The recorded Worker is absent")
+    else:
+        raise OwnershipConflict("The Worker journal cannot be created in its current state")
+    endpoint = await adapter.configure_endpoint(api_token=token, expected=observed)
+    if resource.namespace_ids and resource.namespace_ids != endpoint.namespaces:
+        raise OwnershipConflict("Cloudflare namespace identity changed")
+    resource.state = "present"
+    resource.provider_id = observed.provider_id
+    resource.provider_version = observed.provider_version
+    resource.namespace_ids = endpoint.namespaces
+    resource.observed_at = datetime.now(UTC)
+    return endpoint
+
+
+async def _settle_enable(
+    context: PlatformJobContext, payload: CloudflareEnablePayload, http: httpx.AsyncClient,
+    release: WorkersRelease, *, check_paid: CheckWorkersPaid, refresh_usage: RefreshWorkersUsage,
+) -> dict[str, str]:
+    async with get_db_context() as db:
+        row = await _locked_current(db, context, payload)
+        if row is None:
+            return {"outcome": "superseded"}
+        if row.policy.get("bounds_release") != release.digest:
+            raise PlatformJobRequiresAction("Review Policy for the Packaged Workers Release", {"code": "CF_POLICY_RELEASE_CHANGED"})
+        if row.admitted_revision == payload.revision and await db.scalar(
+            select(cloudflare_usage_within_limit()).where(CloudflareInstallation.id == row.id),
+        ):
+            return {"outcome": "enabled"}
+        row.admitted_revision = None
+        await _require_legacy_cleanup(db)
+        installation = row
+    await check_paid(installation.account_id)
+    async with get_db_context() as db:
+        row = await _locked_current(db, context, payload)
+        if row is None:
+            return {"outcome": "superseded"}
+        prefix = f"bifrost-{row.id.hex}-{payload.revision:x}"
+        deployment = WorkersDeployment(
+            release, row.worker_ingress_origin, f"{prefix}-launcher", f"{prefix}-capacity",
+            CloudflareCapacityPolicy.model_validate(row.policy["limits"]).workers,
+        )
+        bearer, identifiers = await _journal(db, row, deployment, actor=context.requested_by_user_id)
+
+    await context.report("Deploying Cloudflare Workers")
+    adapter = WorkersRestProvisioner(http, deployment)
+    scripts = {}
+    capacity_endpoint = None
+    for identifier in identifiers:
+        async with get_db_context() as db:
+            row = await _locked_current(db, context, payload)
+            if row is None:
+                return {"outcome": "superseded"}
+            resource = await db.get(CloudflareOwnedResource, identifier, with_for_update=True)
+            if resource is None:
+                raise OwnershipConflict("The Worker intent disappeared")
+            is_capacity = resource.target_name == deployment.capacity_name
+            result = await _install_script(
+                adapter, resource, token=await _management_token(db, row),
+                bearer=bearer if is_capacity else None,
+            )
+            scripts[resource.target_name] = result.namespaces
+            if is_capacity:
+                capacity_endpoint = result.endpoint
+    if capacity_endpoint is None:
+        raise ObservationPending("Cloudflare capacity has no confirmed public endpoint")
+
+    await context.report("Checking Worker Ingress")
+    client = ExternalCapacityClient(capacity_endpoint, bearer.get_secret_value(), http=http)
+    async with get_db_context() as db:
+        row = await _locked_current(db, context, payload)
+        if row is None:
+            return {"outcome": "superseded"}
+        scope = await db.get(CloudflareCapacityScope, (row.id, "workers", payload.revision))
+        if scope is None:
+            if await cloudflare_workers_remain(db, row.id):
+                raise PlatformJobRequiresAction("Wait for Cloudflare Workers to Retire", {"code": "CF_PRIOR_WORKERS_LIVE"})
+            db.add(CloudflareCapacityScope(
+                installation_id=row.id, scope="workers", deployment_revision=payload.revision,
+                endpoint=capacity_endpoint, bearer_version=payload.revision,
+            ))
+        elif scope.endpoint != capacity_endpoint or scope.bearer_version != payload.revision:
+            raise OwnershipConflict("Cloudflare scope differs from the verified deployment")
+
+    async def canary(origin: str):
+        return await run_workers_canary(context, payload.installation_id, payload.revision, origin, client, deployment)
+
+    ingress = await probe_worker_ingress(installation, runtime_canary=canary)
+    if not ingress.ready:
+        raise PlatformJobRequiresAction("Verify the Worker Ingress and Runtime", {"code": "CF_WORKER_INGRESS_UNVERIFIED"})
+    await context.report("Checking Cloudflare Spend")
+    await refresh_usage(installation, revision=payload.revision, scripts=scripts)
+    async with get_db_context() as db:
+        row = await _locked_current(db, context, payload)
+        if row is None:
+            return {"outcome": "superseded"}
+        if not await db.scalar(select(cloudflare_usage_within_limit()).where(CloudflareInstallation.id == row.id)):
+            raise WorkersUsageUnverified
+        row.admitted_revision = payload.revision
+        wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
+    return {"outcome": "enabled"}
+
+
+async def _enable(context: PlatformJobContext, parsed: BaseModel) -> dict[str, str]:
+    payload = CloudflareEnablePayload.model_validate(parsed)
+    await context.report("Checking Cloudflare Release and Entitlement")
+    try:
+        release = load_workers_release()
+        async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
+            return await _settle_enable(
+                context, payload, http, release, check_paid=require_workers_paid, refresh_usage=refresh_workers_usage,
+            )
+    except WorkersReleaseUnavailable:
+        raise PlatformJobRequiresAction("Install a Qualified Workers Release", {"code": "CF_RELEASE_UNAVAILABLE"}) from None
+    except WorkersPaidUnverified:
+        raise PlatformJobRequiresAction("Verify Workers Paid", {"code": "CF_WORKERS_PAID_UNVERIFIED"}) from None
+    except WorkersUsageUnverified:
+        raise PlatformJobRequiresAction("Verify Cloudflare Spend", {"code": "CF_SPEND_UNVERIFIED"}) from None
+    except OwnershipConflict:
+        raise PlatformJobRequiresAction("Verify Cloudflare Ownership", {"code": "CF_OWNERSHIP_CONFLICT"}) from None
+    except (ObservationPending, CapacityProtocolError):
+        raise PlatformJobRequiresAction("Verify Cloudflare Deployment", {"code": "CF_DEPLOYMENT_UNVERIFIED"}) from None
+    except CloudflareManagementDenied:
+        raise PlatformJobRequiresAction("Reconnect Cloudflare", {"code": "CF_MANAGEMENT_CREDENTIAL"}) from None
+    except (CloudflareRestUnavailable, httpx.TransportError):
+        raise PlatformJobFailure("CF_PROVIDER_UNAVAILABLE", "Cloudflare Is Temporarily Unavailable", retryable=True) from None
+
+
+CLOUDFLARE_ENABLE_DEFINITION = define_platform_job(ENABLE_JOB, CloudflareEnablePayload, _enable)
+
+
+async def enqueue_cloudflare_enable(
+    db: AsyncSession, caller: Caller, *, installation_id: UUID, expected_revision: int,
+) -> tuple[PlatformJob, bool]:
+    require_operation(caller, "capacity.cloudflare_enable", GLOBAL)
+    actor = caller.principal
+    row = await db.get(CloudflareInstallation, installation_id, with_for_update=True, populate_existing=True)
+    if row is None or row.retired_at is not None or row.desired_revision != expected_revision or row.desired_state == "disconnected":
+        raise CloudflarePolicyConflict("Cloudflare installation changed. Reload its current policy.")
+    row.desired_state = "enabled"
+    payload = CloudflareEnablePayload(installation_id=row.id, revision=row.desired_revision)
+    job, reused = await enqueue_platform_job(
+        db, CLOUDFLARE_ENABLE_DEFINITION, payload, dedupe_key=f"{row.id}:{payload.revision}",
+        resource_lock_key=f"cloudflare-installation:{row.id}",
+        organization_id=None, requested_by_user_id=actor.user_id, requested_by_email=actor.email,
+        requested_by_name=actor.name, resource_type="cloudflare_installation", resource_id=str(row.id),
+        title="Enable Cloudflare", action_url=None,
+    )
+    if not reused:
+        await emit_audit(
+            db, "capacity.cloudflare_enable", resource_type="cloudflare_installation", resource_id=row.id,
+            details={"revision": payload.revision, "job_id": str(job.id)},
+        )
+    return job, reused

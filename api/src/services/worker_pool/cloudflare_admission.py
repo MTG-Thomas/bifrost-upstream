@@ -119,6 +119,7 @@ async def cloudflare_claim_allowed(db: AsyncSession, worker_id: UUID) -> bool:
         installation.desired_state == "enabled",
         installation.admitted_revision.is_not(None),
         installation.admitted_revision == pin.deployment_revision,
+        pin.canary_job_id.is_(None),
         pin.control_root_version.is_not(None),
         cloudflare_usage_within_limit(),
         installation.policy["limits"]["workers"]["work_kinds"].contains(["workflow"]),

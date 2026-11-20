@@ -47,7 +47,9 @@ class FakeProvisioningAdapter:
         if self.confirm_delete:
             self.resource = None
 
-    async def verify_absent(self, *, api_token: SecretStr, target: ResourceTarget) -> None:
+    async def verify_absent(
+        self, *, api_token: SecretStr, target: ResourceTarget, namespace_ids: frozenset[str] = frozenset(),
+    ) -> None:
         self.calls.append("verify_absent")
         assert self.resource is None
 

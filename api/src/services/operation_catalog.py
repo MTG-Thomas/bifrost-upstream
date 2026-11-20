@@ -137,6 +137,24 @@ _CONFIG_MANIFEST_EXCLUSION = (
 
 OPERATION_CATALOG: tuple[OperationDefinition, ...] = (
     OperationDefinition(
+        operation_id="capacity.cloudflare_configure",
+        summary="Connect and Configure Cloudflare Capacity",
+        target_kind=OperationTargetKind.PLATFORM,
+        rest=RestOperationBinding(
+            method="PATCH", path="/api/capacity/cloudflare",
+            request_model="CloudflareConnectRequest | CloudflarePolicyUpdate", response_model="CloudflareCapacityStatus",
+        ),
+        cli=CliOperationBinding(path=("capacity", "cloudflare", "connect")),
+        mcp=McpOperationBinding(name="bifrost_cloudflare_policy_update"),
+        action_scopes=("platform.readwrite",),
+        authorization_resolver="platform.readwrite at Global",
+        exclusions={
+            "native_builder": "Cloudflare capacity is platform administration.",
+            "manifest": "Capacity installations and credentials are bound to the deployment.",
+            "sdk": "Runtime SDKs do not administer capacity.",
+        },
+    ),
+    OperationDefinition(
         operation_id="capacity.cloudflare_status",
         summary="Read Cloudflare capacity status",
         target_kind=OperationTargetKind.PLATFORM,
@@ -208,6 +226,46 @@ OPERATION_CATALOG: tuple[OperationDefinition, ...] = (
             "mcp": "The replacement token is entered through a protected operator input.",
             "native_builder": "Cloudflare capacity is platform administration.",
             "manifest": "Capacity credentials are bound to the deployment.",
+            "sdk": "Runtime SDKs do not administer capacity.",
+        },
+    ),
+    OperationDefinition(
+        operation_id="capacity.cloudflare_enable",
+        summary="Enable Cloudflare Capacity",
+        target_kind=OperationTargetKind.PLATFORM,
+        rest=RestOperationBinding(
+            method="POST", path="/api/capacity/cloudflare/enable",
+            request_model="CloudflareCapacityAction", response_model="PlatformJobAccepted",
+        ),
+        cli=CliOperationBinding(path=("capacity", "cloudflare", "enable")),
+        mcp=McpOperationBinding(name="bifrost_cloudflare_enable_execute"),
+        audit_event="capacity.cloudflare_enable",
+        action_scopes=("platform.readwrite",),
+        authorization_resolver="platform.readwrite at Global",
+        async_policy=OperationAsyncPolicy.PLATFORM_JOB,
+        exclusions={
+            "native_builder": "Cloudflare capacity is platform administration.",
+            "manifest": "Capacity installations are bound to the deployment.",
+            "sdk": "Runtime SDKs do not administer capacity.",
+        },
+    ),
+    OperationDefinition(
+        operation_id="capacity.cloudflare_reconcile",
+        summary="Verify Cloudflare Deployment",
+        target_kind=OperationTargetKind.PLATFORM,
+        rest=RestOperationBinding(
+            method="POST", path="/api/capacity/cloudflare/reconcile",
+            request_model="CloudflareCapacityAction", response_model="PlatformJobAccepted",
+        ),
+        cli=CliOperationBinding(path=("capacity", "cloudflare", "reconcile")),
+        mcp=McpOperationBinding(name="bifrost_cloudflare_reconcile_execute"),
+        audit_event="capacity.cloudflare_reconcile",
+        action_scopes=("platform.readwrite",),
+        authorization_resolver="platform.readwrite at Global",
+        async_policy=OperationAsyncPolicy.PLATFORM_JOB,
+        exclusions={
+            "native_builder": "Cloudflare capacity is platform administration.",
+            "manifest": "Capacity installations are bound to the deployment.",
             "sdk": "Runtime SDKs do not administer capacity.",
         },
     ),

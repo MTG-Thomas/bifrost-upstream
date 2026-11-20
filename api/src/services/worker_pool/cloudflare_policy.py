@@ -40,6 +40,10 @@ from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
     seal_credential,
 )
+from src.services.worker_pool.cloudflare_release import (
+    WorkersRelease,
+    WorkersReleaseUnavailable,
+)
 from src.services.worker_pool.cloudflare_spend import (
     WORKERS_RATE_TABLE_VERSION,
     cloudflare_usage_within_limit,
@@ -47,6 +51,12 @@ from src.services.worker_pool.cloudflare_spend import (
 )
 
 CONSENT_TEXT_VERSION = "existing-https-v1"
+CONSENT_TEXT = (
+    "Cloudflare will process approved workflow code, workload data, and run-scoped credentials. "
+    "Your HTTPS endpoint controls how Cloudflare reaches Bifrost. The Workers Scripts Write "
+    "grant can change other Workers in the selected account. You authorize Bifrost to provision "
+    "and remove its verified owned resources in that account."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +68,16 @@ class WorkersReleaseMeterBounds:
     per_fleet_fixed: Mapping[str, Decimal]
     release: str
     max_slots_per_launcher: int
+
+
+def release_meter_bounds(release: WorkersRelease) -> WorkersReleaseMeterBounds:
+    bounds = release.manifest.meter_bounds
+    if bounds is None:
+        raise WorkersReleaseUnavailable("The packaged Workers release has no qualified metering ceilings")
+    return WorkersReleaseMeterBounds(
+        bounds.cleanup_margin_seconds, bounds.per_launcher_second, bounds.per_fleet_fixed,
+        release.digest, release.manifest.max_slots_per_launcher,
+    )
 
 
 class CloudflarePolicyConflict(ValueError):
@@ -87,7 +107,7 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
         ).where(CloudflareInstallation.retired_at.is_(None))
     )).tuples().one_or_none()
     if row is None:
-        return CloudflareCapacityStatus(consent_text_version=CONSENT_TEXT_VERSION, installation=None)
+        return CloudflareCapacityStatus(consent_text_version=CONSENT_TEXT_VERSION, consent_text=CONSENT_TEXT, installation=None)
     installation, admission_open, owned_resources_pending = row
     latest_job_id = await db.scalar(select(PlatformJob.id).where(
         PlatformJob.resource_type == "cloudflare_installation",
@@ -100,6 +120,7 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
     ).order_by(PlatformJob.created_at.desc(), PlatformJob.id.desc()).limit(1))
     return CloudflareCapacityStatus(
         consent_text_version=CONSENT_TEXT_VERSION,
+        consent_text=CONSENT_TEXT,
         latest_job_id=latest_job_id,
         installation=CloudflareInstallationStatus.model_validate({
             "installation_id": installation.id,

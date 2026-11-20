@@ -1,11 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
+const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), patch: vi.fn() }));
 vi.mock("@/lib/api-client", () => ({
-	apiClient: { GET: mocks.get, POST: mocks.post },
+	apiClient: { GET: mocks.get, POST: mocks.post, PATCH: mocks.patch },
 }));
 
 import {
+	configureCloudflareCapacity,
 	getCloudflareCapacity,
 	rotateCloudflareAccountToken,
 	startCloudflareAction,
@@ -15,6 +16,7 @@ describe("Cloudflare capacity service", () => {
 	beforeEach(() => {
 		mocks.get.mockReset();
 		mocks.post.mockReset();
+		mocks.patch.mockReset();
 	});
 
 	it("reads Cloudflare capacity status", async () => {
@@ -27,7 +29,7 @@ describe("Cloudflare capacity service", () => {
 		expect(mocks.get).toHaveBeenCalledWith("/api/capacity/cloudflare");
 	});
 
-	it.each(["scale-in", "disconnect"] as const)(
+	it.each(["enable", "reconcile", "scale-in", "disconnect"] as const)(
 		"queues %s with the observed revision",
 		async (action) => {
 			const body = {
@@ -69,5 +71,21 @@ describe("Cloudflare capacity service", () => {
 		mocks.post.mockResolvedValue({ data: accepted });
 		await expect(rotateCloudflareAccountToken(body)).resolves.toBe(accepted);
 		expect(mocks.post).toHaveBeenCalledWith("/api/capacity/cloudflare/rotate", { body });
+	});
+
+	it("patches the observed revision and policy", async () => {
+		const body = {
+			action: "policy" as const,
+			installation_id: "installation-id",
+			expected_revision: 3,
+			policy: {
+				workers: { launcher_cap: 1, slots_per_launcher: 2, max_lifetime_seconds: 3600, work_kinds: ["workflow" as const] },
+				monthly_limit_usd: "10.00",
+			},
+		};
+		const data = { installation: null, consent_text_version: "existing-https-v1", consent_text: "Current consent" };
+		mocks.patch.mockResolvedValue({ data });
+		await expect(configureCloudflareCapacity(body)).resolves.toBe(data);
+		expect(mocks.patch).toHaveBeenCalledWith("/api/capacity/cloudflare", { body });
 	});
 });

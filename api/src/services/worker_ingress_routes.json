@@ -37,6 +37,7 @@
     "/api/sdk/artifacts/video": ["POST"],
     "/api/sdk/artifacts/{artifact_id}/content": ["GET"],
     "/api/sdk/artifacts/{artifact_id}/download-url": ["GET"],
+    "/api/sdk/capacity-canary/{worker_id}": ["GET"],
     "/api/sdk/config/delete": ["POST"],
     "/api/sdk/config/get": ["POST"],
     "/api/sdk/config/list": ["POST"],

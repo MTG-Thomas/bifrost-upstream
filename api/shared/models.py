@@ -60,6 +60,7 @@ class CloudflareInstallationStatus(BaseModel):
 
 class CloudflareCapacityStatus(BaseModel):
     consent_text_version: str
+    consent_text: str
     installation: CloudflareInstallationStatus | None
     latest_job_id: UUID | None = None
 
@@ -72,7 +73,26 @@ class CloudflareCapacityAction(BaseModel):
 
 
 class CloudflareAccountTokenRotation(CloudflareCapacityAction):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     api_token: SecretStr = Field(min_length=16, max_length=512, json_schema_extra={"writeOnly": True})
+
+
+class CloudflareConnectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    action: Literal["connect"]
+    account_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    worker_ingress_origin: str = Field(max_length=255)
+    consent_version: str = Field(max_length=64)
+    consent: Literal[True]
+    api_token: SecretStr = Field(min_length=16, max_length=512, json_schema_extra={"writeOnly": True})
+    policy: CloudflareCapacityPolicy
+
+
+class CloudflarePolicyUpdate(CloudflareCapacityAction):
+    action: Literal["policy"]
+    policy: CloudflareCapacityPolicy
 
 
 class GitAppManifestRequest(BaseModel):

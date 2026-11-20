@@ -1,13 +1,14 @@
 """Lease-fenced Cloudflare inventory and retirement jobs."""
 
 import asyncio
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import UUID
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
-from sqlalchemy import case, delete, func, select, text, true, update
+from sqlalchemy import case, delete, func, select, text, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import get_db_context
@@ -23,7 +24,9 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareCredential,
     CloudflareInstallation,
     CloudflareOwnedResource,
+    CloudflareWorkerReservation,
 )
+from src.models.orm.execution_workers import ExecutionWorker
 from src.models.orm.platform_jobs import PlatformJob
 from src.services.audit import emit_audit
 from src.services.audit_context import ActorContext
@@ -176,6 +179,7 @@ async def _cleanup_one(
     await resume_deletion(
         adapter, api_token=token,
         committed_deletion=ResourceObservation(intent, resource.provider_id, resource.provider_version),
+        namespace_ids=frozenset(resource.namespace_ids.values()),
     )
     resource.state = "absent"
     resource.observed_at = datetime.now(UTC)
@@ -192,6 +196,8 @@ async def _settle_disable(
             if row is None or row.desired_revision != payload.revision or row.desired_state != payload.desired_state:
                 return {"outcome": "superseded"}
             workers_remain = await cloudflare_workers_remain(db, row.id)
+            if workers_remain:
+                await _require_legacy_cleanup(db)
             if not workers_remain:
                 cleanup = await _cleanup_one(db, row, adapter) if payload.action == "disconnect" else "complete"
                 if cleanup == "progressed":
@@ -206,10 +212,39 @@ async def _settle_disable(
                         actor_override=ActorContext(None, None, source="scheduler"),
                     )
                     return {"outcome": payload.desired_state}
-            requested_at = await db.scalar(select(PlatformJob.created_at).where(PlatformJob.id == context.job_id))
-            if requested_at is not None and datetime.now(UTC) >= requested_at + DRAIN_DEADLINE:
-                raise PlatformJobRequiresAction("Verify Cloudflare Worker Retirement", {"code": "CF_DRAIN_TIMEOUT"})
+            started_at = await db.scalar(select(PlatformJob.started_at).where(PlatformJob.id == context.job_id))
+            if started_at is not None and datetime.now(UTC) >= started_at + DRAIN_DEADLINE:
+                phase = "Wait for Cloudflare Creation to Settle" if not workers_remain else "Verify Cloudflare Worker Retirement"
+                raise PlatformJobRequiresAction(phase, {"code": "CF_DRAIN_TIMEOUT"})
         await asyncio.sleep(2)
+
+
+async def _require_legacy_cleanup(db: AsyncSession) -> None:
+    workers = (await db.execute(select(
+        ExecutionWorker.id, ExecutionWorker.capacity_scope, ExecutionWorker.capacity_resource_uid,
+    ).where(
+        ExecutionWorker.runtime_profile == "cloudflare-python-v1",
+        ExecutionWorker.capacity_scope.is_not(None),
+        ExecutionWorker.capacity_resource_deleted_at.is_(None),
+        ~select(CloudflareWorkerReservation.worker_id).where(
+            CloudflareWorkerReservation.worker_id == ExecutionWorker.id,
+        ).exists(),
+    ).order_by(ExecutionWorker.id).limit(21))).all()
+    if workers:
+        raise PlatformJobRequiresAction("Retire Legacy Cloudflare Workers", {
+            "code": "CF_LEGACY_WORKERS_UNVERIFIED",
+            "workers": [
+                {"worker_id": str(worker.id), "scope": worker.capacity_scope, "resource_uid": worker.capacity_resource_uid}
+                for worker in workers[:20]
+            ],
+            "more_workers": len(workers) > 20,
+            "instructions": [
+                "Find the original capacity endpoint in the previous Bifrost deployment configuration.",
+                "Look up each worker by its exact worker ID and scope. Match its resource UID before releasing it.",
+                "Use that provider's release operation and retain its exact deletion receipt. If the UID is missing or differs, stop and recover the original enrollment record.",
+                "Have a platform operator reconcile physical deletion using these receipts, then retry the capacity action.",
+            ],
+        })
 
 
 async def _retire(db: AsyncSession, row: CloudflareInstallation, payload: CloudflareDisablePayload) -> None:
@@ -250,49 +285,91 @@ async def _disable(context: PlatformJobContext, parsed: BaseModel) -> dict[str, 
 CLOUDFLARE_DISABLE_DEFINITION = define_platform_job(DISABLE_JOB, CloudflareDisablePayload, _disable)
 
 
-async def _verify_admitted_workers(
-    db: AsyncSession, installation: CloudflareInstallation, adapter: OwnedResourceCleanup,
+@dataclass(frozen=True, slots=True)
+class _InventoryReceipt:
+    intent: ResourceIntent
+    provider_id: str | None
+    provider_version: str | None
+    state: str
+
+
+async def _inventory_snapshot(
+    db: AsyncSession, installation_id: UUID, *, revision: int | None = None,
+) -> tuple[_InventoryReceipt, ...]:
+    query = select(CloudflareOwnedResource).where(CloudflareOwnedResource.installation_id == installation_id)
+    if revision is None:
+        query = query.where(CloudflareOwnedResource.state.in_(("present", "deleting")))
+    else:
+        query = query.where(
+            CloudflareOwnedResource.desired_revision == revision,
+            CloudflareOwnedResource.scope == "workers",
+            CloudflareOwnedResource.kind == "worker_script",
+            CloudflareOwnedResource.state == "present",
+        )
+    rows = (await db.scalars(query.order_by(CloudflareOwnedResource.id))).all()
+    return tuple(_InventoryReceipt(_resource_intent(row), row.provider_id, row.provider_version, row.state) for row in rows)
+
+
+async def _observe_inventory(
+    adapter: OwnedResourceCleanup, token: SecretStr, inventory: tuple[_InventoryReceipt, ...], *, require_present: bool,
 ) -> None:
-    rows = (await db.scalars(select(CloudflareOwnedResource).where(
-        CloudflareOwnedResource.installation_id == installation.id,
-        CloudflareOwnedResource.desired_revision == installation.admitted_revision,
-        CloudflareOwnedResource.scope == "workers",
-        CloudflareOwnedResource.kind == "worker_script",
-        CloudflareOwnedResource.state == "present",
-    ))).all()
-    if len(rows) != 2 or {row.target_name.rsplit("-", 1)[-1] for row in rows} != {"launcher", "capacity"}:
-        raise ObservationPending("The admitted revision lacks a complete Workers deployment receipt")
-    token = await _management_token(db, installation)
-    for row in rows:
-        if row.provider_id is None or row.provider_version is None:
+    for receipt in inventory:
+        if receipt.provider_id is None or receipt.provider_version is None:
             raise OwnershipConflict("Cloudflare Worker has no exact deployment receipt")
-        intent = _resource_intent(row)
-        observation = ResourceObservation(intent, row.provider_id, row.provider_version)
-        if await observe_owned(adapter, api_token=token, intent=intent, recorded=observation) is None:
+        observation = ResourceObservation(receipt.intent, receipt.provider_id, receipt.provider_version)
+        remote = await observe_owned(adapter, api_token=token, intent=receipt.intent, recorded=observation)
+        if remote is None and require_present:
             raise ObservationPending("An owned Cloudflare Worker has disappeared")
+
+
+def _current_reconcile(installation: CloudflareInstallation | None, revision: int) -> bool:
+    return (
+        installation is not None and installation.retired_at is None
+        and installation.desired_revision == revision and installation.desired_state == "enabled"
+    )
 
 
 async def _settle_reconcile(
     context: PlatformJobContext, payload: CloudflareReconcilePayload, adapter: OwnedResourceCleanup,
 ) -> dict[str, str]:
     issue = None
+    token = None
     async with get_db_context() as db:
         await _hold_installation_lease(db, context, payload.installation_id)
         installation = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
-        if (
-            installation is None or installation.retired_at is not None
-            or installation.desired_revision != payload.revision
-            or installation.admitted_revision != payload.revision
-        ):
+        if installation is None or not _current_reconcile(installation, payload.revision):
             return {"outcome": "superseded"}
+        token_version = installation.api_token_version
+        admitted_revision = installation.admitted_revision
+        inventory = await _inventory_snapshot(db, installation.id, revision=payload.revision)
         try:
-            await _verify_admitted_workers(db, installation, adapter)
+            token = await _management_token(db, installation)
+        except CloudflareManagementDenied:
+            issue = ("Reconnect Cloudflare", "CF_MANAGEMENT_CREDENTIAL")
+
+    if token is not None:
+        try:
+            roles = {receipt.intent.target.name.rsplit("-", 1)[-1] for receipt in inventory}
+            if len(inventory) != 2 or roles != {"launcher", "capacity"}:
+                raise ObservationPending("The admitted revision lacks a complete Workers deployment receipt")
+            await _observe_inventory(adapter, token, inventory, require_present=True)
         except OwnershipConflict:
             issue = ("Verify Cloudflare Ownership", "CF_OWNERSHIP_CONFLICT")
         except ObservationPending:
             issue = ("Verify Cloudflare Deployment", "CF_DEPLOYMENT_UNVERIFIED")
         except CloudflareManagementDenied:
             issue = ("Reconnect Cloudflare", "CF_MANAGEMENT_CREDENTIAL")
+
+    async with get_db_context() as db:
+        await _hold_installation_lease(db, context, payload.installation_id)
+        installation = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
+        if (
+            installation is None or not _current_reconcile(installation, payload.revision)
+            or installation.api_token_version != token_version
+            or installation.admitted_revision != admitted_revision
+            or await _inventory_snapshot(db, installation.id, revision=payload.revision) != inventory
+        ):
+            return {"outcome": "superseded"}
         if issue is not None:
             installation.admitted_revision = None
             wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
@@ -314,64 +391,93 @@ async def _reconcile(context: PlatformJobContext, parsed: BaseModel) -> dict[str
 CLOUDFLARE_RECONCILE_DEFINITION = define_platform_job(RECONCILE_JOB, CloudflareReconcilePayload, _reconcile)
 
 
+async def enqueue_cloudflare_reconcile(
+    db: AsyncSession, caller: Caller, *, installation_id: UUID, expected_revision: int,
+) -> tuple[PlatformJob, bool]:
+    require_operation(caller, "capacity.cloudflare_reconcile", GLOBAL)
+    actor = caller.principal
+    installation = await db.get(CloudflareInstallation, installation_id, with_for_update=True)
+    if not _current_reconcile(installation, expected_revision):
+        raise CloudflarePolicyConflict("Cloudflare reconciliation requires the current enabled deployment")
+    payload = CloudflareReconcilePayload(installation_id=installation_id, revision=expected_revision)
+    job, reused = await enqueue_platform_job(
+        db, CLOUDFLARE_RECONCILE_DEFINITION, payload,
+        dedupe_key=f"manual:{installation_id}:{expected_revision}:{actor.user_id}",
+        resource_lock_key=f"cloudflare-installation:{installation_id}",
+        organization_id=None, requested_by_user_id=actor.user_id, requested_by_email=actor.email,
+        requested_by_name=actor.name, resource_type="cloudflare_installation", resource_id=str(installation_id),
+        title="Verify Cloudflare Deployment", action_url=None,
+    )
+    if not reused:
+        await emit_audit(
+            db, "capacity.cloudflare_reconcile", resource_type="cloudflare_installation", resource_id=installation_id,
+            details={"revision": expected_revision, "job_id": str(job.id)},
+        )
+    return job, reused
+
+
 async def _rotate_account_token(context: PlatformJobContext, parsed: BaseModel) -> dict[str, str | int]:
     payload = CloudflareRotateAccountPayload.model_validate(parsed)
     await context.report("Validating Replacement Cloudflare API Token")
     denial = None
+    credential_key = (payload.installation_id, "account_token", "", payload.replacement_version)
+    async with get_db_context() as db:
+        await _hold_installation_lease(db, context, payload.installation_id)
+        installation = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
+        if installation is None or installation.retired_at is not None:
+            return {"outcome": "superseded"}
+        if installation.api_token_version == payload.replacement_version:
+            return {"outcome": "rotated", "credential_version": payload.replacement_version}
+        candidate = await db.get(CloudflareCredential, credential_key)
+        if candidate is None or candidate.ciphertext is None:
+            raise PlatformJobRequiresAction("Submit a Replacement Cloudflare API Token", {"code": "CF_REPLACEMENT_MISSING"})
+        if installation.api_token_version != payload.previous_version:
+            candidate.ciphertext = None
+            return {"outcome": "superseded"}
+        account_id = installation.account_id
+        desired_revision = installation.desired_revision
+        ciphertext = candidate.ciphertext
+        inventory = await _inventory_snapshot(db, installation.id)
+        ref = CredentialRef(installation.id, account_id, "account_token", "", payload.replacement_version)
+        bearer = open_credential(ref, candidate)
+
     try:
-        async with get_db_context() as db:
-            await _hold_installation_lease(db, context, payload.installation_id)
-            installation = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
-            if installation is None or installation.retired_at is not None:
-                return {"outcome": "superseded"}
-            if installation.api_token_version == payload.replacement_version:
-                return {"outcome": "rotated", "credential_version": payload.replacement_version}
-            candidate = await db.get(CloudflareCredential, (
-                installation.id, "account_token", "", payload.replacement_version,
-            ))
-            if candidate is None or candidate.ciphertext is None:
-                raise PlatformJobRequiresAction("Submit A Replacement Cloudflare API Token", {"code": "CF_REPLACEMENT_MISSING"})
-            if installation.api_token_version != payload.previous_version:
-                candidate.ciphertext = None
-                return {"outcome": "superseded"}
-            ref = CredentialRef(installation.id, installation.account_id, "account_token", "", payload.replacement_version)
-            bearer = open_credential(ref, candidate)
-            async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
-                adapter = WorkersRestCleanup(http)
-                try:
-                    await adapter.verify_account(installation.account_id, bearer)
-                    # Prove that the token can also read the exact inventory.
-                    resources = await db.scalars(select(CloudflareOwnedResource).where(
-                        CloudflareOwnedResource.installation_id == installation.id,
-                        CloudflareOwnedResource.state.in_(("present", "deleting")),
-                    ))
-                    for resource in resources:
-                        if resource.provider_id is None or resource.provider_version is None:
-                            raise OwnershipConflict
-                        intent = _resource_intent(resource)
-                        await observe_owned(
-                            adapter, api_token=bearer, intent=intent,
-                            recorded=ResourceObservation(intent, resource.provider_id, resource.provider_version),
-                        )
-                except CloudflareManagementDenied:
-                    denial = ("Submit A Replacement Cloudflare API Token", "CF_MANAGEMENT_CREDENTIAL")
-                except (ObservationPending, OwnershipConflict):
-                    denial = ("Verify Cloudflare Ownership", "CF_DEPLOYMENT_UNVERIFIED")
-            if denial is not None:
-                candidate.ciphertext = None
-            else:
-                previous = await db.get(CloudflareCredential, (installation.id, "account_token", "", payload.previous_version))
-                installation.api_token_version = payload.replacement_version
-                if previous is not None:
-                    previous.ciphertext = None
-                await emit_audit(
-                    db, "capacity.cloudflare_account_token_rotated", resource_type="cloudflare_installation",
-                    resource_id=installation.id, details={
-                        "credential_version": payload.replacement_version, "job_id": str(context.job_id),
-                    }, actor_override=ActorContext(None, None, source="scheduler"),
-                )
+        async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
+            adapter = WorkersRestCleanup(http)
+            await adapter.verify_account(account_id, bearer)
+            await _observe_inventory(adapter, bearer, inventory, require_present=False)
+    except CloudflareManagementDenied:
+        denial = ("Submit a Replacement Cloudflare API Token", "CF_MANAGEMENT_CREDENTIAL")
+    except (ObservationPending, OwnershipConflict):
+        denial = ("Verify Cloudflare Ownership", "CF_DEPLOYMENT_UNVERIFIED")
     except CloudflareRestUnavailable:
         raise PlatformJobFailure("CF_PROVIDER_UNAVAILABLE", "Cloudflare REST Is Temporarily Unavailable", retryable=True) from None
+
+    async with get_db_context() as db:
+        await _hold_installation_lease(db, context, payload.installation_id)
+        installation = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
+        candidate = await db.get(CloudflareCredential, credential_key, with_for_update=True)
+        if (
+            installation is None or installation.retired_at is not None
+            or candidate is None or candidate.ciphertext != ciphertext
+        ):
+            return {"outcome": "superseded"}
+        if (
+            installation.api_token_version != payload.previous_version or installation.desired_revision != desired_revision
+            or installation.account_id != account_id or await _inventory_snapshot(db, installation.id) != inventory
+        ):
+            candidate.ciphertext = None
+            return {"outcome": "superseded"}
+        if denial is not None:
+            candidate.ciphertext = None
+        else:
+            installation.api_token_version = payload.replacement_version
+            await emit_audit(
+                db, "capacity.cloudflare_account_token_rotated", resource_type="cloudflare_installation",
+                resource_id=installation.id, details={
+                    "credential_version": payload.replacement_version, "job_id": str(context.job_id),
+                }, actor_override=ActorContext(None, None, source="scheduler"),
+            )
     if denial is not None:
         raise PlatformJobRequiresAction(denial[0], {"code": denial[1]})
     return {"outcome": "rotated", "credential_version": payload.replacement_version}
@@ -399,9 +505,6 @@ async def enqueue_cloudflare_account_token_rotation(
         CloudflareCredential.scope == "",
     )
     next_version = (await db.scalar(select(func.max(CloudflareCredential.version)).where(*versions)) or 0) + 1
-    await db.execute(update(CloudflareCredential).where(
-        *versions, CloudflareCredential.version != row.api_token_version, CloudflareCredential.ciphertext.is_not(None),
-    ).values(ciphertext=None))
     ref = CredentialRef(row.id, row.account_id, "account_token", "", next_version)
     db.add(seal_credential(ref, replacement, actor=str(actor.user_id), now=datetime.now(UTC)))
     payload = CloudflareRotateAccountPayload(

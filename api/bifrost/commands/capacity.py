@@ -1,8 +1,10 @@
 """Operate platform capacity through the authenticated REST API."""
 
-from typing import Any
+import json
+from typing import Any, TextIO
 
 import click
+from pydantic import ValidationError
 
 from bifrost.client import BifrostClient
 from bifrost.contracts.cloudflare_capacity import (
@@ -54,6 +56,63 @@ def _register_action(name: str, help_text: str) -> None:
 
 _register_action("scale-in", "Drain Cloudflare workers and retain the connection.")
 _register_action("disconnect", "Drain Cloudflare workers and remove verified owned capacity.")
+_register_action("enable", "Provision and verify Cloudflare Workers capacity.")
+_register_action("reconcile", "Verify the current Cloudflare Workers deployment.")
+
+
+def _read_policy(policy: TextIO) -> dict[str, Any]:
+    try:
+        value = json.load(policy)
+    except ValueError:
+        raise click.ClickException("The Cloudflare policy file must contain a JSON object.") from None
+    if not isinstance(value, dict):
+        raise click.ClickException("The Cloudflare policy file must contain a JSON object.")
+    return value
+
+
+@cloudflare_group.command("connect")
+@click.option("--account-id", required=True)
+@click.option("--worker-ingress-origin", required=True)
+@click.option("--policy", type=click.File("r", encoding="utf-8"), required=True, help="Cloudflare capacity policy JSON file.")
+@click.pass_context
+@pass_resolver
+@run_async
+async def connect(
+    ctx: click.Context, account_id: str, worker_ingress_origin: str, policy: TextIO, *,
+    client: BifrostClient, resolver: RefResolver,
+) -> None:
+    """Validate an account token and connect Cloudflare."""
+    limits = _read_policy(policy)
+    current = await client.get(_PATH)
+    current.raise_for_status()
+    consent = current.json()
+    click.echo(consent["consent_text"], err=True)
+    click.confirm("Accept the current Cloudflare consent", abort=True)
+    response = await client.patch(_PATH, json={
+        "action": "connect", "account_id": account_id, "worker_ingress_origin": worker_ingress_origin,
+        "consent_version": consent["consent_text_version"], "consent": True,
+        "api_token": click.prompt("Cloudflare API Token", hide_input=True), "policy": limits,
+    })
+    response.raise_for_status()
+    output_result(response.json(), ctx=ctx)
+
+
+@cloudflare_group.command("policy")
+@_apply_flags(_ACTION_FLAGS)
+@click.option("--policy", type=click.File("r", encoding="utf-8"), required=True, help="Cloudflare capacity policy JSON file.")
+@click.pass_context
+@pass_resolver
+@run_async
+async def policy(
+    ctx: click.Context, policy: TextIO, *, client: BifrostClient, resolver: RefResolver, **fields: Any,
+) -> None:
+    """Update the current Cloudflare capacity policy."""
+    current = CloudflareCapacityAction.model_validate(fields)
+    response = await client.patch(_PATH, json={
+        **current.model_dump(mode="json"), "action": "policy", "policy": _read_policy(policy),
+    })
+    response.raise_for_status()
+    output_result(response.json(), ctx=ctx)
 
 
 @cloudflare_group.command("rotate", help="Validate and replace the Cloudflare account API token.")
@@ -65,9 +124,12 @@ _register_action("disconnect", "Drain Cloudflare workers and remove verified own
 async def rotate(
     ctx: click.Context, wait: bool, *, client: BifrostClient, resolver: RefResolver, **fields: Any,
 ) -> None:
-    body = CloudflareAccountTokenRotation.model_validate({
-        **fields, "api_token": click.prompt("Replacement Cloudflare API Token", hide_input=True),
-    })
+    try:
+        body = CloudflareAccountTokenRotation.model_validate({
+            **fields, "api_token": click.prompt("Replacement Cloudflare API Token", hide_input=True),
+        })
+    except ValidationError:
+        raise click.ClickException("Enter a valid Cloudflare API token and installation revision.") from None
     response = await client.post(f"{_PATH}/rotate", json={
         **body.model_dump(mode="json", exclude={"api_token"}),
         "api_token": body.api_token.get_secret_value(),

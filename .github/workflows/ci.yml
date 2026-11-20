@@ -892,6 +892,7 @@ jobs:
         if: vars.QUALIFIED_WORKERS_RUNTIME_URL != ''
         env:
           QUALIFIED_WORKERS_RUNTIME_URL: ${{ vars.QUALIFIED_WORKERS_RUNTIME_URL }}
+          BIFROST_RELEASE_WORKERS_METER_BOUNDS: ${{ vars.QUALIFIED_WORKERS_METER_BOUNDS }}
         run: |
           set -euo pipefail
           if [[ "$QUALIFIED_WORKERS_RUNTIME_URL" != https://* ]]; then

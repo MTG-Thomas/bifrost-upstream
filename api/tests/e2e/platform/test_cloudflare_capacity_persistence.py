@@ -4,6 +4,7 @@ import json
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
@@ -18,11 +19,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import Settings
 from src.core.principal import UserPrincipal
 from src.jobs.platform import cloudflare_capacity as lifecycle_job
+from src.jobs.platform import cloudflare_enable as enable_job
 from src.jobs.platform.base import (
     PlatformJobContext,
     PlatformJobFailure,
     PlatformJobRequiresAction,
 )
+from src.models.orm.audit import AuditLog
 from src.models.orm.cloudflare_capacity import (
     CloudflareCapacityScope,
     CloudflareCapacityUsage,
@@ -34,6 +37,7 @@ from src.models.orm.cloudflare_capacity import (
 from src.models.orm.execution_workers import ExecutionWorker
 from src.models.orm.platform_jobs import PlatformJob
 from src.models.orm.work_dispatches import WorkDispatch
+from src.services import worker_ingress_probes as ingress_probes
 from src.services.authorization.context import (
     AuthorizationContext,
     Boundary,
@@ -69,6 +73,7 @@ from src.services.worker_pool.cloudflare_policy import (
 )
 from src.services.worker_pool.cloudflare_provisioning import (
     ResourceIntent,
+    ResourceObservation,
     ResourceTarget,
 )
 from src.services.worker_pool.cloudflare_spend import (
@@ -77,6 +82,7 @@ from src.services.worker_pool.cloudflare_spend import (
 )
 from src.services.worker_pool.cloudflare_workers_rest import (
     OWNER_BINDING,
+    ConfiguredWorkersScript,
     WorkersRestCleanup,
     worker_owner_value,
 )
@@ -97,7 +103,7 @@ def test_cloudflare_routes_refuse_provider_org_membership(e2e_client, provider_o
     assert e2e_client.get(path, headers=platform_admin.headers).status_code == 200
     assert e2e_client.get(path, headers=provider_org_user.headers).status_code == 403
     body = {"installation_id": str(uuid4()), "expected_revision": 1}
-    for action in ("scale-in", "disconnect"):
+    for action in ("scale-in", "disconnect", "enable", "reconcile"):
         assert e2e_client.post(f"{path}/{action}", headers=provider_org_user.headers, json=body).status_code == 403
     assert e2e_client.post(
         f"{path}/rotate", headers=provider_org_user.headers,
@@ -106,11 +112,18 @@ def test_cloudflare_routes_refuse_provider_org_membership(e2e_client, provider_o
 
 
 @pytest.mark.asyncio
-async def test_account_rotation_switches_only_a_valid_same_account_version(
+async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
     db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch,
 ) -> None:
-    admin = _platform_operator()
-    candidate = SecretStr("test-rotated-account-token")
+    installation.policy = {**installation.policy, "bounds_release": "d" * 64}
+    job, reused = await enable_job.enqueue_cloudflare_enable(
+        db_session, _platform_operator(), installation_id=installation.id, expected_revision=1,
+    )
+    assert not reused and job.payload == {"installation_id": str(installation.id), "revision": 1}
+    lease_token = uuid4()
+    job.status = "running"
+    job.lease_token = lease_token
+    await db_session.flush()
     connection = await db_session.connection()
 
     @asynccontextmanager
@@ -119,16 +132,115 @@ async def test_account_rotation_switches_only_a_valid_same_account_version(
             yield session
             await session.commit()
 
+    monkeypatch.setattr(enable_job, "get_db_context", context)
+    monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
+    observed = {}
+    writes = []
+
+    class Provider:
+        async def observe(self, *, api_token, intent):
+            assert api_token == SecretStr("synthetic-cloudflare-management-token")
+            return observed.get(intent.target.name)
+
+        async def create(self, *, api_token, intent, scope_bearer):
+            assert (scope_bearer is not None) == intent.target.name.endswith("-capacity")
+            writes.append(intent.target.name)
+            observed[intent.target.name] = ResourceObservation(intent, str(uuid4()), str(uuid4()))
+
+        async def configure_endpoint(self, *, api_token, expected):
+            name = expected.intent.target.name
+            return ConfiguredWorkersScript(
+                "https://capacity.example.test" if name.endswith("-capacity") else None,
+                {"OwnedNamespace": "a" * 32},
+            )
+
+    monkeypatch.setattr(enable_job, "WorkersRestProvisioner", lambda *_: Provider())
+    monkeypatch.setattr(ingress_probes, "_public_addresses", AsyncMock(return_value=("203.0.113.10",)))
+    monkeypatch.setattr(ingress_probes, "_probe_address", AsyncMock(return_value=ingress_probes.WorkerIngressProbeResult(
+        installation.worker_ingress_origin, True, True, True,
+        (ingress_probes.RouteProbe("GET", "/api/sdk/context", 401, True),),
+    )))
+    canary = AsyncMock(side_effect=[ingress_probes.RuntimeCanary(True, False), ingress_probes.RuntimeCanary(True, True)])
+    monkeypatch.setattr(enable_job, "run_workers_canary", canary)
+    paid = AsyncMock()
+
+    async def sample(row, *, revision, scripts):
+        assert revision == row.desired_revision
+        assert set(scripts) == set(writes)
+        async with context() as db:
+            await add_usage(db, row)
+
+    usage = AsyncMock(side_effect=sample)
+    running = PlatformJobContext(job.id, lease_token, None, str(OPERATOR_ID), "operator@example.test", "")
+    payload = enable_job.CloudflareEnablePayload.model_validate(job.payload)
+    release = SimpleNamespace(digest="d" * 64)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(500))) as http:
+        with pytest.raises(PlatformJobRequiresAction) as denied:
+            await enable_job._settle_enable(running, payload, http, release, check_paid=paid, refresh_usage=usage)
+        assert denied.value.result == {"code": "CF_WORKER_INGRESS_UNVERIFIED"}
+        usage.assert_not_awaited()
+        await db_session.refresh(installation)
+        assert installation.admitted_revision is None
+        assert await enable_job._settle_enable(
+            running, payload, http, release, check_paid=paid, refresh_usage=usage,
+        ) == {"outcome": "enabled"}
+    assert len(writes) == 2 and canary.await_count == 2
+    await db_session.refresh(installation)
+    assert installation.admitted_revision == 1
+
+
+@pytest.mark.asyncio
+async def test_account_rotation_switches_only_a_valid_same_account_version(
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch,
+) -> None:
+    admin = _platform_operator()
+    candidate = SecretStr("test-rotated-account-token")
+    receipt = CloudflareOwnedResource(
+        id=uuid4(), installation_id=installation.id, account_id=installation.account_id,
+        scope="workers", kind="worker_script", target_name="rotation-capacity", desired_revision=1,
+        artifact_digest="c" * 64, effect_id=uuid4(), state="present",
+        provider_id=str(uuid4()), provider_version=str(uuid4()),
+    )
+    db_session.add(receipt)
+    await db_session.flush()
+    connection = await db_session.connection()
+    locked = False
+
+    @asynccontextmanager
+    async def context():
+        nonlocal locked
+        async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as session:
+            locked = True
+            try:
+                yield session
+                await session.commit()
+            finally:
+                locked = False
+
     monkeypatch.setattr(lifecycle_job, "get_db_context", context)
     monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
     accepted = False
 
     def remote(request: httpx.Request) -> httpx.Response:
+        assert not locked
         assert request.method == "GET"
-        assert request.url.path == f"/client/v4/accounts/{installation.account_id}"
         assert request.headers["Authorization"] == "Bearer " + candidate.get_secret_value()
+        path = request.url.path
+        if path.endswith("/settings"):
+            result = {"bindings": [{
+                "name": OWNER_BINDING, "type": "plain_text",
+                "text": worker_owner_value(lifecycle_job._resource_intent(receipt)),
+            }]}
+        elif path.endswith("/deployments"):
+            result = {"deployments": [{
+                "id": receipt.provider_id,
+                "versions": [{"percentage": 100, "version_id": receipt.provider_version}],
+            }]}
+        else:
+            assert path == f"/client/v4/accounts/{installation.account_id}"
+            result = {"id": installation.account_id if accepted else "b" * 32}
         return httpx.Response(200, json={
-            "success": True, "result": {"id": installation.account_id if accepted else "b" * 32},
+            "success": True, "result": result,
         })
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as http:
@@ -162,7 +274,12 @@ async def test_account_rotation_switches_only_a_valid_same_account_version(
             await db_session.refresh(installation)
     assert installation.api_token_version == 3 and installation.control_root_version == 1
     previous = await db_session.get(CloudflareCredential, (installation.id, "account_token", "", 1))
-    assert previous is not None and previous.ciphertext is None
+    assert previous is not None and previous.ciphertext is not None
+    audit = await db_session.scalar(select(AuditLog).where(
+        AuditLog.resource_id == installation.id, AuditLog.action == "capacity.cloudflare_account_token_rotated",
+    ))
+    assert audit is not None
+    assert candidate.get_secret_value() not in json.dumps(audit.details)
 
 
 @pytest.mark.asyncio

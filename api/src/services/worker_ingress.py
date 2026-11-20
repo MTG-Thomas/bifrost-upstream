@@ -55,7 +55,8 @@ ROUTES = {
 ALLOW_MARKER = f'v{POLICY["version"]}; allowed'.encode()
 DENY_MARKER = f'v{POLICY["version"]}; denied'.encode()
 PROBE_HEADER = b"x-bifrost-ingress-probe"
-_UUID_PARAMETERS = frozenset({"org_id", "role_id", "form_id", "agent_id", "run_id", "job_id", "execution_id"})
+_UUID_PARAMETERS = frozenset({"org_id", "role_id", "form_id", "agent_id", "run_id", "job_id", "execution_id", "worker_id"})
+_CANARY_PREFIX = "/api/sdk/capacity-canary/"
 _SOURCE_PREFIX = "/api/sdk/modules/"
 _ENCODED_BYTE = re.compile(rb"%([0-9a-fA-F]{2})")
 _UNRESERVED = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
@@ -242,6 +243,7 @@ class WorkerIngress:
         self.origin_until = 0.0
         self.origin_lock = asyncio.Lock()
         self.refresh = _RequestBudget(16, 8)
+        self.capacity_canary = _RequestBudget(4, 2)
         self.pending_hello = _RequestBudget(16, 8)
         self.http = _IdentityBudgets(40, 8)
         self.launchers = _IdentityBudgets(4, 2)
@@ -287,6 +289,9 @@ class WorkerIngress:
         refresh = scope["path"] == _REFRESH_PATH
         if refresh:
             budget = self.refresh if self.refresh.take() else None
+        elif scope["path"].startswith(_CANARY_PREFIX) and scope["method"] == "GET":
+            scope["worker_ingress_capacity_canary"] = True
+            budget = self.capacity_canary if self.capacity_canary.take() else None
         else:
             claims = _access_claims(scope)
             if not claims or not isinstance(claims.get("sub"), str):

@@ -50,7 +50,9 @@ class OwnedResourceCleanup(Protocol):
         """Delete only if the target still matches the entire observation."""
         ...
 
-    async def verify_absent(self, *, api_token: SecretStr, target: ResourceTarget) -> None:
+    async def verify_absent(
+        self, *, api_token: SecretStr, target: ResourceTarget, namespace_ids: frozenset[str] = frozenset(),
+    ) -> None:
         """Check late effects and any resources implicitly owned by this target."""
         ...
 
@@ -127,6 +129,7 @@ async def resume_deletion(
     *,
     api_token: SecretStr,
     committed_deletion: ResourceObservation,
+    namespace_ids: frozenset[str] = frozenset(),
 ) -> None:
     """Resume a committed deletion intent under the caller's mutation fence."""
     observed = await observe_owned(
@@ -138,4 +141,4 @@ async def resume_deletion(
             adapter, api_token=api_token, intent=committed_deletion.intent, recorded=committed_deletion,
         ) is not None:
             raise ObservationPending("Cloudflare resource deletion is unconfirmed")
-    await adapter.verify_absent(api_token=api_token, target=committed_deletion.intent.target)
+    await adapter.verify_absent(api_token=api_token, target=committed_deletion.intent.target, namespace_ids=namespace_ids)

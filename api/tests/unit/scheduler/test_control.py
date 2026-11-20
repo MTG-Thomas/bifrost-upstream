@@ -114,8 +114,8 @@ async def test_leader_installs_the_full_catalog(monkeypatch: pytest.MonkeyPatch)
     started = asyncio.Event()
     stopped = asyncio.Event()
 
-    async def supervise(_stop, _settings, *, kubernetes):
-        assert kubernetes
+    async def supervise(_stop, _settings, *, lease):
+        assert isinstance(lease, FakeLease)
         started.set()
         try:
             await asyncio.Future()

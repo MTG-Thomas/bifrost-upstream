@@ -29,10 +29,13 @@ import { getErrorMessage } from "@/lib/api-error";
 import { GLOBAL_TARGET } from "@/lib/authorization";
 import { useAuthorization } from "@/services/authorization";
 import {
+	configureCloudflareCapacity,
 	getCloudflareCapacity,
 	rotateCloudflareAccountToken,
 	startCloudflareAction,
 	type CloudflareAction,
+	type CloudflareCapacityStatus,
+	type CloudflareConfiguration,
 } from "@/services/cloudflareCapacity";
 import { observePlatformJob, type PlatformJob } from "@/services/platformJobs";
 import { webSocketService } from "@/services/websocket";
@@ -43,6 +46,97 @@ const terminal = new Set([
 	"cancelled",
 	"requires_action",
 ]);
+
+function CloudflareConfigurationForm({ status, onSaved }: {
+	status: CloudflareCapacityStatus;
+	onSaved: () => void;
+}) {
+	const installation = status.installation;
+	const settings = installation?.policy;
+	const [saving, setSaving] = useState(false);
+	const [failure, setFailure] = useState<string>();
+
+	async function save(event: FormEvent<HTMLFormElement>) {
+		event.preventDefault();
+		if (saving) return;
+		const form = event.currentTarget;
+		const fields = new FormData(form);
+		if (!installation && fields.get("consent") !== "on") {
+			setFailure("Accept the Cloudflare terms to connect.");
+			return;
+		}
+		const sharedCap = String(fields.get("shared_cap") ?? "");
+		const policy = {
+			workers: {
+				launcher_cap: Number(fields.get("launcher_cap")),
+				slots_per_launcher: Number(fields.get("slots")),
+				max_lifetime_seconds: Number(fields.get("lifetime")),
+				work_kinds: fields.get("workflows") === "on" ? ["workflow" as const] : [],
+			},
+			monthly_limit_usd: String(fields.get("monthly_limit")),
+			shared_managed_worker_cap: sharedCap ? Number(sharedCap) : null,
+		};
+		const request: CloudflareConfiguration = installation ? {
+			action: "policy",
+			installation_id: installation.installation_id,
+			expected_revision: installation.desired_revision,
+			policy,
+		} : {
+			action: "connect",
+			account_id: String(fields.get("account_id")),
+			worker_ingress_origin: String(fields.get("origin")),
+			api_token: String(fields.get("api_token")),
+			consent: true,
+			consent_version: status.consent_text_version,
+			policy,
+		};
+		const secretInput = form.elements.namedItem("api_token");
+		if (secretInput instanceof HTMLInputElement) secretInput.value = "";
+		setSaving(true);
+		setFailure(undefined);
+		try {
+			await configureCloudflareCapacity(request);
+			onSaved();
+		} catch (error) {
+			setFailure(getErrorMessage(error, "Could not save Cloudflare capacity."));
+		} finally {
+			setSaving(false);
+		}
+	}
+
+	return (
+		<form className="space-y-4" onSubmit={save}>
+			{!installation && (
+				<div className="space-y-3">
+					<Label htmlFor="cf-account-id">Cloudflare Account ID</Label>
+					<Input id="cf-account-id" name="account_id" pattern="[a-f0-9]{32}" required />
+					<Label htmlFor="cf-ingress-origin">Existing HTTPS Endpoint</Label>
+					<Input id="cf-ingress-origin" name="origin" type="url" required />
+					<Label htmlFor="cf-connect-token">Cloudflare API Token</Label>
+					<Input id="cf-connect-token" name="api_token" type="password" autoComplete="new-password" required />
+					<p className="text-sm text-muted-foreground">{status.consent_text}</p>
+					<label className="flex items-center gap-2 text-sm">
+						<input type="checkbox" name="consent" required />
+						I Accept the Cloudflare Terms Above
+					</label>
+				</div>
+			)}
+			<div className="grid gap-3 sm:grid-cols-2">
+				<div><Label htmlFor="cf-launcher-cap">Workers Launcher Limit</Label><Input id="cf-launcher-cap" name="launcher_cap" type="number" min={1} max={1000} defaultValue={settings?.workers.launcher_cap ?? 1} required /></div>
+				<div><Label htmlFor="cf-slots">Slots Per Launcher</Label><Input id="cf-slots" name="slots" type="number" min={1} max={4} defaultValue={settings?.workers.slots_per_launcher ?? 2} required /></div>
+				<div><Label htmlFor="cf-lifetime">Maximum Lifetime in Seconds</Label><Input id="cf-lifetime" name="lifetime" type="number" min={60} max={604800} defaultValue={settings?.workers.max_lifetime_seconds ?? 3600} required /></div>
+				<div><Label htmlFor="cf-monthly">Monthly Spend Limit in USD</Label><Input id="cf-monthly" name="monthly_limit" type="number" min="0.01" step="0.01" defaultValue={settings?.monthly_limit_usd ?? "10.00"} required /></div>
+				<div><Label htmlFor="cf-shared-cap">Shared Managed Worker Limit</Label><Input id="cf-shared-cap" name="shared_cap" type="number" min={1} max={1000} defaultValue={settings?.shared_managed_worker_cap ?? undefined} /></div>
+			</div>
+			<label className="flex items-center gap-2 text-sm">
+				<input type="checkbox" name="workflows" defaultChecked={settings?.workers.work_kinds.includes("workflow") ?? true} />
+				Allow Approved Workflows
+			</label>
+			{failure && <p role="alert">{failure}</p>}
+			<Button type="submit" disabled={saving}>{installation ? "Save Policy" : "Connect Cloudflare"}</Button>
+		</form>
+	);
+}
 
 export function CloudflareCapacity() {
 	const authorization = useAuthorization();
@@ -58,9 +152,11 @@ export function CloudflareCapacity() {
 	const [rotateOpen, setRotateOpen] = useState(false);
 	const [rotating, setRotating] = useState(false);
 	const [rotateError, setRotateError] = useState<string>();
+	const [editing, setEditing] = useState(false);
 	const installation = data?.installation;
 	const jobId = acceptedJobId ?? data?.latest_job_id;
 	const job = observedJob?.id === jobId ? observedJob : undefined;
+	const instructions = job?.result?.instructions;
 	const mutation = useMutation({
 		mutationFn: (action: CloudflareAction) => {
 			if (!installation || !canWrite)
@@ -154,8 +250,14 @@ export function CloudflareCapacity() {
 						)}
 					</p>
 				)}
-				{data && !installation && (
+				{data && !installation && !canWrite && (
 					<p>No Cloudflare connection is configured.</p>
+				)}
+				{data && canWrite && (!installation || editing) && (
+					<CloudflareConfigurationForm status={data} onSaved={() => {
+						setEditing(false);
+						void refetch();
+					}} />
 				)}
 				{canRead && installation && (
 					<>
@@ -210,6 +312,22 @@ export function CloudflareCapacity() {
 						</dl>
 						{canWrite && (
 							<div className="flex flex-wrap gap-2">
+								<Button variant="outline" disabled={busy || installation.desired_state === "disconnected"}
+									onClick={() => setEditing((open) => !open)}
+								>
+									{editing ? "Cancel Policy Edit" : "Edit Policy"}
+								</Button>
+								<Button
+									disabled={busy || installation.admission_open || installation.desired_state === "disconnected"}
+									onClick={() => mutation.mutate("enable")}
+								>
+									Enable
+								</Button>
+								<Button variant="outline" disabled={busy || installation.desired_state !== "enabled"}
+									onClick={() => mutation.mutate("reconcile")}
+								>
+									Reconcile
+								</Button>
 								<Dialog open={rotateOpen} onOpenChange={setRotateOpen}>
 									<DialogTrigger asChild>
 										<Button variant="outline" disabled={busy}>Rotate API Token</Button>
@@ -298,6 +416,12 @@ export function CloudflareCapacity() {
 							job?.progress.phase ??
 							"Cloudflare Job Queued"}
 					</p>
+				)}
+				{Array.isArray(instructions) && (
+					<ol className="list-decimal space-y-1 pl-5 text-sm">
+						{instructions.filter((instruction): instruction is string => typeof instruction === "string")
+							.map((instruction) => <li key={instruction}>{instruction}</li>)}
+					</ol>
 				)}
 			</CardContent>
 		</Card>

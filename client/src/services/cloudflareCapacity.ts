@@ -8,9 +8,14 @@ export type CloudflareCapacityAction =
 	components["schemas"]["CloudflareCapacityAction"];
 export type CloudflareAccountTokenRotation =
 	components["schemas"]["CloudflareAccountTokenRotation"];
-export type CloudflareAction = "scale-in" | "disconnect";
+export type CloudflareConfiguration =
+	| components["schemas"]["CloudflareConnectRequest"]
+	| components["schemas"]["CloudflarePolicyUpdate"];
+export type CloudflareAction = "enable" | "reconcile" | "scale-in" | "disconnect";
 
 const actionPaths = {
+	enable: "/api/capacity/cloudflare/enable",
+	reconcile: "/api/capacity/cloudflare/reconcile",
 	"scale-in": "/api/capacity/cloudflare/scale-in",
 	disconnect: "/api/capacity/cloudflare/disconnect",
 } as const;
@@ -21,6 +26,14 @@ export async function getCloudflareCapacity(): Promise<CloudflareCapacityStatus>
 		throw new Error(
 			getErrorMessage(error, "Could not load Cloudflare capacity."),
 		);
+	}
+	return data;
+}
+
+export async function configureCloudflareCapacity(body: CloudflareConfiguration): Promise<CloudflareCapacityStatus> {
+	const { data, error } = await apiClient.PATCH("/api/capacity/cloudflare", { body });
+	if (error) {
+		throw new Error(getErrorMessage(error, "Could not save Cloudflare capacity."));
 	}
 	return data;
 }

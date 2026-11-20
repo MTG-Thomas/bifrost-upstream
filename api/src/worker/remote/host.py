@@ -1510,6 +1510,22 @@ class RemoteControlHost:
                 await bridge.socket.send_text(frame.to_json())
                 bridge._sequence += 1
 
+    def _start_capacity_canary(self, session: RemoteSession) -> None:
+        async def probe() -> None:
+            from src.services.worker_pool.cloudflare_canary import cloudflare_sdk_canary_proof
+
+            generation = session.lease.session_generation
+            worker_id = session.lease.worker_id
+            proof = await cloudflare_sdk_canary_proof(worker_id, generation)
+            if proof is not None:
+                await session.bridge.request("capacity_canary", {"proof": proof}, expected_generation=generation)
+                await cloudflare_sdk_canary_proof(worker_id, generation, acknowledged=True)
+
+        task = asyncio.create_task(probe(), name=f"capacity-canary:{session.lease.worker_id}")
+        session.reconciliation_tasks.add(task)
+        task.add_done_callback(session.reconciliation_tasks.discard)
+        task.add_done_callback(_observe_task)
+
     async def connect(self, socket: WebSocket) -> tuple[RemoteSession, FragmentAssembler]:
         await socket.accept()
         try:
@@ -1521,6 +1537,7 @@ class RemoteControlHost:
             settings = get_settings()
             cloudflare = signed.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
             containers = False
+            capacity_canary = False
             enrollment = None
             if cloudflare:
                 if signed.form != "external" or signed.resource_uid is None:
@@ -1558,6 +1575,7 @@ class RemoteControlHost:
                         )
                         if pin is None:
                             raise AuthenticationError("Cloudflare worker lacks its current installation pin")
+                        capacity_canary = pin.canary_job_id is not None
                         try:
                             control_key = await load_managed_control_key(db, pin, signed.resource_uid)
                         except ValueError:
@@ -1786,6 +1804,8 @@ class RemoteControlHost:
             else:
                 existing.bridge.replace_socket(socket, lease)
                 await self._welcome(existing.bridge, requirements_content)
+            if capacity_canary:
+                self._start_capacity_canary(existing)
             return existing, FragmentAssembler()
         bridge = Bridge(socket, bootstrap, lease)
         worker = ApiExecutor(bridge, lease.worker_id, remote_static=hello.form == "static")
@@ -1797,6 +1817,8 @@ class RemoteControlHost:
         session.task.add_done_callback(
             lambda task: self._session_finished(lease.worker_id, session, task)
         )
+        if capacity_canary:
+            self._start_capacity_canary(session)
         return session, FragmentAssembler()
 
     def _session_finished(

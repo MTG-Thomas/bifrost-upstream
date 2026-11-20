@@ -165,6 +165,17 @@ export class CloudflareLauncher extends DurableObject {
     this.#core = new LauncherCore({
       ...settings, clock: Date.now, storage: this.#storage,
       runSummary, runAgent,
+      runCapacityCanary: this.#managed ? async (generation, proof) => {
+        const workerId = settings.identity.incarnationId;
+        const url = new URL(`/api/sdk/capacity-canary/${workerId}`, settings.publicUrl);
+        const response = await fetch(url, {
+          headers: {Authorization: `Bearer ${proof}`, 'X-Bifrost-Canary-Generation': String(generation)},
+          redirect: 'error', signal: AbortSignal.timeout(DIAL_TIMEOUT_MS),
+        });
+        if (response.status !== 204 || !response.headers.get('x-bifrost-worker-ingress')?.endsWith('; allowed')) {
+          throw new Error('Capacity canary ingress refused the SDK request');
+        }
+      } : undefined,
       send: (session, frame) => {
         const connection = this.#connection;
         if (connection?.session !== session || connection.socket.readyState !== WebSocket.OPEN) {

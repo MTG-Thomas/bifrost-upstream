@@ -145,6 +145,12 @@ class CloudflareWorkerReservation(Base):
         CheckConstraint("control_root_version IS NOT NULL", name="ck_cf_reservation_has_root", postgresql_not_valid=True),
         Index("ix_cf_reservations_installation", "installation_id"),
         CheckConstraint(
+            "(canary_job_id IS NULL) = (canary_lease_token IS NULL) AND "
+            "(canary_sdk_at IS NULL OR canary_job_id IS NOT NULL) AND "
+            "(canary_ack_at IS NULL OR canary_sdk_at IS NOT NULL)",
+            name="ck_cf_canary_binding",
+        ),
+        CheckConstraint(
             "control_root_purpose = 'control_root' AND control_root_scope = ''",
             name="ck_cf_reservation_control_root",
         ),
@@ -167,6 +173,10 @@ class CloudflareWorkerReservation(Base):
     control_root_purpose: Mapped[str] = mapped_column(String(16), server_default="control_root")
     control_root_scope: Mapped[str] = mapped_column(String(64), server_default="")
     control_root_version: Mapped[int | None]
+    canary_job_id: Mapped[UUID | None]
+    canary_lease_token: Mapped[UUID | None]
+    canary_sdk_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    canary_ack_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class CloudflareOwnedResource(Base):
@@ -201,6 +211,7 @@ class CloudflareOwnedResource(Base):
     state: Mapped[str] = mapped_column(String(16))
     provider_id: Mapped[str | None] = mapped_column(String(255))
     provider_version: Mapped[str | None] = mapped_column(String(255))
+    namespace_ids: Mapped[dict[str, str]] = mapped_column(JSONB, server_default="{}")
     observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 

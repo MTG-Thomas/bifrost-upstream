@@ -16,10 +16,10 @@ def test_every_observed_surface_is_classified_with_a_reason() -> None:
     inventory = build_operation_inventory(app, REPO_ROOT)
     # Cloudflare rotation collects the replacement token through REST and a CLI prompt.
     assert inventory["counts"] == {
-        "cli": 186,
+        "cli": 190,
         "manifest": 16,
-        "mcp": 104,
-        "rest": 728,
+        "mcp": 107,
+        "rest": 732,
         "sdk": 21,
     }
     for surface, rows in inventory["uncataloged"].items():
