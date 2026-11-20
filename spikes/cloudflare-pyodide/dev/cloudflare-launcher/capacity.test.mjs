@@ -6,7 +6,8 @@ const id = 'afe91459-38bd-4c34-8ae5-13e67af6b649';
 const profile = {scope: 'test', worker_version: 'test', max_workers: 1,
   memory_limit_bytes: 128 * 1024 ** 2, max_lifetime_seconds: 60, starting_grace_ms: 0};
 const reservation = {worker_id: id, worker_version: 'test', memory_limit_bytes: profile.memory_limit_bytes,
-  max_lifetime_seconds: 60, drain_grace_seconds: 0};
+  max_lifetime_seconds: 60, drain_grace_seconds: 0,
+  resource_uid: 'a'.repeat(32), control_key: 'b'.repeat(64)};
 
 function fixture() {
   let row;
@@ -74,6 +75,22 @@ test('observe reconciles a lost start reply without a second start', async () =>
   assert.equal((await engine.get(id)).state, STATE.RUNNING);
   assert.equal((await engine.start(id, {resource_uid})).state, STATE.RUNNING);
   assert.equal(starts, 1);
+});
+
+test('prepare replays only the original UID and key and never returns key bytes', async () => {
+  const {restart, runtime} = fixture();
+  let prepares = 0;
+  runtime.prepare = async (row) => {
+    prepares++;
+    assert.equal(row.control_key, reservation.control_key);
+  };
+  const prepared = await restart().prepare(id, reservation);
+  assert.equal(prepared.resource_uid, reservation.resource_uid);
+  assert.deepEqual(await restart().prepare(id, reservation), prepared);
+  await assert.rejects(restart().prepare(id, {...reservation, resource_uid: 'c'.repeat(32)}), /conflicting/);
+  await assert.rejects(restart().prepare(id, {...reservation, control_key: 'd'.repeat(64)}), /conflicting/);
+  assert.equal(prepares, 1);
+  assert.equal(JSON.stringify(await restart().get(id)).includes(reservation.control_key), false);
 });
 
 test('a start without a durable witness is replayed only on affirmative never-started evidence', async () => {

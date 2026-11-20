@@ -1,5 +1,5 @@
-// protocol.mjs against vectors produced by upstream's Python protocol.py and
-// #1424's worker_control_auth.py (vectors.py). Regenerate with vectors.py
+// protocol.mjs against vectors produced by upstream's Python protocol.py.
+// Regenerate with vectors.py
 // after fetching upstream; a changed vector means protocol.mjs must follow.
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
@@ -8,7 +8,7 @@ import {readFileSync} from 'node:fs';
 import {
   CLOUDFLARE_HANDLERS, CLOUDFLARE_INCARNATION_ENDED, CLOUDFLARE_MAX_LOGICAL_BYTES,
   FragmentAssembler, MAX_FRAME_BYTES, ProtocolError, canonicalHello,
-  encodeEnvelope, envelope, externalWorkerControlKey, fragment, parseEnvelope, signHello,
+  encodeEnvelope, envelope, fragment, parseEnvelope, signHello,
 } from './protocol.mjs';
 
 const vectors = JSON.parse(readFileSync(new URL('./vectors.json', import.meta.url), 'utf8'));
@@ -21,13 +21,6 @@ for (const [set, cases] of [['main', vectors.hello_main], ['branch+profile', vec
     }
   });
 }
-
-test('derived external worker keys match #1424', async () => {
-  for (const v of vectors.control_keys) {
-    assert.equal(await externalWorkerControlKey(v.provider_key, v.worker_id, v.resource_uid), v.control_key);
-  }
-  await assert.rejects(externalWorkerControlKey('k', 'w', 'bad uid!'), ProtocolError);
-});
 
 test('envelope encoding matches Python byte for byte', () => {
   const expected = vectors.envelopes.small.json;

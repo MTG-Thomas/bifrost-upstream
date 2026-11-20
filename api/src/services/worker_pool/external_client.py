@@ -81,12 +81,20 @@ class ExternalCapacityClient:
             return None
         return self._resource(response, worker_id, scope)
 
-    async def prepare(self, reservation: WorkerCapacityReservation, scope: str) -> WorkerCapacityResource:
+    async def prepare(
+        self, reservation: WorkerCapacityReservation, scope: str, *,
+        managed_identity: tuple[str, str] | None = None,
+    ) -> WorkerCapacityResource:
+        body = reservation.model_dump(mode="json")
+        uid = None
+        if managed_identity is not None:
+            uid, key = managed_identity
+            body.update(resource_uid=uid, control_key=key)
         response = await self._request(
             "PUT", f"workers/{reservation.worker_id}", scope=scope,
-            body=reservation.model_dump(mode="json"),
+            body=body,
         )
-        resource = self._resource(response, reservation.worker_id, scope)
+        resource = self._resource(response, reservation.worker_id, scope, uid)
         if resource.state != "prepared" or resource.worker_version != reservation.worker_version:
             raise CapacityProtocolError("A new capacity reservation must be prepared before starting")
         return resource

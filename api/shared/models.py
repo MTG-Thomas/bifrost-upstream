@@ -337,13 +337,19 @@ class WorkerCapacityProfile(BaseModel):
     """Capabilities of an authenticated external physical-capacity provider."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
-    protocol_version: Literal[1]
+    protocol_version: Literal[1, 2]
     scope: str = Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9._:-]+$")
     worker_version: str = Field(min_length=1, max_length=100)
     memory_limit_bytes: int = Field(ge=67108864, le=137438953472, multiple_of=1048576, strict=True)
     max_workers: int = Field(ge=1, le=1000, strict=True)
     max_lifetime_seconds: int = Field(ge=60, le=604800, strict=True)
     runtime_profile: Literal["linux-process-v1", "cloudflare-python-v1"] = "linux-process-v1"
+
+    @model_validator(mode="after")
+    def _managed_prepare_is_workers_only(self) -> WorkerCapacityProfile:
+        if self.protocol_version == 2 and self.runtime_profile != "cloudflare-python-v1":
+            raise ValueError("Managed prepare protocol is specific to Cloudflare Workers")
+        return self
 
 
 class WorkerCapacityReservation(BaseModel):

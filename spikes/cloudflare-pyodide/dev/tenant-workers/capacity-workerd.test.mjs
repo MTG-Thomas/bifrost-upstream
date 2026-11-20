@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
-import {randomUUID} from 'node:crypto';
+import {randomBytes, randomUUID} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import {mkdtemp, rm} from 'node:fs/promises';
 import {createServer} from 'node:http';
@@ -11,7 +11,7 @@ import {buffer} from 'node:stream/consumers';
 import {after, before, test} from 'node:test';
 import {setTimeout as delay} from 'node:timers/promises';
 import {fileURLToPath} from 'node:url';
-import {externalWorkerControlKey, signHello} from '../cloudflare-launcher/protocol.mjs';
+import {signHello} from '../cloudflare-launcher/protocol.mjs';
 import {capacityWorker} from '../e2e/capacity-miniflare.mjs';
 
 const {Miniflare} = createRequire(import.meta.resolve('wrangler'))('miniflare');
@@ -39,8 +39,8 @@ const hellos = new Map();
 const sockets = new Map();
 const upgrades = new WebSocketServer({noServer: true});
 
-function request(path, method = 'GET', body) {
-  return fetch(base + '/v1/' + path, {method, body: body && JSON.stringify(body), headers: auth});
+function request(path, method = 'GET', body, headers = auth) {
+  return fetch(base + '/v1/' + path, {method, body: body && JSON.stringify(body), headers});
 }
 
 async function next(predicate) {
@@ -144,11 +144,17 @@ after(async () => {
 test('prepare, start, signed hello, observe and delete use isolated workerd Workers', async () => {
   const id = randomUUID();
   const path = `workers/${id}`;
+  const uid = randomBytes(16).toString('hex');
+  const key = randomBytes(32).toString('hex');
   const reservation = {worker_id: id, worker_version: settings.version,
-    memory_limit_bytes: 128 * 1024 ** 2, max_lifetime_seconds: 60, drain_grace_seconds: 5};
+    memory_limit_bytes: 128 * 1024 ** 2, max_lifetime_seconds: 60, drain_grace_seconds: 5,
+    resource_uid: uid, control_key: key};
+  assert.equal((await request(path, 'PUT', reservation, {...auth, Authorization: `Bearer ${key}`})).status, 401);
+  assert.equal((await request(path, 'PUT', reservation, {...auth, 'X-Bifrost-Capacity-Scope': 'foreign'})).status, 404);
   const prepared = await request(path, 'PUT', reservation);
   assert.equal(prepared.status, 200, await prepared.clone().text());
   const {resource_uid} = await prepared.json();
+  assert.equal(resource_uid, uid);
   const rejected = await request(`workers/${randomUUID()}`, 'PUT', {
     ...reservation, worker_id: randomUUID(),
   });
@@ -160,8 +166,8 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
   assert.equal(started.status, 200, await started.clone().text());
   const seen = await next(() => hellos.get(id)?.find((record) => record.inventory));
   const {proof, ...identity} = seen.hello.hello;
-  const key = await externalWorkerControlKey(settings.token, id, resource_uid);
   assert.equal((await signHello(key, identity)).proof, proof);
+  assert.notEqual((await signHello(settings.token, identity)).proof, proof);
   assert.equal(identity.launcher_id, id);
   assert.equal(identity.runtime_profile, 'cloudflare-python-v1');
   assert.equal(seen.inventory.payload.event, 'inventory');
@@ -178,6 +184,7 @@ test('shared capacity conformance exercises the real local HTTP provider', async
   const python = process.platform === 'win32' ? 'py' : 'python3';
   const flags = process.platform === 'win32' ? ['-3'] : [];
   const args = [...flags, suite, '--base-url', base, '--scope', settings.scope,
+    '--managed-cloudflare',
     '--hook-command', [python, ...flags, `"${hook}"`].join(' ')];
   const child = spawn(python, args, {env: {...process.env, CAPACITY_TOKEN: settings.token, CAPACITY_HOOK_URL: base + '/hook'}});
   const [out, err, code] = await Promise.all([

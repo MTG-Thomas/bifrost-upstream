@@ -17,6 +17,7 @@ from shared.solution_git_stage import SOLUTION_GIT_CAPABILITY
 from sqlalchemy import select
 
 from shared.models import WorkerCapacityProfile, WorkerCapacityReservation
+from shared.worker_control_auth import managed_cloudflare_control_key
 from src.models.orm.execution_workers import ExecutionWorker
 from src.models.orm.executions import Execution
 from src.models.enums import ExecutionStatus
@@ -36,6 +37,7 @@ from tests.unit.services.worker_pool.test_worker_pool import (
 
 db = db_fixture
 TOKEN = "synthetic-capacity-token-" + "x" * 32
+CONTROL_ROOT = "synthetic-platform-control-root"
 
 
 class Provider:
@@ -65,6 +67,12 @@ class Provider:
             return httpx.Response(404) if resource is None else httpx.Response(200, json=resource)
         body = json.loads(request.content)
         if request.method == "PUT":
+            uid = f"resource-{UUID(worker_id).hex}"
+            if self.profile.protocol_version == 2:
+                uid = body.pop("resource_uid")
+                assert body.pop("control_key") == managed_cloudflare_control_key(
+                    CONTROL_ROOT, self.profile.scope, UUID(worker_id), uid,
+                )
             reservation = WorkerCapacityReservation.model_validate(body)
             assert str(reservation.worker_id) == worker_id
             if self.refuse_prepare:
@@ -73,7 +81,7 @@ class Provider:
                 resource = {
                     "scope": self.profile.scope, "worker_id": worker_id,
                     "worker_version": reservation.worker_version,
-                    "resource_uid": f"resource-{UUID(worker_id).hex}", "state": "prepared",
+                    "resource_uid": uid, "state": "prepared",
                 }
                 self.resources[worker_id] = resource
             if self.lose_prepare_response:
@@ -108,6 +116,33 @@ async def capacity(db, monkeypatch):
         client = ExternalCapacityClient("https://capacity.invalid", TOKEN, http=http)
         pool = ExternalWorkerPoolController(client, SETTINGS, await client.profile())
         yield SimpleNamespace(provider=provider, client=client, pool=pool, policy=policy)
+
+
+async def test_managed_prepare_uses_the_uid_committed_before_provider_io(db, capacity):
+    provider = capacity.provider
+    provider.profile = provider.profile.model_copy(update={
+        "protocol_version": 2,
+        "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+        "memory_limit_bytes": CLOUDFLARE_DEV_BUDGET_BYTES,
+    })
+    settings = SimpleNamespace(**vars(SETTINGS), secret_key=CONTROL_ROOT)
+    pool = ExternalWorkerPoolController(capacity.client, settings, provider.profile)
+    policy = replace(capacity.policy, max_workers=1)
+    await _set_request(db.sessions, await _accept_pool_run(), 1, approved=True)
+    [worker_id] = await pool.launch_for_demand(policy)
+    async with db.context() as session:
+        reserved = await session.get(ExecutionWorker, worker_id)
+        assert reserved is not None and reserved.state == "reserved"
+        uid = reserved.capacity_resource_uid
+        assert uid is not None and len(uid) == 32
+
+    provider.lose_prepare_response = True
+    with pytest.raises(httpx.ReadTimeout):
+        await pool.reconcile_worker(worker_id, policy)
+    assert provider.resources[str(worker_id)]["resource_uid"] == uid
+    await pool.reconcile_worker(worker_id, policy)
+    assert provider.starts == [str(worker_id)]
+    assert sum(method == "PUT" for method, _ in provider.requests) == 1
 
 
 async def test_prepared_uid_is_committed_before_start(db, capacity):

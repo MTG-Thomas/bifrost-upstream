@@ -10,7 +10,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import delete
 
-from shared.worker_control_auth import external_worker_control_key
+from shared.worker_control_auth import external_worker_control_key, managed_cloudflare_control_key
 from src.config import Settings
 from src.models.orm.execution_workers import ExecutionWorker
 from src.services.worker_pool import claims
@@ -100,7 +100,7 @@ async def test_cloudflare_hello_defaults_off(hello, acquire, monkeypatch):
         pytest.param({"execution_lane": "fast_path"}, "Normal lane", id="fast-path"),
     ],
 )
-async def test_cloudflare_hello_requires_external_normal(hello, enabled_settings, acquire, changes, message):
+async def test_cloudflare_hello_requires_external_normal(hello, enrollment, acquire, changes, message):
     socket = socket_for(replace(hello, **changes))
 
     with pytest.raises(AuthenticationError, match=message):
@@ -142,7 +142,7 @@ async def test_cloudflare_hello_requires_external_normal(hello, enabled_settings
         pytest.param({"credential_protocol": 3}, "credential protocol 2", id="future-protocol"),
     ],
 )
-async def test_cloudflare_hello_requires_exact_capabilities(hello, enabled_settings, acquire, fields, message):
+async def test_cloudflare_hello_requires_exact_capabilities(hello, enrollment, acquire, fields, message):
     socket = socket_for(hello, **fields)
 
     with pytest.raises(ProtocolError, match=message):
@@ -152,7 +152,7 @@ async def test_cloudflare_hello_requires_exact_capabilities(hello, enabled_setti
 
 
 @pytest.mark.asyncio
-async def test_cloudflare_hello_requires_configured_capacity_token(hello, enabled_settings, acquire):
+async def test_cloudflare_hello_requires_configured_capacity_token(hello, enrollment, enabled_settings, acquire):
     enabled_settings.worker_capacity_token = None
     socket = socket_for(hello)
 
@@ -164,7 +164,7 @@ async def test_cloudflare_hello_requires_configured_capacity_token(hello, enable
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("key", [PLATFORM_KEY, CAPACITY_TOKEN], ids=["platform-secret", "capacity-token"])
-async def test_cloudflare_hello_rejects_underived_proof(hello, enabled_settings, acquire, key):
+async def test_cloudflare_hello_rejects_underived_proof(hello, enrollment, acquire, key):
     socket = socket_for(hello, key=key)
 
     with pytest.raises(AuthenticationError, match="invalid hello proof"):
@@ -226,7 +226,8 @@ async def test_cloudflare_hello_requires_matching_prepared_row(hello, enrollment
             row.runtime_profile = LINUX_RUNTIME_PROFILE
     socket = socket_for(hello, version=version)
 
-    with pytest.raises(AuthenticationError, match="ownership was refused"):
+    message = "reserved resource binding" if mismatch in ("resource", "profile") else "ownership was refused"
+    with pytest.raises(AuthenticationError, match=message):
         await host.RemoteControlHost().connect(socket)
     socket.close.assert_awaited_once_with(code=1008)
     socket.send_text.assert_not_awaited()
@@ -265,11 +266,29 @@ async def test_cloudflare_hello_checks_enrollment_on_reconnect_and_takeover(hell
         await successor.connect(blocked)
     blocked.close.assert_awaited_once_with(code=1008)
     assert await ownership.release_remote_owner(reconnected.lease)
-    with pytest.raises(AuthenticationError, match="ownership was refused"):
+    with pytest.raises(AuthenticationError, match="reserved resource binding"):
         await successor.connect(socket_for(replace(takeover, resource_uid="another-do")))
     adopted, _ = await successor.connect(socket_for(takeover))
     assert adopted.lease.owner_id == successor.owner_id
     assert adopted.lease.session_generation == 3
+
+
+@pytest.mark.asyncio
+async def test_managed_cloudflare_hello_uses_exact_reserved_scope(hello, enrollment, enabled_settings):
+    uid = uuid4().hex
+    async with enrollment() as db:
+        row = await db.get(ExecutionWorker, hello.incarnation_id)
+        row.capacity_scope = "managed-workers"
+        row.capacity_resource_uid = uid
+    enabled_settings.worker_capacity_token = None
+    hello = replace(hello, resource_uid=uid)
+    control_host = host.RemoteControlHost()
+    wrong = managed_cloudflare_control_key(PLATFORM_KEY, "different-scope", hello.incarnation_id, uid)
+    with pytest.raises(AuthenticationError, match="invalid hello proof"):
+        await control_host.connect(socket_for(hello, key=wrong))
+    key = managed_cloudflare_control_key(PLATFORM_KEY, "managed-workers", hello.incarnation_id, uid)
+    session, _ = await control_host.connect(socket_for(hello, key=key))
+    assert session.lease.worker_id == hello.incarnation_id
 
 
 @pytest.mark.asyncio

@@ -8,7 +8,6 @@
 // Uses only Web Crypto and TextEncoder: runs unchanged in Workers and Node.
 
 export const AUTH_DOMAIN = 'bifrost.remote-control.hello.v1\0';
-export const EXTERNAL_CONTROL_DOMAIN = 'bifrost.external-worker.control.v1\0';
 export const MAX_FRAME_BYTES = 1 << 20;
 export const CLOUDFLARE_MAX_LOGICAL_BYTES = 16 * 2 ** 20;
 export const CLOUDFLARE_INCARNATION_ENDED = 4001;
@@ -128,14 +127,6 @@ export async function signHello(secret, hello) {
     proof,
   };
   return signed;
-}
-
-// #1424 shared/worker_control_auth.py::external_worker_control_key.
-export async function externalWorkerControlKey(providerKey, workerId, resourceUid) {
-  if (typeof resourceUid !== 'string' || !RESOURCE_UID.test(resourceUid)) {
-    throw new ProtocolError('Invalid external worker resource identity');
-  }
-  return hmacSha256Hex(providerKey, EXTERNAL_CONTROL_DOMAIN + pythonJson([String(workerId), resourceUid]));
 }
 
 export function newNonce() {

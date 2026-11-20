@@ -14,6 +14,15 @@ import re
 from uuid import UUID
 
 _EXTERNAL_CONTROL_DOMAIN = b"bifrost.external-worker.control.v1\0"
+_MANAGED_CLOUDFLARE_DOMAIN = b"bifrost.cloudflare-capacity.control.v2\0"
+
+
+def managed_cloudflare_control_key(root: str, scope: str, worker_id: UUID, resource_uid: str) -> str:
+    """Bind a Workers control key to its scope and API-reserved identity."""
+    if re.fullmatch(r"[0-9a-f]{32}", resource_uid) is None:
+        raise ValueError("Invalid managed Cloudflare resource identity")
+    binding = json.dumps([scope, str(worker_id), resource_uid], separators=(",", ":")).encode()
+    return hmac.new(root.encode(), _MANAGED_CLOUDFLARE_DOMAIN + binding, hashlib.sha256).hexdigest()
 
 
 def external_worker_control_key(

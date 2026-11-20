@@ -1,6 +1,6 @@
 // Workers capacity provider. Run in a separate Worker from CloudflareLauncher.
 import {createEngine, ProtocolError, STATE} from './capacity-core.mjs';
-import {externalWorkerControlKey, MAX_WORKFLOW_SLOTS, SLOT_BYTES} from './protocol.mjs';
+import {MAX_WORKFLOW_SLOTS, SLOT_BYTES} from './protocol.mjs';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SCOPE_HEADER = 'X-Bifrost-Capacity-Scope';
@@ -21,7 +21,7 @@ function profileFor(env) {
     throw new Error('Invalid Workers capacity settings');
   }
   return {
-    protocol_version: 1, scope: env.SCOPE, worker_version: env.WORKER_VERSION,
+    protocol_version: 2, scope: env.SCOPE, worker_version: env.WORKER_VERSION,
     runtime_profile: 'cloudflare-python-v1', memory_limit_bytes: slots * SLOT_BYTES,
     max_workers: maxWorkers, max_lifetime_seconds: maxLifetime,
   };
@@ -78,7 +78,7 @@ export class WorkerLedger {
           const slots = await launcher(row).prepareManaged({
             incarnationId: row.worker_id, launcherId: row.worker_id, resourceUid: row.resource_uid,
             version: row.reservation.worker_version, memoryLimitBytes: row.reservation.memory_limit_bytes,
-            secret: await externalWorkerControlKey(env.CAPACITY_TOKEN, row.worker_id, row.resource_uid),
+            secret: row.control_key,
           });
           const expected = row.reservation.memory_limit_bytes / SLOT_BYTES;
           if (expected > 1 && slots !== expected) {

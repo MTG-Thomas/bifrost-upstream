@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import ssl
 import subprocess
 import sys
@@ -153,6 +154,7 @@ class Suite:
         self.deadline = deadline
         self.results: list[tuple[str, str, str]] = []
         self.profile: dict[str, Any] = {}
+        self.managed_keys: dict[str, str] | None = None
 
     # -- reporting ------------------------------------------------------
 
@@ -191,6 +193,10 @@ class Suite:
             "max_lifetime_seconds": lifetime,
             "drain_grace_seconds": 300,
         }
+        if self.managed_keys is not None:
+            if worker_id not in self.managed_keys:
+                self.managed_keys[worker_id] = secrets.token_hex(32)
+            doc.update(resource_uid=uuid.UUID(worker_id).hex, control_key=self.managed_keys[worker_id])
         doc.update(overrides)
         return doc
 
@@ -227,6 +233,7 @@ def main() -> int:
     parser.add_argument("--user-agent", default=DEFAULT_USER_AGENT)
     parser.add_argument("--deadline", type=int, default=900)
     parser.add_argument("--json-out", default=None)
+    parser.add_argument("--managed-cloudflare", action="store_true", help="Exercise the fork's managed prepare contract")
     args = parser.parse_args()
 
     token = args.token or os.environ.get(args.token_env, "")
@@ -239,6 +246,8 @@ def main() -> int:
         Hook(args.hook_command),
         args.deadline,
     )
+    if args.managed_cloudflare:
+        suite.managed_keys = {}
 
     # ---- capabilities -------------------------------------------------
     @suite.case("capabilities: contract")
@@ -248,7 +257,8 @@ def main() -> int:
         for field in ("protocol_version", "scope", "worker_version", "memory_limit_bytes",
                       "max_workers", "max_lifetime_seconds"):
             assert field in doc, f"missing {field}"
-        assert doc["protocol_version"] == 1, "protocol_version must be 1"
+        expected_version = 2 if args.managed_cloudflare else 1
+        assert doc["protocol_version"] == expected_version, f"protocol_version must be {expected_version}"
         assert doc["scope"] == args.scope, f"scope mismatch: {doc['scope']}"
         assert doc["worker_version"], "empty worker_version"
         assert 64 * 1024**2 <= doc["memory_limit_bytes"] <= 128 * 1024**4

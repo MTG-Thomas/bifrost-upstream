@@ -5,12 +5,13 @@ import logging
 import time
 from datetime import timedelta
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 from sqlalchemy import and_, select, update
 
 from shared.models import WorkerCapacityProfile, WorkerCapacityReservation
+from shared.worker_control_auth import managed_cloudflare_control_key
 from src.config import Settings
 from src.core.database import get_db_context
 from src.models.orm.execution_workers import ExecutionWorker
@@ -86,7 +87,10 @@ class ExternalWorkerPoolController(WorkerCapacityController):
         )
 
     def _binding_fields(self, worker_id: UUID) -> dict[str, Any]:
-        return {"capacity_scope": self.profile.scope, "version": self.profile.worker_version}
+        fields = {"capacity_scope": self.profile.scope, "version": self.profile.worker_version}
+        if self.profile.protocol_version == 2:
+            fields["capacity_resource_uid"] = uuid4().hex
+        return fields
 
     def _sizing(self, policy: KubernetesPolicy, workers: Any) -> JobSizing:
         try:
@@ -107,6 +111,8 @@ class ExternalWorkerPoolController(WorkerCapacityController):
 
     async def reconcile(self) -> None:
         current = await self.client.profile()
+        if current.protocol_version != self.profile.protocol_version:
+            raise CapacityProtocolError("Capacity protocol changed; drain the original provider first")
         if (current.scope, current.runtime_profile) != (self.profile.scope, self.runtime_profile):
             raise CapacityProtocolError("Capacity provider scope or runtime profile changed; drain the original provider first")
         self.profile = current
@@ -155,7 +161,7 @@ class ExternalWorkerPoolController(WorkerCapacityController):
         if uid is not None and resource is not None and resource.resource_uid != uid:
             raise CapacityProtocolError("Provider resource UID changed for an existing incarnation")
         if state in self.cleanup_states:
-            if resource is None and uid is None and (
+            if resource is None and (uid is None or self.profile.protocol_version == 2) and (
                 not bounded_prepare
                 or ended_at is None or _now() - ended_at < UNBOUND_PREPARE_GRACE
             ):
@@ -206,7 +212,13 @@ class ExternalWorkerPoolController(WorkerCapacityController):
                     if still_reserved is None:
                         return
                     async with asyncio.timeout(CAPACITY_REQUEST_SECONDS):
-                        resource = await self.client.prepare(reservation, self.profile.scope)
+                        if self.profile.protocol_version == 2:
+                            if uid is None:
+                                raise CapacityProtocolError("Managed Cloudflare reservation lacks its caller UID")
+                            key = managed_cloudflare_control_key(self.settings.secret_key, self.profile.scope, worker_id, uid)
+                            resource = await self.client.prepare(reservation, self.profile.scope, managed_identity=(uid, key))
+                        else:
+                            resource = await self.client.prepare(reservation, self.profile.scope)
                 else:
                     resource = await self.client.prepare(reservation, self.profile.scope)
             if resource.state != "prepared":
@@ -220,7 +232,7 @@ class ExternalWorkerPoolController(WorkerCapacityController):
             async with get_db_context() as db:
                 bound = await db.scalar(update(ExecutionWorker).where(
                     ExecutionWorker.id == worker_id, self._managed_scope(),
-                    ExecutionWorker.state == "reserved", ExecutionWorker.capacity_resource_uid.is_(None),
+                    ExecutionWorker.state == "reserved", ExecutionWorker.capacity_resource_uid == uid,
                 ).values(
                     capacity_resource_uid=resource.resource_uid, state="starting",
                     launched_by=self.id if created else None,

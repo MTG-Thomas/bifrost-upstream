@@ -22,7 +22,7 @@ from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from starlette.websockets import WebSocketState
 
 from shared.solution_git_stage import SOLUTION_GIT_CAPABILITY, SOLUTION_UPDATE_CHECK_JOB
-from shared.worker_control_auth import external_worker_control_key
+from shared.worker_control_auth import external_worker_control_key, managed_cloudflare_control_key
 from src.config import get_settings
 from src.core.database import get_db_context, get_liveness_db_context
 from src.jobs.consumers.package_install import PackageInstallConsumer
@@ -1522,12 +1522,26 @@ class RemoteControlHost:
                     raise ProtocolError("Cloudflare worker hello is disabled")
                 if signed.form != "external" or signed.resource_uid is None:
                     raise AuthenticationError("Cloudflare workers require an external capacity resource")
-                token = settings.cloudflare_capacity_token or settings.worker_capacity_token
-                if not token:
-                    raise AuthenticationError("Cloudflare worker control is not configured")
-                control_key = external_worker_control_key(
-                    token.get_secret_value(), signed.incarnation_id, signed.resource_uid,
-                )
+                async with get_liveness_db_context() as db:
+                    binding = (await db.execute(select(ExecutionWorker.capacity_scope).where(
+                        ExecutionWorker.id == signed.incarnation_id,
+                        ExecutionWorker.form == "external",
+                        ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+                        ExecutionWorker.capacity_resource_uid == signed.resource_uid,
+                    ))).one_or_none()
+                if binding is None:
+                    raise AuthenticationError("Cloudflare worker lacks its reserved resource binding")
+                if binding.capacity_scope is None:
+                    token = settings.worker_capacity_token
+                    if not token:
+                        raise AuthenticationError("Manual Cloudflare worker control is not configured")
+                    control_key = external_worker_control_key(
+                        token.get_secret_value(), signed.incarnation_id, signed.resource_uid,
+                    )
+                else:
+                    control_key = managed_cloudflare_control_key(
+                        settings.secret_key, binding.capacity_scope, signed.incarnation_id, signed.resource_uid,
+                    )
             else:
                 control_key = settings.secret_key
                 containers_scope = getattr(settings, "cloudflare_containers_scope", None)

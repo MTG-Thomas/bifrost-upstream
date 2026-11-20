@@ -1,8 +1,6 @@
 // Shared capacity protocol engine (JavaScript).
 //
-// One implementation of the contract in docs/architecture/external-worker-capacity.md,
-// alongside the Python core shipped by the contract change, so the two providers
-// share semantics instead of drifting.
+// Fork protocol 2 retains the upstream lifecycle with caller-owned preparation.
 //
 // Deliberately pure: no fetch, no Durable Objects, no Cloudflare APIs. The
 // transport (capacity.mjs) and the durable store are injected, which is what
@@ -24,6 +22,7 @@ const RESERVATION_FIELDS = [
     "max_lifetime_seconds",
     "drain_grace_seconds",
 ];
+const PREPARE_FIELDS = [...RESERVATION_FIELDS, "resource_uid", "control_key"];
 
 export class ProtocolError extends Error {
     constructor(status, message) {
@@ -32,10 +31,10 @@ export class ProtocolError extends Error {
     }
 }
 
-export const newResourceUid = () =>
-    [...crypto.getRandomValues(new Uint8Array(16))]
-        .map((b) => b.toString(16).padStart(2, "0"))
-        .join("");
+async function keyDigest(key) {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
+    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 /**
  * @param {object} options
@@ -84,8 +83,12 @@ export function createEngine({ profile, store, runtime, clock = { now: () => Dat
     }
 
     function validateReservation(workerId, reservation) {
-        if (!reservation || Object.keys(reservation).some((key) => !RESERVATION_FIELDS.includes(key))) {
+        if (!reservation || Object.keys(reservation).some((key) => !PREPARE_FIELDS.includes(key))) {
             throw new ProtocolError(400, "invalid reservation fields");
+        }
+        if (typeof reservation.resource_uid !== "string" || !/^[0-9a-f]{32}$/.test(reservation.resource_uid) ||
+            typeof reservation.control_key !== "string" || !/^[0-9a-f]{64}$/.test(reservation.control_key)) {
+            throw new ProtocolError(400, "invalid managed prepare identity");
         }
         for (const field of RESERVATION_FIELDS) {
             if (reservation?.[field] === undefined) {
@@ -127,6 +130,7 @@ export function createEngine({ profile, store, runtime, clock = { now: () => Dat
             throw error;
         }
         row.intent = null;
+        delete row.control_key;
         await store.write(workerId, row);
         return resource(row);
     }
@@ -152,6 +156,8 @@ export function createEngine({ profile, store, runtime, clock = { now: () => Dat
         prepare(workerId, reservation) {
             return serialize(workerId, async () => {
                 validateReservation(workerId, reservation);
+                const {resource_uid, control_key, ...bounds} = reservation;
+                const digest = await keyDigest(control_key);
                 const existing = await store.read(workerId);
                 if (existing) {
                     if (existing.scope !== profile.scope) {
@@ -163,7 +169,8 @@ export function createEngine({ profile, store, runtime, clock = { now: () => Dat
                     if (existing.intent === "delete") {
                         throw new ProtocolError(409, "worker deletion is pending");
                     }
-                    if (RESERVATION_FIELDS.some((key) => existing.reservation[key] !== reservation[key])) {
+                    if (existing.resource_uid !== resource_uid || existing.control_key_digest !== digest ||
+                        RESERVATION_FIELDS.some((key) => existing.reservation[key] !== bounds[key])) {
                         throw new ProtocolError(409, "conflicting reservation for this worker");
                     }
                     if (existing.intent === "prepare") return finishPrepare(workerId, existing);
@@ -174,8 +181,10 @@ export function createEngine({ profile, store, runtime, clock = { now: () => Dat
                 const row = {
                     scope: profile.scope,
                     worker_id: workerId,
-                    reservation,
-                    resource_uid: newResourceUid(),
+                    reservation: bounds,
+                    resource_uid,
+                    control_key,
+                    control_key_digest: digest,
                     handle: {},
                     state: STATE.PREPARED,
                     revision: 1,
@@ -289,6 +298,8 @@ export function createEngine({ profile, store, runtime, clock = { now: () => Dat
                 await store.release(workerId);
                 row.state = STATE.DELETED;
                 row.intent = null;
+                delete row.control_key;
+                delete row.control_key_digest;
                 row.revision = (row.revision ?? 0) + 1;
                 await store.write(workerId, row);
                 return resource(row);
