@@ -5,6 +5,7 @@ import pytest
 from src.services.worker_pool.cloudflare_spend import (
     WORKERS_RATES,
     _cost,
+    _legacy_cost,
     usage_period,
     workers_fleet_envelope_usd,
 )
@@ -28,6 +29,10 @@ def test_workers_fleet_envelope_includes_cleanup_and_shared_usage() -> None:
 def test_monthly_usage_charges_only_ledger_activity() -> None:
     assert _cost(0, 0, 0, 0) == Decimal(0)
     assert _cost(0, 0, 2, 1) == Decimal("0.00180135")
+
+
+def test_measured_capacity_cpu_ceiling_prices_launcher_seconds() -> None:
+    assert _legacy_cost(1, 0, 0, 0) - _cost(1, 0, 0, 0) == Decimal("0.00059150")
 
 
 def test_unbounded_meter_rejects_cost_estimate() -> None:

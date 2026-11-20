@@ -7,13 +7,15 @@ from hashlib import sha256
 import json
 from pathlib import Path
 from typing import Annotated, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 WORKERS_RELEASE_PATH = Path("/app/artifacts/cloudflare/workers")
 MAX_WORKER_BYTES = 64 * 1024 * 1024
 QUALIFIED_RUNTIME_SHA256 = "fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5"
-QUALIFIED_METER_BOUNDS_SHA256 = "428e72441dce13bd1862afe56218d116882e75c92cd62c13648f7b907dff1eb8"
+QUALIFIED_METER_BOUNDS_SHA256 = "94258247e9ba953962e6ce80ee7aac584ab3c3b3f678a7a549f71f5667f8ea21"
+LAUNCHER_CPU_CEILING_MS = 30_000
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 WorkerRole = Literal["launcher", "capacity"]
 
@@ -65,9 +67,29 @@ class WorkerArtifact(BaseModel):
     preview_urls: Literal[False]
 
 
+class MeterQualification(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_run: UUID
+    observed_manifest_sha256: Digest
+    bundle_sha256: Digest
+    capacity_cpu_us: int = Field(gt=0)
+    sdk_requests: int = Field(gt=0)
+    safety_margin: int = Field(gt=1)
+
+    @property
+    def capacity_cpu_ms(self) -> int:
+        return (self.capacity_cpu_us * self.safety_margin + 999) // 1000
+
+    @property
+    def sdk_request_limit(self) -> int:
+        return min(50, self.sdk_requests * self.safety_margin)
+
+
 class MeterBounds(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    qualification: MeterQualification
     cleanup_margin_seconds: int = Field(gt=0, le=3600)
     per_launcher_second: dict[str, Decimal]
     per_fleet_fixed: dict[str, Decimal]
@@ -87,7 +109,7 @@ class WorkersManifest(BaseModel):
     runtime_profile: Literal["cloudflare-python-v1"]
     capabilities: tuple[tuple[Literal["workflow.execute"], Literal[1]], ...] = Field(min_length=1, max_length=1)
     max_slots_per_launcher: int = Field(ge=1, le=4)
-    meter_bounds: MeterBounds | None = None
+    meter_bounds: MeterBounds
     workers: dict[WorkerRole, WorkerArtifact]
 
 
@@ -105,12 +127,22 @@ def load_workers_release(path: Path = WORKERS_RELEASE_PATH) -> WorkersRelease:
         manifest = WorkersManifest.model_validate_json(raw)
         if manifest.runtime_sha256 != QUALIFIED_RUNTIME_SHA256:
             raise WorkersReleaseUnavailable("Workers runtime does not match the qualified digest")
-        if manifest.meter_bounds is None or sha256(json.dumps(
+        if sha256(json.dumps(
             manifest.meter_bounds.model_dump(mode="json"), sort_keys=True, separators=(",", ":"),
         ).encode()).hexdigest() != QUALIFIED_METER_BOUNDS_SHA256:
             raise WorkersReleaseUnavailable("Workers meter bounds do not match the pinned digest")
         if set(manifest.workers) != {"launcher", "capacity"}:
             raise WorkersReleaseUnavailable("Workers release must contain the launcher and capacity roles")
+        qualifier = manifest.meter_bounds.qualification
+        launcher = manifest.workers["launcher"]
+        resource_limits = {binding.name: binding.text for binding in launcher.bindings if binding.type == "plain_text"}
+        if (
+            manifest.workers["capacity"].cpu_ms != qualifier.capacity_cpu_ms
+            or launcher.cpu_ms != LAUNCHER_CPU_CEILING_MS
+            or resource_limits.get("BIFROST_METER_SDK_REQUESTS") != str(qualifier.sdk_request_limit)
+            or resource_limits.get("BIFROST_METER_ENGINE_CPU_MS") != str(LAUNCHER_CPU_CEILING_MS)
+        ):
+            raise WorkersReleaseUnavailable("Workers resource limits do not match the measured release")
         modules: dict[WorkerRole, dict[str, bytes]] = {}
         seen: set[str] = set()
         for role, worker in manifest.workers.items():

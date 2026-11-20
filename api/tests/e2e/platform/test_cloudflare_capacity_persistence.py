@@ -203,7 +203,7 @@ async def test_connect_uses_opaque_credential_from_protected_rest_entry(e2e_clie
         assert connected.status_code == 200, connected.text
         installation = connected.json()["installation"]
         installation_id = UUID(installation["installation_id"])
-        assert installation["fleet_envelope_usd"] == "13.31"
+        assert installation["fleet_envelope_usd"] == "13.10"
         assert installation["spend"]["estimated_usd"] == "0.00"
         assert installation["spend"]["workers_paid_subscription_usd"] == "5.00"
         assert token not in connected.text and reference not in connected.text
@@ -1305,7 +1305,7 @@ async def test_admission_prices_the_qualified_ledger_bounds(
     # Per-second launcher and slot charges from the qualified bounds and
     # published rates. The out-of-period closed incarnation contributes zero.
     assert await db_session.scalar(price) == (
-        Decimal("0.01681260") + elapsed * Decimal("0.001447353")
+        Decimal("0.01681260") + elapsed * Decimal("0.000855853")
     )
     installation.policy = {**installation.policy, "rate_table_version": "previous-rate-table"}
     await db_session.flush()

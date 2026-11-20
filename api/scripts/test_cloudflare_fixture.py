@@ -55,7 +55,12 @@ def _release():
                 "modules": [{"name": module, "bytes": len(body), "sha256": sha256(body).hexdigest(),
                              "gzip_bytes": 64, "mime_type": "application/javascript+module"}],
                 "exports": {name: {"type": "durable-object", "storage": "sqlite"} for name in classes},
-                "bindings": [], "cpu_ms": 30000, "public_endpoint": role == "capacity", "preview_urls": False,
+                "bindings": [
+                    {"name": "BIFROST_METER_SDK_REQUESTS", "type": "plain_text", "text": "40"},
+                    {"name": "BIFROST_METER_ENGINE_CPU_MS", "type": "plain_text", "text": "30000"},
+                ] if role == "launcher" else [],
+                "cpu_ms": 30_000 if role == "launcher" else 425,
+                "public_endpoint": role == "capacity", "preview_urls": False,
             }
         (path / "manifest.json").write_text(json.dumps(manifest))
         return load_workers_release(path)

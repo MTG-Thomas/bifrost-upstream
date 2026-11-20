@@ -41,7 +41,8 @@ class MeterRate:
 # https://developers.cloudflare.com/workers/platform/pricing/
 # https://developers.cloudflare.com/durable-objects/platform/pricing/
 # https://developers.cloudflare.com/observability/pricing/
-WORKERS_RATE_TABLE_VERSION = "workers-paid-2026-11-20"
+WORKERS_LEGACY_RATE_TABLE_VERSION = "workers-paid-2026-11-20"
+WORKERS_RATE_TABLE_VERSION = "workers-paid-2026-11-20-calibrated"
 WORKERS_RATES = MappingProxyType({
     "worker_requests": MeterRate(1_000_000, Decimal("0.30")),
     "worker_cpu_ms": MeterRate(1_000_000, Decimal("0.02")),
@@ -62,10 +63,14 @@ WORKERS_PAID_SUBSCRIPTION_USD = Decimal("5.00")
 _CPU_MS_PER_ACTIVITY = 30_000
 _OBJECT_GIB = Decimal("0.125")
 _DURATION_USD_PER_SECOND = _OBJECT_GIB * WORKERS_RATES["do_gb_seconds"].usd / WORKERS_RATES["do_gb_seconds"].unit
-_LAUNCHER_BOUNDS = json.loads(Path(__file__).with_name("cloudflare_meter_bounds.json").read_text())["per_launcher_second"]
+_METER_BOUNDS = json.loads(Path(__file__).with_name("cloudflare_meter_bounds.json").read_text())
+_LAUNCHER_BOUNDS = _METER_BOUNDS["per_launcher_second"]
 _LAUNCHER_USD_PER_SECOND = sum(
     Decimal(_LAUNCHER_BOUNDS[meter]) * rate.usd / rate.unit
     for meter, rate in WORKERS_RATES.items()
+)
+_LEGACY_CPU_PREMIUM_PER_SECOND = WORKERS_RATES["worker_cpu_ms"].cost(
+    Decimal(60_000) - Decimal(_LAUNCHER_BOUNDS["worker_cpu_ms"]),
 )
 _ACTIVITY_USD = (
     WORKERS_RATES["worker_requests"].cost(Decimal(1))
@@ -120,6 +125,12 @@ def _cost(launcher_seconds, slot_seconds, dispatched_runs, sdk_requests):
     )
 
 
+def _legacy_cost(launcher_seconds, slot_seconds, dispatched_runs, sdk_requests):
+    return _cost(launcher_seconds, slot_seconds, dispatched_runs, sdk_requests) + (
+        launcher_seconds * _LEGACY_CPU_PREMIUM_PER_SECOND
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class WorkersLedgerUsage:
     launcher_seconds: Decimal
@@ -148,9 +159,15 @@ def cloudflare_estimated_usage() -> ColumnElement[Decimal | None]:
     """Price the live account ledger in the same database snapshot as admission."""
     installation = CloudflareInstallation
     totals = _totals(installation.id, func.statement_timestamp())
+    usage = totals.c.launcher_seconds, totals.c.slot_seconds, totals.c.dispatched_runs, totals.c.sdk_requests
+    version = installation.policy["rate_table_version"].as_string()
+    legacy_period = installation.policy["legacy_meter_month"].as_string() == func.to_char(
+        func.timezone("UTC", func.statement_timestamp()), "YYYY-MM",
+    )
     return select(case(
-        (totals.c.complete & (installation.policy["rate_table_version"].as_string() == WORKERS_RATE_TABLE_VERSION),
-         _cost(totals.c.launcher_seconds, totals.c.slot_seconds, totals.c.dispatched_runs, totals.c.sdk_requests)),
+        (totals.c.complete & ((version == WORKERS_LEGACY_RATE_TABLE_VERSION)
+                              | ((version == WORKERS_RATE_TABLE_VERSION) & legacy_period)), _legacy_cost(*usage)),
+        (totals.c.complete & (version == WORKERS_RATE_TABLE_VERSION), _cost(*usage)),
     )).select_from(totals).correlate(installation).scalar_subquery()
 
 

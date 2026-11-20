@@ -2,6 +2,10 @@
 
 Historical receipts keep their timestamps. They cannot authorize an ACK
 because their generation was never recorded.
+
+Existing policies retain workers-paid-2026-11-20. The calibrated rate
+version uses the legacy estimate for the calendar month in which an
+existing operator applies a newly qualified release.
 """
 
 import sqlalchemy as sa

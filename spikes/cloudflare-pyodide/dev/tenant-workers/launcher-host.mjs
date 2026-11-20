@@ -91,9 +91,13 @@ async function runLauncherWorkflow(getHost, queueWarm, {route, context, publicUr
     const {phase, attempt_state, error_type} = hosted.terminal;
     if (phase === 'attempt-deadline') return terminal(attempt_state, 'TimeoutError', 'Workflow deadline elapsed');
     if (phase === 'attempt-stopped') return terminal(attempt_state, 'CancelledError', 'Workflow stopped');
+    if (phase === 'sdk-meter-limit') {
+      return terminal(attempt_state, 'CloudflareSDKRequestLimitExceeded',
+        'Stopped by Bifrost: the workflow exceeded the Cloudflare release SDK request limit.');
+    }
     if (phase === 'cpu_limit') {
       return terminal(attempt_state, 'CpuLimitExceeded',
-        `Stopped by Cloudflare: the executor exceeded its CPU time limit (cpu_budget_ms=${context.cloudflare_workspace.cpu_budget_ms}).`);
+        'Stopped by Cloudflare: the executor exceeded its effective CPU time limit.');
     }
     if (phase === 'memory_limit') {
       return terminal(attempt_state, 'MemoryLimitExceeded',

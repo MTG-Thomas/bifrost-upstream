@@ -59,8 +59,11 @@ def release(tmp_path: Path) -> Path:
                 "gzip_bytes": 64, "mime_type": "application/javascript+module",
             }],
             "exports": {value: {"type": "durable-object", "storage": "sqlite"} for value in exports},
-            "bindings": [],
-            "cpu_ms": 30_000,
+            "bindings": [
+                {"name": "BIFROST_METER_SDK_REQUESTS", "type": "plain_text", "text": "40"},
+                {"name": "BIFROST_METER_ENGINE_CPU_MS", "type": "plain_text", "text": "30000"},
+            ] if role == "launcher" else [],
+            "cpu_ms": 30_000 if role == "launcher" else 425,
             "public_endpoint": role == "capacity",
             "preview_urls": False,
         }
@@ -97,6 +100,15 @@ def test_release_rejects_substituted_meter_bounds(release: Path) -> None:
     manifest["meter_bounds"]["per_launcher_second"]["worker_cpu_ms"] = "0"
     path.write_text(json.dumps(manifest))
     with pytest.raises(WorkersReleaseUnavailable, match="pinned digest"):
+        load_workers_release(release)
+
+
+def test_release_rejects_an_uploaded_cpu_limit_higher_than_the_estimate(release: Path) -> None:
+    path = release / "manifest.json"
+    manifest = json.loads(path.read_bytes())
+    manifest["workers"]["capacity"]["cpu_ms"] = 30_000
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(WorkersReleaseUnavailable, match="resource limits"):
         load_workers_release(release)
 
 

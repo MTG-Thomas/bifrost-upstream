@@ -63,9 +63,9 @@ function engine() {
         const response = await fetch('https://models.dev/api.json', {headers});
         result = {status: response.status, etag: response.headers.get('etag'),
           catalog: response.status === 200 ? await response.json() : null};
-      } else if (scenario === 'budget') {
+      } else if (scenario === 'budget' || scenario === 'meter-budget') {
         const statuses = [];
-        for (let index = 0; index < 2; index++) {
+        for (let index = 0; index < (scenario === 'budget' ? 2 : 4); index++) {
           const response = await fetch('https://approved.invalid/count');
           statuses.push(response.status);
           await response.body?.cancel();
@@ -293,6 +293,7 @@ before(async () => {
       name: 'tenant', compatibilityDate,
       exports: {TenantHost: {type: 'durable-object', storage: 'sqlite'}, TenantApi: {type: 'worker'}},
       env: {LOADER: {type: 'worker-loader'}, API_ORIGIN: {type: 'text', value: 'https://upstream.invalid'},
+        BIFROST_METER_SDK_REQUESTS: {type: 'text', value: '3'},
         ATTEMPT_DEADLINE_MS: {type: 'text', value: '1'}},
       manifest: {mainModule, modulesRoot: fileURLToPath(root), modules: {
         [mainModule]: {type: 'esm', contents: main},
@@ -611,6 +612,15 @@ test('TenantHost refuses and records an outbound request past the subrequest all
   assert.equal(origins.slice(beforeCount).filter((url) => url.endsWith('/count')).length, 1);
   assert.deepEqual(limited.timings.api_calls.map(({status, denied}) => [status, denied ?? null]),
     [[200, null], [429, 'subrequest allowance exhausted']]);
+});
+
+test('the release SDK meter stops the fourth request even with a larger workflow allowance', async () => {
+  await host('meter-budget', 'warm');
+  const before = origins.length;
+  const result = await host('meter-budget', 'run', route('meter-budget', {scenario: 'meter-budget', allowance: 8}));
+  assert.equal(result.terminal.phase, 'sdk-meter-limit');
+  assert.equal(result.terminal.attempt_state, 'completed');
+  assert.equal(origins.slice(before).filter(url => url.endsWith('/count')).length, 3);
 });
 
 for (const [scenario, phase] of [['cpu-limit', 'cpu_limit'], ['memory-limit', 'memory_limit']]) {

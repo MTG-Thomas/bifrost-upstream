@@ -909,6 +909,7 @@ jobs:
           curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
             --max-time 120 --max-filesize 22017944 --output "$runtime" "$QUALIFIED_WORKERS_RUNTIME_URL"
           npm ci --prefix api/src/services/app_bundler --omit=dev
+          node --test deploy/capacity/cloudflare/build-workers.test.mjs
           node deploy/capacity/cloudflare/build-workers.mjs "$runtime" \
             deploy/capacity/cloudflare/image-artifacts/workers "$GITHUB_SHA"
           node deploy/capacity/cloudflare/build-workers.mjs "$runtime" "$staging/rebuilt" "$GITHUB_SHA"

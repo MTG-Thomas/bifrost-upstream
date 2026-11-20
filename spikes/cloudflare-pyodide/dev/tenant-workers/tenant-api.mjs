@@ -217,11 +217,15 @@ export class TenantHost extends DurableObject {
   #reserveSubrequest() {
     const current = this.#current;
     if (!current?.routeId) return true;
+    if (current.remainingMeterRequests === 0) {
+      current.meterExceeded = true;
+      return false;
+    }
     if (current.remainingSubrequests === 0) {
-      console.info('launcher_subrequest_allowance_exhausted', current.routeId);
       return false;
     }
     current.remainingSubrequests--;
+    if (current.remainingMeterRequests !== undefined) current.remainingMeterRequests--;
     return true;
   }
 
@@ -358,6 +362,8 @@ export class TenantHost extends DurableObject {
       const stopped = new Promise((resolve) => { stop = resolve; });
       this.#current = {handle, generation, deadlineAt, routeId, stop, stopped: false,
         remainingSubrequests: routeId ? workspace.subrequest_allowance : undefined,
+        remainingMeterRequests: routeId && this.env.BIFROST_METER_SDK_REQUESTS
+          ? Number(this.env.BIFROST_METER_SDK_REQUESTS) : undefined,
         egress: new Set((routeId ? workspace.https_hosts : egressHosts).map((h) => h.toLowerCase())),
         snapshot: routeId ? createTenantGateway({store: workspace.sources, manifest: workspace.manifest,
           solutionId: workspace.solution_id}) : null};
@@ -376,8 +382,10 @@ export class TenantHost extends DurableObject {
         return stoppedInQueue();
       }
       const mark = Date.now();
+      const cpuMs = routeId ? Math.min(workspace.cpu_budget_ms,
+        Number(this.env.BIFROST_METER_ENGINE_CPU_MS) || workspace.cpu_budget_ms) : undefined;
       const entrypoint = routeId ? worker.getEntrypoint(null, {
-        limits: {cpuMs: workspace.cpu_budget_ms, subRequests: workspace.subrequest_allowance},
+        limits: {cpuMs, subRequests: workspace.subrequest_allowance},
       }) : worker.getEntrypoint();
       const request = new Request('https://attempt.invalid/', {
         method: 'POST',
@@ -406,6 +414,10 @@ export class TenantHost extends DurableObject {
         return terminal(response === DEADLINE ? 'attempt-deadline' : 'attempt-stopped',
           'uncertain', undefined, this.#calls.get(handle));
       }
+      if (this.#current.meterExceeded) {
+        await response.body?.cancel();
+        return terminal('sdk-meter-limit', 'completed', undefined, this.#calls.get(handle));
+      }
       const childMs = Date.now() - mark;
       let output;
       try {
@@ -433,6 +445,7 @@ export class TenantHost extends DurableObject {
         await this.#retireChild();
         // RPC exceptions can lose their classification. Return only the
         // allowlisted platform class, with no exception text.
+        if (this.#current?.meterExceeded) return {terminal: {phase: 'sdk-meter-limit', attempt_state: 'uncertain'}};
         if (error_class === 'cpu_limit' || error_class === 'memory_limit') {
           return {terminal: {phase: error_class, attempt_state: 'uncertain'}};
         }

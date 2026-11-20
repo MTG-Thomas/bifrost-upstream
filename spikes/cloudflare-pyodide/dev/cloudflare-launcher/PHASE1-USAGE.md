@@ -88,8 +88,8 @@ backoff without writing replacement zeroes.
 incarnation lifetimes, provisioned slot-seconds, committed cloud dispatch
 assignments and SDK gateway requests authenticated to a live workflow run
 currently assigned to a managed Cloudflare Worker. It prices launcher-seconds
-using the complete pinned release bounds for CPU, requests, duration,
-storage and logging at versioned published marginal rates. Admission uses
+using pinned release bounds for CPU, requests, duration, storage and logging
+at versioned published marginal rates. Admission uses
 the current UTC calendar month and closes at the
 budget or if ledger evidence is unavailable or inconsistent. Policy save
 also validates the static envelope. Both checks cover Bifrost-attributable
@@ -99,6 +99,50 @@ as billed by Cloudflare. The usage estimate can differ from the invoice.
 GraphQL Analytics is an advisory comparison of sampled Worker requests
 and the Bifrost request proxy. The incomplete Durable Object data prevents
 a full spend reconciliation. Missing or divergent samples never gate admission.
+
+### Measured release calibration
+
+The hosted reference used manifest
+`b4d55400c080dc014b85054f1560e8a0e4da2470d597c71ab5c501790801f112`,
+Enable job `22529613-b865-4cab-9f7d-49361b3568a0`, and workflow
+executions `85d6948e-bb29-4513-b2f0-459f14b31c13` and
+`8694ea6d-d661-4d1e-a11e-5794e44f0e17`. The fixed workload sample
+covered 17:01:25–17:08:40 UTC. Cloudflare reported 103 capacity Worker
+requests, 42,499 µs CPU and 1,105 µs p99. The sample interval was
+1.17. The Bifrost ledger counted four SDK requests across the two
+completed workflows. The earlier pilot also observed low Worker CPU
+and no attributable Durable Object rows in its window.
+
+The capacity CPU cap uses the entire measured capacity CPU sample as
+a conservative input per invocation. The SDK cap uses the aggregate
+request count as an upper input per attempt. A 10× margin gives
+425 ms capacity CPU and 40 gateway requests per attempt. The gateway
+enforces the smaller of this ceiling and the approved allowance. It
+marks the attempt failed if the release ceiling blocks a call, even
+if user code handles the HTTP 429. The launcher and dynamic engine
+retain the 30,000 ms CPU ceiling because this sample does not isolate
+cold engine or Durable Object CPU. The dynamic execution entrypoint
+also honors smaller workflow approvals.
+
+The calibrated version prices capacity and launcher CPU at 30,425 ms
+per launcher-second under the existing activity model. Other priced
+meters retain their prior conservative bounds. The launcher can
+cap its application operations. Cloudflare's SQLite index and alarm
+writes, platform-generated logs, shared object residency and billed
+storage include provider work outside a workflow's request budget.
+The pilot did not qualify lower bounds for those meters. Worker CPU
+and requests also exclude Dynamic Worker creations from the comparison.
+The aggregate sample, the cap, and the ledger use different units
+and are all recorded for review.
+
+Packaging requires positive priced bounds, the source run, the
+observed manifest digest, the measured inputs and the margin.
+The bundle fingerprint rejects changes to the launcher or capacity
+bytes until the release is re-qualified. The API verifies the
+pinned bounds and upload limits before accepting the package. The
+rate table version is `workers-paid-2026-11-20-calibrated`. Existing
+installations keep the prior rate until policy adoption, and their
+transition month retains old pricing for previously incurred usage.
 
 ## Item 2. Workers Paid and Containers entitlement
 

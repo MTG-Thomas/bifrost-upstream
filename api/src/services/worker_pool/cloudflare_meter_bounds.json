@@ -1,8 +1,16 @@
 {
+  "qualification": {
+    "source_run": "22529613-b865-4cab-9f7d-49361b3568a0",
+    "observed_manifest_sha256": "b4d55400c080dc014b85054f1560e8a0e4da2470d597c71ab5c501790801f112",
+    "bundle_sha256": "b3ba114b2aed0561753b4accb739c94d12fef12d1a95989bfbcbda0aebcf49f2",
+    "capacity_cpu_us": 42499,
+    "sdk_requests": 4,
+    "safety_margin": 10
+  },
   "cleanup_margin_seconds": 300,
   "per_launcher_second": {
     "worker_requests": "2",
-    "worker_cpu_ms": "60000",
+    "worker_cpu_ms": "30425",
     "do_requests": "64",
     "do_gb_seconds": "1",
     "sqlite_rows_read": "128",
