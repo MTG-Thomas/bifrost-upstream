@@ -33,6 +33,7 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareOwnedResource,
     CloudflareStagedToken,
     CloudflareUsageActivity,
+    CloudflareUsageIncarnation,
     CloudflareWorkerReservation,
 )
 from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
@@ -85,6 +86,7 @@ from src.services.worker_pool.cloudflare_provisioning import (
 from src.services.worker_pool.cloudflare_spend import (
     WORKERS_RATE_TABLE_VERSION,
     WORKERS_RATES,
+    cloudflare_estimated_usage,
     read_workers_usage,
     usage_period,
 )
@@ -169,6 +171,40 @@ async def test_staged_credential_is_encrypted_bound_expiring_and_single_use(db_s
     ).values(expires_at=datetime.now(UTC) - timedelta(seconds=1)))
     with pytest.raises(ValueError, match="Invalid or expired"):
         await consume_staged_token(db_session, expired, actor_id=OPERATOR_ID, account_id=account, purpose="rotate")
+
+
+@pytest.mark.asyncio
+async def test_connect_uses_opaque_credential_from_protected_rest_entry(e2e_client, platform_admin, async_session_factory) -> None:
+    path = "/api/capacity/cloudflare"
+    headers = platform_admin.headers
+    account = "f" * 32
+    token = "browser-fixture-cloudflare-token"
+    staged = e2e_client.post(f"{path}/credential", headers=headers, json={
+        "account_id": account, "purpose": "connect", "api_token": token,
+    })
+    assert staged.status_code == 201 and token not in staged.text
+    reference = staged.json()["credential_ref"]
+    request = {
+        "action": "connect", "account_id": account, "worker_ingress_origin": "https://workers.browser-fixture.test",
+        "consent_version": CONSENT_TEXT_VERSION, "consent": True, "credential_ref": reference,
+        "policy": {"workers": {
+            "launcher_cap": 1, "slots_per_launcher": 2, "max_lifetime_seconds": 3600, "work_kinds": ["workflow"],
+        }, "monthly_limit_usd": "30.00"},
+    }
+    installation_id = None
+    try:
+        connected = e2e_client.patch(path, headers=headers, json=request)
+        assert connected.status_code == 200, connected.text
+        installation_id = UUID(connected.json()["installation"]["installation_id"])
+        assert token not in connected.text and reference not in connected.text
+        assert e2e_client.patch(path, headers=headers, json=request).status_code == 422
+    finally:
+        async with async_session_factory() as db:
+            await db.execute(delete(CloudflareStagedToken).where(CloudflareStagedToken.id == UUID(reference)))
+            if installation_id is not None:
+                await db.execute(delete(CloudflareCredential).where(CloudflareCredential.installation_id == installation_id))
+                await db.execute(delete(CloudflareInstallation).where(CloudflareInstallation.id == installation_id))
+            await db.commit()
 
 
 @pytest.mark.asyncio
@@ -366,11 +402,16 @@ async def test_account_rotation_switches_only_a_valid_same_account_version(
         adapter = WorkersRestCleanup(http)
         monkeypatch.setattr(lifecycle_job, "WorkersRestCleanup", lambda _http: adapter)
         for replacement_version in (2, 3):
+            ref, _ = await stage_account_token(
+                db_session, actor_id=OPERATOR_ID, account_id=installation.account_id, purpose="rotate", token=candidate,
+            )
+            await db_session.flush()
             job, reused = await lifecycle_job.enqueue_cloudflare_account_token_rotation(
-                db_session, admin, installation_id=installation.id, expected_revision=1, replacement=candidate,
+                db_session, admin, installation_id=installation.id, expected_revision=1, replacement=ref,
             )
             assert not reused and job.payload["replacement_version"] == replacement_version
             assert candidate.get_secret_value() not in json.dumps(job.payload)
+            assert str(ref) not in json.dumps(job.payload)
             assert installation.api_token_version == 1
             assert (await get_cloudflare_capacity_status(db_session, admin)).latest_job_id == job.id
             token = uuid4()
@@ -1076,6 +1117,49 @@ async def test_scope_bearer_reference_is_versioned_and_scope_bound(
                 endpoint="https://other.example.test", deployment_revision=1, bearer_version=1,
             ))
             await db_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_exact_budget_boundary_closes_reservations(
+    db_session: AsyncSession, installation: CloudflareInstallation,
+) -> None:
+    installation.policy = {
+        **installation.policy, "limits": {**installation.policy["limits"], "monthly_limit_usd": "5.00"},
+    }
+    installation.desired_state, installation.admitted_revision = "enabled", 1
+    db_session.add(seal_credential(
+        CredentialRef(installation.id, installation.account_id, "scope_bearer", "workers", 1),
+        SecretStr("synthetic-boundary-test-bearer"), actor=str(OPERATOR_ID), now=datetime.now(UTC),
+    ))
+    await db_session.flush()
+    db_session.add(CloudflareCapacityScope(
+        installation_id=installation.id, scope="workers", endpoint="https://capacity.example.test",
+        deployment_revision=1, bearer_version=1,
+    ))
+    await db_session.flush()
+    assert await db_session.scalar(select(cloudflare_estimated_usage()).where(
+        CloudflareInstallation.id == installation.id,
+    )) == Decimal(5)
+    assert await ManagedCloudflareScope(installation.id, "workers", 1).lock_admission(db_session) is None
+
+
+@pytest.mark.asyncio
+async def test_ledger_splits_open_incarnation_at_utc_rollover(
+    db_session: AsyncSession, installation: CloudflareInstallation,
+) -> None:
+    boundary = datetime(2027, 1, 1, tzinfo=UTC)
+    db_session.add(CloudflareUsageIncarnation(
+        worker_id=uuid4(), installation_id=installation.id, started_at=boundary - timedelta(seconds=10), slots=3,
+    ))
+    db_session.add(CloudflareUsageActivity(
+        installation_id=installation.id, period_start=datetime(2026, 12, 1, tzinfo=UTC),
+        dispatched_runs=5, sdk_requests=9,
+    ))
+    await db_session.flush()
+    dec = await read_workers_usage(db_session, installation.id, boundary - timedelta(seconds=2))
+    jan = await read_workers_usage(db_session, installation.id, boundary + timedelta(seconds=4))
+    assert dec is not None and (dec.launcher_seconds, dec.slot_seconds, dec.dispatched_runs, dec.sdk_requests) == (8, 24, 5, 9)
+    assert jan is not None and (jan.launcher_seconds, jan.slot_seconds, jan.dispatched_runs, jan.sdk_requests) == (4, 12, 0, 0)
 
 
 @pytest.mark.asyncio

@@ -35,6 +35,13 @@
         "audit_event": null,
         "authorization_resolver": "platform.readwrite at Global",
         "cli": {
+          "aliases": [
+            [
+              "capacity",
+              "cloudflare",
+              "policy"
+            ]
+          ],
           "path": [
             "capacity",
             "cloudflare",
@@ -48,6 +55,9 @@
         },
         "manifest": null,
         "mcp": {
+          "aliases": [
+            "bifrost_cloudflare_connect_execute"
+          ],
           "name": "bifrost_cloudflare_policy_update"
         },
         "native_builder": false,
@@ -60,6 +70,68 @@
         },
         "side_effects": [],
         "summary": "Connect and Configure Cloudflare Capacity",
+        "target_kind": "platform"
+      }
+    },
+    {
+      "observed": {
+        "cli": {
+          "path": [
+            "capacity",
+            "cloudflare",
+            "stage-credential"
+          ],
+          "status": "exact_parity"
+        },
+        "manifest": {
+          "entity": null,
+          "status": "intentionally_unsupported"
+        },
+        "mcp": {
+          "name": null,
+          "status": "intentionally_unsupported"
+        },
+        "rest": {
+          "operation_id": "capacity.cloudflare_credential_stage",
+          "status": "exact_parity"
+        },
+        "sdk": {
+          "binding": null,
+          "status": "intentionally_unsupported"
+        }
+      },
+      "operation": {
+        "action_scopes": [
+          "platform.readwrite"
+        ],
+        "async_policy": "synchronous",
+        "audit_event": "capacity.cloudflare_credential_stage",
+        "authorization_resolver": "platform.readwrite at Global",
+        "cli": {
+          "path": [
+            "capacity",
+            "cloudflare",
+            "stage-credential"
+          ]
+        },
+        "exclusions": {
+          "manifest": "Cloudflare credentials are bound to the platform.",
+          "mcp": "The operator enters the raw token through the CLI's protected prompt.",
+          "native_builder": "Cloudflare capacity is platform administration.",
+          "sdk": "Runtime SDKs do not administer capacity."
+        },
+        "manifest": null,
+        "mcp": null,
+        "native_builder": false,
+        "operation_id": "capacity.cloudflare_credential_stage",
+        "rest": {
+          "method": "POST",
+          "path": "/api/capacity/cloudflare/credential",
+          "request_model": "CloudflareStageCredentialRequest",
+          "response_model": "CloudflareStagedCredential"
+        },
+        "side_effects": [],
+        "summary": "Stage Cloudflare Credential",
         "target_kind": "platform"
       }
     },
@@ -284,9 +356,21 @@
           "platform.readwrite"
         ],
         "async_policy": "platform_job",
-        "audit_event": "capacity.cloudflare_rotate_account_token",
+        "audit_event": "capacity.cloudflare_rotate_worker_credential",
         "authorization_resolver": "platform.readwrite at Global",
         "cli": {
+          "aliases": [
+            [
+              "capacity",
+              "cloudflare",
+              "rotate-root"
+            ],
+            [
+              "capacity",
+              "cloudflare",
+              "rotate-bearer"
+            ]
+          ],
           "path": [
             "capacity",
             "cloudflare",
@@ -300,6 +384,9 @@
         },
         "manifest": null,
         "mcp": {
+          "aliases": [
+            "bifrost_cloudflare_account_token_replace"
+          ],
           "name": "bifrost_cloudflare_worker_credential_replace"
         },
         "native_builder": false,
@@ -307,7 +394,7 @@
         "rest": {
           "method": "POST",
           "path": "/api/capacity/cloudflare/rotate",
-          "request_model": "CloudflareAccountTokenRotation | CloudflareWorkerCredentialRotation",
+          "request_model": "CloudflareAccountTokenRotation | CloudflareAccountTokenReferenceRotation | CloudflareWorkerCredentialRotation",
           "response_model": "PlatformJobAccepted"
         },
         "side_effects": [],
@@ -11185,10 +11272,10 @@
     }
   ],
   "counts": {
-    "cli": 192,
+    "cli": 193,
     "manifest": 16,
-    "mcp": 108,
-    "rest": 732,
+    "mcp": 110,
+    "rest": 733,
     "sdk": 21
   },
   "schema_version": 1,
@@ -11304,36 +11391,6 @@
         ],
         "reason": "Local authentication, source-control, or lifecycle command.",
         "status": "transport_only"
-      },
-      {
-        "kind": "operation",
-        "path": [
-          "capacity",
-          "cloudflare",
-          "policy"
-        ],
-        "reason": "CLI operation has not entered the canonical operation catalog yet.",
-        "status": "missing_surface"
-      },
-      {
-        "kind": "operation",
-        "path": [
-          "capacity",
-          "cloudflare",
-          "rotate-bearer"
-        ],
-        "reason": "CLI operation has not entered the canonical operation catalog yet.",
-        "status": "missing_surface"
-      },
-      {
-        "kind": "operation",
-        "path": [
-          "capacity",
-          "cloudflare",
-          "rotate-root"
-        ],
-        "reason": "CLI operation has not entered the canonical operation catalog yet.",
-        "status": "missing_surface"
       },
       {
         "kind": "operation",

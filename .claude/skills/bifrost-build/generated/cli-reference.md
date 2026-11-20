@@ -655,16 +655,17 @@ Options:
   --help  Show this message and exit.
 
 Commands:
-  connect        Validate an account token and connect Cloudflare.
-  disconnect     Drain Cloudflare workers and remove verified owned...
-  enable         Provision and verify Cloudflare Workers capacity.
-  policy         Update the current Cloudflare capacity policy.
-  reconcile      Verify the current Cloudflare Workers deployment.
-  rotate         Validate and replace the Cloudflare account API token.
-  rotate-bearer  Retire the previous Workers deployment and stage a new...
-  rotate-root    Rotate the derivation root after Scale In.
-  scale-in       Drain Cloudflare workers and retain the connection.
-  status         Show the current Cloudflare connection and capacity policy.
+  connect           Validate an account token and connect Cloudflare.
+  disconnect        Drain Cloudflare workers and remove verified owned...
+  enable            Provision and verify Cloudflare Workers capacity.
+  policy            Update the current Cloudflare capacity policy.
+  reconcile         Verify the current Cloudflare Workers deployment.
+  rotate            Validate and replace the Cloudflare account API token.
+  rotate-bearer     Retire the previous Workers deployment and stage a...
+  rotate-root       Rotate the derivation root after Scale In.
+  scale-in          Drain Cloudflare workers and retain the connection.
+  stage-credential  Enter a Cloudflare token for a one-time MCP...
+  status            Show the current Cloudflare connection and capacity...
 ```
 
 #### `capacity cloudflare connect`
@@ -802,6 +803,20 @@ Options:
   --expected-revision INTEGER  expected_revision  [required]
   --json                       Emit JSON instead of human-readable output.
   --help                       Show this message and exit.
+```
+
+#### `capacity cloudflare stage-credential`
+
+```
+Usage: capacity cloudflare stage-credential [OPTIONS]
+
+  Enter a Cloudflare token for a one-time MCP credential reference.
+
+Options:
+  --account-id TEXT           [required]
+  --purpose [connect|rotate]  [required]
+  --json                      Emit JSON instead of human-readable output.
+  --help                      Show this message and exit.
 ```
 
 #### `capacity cloudflare status`

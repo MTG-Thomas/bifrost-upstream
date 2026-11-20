@@ -100,17 +100,18 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
         select(
             CloudflareInstallation,
             cloudflare_estimated_usage().label("estimated_usage"),
+            func.statement_timestamp().label("as_of"),
             select(func.count()).select_from(CloudflareOwnedResource).where(
                 CloudflareOwnedResource.installation_id == CloudflareInstallation.id,
                 or_(CloudflareOwnedResource.state != "absent", CloudflareOwnedResource.observed_at.is_(None)),
             ).correlate(CloudflareInstallation).scalar_subquery().label("owned_resources_pending"),
-        ).where(CloudflareInstallation.retired_at.is_(None))
+        ).where(CloudflareInstallation.retired_at.is_(None)).execution_options(populate_existing=True)
     )).tuples().one_or_none()
     if row is None:
         return CloudflareCapacityStatus(consent_text_version=CONSENT_TEXT_VERSION, consent_text=CONSENT_TEXT, installation=None)
-    installation, estimate, owned_resources_pending = row
+    installation, estimate, as_of, owned_resources_pending = row
     policy = CloudflareCapacityPolicy.model_validate(installation.policy["limits"])
-    period_start, period_end = usage_period(datetime.now(UTC))
+    period_start, period_end = usage_period(as_of)
     advisory = (
         CloudflareUsageAdvisory.model_validate(installation.usage_advisory)
         if installation.usage_advisory else None

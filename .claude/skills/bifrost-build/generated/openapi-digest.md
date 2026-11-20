@@ -131,6 +131,7 @@
 | POST | `/api/branding/logo/{logo_type}` |
 | GET | `/api/capacity/cloudflare` |
 | PATCH | `/api/capacity/cloudflare` |
+| POST | `/api/capacity/cloudflare/credential` |
 | POST | `/api/capacity/cloudflare/disconnect` |
 | POST | `/api/capacity/cloudflare/enable` |
 | POST | `/api/capacity/cloudflare/reconcile` |

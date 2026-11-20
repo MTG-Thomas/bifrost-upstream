@@ -2999,6 +2999,23 @@ export interface paths {
         patch: operations["capacity.cloudflare_configure"];
         trace?: never;
     };
+    "/api/capacity/cloudflare/credential": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Stage Cloudflare Credential */
+        post: operations["capacity.cloudflare_credential_stage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/capacity/cloudflare/enable": {
         parameters: {
             query?: never;
@@ -16287,6 +16304,21 @@ export interface components {
              */
             failed: number;
         };
+        /** CloudflareAccountTokenReferenceRotation */
+        CloudflareAccountTokenReferenceRotation: {
+            /**
+             * Installation Id
+             * Format: uuid
+             */
+            installation_id: string;
+            /** Expected Revision */
+            expected_revision: number;
+            /**
+             * Credential Ref
+             * Format: uuid
+             */
+            credential_ref: string;
+        };
         /** CloudflareAccountTokenRotation */
         CloudflareAccountTokenRotation: {
             /**
@@ -16368,11 +16400,10 @@ export interface components {
              * @constant
              */
             consent: true;
-            /**
-             * Api Token
-             * Format: password
-             */
-            api_token: string;
+            /** Api Token */
+            api_token?: string | null;
+            /** Credential Ref */
+            credential_ref?: string | null;
             policy: components["schemas"]["CloudflareCapacityPolicy-Input"];
         };
         /** CloudflareInstallationStatus */
@@ -16407,6 +16438,7 @@ export interface components {
             fleet_envelope_usd: string;
             /** Owned Resources Pending */
             owned_resources_pending: number;
+            spend?: components["schemas"]["CloudflareSpendStatus"] | null;
         };
         /** CloudflarePolicyUpdate */
         CloudflarePolicyUpdate: {
@@ -16423,6 +16455,76 @@ export interface components {
              */
             action: "policy";
             policy: components["schemas"]["CloudflareCapacityPolicy-Input"];
+        };
+        /** CloudflareSpendStatus */
+        CloudflareSpendStatus: {
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "ready" | "budget_reached" | "ledger_unavailable";
+            /** Estimated Usd */
+            estimated_usd: string | null;
+            /** Rate Table Version */
+            rate_table_version: string;
+            /**
+             * Period Start
+             * Format: date-time
+             */
+            period_start: string;
+            /**
+             * Period End
+             * Format: date-time
+             */
+            period_end: string;
+            analytics?: components["schemas"]["CloudflareUsageAdvisory"] | null;
+        };
+        /** CloudflareStageCredentialRequest */
+        CloudflareStageCredentialRequest: {
+            /** Account Id */
+            account_id: string;
+            /**
+             * Purpose
+             * @enum {string}
+             */
+            purpose: "connect" | "rotate";
+            /**
+             * Api Token
+             * Format: password
+             */
+            api_token: string;
+        };
+        /** CloudflareStagedCredential */
+        CloudflareStagedCredential: {
+            /**
+             * Credential Ref
+             * Format: uuid
+             */
+            credential_ref: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+        };
+        /** CloudflareUsageAdvisory */
+        CloudflareUsageAdvisory: {
+            /**
+             * Checked At
+             * Format: date-time
+             */
+            checked_at: string;
+            /**
+             * Period Start
+             * Format: date-time
+             */
+            period_start: string;
+            /** Worker Requests */
+            worker_requests?: string | null;
+            /** Ledger Request Proxy */
+            ledger_request_proxy?: string | null;
+            /** Request Difference */
+            request_difference?: string | null;
         };
         /** CloudflareWorkerCredentialRotation */
         CloudflareWorkerCredentialRotation: {
@@ -38641,6 +38743,39 @@ export interface operations {
             };
         };
     };
+    "capacity.cloudflare_credential_stage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CloudflareStageCredentialRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CloudflareStagedCredential"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     "capacity.cloudflare_enable": {
         parameters: {
             query?: never;
@@ -38782,7 +38917,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CloudflareAccountTokenRotation"] | components["schemas"]["CloudflareWorkerCredentialRotation"];
+                "application/json": components["schemas"]["CloudflareAccountTokenRotation"] | components["schemas"]["CloudflareAccountTokenReferenceRotation"] | components["schemas"]["CloudflareWorkerCredentialRotation"];
             };
         };
         responses: {
