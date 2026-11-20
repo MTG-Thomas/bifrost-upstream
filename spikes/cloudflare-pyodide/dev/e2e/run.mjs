@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {execFileSync, spawn, spawnSync} from 'node:child_process';
 import {createHash, randomBytes} from 'node:crypto';
-import {appendFileSync, readFileSync, unlinkSync, utimesSync, writeFileSync} from 'node:fs';
+import {appendFileSync, existsSync, readFileSync, unlinkSync, utimesSync, writeFileSync} from 'node:fs';
 import {mkdir} from 'node:fs/promises';
 import {createServer} from 'node:http';
 import {createServer as createTlsServer} from 'node:https';
@@ -615,6 +615,9 @@ async function containersChecks() {
     version: devVersion(), archive: process.cwd(),
   };
   const hosted = config.qualification?.placement;
+  const expiry = hosted?.containerExpiry;
+  let containerQuiet = false;
+  let containerDeletes = 0;
   const vmToken = randomBytes(32).toString('hex');
   const containersToken = hosted?.containersToken ??
     createHash('sha256').update(config.phase6.token + ':containers').digest('hex');
@@ -631,6 +634,15 @@ async function containersChecks() {
     if (!hosted) await launch(proxy.address().port);
     if (hosted) evidence('hosted-relay-ready', {port: proxy.address().port});
     providerServer = await serveContainersProviders(config.phase6.providerHost, {
+      ...(expiry ? {containers: {
+        fetch(request) {
+          if (containerQuiet) return new Response(null, {status: 503});
+          if (request.method === 'DELETE') containerDeletes += 1;
+          const url = new URL(request.url);
+          const target = new URL(url.pathname + url.search, hosted.containersUrl);
+          return fetch(new Request(target, request), {redirect: 'manual'});
+        },
+      }} : {}),
       vm: {
         async fetch(request) {
           const response = await vm.fetch(request);
@@ -679,7 +691,7 @@ async function containersChecks() {
       `BIFROST_WORKER_CAPACITY_TOKEN=${vmToken}`,
       `BIFROST_CLOUDFLARE_CAPACITY_URL=${hosted?.workersUrl ?? endpoint + '/workers'}`,
       `BIFROST_CLOUDFLARE_CAPACITY_TOKEN=${config.phase6.token}`,
-      `BIFROST_CLOUDFLARE_CONTAINERS_URL=${hosted?.containersUrl ?? endpoint + '/containers'}`,
+      `BIFROST_CLOUDFLARE_CONTAINERS_URL=${expiry ? endpoint + '/containers' : hosted?.containersUrl ?? endpoint + '/containers'}`,
       'BIFROST_CLOUDFLARE_CONTAINERS_SCOPE=containers',
       `BIFROST_CLOUDFLARE_CONTAINERS_TOKEN=${containersToken}`,
       '',
@@ -767,7 +779,7 @@ asyncio.run(run())
         jobId, solutionId, privateId, ...update, publicFetches: git.fetches - privateFetches, privateFetches,
       });
     }
-    const hostedWorkflows = hosted && (async () => {
+    const hostedWorkflows = hosted && !expiry && (async () => {
       let loose;
       let solution;
       try {
@@ -813,6 +825,19 @@ asyncio.run(run())
     assert.equal(Number(workerStatus.requirements_installed), 1);
     assert.equal(Number(workerStatus.requirements_total), 1);
     evidence('containers-workflow', {primary, vmRun, linux, linuxRow, container, requirements: 1});
+    if (expiry) {
+      containerQuiet = true;
+      assert.equal(containerDeletes, 0);
+      assert.equal(container.state, 'ready');
+      assert.equal(container.deleted, false);
+      assert.ok(!runRow(vmRun).completed, 'VM primary remained occupied through overflow settlement');
+      evidence('container-expiry-wait', {id: linux, incarnation: container.id, deletesForwarded: containerDeletes});
+      await until('independent Cloudflare instance stop receipt', () => existsSync('.phase7-expiry-observed'), 420_000);
+      evidence('container-expiry-bifrost', {id: linux, row: runRow(linux),
+        incarnation: managedRows('containers', {includeRetired: true}).find(({id}) => id === container.id),
+        deletesForwarded: containerDeletes});
+      return;
+    }
     approved?.gate.release.resolve();
     const localOutcome = hosted ? null : await settle('phase6-a', approved, 'Success');
     const released = await until('Containers idle retirement and provider-confirmed deletion', () =>

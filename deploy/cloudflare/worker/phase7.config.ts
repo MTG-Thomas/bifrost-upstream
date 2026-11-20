@@ -25,7 +25,7 @@ export default defineConfig({
   containers: [container],
   worker: {
     name,
-    entrypoint: './capacity.mjs',
+    entrypoint: process.env.PHASE7_CONTAINER_EXPIRY === '1' ? './phase7-expiry.mjs' : './capacity.mjs',
     compatibilityDate: '2026-11-10',
     workersDev: true,
     previewUrls: false,
