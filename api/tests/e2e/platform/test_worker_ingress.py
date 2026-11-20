@@ -14,14 +14,22 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
-from websockets.asyncio.client import connect
-
+from pydantic import SecretStr
+from sqlalchemy import delete
 from src.config import get_settings
-from src.models.orm.cloudflare_capacity import CloudflareInstallation
+from src.models.orm.cloudflare_capacity import (
+    CloudflareCredential,
+    CloudflareInstallation,
+)
 from src.models.orm.execution_workers import ExecutionWorker
 from src.services import worker_ingress_probes as probes
 from src.services.worker_ingress import CONTROL_PATH, PORT
+from src.services.worker_pool.cloudflare_credentials import (
+    CredentialRef,
+    seal_credential,
+)
 from src.worker.remote.protocol import Hello, new_nonce, sign_hello
+from websockets.asyncio.client import connect
 
 pytestmark = [pytest.mark.e2e, pytest.mark.asyncio]
 
@@ -76,10 +84,15 @@ async def test_worker_ingress_over_tls(
     installation = CloudflareInstallation(
         id=uuid4(), account_id="a" * 32, worker_ingress_origin=origin, policy={},
         consent_version="existing-https-v1", consent_actor="test", consent_at=datetime.now(UTC),
-        desired_revision=1, desired_state="scaled_in",
+        desired_revision=1, desired_state="scaled_in", api_token_version=1,
     )
     async with async_session_factory() as db:
         db.add(installation)
+        await db.flush()
+        db.add(seal_credential(
+            CredentialRef(installation.id, installation.account_id, "account_token", "", 1),
+            SecretStr("synthetic-ingress-test-token"), actor="test", now=installation.consent_at,
+        ))
         await db.commit()
         db.expunge(installation)
     hello = Hello(
@@ -164,5 +177,8 @@ async def test_worker_ingress_over_tls(
             worker = await db.get(ExecutionWorker, hello.incarnation_id)
             if worker is not None:
                 await db.delete(worker)
+            await db.execute(delete(CloudflareCredential).where(
+                CloudflareCredential.installation_id == installation.id,
+            ))
             await db.delete(installation)
             await db.commit()
