@@ -25,8 +25,7 @@ async def ${name}():
 		await page.goto("/workflows");
 		await page.getByPlaceholder("Search by name, description, or category...").fill(name);
 		await page.getByRole("button", { name: `${name} actions`, exact: true }).click();
-		await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
-		await page.getByRole("tab", { name: "Cloudflare Approval" }).click();
+		await page.getByRole("menuitem", { name: "Review Cloudflare Approval" }).click();
 
 		const panel = page.getByRole("region", { name: "Cloudflare Approval" });
 		await expect(panel.getByRole("status")).toHaveText("Pending Review");

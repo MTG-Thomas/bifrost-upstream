@@ -3,6 +3,7 @@ import {
 	AlertTriangle,
 	Bot,
 	Building2,
+	Cloud,
 	Code,
 	Code2,
 	Database,
@@ -65,6 +66,7 @@ export interface WorkflowListSurfaceProps {
 	workflowsWithKeys?: Set<string>;
 	openingWorkflowId?: string | null;
 	onOpenCode?: (workflow: WorkflowListItem) => void;
+	onReviewCloudflare?: (workflow: WorkflowListItem) => void;
 	onEditScope?: (workflow: WorkflowListItem) => void;
 	onEditEndpoint?: (workflow: WorkflowListItem) => void;
 	onResolveOrphaned?: (workflow: WorkflowListItem) => void;
@@ -153,6 +155,7 @@ export function WorkflowListSurface({
 	workflowsWithKeys = new Set<string>(),
 	openingWorkflowId = null,
 	onOpenCode,
+	onReviewCloudflare,
 	onEditScope,
 	onEditEndpoint,
 	onResolveOrphaned,
@@ -194,6 +197,12 @@ export function WorkflowListSurface({
 						<Code2 aria-hidden="true" className="size-4" />
 					)}
 					Open in editor
+				</DropdownMenuItem>
+			)}
+			{workflow.type === "workflow" && onReviewCloudflare && (
+				<DropdownMenuItem className="min-h-11" onSelect={() => onReviewCloudflare(workflow)}>
+					<Cloud aria-hidden="true" className="size-4" />
+					Review Cloudflare Approval
 				</DropdownMenuItem>
 			)}
 			{canManageWorkflow(workflow) &&

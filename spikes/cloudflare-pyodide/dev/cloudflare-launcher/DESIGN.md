@@ -959,7 +959,7 @@ tags. Private handoffs and raw logs were removed.
 
 ### Phase 3 workspace approval and placement
 
-Use **Cloudflare Approval** in Workflow Settings or run these commands with an authenticated Bifrost CLI:
+Use **Review Cloudflare Approval** in the workflow's actions menu or run these commands with an authenticated Bifrost CLI:
 
 ```sh
 bifrost workflows cloudflare-approval propose WORKFLOW_UUID --subrequest-allowance 10 --cpu-budget-ms 1000 --https-hosts '*.halopsa.com'

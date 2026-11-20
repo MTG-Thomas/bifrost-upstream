@@ -139,6 +139,9 @@ async def test_workflow_approval_rest_reviews_wildcard_and_fences_two_accepts(as
                 state = (await client.get(endpoint, headers=reader_headers)).json()
                 assert state["status"] == "approved"
                 assert state["current_revision"] == latest["review_sha256"]
+                await write_source("changed-again")
+                changed = await client.get(endpoint, headers=reader_headers)
+                assert changed.json()["status"] == "revision_changed"
                 assert (await client.delete(endpoint, headers=reader_headers)).status_code == 403
                 revoked = await client.delete(endpoint, headers=provider_headers)
                 assert revoked.json()["status"] == "pending_review"

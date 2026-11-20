@@ -74,7 +74,6 @@ import { useWorkflowKeys, useCreateWorkflowKey, useRevokeWorkflowKey } from "@/h
 import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
 import { AccessLevelSelect } from "@/components/access/AccessLevelSelect";
 import { WorkflowAccessPanel } from "@/components/workflows/WorkflowAccessPanel";
-import { CloudflareApprovalPanel } from "@/components/workflows/CloudflareApprovalPanel";
 import type { components } from "@/lib/v1";
 
 type Workflow = components["schemas"]["WorkflowMetadata"];
@@ -515,19 +514,9 @@ export function WorkflowEditDialog({
 							<Globe className="h-3.5 w-3.5" />
 							Endpoint
 						</TabsTrigger>
-						{workflow?.type === "workflow" && (
-							<TabsTrigger value="cloudflare" className="h-11 min-h-11 flex-none">
-								Cloudflare Approval
-							</TabsTrigger>
-						)}
 					</TabsList>
 
 					<div className="flex-1 overflow-y-auto py-4">
-						{workflow?.type === "workflow" && (
-							<TabsContent value="cloudflare" className="mt-0">
-								<CloudflareApprovalPanel key={workflow.id} workflowId={workflow.id} />
-							</TabsContent>
-						)}
 						{/* General Tab */}
 						<TabsContent value="general" className="mt-0 space-y-4">
 							<div className="space-y-2">

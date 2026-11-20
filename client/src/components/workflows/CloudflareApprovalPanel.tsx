@@ -57,12 +57,9 @@ export function CloudflareApprovalPanel({ workflowId }: { workflowId: string }) 
 
 	return (
 		<section aria-label="Cloudflare Approval" className="space-y-4">
-			<div className="flex items-center justify-between gap-3">
-				<h3 className="text-sm font-semibold">Cloudflare Approval</h3>
-				<Badge variant="outline" role="status">
-					{state ? statuses[state.status] : status.isPending ? "Loading" : "Temporarily Unavailable"}
-				</Badge>
-			</div>
+			<Badge variant="outline" role="status">
+				{state ? statuses[state.status] : status.isPending ? "Loading" : "Temporarily Unavailable"}
+			</Badge>
 			{(error || status.isError) && (
 				<p className="text-sm text-destructive" role="alert">
 					{error || "Approval status could not be loaded."}
