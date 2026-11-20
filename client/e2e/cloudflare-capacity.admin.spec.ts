@@ -23,11 +23,25 @@ test("a platform operator connects and enables Cloudflare capacity", async ({ pa
 	await expect(page.getByText(origin, { exact: true })).toBeVisible();
 
 	const enable = page.waitForResponse((response) => response.url().endsWith("/api/capacity/cloudflare/enable"));
+	const admitted = page.waitForResponse(async (response) =>
+		response.url().endsWith("/api/capacity/cloudflare") &&
+		response.request().method() === "GET" &&
+		response.ok() &&
+		(await response.json()).installation?.admission_open === true,
+	);
 	await page.getByRole("button", { name: "Enable", exact: true }).click();
 	expect((await enable).status()).toBe(202);
+	await admitted;
 	await expect(page.getByText("Enabled", { exact: true })).toBeVisible();
 
+	const retired = page.waitForResponse(async (response) =>
+		response.url().endsWith("/api/capacity/cloudflare") &&
+		response.request().method() === "GET" &&
+		response.ok() &&
+		(await response.json()).installation === null,
+	);
 	await page.getByRole("button", { name: "Disconnect", exact: true }).click();
 	await page.getByRole("alertdialog").getByRole("button", { name: "Disconnect", exact: true }).click();
+	await retired;
 	await expect(page.getByRole("button", { name: "Connect Cloudflare" })).toBeVisible();
 });
