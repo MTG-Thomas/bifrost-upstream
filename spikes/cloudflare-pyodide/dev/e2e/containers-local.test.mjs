@@ -1,6 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {expiryCapacityRelay, OVERFLOW_MEMORY_MIB, vmHoldMemoryMiB} from './containers-local.mjs';
+import {expiryCapacityRelay, localLinuxProvider, OVERFLOW_MEMORY_MIB, vmHoldMemoryMiB} from './containers-local.mjs';
+
+test('local provider advertises the configured memory budget', async () => {
+  const token = 'local-fixture-token'.repeat(2);
+  const provider = localLinuxProvider({scope: 'containers', token, version: 'test', memoryMiB: 1536});
+  const response = await provider.fetch(new Request('https://fixture.invalid/v1/capabilities', {
+    headers: {Authorization: `Bearer ${token}`},
+  }));
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).memory_limit_bytes, 1536 * 2 ** 20);
+});
 
 test('VM hold leaves room for working-set growth while blocking the update stage', () => {
   const mib = 2 ** 20;

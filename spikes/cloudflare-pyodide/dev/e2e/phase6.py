@@ -131,7 +131,7 @@ def run(runtime: Path, solution: bool, containers: bool) -> None:
     origin, project, admin, send = local_api(False)
     policy = {"warm_workers": 0, "max_workers": 1, "idle_seconds": 4}
     if containers:
-        policy.update(warm_workers=1, max_workers=3, worker_memory_mib=1024, largest_worker_mib=1024, idle_seconds=10)
+        policy.update(warm_workers=1, max_workers=3, worker_memory_mib=1536, largest_worker_mib=1536, idle_seconds=10)
     send("/api/admin/kubernetes/policy", policy, admin, method="PUT")
     tenants = [send("/api/organizations", {"name": name}, admin)["id"]
                for name in ("Phase 6 Tenant A", "Phase 6 Tenant B")]
@@ -149,7 +149,8 @@ def run(runtime: Path, solution: bool, containers: bool) -> None:
     subprocess.run(["node", str(HERE / "run.mjs")], cwd=ROOT, check=True, text=True, input=json.dumps({
         "phase6": {"token": secrets.token_hex(32), "scope": "phase6-local",
                    "providerHost": (ROOT / ".phase6-host").read_text(), "slots": 2,
-                   "tenants": tenants, "results": results, "containers": containers},
+                   "tenants": tenants, "results": results, "containers": containers,
+                   "workerMemoryMiB": policy.get("worker_memory_mib")},
         "build": "phase6-local", "origin": origin, "project": project, "admin": admin,
         "workflows": workflows, "runtime": str(runtime), "port": 0,
     }))

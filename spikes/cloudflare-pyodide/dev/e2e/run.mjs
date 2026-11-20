@@ -618,6 +618,7 @@ async function containersChecks() {
   const hosted = config.qualification?.placement;
   const expiry = hosted?.containerExpiry;
   const expiryRelay = expiry ? expiryCapacityRelay(hosted.containersUrl) : null;
+  if (!hosted) common.memoryMiB = config.phase6.workerMemoryMiB;
   const vmToken = randomBytes(32).toString('hex');
   const containersToken = hosted?.containersToken ??
     createHash('sha256').update(config.phase6.token + ':containers').digest('hex');
