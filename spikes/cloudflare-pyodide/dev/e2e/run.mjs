@@ -635,12 +635,21 @@ async function containersChecks() {
     if (hosted) evidence('hosted-relay-ready', {port: proxy.address().port});
     providerServer = await serveContainersProviders(config.phase6.providerHost, {
       ...(expiry ? {containers: {
-        fetch(request) {
+        async fetch(request) {
           if (containerQuiet) return new Response(null, {status: 503});
           if (request.method === 'DELETE') containerDeletes += 1;
           const url = new URL(request.url);
-          const target = new URL(url.pathname + url.search, hosted.containersUrl);
-          return fetch(new Request(target, request), {redirect: 'manual'});
+          const target = new URL(hosted.containersUrl);
+          target.pathname = url.pathname;
+          target.search = url.search;
+          const headers = new Headers();
+          for (const name of ['authorization', 'content-type']) {
+            if (request.headers.has(name)) headers.set(name, request.headers.get(name));
+          }
+          const response = await fetch(target, {method: request.method, headers, redirect: 'manual',
+            body: request.body ? await request.arrayBuffer() : undefined});
+          return new Response(response.body, {status: response.status,
+            headers: {'content-type': response.headers.get('content-type') ?? 'application/json'}});
         },
       }} : {}),
       vm: {
