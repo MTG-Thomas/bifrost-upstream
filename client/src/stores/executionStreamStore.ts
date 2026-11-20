@@ -24,7 +24,7 @@ export interface ExecutionStreamState {
 	status: ExecutionStatus;
 	streamingLogs: StreamingLog[];
 	pendingLogs: StreamingLog[]; // Buffer for out-of-order logs
-	expectedSequence: number; // Next expected sequence (starts at 1)
+	expectedSequence: number; // Next expected sequence (server publishes from 0)
 	isComplete: boolean;
 	isConnected: boolean;
 	hasReceivedUpdate: boolean; // True once we've received any status update
@@ -101,7 +101,7 @@ export const useExecutionStreamStore = create<ExecutionStreamStore>((set) => ({
 						status: initialStatus,
 						streamingLogs: [],
 						pendingLogs: [],
-						expectedSequence: 1,
+						expectedSequence: 0,
 						isComplete: false,
 						isConnected: false,
 						hasReceivedUpdate: false,
@@ -165,6 +165,11 @@ export const useExecutionStreamStore = create<ExecutionStreamStore>((set) => ({
 			const readyLogs: StreamingLog[] = [];
 			let nextExpected = stream.expectedSequence;
 			const stillPending: StreamingLog[] = [];
+			// One buffered log per sequence: a retransmitted future log would
+			// otherwise flush as a duplicate when the execution completes.
+			// Previously buffered logs are part of `allPending`, so the set is
+			// built within this pass rather than pre-seeded from them.
+			const queuedSequences = new Set<number>();
 
 			for (const log of allPending) {
 				if (log.sequence === nextExpected) {
@@ -172,8 +177,10 @@ export const useExecutionStreamStore = create<ExecutionStreamStore>((set) => ({
 					nextExpected++;
 				} else if (
 					log.sequence !== undefined &&
-					log.sequence > nextExpected
+					log.sequence > nextExpected &&
+					!queuedSequences.has(log.sequence)
 				) {
+					queuedSequences.add(log.sequence);
 					stillPending.push(log);
 				}
 				// Duplicates (sequence < expected) are dropped

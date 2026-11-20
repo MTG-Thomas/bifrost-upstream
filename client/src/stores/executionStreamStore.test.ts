@@ -101,3 +101,47 @@ describe("execution stream queue advisories", () => {
 		});
 	});
 });
+
+describe("execution stream log sequencing", () => {
+	// Counterexamples shrunk by executionStreamStore.property.test.ts
+	// (seed 20261118). Both were silent data loss in the live terminal.
+	const log = (sequence: number) => ({
+		level: "INFO",
+		message: `line ${sequence}`,
+		timestamp: "2026-11-18T00:00:00Z",
+		sequence,
+	});
+
+	const visibleSequences = (executionId: string) =>
+		(
+			useExecutionStreamStore.getState().streams[executionId]
+				?.streamingLogs ?? []
+		).map((entry) => entry.sequence);
+
+	beforeEach(() => {
+		useExecutionStreamStore.setState({ streams: {} });
+	});
+
+	// The server publishes its first log with sequence 0, so a 1-based
+	// expectation dropped the first line of every streamed execution.
+	it("displays the first log, which the server sequences as 0", () => {
+		const store = useExecutionStreamStore.getState();
+		store.startStreaming("execution-1");
+		store.appendLogs("execution-1", [log(0)]);
+
+		expect(visibleSequences("execution-1")).toEqual([0]);
+	});
+
+	// A gap buffers future logs; retransmitting one used to queue it twice,
+	// and completion flushed both copies.
+	it("flushes a retransmitted buffered log once on completion", () => {
+		const store = useExecutionStreamStore.getState();
+		store.startStreaming("execution-1");
+		store.appendLogs("execution-1", [log(10)]);
+		store.appendLogs("execution-1", [log(10)]);
+
+		store.completeExecution("execution-1");
+
+		expect(visibleSequences("execution-1")).toEqual([10]);
+	});
+});
