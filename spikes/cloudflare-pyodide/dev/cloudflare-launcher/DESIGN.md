@@ -10,6 +10,11 @@ capacity core, #1423) and stays compatible with the direction of #1424
 (API-owned compute, derived worker keys) and #1425 (Cloudflare Containers
 provider). Workers for Platforms is out of scope.
 
+## Scale Out With Cloudflare
+
+[Scale Out With Cloudflare](SCALE-OUT.md) describes how Bifrost can provision,
+scale, upgrade, and remove the hosted capacity qualified in this spike.
+
 ## Why this shape
 
 On upstream `main` the API already owns the whole execution lifecycle for
