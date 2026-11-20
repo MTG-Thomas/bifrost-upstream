@@ -11,6 +11,7 @@ from pydantic import SecretStr
 from shared.models import CloudflareWorkersPolicy
 from src.services.worker_pool import cloudflare_release
 from src.services.worker_pool.cloudflare_provisioning import (
+    ObservationPending,
     ResourceIntent,
     ResourceTarget,
     resume_creation,
@@ -125,7 +126,8 @@ async def test_paid_check_identifies_the_missing_entitlement() -> None:
             await WorkersRestCleanup(http).verify_workers_paid(account, SecretStr("synthetic-account-token"))
 
 
-async def test_rest_upload_scopes_the_bearer_and_finalizes_the_verified_endpoint(release: Path) -> None:
+@pytest.mark.parametrize("confirmed", [True, False])
+async def test_rest_upload_scopes_the_bearer_and_finalizes_the_verified_endpoint(release: Path, confirmed: bool) -> None:
     path = release / "manifest.json"
     manifest = json.loads(path.read_bytes())
     manifest["workers"]["capacity"]["bindings"] = [
@@ -140,10 +142,12 @@ async def test_rest_upload_scopes_the_bearer_and_finalizes_the_verified_endpoint
     bindings = []
     endpoint = {}
     mutations = []
+    endpoint_reads = 0
+    propagated = False
     namespaces = {"ScopeRegistry": "1" * 32, "WorkerLedger": "2" * 32}
 
     async def read_provider(request: httpx.Request) -> httpx.Response:
-        nonlocal bindings, endpoint
+        nonlocal bindings, endpoint, endpoint_reads
         assert request.headers["Authorization"] == "Bearer synthetic-management"
         if request.method == "PUT":
             mutations.append("PUT")
@@ -163,7 +167,7 @@ async def test_rest_upload_scopes_the_bearer_and_finalizes_the_verified_endpoint
         elif request.method == "POST":
             mutations.append("POST")
             endpoint = json.loads(await request.aread())
-            result = {}
+            result = {**endpoint, "previews_enabled": not confirmed}
         elif request.url.path.endswith("/settings"):
             if not bindings:
                 return httpx.Response(404)
@@ -176,7 +180,9 @@ async def test_rest_upload_scopes_the_bearer_and_finalizes_the_verified_endpoint
         elif request.url.path.endswith("/workers/subdomain"):
             result = {"subdomain": "test-account"}
         else:
-            result = endpoint
+            endpoint_reads += 1
+            # The first read after the update may still show the old state.
+            result = endpoint if propagated else {"enabled": False, "previews_enabled": False}
         return httpx.Response(200, json={"success": True, "result": result})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(read_provider)) as client:
@@ -192,9 +198,16 @@ async def test_rest_upload_scopes_the_bearer_and_finalizes_the_verified_endpoint
             adapter, api_token=token, scope_bearer=SecretStr("synthetic-bearer"), committed_intent=intent,
         )
         assert observed.provider_version == version
+        if not confirmed:
+            with pytest.raises(ObservationPending, match="did not confirm the requested settings"):
+                await adapter.configure_endpoint(api_token=token, expected=observed)
+            assert endpoint_reads == 1
+            return
         configured = await adapter.configure_endpoint(api_token=token, expected=observed)
         assert configured.endpoint == "https://bifrost-capacity.test-account.workers.dev"
         assert configured.namespaces == namespaces
+        assert endpoint_reads == 1
+        propagated = True
         assert await adapter.configure_endpoint(api_token=token, expected=observed) == configured
     assert mutations == ["PUT", "POST"]
     assert endpoint == {"enabled": True, "previews_enabled": False}

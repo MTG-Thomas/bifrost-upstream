@@ -441,11 +441,14 @@ class WorkersRestProvisioner(WorkersRestCleanup):
         if not isinstance(readback, dict) or any(readback.get(key) is not value for key, value in settings.items()):
             if await observe_owned(self, api_token=api_token, intent=intent, recorded=expected) is None:
                 raise ObservationPending("Cloudflare uploaded Worker has disappeared")
-            await self._request(api_token, intent.target.account_id, "POST", f"{path}/subdomain", json_body=settings)
-            response = await self._request(api_token, intent.target.account_id, "GET", f"{path}/subdomain")
-            readback = response["result"] if response is not None else None
-            if not isinstance(readback, dict) or any(readback.get(key) is not value for key, value in settings.items()):
-                raise ObservationPending("Cloudflare Worker endpoint settings could not be verified")
+            # The update returns both authoritative settings. A separate GET
+            # can still reflect the previous endpoint while it propagates.
+            response = await self._request(
+                api_token, intent.target.account_id, "POST", f"{path}/subdomain", json_body=settings,
+            )
+            confirmed = response["result"] if response is not None else None
+            if not isinstance(confirmed, dict) or any(confirmed.get(key) is not value for key, value in settings.items()):
+                raise ObservationPending("Cloudflare Worker endpoint update did not confirm the requested settings")
         if await observe_owned(self, api_token=api_token, intent=intent, recorded=expected) is None:
             raise ObservationPending("Cloudflare uploaded Worker has disappeared")
         if role == "launcher":
