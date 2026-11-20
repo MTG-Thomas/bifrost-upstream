@@ -134,6 +134,7 @@ WAKE_WORKFLOW = "workflow_execution"
 WAKE_AGENT_RUN = "agent_run"
 WAKE_AGENT_SUMMARY = "agent_summary"
 WAKE_PLATFORM_JOB = "platform_job"
+WAKE_CLOUDFLARE_CAPACITY = "cloudflare_capacity"
 WAKE_SERVICE = "service"
 WAKE_PACKAGE = "package"
 DISPATCH_WAKE_FAMILIES = frozenset((WAKE_WORKFLOW, WAKE_AGENT_RUN, WAKE_AGENT_SUMMARY))
@@ -422,6 +423,7 @@ __all__ = [
     "DISPATCH_WAKE_FAMILIES",
     "WAKE_AGENT_RUN",
     "WAKE_AGENT_SUMMARY",
+    "WAKE_CLOUDFLARE_CAPACITY",
     "WAKE_PACKAGE",
     "WAKE_PLATFORM_JOB",
     "WAKE_SERVICE",

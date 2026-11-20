@@ -21,6 +21,7 @@ from src.jobs.platform import cloudflare_capacity as lifecycle_job
 from src.jobs.platform.base import PlatformJobContext, PlatformJobRequiresAction
 from src.models.orm.cloudflare_capacity import (
     CloudflareCapacityScope,
+    CloudflareCapacityUsage,
     CloudflareCredential,
     CloudflareInstallation,
     CloudflareOwnedResource,
@@ -301,6 +302,7 @@ async def test_supervisor_reserves_and_retires_without_restarting(
         assert not writes
         installation.desired_state = "enabled"
         installation.admitted_revision = 1
+        await add_usage(db_session, installation)
         await db_session.flush()
         await sweep()
         assert writes == ["PUT", "POST"]
@@ -324,6 +326,21 @@ async def installation(db_session: AsyncSession) -> CloudflareInstallation:
     row = await db_session.get(CloudflareInstallation, installation_id)
     assert row is not None
     return row
+
+
+async def add_usage(
+    db_session: AsyncSession, installation: CloudflareInstallation, *, attributed_usd: Decimal = Decimal(5),
+) -> CloudflareCapacityUsage:
+    now = datetime.now(UTC)
+    sample = CloudflareCapacityUsage(
+        installation_id=installation.id, account_id=installation.account_id,
+        deployment_revision=installation.desired_revision, rate_table_version=WORKERS_RATE_TABLE_VERSION,
+        bounds_digest=installation.policy["bounds_digest"], period_start=now - timedelta(days=1),
+        period_end=now + timedelta(days=1), measured_at=now, attributed_usd=attributed_usd,
+    )
+    db_session.add(sample)
+    await db_session.flush()
+    return sample
 
 
 async def create_installation(
@@ -535,6 +552,18 @@ async def test_claim_gate_tracks_scale_in_and_deployment_changes_without_restart
 
     installation.desired_state = "enabled"
     installation.admitted_revision = 1
+    await db_session.flush()
+    assert not await cloudflare_claim_allowed(db_session, worker_id)
+    sample = await add_usage(db_session, installation)
+    assert await cloudflare_claim_allowed(db_session, worker_id)
+    sample.attributed_usd = Decimal(10)
+    await db_session.flush()
+    assert not await cloudflare_claim_allowed(db_session, worker_id)
+    sample.attributed_usd = Decimal(5)
+    sample.measured_at -= timedelta(minutes=16)
+    await db_session.flush()
+    assert not await cloudflare_claim_allowed(db_session, worker_id)
+    sample.measured_at = datetime.now(UTC)
     await db_session.flush()
     assert await cloudflare_claim_allowed(db_session, worker_id)
 

@@ -1,6 +1,7 @@
 """Installation-local desired state and Cloudflare resource journal."""
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -11,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     ForeignKeyConstraint,
     Index,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -200,3 +202,27 @@ class CloudflareOwnedResource(Base):
     provider_id: Mapped[str | None] = mapped_column(String(255))
     provider_version: Mapped[str | None] = mapped_column(String(255))
     observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CloudflareCapacityUsage(Base):
+    __tablename__ = "cloudflare_capacity_usage"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["installation_id", "account_id"],
+            ["cloudflare_installations.id", "cloudflare_installations.account_id"],
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("deployment_revision > 0", name="ck_cf_usage_revision"),
+        CheckConstraint("period_start <= measured_at AND measured_at < period_end", name="ck_cf_usage_period"),
+        CheckConstraint("attributed_usd >= 0 AND attributed_usd < 'Infinity'::numeric", name="ck_cf_usage_amount"),
+    )
+
+    installation_id: Mapped[UUID] = mapped_column(primary_key=True)
+    account_id: Mapped[str] = mapped_column(String(32))
+    deployment_revision: Mapped[int]
+    rate_table_version: Mapped[str] = mapped_column(String(64))
+    bounds_digest: Mapped[str] = mapped_column(String(64))
+    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    measured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    attributed_usd: Mapped[Decimal] = mapped_column(Numeric(20, 6))

@@ -25,6 +25,10 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareWorkerReservation,
 )
 from src.models.orm.execution_workers import ExecutionWorker
+from src.services.work_dispatch import (
+    WAKE_CLOUDFLARE_CAPACITY,
+    wake_pool_workers_after_commit,
+)
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
     seal_credential,
@@ -229,4 +233,5 @@ async def save_cloudflare_policy(
         row.admitted_revision = None
         row.desired_revision += 1
         await db.flush()
+        wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
     return row.desired_revision

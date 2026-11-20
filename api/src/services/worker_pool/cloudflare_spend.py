@@ -8,6 +8,14 @@ from types import MappingProxyType
 from typing import Literal
 from uuid import UUID
 
+from sqlalchemy import func, select
+from sqlalchemy.sql.elements import ColumnElement
+
+from src.models.orm.cloudflare_capacity import (
+    CloudflareCapacityUsage,
+    CloudflareInstallation,
+)
+
 
 @dataclass(frozen=True, slots=True)
 class MeterRate:
@@ -106,3 +114,23 @@ def cloudflare_spend_status(
     if not monthly_limit_usd.is_finite() or monthly_limit_usd <= sample.attributed_usd:
         return "budget_reached"
     return "ready"
+
+
+def cloudflare_usage_within_limit() -> ColumnElement[bool]:
+    """Correlate fresh usage evidence with the current installation and policy."""
+    usage = CloudflareCapacityUsage
+    installation = CloudflareInstallation
+    now = func.statement_timestamp()
+    return select(usage.installation_id).where(
+        usage.installation_id == installation.id,
+        usage.account_id == installation.account_id,
+        usage.deployment_revision == installation.desired_revision,
+        usage.rate_table_version == WORKERS_RATE_TABLE_VERSION,
+        usage.rate_table_version == installation.policy["rate_table_version"].as_string(),
+        usage.bounds_digest == installation.policy["bounds_digest"].as_string(),
+        usage.period_start <= usage.measured_at,
+        usage.measured_at <= now,
+        usage.measured_at >= now - MAX_USAGE_AGE,
+        now < usage.period_end,
+        usage.attributed_usd < installation.policy["limits"]["monthly_limit_usd"].as_numeric(20, 6),
+    ).correlate(installation).exists()

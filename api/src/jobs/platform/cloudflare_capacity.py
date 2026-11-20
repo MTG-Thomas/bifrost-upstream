@@ -26,6 +26,10 @@ from src.models.orm.platform_jobs import PlatformJob
 from src.services.authorization.enforce import Caller, require_permission
 from src.services.platform_job_lease import LeaseLost, hold_lease
 from src.services.platform_jobs import enqueue_platform_job, find_active_platform_job
+from src.services.work_dispatch import (
+    WAKE_CLOUDFLARE_CAPACITY,
+    wake_pool_workers_after_commit,
+)
 from src.services.worker_pool.cloudflare_credentials import load_account_token
 from src.services.worker_pool.cloudflare_policy import (
     CloudflarePolicyConflict,
@@ -201,6 +205,7 @@ async def enqueue_cloudflare_disable(
     row.admitted_revision = None
     row.desired_state = payload.desired_state
     row.desired_revision = payload.revision
+    wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
     return await enqueue_platform_job(
         db, CLOUDFLARE_DISABLE_DEFINITION, payload, dedupe_key=payload.key,
         resource_lock_key=f"cloudflare-installation:{installation_id}",

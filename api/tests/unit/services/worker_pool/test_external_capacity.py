@@ -20,6 +20,7 @@ from sqlalchemy import delete, select
 from src.models.enums import ExecutionStatus
 from src.models.orm.cloudflare_capacity import (
     CloudflareCapacityScope,
+    CloudflareCapacityUsage,
     CloudflareCredential,
     CloudflareInstallation,
     CloudflareWorkerReservation,
@@ -35,6 +36,7 @@ from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
     seal_credential,
 )
+from src.services.worker_pool.cloudflare_spend import WORKERS_RATE_TABLE_VERSION
 from src.services.worker_pool.external_client import (
     CapacityProtocolError,
     ExternalCapacityClient,
@@ -159,7 +161,10 @@ async def managed_pool(db, capacity):
         session.add(CloudflareInstallation(
             id=installation_id, account_id=account_id, worker_ingress_origin="https://workers.example.test",
             consent_version="test", consent_actor="fixture", consent_at=now,
-            policy={"limits": {"workers": {"work_kinds": ["workflow"]}}},
+            policy={
+                "limits": {"workers": {"work_kinds": ["workflow"]}, "monthly_limit_usd": "10.00"},
+                "rate_table_version": WORKERS_RATE_TABLE_VERSION, "bounds_digest": "b" * 64,
+            },
             desired_state="enabled", desired_revision=1, admitted_revision=1, api_token_version=1, control_root_version=1,
         ))
         await session.flush()
@@ -176,6 +181,12 @@ async def managed_pool(db, capacity):
         session.add(CloudflareCapacityScope(
             installation_id=installation_id, scope=scope_name, endpoint="https://capacity.invalid",
             deployment_revision=1, bearer_version=1,
+        ))
+        session.add(CloudflareCapacityUsage(
+            installation_id=installation_id, account_id=account_id, deployment_revision=1,
+            rate_table_version=WORKERS_RATE_TABLE_VERSION, bounds_digest="b" * 64,
+            period_start=now - timedelta(days=1), period_end=now + timedelta(days=1),
+            measured_at=now, attributed_usd=5,
         ))
         session.add(ExecutionWorker(
             id=uuid4(), form="static", state="ready", heartbeat_at=now, memory_pressured=True,
@@ -195,6 +206,9 @@ async def managed_pool(db, capacity):
         ))
         await session.execute(delete(CloudflareCapacityScope).where(
             CloudflareCapacityScope.installation_id == installation_id,
+        ))
+        await session.execute(delete(CloudflareCapacityUsage).where(
+            CloudflareCapacityUsage.installation_id == installation_id,
         ))
         await session.execute(delete(CloudflareCredential).where(CloudflareCredential.installation_id == installation_id))
         await session.delete(row)

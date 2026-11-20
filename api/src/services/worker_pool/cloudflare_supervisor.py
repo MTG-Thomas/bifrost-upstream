@@ -3,6 +3,8 @@
 import asyncio
 import logging
 import os
+import time
+from contextlib import suppress
 from uuid import UUID
 
 import httpx
@@ -17,6 +19,12 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareInstallation,
 )
 from src.services.kubernetes_execution import load_kubernetes_policy
+from src.services.work_dispatch import (
+    WAKE_CLOUDFLARE_CAPACITY,
+    WAKE_WORKFLOW,
+    listen_for_pool_wake,
+    wait_for_next_pass,
+)
 from src.services.worker_pool.cloudflare_admission import (
     ManagedCloudflareScope,
     PrimaryPool,
@@ -25,7 +33,12 @@ from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
     open_credential,
 )
-from src.services.worker_pool.controller import SWEEP_SECONDS, _withdraw_live
+from src.services.worker_pool.cloudflare_spend import cloudflare_usage_within_limit
+from src.services.worker_pool.controller import (
+    RECONCILE_SECONDS,
+    SWEEP_SECONDS,
+    _withdraw_live,
+)
 from src.services.worker_pool.external_client import (
     CapacityProtocolError,
     ExternalCapacityClient,
@@ -125,6 +138,9 @@ async def _reconcile_scope(
             and cloudflare_slots(controller.profile.memory_limit_bytes) == policy.workers.slots_per_launcher
             and policy.workers.max_lifetime_seconds <= controller.profile.max_lifetime_seconds
             and installation.admitted_revision == scope.deployment_revision
+            and bool(await db.scalar(
+                select(cloudflare_usage_within_limit()).where(CloudflareInstallation.id == installation_id),
+            ))
         )
         controller.cloudflare_primary = None
         if controller.burst_launch_allowed:
@@ -143,8 +159,13 @@ async def cloudflare_supervisor_loop(
 ) -> None:
     controllers: dict[ManagedCloudflareScope, ExternalWorkerPoolController] = {}
     async with httpx.AsyncClient(trust_env=False) as http:
+        wake = asyncio.Event()
+        listener = asyncio.create_task(listen_for_pool_wake(
+            settings.redis_url, {WAKE_CLOUDFLARE_CAPACITY: wake, WAKE_WORKFLOW: wake},
+        ))
         try:
             while not stop_event.is_set():
+                started = time.monotonic()
                 try:
                     scopes = await _installations()
                     for binding in list(controllers):
@@ -159,10 +180,10 @@ async def cloudflare_supervisor_loop(
                             logger.warning("Managed Cloudflare scope reconciliation failed", exc_info=True)
                 except Exception:
                     logger.warning("Could not read managed Cloudflare scopes", exc_info=True)
-                try:
-                    await asyncio.wait_for(stop_event.wait(), timeout=SWEEP_SECONDS)
-                except TimeoutError:
-                    pass
+                await wait_for_next_pass(stop_event, wake, since=started, spacing=RECONCILE_SECONDS, sweep=SWEEP_SECONDS)
         finally:
+            listener.cancel()
+            with suppress(asyncio.CancelledError):
+                await listener
             for controller in controllers.values():
                 await _withdraw_live(controller.id)

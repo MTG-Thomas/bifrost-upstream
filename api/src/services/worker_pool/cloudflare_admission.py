@@ -15,6 +15,7 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareWorkerReservation,
 )
 from src.models.orm.execution_workers import ExecutionWorker
+from src.services.worker_pool.cloudflare_spend import cloudflare_usage_within_limit
 from src.services.worker_pool.liveness import HEARTBEAT_LOST_AFTER
 from src.worker.remote.protocol import CLOUDFLARE_PYTHON_RUNTIME_PROFILE
 
@@ -47,6 +48,7 @@ class ManagedCloudflareScope:
                 CloudflareInstallation.retired_at.is_(None),
                 CloudflareInstallation.desired_state == "enabled",
                 CloudflareInstallation.control_root_version.is_not(None),
+                cloudflare_usage_within_limit(),
                 CloudflareInstallation.admitted_revision == self.revision,
                 CloudflareInstallation.policy["limits"]["workers"]["work_kinds"].contains(["workflow"]),
                 CloudflareCapacityScope.scope == self.name,
@@ -119,6 +121,7 @@ async def cloudflare_claim_allowed(db: AsyncSession, worker_id: UUID) -> bool:
         installation.admitted_revision.is_not(None),
         installation.admitted_revision == pin.deployment_revision,
         pin.control_root_version.is_not(None),
+        cloudflare_usage_within_limit(),
         installation.policy["limits"]["workers"]["work_kinds"].contains(["workflow"]),
         ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
         ExecutionWorker.capacity_scope.is_not_distinct_from(pin.scope),
