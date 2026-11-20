@@ -24,12 +24,13 @@ test('local provider advertises the configured memory budget', async () => {
   assert.equal((await response.json()).memory_limit_bytes, 1536 * 2 ** 20);
 });
 
-test('VM hold leaves room for working-set growth while blocking the update stage', () => {
+test('VM hold leaves room for working-set growth while blocking every overflow fixture', () => {
   const mib = 2 ** 20;
   const measured = 586376806;
   const hold = vmHoldMemoryMiB(measured) * mib;
-  assert.ok(hold < measured - 64 * mib);
-  assert.ok(measured + 64 * mib - hold < OVERFLOW_MEMORY_MIB * mib);
+  assert.ok(hold < measured - 16 * mib);
+  assert.ok(measured + 16 * mib - hold < 64 * mib);
+  assert.ok(measured - hold < OVERFLOW_MEMORY_MIB * mib);
 });
 
 test('expiry relay forwards scoped reservations until independent observation begins', async () => {

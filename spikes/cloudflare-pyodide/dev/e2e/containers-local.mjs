@@ -21,9 +21,9 @@ const waitDocker = promisify(execFile);
 export const OVERFLOW_MEMORY_MIB = 256;
 
 export function vmHoldMemoryMiB(budgetBytes) {
-  // Split the update check's 256 MiB requirement between the hold's
-  // admission margin and the gap that keeps the update check off the VM.
-  return Math.floor(budgetBytes / 2 ** 20) - 128;
+  // Leave startup margin below the smallest overflow fixture (64 MiB).
+  // A larger gap also admits the Workers fixture on the primary VM.
+  return Math.floor(budgetBytes / 2 ** 20) - 32;
 }
 
 export function expiryCapacityRelay(origin, send = fetch) {
@@ -52,9 +52,9 @@ export function expiryCapacityRelay(origin, send = fetch) {
         body: request.body ? await request.arrayBuffer() : undefined});
       return new Response(response.body, {status: response.status,
         headers: {'content-type': response.headers.get('content-type') ?? 'application/json'}});
-      },
-    };
-  }
+    },
+  };
+}
 
 export function deferContainerStarts(provider, enabled) {
   return {
