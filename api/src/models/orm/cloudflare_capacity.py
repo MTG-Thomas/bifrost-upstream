@@ -10,9 +10,11 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
+    Index,
     String,
     Text,
     UniqueConstraint,
+    text,
     true,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -32,10 +34,24 @@ class CloudflareInstallation(Base):
             name="ck_cf_admitted_revision",
         ),
         UniqueConstraint("id", "account_id", name="uq_cf_installation_account"),
+        Index("uq_cf_active_installation", "singleton", unique=True, postgresql_where=text("retired_at IS NULL")),
+        CheckConstraint("api_token_purpose = 'account_token' AND api_token_scope = ''", name="ck_cf_account_token_binding"),
+        CheckConstraint(
+            "retired_at IS NULL OR (desired_state = 'disconnected' AND api_token_version IS NULL)",
+            name="ck_cf_retired_installation",
+        ),
+        ForeignKeyConstraint(
+            ["id", "api_token_purpose", "api_token_scope", "api_token_version"],
+            [
+                "cloudflare_capacity_credentials.installation_id", "cloudflare_capacity_credentials.purpose",
+                "cloudflare_capacity_credentials.scope", "cloudflare_capacity_credentials.version",
+            ],
+            name="fk_cf_active_account_token", deferrable=True, initially="DEFERRED", use_alter=True,
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True)
-    singleton: Mapped[bool] = mapped_column(Boolean, unique=True, server_default=true())
+    singleton: Mapped[bool] = mapped_column(Boolean, server_default=true())
     account_id: Mapped[str] = mapped_column(String(32))
     worker_ingress_origin: Mapped[str] = mapped_column(String(255))
     consent_version: Mapped[str] = mapped_column(String(64))
@@ -45,6 +61,10 @@ class CloudflareInstallation(Base):
     desired_revision: Mapped[int]
     desired_state: Mapped[str] = mapped_column(String(16))
     admitted_revision: Mapped[int | None]
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    api_token_purpose: Mapped[str] = mapped_column(String(16), server_default="account_token")
+    api_token_scope: Mapped[str] = mapped_column(String(64), server_default="")
+    api_token_version: Mapped[int | None]
 
 
 class CloudflareCredential(Base):

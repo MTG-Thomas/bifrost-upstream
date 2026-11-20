@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import SecretStr
 from shared.models import CloudflareCapacityPolicy, CloudflareWorkersPolicy
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.models.orm.cloudflare_capacity import (
@@ -21,16 +22,21 @@ from src.services.worker_pool.cloudflare_credentials import (
     seal_credential,
 )
 from src.services.worker_pool.cloudflare_policy import (
+    CONSENT_TEXT_VERSION,
     CloudflareBudgetTooLow,
+    CloudflareInstallationExists,
     CloudflarePolicyConflict,
     WorkersReleaseMeterBounds,
     create_cloudflare_installation,
+    retire_cloudflare_installation,
     save_cloudflare_policy,
 )
 from src.services.worker_pool.cloudflare_spend import (
     WORKERS_RATE_TABLE_VERSION,
     WORKERS_RATES,
 )
+
+OPERATOR_ID = UUID("20cb7fe5-78e2-48d7-8f1e-8edcac69ffab")
 
 
 @pytest.fixture
@@ -41,14 +47,17 @@ async def installation(db_session: AsyncSession) -> CloudflareInstallation:
     return row
 
 
-async def create_installation(db_session: AsyncSession, account_id: str) -> UUID:
+async def create_installation(
+    db_session: AsyncSession, account_id: str, *, consent_version: str = CONSENT_TEXT_VERSION,
+    rated_slots: int = 2,
+) -> UUID:
     zero = dict.fromkeys(WORKERS_RATES, Decimal(0))
     return await create_cloudflare_installation(
         db_session,
         account_id=account_id,
         worker_ingress_origin="https://workers.example.test",
-        consent_version="existing-https-v1",
-        actor="operator",
+        consent_version=consent_version,
+        actor_id=OPERATOR_ID,
         verified_api_token=SecretStr("synthetic-cloudflare-management-token"),
         policy=CloudflareCapacityPolicy(
             workers=CloudflareWorkersPolicy(
@@ -56,7 +65,7 @@ async def create_installation(db_session: AsyncSession, account_id: str) -> UUID
             ),
             monthly_limit_usd=Decimal("10.00"),
         ),
-        bounds=WorkersReleaseMeterBounds(60, zero, zero),
+        bounds=WorkersReleaseMeterBounds(60, zero, zero, "fixture-release", rated_slots),
     )
 
 
@@ -64,15 +73,69 @@ async def create_installation(db_session: AsyncSession, account_id: str) -> UUID
 async def test_connection_persists_consent_and_account_token_without_admitting_work(
     db_session: AsyncSession, installation: CloudflareInstallation
 ) -> None:
-    assert (installation.consent_actor, installation.consent_version) == ("operator", "existing-https-v1")
+    assert (installation.consent_actor, installation.consent_version) == (str(OPERATOR_ID), CONSENT_TEXT_VERSION)
     assert installation.desired_state == "scaled_in" and installation.admitted_revision is None
-    credential = await db_session.get(CloudflareCredential, (installation.id, "account_token", "", 1))
+    assert installation.api_token_version == 1
+    credential = await db_session.get(CloudflareCredential, (
+        installation.id, "account_token", "", installation.api_token_version,
+    ))
     assert credential is not None
     ref = CredentialRef(installation.id, installation.account_id, "account_token", "", 1)
     assert open_credential(ref, credential) == SecretStr("synthetic-cloudflare-management-token")
 
-    with pytest.raises(CloudflarePolicyConflict, match="already exists"):
+    with pytest.raises(CloudflareInstallationExists, match="already exists"):
         await create_installation(db_session, "b" * 32)
+
+
+@pytest.mark.asyncio
+async def test_disconnect_retires_with_receipts_and_allows_reconnect(
+    db_session: AsyncSession, installation: CloudflareInstallation,
+) -> None:
+    installation_id = installation.id
+    installation.desired_state = "disconnected"
+    installation.desired_revision += 1
+    await db_session.flush()
+    resource = CloudflareOwnedResource(
+        id=uuid4(), installation_id=installation_id, account_id=installation.account_id,
+        scope="workers", kind="worker_script", target_name="disconnect-receipt",
+        desired_revision=1, artifact_digest="c" * 64, effect_id=uuid4(), state="creating",
+    )
+    db_session.add(resource)
+    await db_session.flush()
+    with pytest.raises(CloudflarePolicyConflict, match="cleanup is pending"):
+        await retire_cloudflare_installation(db_session, installation_id=installation_id, expected_revision=2)
+    with pytest.raises(CloudflareInstallationExists):
+        await create_installation(db_session, "b" * 32)
+
+    resource.state = "absent"
+    resource.observed_at = datetime.now(UTC)
+    await db_session.flush()
+    await retire_cloudflare_installation(db_session, installation_id=installation_id, expected_revision=2)
+    assert installation.retired_at is not None and installation.api_token_version is None
+    credential = await db_session.get(CloudflareCredential, (installation_id, "account_token", "", 1))
+    assert credential is not None and credential.ciphertext is None
+    new_id = await create_installation(db_session, "b" * 32)
+    assert new_id != installation_id
+    assert await db_session.get(CloudflareOwnedResource, resource.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_connection_requires_current_consent_and_slot_rated_bounds(db_session: AsyncSession) -> None:
+    with pytest.raises(ValueError, match="current text"):
+        await create_installation(db_session, "a" * 32, consent_version="obsolete")
+    with pytest.raises(ValueError, match="slot count"):
+        await create_installation(db_session, "a" * 32, rated_slots=1)
+
+
+@pytest.mark.asyncio
+async def test_active_token_reference_requires_matching_version(
+    db_session: AsyncSession, installation: CloudflareInstallation,
+) -> None:
+    with pytest.raises(IntegrityError):
+        async with db_session.begin_nested():
+            installation.api_token_version = 2
+            await db_session.flush()
+            await db_session.execute(text("SET CONSTRAINTS fk_cf_active_account_token IMMEDIATE"))
 
 
 @pytest.mark.asyncio
@@ -143,8 +206,8 @@ async def test_policy_save_fences_old_admission_and_rejects_an_unsafe_budget(
         monthly_limit_usd=Decimal("4.00"),
     )
     zero = dict.fromkeys(WORKERS_RATES, Decimal(0))
-    # The minimum plan fee alone exceeds the initial budget.
-    bounds = WorkersReleaseMeterBounds(60, zero, zero)
+    # The minimum plan fee alone exceeds the proposed reduced budget.
+    bounds = WorkersReleaseMeterBounds(60, zero, zero, "fixture-release", 2)
     with pytest.raises(CloudflareBudgetTooLow):
         await save_cloudflare_policy(
             db_session, installation_id=installation.id, expected_revision=1, policy=policy, bounds=bounds,
@@ -158,6 +221,11 @@ async def test_policy_save_fences_old_admission_and_rejects_an_unsafe_budget(
     assert installation.admitted_revision is None
     assert installation.policy["rate_table_version"] == WORKERS_RATE_TABLE_VERSION
     assert installation.policy["fleet_envelope_usd"] == "5.00"
+    assert installation.policy["bounds_release"] == "fixture-release"
+    assert len(installation.policy["bounds_digest"]) == 64
+    assert await save_cloudflare_policy(
+        db_session, installation_id=installation.id, expected_revision=2, policy=policy, bounds=bounds,
+    ) == 2
     with pytest.raises(CloudflarePolicyConflict):
         await save_cloudflare_policy(
             db_session, installation_id=installation.id, expected_revision=1, policy=policy, bounds=bounds,
