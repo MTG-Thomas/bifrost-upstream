@@ -94,7 +94,8 @@ async def test_workflow_approval_rest_enforces_global_operator_and_audits_revisi
         workflow.function_name = "run"
         path = workflow.path
         index = FileIndexService(world.session)
-        endpoint = f"/api/workflows/{workflow.id}/cloudflare-approval"
+        workflow_id = workflow.id
+        endpoint = f"/api/workflows/{workflow_id}/cloudflare-approval"
         options = {"subrequest_allowance": 5, "cpu_budget_ms": 100}
         wildcard = {**options, "https_hosts": ["*.halopsa.com"]}
 
@@ -174,7 +175,7 @@ async def test_workflow_approval_rest_enforces_global_operator_and_audits_revisi
         finally:
             await world.session.rollback()
             await index.delete(path)
-            await world.session.execute(delete(AuditLog).where(AuditLog.resource_id == workflow.id))
+            await world.session.execute(delete(AuditLog).where(AuditLog.resource_id == workflow_id))
             await world.session.commit()
 
 
@@ -189,7 +190,8 @@ async def test_accept_rejects_a_republished_solution_generation(async_engine, e2
         solution.allow_outbound_access = False
         workflow = await world.workflow(org, solution_id=solution.id)
         path = workflow.path
-        storage = SolutionStorage(solution.id)
+        solution_id = solution.id
+        storage = SolutionStorage(solution_id)
         pin = await storage.write(path, f"def {workflow.function_name}(): return 1\n".encode())
         endpoint = f"/api/workflows/{workflow.id}/cloudflare-approval"
         options = {"subrequest_allowance": 5, "cpu_budget_ms": 100}
@@ -215,7 +217,7 @@ async def test_accept_rejects_a_republished_solution_generation(async_engine, e2
         finally:
             await world.session.rollback()
             await storage.delete(path)
-            await world.session.execute(delete(SolutionFileIndex).where(SolutionFileIndex.solution_id == solution.id))
+            await world.session.execute(delete(SolutionFileIndex).where(SolutionFileIndex.solution_id == solution_id))
             await world.session.commit()
 
 
