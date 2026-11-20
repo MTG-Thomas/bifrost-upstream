@@ -60,6 +60,14 @@ The fork's `api/src/services/kubernetes_control.py` requires both external-provi
 - Optional provider blocking limits cover Workers and Durable Objects across the entire account. They do not cover Containers and can interrupt recovery calls. Read them back if authorized. The default flow leaves account-wide settings under operator control. [Cloudflare spending limits and alerts](https://developers.cloudflare.com/billing/manage/spend-management/)
 
 
+## Provisioning Adapter Boundary
+
+The resource journal uses a target (installation, account, scope, kind and exact name), a creation effect ID, a desired revision and an artifact digest. Provider readback adds an opaque resource ID and version witness. An adapter can use a provider version or a digest of independently read deployment state as the witness. Preserve provider IDs verbatim, including the Container application ID. Reconcile receives an observation only after the adapter has checked its owner and version. Verified absence excludes an earlier effect that can still arrive.
+
+Phase 0 at `61a77ea11` supplies the operation map for product adapters. REST handles account identity and entitlement reads, multipart Worker upload with a durable ownership marker, exact script and namespace readback, and Container application and image preparation. OCI copies image content by digest. The pinned `cf` path supplies scoped registry tag inventory and deletion for an exact repository and digest. Route each operation through its qualified path. A timeout leaves the journal open for readback on that same path.
+
+The connection preflight verifies account identity and Workers entitlement through REST before persisting the token. Workers Paid and billing-period evidence use an independently authorized read-only probe. Phase 0 obtained this via the pinned `cf` session after the scoped REST subscription read returned 403. The product runner still needs a qualified authority for that check. Keep provisioner credentials and the Workers Paid read authority on Bifrost. Send a scope bearer only as the private secret binding on that scope's capacity Worker.
+
 ## Lifecycle and Recovery
 
 Register `capacity.cloudflare_enable`, `capacity.cloudflare_reconcile` and `capacity.cloudflare_disable` on trusted Bifrost infrastructure. Reconcile owns automatic upgrades in Phase 4. An explicit upgrade action can request the same reconcile path. Disable handles Scale In and Disconnect. Version job payloads and include IDs and desired revision only. Use the shared PlatformJob policies for deadlines, retry, waiting, cancellation and progress. The fenced scheduler deduplicates jobs on config changes and health sweeps. Persist the installation, credential references, current deployed artifact revision and resource inventory. Serialize incompatible actions by installation and desired revision. The durable resource record stores effect intent and readback. PlatformJob owns job leases and terminal state.
