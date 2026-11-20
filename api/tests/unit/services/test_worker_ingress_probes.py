@@ -61,8 +61,11 @@ def ingress(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("addresses", [(IPV6, IPV4), (IPV4, IPV6)])
 async def test_dual_stack_probe_uses_reachable_address(ingress, addresses) -> None:
+    wrapped = RuntimeError("Transport wrapper")
+    wrapped.__context__ = OSError(errno.ENETUNREACH, "Network is unreachable")
+    wrapped.__suppress_context__ = True
     installation, attempted, control, canary = ingress(
-        addresses, httpx.ConnectError("Connection failed"), OSError(errno.ENETUNREACH, "Network is unreachable"),
+        addresses, httpx.ConnectError("Connection failed"), wrapped,
     )
 
     result = await probes.probe_worker_ingress(installation, runtime_canary=canary)

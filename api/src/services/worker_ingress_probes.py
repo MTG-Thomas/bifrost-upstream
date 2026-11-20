@@ -149,7 +149,9 @@ def _tls_error(cause: BaseException | None) -> bool:
     while cause is not None:
         if isinstance(cause, ssl.SSLError):
             return True
-        cause = cause.__cause__
+        if isinstance(cause, BaseExceptionGroup):
+            return any(_tls_error(member) for member in cause.exceptions)
+        cause = cause.__cause__ or cause.__context__
     return False
 
 
@@ -157,7 +159,11 @@ def _missing_tcp_route(cause: BaseException | None) -> bool:
     while cause is not None:
         if isinstance(cause, OSError) and cause.errno in _MISSING_ROUTE_ERRNOS:
             return True
-        cause = cause.__cause__
+        if isinstance(cause, BaseExceptionGroup):
+            return all(_missing_tcp_route(member) for member in cause.exceptions)
+        # httpcore can suppress the display of the original OSError with
+        # `raise ... from None`. The socket errno is still in __context__.
+        cause = cause.__cause__ or cause.__context__
     return False
 
 
