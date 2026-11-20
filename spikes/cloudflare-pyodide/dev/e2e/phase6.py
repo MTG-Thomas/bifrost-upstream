@@ -26,7 +26,7 @@ def mount_private_fixture(root: Path) -> None:
     ))
 
 
-def seed_solution_workflows(project, admin, send, tenant_fixtures, *, hosted=False):
+def seed_solution_workflows(admin, send, tenant_fixtures, *, hosted=False):
     if hosted:
         content = (HERE / "fixture-hosted.py").read_text().replace("phase5b_fixture", FUNCTION)
     else:
@@ -69,7 +69,7 @@ def seed_solution_workflows(project, admin, send, tenant_fixtures, *, hosted=Fal
         else:
             raise SystemExit("Fixture Solution deploy did not settle")
         workflow_id = workflows[scenario] = str(uuid5(UUID(install), str(manifest_id)))
-        approval = approve_workflow(project, workflow_id, content.encode(), 12, 1000, solution_id=install)
+        approval = approve_workflow(send, admin, workflow_id, content.encode(), 12, 1000, solution_id=install)
         assert approval["organization_id"] == tenant
         assert approval["solution"]["version"] == "1.0.0"
         assert approval["module_sha256"] == {"phase6_support/values.py": sha256(helper.encode())}
@@ -131,16 +131,16 @@ def run(runtime: Path, solution: bool, containers: bool) -> None:
     origin, project, admin, send = local_api(False)
     policy = {"warm_workers": 0, "max_workers": 1, "idle_seconds": 4}
     if containers:
-        policy.update(warm_workers=1, max_workers=3, worker_memory_mib=1024, largest_worker_mib=1024, idle_seconds=10)
+        policy.update(warm_workers=1, max_workers=3, worker_memory_mib=1536, largest_worker_mib=1536, idle_seconds=10)
     send("/api/admin/kubernetes/policy", policy, admin, method="PUT")
     tenants = [send("/api/organizations", {"name": name}, admin)["id"]
                for name in ("Phase 6 Tenant A", "Phase 6 Tenant B")]
     # Register in the actual owner organizations and accept their approvals.
     tenant_fixtures = tuple(zip(("phase6-a", "phase6-b"), tenants, strict=True))
     if solution:
-        workflows, approval, results = seed_solution_workflows(project, admin, send, tenant_fixtures)
+        workflows, approval, results = seed_solution_workflows(admin, send, tenant_fixtures)
     else:
-        workflows, approval = seed_workflows(project, admin, send, False, tenant_fixtures=tenant_fixtures)
+        workflows, approval = seed_workflows(admin, send, False, tenant_fixtures=tenant_fixtures)
         results = {}
     seed_linux_workflows(admin, send, workflows, containers)
     print(json.dumps({"project": project, "workflows": workflows, "tenants": tenants,
@@ -149,7 +149,8 @@ def run(runtime: Path, solution: bool, containers: bool) -> None:
     subprocess.run(["node", str(HERE / "run.mjs")], cwd=ROOT, check=True, text=True, input=json.dumps({
         "phase6": {"token": secrets.token_hex(32), "scope": "phase6-local",
                    "providerHost": (ROOT / ".phase6-host").read_text(), "slots": 2,
-                   "tenants": tenants, "results": results, "containers": containers},
+                   "tenants": tenants, "results": results, "containers": containers,
+                   "workerMemoryMiB": policy.get("worker_memory_mib")},
         "build": "phase6-local", "origin": origin, "project": project, "admin": admin,
         "workflows": workflows, "runtime": str(runtime), "port": 0,
     }))

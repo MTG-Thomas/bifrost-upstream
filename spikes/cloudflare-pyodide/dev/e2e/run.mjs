@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {execFileSync, spawn, spawnSync} from 'node:child_process';
 import {createHash, randomBytes} from 'node:crypto';
-import {appendFileSync, readFileSync, unlinkSync, utimesSync, writeFileSync} from 'node:fs';
+import {appendFileSync, existsSync, readFileSync, rmSync, unlinkSync, utimesSync, writeFileSync} from 'node:fs';
 import {mkdir} from 'node:fs/promises';
 import {createServer} from 'node:http';
 import {createServer as createTlsServer} from 'node:https';
@@ -14,7 +14,8 @@ import {supervisorModules} from '../tenant-workers/supervisor-digest.mjs';
 import {stageRuntimeLoader} from '../stage-runtime-loader.mjs';
 import {hostedRelayPath, relayHeaders, relayHttp} from './relay-http.mjs';
 import {capacityWorker} from './capacity-miniflare.mjs';
-import {localLinuxProvider, localSolutionGit, serveContainersProviders, vmHoldMemoryMiB} from './containers-local.mjs';
+import {deferContainerStarts, expiryCapacityRelay, localLinuxProvider, localSolutionGit, OVERFLOW_MEMORY_MIB,
+  serveContainersProviders, vmHoldMemoryMiB} from './containers-local.mjs';
 
 const root = new URL('../', import.meta.url);
 const require = createRequire(new URL('tenant-workers/package.json', root));
@@ -70,6 +71,7 @@ function managedRows(scope = 'phase6-local', {includeRetired = false} = {}) {
   return sql(`SELECT coalesce(json_agg(json_build_object('id',id,'state',state,'uid',capacity_resource_uid,
     'launcher_bound',remote_launcher_id=id,'profile',runtime_profile,'hello',remote_hello_sequence,
     'budget',memory_limit_bytes,'available',memory_budget_bytes,'active',active_runs,
+    'pressured',memory_pressured,
     'deleted',capacity_resource_deleted_at IS NOT NULL,'end',end_reason,
     'created_at',created_at,'ready_at',ready_at,'ended_at',ended_at,
     'deleted_at',capacity_resource_deleted_at)), '[]'::json)
@@ -615,6 +617,9 @@ async function containersChecks() {
     version: devVersion(), archive: process.cwd(),
   };
   const hosted = config.qualification?.placement;
+  const expiry = hosted?.containerExpiry;
+  const expiryRelay = expiry ? expiryCapacityRelay(hosted.containersUrl) : null;
+  if (!hosted) common.memoryMiB = config.phase6.workerMemoryMiB;
   const vmToken = randomBytes(32).toString('hex');
   const containersToken = hosted?.containersToken ??
     createHash('sha256').update(config.phase6.token + ':containers').digest('hex');
@@ -626,11 +631,17 @@ async function containersChecks() {
   const privateAuth = 'Basic ' + Buffer.from('x-access-token:' + privateToken).toString('base64');
   let privateFetches = 0;
   let vmProfileRead = false;
+  let vmHoldClaimed = false;
   execFileSync('docker', ['pause', ...launchers]);
   try {
+    if (git) {
+      execFileSync('docker', ['exec', config.project + '-api-1', 'python', '-m',
+        'scripts.containers_private_fixture', 'retire-paused-workers'], {timeout: 15_000});
+    }
     if (!hosted) await launch(proxy.address().port);
     if (hosted) evidence('hosted-relay-ready', {port: proxy.address().port});
     providerServer = await serveContainersProviders(config.phase6.providerHost, {
+      ...(expiryRelay ? {containers: expiryRelay} : {}),
       vm: {
         async fetch(request) {
           const response = await vm.fetch(request);
@@ -640,7 +651,7 @@ async function containersChecks() {
           return response;
         },
       },
-      ...(hosted ? {} : {containers,
+      ...(hosted ? {} : {containers: deferContainerStarts(containers, () => vmHoldClaimed),
       git: {
         fetch(request) {
           assert.equal(request.headers.has('authorization'), false);
@@ -679,7 +690,7 @@ async function containersChecks() {
       `BIFROST_WORKER_CAPACITY_TOKEN=${vmToken}`,
       `BIFROST_CLOUDFLARE_CAPACITY_URL=${hosted?.workersUrl ?? endpoint + '/workers'}`,
       `BIFROST_CLOUDFLARE_CAPACITY_TOKEN=${config.phase6.token}`,
-      `BIFROST_CLOUDFLARE_CONTAINERS_URL=${hosted?.containersUrl ?? endpoint + '/containers'}`,
+      `BIFROST_CLOUDFLARE_CONTAINERS_URL=${expiry ? endpoint + '/containers' : hosted?.containersUrl ?? endpoint + '/containers'}`,
       'BIFROST_CLOUDFLARE_CONTAINERS_SCOPE=containers',
       `BIFROST_CLOUDFLARE_CONTAINERS_TOKEN=${containersToken}`,
       '',
@@ -700,10 +711,15 @@ async function containersChecks() {
       ))
     `), 60_000);
     const primary = await until('VM primary ready with measured budget', () =>
-      managedRows('vm').find((row) => row.state === 'ready' && row.available > 256 * 2 ** 20), 90_000);
+      managedRows('vm').find((row) => row.state === 'ready' && !row.pressured && row.available > 256 * 2 ** 20), 90_000);
     const hold = await api('/api/workflows/' + config.workflows.vm,
       {memory_request_mib: vmHoldMemoryMiB(primary.available)}, config.admin, 'PATCH');
     assert.equal(hold.status, 200);
+    if (expiry) {
+      const overflow = await api('/api/workflows/' + config.workflows.linux,
+        {memory_request_mib: OVERFLOW_MEMORY_MIB}, config.admin, 'PATCH');
+      assert.equal(overflow.status, 200);
+    }
     async function submit(key) {
       const reply = await api('/api/workflows/execute', {
         workflow_id: config.workflows[key], input_data: {}, sync: false,
@@ -714,7 +730,14 @@ async function containersChecks() {
     }
     const vmRun = await submit('vm');
     await until('VM primary claims held work', () => runRow(vmRun)?.claim?.[0].worker === primary.id);
+    vmHoldClaimed = true;
     if (git) {
+      const topic = await api('/api/events/sources', {
+        name: 'Containers Solution Updates', source_type: 'topic', event_type: 'solution.update_available',
+      });
+      assert.equal(topic.status, 201);
+      const eventSourceId = topic.data.id;
+      assert.match(eventSourceId, /^[0-9a-f-]{36}$/);
       const solution = await api('/api/solutions', {slug: 'container-update', name: 'Container Update'});
       assert.ok([200, 201].includes(solution.status));
       const solutionId = solution.data.id;
@@ -744,9 +767,11 @@ asyncio.run(run())
         const row = sql(`SELECT json_build_object('status',j.status,'result',j.result,'error',j.error_code,
         'stage',j.remote_stage,'update_available',s.update_available_version,'scope',w.capacity_scope,
         'private_version',(SELECT update_available_version FROM solutions WHERE id = '${privateId}'),
-        'private_events',(SELECT count(*) FROM events WHERE event_type = 'solution.update_available'
+        'private_events',(SELECT coalesce(json_agg(id), '[]'::json) FROM events WHERE event_source_id = '${eventSourceId}'
+          AND event_type = 'solution.update_available'
           AND data->'solution'->>'id' = '${privateId}' AND data->'solution'->>'available_version' = '2.0.0'),
-        'events',(SELECT count(*) FROM events WHERE event_type = 'solution.update_available'
+        'events',(SELECT coalesce(json_agg(id), '[]'::json) FROM events WHERE event_source_id = '${eventSourceId}'
+          AND event_type = 'solution.update_available'
           AND data->'solution'->>'id' = s.id::text AND data->'solution'->>'available_version' = '2.0.0'))
         FROM platform_jobs j CROSS JOIN solutions s
         LEFT JOIN execution_workers w ON w.id = (j.remote_stage->>'worker_id')::uuid
@@ -759,15 +784,16 @@ asyncio.run(run())
       assert.equal(update.update_available, '2.0.0');
       assert.equal(update.result.updates_found, 2);
       assert.equal(update.result.check_failures, 0);
-      assert.equal(update.events, 1);
+      assert.equal(update.events.length, 1);
       assert.equal(update.private_version, '2.0.0');
-      assert.equal(update.private_events, 1);
+      assert.equal(update.private_events.length, 1);
       assert.ok(privateFetches > 0 && git.fetches > privateFetches);
       evidence('containers-platform-stage', {
-        jobId, solutionId, privateId, ...update, publicFetches: git.fetches - privateFetches, privateFetches,
+        jobId, vmRun, solutionId, privateId, eventSourceId, ...update,
+        publicFetches: git.fetches - privateFetches, privateFetches,
       });
     }
-    const hostedWorkflows = hosted && (async () => {
+    const hostedWorkflows = hosted && !expiry && (async () => {
       let loose;
       let solution;
       try {
@@ -813,6 +839,30 @@ asyncio.run(run())
     assert.equal(Number(workerStatus.requirements_installed), 1);
     assert.equal(Number(workerStatus.requirements_total), 1);
     evidence('containers-workflow', {primary, vmRun, linux, linuxRow, container, requirements: 1});
+    if (expiry) {
+      const receipt = '.phase7-expiry-observed';
+      rmSync(receipt, {force: true});
+      expiryRelay.stopForwarding();
+      assert.equal(expiryRelay.deletesForwarded, 0);
+      assert.equal(container.state, 'ready');
+      assert.equal(container.deleted, false);
+      assert.ok(!runRow(vmRun).completed, 'VM primary remained occupied through overflow settlement');
+      evidence('container-expiry-wait', {id: linux, incarnation: container.id, deletesForwarded: expiryRelay.deletesForwarded});
+      await until('independent Cloudflare instance stop receipt', () => existsSync(receipt), 420_000);
+      const incarnation = await until('Bifrost records Container retirement', () => {
+        const current = managedRows('containers', {includeRetired: true}).find(({id}) => id === container.id);
+        return current?.state === 'retired' && current;
+      });
+      const row = runRow(linux);
+      assert.equal(incarnation.end, 'stopped');
+      assert.equal(incarnation.deleted, false);
+      assert.equal(row?.status, 'Success');
+      assert.deepEqual(row.claim, linuxRow.claim);
+      assert.equal(expiryRelay.deletesForwarded, 0);
+      evidence('container-expiry-bifrost', {id: linux, row, incarnation,
+        deletesForwarded: expiryRelay.deletesForwarded, deletesBlocked: expiryRelay.deletesBlocked});
+      return;
+    }
     approved?.gate.release.resolve();
     const localOutcome = hosted ? null : await settle('phase6-a', approved, 'Success');
     const released = await until('Containers idle retirement and provider-confirmed deletion', () =>

@@ -12,6 +12,14 @@ import {
 	WorkflowListSurface,
 	type WorkflowListItem,
 } from "@/components/workflows/WorkflowListSurface";
+import { CloudflareApprovalPanel } from "@/components/workflows/CloudflareApprovalPanel";
+import {
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogHeader,
+	DialogTitle,
+} from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
@@ -88,6 +96,10 @@ export function Workflows() {
 		setPrevIsDesktop(isDesktop);
 		setSidebarOpen(isDesktop);
 	}
+
+	const [approvalWorkflow, setApprovalWorkflow] = useState<WorkflowListItem | null>(
+		null,
+	);
 
 	// Edit workflow dialog state
 	const [editDialogOpen, setEditDialogOpen] = useState(false);
@@ -366,6 +378,7 @@ export function Workflows() {
 					onOpenCode={
 						canEditWorkspace ? handleOpenInEditor : undefined
 					}
+					onReviewCloudflare={setApprovalWorkflow}
 					onEditScope={(workflow) => handleEditWorkflow(workflow)}
 					onEditEndpoint={(workflow) =>
 						handleEditWorkflow(workflow, "endpoint")
@@ -606,6 +619,27 @@ export function Workflows() {
 					onSuccess={() => refetch()}
 				/>
 			)}
+
+			<Dialog
+				open={approvalWorkflow !== null}
+				onOpenChange={(open) => {
+					if (!open) setApprovalWorkflow(null);
+				}}
+			>
+				<DialogContent className="max-h-[90dvh] flex flex-col overflow-hidden">
+					<DialogHeader>
+						<DialogTitle>Cloudflare Approval</DialogTitle>
+						<DialogDescription>
+							{approvalWorkflow?.display_name || approvalWorkflow?.name}
+						</DialogDescription>
+					</DialogHeader>
+					<div className="min-h-0 overflow-auto">
+						{approvalWorkflow && (
+							<CloudflareApprovalPanel workflowId={approvalWorkflow.id} />
+						)}
+					</div>
+				</DialogContent>
+			</Dialog>
 
 			{/* Workflow Edit Dialog */}
 			<WorkflowEditDialog

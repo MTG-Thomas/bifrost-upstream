@@ -14,12 +14,12 @@ REPO_ROOT = API_ROOT.parent
 
 def test_every_observed_surface_is_classified_with_a_reason() -> None:
     inventory = build_operation_inventory(app, REPO_ROOT)
-    # Cloudflare rotation collects the replacement token through REST and a CLI prompt.
+    # Count both Cloudflare workflow approval and platform capacity operations.
     assert inventory["counts"] == {
-        "cli": 193,
+        "cli": 197,
         "manifest": 16,
-        "mcp": 110,
-        "rest": 733,
+        "mcp": 114,
+        "rest": 737,
         "sdk": 21,
     }
     for surface, rows in inventory["uncataloged"].items():
@@ -139,6 +139,9 @@ def test_catalog_operations_report_exact_rest_parity() -> None:
     }
     for operation_id, row in operations.items():
         assert row["observed"]["rest"]["status"] == "exact_parity", operation_id
+        if operation_id.startswith("workflows.cloudflare_approval."):
+            for surface in ("cli", "mcp"):
+                assert row["observed"][surface]["status"] == "exact_parity", (operation_id, surface)
 
 
 def test_generated_operation_files_are_fresh() -> None:

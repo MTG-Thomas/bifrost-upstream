@@ -1,0 +1,17 @@
+{
+  "source_base": "e5f385a20",
+  "javascript_sha256": {
+    "phase0-runtime.mjs": "08aae886e04e64a10b859d33c7cd4d038c973f151b51b6e2f4edb4b6de178453",
+    "phase0-launcher.mjs": "14ad9ad2f91efcbf304acc98cda34c52c42fefc725a8c67655e4800af12ede8d",
+    "phase0-provider.mjs": "c2ee409319a7735d864ad09588312886d7537cc14c2d565e4bddbc2daf88abea",
+    "phase0-container.mjs": "9f451940814bce584e63350e801babd985037d4f4bd94ce60bb1057e640ab1fc",
+    "capacity.mjs": "058be8a4934fdc4e01b7a25313c4821f426ab300b903a2cb1b10a7c51f188dc8",
+    "capacity-core.mjs": "461b93c2036c93e5283774bc61a28d34f435d6d1737b8d2b17ef76eb63d64008",
+    "protocol.mjs": "c5b3fe7339c1e6f170f57af6f11bf29ff8cdf9475307d67eb6caa4d5b33e108e"
+  },
+  "image": {
+    "repository": "docker.io/library/busybox",
+    "platform": "linux/amd64",
+    "digest": "sha256:66a6306db78bf2dbf3487f293aa8d6990d8e506fdffab9cc43fe422becf886e4"
+  }
+}

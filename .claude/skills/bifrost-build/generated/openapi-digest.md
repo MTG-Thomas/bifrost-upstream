@@ -654,6 +654,10 @@
 | DELETE | `/api/workflows/{workflow_id}` |
 | GET | `/api/workflows/{workflow_id}` |
 | PATCH | `/api/workflows/{workflow_id}` |
+| DELETE | `/api/workflows/{workflow_id}/cloudflare-approval` |
+| GET | `/api/workflows/{workflow_id}/cloudflare-approval` |
+| POST | `/api/workflows/{workflow_id}/cloudflare-approval/accept` |
+| POST | `/api/workflows/{workflow_id}/cloudflare-approval/propose` |
 | GET | `/api/workflows/{workflow_id}/compatible-replacements` |
 | POST | `/api/workflows/{workflow_id}/deactivate` |
 | GET | `/api/workflows/{workflow_id}/parameters` |

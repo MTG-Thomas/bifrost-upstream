@@ -196,10 +196,11 @@ async def test_proposal_refuses_ineligible_solution_before_storage(installed_rev
     else:
         solution.organization_id = None
     await db_session.flush()
-    with pytest.raises(AnalysisRejected, match="published install-local source"):
+    with pytest.raises(AnalysisRejected) as refusal:
         await cloudflare_eligibility.propose_approval(
             approval.workflow_id, subrequest_allowance=10, cpu_budget_ms=500,
         )
+    assert refusal.value.rule == ("CF_OUTBOUND" if state == "outbound" else "CF_SOURCE")
     storage.assert_not_called()
 
 
@@ -563,7 +564,8 @@ async def test_analysis_budgets_copy_work_across_sibling_scopes(monkeypatch):
 async def test_missing_import_retries_only_if_the_index_has_the_path(review, monkeypatch, indexed):
     approval, sources, _ = review
     workflow = SimpleNamespace(
-        is_active=True, solution_id=None, type="workflow", path=ENTRY, function_name="run", organization_id=None,
+        is_active=True, solution_id=None, type="workflow", execution_lane="auto",
+        path=ENTRY, function_name="run", organization_id=None,
     )
 
     @asynccontextmanager
@@ -596,7 +598,8 @@ async def test_missing_import_retries_only_if_the_index_has_the_path(review, mon
 async def test_oversized_storage_object_checks_observed_digest_before_refusal(review, monkeypatch):
     approval, _, _ = review
     workflow = SimpleNamespace(
-        is_active=True, solution_id=None, type="workflow", path=ENTRY, function_name="run", organization_id=None,
+        is_active=True, solution_id=None, type="workflow", execution_lane="auto",
+        path=ENTRY, function_name="run", organization_id=None,
     )
 
     @asynccontextmanager

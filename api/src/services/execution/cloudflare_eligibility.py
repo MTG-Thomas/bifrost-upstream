@@ -5,27 +5,26 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from dataclasses import dataclass
-from typing import Annotated
 from uuid import UUID
-
-from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from bifrost.cloudflare_analysis import (
     MAX_BUNDLE_BYTES,
-    MAX_CPU_MS,
-    MAX_MODULES,
     MAX_SOURCE_BYTES,
-    MAX_SUBREQUESTS,
     POLICY_VERSION,
     AnalysisRejected,
     SourceUnresolved,
     digest,
 )
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from src.core.database import get_db_context
 from src.core.storage.contracts import StorageError
+from src.models.contracts.cloudflare_approval import (
+    ApprovalDeclaration,
+    SolutionApprovalScope,
+)
 from src.models.orm import (
     CloudflareApproval,
     FileIndex,
@@ -38,44 +37,9 @@ from src.services.execution.cloudflare_hosts import reviewed_https_allowlist
 from src.services.repo_storage import RepoStorage
 from src.services.solutions.storage import SolutionStorage
 
-_SourceDigest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
-
-class SolutionApprovalScope(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    install_id: UUID
-    version: str | None
-    source_generation: UUID
-
-
-class ApprovalDeclaration(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    entry_path: str
-    function_name: str
-    entry_sha256: _SourceDigest
-    module_sha256: dict[str, _SourceDigest] = Field(max_length=MAX_MODULES - 1)
-    manifest_sha256: _SourceDigest
-    packages: list[str] = Field(max_length=32)
-    https_hosts: list[str] = Field(max_length=32)
-    required_https_hosts: list[str] = Field(max_length=32)
-    unresolved_url_calls: int = Field(default=0, strict=True, ge=0)
-    estimated_subrequests: int = Field(strict=True, ge=0)
-    subrequest_allowance: int = Field(strict=True, ge=0, le=MAX_SUBREQUESTS)
-    estimated_cpu_ms: int = Field(strict=True, ge=0)
-    cpu_budget_ms: int = Field(strict=True, gt=0, le=MAX_CPU_MS)
-    solution: SolutionApprovalScope | None = None
-
-    @property
-    def manifest(self) -> dict[str, str]:
-        return {**self.module_sha256, self.entry_path: self.entry_sha256}
-
-    def review_fields(self) -> dict[str, object]:
-        fields = self.model_dump(mode="json")
-        if self.solution is None:
-            fields.pop("solution")
-        return fields
+def workflow_review_scope(workflow: Workflow) -> tuple[UUID | None, UUID | None, str, str]:
+    return workflow.organization_id, workflow.solution_id, workflow.path, workflow.function_name
 
 
 @dataclass(frozen=True)
@@ -172,22 +136,40 @@ class ObservationChanged(AnalysisRejected):
     """Storage has moved beyond the source digests used to schedule the job."""
 
 
+async def approval_placement(db: AsyncSession, workflow: Workflow) -> SolutionApprovalScope | None:
+    """Resolve the source boundary before analysis or status reporting."""
+    if not workflow.is_active:
+        raise ObservationChanged("Expected an active workflow")
+    if workflow.type != "workflow":
+        raise ObservationChanged("Only workflows can be approved", "CF_EXECUTABLE_TYPE")
+    if workflow.execution_lane == "fast_path":
+        raise ObservationChanged("Cloudflare supplies Normal capacity only", "CF_FAST_PATH")
+    if workflow.solution_id is None:
+        return None
+    solution = await solution_approval_scope(db, workflow.solution_id, workflow.organization_id)
+    if solution is None:
+        outbound = await db.scalar(select(Solution.allow_outbound_access).where(Solution.id == workflow.solution_id))
+        if outbound:
+            raise ObservationChanged("The Solution install allows outbound access", "CF_OUTBOUND")
+        raise ObservationChanged("Expected an active Solution with published install-local source")
+    return solution
+
+
 async def propose_approval(
     workflow_id: UUID, *, subrequest_allowance: int, cpu_budget_ms: int,
     expected_pins: dict[str, str | None] | None = None,
     analysed_pins: dict[str, str | None] | None = None,
     https_hosts: list[str] | None = None,
+    expected_scope: tuple[UUID | None, UUID | None, str, str] | None = None,
 ) -> ApprovalProposal:
     async with get_db_context() as db:
         workflow = await db.get(Workflow, workflow_id)
-        if workflow is None or not workflow.is_active or workflow.type != "workflow":
+        if workflow is None:
             raise ObservationChanged("Expected an active workflow")
+        if expected_scope is not None and workflow_review_scope(workflow) != expected_scope:
+            raise ObservationChanged("Workflow scope changed before analysis")
+        solution = await approval_placement(db, workflow)
         install_id = workflow.solution_id
-        solution = None
-        if install_id is not None:
-            solution = await solution_approval_scope(db, install_id, workflow.organization_id)
-            if solution is None:
-                raise ObservationChanged("Expected an active Solution with published install-local source")
         current = await current_approval(db, workflow_id)
         previous_revision = current.revision if current else None
         history_count = 0 if current else await _history_count(db, workflow_id)
@@ -228,7 +210,7 @@ async def propose_approval(
     declaration = ApprovalDeclaration.model_validate(result)
     merged_hosts = sorted(set(declaration.required_https_hosts) | set(reviewed_https_allowlist(https_hosts or [])))
     if len(merged_hosts) > 32:
-        raise AnalysisRejected("The reviewed HTTPS allowlist exceeds 32 hosts")
+        raise AnalysisRejected("The reviewed HTTPS allowlist exceeds 32 hosts", "CF_HOST_BUDGET")
     declaration = declaration.model_copy(update={"https_hosts": merged_hosts, "solution": solution})
     return ApprovalProposal(workflow_id, organization_id, previous_revision, declaration, history_count)
 
@@ -244,6 +226,7 @@ async def accept_proposal(
     install_id = solution.install_id if solution else None
     if (
         workflow is None or not workflow.is_active or workflow.type != "workflow"
+        or workflow.execution_lane == "fast_path"
         or (workflow.organization_id, workflow.solution_id, workflow.path, workflow.function_name) != (
             proposal.organization_id, install_id, declaration.entry_path, declaration.function_name,
         )

@@ -6,6 +6,10 @@ import {
 	type WorkflowListItem,
 } from "./WorkflowListSurface";
 
+vi.mock("@/components/solutions/SolutionManagedBadge", () => ({
+	SolutionManagedBadge: () => null,
+}));
+
 function LocationProbe() {
 	const location = useLocation();
 	return (
@@ -16,6 +20,30 @@ function LocationProbe() {
 }
 
 describe("workflow recovery actions", () => {
+	it("offers approval review for a read-only Solution workflow", async () => {
+		const workflow = {
+			id: "solution-workflow",
+			name: "solution_workflow",
+			type: "workflow",
+			is_solution_managed: true,
+		} as WorkflowListItem;
+		const onReviewCloudflare = vi.fn();
+		const { user } = renderWithProviders(
+			<WorkflowListSurface
+				workflows={[workflow]}
+				viewMode="table"
+				isPlatformAdmin={false}
+				canManageWorkflows={false}
+				getOrgName={() => "Global"}
+				onReviewCloudflare={onReviewCloudflare}
+				onExecute={vi.fn()}
+			/>,
+		);
+		await user.click(screen.getByRole("button", { name: "solution_workflow actions" }));
+		await user.click(screen.getByRole("menuitem", { name: "Review Cloudflare Approval" }));
+		expect(onReviewCloudflare).toHaveBeenCalledExactlyOnceWith(workflow);
+	});
+
 	it("keeps a selected checkbox from opening the workflow row", async () => {
 		const workflow = {
 			id: "selected-workflow",

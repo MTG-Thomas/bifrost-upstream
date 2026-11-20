@@ -2349,6 +2349,263 @@
         "cli": {
           "path": [
             "workflows",
+            "cloudflare-approval",
+            "status"
+          ],
+          "status": "exact_parity"
+        },
+        "manifest": {
+          "entity": null,
+          "status": "intentionally_unsupported"
+        },
+        "mcp": {
+          "name": "bifrost_workflow_cloudflare_approval_status",
+          "status": "exact_parity"
+        },
+        "rest": {
+          "operation_id": "workflows.cloudflare_approval.status",
+          "status": "exact_parity"
+        },
+        "sdk": {
+          "binding": null,
+          "status": "intentionally_unsupported"
+        }
+      },
+      "operation": {
+        "action_scopes": [
+          "workflows.read",
+          "platform.readwrite"
+        ],
+        "async_policy": "synchronous",
+        "audit_event": null,
+        "authorization_resolver": "Workflow read permission at the owning scope or human Global platform.readwrite",
+        "cli": {
+          "path": [
+            "workflows",
+            "cloudflare-approval",
+            "status"
+          ]
+        },
+        "exclusions": {
+          "manifest": "Cloudflare approval binds source and operator authority in the current environment.",
+          "native_builder": "Cloudflare approval review is an interactive workflow operation.",
+          "sdk": "Cloudflare approval review is an interactive workflow operation."
+        },
+        "manifest": null,
+        "mcp": {
+          "name": "bifrost_workflow_cloudflare_approval_status"
+        },
+        "native_builder": false,
+        "operation_id": "workflows.cloudflare_approval.status",
+        "rest": {
+          "method": "GET",
+          "path": "/api/workflows/{workflow_id}/cloudflare-approval",
+          "request_model": null,
+          "response_model": "CloudflareApprovalState"
+        },
+        "side_effects": [],
+        "summary": "Read Cloudflare approval status for a workflow",
+        "target_kind": "resource"
+      }
+    },
+    {
+      "observed": {
+        "cli": {
+          "path": [
+            "workflows",
+            "cloudflare-approval",
+            "propose"
+          ],
+          "status": "exact_parity"
+        },
+        "manifest": {
+          "entity": null,
+          "status": "intentionally_unsupported"
+        },
+        "mcp": {
+          "name": "bifrost_workflow_cloudflare_approval_propose",
+          "status": "exact_parity"
+        },
+        "rest": {
+          "operation_id": "workflows.cloudflare_approval.propose",
+          "status": "exact_parity"
+        },
+        "sdk": {
+          "binding": null,
+          "status": "intentionally_unsupported"
+        }
+      },
+      "operation": {
+        "action_scopes": [
+          "platform.readwrite"
+        ],
+        "async_policy": "synchronous",
+        "audit_event": null,
+        "authorization_resolver": "Human Global platform.readwrite",
+        "cli": {
+          "path": [
+            "workflows",
+            "cloudflare-approval",
+            "propose"
+          ]
+        },
+        "exclusions": {
+          "manifest": "Cloudflare approval binds source and operator authority in the current environment.",
+          "native_builder": "Cloudflare approval review is an interactive workflow operation.",
+          "sdk": "Cloudflare approval review is an interactive workflow operation."
+        },
+        "manifest": null,
+        "mcp": {
+          "name": "bifrost_workflow_cloudflare_approval_propose"
+        },
+        "native_builder": false,
+        "operation_id": "workflows.cloudflare_approval.propose",
+        "rest": {
+          "method": "POST",
+          "path": "/api/workflows/{workflow_id}/cloudflare-approval/propose",
+          "request_model": "CloudflareApprovalOptions",
+          "response_model": "CloudflareApprovalState"
+        },
+        "side_effects": [],
+        "summary": "Analyze workflow source and generate a Cloudflare approval proposal",
+        "target_kind": "resource"
+      }
+    },
+    {
+      "observed": {
+        "cli": {
+          "path": [
+            "workflows",
+            "cloudflare-approval",
+            "accept"
+          ],
+          "status": "exact_parity"
+        },
+        "manifest": {
+          "entity": null,
+          "status": "intentionally_unsupported"
+        },
+        "mcp": {
+          "name": "bifrost_workflow_cloudflare_approval_accept",
+          "status": "exact_parity"
+        },
+        "rest": {
+          "operation_id": "workflows.cloudflare_approval.accept",
+          "status": "exact_parity"
+        },
+        "sdk": {
+          "binding": null,
+          "status": "intentionally_unsupported"
+        }
+      },
+      "operation": {
+        "action_scopes": [
+          "platform.readwrite"
+        ],
+        "async_policy": "synchronous",
+        "audit_event": "workflow.cloudflare_approval.accept",
+        "authorization_resolver": "Human Global platform.readwrite and a current reviewed digest",
+        "cli": {
+          "path": [
+            "workflows",
+            "cloudflare-approval",
+            "accept"
+          ]
+        },
+        "exclusions": {
+          "manifest": "Cloudflare approval binds source and operator authority in the current environment.",
+          "native_builder": "Cloudflare approval review is an interactive workflow operation.",
+          "sdk": "Cloudflare approval review is an interactive workflow operation."
+        },
+        "manifest": null,
+        "mcp": {
+          "name": "bifrost_workflow_cloudflare_approval_accept"
+        },
+        "native_builder": false,
+        "operation_id": "workflows.cloudflare_approval.accept",
+        "rest": {
+          "method": "POST",
+          "path": "/api/workflows/{workflow_id}/cloudflare-approval/accept",
+          "request_model": "CloudflareApprovalAccept",
+          "response_model": "CloudflareApprovalState"
+        },
+        "side_effects": [
+          "activate the reviewed approval revision"
+        ],
+        "summary": "Accept an exact reviewed workflow approval digest",
+        "target_kind": "resource"
+      }
+    },
+    {
+      "observed": {
+        "cli": {
+          "path": [
+            "workflows",
+            "cloudflare-approval",
+            "revoke"
+          ],
+          "status": "exact_parity"
+        },
+        "manifest": {
+          "entity": null,
+          "status": "intentionally_unsupported"
+        },
+        "mcp": {
+          "name": "bifrost_workflow_cloudflare_approval_revoke",
+          "status": "exact_parity"
+        },
+        "rest": {
+          "operation_id": "workflows.cloudflare_approval.revoke",
+          "status": "exact_parity"
+        },
+        "sdk": {
+          "binding": null,
+          "status": "intentionally_unsupported"
+        }
+      },
+      "operation": {
+        "action_scopes": [
+          "platform.readwrite"
+        ],
+        "async_policy": "synchronous",
+        "audit_event": "workflow.cloudflare_approval.revoke",
+        "authorization_resolver": "Human Global platform.readwrite",
+        "cli": {
+          "path": [
+            "workflows",
+            "cloudflare-approval",
+            "revoke"
+          ]
+        },
+        "exclusions": {
+          "manifest": "Cloudflare approval binds source and operator authority in the current environment.",
+          "native_builder": "Cloudflare approval review is an interactive workflow operation.",
+          "sdk": "Cloudflare approval review is an interactive workflow operation."
+        },
+        "manifest": null,
+        "mcp": {
+          "name": "bifrost_workflow_cloudflare_approval_revoke"
+        },
+        "native_builder": false,
+        "operation_id": "workflows.cloudflare_approval.revoke",
+        "rest": {
+          "method": "DELETE",
+          "path": "/api/workflows/{workflow_id}/cloudflare-approval",
+          "request_model": null,
+          "response_model": "CloudflareApprovalState"
+        },
+        "side_effects": [
+          "deactivate the current approval revision"
+        ],
+        "summary": "Revoke the current Cloudflare workflow approval",
+        "target_kind": "resource"
+      }
+    },
+    {
+      "observed": {
+        "cli": {
+          "path": [
+            "workflows",
             "convert",
             "analyze"
           ],
@@ -11272,10 +11529,10 @@
     }
   ],
   "counts": {
-    "cli": 193,
+    "cli": 197,
     "manifest": 16,
-    "mcp": 110,
-    "rest": 733,
+    "mcp": 114,
+    "rest": 737,
     "sdk": 21
   },
   "schema_version": 1,

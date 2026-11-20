@@ -8,8 +8,14 @@ from uuid import UUID
 
 from git import Repo
 from shared.solution_git_sources import SolutionGitCredentials, save_verified_source
+from sqlalchemy import func, update
 from src.core.database import get_db_context, init_db
+from src.models.orm.execution_workers import ExecutionWorker
 from src.models.orm.solutions import Solution
+from src.services.worker_pool.liveness import (
+    HEARTBEAT_LOST_AFTER,
+    end_silent_static_executors,
+)
 
 REPO = "https://github.com/fixture-owner/container-update"
 CONFIG = Path("/app/scripts/.containers-private.json")
@@ -22,6 +28,8 @@ def config():
 async def seed(solution_id: UUID) -> None:
     await init_db()
     async with get_db_context() as db:
+        solution = await db.get(Solution, solution_id)
+        assert solution is not None
         source = await save_verified_source(
             db,
             {
@@ -32,10 +40,8 @@ async def seed(solution_id: UUID) -> None:
                     "default_branch": "main", "private": True,
                 },
             },
-            None, "local-qualification",
+            solution.organization_id, "local-qualification",
         )
-        solution = await db.get(Solution, solution_id)
-        assert solution is not None
         solution.version = "1.0.0"
         solution.git_connected = True
         solution.git_repo_url = REPO
@@ -45,8 +51,23 @@ async def seed(solution_id: UUID) -> None:
         await db.commit()
 
 
+async def retire_paused_workers() -> None:
+    """Advance only the static fixtures past the canonical liveness threshold."""
+    await init_db()
+    async with get_db_context() as db:
+        await db.execute(update(ExecutionWorker).where(
+            ExecutionWorker.form == "static",
+            ExecutionWorker.state.in_(("starting", "ready", "draining")),
+        ).values(heartbeat_at=func.now() - 2 * HEARTBEAT_LOST_AFTER))
+        await db.commit()
+    assert not await end_silent_static_executors(), "Static fixtures must have no workflow claims"
+
+
 if __name__ == "__main__":
-    asyncio.run(seed(UUID(sys.argv[1])))
+    if sys.argv[1] == "retire-paused-workers":
+        asyncio.run(retire_paused_workers())
+    else:
+        asyncio.run(seed(UUID(sys.argv[1])))
 else:
     from src.main import app as api_app
     from src.worker.remote.platform_stage_host import PlatformStageBackend

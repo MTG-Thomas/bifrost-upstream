@@ -126,6 +126,14 @@ _MCP_VERBS = frozenset(
     }
 )
 
+# Preserve the public names of the existing approval tools when cataloging them.
+_EXISTING_APPROVAL_MCP_NAMES = frozenset({
+    "bifrost_workflow_cloudflare_approval_status",
+    "bifrost_workflow_cloudflare_approval_propose",
+    "bifrost_workflow_cloudflare_approval_accept",
+})
+
+
 _CONFIG_MANIFEST_EXCLUSION = (
     "Config values are serialized into .bifrost/configs.yaml for export, but git "
     "sync never reconciles them back: github_sync.py has no _resolve_config and "
@@ -897,6 +905,84 @@ OPERATION_CATALOG: tuple[OperationDefinition, ...] = (
         exclusions={
             "manifest": "Reading job progress does not change manifest state.",
             "sdk": _PLATFORM_JOB_SDK_EXCLUSION,
+        },
+    ),
+    OperationDefinition(
+        operation_id="workflows.cloudflare_approval.status",
+        summary="Read Cloudflare approval status for a workflow",
+        target_kind=OperationTargetKind.RESOURCE,
+        rest=RestOperationBinding(
+            method="GET", path="/api/workflows/{workflow_id}/cloudflare-approval",
+            response_model="CloudflareApprovalState",
+        ),
+        cli=CliOperationBinding(path=("workflows", "cloudflare-approval", "status")),
+        mcp=McpOperationBinding(name="bifrost_workflow_cloudflare_approval_status"),
+        action_scopes=("workflows.read", "platform.readwrite"),
+        authorization_resolver="Workflow read permission at the owning scope or human Global platform.readwrite",
+        exclusions={
+            "manifest": "Cloudflare approval binds source and operator authority in the current environment.",
+            "sdk": "Cloudflare approval review is an interactive workflow operation.",
+            "native_builder": "Cloudflare approval review is an interactive workflow operation.",
+        },
+    ),
+    OperationDefinition(
+        operation_id="workflows.cloudflare_approval.propose",
+        summary="Analyze workflow source and generate a Cloudflare approval proposal",
+        target_kind=OperationTargetKind.RESOURCE,
+        rest=RestOperationBinding(
+            method="POST", path="/api/workflows/{workflow_id}/cloudflare-approval/propose",
+            request_model="CloudflareApprovalOptions",
+            response_model="CloudflareApprovalState",
+        ),
+        cli=CliOperationBinding(path=("workflows", "cloudflare-approval", "propose")),
+        mcp=McpOperationBinding(name="bifrost_workflow_cloudflare_approval_propose"),
+        action_scopes=("platform.readwrite",),
+        authorization_resolver="Human Global platform.readwrite",
+        exclusions={
+            "manifest": "Cloudflare approval binds source and operator authority in the current environment.",
+            "sdk": "Cloudflare approval review is an interactive workflow operation.",
+            "native_builder": "Cloudflare approval review is an interactive workflow operation.",
+        },
+    ),
+    OperationDefinition(
+        operation_id="workflows.cloudflare_approval.accept",
+        summary="Accept an exact reviewed workflow approval digest",
+        target_kind=OperationTargetKind.RESOURCE,
+        rest=RestOperationBinding(
+            method="POST", path="/api/workflows/{workflow_id}/cloudflare-approval/accept",
+            request_model="CloudflareApprovalAccept",
+            response_model="CloudflareApprovalState",
+        ),
+        cli=CliOperationBinding(path=("workflows", "cloudflare-approval", "accept")),
+        mcp=McpOperationBinding(name="bifrost_workflow_cloudflare_approval_accept"),
+        action_scopes=("platform.readwrite",),
+        authorization_resolver="Human Global platform.readwrite and a current reviewed digest",
+        audit_event="workflow.cloudflare_approval.accept",
+        side_effects=("activate the reviewed approval revision",),
+        exclusions={
+            "manifest": "Cloudflare approval binds source and operator authority in the current environment.",
+            "sdk": "Cloudflare approval review is an interactive workflow operation.",
+            "native_builder": "Cloudflare approval review is an interactive workflow operation.",
+        },
+    ),
+    OperationDefinition(
+        operation_id="workflows.cloudflare_approval.revoke",
+        summary="Revoke the current Cloudflare workflow approval",
+        target_kind=OperationTargetKind.RESOURCE,
+        rest=RestOperationBinding(
+            method="DELETE", path="/api/workflows/{workflow_id}/cloudflare-approval",
+            response_model="CloudflareApprovalState",
+        ),
+        cli=CliOperationBinding(path=("workflows", "cloudflare-approval", "revoke")),
+        mcp=McpOperationBinding(name="bifrost_workflow_cloudflare_approval_revoke"),
+        action_scopes=("platform.readwrite",),
+        authorization_resolver="Human Global platform.readwrite",
+        audit_event="workflow.cloudflare_approval.revoke",
+        side_effects=("deactivate the current approval revision",),
+        exclusions={
+            "manifest": "Cloudflare approval binds source and operator authority in the current environment.",
+            "sdk": "Cloudflare approval review is an interactive workflow operation.",
+            "native_builder": "Cloudflare approval review is an interactive workflow operation.",
         },
     ),
     OperationDefinition(
@@ -4078,7 +4164,7 @@ def validate_operation_catalog(
             )
             continue
         verb = name.rsplit("_", 1)[-1]
-        if verb not in _MCP_VERBS:
+        if verb not in _MCP_VERBS and name not in _EXISTING_APPROVAL_MCP_NAMES:
             errors.append(
                 f"{operation.operation_id}: MCP name {name!r} ends in "
                 f"{verb!r}, which is not a recognized verb "

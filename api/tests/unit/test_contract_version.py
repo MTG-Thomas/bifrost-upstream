@@ -100,6 +100,12 @@ from src.models.contracts.workflows import (  # noqa: E402
     WorkflowValidationResponse,
 )
 
+from src.models.contracts.cloudflare_approval import (  # noqa: E402
+    CloudflareApprovalAccept,
+    CloudflareApprovalOptions,
+    CloudflareApprovalState,
+)
+
 import inspect  # noqa: E402
 
 from pydantic import BaseModel  # noqa: E402
@@ -112,6 +118,9 @@ from src.models.contracts import cli as _cli_contracts  # noqa: E402
 
 #: The explicit CRUD + execute DTOs the `bifrost <entity>` command surface uses.
 _COMMAND_DTOS: list[type] = [
+    CloudflareApprovalOptions,
+    CloudflareApprovalAccept,
+    CloudflareApprovalState,
     BaseRoleDefaultsResponse,
     BaseRoleDefaultsUpdate,
     OrganizationCreate,
@@ -442,9 +451,9 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Linux runtime, so existing CLI shapes and the minimum stay unchanged.
     # Workflow validation is now fingerprinted for CLI and MCP. Request fields
     # are optional and Cloudflare issue metadata and info severity are additive.
-    # Additive Cloudflare capacity policy, status and action DTOs.
-    # Cloudflare capacity adds a write-only rotation request and latest job ID.
-    "8afa89aed79eeb422d1aeba974c286bbe09bcab31e3535ea44e9bfbb898fc0dd"
+    # Cloudflare capacity and workflow approval add request and status DTOs.
+    # MIN_CLI_VERSION remains unchanged.
+    "ad812ee2c9c87f74a3a7a7e5d9b8763a5dcd66b6c67a90ece3a962f5a42e462b"
 )
 
 

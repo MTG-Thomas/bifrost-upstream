@@ -4,7 +4,9 @@ Status: phases 5a and 5b passed on the fork, 2026-11-18. Phase 7 verified
 hosted agent and summary settlement, three-scope claim placement, and Linux
 workflow execution and idle release on Containers. See the
 [Workers-only follow-up](#workers-only-follow-up-2026-11-19-and-2026-11-20-utc)
-for hosted Workers workflow and runtime results. Targets upstream
+for hosted Workers workflow and runtime results and the
+[natural inactivity qualification](#natural-inactivity-qualification)
+for the Container timer result. Targets upstream
 `main` (Jack's merged
 capacity core, #1423) and stays compatible with the direction of #1424
 (API-owned compute, derived worker keys) and #1425 (Cloudflare Containers
@@ -841,6 +843,72 @@ for the four trial projects, and zero local
 timer image tags. The connector was stopped and the private handoffs and
 raw logs were removed from the three owned archives.
 
+#### Natural inactivity qualification
+
+The earlier `lite` probe hit a Cloudflare assignment failure before any
+process started. The scheduler reported no available instance and the
+application had a slot still scheduling. The retained events do not explain
+why the scheduler could not provide that slot.
+
+The follow-up used the previously qualified `basic` profile with a
+one-instance cap. Before submitting any work, `cf` reported one healthy
+slot and zero starting, scheduling or assigned instances. The first Linux
+workflow was claimed by the held VM because its default memory request still
+fit. It failed its Container-specific assertion. The hosted application
+still had zero assignments. The expiry harness requests 256 MiB for overflow,
+using the same requirement as the local placement sizing test.
+
+The larger request stayed pending while the held VM had about 128 MiB free.
+Its Container reservation remained unbound because the trial relay omitted
+the capacity scope header. Workers Logs showed 15 reservation `PUT`
+requests returning 404 while capabilities requests returned 200.
+The relay now forwards the header to the fixed
+provider origin and blocks both reads and mutations when observation begins.
+The regression test covers both behaviors.
+
+The dedicated trial entrypoint keeps the real Container provider and
+substitutes a two-minute platform inactivity timeout. Its exit monitor is
+disabled because a pending monitor can keep the Durable Object active.
+After the Linux workflow settles, the local relay stops forwarding provider
+requests. Independent account API reads can then observe the instance
+without waking its Durable Object. The normal Bifrost worker control
+connection remains open during observation. The production provider retains
+its lifetime-based timeout and exit monitor.
+[Cloudflare inactivity semantics](https://developers.cloudflare.com/containers/api/durable-object-container/#setinactivitytimeout)
+[Cloudflare exit monitor lifecycle](https://developers.cloudflare.com/containers/examples/status-hooks/).
+
+The Linux overflow execution `a18733f5-5b88-4ead-947b-24d2bebd14fd`
+settled as `Success` at 05:14:09.548 UTC on November 20, 2026, under claim
+`82fc3c37-d6fd-4fac-ac52-ad69fd0d28d5`. The VM hold
+`73a9b1ec-7a1f-489a-ac4e-8eb5a6799861` was still running. The Container
+registered derived hello 1, returned `stdout=containers`, could not read
+the supervisor environment, and reported one installed requirement.
+Cloudflare showed exactly one running instance whose instance name matched
+the Bifrost Container incarnation. The relay sealed at 05:14:10.985 UTC
+with zero deletes forwarded.
+
+The account API reported the same instance `running` at 05:14:46.667 UTC
+and `inactive` with zero active instances at 05:16:22.067 UTC, before any
+teardown. Cloudflare dated the inactive transition to 05:16:00 UTC, about
+120 seconds after its recorded running transition. At 05:16:00.504 UTC,
+Bifrost retired the incarnation with end reason `stopped`. The execution
+remained `Success` under its original claim, with zero forwarded deletes
+and no provider deletion receipt at the final Bifrost readback.
+
+At the published `basic` rates, the roughly 122 seconds from reservation to
+stop cost about $0.001 in Container compute before included usage, even
+assuming full CPU use. Estimated total incremental spend was under $0.01
+including Workers and Durable Objects. The Workers spend guard was enabled
+and the probe made no LLM calls.
+[Cloudflare Containers pricing](https://developers.cloudflare.com/containers/platform/pricing/).
+
+Post-deletion `cf` readback returned zero trial Workers, Durable Object
+namespaces, Container applications, registry images, DNS records, live
+tunnels and connectors. Docker readback returned zero owned project
+containers, networks, volumes and image tags across the three debug
+projects. The guest had no trial connector processes or local trial image
+tags. Private handoffs and raw logs were removed.
+
 ### Multi-slot managed launchers
 
 - The authenticated provider profile declares `memory_limit_bytes` as one to
@@ -891,12 +959,13 @@ raw logs were removed from the three owned archives.
 
 ### Phase 3 workspace approval and placement
 
-A server operator runs these commands inside the API container, from `/app`:
+Use **Review Cloudflare Approval** in the workflow's actions menu or run these commands with an authenticated Bifrost CLI:
 
 ```sh
-python -m scripts.cloudflare_workflow_approval propose WORKFLOW_UUID --subrequest-allowance 10 --cpu-budget-ms 1000 --https-host '*.halopsa.com'
-python -m scripts.cloudflare_workflow_approval accept WORKFLOW_UUID --subrequest-allowance 10 --cpu-budget-ms 1000 --https-host '*.halopsa.com' --review-sha256 REVIEW_SHA256 --operator OPERATOR_LABEL
-python -m scripts.cloudflare_workflow_approval revoke WORKFLOW_UUID
+bifrost workflows cloudflare-approval propose WORKFLOW_UUID --subrequest-allowance 10 --cpu-budget-ms 1000 --https-hosts '*.halopsa.com'
+bifrost workflows cloudflare-approval accept WORKFLOW_UUID --subrequest-allowance 10 --cpu-budget-ms 1000 --https-hosts '*.halopsa.com' --review-sha256 REVIEW_SHA256
+bifrost workflows cloudflare-approval status WORKFLOW_UUID
+bifrost workflows cloudflare-approval revoke WORKFLOW_UUID
 ```
 
 Review the complete proposal and the pinned source against the expected inputs,
@@ -904,8 +973,14 @@ dependencies, HTTPS destinations, and resource usage. The digest covers the poli
 version, workflow and owning organization, prior approval, entry and module
 SHA-256 pins, canonical manifest digest, packages, HTTPS allowlist, and both
 estimates and limits. Accept regenerates the proposal and checks the reviewed
-digest. PostgreSQL stores the accepted revision and operator label. The command
-requires trusted server access and has no HTTP or tenant-facing surface.
+digest. PostgreSQL stores the accepted revision and the authenticated operator ID.
+Global operators with `platform.readwrite` can generate, accept, and revoke
+approvals. Users with workflow read access can view approval status in their
+authorized scope. Proposal generation uses the same operator gate as acceptance
+so ordinary workflow reads cannot exhaust the shared analyzer.
+Reapproval treats changes to executable type, execution lane, or Solution
+outbound policy as superseded work. Interactive review reports the corresponding
+`CF_EXECUTABLE_TYPE`, `CF_FAST_PATH`, or `CF_OUTBOUND` diagnostic.
 Revocation clears the current approval and makes later runs Linux-only.
 Earlier approvals and derived children remain inactive in history with their
 lineage intact. A queued reanalysis becomes superseded and a queued dispatch

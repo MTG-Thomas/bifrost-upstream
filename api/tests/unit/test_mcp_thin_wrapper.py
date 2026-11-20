@@ -63,12 +63,19 @@ from src.services.mcp_server.tools import (  # noqa: E402
     roles as roles_mod,
     tables as tables_mod,
     workflow as workflow_mod,
+    cloudflare_approval as cloudflare_approval_mod,
     workflow_conversion as workflow_conversion_mod,
 )
 
 
 PARITY_HANDLERS: dict[str, set[str]] = {
     "base_role_defaults": {"bifrost_base_role_default_get", "bifrost_base_role_default_update"},
+    "cloudflare_approval": {
+        "bifrost_workflow_cloudflare_approval_status",
+        "bifrost_workflow_cloudflare_approval_propose",
+        "bifrost_workflow_cloudflare_approval_accept",
+        "bifrost_workflow_cloudflare_approval_revoke",
+    },
     "workflow_conversion": {
         "bifrost_workflow_conversion_create",
         "bifrost_workflow_conversion_get",
@@ -199,6 +206,7 @@ PARITY_HANDLERS: dict[str, set[str]] = {
 
 MODULES = {
     "base_role_defaults": base_role_defaults_mod,
+    "cloudflare_approval": cloudflare_approval_mod,
     "workflow_conversion": workflow_conversion_mod,
     "agents": agents_mod,
     "code_editor": code_editor_mod,

@@ -11,10 +11,11 @@ const image = process.env.PHASE7_IMAGE ?? '';
 if (!new RegExp('^registry\\.cloudflare\\.com/[a-f0-9]{32}/' + root + '@sha256:[a-f0-9]{64}$').test(image)) {
   throw new Error('Set the digest of the dedicated trial image');
 }
-const name = root + '-containers';
+const expiry = process.env.PHASE7_CONTAINER_EXPIRY === '1';
+const name = root + (expiry ? '-expiry' : '-containers');
 const object = (exportName: string) => bindings.durableObject({worker: name, exportName});
 const container = defineContainer({
-  name: root + '-container',
+  name: root + (expiry ? '-expiry-container' : '-container'),
   image: {reference: image},
   instanceType: 'basic',
   maxInstances: 1,
@@ -25,7 +26,7 @@ export default defineConfig({
   containers: [container],
   worker: {
     name,
-    entrypoint: './capacity.mjs',
+    entrypoint: expiry ? './phase7-expiry.mjs' : './capacity.mjs',
     compatibilityDate: '2026-11-10',
     workersDev: true,
     previewUrls: false,

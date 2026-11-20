@@ -2583,6 +2583,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workflows/{workflow_id}/cloudflare-approval": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Workflow Cloudflare Approval */
+        get: operations["workflows.cloudflare_approval.status"];
+        put?: never;
+        post?: never;
+        /** Revoke Workflow Cloudflare Approval */
+        delete: operations["workflows.cloudflare_approval.revoke"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workflows/{workflow_id}/cloudflare-approval/propose": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Propose Workflow Cloudflare Approval */
+        post: operations["workflows.cloudflare_approval.propose"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workflows/{workflow_id}/cloudflare-approval/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Accept Workflow Cloudflare Approval */
+        post: operations["workflows.cloudflare_approval.accept"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workflows/{workflow_id}/run-identities": {
         parameters: {
             query?: never;
@@ -14418,6 +14470,41 @@ export interface components {
             /** Affected Run Ids */
             affected_run_ids: string[];
         };
+        /** ApprovalDeclaration */
+        ApprovalDeclaration: {
+            /** Entry Path */
+            entry_path: string;
+            /** Function Name */
+            function_name: string;
+            /** Entry Sha256 */
+            entry_sha256: string;
+            /** Module Sha256 */
+            module_sha256: {
+                [key: string]: string;
+            };
+            /** Manifest Sha256 */
+            manifest_sha256: string;
+            /** Packages */
+            packages: string[];
+            /** Https Hosts */
+            https_hosts: string[];
+            /** Required Https Hosts */
+            required_https_hosts: string[];
+            /**
+             * Unresolved Url Calls
+             * @default 0
+             */
+            unresolved_url_calls: number;
+            /** Estimated Subrequests */
+            estimated_subrequests: number;
+            /** Subrequest Allowance */
+            subrequest_allowance: number;
+            /** Estimated Cpu Ms */
+            estimated_cpu_ms: number;
+            /** Cpu Budget Ms */
+            cpu_budget_ms: number;
+            solution?: components["schemas"]["SolutionApprovalScope"] | null;
+        };
         /**
          * ArtifactDownloadResponse
          * @description Short-lived authenticated download location for an artifact.
@@ -16333,6 +16420,114 @@ export interface components {
              * Format: password
              */
             api_token: string;
+        };
+        /** CloudflareApprovalAccept */
+        CloudflareApprovalAccept: {
+            /** Subrequest Allowance */
+            subrequest_allowance: number;
+            /** Cpu Budget Ms */
+            cpu_budget_ms: number;
+            /** Https Hosts */
+            https_hosts?: string[];
+            /** Review Sha256 */
+            review_sha256: string;
+        };
+        /** CloudflareApprovalDiagnostic */
+        CloudflareApprovalDiagnostic: {
+            /** Rule Id */
+            rule_id: string;
+            /**
+             * Severity
+             * @enum {string}
+             */
+            severity: "warning" | "info";
+            /** Message */
+            message: string;
+            /** Hint */
+            hint: string;
+            /** Path */
+            path?: string | null;
+            /** Line */
+            line?: number | null;
+            /** Column */
+            column?: number | null;
+        };
+        /** CloudflareApprovalOptions */
+        CloudflareApprovalOptions: {
+            /** Subrequest Allowance */
+            subrequest_allowance: number;
+            /** Cpu Budget Ms */
+            cpu_budget_ms: number;
+            /** Https Hosts */
+            https_hosts?: string[];
+        };
+        /** CloudflareApprovalReview */
+        CloudflareApprovalReview: {
+            /** Entry Path */
+            entry_path: string;
+            /** Function Name */
+            function_name: string;
+            /** Entry Sha256 */
+            entry_sha256: string;
+            /** Module Sha256 */
+            module_sha256: {
+                [key: string]: string;
+            };
+            /** Manifest Sha256 */
+            manifest_sha256: string;
+            /** Packages */
+            packages: string[];
+            /** Https Hosts */
+            https_hosts: string[];
+            /** Required Https Hosts */
+            required_https_hosts: string[];
+            /**
+             * Unresolved Url Calls
+             * @default 0
+             */
+            unresolved_url_calls: number;
+            /** Estimated Subrequests */
+            estimated_subrequests: number;
+            /** Subrequest Allowance */
+            subrequest_allowance: number;
+            /** Estimated Cpu Ms */
+            estimated_cpu_ms: number;
+            /** Cpu Budget Ms */
+            cpu_budget_ms: number;
+            solution?: components["schemas"]["SolutionApprovalScope"] | null;
+            /** Policy Version */
+            policy_version: string;
+            /**
+             * Workflow Id
+             * Format: uuid
+             */
+            workflow_id: string;
+            /** Organization Id */
+            organization_id: string | null;
+            /** Previous Revision */
+            previous_revision: string | null;
+            /** Inactive History Count */
+            inactive_history_count: number;
+            /** Review Sha256 */
+            review_sha256: string;
+            /** Wildcard Https Hosts */
+            wildcard_https_hosts: string[];
+        };
+        /** CloudflareApprovalState */
+        CloudflareApprovalState: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "approved" | "pending_review" | "revision_changed" | "ineligible" | "temporarily_unavailable";
+            /** Can Manage */
+            can_manage: boolean;
+            /** Current Revision */
+            current_revision?: string | null;
+            current_declaration?: components["schemas"]["ApprovalDeclaration"] | null;
+            proposal?: components["schemas"]["CloudflareApprovalReview"] | null;
+            /** Diagnostics */
+            diagnostics?: components["schemas"]["CloudflareApprovalDiagnostic"][];
         };
         /** CloudflareCapacityAction */
         CloudflareCapacityAction: {
@@ -29420,6 +29615,21 @@ export interface components {
             /** Actionable */
             actionable: boolean;
         };
+        /** SolutionApprovalScope */
+        SolutionApprovalScope: {
+            /**
+             * Install Id
+             * Format: uuid
+             */
+            install_id: string;
+            /** Version */
+            version: string | null;
+            /**
+             * Source Generation
+             * Format: uuid
+             */
+            source_generation: string;
+        };
         /**
          * SolutionCaptureCandidates
          * @description Loose same-scope entities that can be adopted into an install.
@@ -37667,6 +37877,138 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WorkflowParameter"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "workflows.cloudflare_approval.status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workflow_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CloudflareApprovalState"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "workflows.cloudflare_approval.revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workflow_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CloudflareApprovalState"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "workflows.cloudflare_approval.propose": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workflow_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CloudflareApprovalOptions"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CloudflareApprovalState"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "workflows.cloudflare_approval.accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workflow_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CloudflareApprovalAccept"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CloudflareApprovalState"];
                 };
             };
             /** @description Validation Error */

@@ -18,21 +18,67 @@ const docker = (args, options = {}) => execFileSync('docker', args, {
 }).trim();
 const waitDocker = promisify(execFile);
 
+export const OVERFLOW_MEMORY_MIB = 256;
+
 export function vmHoldMemoryMiB(budgetBytes) {
-  // Split the update check's 256 MiB requirement between the hold's
-  // admission margin and the gap that keeps the update check off the VM.
-  return Math.floor(budgetBytes / 2 ** 20) - 128;
+  // Leave startup margin below the smallest overflow fixture (64 MiB).
+  // A larger gap also admits the Workers fixture on the primary VM.
+  return Math.floor(budgetBytes / 2 ** 20) - 32;
+}
+
+export function expiryCapacityRelay(origin, send = fetch) {
+  let quiet = false;
+  let forwardedDeletes = 0;
+  let blockedDeletes = 0;
+  return {
+    stopForwarding() { quiet = true; },
+    get deletesForwarded() { return forwardedDeletes; },
+    get deletesBlocked() { return blockedDeletes; },
+    async fetch(request) {
+      if (quiet) {
+        if (request.method === 'DELETE') blockedDeletes += 1;
+        return new Response(null, {status: 503});
+      }
+      if (request.method === 'DELETE') forwardedDeletes += 1;
+      const url = new URL(request.url);
+      const target = new URL(origin);
+      target.pathname = url.pathname;
+      target.search = url.search;
+      const headers = new Headers();
+      for (const name of ['authorization', 'content-type', 'x-bifrost-capacity-scope']) {
+        if (request.headers.has(name)) headers.set(name, request.headers.get(name));
+      }
+      const response = await send(target, {method: request.method, headers, redirect: 'manual',
+        body: request.body ? await request.arrayBuffer() : undefined});
+      return new Response(response.body, {status: response.status,
+        headers: {'content-type': response.headers.get('content-type') ?? 'application/json'}});
+    },
+  };
+}
+
+export function deferContainerStarts(provider, enabled) {
+  return {
+    fetch(request) {
+      if (request.method === 'POST'
+          && /^\/v1\/workers\/[^/]+\/start$/.test(new URL(request.url).pathname)
+          && !enabled()) {
+        return new Response(null, {status: 503});
+      }
+      return provider.fetch(request);
+    },
+  };
 }
 
 export function localLinuxProvider({
   project, image, scope, token, version, archive, vmEnv = null, protocolOnly = false, gitFixture = false,
+  memoryMiB = 1024,
 }) {
   const records = new Map();
   const resetActors = [];
   const status = (name) => docker(['inspect', '--format', '{{.State.Running}}', name]) === 'true';
   const env = {
     SCOPE: scope, CAPACITY_TOKEN: token, WORKER_VERSION: version,
-    MEMORY_LIMIT_BYTES: String(1024 ** 3), MAX_WORKERS: '1',
+    MEMORY_LIMIT_BYTES: String(memoryMiB * 2 ** 20), MAX_WORKERS: '1',
     MAX_LIFETIME_SECONDS: '21600', STARTING_GRACE_MS: '30000',
     WORKER_CONTAINER_ENV: JSON.stringify({BIFROST_API_URL: 'http://api:8000', HOME: '/home/bifrost'}),
     ...(protocolOnly ? {WORKER_ENTRYPOINT_JSON: '["sleep","300"]'} : {}),
@@ -50,7 +96,7 @@ export function localLinuxProvider({
           delete values.BIFROST_WORKER_CONTROL_SECRET;
           Object.assign(values, vmEnv);
         }
-        const args = ['run', '--detach', '--name', name, '--memory', '1g', '--memory-swap', '1g',
+        const args = ['run', '--detach', '--name', name, '--memory', `${memoryMiB}m`, '--memory-swap', `${memoryMiB}m`,
           '--network', project + '_default'];
         if (gitFixture) {
           args.push('--env', 'SSL_CERT_FILE=/app/.phase6-ca.pem',

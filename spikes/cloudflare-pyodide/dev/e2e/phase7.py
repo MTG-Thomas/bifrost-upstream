@@ -62,7 +62,7 @@ def manual(project, admin, send, prior_enrollment):
         or not hmac.compare_digest(previous["controlKey"], key)
     ):
         raise SystemExit("The prior enrollment does not match the prepared trial key and identity")
-    workflows, approval = seed_workflows(project, admin, send, True)
+    workflows, approval = seed_workflows(admin, send, True)
     enroll_manual(project, incarnation, launcher, resource, build)
     return {
         "workflows": workflows, "incarnation": str(incarnation), "launcher": str(launcher),
@@ -72,7 +72,7 @@ def manual(project, admin, send, prior_enrollment):
     }, approval
 
 
-def placement(admin, send, project, provision, *, workers_only=False):
+def placement(admin, send, project, provision, *, workers_only=False, container_expiry=False):
     if provision.stat().st_mode & 0o077:
         raise SystemExit("The capacity handoff must be private")
     hosted = json.loads(provision.read_text())
@@ -80,20 +80,32 @@ def placement(admin, send, project, provision, *, workers_only=False):
     for key in url_keys:
         if not re.fullmatch(r"https://bifrost-hq-[a-f0-9]{9}-[a-z]+\.[a-z0-9-]+\.workers\.dev", hosted[key]):
             raise SystemExit("Use the dedicated hosted capacity providers")
+    if not workers_only:
+        mode = "expiry" if container_expiry else "standard"
+        suffix = "expiry" if container_expiry else "containers"
+        if hosted.get("containersMode") != mode or not re.fullmatch(
+            rf"https://bifrost-hq-[a-f0-9]{{9}}-{suffix}\.[a-z0-9-]+\.workers\.dev",
+            hosted["containersUrl"],
+        ):
+            raise SystemExit(f"Containers handoff must identify the {mode} provider")
     token_keys = ("workersToken",) if workers_only else ("workersToken", "containersToken")
     for key in token_keys:
         if not re.fullmatch(r"[a-f0-9]{64}", hosted[key]):
             raise SystemExit("Expected dedicated random capacity tokens")
-    tenants = [send("/api/organizations", {"name": f"Phase 7 Tenant {label}"}, admin)["id"] for label in ("A", "B")]
-    workflows, loose = seed_workflows(project, admin, send, False,
-                                      tenant_fixtures=(("phase6-a", tenants[0]),), hosted_tenants=True)
-    installed, solution, results = seed_solution_workflows(project, admin, send, (("phase6-b", tenants[1]),), hosted=True)
-    workflows.update(installed)
+    tenants, workflows, loose, solution, results = [], {}, [], [], {}
+    if not container_expiry:
+        tenants = [send("/api/organizations", {"name": f"Phase 7 Tenant {label}"}, admin)["id"] for label in ("A", "B")]
+        workflows, loose = seed_workflows(admin, send, False,
+                                          tenant_fixtures=(("phase6-a", tenants[0]),), hosted_tenants=True)
+        installed, solution, results = seed_solution_workflows(
+            admin, send, (("phase6-b", tenants[1]),), hosted=True,
+        )
+        workflows.update(installed)
     if workers_only:
         send("/api/admin/kubernetes/policy", {
             "warm_workers": 1, "max_workers": 1, "idle_seconds": 120,
         }, admin, method="PUT")
-        runtime_workflows, runtime_approvals = seed_workflows(project, admin, send, True)
+        runtime_workflows, runtime_approvals = seed_workflows(admin, send, True)
         workflows.update(runtime_workflows)
         loose += runtime_approvals
     else:
@@ -105,21 +117,22 @@ def placement(admin, send, project, provision, *, workers_only=False):
             "tenants": tenants, "results": results,
         },
         "qualification": {"workersOnly": hosted["workersUrl"]} if workers_only else {"placement": {
-            **hosted, "policy": {
+            **hosted, "containerExpiry": container_expiry, "policy": {
                 "warm_workers": 1, "max_workers": 3, "worker_memory_mib": 1024,
-                "largest_worker_mib": 1024, "idle_seconds": 10,
+                "largest_worker_mib": 1024, "idle_seconds": 480 if container_expiry else 10,
             },
         }},
     }, loose + solution
 
 
-def run(runtime, provision, prior_enrollment, workers_only=None):
+def run(runtime, provision, prior_enrollment, workers_only=None, container_expiry=None):
     if not ROOT.name.startswith("hosted-") or ROOT.stat().st_mode & 0o077:
         raise SystemExit("Use a private hosted archive")
     origin, project, admin, send = local_api(True)
-    config, approval = (placement(admin, send, project, workers_only or provision, workers_only=bool(workers_only))
-                        if workers_only or provision
-                        else manual(project, admin, send, prior_enrollment))
+    handoff = workers_only or container_expiry or provision
+    config, approval = (placement(
+        admin, send, project, handoff, workers_only=bool(workers_only), container_expiry=bool(container_expiry),
+    ) if handoff else manual(project, admin, send, prior_enrollment))
     print(json.dumps({"project": project, "workflows": config["workflows"], "runtime_sha256": sha256(runtime.read_bytes()),
                       "approved_entries": [item["entry_sha256"] for item in approval]}), flush=True)
     subprocess.run(["node", str(HERE / "run.mjs")], check=True, cwd=ROOT, text=True, input=json.dumps({
@@ -140,9 +153,11 @@ if __name__ == "__main__":
     mode = runner.add_mutually_exclusive_group()
     mode.add_argument("--placement", type=Path, help="Private hosted provider handoff JSON")
     mode.add_argument("--workers-only", type=Path, help="Private Workers provider handoff JSON")
+    mode.add_argument("--container-expiry", type=Path, help="Private handoff for the natural Container inactivity probe")
     mode.add_argument("--reuse-enrollment", type=Path, help="Private, previously deployed identity for a fresh dev database")
     args = parser.parse_args()
     if args.command == "prepare":
         prepare_hosted(args.hostname, args.workers_only)
     else:
-        run(args.runtime.resolve(strict=True), args.placement, args.reuse_enrollment, args.workers_only)
+        run(args.runtime.resolve(strict=True), args.placement, args.reuse_enrollment, args.workers_only,
+            args.container_expiry)

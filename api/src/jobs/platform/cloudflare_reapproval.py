@@ -13,6 +13,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy import and_, column, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bifrost.cloudflare_analysis import (
+    MAX_MODULES,
+    POLICY_VERSION,
+    AnalysisRejected,
+    SourceUnresolved,
+    digest,
+)
 from src.core.database import get_db_context
 from src.core.storage.contracts import StorageError
 from src.jobs.platform.base import (
@@ -21,19 +28,14 @@ from src.jobs.platform.base import (
     PlatformJobFailure,
     define_platform_job,
 )
-from src.models.orm import FileIndex, PlatformJob, SolutionFileIndex
-from bifrost.cloudflare_analysis import (
-    MAX_MODULES,
-    POLICY_VERSION,
-    AnalysisRejected,
-    SourceUnresolved,
-    digest,
+from src.models.contracts.cloudflare_approval import (
+    ApprovalDeclaration,
+    SolutionApprovalScope,
 )
+from src.models.orm import FileIndex, PlatformJob, SolutionFileIndex
 from src.services.execution.cloudflare_analysis_runner import AnalysisBusy
 from src.services.execution.cloudflare_eligibility import (
-    ApprovalDeclaration,
     ObservationChanged,
-    SolutionApprovalScope,
     accept_proposal,
     current_approval,
     indexed_pins,
