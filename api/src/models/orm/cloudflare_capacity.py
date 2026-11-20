@@ -12,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     ForeignKeyConstraint,
     Index,
+    Integer,
     SmallInteger,
     String,
     Text,
@@ -153,6 +154,10 @@ class CloudflareWorkerReservation(Base):
             name="ck_cf_canary_binding",
         ),
         CheckConstraint(
+            "canary_sdk_generation IS NULL OR (canary_sdk_generation > 0 AND canary_sdk_at IS NOT NULL)",
+            name="ck_cf_canary_sdk_generation",
+        ),
+        CheckConstraint(
             "control_root_purpose = 'control_root' AND control_root_scope = ''",
             name="ck_cf_reservation_control_root",
         ),
@@ -178,6 +183,7 @@ class CloudflareWorkerReservation(Base):
     canary_job_id: Mapped[UUID | None]
     canary_lease_token: Mapped[UUID | None]
     canary_sdk_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    canary_sdk_generation: Mapped[int | None] = mapped_column(Integer)
     canary_ack_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 

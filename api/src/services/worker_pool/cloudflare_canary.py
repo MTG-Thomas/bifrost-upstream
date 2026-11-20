@@ -98,9 +98,12 @@ async def cloudflare_sdk_canary_proof(
         if received is not None:
             if not hmac.compare_digest(expected, received):
                 return None
+            if generation != binding.canary_sdk_generation:
+                binding.canary_ack_at = None
             binding.canary_sdk_at = datetime.now(UTC)
+            binding.canary_sdk_generation = generation
         if acknowledged:
-            if binding.canary_sdk_at is None:
+            if binding.canary_sdk_generation != generation:
                 return None
             binding.canary_ack_at = datetime.now(UTC)
         return expected
@@ -111,15 +114,24 @@ async def record_canary_failure(worker_id: UUID, generation: int, failure: Canar
     pin = CloudflareWorkerReservation
     worker = ExecutionWorker
     async with get_db_context() as db:
-        await db.execute(update(PlatformJob).where(
+        job = await db.scalar(select(PlatformJob).where(
             select(pin.worker_id).join(worker, worker.id == pin.worker_id).where(
                 pin.worker_id == worker_id, worker.remote_session_generation == generation,
                 _active_lease(),
             ).correlate(PlatformJob).exists(),
-        ).values(result={
-            "canary_worker": str(worker_id), "canary_generation": generation,
-            "canary_failure": failure.as_result(),
-        }))
+        ).with_for_update())
+        if job is not None:
+            job.result = {
+                **(job.result or {}),
+                "canary_failure": {"worker_id": str(worker_id), "generation": generation, "reason": failure.as_result()},
+            }
+
+
+def _canary_session_failure(checkpoint: dict, worker_id: UUID, generation: int) -> CanaryFailure | None:
+    record = checkpoint.get("canary_failure")
+    if isinstance(record, dict) and record.get("worker_id") == str(worker_id) and record.get("generation") == generation:
+        return CanaryFailure.from_result(record.get("reason"))
+    return None
 
 
 async def _retire_canary(client: ExternalCapacityClient, worker_id: UUID, resource_uid: str) -> bool:
@@ -209,7 +221,8 @@ async def run_workers_canary(
                     async with get_db_context() as db:
                         proof = (await db.execute(select(
                             ExecutionWorker.remote_hello_sequence, ExecutionWorker.remote_session_generation,
-                            CloudflareWorkerReservation.canary_ack_at, PlatformJob.result,
+                            CloudflareWorkerReservation.canary_ack_at, CloudflareWorkerReservation.canary_sdk_generation,
+                            PlatformJob.result,
                         ).join(
                             CloudflareWorkerReservation, CloudflareWorkerReservation.worker_id == ExecutionWorker.id,
                         ).join(PlatformJob, _active_lease()).where(ExecutionWorker.id == worker_id))).one_or_none()
@@ -217,18 +230,21 @@ async def run_workers_canary(
                         failure = CanaryFailure("hello", "lease_changed")
                         break
                     signed = proof.remote_hello_sequence > 0
-                    scoped = signed and proof.canary_ack_at is not None
-                    checkpoint = proof.result or {}
-                    if (
-                        not scoped and checkpoint.get("canary_worker") == str(worker_id)
-                        and checkpoint.get("canary_generation") == proof.remote_session_generation
-                    ):
-                        failure = CanaryFailure.from_result(checkpoint.get("canary_failure"))
+                    scoped = (
+                        signed and proof.canary_ack_at is not None
+                        and proof.canary_sdk_generation == proof.remote_session_generation
+                    )
+                    if scoped:
+                        failure = None
                         break
-                    if not scoped:
-                        await asyncio.sleep(0.5)
+                    failure = _canary_session_failure(proof.result or {}, worker_id, proof.remote_session_generation)
+                    if failure is not None and (failure.stage, failure.error_class) not in {
+                        ("launcher", "connection_lost"), ("proof", "unavailable"),
+                    }:
+                        break
+                    await asyncio.sleep(0.5)
         except TimeoutError:
-            failure = CanaryFailure("ack" if signed else "hello", "timeout")
+            failure = failure or CanaryFailure("ack" if signed else "hello", "timeout")
     finally:
         retired = await _retire_canary(client, worker_id, resource_uid)
     if not retired and signed and scoped:

@@ -257,14 +257,29 @@ async def test_canary_proof_requires_current_lease_worker_generation_and_revisio
     await cloudflare_canary.record_canary_failure(worker.id, 8, failure)
     await db_session.refresh(job)
     assert job.result is None
+    job.result = {"prior_checkpoint": "retain"}
+    await db_session.flush()
     await cloudflare_canary.record_canary_failure(worker.id, 7, failure)
     await db_session.refresh(job)
-    assert job.result == {"canary_worker": str(worker.id), "canary_generation": 7, "canary_failure": failure.as_result()}
+    assert job.result == {
+        "prior_checkpoint": "retain",
+        "canary_failure": {"worker_id": str(worker.id), "generation": 7, "reason": failure.as_result()},
+    }
     assert await proof_for(worker.id, 7, received="a" * 64) is None
     assert await proof_for(worker.id, 7, received=proof) == proof
     assert await proof_for(worker.id, 7, acknowledged=True) == proof
     await db_session.refresh(pin)
-    assert pin.canary_sdk_at is not None and pin.canary_ack_at is not None
+    assert pin.canary_sdk_at is not None and pin.canary_ack_at is not None and pin.canary_sdk_generation == 7
+    worker.remote_session_generation = 8
+    await db_session.flush()
+    assert await proof_for(worker.id, 8, acknowledged=True) is None
+    proof8 = await proof_for(worker.id, 8)
+    assert proof8 is not None and proof8 != proof
+    assert await proof_for(worker.id, 8, received=proof8) == proof8
+    await db_session.refresh(pin)
+    assert pin.canary_ack_at is None and pin.canary_sdk_generation == 8
+    assert await proof_for(worker.id, 8, acknowledged=True) == proof8
+    worker.remote_session_generation = 7
     worker.state = "starting"
     await db_session.flush()
     assert await proof_for(worker.id, 7) is None
@@ -278,7 +293,7 @@ async def test_canary_proof_requires_current_lease_worker_generation_and_revisio
     assert await proof_for(worker.id, 7) is None
     await cloudflare_canary.record_canary_failure(worker.id, 7, ingress_probes.CanaryFailure("ack", "timeout"))
     await db_session.refresh(job)
-    assert job.result is not None and job.result["canary_failure"] == failure.as_result()
+    assert job.result is not None and job.result["canary_failure"]["reason"] == failure.as_result()
 
 
 @pytest.mark.asyncio
@@ -326,10 +341,15 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
 
     monkeypatch.setattr(enable_job, "WorkersRestProvisioner", lambda *_: Provider())
     monkeypatch.setattr(ingress_probes, "_public_addresses", AsyncMock(return_value=("203.0.113.10",)))
-    monkeypatch.setattr(ingress_probes, "_probe_address", AsyncMock(return_value=ingress_probes.WorkerIngressProbeResult(
+    reachable = ingress_probes.WorkerIngressProbeResult(
         installation.worker_ingress_origin, True, True, True,
         (ingress_probes.RouteProbe("GET", "/api/sdk/context", 401, True),),
-    )))
+    )
+    refused = ingress_probes.WorkerIngressProbeResult(
+        installation.worker_ingress_origin, True, False, False,
+        (ingress_probes.RouteProbe("GET", "/api/sdk/context", 521, False, error_class="unexpected_status"),),
+    )
+    monkeypatch.setattr(ingress_probes, "_probe_address", AsyncMock(side_effect=[refused, reachable, reachable]))
     canary = AsyncMock(side_effect=[
         ingress_probes.RuntimeCanary(True, False, ingress_probes.CanaryFailure("sdk_response", "http_status", 404)),
         ingress_probes.RuntimeCanary(True, True),
@@ -354,20 +374,28 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
     payload = enable_job.CloudflareEnablePayload.model_validate(job.payload)
     release = SimpleNamespace(digest="d" * 64)
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider_read)) as http:
+        with pytest.raises(PlatformJobRequiresAction) as ingress_denied:
+            await enable_job._settle_enable(running, payload, http, release)
+        assert ingress_denied.value.result == {
+            "code": "CF_WORKER_INGRESS_UNVERIFIED",
+            "canary_failure": {"stage": "ingress_http", "error_class": "unexpected_status", "status": 521},
+        }
+        assert ingress_denied.value.phase == "Worker Ingress Probe Failed (Ingress HTTP, Unexpected Status, HTTP 521)"
+        canary.assert_not_awaited()
         with pytest.raises(PlatformJobRequiresAction) as denied:
             await enable_job._settle_enable(running, payload, http, release)
         assert denied.value.result == {
             "code": "CF_WORKER_INGRESS_UNVERIFIED",
             "canary_failure": {"stage": "sdk_response", "error_class": "http_status", "status": 404},
         }
-        assert denied.value.phase == "Cloudflare Canary Failed (sdk response, http status, HTTP 404)"
+        assert denied.value.phase == "Cloudflare Canary Failed (SDK Response, HTTP Status, HTTP 404)"
         await db_session.refresh(installation)
         assert installation.admitted_revision is None
         assert await enable_job._settle_enable(
             running, payload, http, release,
         ) == {"outcome": "enabled"}
     assert len(writes) == 2 and canary.await_count == 2
-    assert sum(path.endswith("/entitlements") for path in paid_reads) == 2
+    assert sum(path.endswith("/entitlements") for path in paid_reads) == 3
     await db_session.refresh(installation)
     assert installation.admitted_revision == 1
 
@@ -668,19 +696,26 @@ async def test_disconnect_resumes_owned_script_delete_until_namespace_absence(
     monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
     payload = lifecycle_job.CloudflareDisablePayload.model_validate(job.payload)
     running = PlatformJobContext(job.id, token, None, str(OPERATOR_ID), admin.principal.email, "")
+
+    pauses = []
+
+    async def propagate(delay):
+        nonlocal namespace_exists
+        pauses.append(delay)
+        await db_session.refresh(installation)
+        assert installation.retired_at is None and installation.api_token_version == 1
+        if len(pauses) == 2:
+            namespace_exists = False
+
+    monkeypatch.setattr(lifecycle_job, "asyncio", SimpleNamespace(sleep=propagate))
     async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as http:
         adapter = WorkersRestCleanup(http)
         monkeypatch.setattr(lifecycle_job, "WorkersRestCleanup", lambda _http: adapter)
-        with pytest.raises(PlatformJobRequiresAction) as pending:
-            await lifecycle_job.CLOUDFLARE_DISABLE_DEFINITION.handler(running, payload)
-        assert pending.value.result == {"code": "CF_CLEANUP_PENDING"}
-        await db_session.refresh(installation)
-        assert installation.retired_at is None and installation.api_token_version == 1
-        namespace_exists = False
         assert await lifecycle_job.CLOUDFLARE_DISABLE_DEFINITION.handler(running, payload) == {"outcome": "disconnected"}
     await db_session.refresh(resource)
     await db_session.refresh(installation)
     assert mutations == ["DELETE"]
+    assert pauses == [2, 4]
     assert resource.state == "absent" and resource.observed_at is not None
     assert installation.retired_at is not None and installation.api_token_version is None
     actions = set(await db_session.scalars(select(AuditLog.action).where(AuditLog.resource_id == installation.id)))

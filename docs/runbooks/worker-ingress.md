@@ -10,9 +10,11 @@ Scale In and Disconnect so launchers can drain.
 
 The API runner needs outbound HTTPS and WebSocket connectivity to the
 worker hostname. The probe accepts an IPv4-only runner for a dual-stack
-hostname when IPv4 passes the checks. It validates the entire DNS answer
-and checks each address it can connect to. TLS and ingress-policy
-failures still fail Enable.
+hostname when every IPv4 address passes and the runner lacks an IPv6
+route. The probe validates the entire DNS answer. It skips a family only
+when every address in that family reports a missing TCP route or address
+family. Connection refusal, timeouts, TLS failures, and ingress-policy
+failures all fail Enable.
 
 - **Docker Compose** — Attach the proxy to the Bifrost network and target
   `http://api:8001`. Compose exposes the port to the network without publishing

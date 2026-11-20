@@ -35,6 +35,10 @@ class ObservationPending(Exception):
     """The adapter cannot establish current ownership or settle an earlier effect."""
 
 
+class DeletionSettling(ObservationPending):
+    """An owned resource or its namespace is still visible during deletion."""
+
+
 class OwnershipConflict(Exception):
     """The provider returned an incompatible owner, resource ID or revision."""
 
@@ -140,5 +144,5 @@ async def resume_deletion(
         if await observe_owned(
             adapter, api_token=api_token, intent=committed_deletion.intent, recorded=committed_deletion,
         ) is not None:
-            raise ObservationPending("Cloudflare resource deletion is unconfirmed")
+            raise DeletionSettling("Cloudflare Worker is still present after deletion")
     await adapter.verify_absent(api_token=api_token, target=committed_deletion.intent.target, namespace_ids=namespace_ids)

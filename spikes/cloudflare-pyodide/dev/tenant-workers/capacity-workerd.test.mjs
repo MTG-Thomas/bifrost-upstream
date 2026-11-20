@@ -19,6 +19,7 @@ const {WebSocketServer} = createRequire(import.meta.url)('ws');
 const settings = {token: 'local-conformance-token-' + 'a'.repeat(36), scope: 'workerd', version: 'test', maxWorkers: 1};
 const auth = {Authorization: `Bearer ${settings.token}`, 'X-Bifrost-Capacity-Scope': settings.scope};
 const root = new URL('../', import.meta.url);
+const ingressPolicy = JSON.parse(readFileSync(new URL('../../../../api/src/services/worker_ingress_routes.json', import.meta.url), 'utf8'));
 const modules = Object.fromEntries([
   'cloudflare-launcher/launcher-do.mjs', 'cloudflare-launcher/launcher-core.mjs',
   'cloudflare-launcher/agent-loop.mjs', 'cloudflare-launcher/agent-provider.mjs',
@@ -190,7 +191,8 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
 });
 
 for (const {name, status, headers, proof, expected} of [
-  {name: 'accepts authenticated 204', status: 204, headers: {'x-bifrost-worker-ingress': 'v1; allowed'}, expected: {}},
+  {name: 'accepts authenticated 204', status: 204,
+    headers: {'x-bifrost-worker-ingress': `v${ingressPolicy.version}; allowed`}, expected: {}},
   {name: 'rejects ingress 404', status: 404, expected: {stage: 'sdk_response', error_class: 'http_status', status: 404}},
   {name: 'reports proof refusal', status: 401, expected: {stage: 'sdk_response', error_class: 'http_status', status: 401}},
   {name: 'does not follow redirects', status: 302, headers: {Location: '/unexpected'},

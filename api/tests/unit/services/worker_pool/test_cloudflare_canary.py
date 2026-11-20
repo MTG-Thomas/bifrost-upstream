@@ -11,6 +11,7 @@ from src.services.worker_ingress_probes import CanaryFailure
 from src.services.worker_pool import cloudflare_canary
 from src.services.worker_pool.cloudflare_canary import _proof
 from src.worker.remote.host import RemoteControlHost
+from src.worker.remote.protocol import CredentialRouteChanged
 
 
 def test_capacity_canary_is_bound_to_worker_lease_and_generation() -> None:
@@ -29,6 +30,8 @@ def test_capacity_canary_is_bound_to_worker_lease_and_generation() -> None:
     [
         (None, None, CanaryFailure("proof", "unavailable")),
         (ConnectionError(), None, CanaryFailure("launcher", "connection_lost")),
+        (CredentialRouteChanged(), None, CanaryFailure("launcher", "connection_lost")),
+        (RuntimeError(), None, CanaryFailure("ack", "invalid_reply")),
         (TimeoutError(), None, CanaryFailure("ack", "timeout")),
         ({"failure": {"stage": "launcher", "error_class": "unavailable"}}, None, CanaryFailure("launcher", "unavailable")),
         ({"failure": {"stage": "sdk_fetch", "error_class": "fetch_error"}}, None, CanaryFailure("sdk_fetch", "fetch_error")),
@@ -36,6 +39,8 @@ def test_capacity_canary_is_bound_to_worker_lease_and_generation() -> None:
          CanaryFailure("sdk_response", "http_status", 401)),
         ({"failure": {"stage": "sdk_response", "error_class": "sensitive message"}}, None,
          CanaryFailure("ack", "invalid_reply")),
+        ({"failure": {"stage": "hello", "error_class": "timeout"}}, None, CanaryFailure("ack", "invalid_reply")),
+        ({"failure": {"stage": "ingress_http", "error_class": "connect_error"}}, None, CanaryFailure("ack", "invalid_reply")),
         ({}, None, CanaryFailure("ack", "missing_sdk_receipt")),
         ({}, "a" * 64, None),
     ],

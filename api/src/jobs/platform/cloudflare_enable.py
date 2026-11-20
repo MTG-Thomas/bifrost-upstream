@@ -256,12 +256,16 @@ async def _settle_enable(
     ingress = await probe_worker_ingress(installation, runtime_canary=canary)
     if not ingress.ready:
         failure = ingress.failure
-        stage = failure.stage.replace("_", " ")
-        reason = failure.error_class.replace("_", " ")
+        abbreviations = {"ack", "dns", "http", "sdk", "tls"}
+        stage, reason = (
+            " ".join(word.upper() if word in abbreviations else word.title() for word in code.split("_"))
+            for code in (failure.stage, failure.error_class)
+        )
         if failure.status is not None:
             reason += f", HTTP {failure.status}"
+        label = "Worker Ingress Probe Failed" if failure.stage.startswith("ingress_") else "Cloudflare Canary Failed"
         raise PlatformJobRequiresAction(
-            f"Cloudflare Canary Failed ({stage}, {reason})",
+            f"{label} ({stage}, {reason})",
             {"code": "CF_WORKER_INGRESS_UNVERIFIED", "canary_failure": failure.as_result()},
         )
     await context.report("Checking Cloudflare Spend")

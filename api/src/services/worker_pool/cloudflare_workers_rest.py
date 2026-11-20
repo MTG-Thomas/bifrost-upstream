@@ -13,6 +13,7 @@ from pydantic import SecretStr
 from shared.models import CloudflareWorkersPolicy
 
 from src.services.worker_pool.cloudflare_provisioning import (
+    DeletionSettling,
     ObservationPending,
     OwnershipConflict,
     ResourceIntent,
@@ -303,7 +304,7 @@ class WorkersRestCleanup:
     ) -> None:
         path = _script_path(target)
         if await self._script_namespaces(api_token, target, namespace_ids=namespace_ids):
-            raise ObservationPending("Cloudflare Worker's namespace is still present")
+            raise DeletionSettling("Cloudflare Worker's namespace is still present")
         if await self._request(
             api_token, target.account_id, "GET", f"{path}/settings", allow_missing=True,
         ) is not None:

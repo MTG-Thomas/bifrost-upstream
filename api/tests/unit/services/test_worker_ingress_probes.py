@@ -2,21 +2,25 @@ import asyncio
 import errno
 import socket
 import ssl
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
 from src.models.orm.cloudflare_capacity import CloudflareInstallation
 from src.services import worker_ingress_probes as probes
+from websockets.datastructures import Headers
+from websockets.exceptions import InvalidStatus
+from websockets.http11 import Response
 
 ORIGIN = "https://workers.example.test"
 IPV4 = "1.1.1.1"
+OTHER_IPV4 = "1.0.0.1"
 IPV6 = "2606:4700:4700::1111"
 
 
 @pytest.fixture
 def ingress(monkeypatch):
-    def configure(addresses, failure, cause=None, *, route_failure=None):
+    def configure(addresses, failure, cause=None, *, route_failure=None, failed_address=IPV6):
         resolver = AsyncMock(return_value=[
             (socket.AF_INET6 if ":" in ip else socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 443))
             for ip in addresses
@@ -28,7 +32,7 @@ def ingress(monkeypatch):
             address = request.url.host
             if address not in attempted:
                 attempted.append(address)
-            if address == IPV6:
+            if address == failed_address:
                 raise failure from cause
             assert address == IPV4
             assert request.headers["Host"] == "workers.example.test"
@@ -45,7 +49,7 @@ def ingress(monkeypatch):
         monkeypatch.setattr(
             probes.httpx, "AsyncClient", lambda **kwargs: client(transport=httpx.MockTransport(respond), **kwargs),
         )
-        control = AsyncMock(return_value=(True, True))
+        control = AsyncMock(return_value=(True, None))
         monkeypatch.setattr(probes, "_check_control", control)
         canary = AsyncMock(return_value=probes.RuntimeCanary(signed_hello=True, scoped_sdk=True))
         installation = CloudflareInstallation(worker_ingress_origin=ORIGIN)
@@ -76,7 +80,7 @@ async def test_unreachable_hostname_does_not_start_canary(ingress) -> None:
 
     result = await probes.probe_worker_ingress(installation, runtime_canary=canary)
     assert not result.reachable
-    assert result.failure == probes.CanaryFailure("ingress", "unreachable")
+    assert result.failure == probes.CanaryFailure("ingress_http", "connect_timeout")
     control.assert_not_awaited()
     canary.assert_not_awaited()
 
@@ -94,7 +98,7 @@ async def test_route_transport_failure_reports_only_its_class(ingress, error, ki
     result = await probes.probe_worker_ingress(installation, runtime_canary=canary)
 
     assert result.tls and not result.reachable
-    assert result.failure.as_result() == {"stage": "ingress", "error_class": kind}
+    assert result.failure.as_result() == {"stage": "ingress_http", "error_class": kind}
     control.assert_not_awaited()
     canary.assert_not_awaited()
 
@@ -115,8 +119,30 @@ async def test_dual_stack_probe_refuses_invalid_certificate_on_reachable_peer(in
         (IPV4, IPV6), httpx.ConnectError("TLS handshake failed"), ssl.SSLCertVerificationError("Invalid certificate"),
     )
 
-    assert not (await probes.probe_worker_ingress(installation, runtime_canary=canary)).reachable
+    result = await probes.probe_worker_ingress(installation, runtime_canary=canary)
+    assert not result.reachable
+    assert result.failure == probes.CanaryFailure("ingress_http", "tls_error")
     assert attempted == [IPV4, IPV6]
+    canary.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("transport", "cause", "kind"), [
+    (httpx.ConnectError, ConnectionRefusedError(errno.ECONNREFUSED, "Server refused"), "connect_error"),
+    (httpx.ConnectError, ssl.SSLEOFError("Handshake ended"), "tls_error"),
+    (httpx.ConnectError, EOFError("Handshake ended"), "connect_error"),
+    (httpx.ConnectTimeout, None, "connect_timeout"),
+    (httpx.ConnectError, OSError(errno.EHOSTUNREACH, "Host unreachable"), "connect_error"),
+])
+async def test_reachable_family_requires_all_addresses(ingress, transport, cause, kind) -> None:
+    installation, attempted, _, canary = ingress(
+        (IPV4, OTHER_IPV4), transport("Private diagnostic details"), cause, failed_address=OTHER_IPV4,
+    )
+    result = await probes.probe_worker_ingress(installation, runtime_canary=canary)
+
+    assert not result.reachable
+    assert attempted == [IPV4, OTHER_IPV4]
+    assert result.failure.as_result() == {"stage": "ingress_http", "error_class": kind}
     canary.assert_not_awaited()
 
 
@@ -124,7 +150,36 @@ async def test_dual_stack_probe_refuses_invalid_certificate_on_reachable_peer(in
 async def test_dual_stack_probe_refuses_nonpublic_dns_answer(ingress) -> None:
     installation, attempted, control, canary = ingress((IPV4, "fd00::1"), httpx.ConnectError("Unused"))
 
-    assert not (await probes.probe_worker_ingress(installation, runtime_canary=canary)).reachable
+    result = await probes.probe_worker_ingress(installation, runtime_canary=canary)
+    assert not result.reachable
+    assert result.failure == probes.CanaryFailure("ingress_dns", "invalid_public_address")
     assert attempted == []
     control.assert_not_awaited()
     canary.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("status", "marker", "reason"), [
+    (521, "v1; allowed", "unexpected_status"),
+    (401, "v1; denied", "invalid_ingress_marker"),
+    (401, "v1; allowed", "invalid_probe_nonce"),
+])
+async def test_http_probe_reports_failed_response_witness(status, marker, reason) -> None:
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _r: httpx.Response(status, headers={
+        probes.INGRESS_HEADER.decode(): marker, probes.PROBE_HEADER.decode(): "stale-nonce",
+    }))) as client:
+        route = await probes._check_route(client, ORIGIN, "workers.example.test", "GET", "/api/sdk/context", allowed=True)
+    result = probes.WorkerIngressProbeResult(ORIGIN, True, False, False, (route,))
+    assert result.failure == probes.CanaryFailure("ingress_http", reason, status)
+
+
+@pytest.mark.asyncio
+async def test_control_refusal_reports_status_without_provider_message(monkeypatch) -> None:
+    monkeypatch.setattr(asyncio.get_running_loop(), "sock_connect", AsyncMock())
+
+    refused = MagicMock()
+    refused.return_value.__aenter__.side_effect = InvalidStatus(Response(403, "Private diagnostic details", Headers()))
+    monkeypatch.setattr(probes, "connect", refused)
+    upgraded, failure = await probes._check_control(ORIGIN, "workers.example.test", IPV4, 443, ssl.create_default_context())
+    assert not upgraded
+    assert failure == probes.CanaryFailure("ingress_websocket", "unexpected_status", 403)

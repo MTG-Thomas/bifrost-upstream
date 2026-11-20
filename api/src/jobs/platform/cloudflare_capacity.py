@@ -57,6 +57,7 @@ from src.services.worker_pool.cloudflare_policy import (
     retire_cloudflare_installation,
 )
 from src.services.worker_pool.cloudflare_provisioning import (
+    DeletionSettling,
     ObservationPending,
     OwnedResourceCleanup,
     OwnershipConflict,
@@ -207,7 +208,9 @@ async def _cleanup_one(
 async def _settle_disable(
     context: PlatformJobContext, payload: CloudflareDisablePayload, adapter: OwnedResourceCleanup,
 ) -> dict[str, str]:
+    delay = 2
     while True:
+        waiting_for_deletion = False
         async with get_db_context() as db:
             await _hold_installation_lease(db, context, payload.installation_id)
             row = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
@@ -217,8 +220,15 @@ async def _settle_disable(
             if workers_remain:
                 await _require_legacy_cleanup(db)
             if not workers_remain:
-                cleanup = await _cleanup_one(db, row, adapter) if payload.action == "disconnect" else "complete"
+                try:
+                    cleanup = await _cleanup_one(db, row, adapter) if payload.action == "disconnect" else "complete"
+                except DeletionSettling:
+                    # The journaled deletion intent survives the wait and any
+                    # runner loss. The next pass verifies ownership again.
+                    cleanup = "settling"
+                    waiting_for_deletion = True
                 if cleanup == "progressed":
+                    delay = 2
                     continue
                 if cleanup == "complete":
                     if payload.action == "disconnect":
@@ -232,9 +242,18 @@ async def _settle_disable(
                     return {"outcome": payload.desired_state}
             started_at = await db.scalar(select(PlatformJob.started_at).where(PlatformJob.id == context.job_id))
             if started_at is not None and datetime.now(UTC) >= started_at + DRAIN_DEADLINE:
+                if waiting_for_deletion:
+                    raise PlatformJobFailure(
+                        "CF_DELETION_UNCONFIRMED", "Cloudflare Deletion Is Still Propagating", retryable=True,
+                    )
                 phase = "Wait for Cloudflare Creation to Settle" if not workers_remain else "Verify Cloudflare Worker Retirement"
                 raise PlatformJobRequiresAction(phase, {"code": "CF_DRAIN_TIMEOUT"})
-        await asyncio.sleep(2)
+        if waiting_for_deletion:
+            await context.report("Verifying Cloudflare Deletion")
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 30)
+        else:
+            await asyncio.sleep(2)
 
 
 async def _require_legacy_cleanup(db: AsyncSession) -> None:
