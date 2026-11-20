@@ -44,6 +44,7 @@ FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87
 
 WORKDIR /app
 ARG BIFROST_VERSION=unknown
+ARG BIFROST_REQUIRE_WORKERS_RELEASE=0
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -96,9 +97,13 @@ COPY api/alembic.ini /app/
 COPY api/bifrost/ /app/bifrost/
 COPY api/bifrost.py /app/
 COPY api/scripts/ /app/scripts/
+COPY deploy/capacity/cloudflare/image-artifacts/ /app/artifacts/cloudflare/
 COPY --chmod=644 LICENSE /app/LICENSE
 COPY assets/ /app/assets/
 RUN chmod -R a+rX /app/assets
+RUN if [ "$BIFROST_REQUIRE_WORKERS_RELEASE" = 1 ]; then \
+      PYTHONPATH=/app python -c 'from src.services.worker_pool.cloudflare_release import load_workers_release; load_workers_release()'; \
+    fi
 
 # Build the CLI once as an immutable image artifact. The API serves this file;
 # it never packages the live source tree in a request handler.
