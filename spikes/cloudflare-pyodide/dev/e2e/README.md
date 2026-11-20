@@ -326,6 +326,32 @@ receipt and an independent Container instance readback before claiming
 physical stop. API idle retirement and the Cloudflare inactivity timer
 have separate evidence requirements.
 
+For a natural inactivity probe, deploy the trial Containers provider with
+`PHASE7_CONTAINER_EXPIRY=1` and run
+`phase7.py run <generated-runtime.mjs> --container-expiry <handoff>`.
+Use the same preparation and hosted handoff as for placement. This mode holds
+the VM primary and submits a Linux overflow workflow. The trial Container DO
+sets a two-minute platform inactivity timeout and omits its exit monitor
+so the DO can go inactive. Standard capacity behavior remains in the
+regular provider entrypoint.
+
+After `container-expiry-wait`, provider requests from the dev API are held
+at a local relay. The worker control tunnel stays connected. Use `cf`
+application and instance readback to record the hosted instance while it is
+active and again after it stops. The readback must go through the account
+API so it does not wake the trial DO. Create the private
+`.phase7-expiry-observed` marker in the archive only after the same
+instance is inactive. The harness then emits the Bifrost settlement and
+the count of forwarded deletion requests before teardown.
+
+The November 20, 2026 UTC hosted run settled Linux overflow execution
+`a18733f5-5b88-4ead-947b-24d2bebd14fd` while the VM hold was still running.
+The account API observed the same instance transition from `running` to
+`inactive` before cleanup. Bifrost retired the incarnation as `stopped`
+and kept the successful execution settlement. The relay forwarded zero
+deletes during the proof. See the natural inactivity qualification in
+[DESIGN.md](../cloudflare-launcher/DESIGN.md#natural-inactivity-qualification).
+
 For a Workers-only follow-up, pass `--workers-only` to `phase7.py prepare`
 and `--workers-only <private-provider-handoff.json>` to `phase7.py run`.
 The handoff needs only `workersUrl` and `workersToken`. Seed and approve
@@ -344,12 +370,12 @@ and both succeeded. CPU execution `9c837430-4163-4491-867a-7128636287bc`
 made a successful SDK call before settling as `CpuLimitExceeded` /
 `uncertain`. The replacement reconnected, inventoried and settled
 `4eecde08-c9e0-48ca-8b52-8c7188052920` as `LauncherReset` / `uncertain`
-without redispatch. The Container timer probe received no instance, so
-natural inactivity expiry remains unverified. See the Workers-only
+without redispatch. The Container timer probe in that pass received no
+instance. See the Workers-only
 follow-up in [DESIGN.md](../cloudflare-launcher/DESIGN.md) for claims,
 timing, and teardown evidence.
 
-For both passes, the connector uses loopback port 31847 in the archive. Use
+For hosted passes, the connector uses loopback port 31847 in the archive. Use
 an exact-host tunnel ingress rule with this anchored path expression, then
 `http_status:404`:
 
