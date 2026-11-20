@@ -219,7 +219,7 @@ OPERATION_CATALOG: tuple[OperationDefinition, ...] = (
             response_model="PlatformJobAccepted",
         ),
         cli=CliOperationBinding(path=("capacity", "cloudflare", "rotate")),
-        mcp=McpOperationBinding(name="bifrost_cloudflare_worker_credential_rotate"),
+        mcp=McpOperationBinding(name="bifrost_cloudflare_worker_credential_replace"),
         audit_event="capacity.cloudflare_rotate_account_token",
         action_scopes=("platform.readwrite",),
         authorization_resolver="platform.readwrite at Global",

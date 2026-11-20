@@ -1,61 +1,33 @@
 import { expect, test } from "./fixtures/api-fixture";
 
-test("an operator scales in Cloudflare capacity from Settings", async ({
-	page,
-}) => {
-	const installation = {
-		installation_id: "365a5b2b-7b12-40c4-b5ff-06322da4a3a9",
-		worker_ingress_origin: "https://worker-ingress.example.test",
-		desired_revision: 1,
-		desired_state: "enabled",
-		admission_open: true,
-		fleet_envelope_usd: "10.00",
-		policy: {
-			monthly_limit_usd: "30.00",
-			workers: { launcher_cap: 1, slots_per_launcher: 2 },
-		},
-	};
-	const jobId = "f8081ebd-1432-4a2f-b51f-1f0e9f8c05d4";
-	await page.route("**/api/capacity/cloudflare", (route) =>
-		route.fulfill({
-			json: { consent_text_version: "existing-https-v1", installation },
-		}),
-	);
-	await page.route("**/api/capacity/cloudflare/scale-in", async (route) => {
-		expect(route.request().postDataJSON()).toEqual({
-			installation_id: installation.installation_id,
-			expected_revision: 1,
-		});
-		installation.desired_revision = 2;
-		installation.desired_state = "scaled_in";
-		installation.admission_open = false;
-		await route.fulfill({
-			status: 202,
-			json: { job_id: jobId, status: "queued" },
-		});
-	});
-	await page.route("**/api/platform-jobs/" + jobId, (route) =>
-		route.fulfill({
-			json: {
-				id: jobId,
-				status: "succeeded",
-				revision: 1,
-				progress: { phase: "Completed" },
-			},
-		}),
-	);
-
+test("a platform operator connects and enables Cloudflare capacity", async ({ page }) => {
+	const origin = "https://workers.browser-fixture.test";
+	const token = "browser-fixture-cloudflare-token";
 	await page.goto("/settings/ai");
 	await page.getByRole("button", { name: "Capacity", exact: true }).click();
-	await page
-		.getByRole("button", { name: "Scale Out With Cloudflare", exact: true })
-		.click();
-	await expect(
-		page.getByText("https://worker-ingress.example.test"),
-	).toBeVisible();
-	await page.getByRole("button", { name: "Scale In", exact: true }).click();
-	await expect(
-		page.getByText("Completed", { exact: true }),
-	).toBeVisible();
-	await expect(page.getByText("Scaled In", { exact: true })).toBeVisible();
+	await page.getByRole("button", { name: "Scale Out With Cloudflare", exact: true }).click();
+	await page.getByLabel("Cloudflare Account ID").fill("f".repeat(32));
+	await page.getByLabel("Existing HTTPS Endpoint").fill(origin);
+	const tokenField = page.getByLabel("Cloudflare API Token");
+	await expect(tokenField).toHaveAttribute("type", "password");
+	await tokenField.fill(token);
+	await page.getByRole("checkbox", { name: "I Accept the Cloudflare Terms Above" }).check();
+
+	const connect = page.waitForResponse((response) =>
+		response.url().endsWith("/api/capacity/cloudflare") && response.request().method() === "PATCH",
+	);
+	await page.getByRole("button", { name: "Connect Cloudflare" }).click();
+	const connected = await connect;
+	expect(connected.status()).toBe(200);
+	expect(await connected.text()).not.toContain(token);
+	await expect(page.getByText(origin, { exact: true })).toBeVisible();
+
+	const enable = page.waitForResponse((response) => response.url().endsWith("/api/capacity/cloudflare/enable"));
+	await page.getByRole("button", { name: "Enable", exact: true }).click();
+	expect((await enable).status()).toBe(202);
+	await expect(page.getByText("Enabled", { exact: true })).toBeVisible();
+
+	await page.getByRole("button", { name: "Disconnect", exact: true }).click();
+	await page.getByRole("alertdialog").getByRole("button", { name: "Disconnect", exact: true }).click();
+	await expect(page.getByRole("button", { name: "Connect Cloudflare" })).toBeVisible();
 });

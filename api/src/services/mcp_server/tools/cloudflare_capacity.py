@@ -47,7 +47,7 @@ async def bifrost_cloudflare_reconcile_execute(context: Any, installation_id: UU
     return await _submit(context, "reconcile", installation_id, expected_revision)
 
 
-async def bifrost_cloudflare_worker_credential_rotate(
+async def bifrost_cloudflare_worker_credential_replace(
     context: Any, installation_id: UUID, expected_revision: int, credential: Literal["control_root", "scope_bearer"],
 ) -> ToolResult:
     request = CloudflareWorkerCredentialRotation(
@@ -77,7 +77,7 @@ _TOOLS = (
     (bifrost_cloudflare_disconnect_execute, "Disconnect Cloudflare", "Drain capacity and remove owned resources."),
     (bifrost_cloudflare_enable_execute, "Enable Cloudflare", "Provision and verify Cloudflare Workers capacity."),
     (bifrost_cloudflare_reconcile_execute, "Reconcile Cloudflare", "Verify the current Cloudflare Workers deployment."),
-    (bifrost_cloudflare_worker_credential_rotate, "Rotate Cloudflare Worker Credential", "After Scale In, rotate the internal control root or Workers scope bearer."),
+    (bifrost_cloudflare_worker_credential_replace, "Rotate Cloudflare Worker Credential", "After Scale In, rotate the internal control root or Workers scope bearer."),
     (bifrost_cloudflare_policy_update, "Update Cloudflare Policy", "Update the current Cloudflare capacity policy."),
 )
 TOOLS = [(tool.__name__, title, description) for tool, title, description in _TOOLS]

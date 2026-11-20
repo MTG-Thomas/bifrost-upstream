@@ -1,4 +1,4 @@
-"""Test-compose-only synthetic GitHub transport for subprocess job runners.
+"""Test-compose-only provider substitutes for subprocess job runners.
 
 Mounted as /app/sitecustomize.py only in the test executors and activated only
 for the isolated PlatformJob runner, never health probes or execution templates. Real credentials
@@ -51,24 +51,42 @@ if "src.jobs.platform.runner" in sys.orig_argv:
 
         module.http_client = fixture_client
 
+    def install_enable(module):
+        from test_cloudflare_fixture import install_enable as install
+
+        install(module)
+
+    def install_lifecycle(module):
+        from test_cloudflare_fixture import install_lifecycle as install
+
+        install(module)
+
+    installers = {
+        "shared.github_git_app": install_transport,
+        "src.jobs.platform.cloudflare_enable": install_enable,
+        "src.jobs.platform.cloudflare_capacity": install_lifecycle,
+    }
+
     class FixtureLoader(importlib.abc.Loader):
-        def __init__(self, original):
+        def __init__(self, original, install):
             self.original = original
+            self.install = install
 
         def create_module(self, spec):
             return self.original.create_module(spec)
 
         def exec_module(self, module):
             self.original.exec_module(module)
-            install_transport(module)
+            self.install(module)
 
     class FixtureFinder(importlib.abc.MetaPathFinder):
         def find_spec(self, fullname, path, target=None):
-            if fullname != "shared.github_git_app":
+            install = installers.get(fullname)
+            if install is None:
                 return None
             spec = importlib.machinery.PathFinder.find_spec(fullname, path)
             if spec is not None and spec.loader is not None:
-                spec.loader = FixtureLoader(spec.loader)
+                spec.loader = FixtureLoader(spec.loader, install)
             return spec
 
     sys.meta_path.insert(0, FixtureFinder())
