@@ -3385,22 +3385,96 @@ Options:
   --help  Show this message and exit.
 
 Commands:
-  cloudflare-report  Opt in to an offline Workers report for a workspace...
-  convert            Analyze, review and convert workflow permissions.
-  delete             Delete a workflow by removing its function from the...
-  execute            Execute a registered workflow remotely and stream...
-  get                Get a single workflow by UUID, name, or...
-  grant              Grant the identity a workflow runs as what...
-  grant-role         Grant a role access to a workflow.
-  list               List all workflows visible to the caller.
-  list-orphaned      List all orphaned workflows (backing file deleted or...
-  recommendations    Show what the identity a workflow runs as would also...
-  register           Register a decorated function from an existing...
-  remap              Move references from one workflow ID to another...
-  replace            Repoint an orphaned workflow to a new file location.
-  revoke-role        Revoke a role's access from a workflow.
-  update             Update a workflow's editable properties.
-  validate           Validate workspace PATH or proposed content from a...
+  cloudflare-approval  Review Cloudflare workflow eligibility and approval.
+  cloudflare-report    Opt in to an offline Workers report for a...
+  convert              Analyze, review and convert workflow permissions.
+  delete               Delete a workflow by removing its function from...
+  execute              Execute a registered workflow remotely and stream...
+  get                  Get a single workflow by UUID, name, or...
+  grant                Grant the identity a workflow runs as what...
+  grant-role           Grant a role access to a workflow.
+  list                 List all workflows visible to the caller.
+  list-orphaned        List all orphaned workflows (backing file deleted...
+  recommendations      Show what the identity a workflow runs as would...
+  register             Register a decorated function from an existing...
+  remap                Move references from one workflow ID to another...
+  replace              Repoint an orphaned workflow to a new file location.
+  revoke-role          Revoke a role's access from a workflow.
+  update               Update a workflow's editable properties.
+  validate             Validate workspace PATH or proposed content from a...
+```
+
+### `workflows cloudflare-approval`
+
+```
+Usage: workflows cloudflare-approval [OPTIONS] COMMAND [ARGS]...
+
+  Review Cloudflare workflow eligibility and approval.
+
+Options:
+  --json  Emit JSON instead of human-readable output.
+  --help  Show this message and exit.
+
+Commands:
+  accept   Accept only the supplied reviewed digest.
+  propose  Generate a review with source pins, budgets and diagnostics.
+  revoke   Revoke the current approval.
+  status   Read approval status for a workflow.
+```
+
+#### `workflows cloudflare-approval accept`
+
+```
+Usage: workflows cloudflare-approval accept [OPTIONS] REF
+
+  Accept only the supplied reviewed digest. Repeat the reviewed options.
+
+Options:
+  --subrequest-allowance INTEGER  subrequest_allowance  [required]
+  --cpu-budget-ms INTEGER         cpu_budget_ms  [required]
+  --https-hosts TEXT              https_hosts (repeat for multiple).
+  --review-sha256 TEXT            review_sha256  [required]
+  --json                          Emit JSON instead of human-readable output.
+  --help                          Show this message and exit.
+```
+
+#### `workflows cloudflare-approval propose`
+
+```
+Usage: workflows cloudflare-approval propose [OPTIONS] REF
+
+  Generate a review with source pins, budgets and diagnostics.
+
+Options:
+  --subrequest-allowance INTEGER  subrequest_allowance  [required]
+  --cpu-budget-ms INTEGER         cpu_budget_ms  [required]
+  --https-hosts TEXT              https_hosts (repeat for multiple).
+  --json                          Emit JSON instead of human-readable output.
+  --help                          Show this message and exit.
+```
+
+#### `workflows cloudflare-approval revoke`
+
+```
+Usage: workflows cloudflare-approval revoke [OPTIONS] REF
+
+  Revoke the current approval.
+
+Options:
+  --json  Emit JSON instead of human-readable output.
+  --help  Show this message and exit.
+```
+
+#### `workflows cloudflare-approval status`
+
+```
+Usage: workflows cloudflare-approval status [OPTIONS] REF
+
+  Read approval status for a workflow.
+
+Options:
+  --json  Emit JSON instead of human-readable output.
+  --help  Show this message and exit.
 ```
 
 ### `workflows cloudflare-report`

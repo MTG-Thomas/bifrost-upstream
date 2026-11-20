@@ -9251,13 +9251,13 @@
     "current_gate": "authenticated",
     "inline_checks": [],
     "inline_effect": "deny_unless_bypass",
-    "intended_change": null,
+    "intended_change": "Retain provider-organization bypass for Global Cloudflare operators.",
     "mcp_tool": null,
     "method": "DELETE",
     "operation_id": null,
     "path": "/api/workflows/{workflow_id}/cloudflare-approval",
     "permission": "workflows.readwrite",
-    "reason": "Global operator action enforced by the workflow approval service."
+    "reason": "Global operator action enforced by the workflow approval service. The workflow approval service evaluates the bypass beyond the one-hop scan."
   },
   {
     "access_class": "permission",
@@ -9265,13 +9265,13 @@
     "current_gate": "authenticated",
     "inline_checks": [],
     "inline_effect": "widens_for_bypass",
-    "intended_change": null,
+    "intended_change": "Retain provider-organization bypass for Global Cloudflare operators.",
     "mcp_tool": null,
     "method": "GET",
     "operation_id": null,
     "path": "/api/workflows/{workflow_id}/cloudflare-approval",
     "permission": "workflows.read",
-    "reason": "Workflow read permission or Global operator authority. Additional HTTPS hosts require a Global operator."
+    "reason": "Workflow read permission or Global operator authority. Additional HTTPS hosts require a Global operator. The workflow approval service evaluates the bypass beyond the one-hop scan."
   },
   {
     "access_class": "permission",
@@ -9279,13 +9279,13 @@
     "current_gate": "authenticated",
     "inline_checks": [],
     "inline_effect": "deny_unless_bypass",
-    "intended_change": null,
+    "intended_change": "Retain provider-organization bypass for Global Cloudflare operators.",
     "mcp_tool": null,
     "method": "POST",
     "operation_id": null,
     "path": "/api/workflows/{workflow_id}/cloudflare-approval/accept",
     "permission": "workflows.readwrite",
-    "reason": "Global operator action enforced by the workflow approval service."
+    "reason": "Global operator action enforced by the workflow approval service. The workflow approval service evaluates the bypass beyond the one-hop scan."
   },
   {
     "access_class": "permission",
@@ -9293,13 +9293,13 @@
     "current_gate": "authenticated",
     "inline_checks": [],
     "inline_effect": "widens_for_bypass",
-    "intended_change": null,
+    "intended_change": "Retain provider-organization bypass for Global Cloudflare operators.",
     "mcp_tool": null,
     "method": "POST",
     "operation_id": null,
     "path": "/api/workflows/{workflow_id}/cloudflare-approval/propose",
     "permission": "workflows.read",
-    "reason": "Workflow read permission or Global operator authority. Additional HTTPS hosts require a Global operator."
+    "reason": "Workflow read permission or Global operator authority. Additional HTTPS hosts require a Global operator. The workflow approval service evaluates the bypass beyond the one-hop scan."
   },
   {
     "access_class": "permission",
@@ -11462,13 +11462,13 @@
     "current_gate": "authenticated",
     "inline_checks": [],
     "inline_effect": "deny_unless_bypass",
-    "intended_change": null,
+    "intended_change": "Retain provider-organization bypass for Global Cloudflare operators.",
     "mcp_tool": "bifrost_workflow_cloudflare_approval_accept",
     "method": null,
     "operation_id": null,
     "path": null,
     "permission": "workflows.readwrite",
-    "reason": "Thin MCP wrapper inherits the workflow approval REST gate."
+    "reason": "Thin MCP wrapper inherits the workflow approval REST gate. The workflow approval service evaluates the bypass beyond the one-hop scan."
   },
   {
     "access_class": "permission",
@@ -11476,13 +11476,13 @@
     "current_gate": "authenticated",
     "inline_checks": [],
     "inline_effect": "widens_for_bypass",
-    "intended_change": null,
+    "intended_change": "Retain provider-organization bypass for Global Cloudflare operators.",
     "mcp_tool": "bifrost_workflow_cloudflare_approval_propose",
     "method": null,
     "operation_id": null,
     "path": null,
     "permission": "workflows.read",
-    "reason": "Thin MCP wrapper inherits the workflow approval REST gate."
+    "reason": "Thin MCP wrapper inherits the workflow approval REST gate. The workflow approval service evaluates the bypass beyond the one-hop scan."
   },
   {
     "access_class": "permission",
@@ -11490,13 +11490,13 @@
     "current_gate": "authenticated",
     "inline_checks": [],
     "inline_effect": "deny_unless_bypass",
-    "intended_change": null,
+    "intended_change": "Retain provider-organization bypass for Global Cloudflare operators.",
     "mcp_tool": "bifrost_workflow_cloudflare_approval_revoke",
     "method": null,
     "operation_id": null,
     "path": null,
     "permission": "workflows.readwrite",
-    "reason": "Thin MCP wrapper inherits the workflow approval REST gate."
+    "reason": "Thin MCP wrapper inherits the workflow approval REST gate. The workflow approval service evaluates the bypass beyond the one-hop scan."
   },
   {
     "access_class": "permission",
@@ -11504,13 +11504,13 @@
     "current_gate": "authenticated",
     "inline_checks": [],
     "inline_effect": "widens_for_bypass",
-    "intended_change": null,
+    "intended_change": "Retain provider-organization bypass for Global Cloudflare operators.",
     "mcp_tool": "bifrost_workflow_cloudflare_approval_status",
     "method": null,
     "operation_id": null,
     "path": null,
     "permission": "workflows.read",
-    "reason": "Thin MCP wrapper inherits the workflow approval REST gate."
+    "reason": "Thin MCP wrapper inherits the workflow approval REST gate. The workflow approval service evaluates the bypass beyond the one-hop scan."
   },
   {
     "access_class": "permission",
