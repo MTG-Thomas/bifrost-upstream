@@ -529,13 +529,20 @@ async def watch_worker_ingress(app: FastAPI) -> AsyncIterator[None]:
             try:
                 if await _installation_origin() is not None:
                     async with serve_worker_ingress(app):
+                        absent = False
                         while True:
                             await asyncio.sleep(1)
                             try:
-                                if await _installation_origin() is None:
-                                    break
+                                current_absent = await _installation_origin() is None
                             except (SQLAlchemyError, TimeoutError):
+                                absent = False
                                 logger.warning("Could not refresh the worker ingress installation", exc_info=True)
+                            else:
+                                # A reconnect can occupy the singleton between
+                                # polls. Keep its socket if the gap was brief.
+                                if current_absent and absent:
+                                    break
+                                absent = current_absent
             except (SQLAlchemyError, OSError, TimeoutError, RuntimeError):
                 logger.warning("Worker ingress is unavailable", exc_info=True)
             await asyncio.sleep(1)

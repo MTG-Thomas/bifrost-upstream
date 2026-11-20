@@ -27,7 +27,8 @@ from src.services import worker_ingress as ingress
 async def test_listener_survives_transient_installation_read_error(monkeypatch):
     transitions = []
     stopped = asyncio.Event()
-    results = iter(("https://workers.example.test", SQLAlchemyError(), "https://workers.example.test", None))
+    origin_url = "https://workers.example.test"
+    results = iter((origin_url, SQLAlchemyError(), None, origin_url, None, None))
 
     async def read_origin():
         result = next(results, None)
@@ -57,7 +58,7 @@ async def test_listener_survives_transient_installation_read_error(monkeypatch):
     ))
     async with ingress.watch_worker_ingress(FastAPI()):
         await asyncio.wait_for(stopped.wait(), 2)
-    assert transitions == ["open", ("closed", 4)]
+    assert transitions == ["open", ("closed", 6)]
 
 
 def test_versioned_allowlist_matches_sdk_and_registered_api_routes():
