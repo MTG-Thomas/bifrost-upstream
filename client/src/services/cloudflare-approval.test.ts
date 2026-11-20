@@ -1,5 +1,4 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { apiClient } from "@/lib/api-client";
 import {
 	acceptCloudflareApproval,
 	getCloudflareApproval,
@@ -7,8 +6,13 @@ import {
 	revokeCloudflareApproval,
 } from "./cloudflare-approval";
 
+const { get, post, remove } = vi.hoisted(() => ({
+	get: vi.fn(),
+	post: vi.fn(),
+	remove: vi.fn(),
+}));
 vi.mock("@/lib/api-client", () => ({
-	apiClient: { GET: vi.fn(), POST: vi.fn(), DELETE: vi.fn() },
+	apiClient: { GET: get, POST: post, DELETE: remove },
 }));
 
 describe("Cloudflare workflow approval API", () => {
@@ -19,23 +23,23 @@ describe("Cloudflare workflow approval API", () => {
 
 	beforeEach(() => {
 		vi.resetAllMocks();
-		for (const method of [apiClient.GET, apiClient.POST, apiClient.DELETE]) {
-			vi.mocked(method).mockResolvedValue({ data: state, response: new Response() });
+		for (const method of [get, post, remove]) {
+			method.mockResolvedValue({ data: state, response: new Response() });
 		}
 	});
 
 	it("uses the workflow-scoped read and revoke endpoints", async () => {
 		await expect(getCloudflareApproval("workflow")).resolves.toEqual(state);
 		await expect(revokeCloudflareApproval("workflow")).resolves.toEqual(state);
-		expect(apiClient.GET).toHaveBeenCalledWith(path, { params });
-		expect(apiClient.DELETE).toHaveBeenCalledWith(path, { params });
+		expect(get).toHaveBeenCalledWith(path, { params });
+		expect(remove).toHaveBeenCalledWith(path, { params });
 	});
 
 	it("sends the reviewed options and digest", async () => {
 		const accepted = { ...options, review_sha256: "a".repeat(64) };
 		await proposeCloudflareApproval("workflow", options);
 		await acceptCloudflareApproval("workflow", accepted);
-		expect(apiClient.POST).toHaveBeenNthCalledWith(1, `${path}/propose`, { params, body: options });
-		expect(apiClient.POST).toHaveBeenNthCalledWith(2, `${path}/accept`, { params, body: accepted });
+		expect(post).toHaveBeenNthCalledWith(1, `${path}/propose`, { params, body: options });
+		expect(post).toHaveBeenNthCalledWith(2, `${path}/accept`, { params, body: accepted });
 	});
 });

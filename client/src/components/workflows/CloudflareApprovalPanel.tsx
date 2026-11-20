@@ -110,7 +110,7 @@ export function CloudflareApprovalPanel({ workflowId }: { workflowId: string }) 
 					<Button type="submit" variant="outline" disabled={busy}>Propose Approval</Button>
 				</form>
 			)}
-			{state?.diagnostics.map((diagnostic) => (
+			{state?.diagnostics?.map((diagnostic) => (
 				<div className="rounded-md border p-3 text-sm" key={diagnostic.rule_id}>
 					<code>{diagnostic.rule_id}</code>
 					<p>{diagnostic.message}</p>

@@ -25,7 +25,7 @@ const proposal: NonNullable<ApprovalState["proposal"]> = {
 	inactive_history_count: 0, review_sha256: digest, wildcard_https_hosts: ["*.example.com"],
 	entry_path: "test.py", function_name: "run", entry_sha256: digest, module_sha256: {},
 	manifest_sha256: digest, packages: ["httpx"], https_hosts: ["*.example.com"], required_https_hosts: [],
-	estimated_subrequests: 1, subrequest_allowance: 10, estimated_cpu_ms: 10, cpu_budget_ms: 1000,
+	unresolved_url_calls: 1, estimated_subrequests: 1, subrequest_allowance: 10, estimated_cpu_ms: 10, cpu_budget_ms: 1000,
 };
 
 function open() {
