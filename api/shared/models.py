@@ -2,11 +2,19 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
-
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 
 SEMVER_PATTERN = (
     r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
@@ -14,6 +22,25 @@ SEMVER_PATTERN = (
     r"(?:\.(?:(?:0|[1-9]\d*)|(?:\d*[A-Za-z-][0-9A-Za-z-]*)))*)?"
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
+
+
+class CloudflareWorkersPolicy(BaseModel):
+    """Launch limits for the Phase 1 Workers scope."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    launcher_cap: int = Field(ge=1, le=1000)
+    slots_per_launcher: int = Field(ge=1, le=4)
+    max_lifetime_seconds: int = Field(ge=60, le=604800)
+    work_kinds: frozenset[Literal["workflow"]]
+
+
+class CloudflareCapacityPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal[1] = 1
+    workers: CloudflareWorkersPolicy
+    monthly_limit_usd: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
 
 
 class GitAppManifestRequest(BaseModel):

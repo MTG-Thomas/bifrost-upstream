@@ -1,10 +1,12 @@
 """Exercise the Cloudflare journal against the migrated platform database."""
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
 from pydantic import SecretStr
+from shared.models import CloudflareCapacityPolicy, CloudflareWorkersPolicy
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.models.orm.cloudflare_capacity import (
@@ -17,6 +19,16 @@ from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
     open_credential,
     seal_credential,
+)
+from src.services.worker_pool.cloudflare_policy import (
+    CloudflareBudgetTooLow,
+    CloudflarePolicyConflict,
+    WorkersReleaseMeterBounds,
+    save_cloudflare_policy,
+)
+from src.services.worker_pool.cloudflare_spend import (
+    WORKERS_RATE_TABLE_VERSION,
+    WORKERS_RATES,
 )
 
 
@@ -94,3 +106,38 @@ async def test_scaled_in_installation_cannot_admit_its_revision(
         async with db_session.begin_nested():
             installation.admitted_revision = installation.desired_revision
             await db_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_policy_save_fences_old_admission_and_rejects_an_unsafe_budget(
+    db_session: AsyncSession, installation: CloudflareInstallation
+) -> None:
+    installation.desired_state = "enabled"
+    installation.admitted_revision = 1
+    await db_session.flush()
+    policy = CloudflareCapacityPolicy(
+        workers=CloudflareWorkersPolicy(
+            launcher_cap=1, slots_per_launcher=2, max_lifetime_seconds=3600, work_kinds=frozenset({"workflow"}),
+        ),
+        monthly_limit_usd=Decimal("4.00"),
+    )
+    zero = dict.fromkeys(WORKERS_RATES, Decimal(0))
+    # The minimum plan fee alone exceeds the initial budget.
+    bounds = WorkersReleaseMeterBounds(60, zero, zero)
+    with pytest.raises(CloudflareBudgetTooLow):
+        await save_cloudflare_policy(
+            db_session, installation_id=installation.id, expected_revision=1, policy=policy, bounds=bounds,
+        )
+    assert installation.admitted_revision == 1
+
+    policy.monthly_limit_usd = Decimal("10.00")
+    assert await save_cloudflare_policy(
+        db_session, installation_id=installation.id, expected_revision=1, policy=policy, bounds=bounds,
+    ) == 2
+    assert installation.admitted_revision is None
+    assert installation.policy["rate_table_version"] == WORKERS_RATE_TABLE_VERSION
+    assert installation.policy["fleet_envelope_usd"] == "5.00"
+    with pytest.raises(CloudflarePolicyConflict):
+        await save_cloudflare_policy(
+            db_session, installation_id=installation.id, expected_revision=1, policy=policy, bounds=bounds,
+        )
