@@ -206,6 +206,16 @@ async def test_claim_gate_tracks_scale_in_and_deployment_changes_without_restart
     await db_session.flush()
     assert await cloudflare_claim_allowed(db_session, worker_id)
 
+    policy = installation.policy
+    limits = policy["limits"]
+    installation.policy = {
+        **policy,
+        "limits": {**limits, "workers": {**limits["workers"], "work_kinds": []}},
+    }
+    await db_session.flush()
+    assert not await cloudflare_claim_allowed(db_session, worker_id)
+    installation.policy = policy
+
     installation.admitted_revision = None
     installation.desired_state = "scaled_in"
     installation.desired_revision = 2
@@ -221,6 +231,20 @@ async def test_claim_gate_tracks_scale_in_and_deployment_changes_without_restart
     await db_session.flush()
     assert not await cloudflare_claim_allowed(db_session, worker_id)
     assert await cloudflare_claim_allowed(db_session, uuid4())
+
+    installation.admitted_revision = None
+    installation.desired_state = "disconnected"
+    installation.desired_revision = 3
+    await db_session.flush()
+    with pytest.raises(CloudflarePolicyConflict, match="cleanup is pending"):
+        await retire_cloudflare_installation(db_session, installation_id=installation.id, expected_revision=3)
+    worker = await db_session.get(ExecutionWorker, worker_id)
+    assert worker is not None
+    worker.state = "retired"
+    worker.capacity_resource_deleted_at = datetime.now(UTC)
+    await db_session.flush()
+    await retire_cloudflare_installation(db_session, installation_id=installation.id, expected_revision=3)
+    assert installation.retired_at is not None
 
 
 @pytest.mark.asyncio
