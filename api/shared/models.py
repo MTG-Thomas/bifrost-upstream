@@ -55,6 +55,7 @@ class CloudflareUsageAdvisory(BaseModel):
 class CloudflareSpendStatus(BaseModel):
     state: Literal["ready", "budget_reached", "ledger_unavailable"]
     estimated_usd: Decimal | None
+    workers_paid_subscription_usd: Decimal = Field(description="Monthly Workers Paid subscription billed separately by Cloudflare")
     rate_table_version: str
     period_start: datetime
     period_end: datetime

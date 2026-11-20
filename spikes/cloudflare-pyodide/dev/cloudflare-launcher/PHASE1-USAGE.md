@@ -92,7 +92,9 @@ using the complete pinned release bounds for CPU, requests, duration,
 storage and logging at versioned published marginal rates. Admission uses
 the current UTC calendar month and closes at the
 budget or if ledger evidence is unavailable or inconsistent. Policy save
-also validates the static envelope. The estimate can differ from the invoice.
+also validates the static envelope. Both checks cover Bifrost-attributable
+usage. Status shows the $5 monthly Workers Paid subscription separately
+as billed by Cloudflare. The usage estimate can differ from the invoice.
 
 GraphQL Analytics is an advisory comparison of sampled Worker requests
 and the Bifrost request proxy. The incomplete Durable Object data prevents

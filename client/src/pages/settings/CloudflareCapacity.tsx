@@ -126,7 +126,7 @@ function CloudflareConfigurationForm({ status, onSaved }: {
 				<div><Label htmlFor="cf-launcher-cap">Workers Launcher Limit</Label><Input id="cf-launcher-cap" name="launcher_cap" type="number" min={1} max={1000} defaultValue={settings?.workers.launcher_cap ?? 1} required /></div>
 				<div><Label htmlFor="cf-slots">Slots Per Launcher</Label><Input id="cf-slots" name="slots" type="number" min={1} max={4} defaultValue={settings?.workers.slots_per_launcher ?? 2} required /></div>
 				<div><Label htmlFor="cf-lifetime">Maximum Lifetime in Seconds</Label><Input id="cf-lifetime" name="lifetime" type="number" min={60} max={604800} defaultValue={settings?.workers.max_lifetime_seconds ?? 3600} required /></div>
-				<div><Label htmlFor="cf-monthly">Monthly Spend Limit in USD</Label><Input id="cf-monthly" name="monthly_limit" type="number" min="0.01" step="0.01" defaultValue={settings?.monthly_limit_usd ?? "30.00"} required /></div>
+				<div><Label htmlFor="cf-monthly">Monthly Usage Limit in USD</Label><Input id="cf-monthly" name="monthly_limit" type="number" min="0.01" step="0.01" defaultValue={settings?.monthly_limit_usd ?? "30.00"} required /></div>
 				<div><Label htmlFor="cf-shared-cap">Shared Managed Worker Limit</Label><Input id="cf-shared-cap" name="shared_cap" type="number" min={1} max={1000} defaultValue={settings?.shared_managed_worker_cap ?? undefined} /></div>
 			</div>
 			<label className="flex items-center gap-2 text-sm">
@@ -299,7 +299,7 @@ export function CloudflareCapacity() {
 							</div>
 							<div>
 								<dt className="text-muted-foreground">
-									Monthly Spend Limit
+									Monthly Usage Limit
 								</dt>
 								<dd>
 									{installation.policy.monthly_limit_usd} USD
@@ -307,16 +307,20 @@ export function CloudflareCapacity() {
 							</div>
 							<div>
 								<dt className="text-muted-foreground">
-									Fleet Spend Envelope
+									Fleet Usage Envelope
 								</dt>
 								<dd>{installation.fleet_envelope_usd} USD</dd>
 							</div>
 							{installation.spend && (
 								<>
 									<div>
-										<dt className="text-muted-foreground">Estimated Spend This UTC Month</dt>
+										<dt className="text-muted-foreground">Estimated Bifrost Usage This UTC Month</dt>
 										<dd>{installation.spend.estimated_usd === null ? "Spend Ledger Unavailable" : `${installation.spend.estimated_usd} USD`}</dd>
 										{installation.spend.state === "budget_reached" && <dd>Budget Reached</dd>}
+									</div>
+									<div>
+										<dt className="text-muted-foreground">Workers Paid Subscription (Billed by Cloudflare)</dt>
+										<dd>{installation.spend.workers_paid_subscription_usd} USD per Month</dd>
 									</div>
 									<div>
 										<dt className="text-muted-foreground">Cloudflare Analytics Advisory</dt>

@@ -188,14 +188,18 @@ async def test_connect_uses_opaque_credential_from_protected_rest_entry(e2e_clie
         "action": "connect", "account_id": account, "worker_ingress_origin": "https://workers.browser-fixture.test",
         "consent_version": CONSENT_TEXT_VERSION, "consent": True, "credential_ref": reference,
         "policy": {"workers": {
-            "launcher_cap": 1, "slots_per_launcher": 2, "max_lifetime_seconds": 3600, "work_kinds": ["workflow"],
-        }, "monthly_limit_usd": "30.00"},
+            "launcher_cap": 1, "slots_per_launcher": 1, "max_lifetime_seconds": 60, "work_kinds": ["workflow"],
+        }, "monthly_limit_usd": "15.00"},
     }
     installation_id = None
     try:
         connected = e2e_client.patch(path, headers=headers, json=request)
         assert connected.status_code == 200, connected.text
-        installation_id = UUID(connected.json()["installation"]["installation_id"])
+        installation = connected.json()["installation"]
+        installation_id = UUID(installation["installation_id"])
+        assert installation["fleet_envelope_usd"] == "13.31"
+        assert installation["spend"]["estimated_usd"] == "0.00"
+        assert installation["spend"]["workers_paid_subscription_usd"] == "5.00"
         assert token not in connected.text and reference not in connected.text
         assert e2e_client.patch(path, headers=headers, json=request).status_code == 422
     finally:
@@ -1151,7 +1155,7 @@ async def test_exact_budget_boundary_closes_reservations(
     db_session: AsyncSession, installation: CloudflareInstallation,
 ) -> None:
     installation.policy = {
-        **installation.policy, "limits": {**installation.policy["limits"], "monthly_limit_usd": "5.00"},
+        **installation.policy, "limits": {**installation.policy["limits"], "monthly_limit_usd": "120.09"},
     }
     installation.desired_state, installation.admitted_revision = "enabled", 1
     db_session.add(seal_credential(
@@ -1163,10 +1167,14 @@ async def test_exact_budget_boundary_closes_reservations(
         installation_id=installation.id, scope="workers", endpoint="https://capacity.example.test",
         deployment_revision=1, bearer_version=1,
     ))
+    start, _ = usage_period(datetime.now(UTC))
+    db_session.add(CloudflareUsageActivity(
+        installation_id=installation.id, period_start=start, sdk_requests=200_000,
+    ))
     await db_session.flush()
     assert await db_session.scalar(select(cloudflare_estimated_usage()).where(
         CloudflareInstallation.id == installation.id,
-    )) == Decimal(5)
+    )) == Decimal("120.09")
     assert await ManagedCloudflareScope(installation.id, "workers", 1).lock_admission(db_session) is None
 
 
@@ -1213,7 +1221,7 @@ async def test_admission_prices_the_qualified_ledger_bounds(
     # Per-second launcher and slot charges from the qualified bounds and
     # published rates. The out-of-period closed incarnation contributes zero.
     assert await db_session.scalar(price) == (
-        Decimal("5.01681260") + elapsed * Decimal("0.001447353")
+        Decimal("0.01681260") + elapsed * Decimal("0.001447353")
     )
     installation.policy = {**installation.policy, "rate_table_version": "previous-rate-table"}
     await db_session.flush()
@@ -1396,8 +1404,8 @@ async def test_policy_save_fences_old_admission_and_rejects_an_unsafe_budget(
         monthly_limit_usd=Decimal("4.00"),
     )
     zero = dict.fromkeys(WORKERS_RATES, Decimal(0))
-    # The minimum plan fee alone exceeds the proposed reduced budget.
-    bounds = WorkersReleaseMeterBounds(60, zero, zero, "fixture-release", 2)
+    fixed = {**zero, "sqlite_rows_written": Decimal(5_000_000)}
+    bounds = WorkersReleaseMeterBounds(60, zero, fixed, "fixture-release", 2)
     with pytest.raises(CloudflareBudgetTooLow):
         await save_cloudflare_policy(
             db_session, installation_id=installation.id, expected_revision=1, policy=policy, bounds=bounds,

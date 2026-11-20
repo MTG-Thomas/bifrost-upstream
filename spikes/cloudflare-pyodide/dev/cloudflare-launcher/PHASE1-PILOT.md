@@ -2,17 +2,27 @@
 
 **November 20, 2026 UTC · Base `510ff121e`**
 
+## Usage-only limit
+
+Bifrost's monthly limit now covers attributable usage. The fleet envelope
+and admission meter exclude the $5 Workers Paid subscription. Status shows
+the subscription separately as **Workers Paid Subscription (Billed by
+Cloudflare)**. Using the same release bounds, the minimum fleet envelope is
+$13.31 and the two-launcher, 300-second envelope is $14.51.
+
+## First pilot
+
 The product rejected Connect under the authorized $5 monthly limit. The
 Connect REST endpoint returned HTTP 422 with a **$19.51 fleet spend envelope**
 for two one-slot launchers with a 300-second lifetime. The same product
 calculator returned **$18.31** for one one-slot launcher at the 60-second
 minimum lifetime. No Workers were deployed.
 
-The limit covers the $5 Workers Paid subscription base and the release's
+The first-run limit covered the $5 Workers Paid subscription base and the release's
 gross usage envelope. Cloudflare rounds billable Durable Object requests
 and duration up to billing units. Bifrost prices this envelope without
-relying on shared-account allowances. A policy at or below $5 therefore
-cannot pass the current product guard. The pilot preserved that guard.
+relying on shared-account allowances. The first-run guard rejected the $5
+policy.
 [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/) ·
 [Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/).
 

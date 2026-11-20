@@ -4,6 +4,7 @@ from decimal import Decimal
 import pytest
 from src.services.worker_pool.cloudflare_spend import (
     WORKERS_RATES,
+    _cost,
     usage_period,
     workers_fleet_envelope_usd,
 )
@@ -21,7 +22,12 @@ def test_workers_fleet_envelope_includes_cleanup_and_shared_usage() -> None:
         cleanup_margin_seconds=600,
         per_launcher_second=per_second,
         per_fleet_fixed=fixed,
-    ) == Decimal("19.97")
+    ) == Decimal("14.97")
+
+
+def test_monthly_usage_charges_only_ledger_activity() -> None:
+    assert _cost(0, 0, 0, 0) == Decimal(0)
+    assert _cost(0, 0, 2, 1) == Decimal("0.00180135")
 
 
 def test_unbounded_meter_rejects_cost_estimate() -> None:

@@ -55,7 +55,7 @@ WORKERS_RATES = MappingProxyType({
     "log_stored_gb_month": MeterRate(1, Decimal("0.10")),
     "transfer_gb": MeterRate(1, Decimal(0)),
 })
-WORKERS_PAID_MINIMUM_USD = Decimal("5.00")
+WORKERS_PAID_SUBSCRIPTION_USD = Decimal("5.00")
 # Estimate at the published marginal rates, with no account-wide free tiers.
 # Each resident 128 MiB object is estimated separately. Work and gateway
 # activity use the packaged Worker CPU cap and one request as pricing proxies.
@@ -96,7 +96,7 @@ def workers_fleet_envelope_usd(
         ):
             raise ValueError("Cloudflare Workers meter bounds are incomplete or invalid")
     launcher_seconds = launcher_cap * (max_lifetime_seconds + cleanup_margin_seconds)
-    gross = WORKERS_PAID_MINIMUM_USD + sum(
+    gross = sum(
         rate.cost(per_launcher_second[meter] * launcher_seconds + per_fleet_fixed[meter])
         for meter, rate in WORKERS_RATES.items()
     )
@@ -114,8 +114,7 @@ def usage_period(now: datetime) -> tuple[datetime, datetime]:
 
 def _cost(launcher_seconds, slot_seconds, dispatched_runs, sdk_requests):
     return (
-        WORKERS_PAID_MINIMUM_USD
-        + _LAUNCHER_USD_PER_SECOND * launcher_seconds
+        _LAUNCHER_USD_PER_SECOND * launcher_seconds
         + _DURATION_USD_PER_SECOND * slot_seconds
         + _ACTIVITY_USD * (dispatched_runs + sdk_requests)
     )

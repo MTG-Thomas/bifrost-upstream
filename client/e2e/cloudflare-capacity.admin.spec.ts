@@ -21,8 +21,9 @@ test("a platform operator connects and enables Cloudflare capacity", async ({ pa
 	expect(connected.status()).toBe(200);
 	expect(await connected.text()).not.toContain(token);
 	await expect(page.getByText(origin, { exact: true })).toBeVisible();
-	await expect(page.getByText("Fleet Spend Envelope")).toBeVisible();
-	await expect(page.getByText("Estimated Spend This UTC Month")).toBeVisible();
+	await expect(page.getByText("Fleet Usage Envelope")).toBeVisible();
+	await expect(page.getByText("Estimated Bifrost Usage This UTC Month")).toBeVisible();
+	await expect(page.getByText("Workers Paid Subscription (Billed by Cloudflare)")).toBeVisible();
 
 	const enable = page.waitForResponse((response) => response.url().endsWith("/api/capacity/cloudflare/enable"));
 	const admitted = page.waitForResponse(async (response) =>

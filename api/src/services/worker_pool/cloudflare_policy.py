@@ -47,6 +47,7 @@ from src.services.worker_pool.cloudflare_release import (
     WorkersReleaseUnavailable,
 )
 from src.services.worker_pool.cloudflare_spend import (
+    WORKERS_PAID_SUBSCRIPTION_USD,
     WORKERS_RATE_TABLE_VERSION,
     cloudflare_estimated_usage,
     usage_period,
@@ -121,6 +122,7 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
             "budget_reached" if estimate >= policy.monthly_limit_usd else "ready"
         ),
         estimated_usd=estimate.quantize(Decimal("0.01")) if estimate is not None else None,
+        workers_paid_subscription_usd=WORKERS_PAID_SUBSCRIPTION_USD,
         rate_table_version=WORKERS_RATE_TABLE_VERSION,
         period_start=period_start, period_end=period_end,
         analytics=advisory if advisory is not None and advisory.period_start == period_start else None,
