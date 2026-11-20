@@ -23,7 +23,8 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareOwnedResource,
 )
 from src.models.orm.platform_jobs import PlatformJob
-from src.services.authorization.enforce import Caller, require_permission
+from src.services.authorization.enforce import Caller, require_operation
+from src.services.authorization.evaluator import GLOBAL
 from src.services.platform_job_lease import LeaseLost, hold_lease
 from src.services.platform_jobs import enqueue_platform_job, find_active_platform_job
 from src.services.work_dispatch import (
@@ -186,7 +187,10 @@ async def enqueue_cloudflare_disable(
     db: AsyncSession, caller: Caller, *, installation_id: UUID, expected_revision: int,
     action: Literal["scale_in", "disconnect"],
 ) -> tuple[PlatformJob, bool]:
-    require_permission(caller, "platform.readwrite", None)
+    if action == "scale_in":
+        require_operation(caller, "POST /api/capacity/cloudflare/scale-in", GLOBAL)
+    else:
+        require_operation(caller, "POST /api/capacity/cloudflare/disconnect", GLOBAL)
     actor = caller.principal
     payload = CloudflareDisablePayload(installation_id=installation_id, revision=expected_revision + 1, action=action)
     row = await db.get(CloudflareInstallation, installation_id, with_for_update=True, populate_existing=True)

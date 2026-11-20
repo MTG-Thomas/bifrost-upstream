@@ -12,8 +12,12 @@ from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 from pydantic import SecretStr
-from shared.models import CloudflareCapacityPolicy
-from sqlalchemy import or_, select, update
+from shared.models import (
+    CloudflareCapacityPolicy,
+    CloudflareCapacityStatus,
+    CloudflareInstallationStatus,
+)
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,6 +39,7 @@ from src.services.worker_pool.cloudflare_credentials import (
 )
 from src.services.worker_pool.cloudflare_spend import (
     WORKERS_RATE_TABLE_VERSION,
+    cloudflare_usage_within_limit,
     workers_fleet_envelope_usd,
 )
 
@@ -62,6 +67,41 @@ class CloudflareBudgetTooLow(ValueError):
 
 class CloudflareInstallationExists(ValueError):
     """A current installation must finish disconnecting before another is created."""
+
+
+async def get_cloudflare_capacity_status(db: AsyncSession) -> CloudflareCapacityStatus:
+    row = (await db.execute(
+        select(
+            CloudflareInstallation,
+            and_(
+                CloudflareInstallation.admitted_revision.is_not(None),
+                cloudflare_usage_within_limit(),
+            ).label("admission_open"),
+            select(func.count()).select_from(CloudflareOwnedResource).where(
+                CloudflareOwnedResource.installation_id == CloudflareInstallation.id,
+                or_(CloudflareOwnedResource.state != "absent", CloudflareOwnedResource.observed_at.is_(None)),
+            ).correlate(CloudflareInstallation).scalar_subquery().label("owned_resources_pending"),
+        ).where(CloudflareInstallation.retired_at.is_(None))
+    )).tuples().one_or_none()
+    if row is None:
+        return CloudflareCapacityStatus(consent_text_version=CONSENT_TEXT_VERSION, installation=None)
+    installation, admission_open, owned_resources_pending = row
+    return CloudflareCapacityStatus(
+        consent_text_version=CONSENT_TEXT_VERSION,
+        installation=CloudflareInstallationStatus.model_validate({
+            "installation_id": installation.id,
+            "account_id": installation.account_id,
+            "worker_ingress_origin": installation.worker_ingress_origin,
+            "consent_version": installation.consent_version,
+            "consent_at": installation.consent_at,
+            "desired_revision": installation.desired_revision,
+            "desired_state": installation.desired_state,
+            "admission_open": admission_open,
+            "policy": installation.policy["limits"],
+            "fleet_envelope_usd": installation.policy["fleet_envelope_usd"],
+            "owned_resources_pending": owned_resources_pending,
+        }),
+    )
 
 
 def _price_policy(

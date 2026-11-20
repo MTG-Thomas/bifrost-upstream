@@ -39,6 +39,7 @@ from src.routers.chat import router as chat_router
 from src.routers.claims import router as claims_router
 from src.routers.cli import install_router as cli_install_router
 from src.routers.cli import router as cli_router
+from src.routers.cloudflare_capacity import router as cloudflare_capacity_router
 from src.routers.config import router as config_router
 from src.routers.decorator_properties import router as decorator_properties_router
 from src.routers.dependencies import router as dependencies_router
@@ -461,6 +462,7 @@ def create_app() -> FastAPI:
     app.include_router(workflow_conversions_router)
     app.include_router(forms_router)
     app.include_router(config_router)
+    app.include_router(cloudflare_capacity_router)
     app.include_router(websocket_router)
     app.include_router(branding_router)
     app.include_router(files_router)

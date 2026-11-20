@@ -44,6 +44,32 @@ class CloudflareCapacityPolicy(BaseModel):
     shared_managed_worker_cap: int | None = Field(default=None, ge=1, le=1000)
 
 
+class CloudflareInstallationStatus(BaseModel):
+    installation_id: UUID
+    account_id: str
+    worker_ingress_origin: str
+    consent_version: str
+    consent_at: datetime
+    desired_revision: int
+    desired_state: Literal["scaled_in", "enabled", "disconnected"]
+    admission_open: bool
+    policy: CloudflareCapacityPolicy
+    fleet_envelope_usd: Decimal
+    owned_resources_pending: int
+
+
+class CloudflareCapacityStatus(BaseModel):
+    consent_text_version: str
+    installation: CloudflareInstallationStatus | None
+
+
+class CloudflareCapacityAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    installation_id: UUID
+    expected_revision: int = Field(gt=0)
+
+
 class GitAppManifestRequest(BaseModel):
     purpose: Literal["workspace", "solution"] = "workspace"
     organization_id: UUID | None = None

@@ -69,6 +69,16 @@ from src.services.worker_pool.cloudflare_workers_rest import (
 
 OPERATOR_ID = UUID("20cb7fe5-78e2-48d7-8f1e-8edcac69ffab")
 
+
+def test_cloudflare_routes_refuse_provider_org_membership(e2e_client, provider_org_user, platform_admin) -> None:
+    path = "/api/capacity/cloudflare"
+    assert e2e_client.get(path, headers=platform_admin.headers).status_code == 200
+    assert e2e_client.get(path, headers=provider_org_user.headers).status_code == 403
+    body = {"installation_id": str(uuid4()), "expected_revision": 1}
+    for action in ("scale-in", "disconnect"):
+        assert e2e_client.post(f"{path}/{action}", headers=provider_org_user.headers, json=body).status_code == 403
+
+
 @pytest.mark.asyncio
 async def test_scale_in_job_uses_platform_authority_and_current_lease(
     db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch,
