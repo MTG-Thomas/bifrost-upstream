@@ -63,6 +63,7 @@ from bifrost.refs import RefResolver, identity_label
 from bifrost.contracts import WorkflowUpdateRequest
 
 from .base import _apply_flags, entity_group, output_result, pass_resolver, run_async
+from .cloudflare_approval import approval_group
 from .users import _boundary_input, _boundary_label, _current_assignments, _print_role_assignments
 from .workflow_conversion import conversion_group
 
@@ -73,6 +74,7 @@ _TERMINAL_STATUSES = frozenset(
 
 workflows_group = entity_group("workflows", "Manage workflows.")
 workflows_group.add_command(conversion_group)
+workflows_group.add_command(approval_group)
 
 
 _UPDATE_FLAGS = build_cli_flags(

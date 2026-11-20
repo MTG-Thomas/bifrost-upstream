@@ -100,6 +100,12 @@ from src.models.contracts.workflows import (  # noqa: E402
     WorkflowValidationResponse,
 )
 
+from src.models.contracts.cloudflare_approval import (  # noqa: E402
+    CloudflareApprovalAccept,
+    CloudflareApprovalOptions,
+    CloudflareApprovalState,
+)
+
 import inspect  # noqa: E402
 
 from pydantic import BaseModel  # noqa: E402
@@ -112,6 +118,9 @@ from src.models.contracts import cli as _cli_contracts  # noqa: E402
 
 #: The explicit CRUD + execute DTOs the `bifrost <entity>` command surface uses.
 _COMMAND_DTOS: list[type] = [
+    CloudflareApprovalOptions,
+    CloudflareApprovalAccept,
+    CloudflareApprovalState,
     BaseRoleDefaultsResponse,
     BaseRoleDefaultsUpdate,
     OrganizationCreate,

@@ -21,6 +21,7 @@ from src.jobs.platform.base import (
     PlatformJobFailure,
     define_platform_job,
 )
+from src.models.contracts.cloudflare_approval import ApprovalDeclaration, SolutionApprovalScope
 from src.models.orm import FileIndex, PlatformJob, SolutionFileIndex
 from bifrost.cloudflare_analysis import (
     MAX_MODULES,
@@ -31,9 +32,7 @@ from bifrost.cloudflare_analysis import (
 )
 from src.services.execution.cloudflare_analysis_runner import AnalysisBusy
 from src.services.execution.cloudflare_eligibility import (
-    ApprovalDeclaration,
     ObservationChanged,
-    SolutionApprovalScope,
     accept_proposal,
     current_approval,
     indexed_pins,

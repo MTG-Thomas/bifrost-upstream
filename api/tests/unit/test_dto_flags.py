@@ -52,11 +52,19 @@ from src.models.contracts.tables import TableCreate, TableUpdate  # noqa: E402
 from src.models.contracts.users import RoleCreate, RoleUpdate  # noqa: E402
 from src.models.contracts.workflows import WorkflowUpdateRequest  # noqa: E402
 
+from bifrost.contracts.cloudflare_approval import (  # noqa: E402
+    CloudflareApprovalAccept as CliCloudflareApprovalAccept,
+    CloudflareApprovalOptions as CliCloudflareApprovalOptions,
+)
+from src.models.contracts.cloudflare_approval import CloudflareApprovalAccept, CloudflareApprovalOptions  # noqa: E402
+
 # DTOs covered by the field-parity contract. Each entry maps a
 # Pydantic model class to its declared exclude set; a missing entry means
 # "exclude nothing." Workflows have no ``Create`` DTO — workflows are
 # created from code via @workflow registration, not the API.
 COVERED_DTOS: list[type] = [
+    CloudflareApprovalOptions,
+    CloudflareApprovalAccept,
     OrganizationCreate,
     OrganizationUpdate,
     RoleCreate,
@@ -268,3 +276,11 @@ def test_required_flags_are_actually_enforced_by_click() -> None:
     ok = CliRunner().invoke(probe, ["--name", "x", "--form-schema", "{}"])
     assert "Missing option" not in ok.output
     assert "body-ran" in ok.output
+
+
+@pytest.mark.parametrize(("server", "cli"), [
+    (CloudflareApprovalOptions, CliCloudflareApprovalOptions),
+    (CloudflareApprovalAccept, CliCloudflareApprovalAccept),
+])
+def test_cloudflare_approval_cli_fields_match_server(server, cli):
+    assert set(server.model_fields) == set(cli.model_fields)

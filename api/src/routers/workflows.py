@@ -69,6 +69,11 @@ from src.services.audit import emit_audit
 from src.services.operation_catalog import operation_route
 from shared.identities import validate_run_identity
 from shared.run_lineage import identity_lineage
+from src.models.contracts.cloudflare_approval import (
+    CloudflareApprovalAccept,
+    CloudflareApprovalOptions,
+    CloudflareApprovalState,
+)
 from src.models.contracts.identities import IdentityPublic
 from src.models.contracts.recommended_access import RecommendedAccess
 from src.models.contracts.workflow_permissions import WorkflowPermissionMode
@@ -78,6 +83,7 @@ from src.services.authorization.enforce import (
     require_permission,
     user_reach,
 )
+from src.services.execution.cloudflare_approval import get_approval_state, review_approval, revoke_review
 from src.services.identities import list_run_identities, require_delegation
 from src.services.recommended_access import recommended_access
 from src.models.orm.solution_workflow_permission_requests import SolutionWorkflowPermissionRequest
@@ -1844,6 +1850,34 @@ async def get_workflow(
         role_ids=role_ids,
         permission_request=(await workflow_permission_requests(db, [workflow])).get(workflow.id),
     )
+
+
+@router.get("/{workflow_id}/cloudflare-approval")
+async def get_workflow_cloudflare_approval(
+    workflow_id: UUID, user: CurrentActiveUser, db: DbSession,
+) -> CloudflareApprovalState:
+    return await get_approval_state(db, user, workflow_id)
+
+
+@router.post("/{workflow_id}/cloudflare-approval/propose")
+async def propose_workflow_cloudflare_approval(
+    workflow_id: UUID, request: CloudflareApprovalOptions, user: CurrentActiveUser, db: DbSession,
+) -> CloudflareApprovalState:
+    return await review_approval(db, user, workflow_id, request)
+
+
+@router.post("/{workflow_id}/cloudflare-approval/accept")
+async def accept_workflow_cloudflare_approval(
+    workflow_id: UUID, request: CloudflareApprovalAccept, user: CurrentActiveUser, db: DbSession,
+) -> CloudflareApprovalState:
+    return await review_approval(db, user, workflow_id, request)
+
+
+@router.delete("/{workflow_id}/cloudflare-approval")
+async def revoke_workflow_cloudflare_approval(
+    workflow_id: UUID, user: CurrentActiveUser, db: DbSession,
+) -> CloudflareApprovalState:
+    return await revoke_review(db, user, workflow_id)
 
 
 @router.get(

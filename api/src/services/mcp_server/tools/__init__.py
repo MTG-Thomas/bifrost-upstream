@@ -26,6 +26,7 @@ from src.services.mcp_server.tools import (
     sdk,
     tables,
     workflow,
+    cloudflare_approval,
     workflow_conversion,
 )
 from src.services.mcp_server.tools import gateway
@@ -52,6 +53,7 @@ TOOL_MODULES = [
     sdk,
     tables,
     workflow,
+    cloudflare_approval,
     workflow_conversion,
 ]
 
