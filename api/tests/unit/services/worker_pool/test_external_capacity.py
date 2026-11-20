@@ -164,10 +164,13 @@ async def test_prepared_uid_is_committed_before_start(db, capacity):
 
 async def test_cloudflare_reserves_only_approved_fitting_dispatches_before_hello(db, capacity):
     capacity.provider.profile = capacity.provider.profile.model_copy(update={
+        "protocol_version": 2,
         "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
         "memory_limit_bytes": CLOUDFLARE_DEV_BUDGET_BYTES,
     })
-    pool = ExternalWorkerPoolController(capacity.client, SETTINGS, await capacity.client.profile())
+    pool = ExternalWorkerPoolController(
+        capacity.client, SimpleNamespace(**vars(SETTINGS), secret_key=CONTROL_ROOT), await capacity.client.profile(),
+    )
     for amount, approved in ((1, False), (CLOUDFLARE_DEV_BUDGET_BYTES + 1, True)):
         await _set_request(db.sessions, await _accept_pool_run(), amount, approved=approved)
     assert await pool.launch_for_demand(capacity.policy) == []
@@ -396,7 +399,7 @@ async def test_idle_cloudflare_drains_even_when_linux_floor_is_unfilled(db, capa
         linux = ExecutionWorker(id=uuid4(), form="external", state="ready", resource_class="standard")
         burst = ExecutionWorker(
             id=uuid4(), form="external", state="ready", resource_class="standard",
-            runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+            runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE, capacity_scope="burst",
         )
         session.add_all([linux, burst])
         linux_id, burst_id = linux.id, burst.id
@@ -476,7 +479,7 @@ async def test_containers_overflow_uses_vm_ceiling_and_keeps_workers_dispatches_
     assert claim is not None and str(claim.subject_id) == linux_only
     assert await claims.claim_next(container_id, fits_bytes=GIB, budget_bytes=GIB) is None
     claim = await claims.claim_next(workers_id, fits_bytes=CLOUDFLARE_DEV_BUDGET_BYTES, budget_bytes=CLOUDFLARE_DEV_BUDGET_BYTES)
-    assert claim is not None and str(claim.subject_id) == approved
+    assert claim is None  # An old scoped Workers reservation without a durable pin is refused.
     another = await _accept_pool_run()
     await _set_request(db.sessions, another, GIB)
     assert await containers.launch_for_demand(policy) == []

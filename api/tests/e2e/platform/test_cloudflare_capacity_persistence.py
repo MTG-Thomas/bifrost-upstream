@@ -9,12 +9,16 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from fastapi import HTTPException
 from pydantic import SecretStr
 from shared.models import CloudflareCapacityPolicy, CloudflareWorkersPolicy
 from sqlalchemy import delete, select, text, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import Settings
+from src.core.principal import UserPrincipal
+from src.jobs.platform import cloudflare_capacity as lifecycle_job
+from src.jobs.platform.base import PlatformJobContext
 from src.models.orm.cloudflare_capacity import (
     CloudflareCapacityScope,
     CloudflareCredential,
@@ -24,6 +28,8 @@ from src.models.orm.cloudflare_capacity import (
 )
 from src.models.orm.execution_workers import ExecutionWorker
 from src.models.orm.work_dispatches import WorkDispatch
+from src.services.authorization.context import AuthorizationContext
+from src.services.authorization.enforce import Caller
 from src.services.kubernetes_execution import KubernetesExecutionService
 from src.services.worker_pool import (
     cloudflare_supervisor,
@@ -52,6 +58,56 @@ from src.services.worker_pool.cloudflare_spend import (
 )
 
 OPERATOR_ID = UUID("20cb7fe5-78e2-48d7-8f1e-8edcac69ffab")
+
+@pytest.mark.asyncio
+async def test_scale_in_job_uses_platform_authority_and_current_lease(
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch,
+) -> None:
+    organization_id = uuid4()
+    provider_member = Caller(
+        UserPrincipal(OPERATOR_ID, "member@example.test", organization_id, is_provider_org=True),
+        AuthorizationContext(OPERATOR_ID, organization_id, uuid4(), False, frozenset()),
+    )
+    with pytest.raises(HTTPException) as denied:
+        await lifecycle_job.enqueue_cloudflare_disable(
+            db_session, provider_member, installation_id=installation.id, expected_revision=1, action="scale_in",
+        )
+    assert denied.value.status_code == 403
+    assert installation.desired_revision == 1
+
+    admin = Caller(
+        UserPrincipal(OPERATOR_ID, "operator@example.test", None),
+        AuthorizationContext(OPERATOR_ID, None, uuid4(), False, frozenset({"platform.readwrite"})),
+    )
+    installation.desired_state = "enabled"
+    installation.admitted_revision = 1
+    job, reused = await lifecycle_job.enqueue_cloudflare_disable(
+        db_session, admin, installation_id=installation.id, expected_revision=1, action="scale_in",
+    )
+    assert not reused and job.payload_version == 1
+    assert installation.desired_state == "scaled_in" and installation.admitted_revision is None
+    duplicate, reused = await lifecycle_job.enqueue_cloudflare_disable(
+        db_session, admin, installation_id=installation.id, expected_revision=1, action="scale_in",
+    )
+    assert reused and duplicate.id == job.id
+    token = uuid4()
+    job.lease_token = token
+    job.status = "running"
+    await db_session.flush()
+    connection = await db_session.connection()
+
+    @asynccontextmanager
+    async def context():
+        async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as session:
+            yield session
+            await session.commit()
+
+    monkeypatch.setattr(lifecycle_job, "get_db_context", context)
+    monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
+    payload = lifecycle_job.CloudflareDisablePayload.model_validate(job.payload)
+    running = PlatformJobContext(job.id, token, None, str(OPERATOR_ID), admin.principal.email, "")
+    assert await lifecycle_job.CLOUDFLARE_DISABLE_DEFINITION.handler(running, payload) == {"outcome": "scaled_in"}
+    assert installation.api_token_version == 1
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("primary", ["static", "job", "external"])
@@ -133,7 +189,7 @@ async def test_supervisor_reserves_and_retires_without_restarting(
         return httpx.Response(200, json=resources[worker_id])
 
     settings = Settings(
-        _env_file=None, secret_key="synthetic-supervisor-test-key",
+        _env_file=None, secret_key="synthetic-supervisor-test-key-" + "x" * 32,
         worker_capacity_url="https://vm.example.test" if primary == "external" else None,
         worker_capacity_token="p" * 40 if primary == "external" else None,
     )

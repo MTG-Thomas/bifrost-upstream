@@ -591,17 +591,22 @@ async def begin_idle_drain(incarnation_id: UUID) -> bool:
         )
         settings = get_settings()
         containers_scope = getattr(settings, "cloudflare_containers_scope", None)
-        linux_floor = worker_row.execution_lane == "normal"
         containers_worker = containers_scope is not None and worker_row.capacity_scope == containers_scope
-        if not sized and not containers_worker and (not linux_floor or worker_row.runtime_profile == LINUX_RUNTIME_PROFILE):
+        scoped_cloudflare = (
+            worker_row.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and worker_row.capacity_scope is not None
+        )
+        if not sized and not containers_worker and not scoped_cloudflare:
             ready = select(func.count(ExecutionWorker.id)).where(
                 ExecutionWorker.form.in_(MANAGED_WORKER_FORMS),
                 ExecutionWorker.resource_class == "standard",
                 ExecutionWorker.state == "ready",
                 ExecutionWorker.execution_lane == worker_row.execution_lane,
             )
-            if linux_floor:
-                ready = ready.where(ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE)
+            if worker_row.execution_lane == "normal":
+                ready = ready.where(
+                    (ExecutionWorker.runtime_profile != CLOUDFLARE_PYTHON_RUNTIME_PROFILE)
+                    | ExecutionWorker.capacity_scope.is_(None)
+                )
                 if containers_scope is not None:
                     ready = ready.where(ExecutionWorker.capacity_scope.is_distinct_from(containers_scope))
             ready_jobs = await db.scalar(ready) or 0

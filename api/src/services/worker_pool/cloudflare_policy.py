@@ -169,7 +169,18 @@ async def retire_cloudflare_installation(
     scope = await db.scalar(select(CloudflareCapacityScope.scope).where(
         CloudflareCapacityScope.installation_id == installation_id,
     ).limit(1))
-    unconfirmed_worker = await db.scalar(
+    if remaining is not None or scope is not None or await cloudflare_workers_remain(db, installation_id):
+        raise CloudflarePolicyConflict("Cloudflare cleanup is pending")
+    row.api_token_version = None
+    row.retired_at = datetime.now(UTC)
+    await db.execute(update(CloudflareCredential).where(
+        CloudflareCredential.installation_id == installation_id,
+    ).values(ciphertext=None))
+    await db.flush()
+
+
+async def cloudflare_workers_remain(db: AsyncSession, installation_id: UUID) -> bool:
+    return (await db.scalar(
         select(ExecutionWorker.id)
         .outerjoin(CloudflareWorkerReservation, ExecutionWorker.id == CloudflareWorkerReservation.worker_id)
         .where(
@@ -185,15 +196,7 @@ async def retire_cloudflare_installation(
             ),
         )
         .limit(1)
-    )
-    if remaining is not None or scope is not None or unconfirmed_worker is not None:
-        raise CloudflarePolicyConflict("Cloudflare cleanup is pending")
-    row.api_token_version = None
-    row.retired_at = datetime.now(UTC)
-    await db.execute(update(CloudflareCredential).where(
-        CloudflareCredential.installation_id == installation_id,
-    ).values(ciphertext=None))
-    await db.flush()
+    )) is not None
 
 
 async def save_cloudflare_policy(

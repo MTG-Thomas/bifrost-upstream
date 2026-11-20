@@ -198,6 +198,8 @@ class WorkerCapacityController(ABC):
         return self.peer_profile is not None
 
     def _counts_for_warm_floor(self, worker: ExecutionWorker) -> bool:
+        if worker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and worker.capacity_scope is not None:
+            return False
         return (
             not self.dual_capacity
             or worker.execution_lane != "normal"
