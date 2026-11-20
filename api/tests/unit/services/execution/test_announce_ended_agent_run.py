@@ -77,6 +77,10 @@ class _Session:
     async def get(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
         return self.run
 
+    async def scalar(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+        # A Linux-owned run has no Cloudflare chat attempt to settle.
+        return None
+
 
 def _with_run(monkeypatch: pytest.MonkeyPatch, run: AgentRun) -> _Session:
     session = _Session(run)
