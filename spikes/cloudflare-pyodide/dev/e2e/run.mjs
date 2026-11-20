@@ -732,6 +732,12 @@ async function containersChecks() {
     await until('VM primary claims held work', () => runRow(vmRun)?.claim?.[0].worker === primary.id);
     vmHoldClaimed = true;
     if (git) {
+      const topic = await api('/api/events/sources', {
+        name: 'Containers Solution Updates', source_type: 'topic', event_type: 'solution.update_available',
+      });
+      assert.equal(topic.status, 201);
+      const eventSourceId = topic.data.id;
+      assert.match(eventSourceId, /^[0-9a-f-]{36}$/);
       const solution = await api('/api/solutions', {slug: 'container-update', name: 'Container Update'});
       assert.ok([200, 201].includes(solution.status));
       const solutionId = solution.data.id;
@@ -761,9 +767,11 @@ asyncio.run(run())
         const row = sql(`SELECT json_build_object('status',j.status,'result',j.result,'error',j.error_code,
         'stage',j.remote_stage,'update_available',s.update_available_version,'scope',w.capacity_scope,
         'private_version',(SELECT update_available_version FROM solutions WHERE id = '${privateId}'),
-        'private_events',(SELECT count(*) FROM events WHERE event_type = 'solution.update_available'
+        'private_events',(SELECT coalesce(json_agg(id), '[]'::json) FROM events WHERE event_source_id = '${eventSourceId}'
+          AND event_type = 'solution.update_available'
           AND data->'solution'->>'id' = '${privateId}' AND data->'solution'->>'available_version' = '2.0.0'),
-        'events',(SELECT count(*) FROM events WHERE event_type = 'solution.update_available'
+        'events',(SELECT coalesce(json_agg(id), '[]'::json) FROM events WHERE event_source_id = '${eventSourceId}'
+          AND event_type = 'solution.update_available'
           AND data->'solution'->>'id' = s.id::text AND data->'solution'->>'available_version' = '2.0.0'))
         FROM platform_jobs j CROSS JOIN solutions s
         LEFT JOIN execution_workers w ON w.id = (j.remote_stage->>'worker_id')::uuid
@@ -776,12 +784,13 @@ asyncio.run(run())
       assert.equal(update.update_available, '2.0.0');
       assert.equal(update.result.updates_found, 2);
       assert.equal(update.result.check_failures, 0);
-      assert.equal(update.events, 1);
+      assert.equal(update.events.length, 1);
       assert.equal(update.private_version, '2.0.0');
-      assert.equal(update.private_events, 1);
+      assert.equal(update.private_events.length, 1);
       assert.ok(privateFetches > 0 && git.fetches > privateFetches);
       evidence('containers-platform-stage', {
-        jobId, solutionId, privateId, ...update, publicFetches: git.fetches - privateFetches, privateFetches,
+        jobId, vmRun, solutionId, privateId, eventSourceId, ...update,
+        publicFetches: git.fetches - privateFetches, privateFetches,
       });
     }
     const hostedWorkflows = hosted && !expiry && (async () => {
