@@ -38,6 +38,7 @@ from src.models.orm.execution_workers import ExecutionWorker
 from src.models.orm.platform_jobs import PlatformJob
 from src.models.orm.work_dispatches import WorkDispatch
 from src.services import worker_ingress_probes as ingress_probes
+from src.services.audit_context import ActorContext, clear_actor, set_actor
 from src.services.authorization.context import (
     AuthorizationContext,
     Boundary,
@@ -97,6 +98,15 @@ def _platform_operator() -> Caller:
         UserPrincipal(OPERATOR_ID, "operator@example.test", None),
         AuthorizationContext(OPERATOR_ID, None, uuid4(), False, frozenset(), (role,)),
     )
+
+
+@pytest.fixture
+def lifecycle_audit_actor(platform_admin):
+    token = set_actor(ActorContext(platform_admin.user_id, platform_admin.organization_id))
+    try:
+        yield
+    finally:
+        clear_actor(token)
 
 
 def test_cloudflare_routes_refuse_provider_org_membership(e2e_client, provider_org_user, platform_admin) -> None:
@@ -346,7 +356,7 @@ async def test_rotate_worker_credential_is_drain_first(
 
 @pytest.mark.asyncio
 async def test_scale_in_job_uses_platform_authority_and_current_lease(
-    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch,
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch, lifecycle_audit_actor,
 ) -> None:
     organization_id = uuid4()
     provider_member = Caller(
@@ -396,7 +406,7 @@ async def test_scale_in_job_uses_platform_authority_and_current_lease(
 
 @pytest.mark.asyncio
 async def test_disconnect_resumes_owned_script_delete_until_namespace_absence(
-    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch,
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch, lifecycle_audit_actor,
 ) -> None:
     admin = _platform_operator()
     resource = CloudflareOwnedResource(
@@ -459,7 +469,7 @@ async def test_disconnect_resumes_owned_script_delete_until_namespace_absence(
             assert resource.state == "deleting"
             script_exists = False
             mutations.append("DELETE")
-            result = None
+            return httpx.Response(204)
         return httpx.Response(200, json={"success": True, "result": result})
 
     monkeypatch.setattr(lifecycle_job, "get_db_context", context)

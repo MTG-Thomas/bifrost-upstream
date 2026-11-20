@@ -25,7 +25,7 @@ from src.services.worker_pool.manifest import resolve_worker_job_spec
 
 @pytest.mark.parametrize("cluster", [False, True])
 async def test_external_capacity_is_the_only_selected_worker_provider(monkeypatch, cluster):
-    from src.services.worker_pool import cloudflare_supervisor, controller, external_controller
+    from src.services.worker_pool import controller, external_controller
     from src.jobs.schedulers import kubernetes_jobs
 
     stop = asyncio.Event()
@@ -36,14 +36,13 @@ async def test_external_capacity_is_the_only_selected_worker_provider(monkeypatc
     legacy_workers = AsyncMock(side_effect=wait)
     monkeypatch.setattr(controller, "worker_pool_loop", legacy_workers)
     monkeypatch.setattr(external_controller, "external_worker_pool_loop", wait)
-    monkeypatch.setattr(cloudflare_supervisor, "cloudflare_supervisor_loop", AsyncMock(side_effect=lambda *a, **kw: None))
     monkeypatch.setattr(kubernetes_jobs, "kubernetes_build_loop", wait)
     monkeypatch.setattr(kubernetes_control, "may_manage_jobs", AsyncMock(return_value=cluster))
     tasks = await kubernetes_control.start_kubernetes_loops(stop, SimpleNamespace(
         worker_capacity_url="https://capacity.invalid", worker_capacity_token=SecretStr("x" * 40),
     ))
     try:
-        assert [task.get_name() for task in tasks] == ["external-worker-pool-controller", "cloudflare-worker-supervisor"] + (
+        assert [task.get_name() for task in tasks] == ["external-worker-pool-controller"] + (
             ["kubernetes-build-controller"] if cluster else []
         )
         legacy_workers.assert_not_called()
@@ -68,9 +67,6 @@ async def test_partial_external_configuration_does_not_fall_back_to_kubernetes(m
 
 
 async def test_manual_cloudflare_enrollment_does_not_start_an_external_provider(monkeypatch):
-    from src.services.worker_pool import cloudflare_supervisor
-
-    monkeypatch.setattr(cloudflare_supervisor, "cloudflare_supervisor_loop", AsyncMock())
     permission = AsyncMock(return_value=False)
     monkeypatch.setattr(kubernetes_control, "may_manage_jobs", permission)
     settings = SimpleNamespace(
@@ -78,8 +74,7 @@ async def test_manual_cloudflare_enrollment_does_not_start_an_external_provider(
         cloudflare_worker_hello_enabled=True,
     )
     tasks = await kubernetes_control.start_kubernetes_loops(asyncio.Event(), settings)
-    assert [task.get_name() for task in tasks] == ["cloudflare-worker-supervisor"]
-    await asyncio.gather(*tasks)
+    assert tasks == []
     permission.assert_awaited_once_with(settings)
 
 

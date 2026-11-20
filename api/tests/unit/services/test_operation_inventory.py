@@ -18,7 +18,7 @@ def test_every_observed_surface_is_classified_with_a_reason() -> None:
     assert inventory["counts"] == {
         "cli": 192,
         "manifest": 16,
-        "mcp": 107,
+        "mcp": 108,
         "rest": 732,
         "sdk": 21,
     }

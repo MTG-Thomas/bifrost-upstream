@@ -23,7 +23,7 @@ from src.models.orm.cloudflare_capacity import (
 )
 from src.models.orm.execution_workers import ExecutionWorker
 from src.services import worker_ingress_probes as probes
-from src.services.worker_ingress import CONTROL_PATH, PORT
+from src.services.worker_ingress import ALLOW_MARKER, CONTROL_PATH, INGRESS_HEADER, PORT
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
     seal_credential,
@@ -107,16 +107,17 @@ async def test_worker_ingress_over_tls(
         await _relay(reader, writer, api.hostname, upstream_port)
 
     try:
-        async with asyncio.timeout(8):
+        async with asyncio.timeout(8), httpx.AsyncClient(timeout=2, trust_env=False) as ready:
             while True:
                 try:
-                    _, ingress_socket = await asyncio.open_connection(api.hostname, PORT)
-                except OSError:
-                    await asyncio.sleep(0.1)
-                else:
-                    ingress_socket.close()
-                    await ingress_socket.wait_closed()
-                    break
+                    response = await ready.get(
+                        f"http://{api.hostname}:{PORT}/api/sdk/context", headers={"Host": _HOST},
+                    )
+                    if response.status_code == 401 and response.headers.get(INGRESS_HEADER.decode()) == ALLOW_MARKER.decode():
+                        break
+                except httpx.TransportError:
+                    pass
+                await asyncio.sleep(0.1)
         async with await asyncio.start_server(forward, "127.0.0.1", 0, ssl=tls) as proxy:
             port = proxy.sockets[0].getsockname()[1]
             probe_address = probes._probe_address

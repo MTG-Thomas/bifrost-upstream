@@ -74,6 +74,10 @@ class WorkersRestCleanup:
             raise CloudflareRestUnavailable("Cloudflare REST is temporarily unavailable")
         if not response.is_success:
             raise ObservationPending("Cloudflare REST request did not succeed")
+        if method == "DELETE" and response.status_code in (200, 204) and not response.content:
+            # Worker delete can acknowledge with an empty body. The caller
+            # still verifies script and namespace absence independently.
+            return {"success": True, "result": None}
         try:
             payload = response.json()
         except ValueError:
