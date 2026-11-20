@@ -335,6 +335,7 @@ class Bridge:
                             raise ProtocolError("Cloudflare command exceeds the control payload limit")
                         if action == "workflow" and self.managed_cloudflare:
                             deadline = payload.get("workflow_deadline")
+                            workspace = payload["context"]["cloudflare_workspace"]
                             # Commit the reservation before sending any frame. A
                             # failed socket send can leave a conservative charge.
                             with remote_owner_context(LeaseRef(self.lease)):
@@ -343,9 +344,11 @@ class Bridge:
                                         raise CredentialRouteChanged("Cloudflare ownership changed before dispatch")
                                     if not await reserve_tenant_host_usage(
                                         db, self.lease.worker_id, datetime.fromisoformat(deadline) if deadline else None,
+                                        workflow_cpu_ms=workspace["cpu_budget_ms"],
+                                        subrequests=workspace["subrequest_allowance"],
                                     ):
                                         raise CloudflareRevisionRejected(
-                                            "Managed Cloudflare workflows require a finite timeout"
+                                            "Managed Cloudflare workflow usage could not be reserved"
                                         )
                         sent = 0
                         send_deadline = loop.time() + _reply_timeout(action)

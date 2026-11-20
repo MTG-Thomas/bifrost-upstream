@@ -256,6 +256,11 @@ class CloudflareUsageActivity(Base):
     inventory_warm_pings: Mapped[int] = mapped_column(BigInteger, server_default="0")
     capacity_requests: Mapped[int] = mapped_column(BigInteger, server_default="0")
     capacity_cpu_ms: Mapped[int] = mapped_column(BigInteger, server_default="0")
+    qualified_cpu_ms: Mapped[int] = mapped_column(BigInteger, server_default="0")
+    qualified_dispatches: Mapped[int] = mapped_column(BigInteger, server_default="0")
+    qualified_warm_pings: Mapped[int] = mapped_column(BigInteger, server_default="0")
+    qualified_creations: Mapped[int] = mapped_column(BigInteger, server_default="0")
+    qualified_legacy_events: Mapped[int] = mapped_column(BigInteger, server_default="0")
 
 
 class CloudflareUsageIncarnation(Base):

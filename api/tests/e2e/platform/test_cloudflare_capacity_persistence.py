@@ -97,11 +97,11 @@ from src.services.worker_pool.cloudflare_provisioning import (
 )
 from src.services.worker_pool.cloudflare_spend import (
     WORKERS_CALIBRATED_RATE_TABLE_VERSION,
+    WORKERS_INVENTORY_RATE_TABLE_VERSION,
     WORKERS_LEGACY_RATE_TABLE_VERSION,
     WORKERS_RATE_TABLE_VERSION,
     WORKERS_RATES,
     cloudflare_estimated_usage,
-    launcher_lifetime_rate,
     read_workers_usage,
     reserve_tenant_host_usage,
     usage_period,
@@ -115,6 +115,9 @@ from src.services.worker_pool.cloudflare_workers_rest import (
 
 OPERATOR_ID = UUID("20cb7fe5-78e2-48d7-8f1e-8edcac69ffab")
 TEST_LAUNCHER_CAPS = {"sqlite_rows_written": 100, "do_requests": 20, "log_events": 5}
+TEST_CPU_LIMITS = {
+    "capacity": 87, "gateway": 50, "workflow": 30_000, "boot": 2000, "warm": 200, "exercise": 100, "startup": 1000,
+}
 
 
 def _platform_operator() -> Caller:
@@ -1090,7 +1093,7 @@ async def create_installation(
             monthly_limit_usd=Decimal("10.00"),
             shared_managed_worker_cap=8,
         ),
-        bounds=WorkersReleaseMeterBounds(60, zero, zero, "fixture-release", rated_slots, TEST_LAUNCHER_CAPS),
+        bounds=WorkersReleaseMeterBounds(60, zero, zero, "fixture-release", rated_slots, TEST_LAUNCHER_CAPS, TEST_CPU_LIMITS),
     )
 
 
@@ -1366,11 +1369,10 @@ async def test_admission_prices_the_qualified_ledger_bounds(
     )
     receipt = CloudflareLauncherUsage(sqlite_rows_written=120, do_requests=22, log_events=8, exhausted=True)
     current.meter_release_digest = "b" * 64
-    current.meter_rate_version = WORKERS_RATE_TABLE_VERSION
-    bounds = json.loads(Path(cloudflare_spend.__file__).with_name("cloudflare_meter_bounds.json").read_bytes())
+    current.meter_rate_version = WORKERS_INVENTORY_RATE_TABLE_VERSION
     current.meter_bounds = {
         "caps": TEST_LAUNCHER_CAPS,
-        "second_usd": str(launcher_lifetime_rate({name: Decimal(value) for name, value in bounds["per_launcher_second"].items()})),
+        "second_usd": "0.000681378",
     }
     # The production guard charges a floor per meter and retains amounts
     # above the cap even for a regressing or uncertain final receipt.
@@ -1469,7 +1471,7 @@ async def test_tenant_residency_reserves_route_and_warm_tail_in_the_spend_query(
     worker_id = uuid4()
     incarnation = CloudflareUsageIncarnation(
         worker_id=worker_id, installation_id=installation.id, started_at=now - timedelta(minutes=1),
-        slots=1, meter_release_digest="f" * 64, meter_rate_version=WORKERS_RATE_TABLE_VERSION,
+        slots=1, meter_release_digest="f" * 64, meter_rate_version=WORKERS_INVENTORY_RATE_TABLE_VERSION,
         meter_bounds={"caps": TEST_LAUNCHER_CAPS, "second_usd": "0.00068126550"},
     )
     db_session.add(incarnation)
@@ -1505,6 +1507,57 @@ async def test_tenant_residency_reserves_route_and_warm_tail_in_the_spend_query(
     installation.policy = {**installation.policy, "meter_launcher": {}}
     await db_session.flush()
     assert await db_session.scalar(price) is None
+
+
+@pytest.mark.asyncio
+async def test_qualified_dispatch_prices_pinned_cpu_and_keeps_sdk_events_attributed(
+    db_session: AsyncSession, installation: CloudflareInstallation,
+) -> None:
+    worker_id, execution_id = uuid4(), uuid4()
+    db_session.add(ExecutionWorker(
+        id=worker_id, form="external", state="ready", capacity_scope="workers",
+        runtime_profile="cloudflare-python-v1", memory_limit_bytes=128 * 2**20, version="fixture-release",
+    ))
+    await db_session.flush()
+    db_session.add(CloudflareWorkerReservation(
+        worker_id=worker_id, installation_id=installation.id, scope="workers", deployment_revision=1,
+        control_root_version=1,
+    ))
+    await db_session.flush()
+    db_session.add(ExecutionWorkerClaim(worker_id=worker_id, family=WAKE_WORKFLOW, subject_id=execution_id))
+    await db_session.flush()
+    await cloudflare_spend.record_sdk_gateway_request(
+        db_session, origin=installation.worker_ingress_origin, execution_id=execution_id,
+    )
+
+    now = await db_session.scalar(select(func.clock_timestamp()))
+    assert now is not None
+    assert not await reserve_tenant_host_usage(db_session, worker_id, now)
+    assert await reserve_tenant_host_usage(
+        db_session, worker_id, now + timedelta(seconds=120), workflow_cpu_ms=123, subrequests=12,
+    )
+    row = await db_session.get(CloudflareUsageActivity, (installation.id, usage_period(now)[0]))
+    assert row is not None
+    assert (row.dispatched_runs, row.sdk_requests, row.qualified_legacy_events) == (1, 1, 2)
+    assert (row.qualified_dispatches, row.qualified_warm_pings, row.qualified_cpu_ms) == (1, 32, 47_523)
+    assert row.qualified_creations in (5, 6)  # the warm tail may cross UTC midnight
+    incarnation = await db_session.get(CloudflareUsageIncarnation, worker_id)
+    assert incarnation is not None
+    incarnation.deleted_at = now
+    await db_session.flush()
+    price = select(cloudflare_estimated_usage()).where(CloudflareInstallation.id == installation.id)
+    qualified_price = await db_session.scalar(price)
+    row.qualified_legacy_events = 0
+    await db_session.flush()
+    duplicate_proxy = await db_session.scalar(price)
+    assert duplicate_proxy is not None and qualified_price is not None
+    assert duplicate_proxy - qualified_price == Decimal("0.0012")
+
+    row.qualified_cpu_ms = 0
+    await db_session.flush()
+    without_reserved_cpu = await db_session.scalar(price)
+    assert without_reserved_cpu is not None
+    assert duplicate_proxy - without_reserved_cpu == Decimal("0.00095046")
 
 
 @pytest.mark.asyncio
@@ -1707,7 +1760,7 @@ async def test_policy_save_fences_old_admission_and_rejects_an_unsafe_budget(
     )
     zero = dict.fromkeys(WORKERS_RATES, Decimal(0))
     fixed = {**zero, "sqlite_rows_written": Decimal(5_000_000)}
-    bounds = WorkersReleaseMeterBounds(60, zero, fixed, "fixture-release", 2, TEST_LAUNCHER_CAPS)
+    bounds = WorkersReleaseMeterBounds(60, zero, fixed, "fixture-release", 2, TEST_LAUNCHER_CAPS, TEST_CPU_LIMITS)
     with pytest.raises(CloudflareBudgetTooLow):
         await save_cloudflare_policy(
             db_session, installation_id=installation.id, expected_revision=1, policy=policy, bounds=bounds,

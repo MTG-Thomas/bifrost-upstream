@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {execFileSync, spawn} from 'node:child_process';
+import {spawn} from 'node:child_process';
 import {createHash, randomBytes, randomUUID} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import {mkdtemp, rm} from 'node:fs/promises';
@@ -115,15 +115,6 @@ async function observeAtControllerCadence(path) {
   observer.stdin.end(JSON.stringify(auth));
   const [receipt] = await Promise.all([buffer(observer.stdout), completion]);
   console.info('controller-cadence', receipt.toString('utf8').trim());
-}
-
-function localWorkerdCpu() {
-  const children = readFileSync(`/proc/${process.pid}/task/${process.pid}/children`, 'utf8').trim().split(/\s+/);
-  const ids = children.filter(pid => readFileSync(`/proc/${pid}/comm`, 'utf8').trim() === 'workerd');
-  assert.equal(ids.length, 1, 'The measurement needs exactly one local workerd process');
-  const stat = readFileSync(`/proc/${ids[0]}/stat`, 'utf8');
-  const fields = stat.slice(stat.lastIndexOf(') ') + 2).split(' ');
-  return Number(fields[11]) + Number(fields[12]);
 }
 
 function request(path, method = 'GET', body, headers = auth) {
@@ -252,6 +243,9 @@ async function start() {
             LOADER: {type: 'worker-loader'},
             RUNTIME_SHA256: {type: 'text', value: 'fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5'},
             BIFROST_METER_ENGINE_CPU_MS: {type: 'text', value: '30000'},
+            BIFROST_METER_BOOT_CPU_MS: {type: 'text', value: process.env.BIFROST_QUALIFIED_BOOT_CPU_MS ?? '30000'},
+            BIFROST_METER_WARM_CPU_MS: {type: 'text', value: process.env.BIFROST_QUALIFIED_WARM_CPU_MS ?? '30000'},
+            BIFROST_METER_EXERCISE_CPU_MS: {type: 'text', value: process.env.BIFROST_QUALIFIED_EXERCISE_CPU_MS ?? '30000'},
             BIFROST_METER_SDK_REQUESTS: {type: 'text', value: '40'},
             BIFROST_LAUNCHER_METERS: {type: 'text', value: process.env.BIFROST_QUALIFIED_LAUNCHER_METERS ??
               '{"sqlite_rows_written":10000,"do_requests":1000,"log_events":100}'},
@@ -282,7 +276,6 @@ after(async () => {
 });
 
 test('prepare, start, signed hello, observe and delete use isolated workerd Workers', async () => {
-  const beforeCpu = measuredBundle ? localWorkerdCpu() : null;
   const id = randomUUID();
   const path = `workers/${id}`;
   const uid = randomBytes(16).toString('hex');
@@ -335,13 +328,6 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
   await next(() => sockets.get(id).readyState === 3);
   assert.equal((await request(path + '/start', 'POST', {resource_uid})).status, 409);
   assert.equal(hellos.get(id).length, 1);
-  if (beforeCpu !== null && !references) {
-    const hz = Number(execFileSync('getconf', ['CLK_TCK'], {encoding: 'utf8'}));
-    const cpuUs = Math.ceil(((localWorkerdCpu() - beforeCpu) + 1) * 1000000 / hz);
-    console.info('capacity-module-cpu', JSON.stringify({
-      cpuUs, sha256: createHash('sha256').update(readFileSync(measuredBundle)).digest('hex'),
-    }));
-  }
   if (references) {
     assert.ok(references.every(attempt => attempt.usage));
     assert.ok(deleted.usage);

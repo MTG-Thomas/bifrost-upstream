@@ -51,6 +51,7 @@ from src.services.worker_pool.cloudflare_spend import (
     launcher_lifetime_rate,
     spend_coverage,
     usage_period,
+    valid_cpu_limits,
     workers_fleet_envelope_usd,
 )
 
@@ -73,6 +74,7 @@ class WorkersReleaseMeterBounds:
     release: str
     max_slots_per_launcher: int
     launcher_caps: Mapping[str, int]
+    cpu_limits_ms: Mapping[str, int]
 
 
 def release_meter_bounds(release: WorkersRelease) -> WorkersReleaseMeterBounds:
@@ -80,7 +82,7 @@ def release_meter_bounds(release: WorkersRelease) -> WorkersReleaseMeterBounds:
     return WorkersReleaseMeterBounds(
         bounds.cleanup_margin_seconds, bounds.per_launcher_second, bounds.per_fleet_fixed,
         release.digest, release.manifest.max_slots_per_launcher,
-        bounds.qualification.launcher_caps,
+        bounds.qualification.launcher_caps, bounds.qualification.cpu_limits_ms,
     )
 
 
@@ -169,12 +171,15 @@ def _price_policy(
         type(cap) is not int or cap <= 0 for cap in bounds.launcher_caps.values()
     ):
         raise ValueError("Workers release needs positive caps for all launcher meters")
+    if not valid_cpu_limits(bounds.cpu_limits_ms):
+        raise ValueError("Workers release needs positive CPU limits for all qualified paths")
     digest = sha256(json.dumps({
         "cleanup_margin_seconds": bounds.cleanup_margin_seconds,
         "max_slots_per_launcher": bounds.max_slots_per_launcher,
         "per_launcher_second": {k: str(v.normalize()) for k, v in bounds.per_launcher_second.items()},
         "per_fleet_fixed": {k: str(v.normalize()) for k, v in bounds.per_fleet_fixed.items()},
         "launcher_caps": dict(bounds.launcher_caps),
+        "cpu_limits_ms": dict(bounds.cpu_limits_ms),
     }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     envelope = workers_fleet_envelope_usd(
         launcher_cap=policy.workers.launcher_cap,
@@ -196,6 +201,7 @@ def _price_policy(
         "meter_launcher": {
             "caps": dict(bounds.launcher_caps),
             "second_usd": str(launcher_lifetime_rate(bounds.per_launcher_second)),
+            "cpu_ms": dict(bounds.cpu_limits_ms),
         },
     }
 

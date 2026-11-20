@@ -15,8 +15,8 @@ from shared.models import CloudflareLauncherCounts
 WORKERS_RELEASE_PATH = Path("/app/artifacts/cloudflare/workers")
 MAX_WORKER_BYTES = 64 * 1024 * 1024
 QUALIFIED_RUNTIME_SHA256 = "fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5"
-QUALIFIED_METER_BOUNDS_SHA256 = "98b97467fe949ec18b66254a78a1bd29843c1e4967ddf8731e1c27b017e2d715"
-LAUNCHER_CPU_CEILING_MS = 30_000
+QUALIFIED_METER_BOUNDS_SHA256 = "735eb7b9aef4edfa2f1b25be475120f010a58fa857f9d2df69649ead8daeade0"
+WORKFLOW_CPU_CEILING_MS = 30_000
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 WorkerRole = Literal["launcher", "capacity"]
 
@@ -75,6 +75,37 @@ class LauncherReference(BaseModel):
     observed: CloudflareLauncherCounts
 
 
+class CpuSample(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    samples: int = Field(gt=0)
+    p99_us: int = Field(gt=0)
+
+
+class CpuSamplePaths(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    capacity_profile: CpuSample
+    capacity_observe: CpuSample
+    capacity_prepare: CpuSample
+    capacity_start: CpuSample
+    capacity_delete: CpuSample
+    boot: CpuSample
+    warm: CpuSample
+    exercise: CpuSample
+    cold_exercise: CpuSample
+    loose: CpuSample
+    solution: CpuSample
+
+
+class CpuReference(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_run: UUID
+    samples: CpuSamplePaths
+    startup_reserve_ms: Literal[1000]
+
+
 class MeterQualification(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -82,14 +113,31 @@ class MeterQualification(BaseModel):
     observed_manifest_sha256: Digest
     capacity_module_sha256: Digest
     bundle_sha256: Digest
-    capacity_cpu_us: int = Field(gt=0)
+    cpu_reference: CpuReference
     sdk_requests: int = Field(gt=0)
     safety_margin: int = Field(gt=1)
     launcher_reference: LauncherReference
 
     @property
-    def capacity_cpu_ms(self) -> int:
-        return (self.capacity_cpu_us * self.safety_margin + 999) // 1000
+    def cpu_limits_ms(self) -> dict[str, int]:
+        sample = self.cpu_reference.samples
+
+        def cap(*paths: CpuSample) -> int:
+            p99 = max(value.p99_us for value in paths)
+            return min(WORKFLOW_CPU_CEILING_MS, (p99 * self.safety_margin + 999) // 1000)
+
+        return {
+            "capacity": cap(
+                sample.capacity_profile, sample.capacity_observe, sample.capacity_prepare,
+                sample.capacity_start, sample.capacity_delete,
+            ),
+            "gateway": cap(sample.loose, sample.solution),
+            "boot": cap(sample.boot),
+            "warm": cap(sample.warm),
+            "exercise": cap(sample.exercise),
+            "workflow": WORKFLOW_CPU_CEILING_MS,
+            "startup": self.cpu_reference.startup_reserve_ms,
+        }
 
     @property
     def sdk_request_limit(self) -> int:
@@ -150,14 +198,17 @@ def load_workers_release(path: Path = WORKERS_RELEASE_PATH) -> WorkersRelease:
         if set(manifest.workers) != {"launcher", "capacity"}:
             raise WorkersReleaseUnavailable("Workers release must contain the launcher and capacity roles")
         qualifier = manifest.meter_bounds.qualification
+        cpu = qualifier.cpu_limits_ms
         launcher = manifest.workers["launcher"]
         resource_limits = {binding.name: binding.text for binding in launcher.bindings if binding.type == "plain_text"}
         serialized_caps = json.dumps(qualifier.launcher_caps, sort_keys=True, separators=(",", ":"))
         if (
-            manifest.workers["capacity"].cpu_ms != qualifier.capacity_cpu_ms
-            or launcher.cpu_ms != LAUNCHER_CPU_CEILING_MS
+            manifest.workers["capacity"].cpu_ms != cpu["capacity"]
+            or launcher.cpu_ms != cpu["gateway"]
             or resource_limits.get("BIFROST_METER_SDK_REQUESTS") != str(qualifier.sdk_request_limit)
-            or resource_limits.get("BIFROST_METER_ENGINE_CPU_MS") != str(LAUNCHER_CPU_CEILING_MS)
+            or resource_limits.get("BIFROST_METER_ENGINE_CPU_MS") != str(cpu["workflow"])
+            or any(resource_limits.get(f"BIFROST_METER_{name.upper()}_CPU_MS") != str(cpu[name])
+                   for name in ("boot", "warm", "exercise"))
             or resource_limits.get("BIFROST_LAUNCHER_METERS") != serialized_caps
         ):
             raise WorkersReleaseUnavailable("Workers resource limits do not match the measured release")

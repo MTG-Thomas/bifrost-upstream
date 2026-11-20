@@ -46,6 +46,8 @@ def release(tmp_path: Path, monkeypatch) -> Path:
         "workers": {},
     }
     raw_bounds = manifest["meter_bounds"]
+    qualification = cloudflare_release.MeterBounds.model_validate(raw_bounds).qualification
+    cpu = qualification.cpu_limits_ms
     for role, exports in (
         ("launcher", ("CloudflareLauncher", "TenantHost")),
         ("capacity", ("ScopeRegistry", "WorkerLedger")),
@@ -62,16 +64,16 @@ def release(tmp_path: Path, monkeypatch) -> Path:
             "exports": {value: {"type": "durable-object", "storage": "sqlite"} for value in exports},
             "bindings": [
                 {"name": "BIFROST_METER_SDK_REQUESTS", "type": "plain_text", "text": "40"},
-                {"name": "BIFROST_METER_ENGINE_CPU_MS", "type": "plain_text", "text": "30000"},
+                {"name": "BIFROST_METER_ENGINE_CPU_MS", "type": "plain_text", "text": str(cpu["workflow"])},
+                *({"name": f"BIFROST_METER_{name.upper()}_CPU_MS", "type": "plain_text", "text": str(cpu[name])}
+                  for name in ("boot", "warm", "exercise")),
                 {"name": "BIFROST_LAUNCHER_METERS", "type": "plain_text", "text": json.dumps(
                     {name: value * raw_bounds["qualification"]["safety_margin"]
                      for name, value in raw_bounds["qualification"]["launcher_reference"]["observed"].items()},
                     sort_keys=True, separators=(",", ":"),
                 )},
             ] if role == "launcher" else [],
-            "cpu_ms": 30_000 if role == "launcher" else (
-                raw_bounds["qualification"]["capacity_cpu_us"] * raw_bounds["qualification"]["safety_margin"] + 999
-            ) // 1000,
+            "cpu_ms": cpu["gateway" if role == "launcher" else "capacity"],
             "public_endpoint": role == "capacity",
             "preview_urls": False,
         }
@@ -97,6 +99,17 @@ def test_repository_meter_bounds_match_the_api_pin() -> None:
     path = Path(cloudflare_release.__file__).with_name("cloudflare_meter_bounds.json")
     bounds = cloudflare_release.MeterBounds.model_validate_json(path.read_bytes())
     assert cloudflare_release.meter_bounds_digest(bounds) == cloudflare_release.QUALIFIED_METER_BOUNDS_SHA256
+
+
+@pytest.mark.parametrize("name", ["BOOT", "WARM", "EXERCISE"])
+def test_release_rejects_a_mismatched_child_cpu_limit(release: Path, name: str) -> None:
+    path = release / "manifest.json"
+    manifest = json.loads(path.read_bytes())
+    bindings = manifest["workers"]["launcher"]["bindings"]
+    next(binding for binding in bindings if binding["name"] == f"BIFROST_METER_{name}_CPU_MS")["text"] = "1"
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(WorkersReleaseUnavailable, match="resource limits"):
+        load_workers_release(release)
 
 
 def test_release_rejects_same_size_module_substitution(release: Path) -> None:
@@ -216,6 +229,7 @@ async def test_rest_upload_scopes_the_bearer_and_finalizes_the_verified_endpoint
                      for part in message.iter_parts()}
             assert parts["capacity.mjs"] == packaged.modules["capacity"]["capacity.mjs"]
             metadata = json.loads(parts["metadata"])
+            assert metadata["limits"] == {"cpu_ms": 87}
             assert "synthetic-management" not in json.dumps(metadata)
             assert metadata["observability"] == {"enabled": False}
             assert metadata["logpush"] is False

@@ -101,9 +101,12 @@ terminal ACK recovery continues.
 Bifrost reserves the Worker request and configured CPU budget before each
 managed capacity call, including idle capability polling. Each workflow
 reserves control fragments, gateway calls, and TenantHost residency
-through its finite deadline and the extended warm tail. The warm allowance
-covers requests, CPU, possible Dynamic Worker creations, alarms and
-storage. Managed uploads disable provider Observability and Logpush.
+through its finite deadline and the extended warm tail. CPU reserves use
+the packaged limits for cold boot, warm prime, idle exercise and gateway,
+plus the approved workflow CPU budget up to the release ceiling. Idle
+alarms can use only a confirmed engine generation. The separate identity
+reserve covers initial Dynamic Workers and reuse across UTC days. Managed
+uploads disable provider Observability and Logpush.
 
 Capacity Settings lists the coverage of each rate contributing to the
 current month. External traffic, provider retries and overages, exact

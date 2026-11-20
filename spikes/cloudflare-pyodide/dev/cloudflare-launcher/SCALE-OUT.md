@@ -52,12 +52,12 @@ To include the Workers release, configure the repository variable `QUALIFIED_WOR
 
 Set `QUALIFIED_WORKERS_METER_BOUNDS` to the exact JSON in `api/src/services/worker_pool/cloudflare_meter_bounds.json` when enabling Workers packaging. CI requires positive priced bounds, measurement sources, measured inputs, the safety margin, the exact capacity module digest and the bundle fingerprint. Re-qualify changed bundles before packaging. The API verifies both fingerprints, the bounds digest and the release limits sent to Cloudflare. The unpriced transfer entry records zero. Bifrost binds a saved policy to the manifest digest before Connect or a policy save.
 
-The Phase 1 calibration applies a 10× margin to measured capacity CPU
-and gateway requests. The packaged capacity Worker caps CPU at 425 ms
-per invocation. The launcher caps gateway requests at 40 per attempt
-and keeps the 30,000 ms dynamic engine ceiling. Pricing retains
-conservative provider-side SQLite, log, and residency bounds until
-those units can be independently attributed and enforced. [Measured release calibration](PHASE1-USAGE.md#measured-release-calibration)
+The Phase 1 calibration applies a 10× margin to measured CPU and gateway
+requests. The package sets separate CPU limits for the capacity Worker,
+launcher gateway, warm priming, and idle exercise. Cold boot retains the
+30,000 ms ceiling. Execution honors each approval up to that ceiling.
+The admission ledger prices Worker CPU by request and dispatch and keeps
+the separate DO residency and Dynamic Worker identity reserves. [Measured release calibration](PHASE1-USAGE.md#measured-release-calibration)
 
 **Deploy path decision.** Choose REST/OCI if the packaged runner proves the complete lifecycle through documented interfaces or standard registry operations, including retry after lost responses, least-privilege permissions and exact cleanup. If a necessary lifecycle operation fails that gate or has no supported direct operation (image tag deletion is a specific candidate), qualify a pinned `cf` client inside the trusted runner as the deliberate deployment path. Include any required pinned build adapter in the runner image and use the same immutable artifacts and resource inventory. Require structured outputs/readback, protected token injection, tool provenance, exact resource fences, explicit app creation and cleanup. Keep one deployment adapter per qualified release/scope. A failed or ambiguous mutation never triggers an automatic switch of adapters. Keep a scope gated if neither path passes. `cf` implements managed registry tag listing/deletion independently of Wrangler. [cf registry implementation](https://github.com/cloudflare/cf/blob/main/CLAUDE.md) · [Wrangler image commands](https://developers.cloudflare.com/workers/wrangler/commands/containers/)
 

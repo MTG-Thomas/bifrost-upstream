@@ -77,6 +77,9 @@ export default defineConfig({
       API_ORIGIN: {type: 'text', value: process.env.STAGING_API_ORIGIN ?? ''},
       ...((managedLauncher || launcherEnabled) ? {
         BIFROST_METER_ENGINE_CPU_MS: {type: 'text' as const, value: '30000'},
+        BIFROST_METER_BOOT_CPU_MS: {type: 'text' as const, value: '30000'},
+        BIFROST_METER_WARM_CPU_MS: {type: 'text' as const, value: '30000'},
+        BIFROST_METER_EXERCISE_CPU_MS: {type: 'text' as const, value: '30000'},
         BIFROST_METER_SDK_REQUESTS: {type: 'text' as const, value: '40'},
       } : {}),
       ...(managedLauncher ? {BIFROST_CLOUDFLARE_MANAGED: {type: 'text' as const, value: 'true'}} :

@@ -53,6 +53,7 @@ def _release():
         path = Path(directory)
         bounds = manifest["meter_bounds"]
         qualification = cloudflare_release.MeterQualification.model_validate(bounds["qualification"])
+        cpu = qualification.cpu_limits_ms
         for role, classes in EXPORTS.items():
             module = f"{role}.mjs"
             body = f"export default '{role}';".encode()
@@ -63,13 +64,15 @@ def _release():
                              "gzip_bytes": 64, "mime_type": "application/javascript+module"}],
                 "exports": {name: {"type": "durable-object", "storage": "sqlite"} for name in classes},
                 "bindings": [
-                    {"name": "BIFROST_METER_SDK_REQUESTS", "type": "plain_text", "text": "40"},
-                    {"name": "BIFROST_METER_ENGINE_CPU_MS", "type": "plain_text", "text": "30000"},
+                    {"name": "BIFROST_METER_SDK_REQUESTS", "type": "plain_text", "text": str(qualification.sdk_request_limit)},
+                    {"name": "BIFROST_METER_ENGINE_CPU_MS", "type": "plain_text", "text": str(cpu["workflow"])},
+                    *({"name": f"BIFROST_METER_{name.upper()}_CPU_MS", "type": "plain_text", "text": str(cpu[name])}
+                      for name in ("boot", "warm", "exercise")),
                     {"name": "BIFROST_LAUNCHER_METERS", "type": "plain_text", "text": json.dumps(
                         qualification.launcher_caps, sort_keys=True, separators=(",", ":"),
                     )},
                 ] if role == "launcher" else [],
-                "cpu_ms": 30_000 if role == "launcher" else qualification.capacity_cpu_ms,
+                "cpu_ms": cpu["gateway" if role == "launcher" else "capacity"],
                 "public_endpoint": role == "capacity", "preview_urls": False,
             }
         modules = [manifest["workers"][role]["modules"][0] for role in ("launcher", "capacity")]

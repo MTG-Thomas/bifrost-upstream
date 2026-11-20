@@ -164,7 +164,7 @@
         ]
       },
       "spikes/cloudflare-pyodide/dev/tenant-workers/tenant-api.mjs": {
-        "sha256": "df7cb413f3de84d5a8a43995e03a6670bb9ddcd26c7ad052e4f2f8889f451156",
+        "sha256": "fbf40dcc6842bede3913e5825845030102c15b43234e1f8eab658e7c4c8de1ac",
         "paths": [
           "tenant-state",
           "dynamic-engine",

@@ -240,10 +240,13 @@ export class TenantHost extends DurableObject {
   #releaseLimits() {
     const requests = Number(this.env.BIFROST_METER_SDK_REQUESTS);
     const cpuMs = Number(this.env.BIFROST_METER_ENGINE_CPU_MS);
-    if (![requests, cpuMs].every(limit => Number.isSafeInteger(limit) && limit > 0)) {
+    const bootMs = Number(this.env.BIFROST_METER_BOOT_CPU_MS);
+    const warmMs = Number(this.env.BIFROST_METER_WARM_CPU_MS);
+    const exerciseMs = Number(this.env.BIFROST_METER_EXERCISE_CPU_MS);
+    if (![requests, cpuMs, bootMs, warmMs, exerciseMs].every(limit => Number.isSafeInteger(limit) && limit > 0)) {
       throw new Error('Cloudflare routed execution meter bindings are missing or invalid');
     }
-    return {requests, cpuMs};
+    return {requests, cpuMs, bootMs, warmMs, exerciseMs};
   }
 
   // The outbound gateway reports each SDK call (path without query, status,
@@ -503,14 +506,16 @@ export class TenantHost extends DurableObject {
   // pre-first-call path hot between real attempts. Both ping variants
   // hold #exclusive through priming and any required retirement.
   async #ping(tenantId, {exercise = false} = {}) {
+    const limits = this.env.BIFROST_METER_ENGINE_CPU_MS !== undefined ||
+      this.env.BIFROST_CLOUDFLARE_MANAGED === 'true' ? this.#releaseLimits() : null;
+    const cpuMs = limits && (exercise ? limits.exerciseMs : this.#childIsReady() ? limits.warmMs : limits.bootMs);
     const {worker, generation} = await this.#engine(tenantId);
     const modules = await this.#primeList();
     const mark = Date.now();
     try {
-      const entrypoint = this.env.BIFROST_METER_ENGINE_CPU_MS !== undefined ||
-        this.env.BIFROST_CLOUDFLARE_MANAGED === 'true'
-        ? worker.getEntrypoint(null, {limits: {cpuMs: this.#releaseLimits().cpuMs}})
-        : worker.getEntrypoint();
+      const entrypoint = limits ? worker.getEntrypoint(null, {
+        limits: {cpuMs, ...(exercise ? {subRequests: 1} : {})},
+      }) : worker.getEntrypoint();
       const response = await entrypoint.fetch(new Request('https://attempt.invalid/', {
         method: 'POST', signal: AbortSignal.timeout(ENGINE_BOOT_TIMEOUT_MS),
         body: JSON.stringify({action: 'ping', modules,
@@ -544,9 +549,10 @@ export class TenantHost extends DurableObject {
   }
 
   // Diagnostic: one exercising ping on demand, serialized like the alarm's.
-  async exercise({tenantId}) {
-    const boot = await this.#exclusive(() => this.#ping(tenantId, {exercise: true}));
-    return {...boot, ...await this.#warmOrigin()};
+  async exercise({tenantId, readyOnly = false}) {
+    const boot = await this.#exclusive(() =>
+      readyOnly && !this.#childIsReady() ? null : this.#ping(tenantId, {exercise: true}));
+    return boot && {...boot, ...await this.#warmOrigin()};
   }
 
   // Diagnostic: module names loaded in this tenant's child (no tenant data).
@@ -584,13 +590,18 @@ export class TenantHost extends DurableObject {
     const lastAttempt = state.get('lastAttempt') ?? 0;
     // Outside the window the host lets the child (and itself) go cold.
     if (!tenantId || Date.now() - lastAttempt > WARM_WINDOW_MS) return;
+    const managed = this.env.BIFROST_CLOUDFLARE_MANAGED === 'true';
+    let rearm = !managed;
     try {
       // Keep-warm pings run off the request path, so they also exercise the
       // engine. Warm-ups on the request path (warm()) do not: an attempt is
       // waiting on them.
-      await this.exercise({tenantId});
+      // In managed mode only real work can open a new engine generation.
+      // Evicting the isolate may reload the same identity, but an alarm may
+      // not manufacture a different one or keep retrying a retired child.
+      rearm = Boolean(await this.exercise({tenantId, readyOnly: managed}));
     } finally {
-      await this.ctx.storage.setAlarm(Date.now() + WARM_PING_MS, UNGATED);
+      if (rearm) await this.ctx.storage.setAlarm(Date.now() + WARM_PING_MS, UNGATED);
     }
   }
 }

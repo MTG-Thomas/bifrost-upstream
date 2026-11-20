@@ -21,6 +21,10 @@ const durableObject = (name, class_name, script) => ({
 const input = (name, source, type = "plain_text") => ({ name, type, source });
 const plain = (name, value) => ({name, type: "plain_text", text: String(value)});
 const theoreticalCpuMs = 30_000;
+const cpuSamplePaths = [
+  "capacity_profile", "capacity_observe", "capacity_prepare", "capacity_start", "capacity_delete",
+  "boot", "warm", "exercise", "cold_exercise", "loose", "solution",
+];
 const pricedMeters = [
   "worker_requests", "worker_cpu_ms", "do_requests", "do_gb_seconds", "sqlite_rows_read", "sqlite_rows_written",
   "sqlite_stored_gb_month", "log_events", "log_ingested_gb", "log_stored_gb_month",
@@ -36,6 +40,7 @@ export function qualifiedMeterLimits(bounds) {
   }
   const measurement = bounds.qualification;
   const launcher = measurement?.launcher_reference;
+  const cpu = measurement?.cpu_reference;
   if (!measurement || !/^[a-f0-9-]{36}$/.test(measurement.source_run ?? "") ||
       !/^[a-f0-9]{64}$/.test(measurement.observed_manifest_sha256 ?? "") ||
       !/^[a-f0-9]{64}$/.test(measurement.capacity_module_sha256 ?? "") ||
@@ -43,22 +48,32 @@ export function qualifiedMeterLimits(bounds) {
       !launcher?.source || Object.keys(launcher.observed ?? {}).length !== 3 ||
       ["sqlite_rows_written", "do_requests", "log_events"].some(name =>
         !Number.isSafeInteger(launcher.observed[name]) || launcher.observed[name] < 1) ||
-      ![measurement.capacity_cpu_us, measurement.sdk_requests, measurement.safety_margin].every(
+      ![measurement.sdk_requests, measurement.safety_margin].every(
         value => Number.isSafeInteger(value) && value > 0) || measurement.safety_margin <= 1) {
     throw new Error("Workers meter bounds require pinned positive qualification measurements");
   }
-  const capacityCpuMs = Math.ceil(measurement.capacity_cpu_us * measurement.safety_margin / 1000);
+  if (!cpu || !/^[a-f0-9-]{36}$/.test(cpu.source_run ?? "") || cpu.startup_reserve_ms !== 1000 ||
+      Object.keys(cpu.samples ?? {}).length !== cpuSamplePaths.length || cpuSamplePaths.some(name =>
+        ![cpu.samples[name]?.samples, cpu.samples[name]?.p99_us].every(
+          value => Number.isSafeInteger(value) && value > 0))) {
+    throw new Error("Workers CPU limits require positive qualification samples for every path");
+  }
+  const cap = (...names) => Math.min(theoreticalCpuMs, Math.ceil(
+    Math.max(...names.map(name => cpu.samples[name].p99_us)) * measurement.safety_margin / 1000,
+  ));
+  const capacityCpuMs = cap("capacity_profile", "capacity_observe", "capacity_prepare", "capacity_start", "capacity_delete");
+  const launcherCpuMs = cap("loose", "solution");
   const sdkRequests = Math.min(50, measurement.sdk_requests * measurement.safety_margin);
-  if (capacityCpuMs > theoreticalCpuMs ||
-      Number(bounds.per_launcher_second.worker_cpu_ms) !== theoreticalCpuMs + capacityCpuMs) {
-    throw new Error("Workers CPU bounds differ from the measured limit and launcher ceiling");
+  if (Number(bounds.per_launcher_second.worker_cpu_ms) !== theoreticalCpuMs + launcherCpuMs + capacityCpuMs) {
+    throw new Error("Workers CPU bounds differ from the measured deployment limits and workflow ceiling");
   }
   const launcherMeters = Object.fromEntries(Object.entries(launcher.observed).sort().map(([name, value]) =>
     [name, value * measurement.safety_margin]));
   if (launcherMeters.sqlite_rows_written <= SQLITE_HEADROOM || launcherMeters.do_requests <= MAX_WORKFLOW_SLOTS) {
     throw new Error("Launcher meter bounds must cover reserved retirement operations");
   }
-  return {capacityCpuMs, sdkRequests, engineCpuMs: theoreticalCpuMs, launcherMeters};
+  return {capacityCpuMs, launcherCpuMs, sdkRequests, engineCpuMs: theoreticalCpuMs, launcherMeters,
+    bootCpuMs: cap("boot"), warmCpuMs: cap("warm"), exerciseCpuMs: cap("exercise")};
 }
 
 const workerDefinitions = {
@@ -72,7 +87,6 @@ const workerDefinitions = {
       { name: "SDK_SCOPE", type: "plain_text", text: "sdk" },
       { name: "RUNTIME_SHA256", type: "plain_text", text: runtimePin },
     ],
-    cpu_ms: theoreticalCpuMs,
     public_endpoint: false,
   },
   capacity: {
@@ -192,9 +206,12 @@ export async function buildWorkers(runtimePath, outputPath, sourceRevision, mete
       bindings: role === "launcher" ? [...bindings,
         plain("BIFROST_METER_SDK_REQUESTS", limits.sdkRequests),
         plain("BIFROST_METER_ENGINE_CPU_MS", limits.engineCpuMs),
+        plain("BIFROST_METER_BOOT_CPU_MS", limits.bootCpuMs),
+        plain("BIFROST_METER_WARM_CPU_MS", limits.warmCpuMs),
+        plain("BIFROST_METER_EXERCISE_CPU_MS", limits.exerciseCpuMs),
         plain("BIFROST_LAUNCHER_METERS", JSON.stringify(limits.launcherMeters)),
       ] : bindings,
-      cpu_ms: role === "capacity" ? limits.capacityCpuMs : definition.cpu_ms,
+      cpu_ms: role === "capacity" ? limits.capacityCpuMs : limits.launcherCpuMs,
       preview_urls: false,
     };
   }

@@ -129,7 +129,7 @@ const main = `
       return attempt;
     }
     async waitForRun(id) { await this.#signal(id).promise; }
-    async runWithCpuWitness(input) {
+    async withCpuWitness(action, input) {
       const loader = this.env.LOADER;
       let limit;
       this.env.LOADER = {get(...args) {
@@ -140,11 +140,25 @@ const main = `
         }};
       }};
       try {
-        const result = await super.run(input);
+        const result = await super[action](input);
         return {limit, result};
+      } catch (error) {
+        return {limit, error: error.message};
       } finally {
         this.env.LOADER = loader;
       }
+    }
+    async runManagedAlarm() {
+      this.env.BIFROST_CLOUDFLARE_MANAGED = 'true';
+      await this.ctx.storage.deleteAlarm();
+      try {
+        await super.alarm();
+      } catch (error) {
+        return {error: error.message, alarm: await this.ctx.storage.getAlarm()};
+      } finally {
+        delete this.env.BIFROST_CLOUDFLARE_MANAGED;
+      }
+      return {alarm: await this.ctx.storage.getAlarm()};
     }
     async runWithoutReleaseBinding({binding, route}) {
       const value = this.env[binding];
@@ -170,7 +184,9 @@ const main = `
       const {tenantId, action, input} = await request.json();
       const host = ctx.exports.TenantHost.getByName(tenantId);
       if (action === 'run') return Response.json(await host.run(input));
-      if (action === 'cpu-witness') return Response.json(await host.runWithCpuWitness(input));
+      if (action === 'cpu-witness') return Response.json(await host.withCpuWitness(
+        input.action, input.action === 'run' ? input.payload : {tenantId}));
+      if (action === 'managed-alarm') return Response.json(await host.runManagedAlarm());
       if (action === 'missing-meter') return Response.json(await host.runWithoutReleaseBinding(input));
       if (action === 'warm') return Response.json(await host.warm({tenantId, ...input}));
       if (action === 'warm-commit-failure') return Response.json(await host.warmWithCommitFailure({tenantId, ...input}));
@@ -333,6 +349,9 @@ before(async () => {
       env: {LOADER: {type: 'worker-loader'}, API_ORIGIN: {type: 'text', value: 'https://upstream.invalid'},
         BIFROST_METER_SDK_REQUESTS: {type: 'text', value: '3'},
         BIFROST_METER_ENGINE_CPU_MS: {type: 'text', value: '125'},
+        BIFROST_METER_BOOT_CPU_MS: {type: 'text', value: '120'},
+        BIFROST_METER_WARM_CPU_MS: {type: 'text', value: '20'},
+        BIFROST_METER_EXERCISE_CPU_MS: {type: 'text', value: '30'},
         ATTEMPT_DEADLINE_MS: {type: 'text', value: '1'}},
       manifest: {mainModule, modulesRoot: fileURLToPath(root), modules: {
         [mainModule]: {type: 'esm', contents: main},
@@ -672,11 +691,12 @@ test('the release SDK meter stops the fourth request even with a larger workflow
   assert.deepEqual(snapshot.output.result, {content: 'pinned = True\n', missing: 404});
 });
 
-test('a routed workflow cannot enter the engine with either release binding missing', async () => {
+test('a routed workflow cannot enter the engine with a release meter binding missing', async () => {
   const tenant = 'missing-meter';
   await host(tenant, 'warm', {engineOnly: true});
   const before = origins.filter(url => url.includes('/api/users?')).length;
-  for (const binding of ['BIFROST_METER_ENGINE_CPU_MS', 'BIFROST_METER_SDK_REQUESTS']) {
+  for (const binding of ['BIFROST_METER_ENGINE_CPU_MS', 'BIFROST_METER_SDK_REQUESTS',
+    'BIFROST_METER_BOOT_CPU_MS', 'BIFROST_METER_WARM_CPU_MS', 'BIFROST_METER_EXERCISE_CPU_MS']) {
     await assert.rejects(host(tenant, 'missing-meter', {
       binding, route: route(tenant, {routeId: binding, scenario: 'meter-budget'}),
     }), /meter bindings are missing or invalid/);
@@ -690,10 +710,30 @@ test('the WorkerLoader receives the smaller of the release CPU limit and the wor
   for (const [approved, expected] of [[200, 125], [50, 50]]) {
     const input = route(tenant, {routeId: `cpu-${approved}`});
     input.context.cloudflare_workspace.cpu_budget_ms = approved;
-    const {limit, result} = await host(tenant, 'cpu-witness', input);
+    const {limit, result} = await host(tenant, 'cpu-witness', {action: 'run', payload: input});
     assert.equal(limit, expected);
     assert.equal(result.output.status, 'Success');
   }
+});
+
+test('boot, warm priming and exercise pass separate CPU limits to WorkerLoader', async () => {
+  const tenant = 'ping-cpu';
+  const boot = await host(tenant, 'cpu-witness', {action: 'warm'});
+  assert.equal(boot.limit, 120);
+  assert.equal(boot.result.first_request, true);
+  const warm = await host(tenant, 'cpu-witness', {action: 'warm'});
+  assert.equal(warm.limit, 20);
+  assert.equal(warm.result.first_request, false);
+  const exercise = await host(tenant, 'cpu-witness', {action: 'exercise'});
+  assert.deepEqual(exercise, {limit: 30, error: 'Tenant engine ping failed'});
+});
+
+test('a failed managed keep-warm alarm does not attempt a new engine generation', async () => {
+  const tenant = 'idle-generation-measurement';
+  assert.equal((await host(tenant, 'warm')).first_request, true);
+  assert.deepEqual(await host(tenant, 'managed-alarm'), {error: 'Tenant engine ping failed', alarm: null});
+  assert.deepEqual(await host(tenant, 'managed-alarm'), {alarm: null});
+  assert.deepEqual(await host(tenant, 'run', route(tenant)), {needsWarm: true, attempt_state: 'not_started'});
 });
 
 for (const [scenario, phase] of [['cpu-limit', 'cpu_limit'], ['memory-limit', 'memory_limit']]) {

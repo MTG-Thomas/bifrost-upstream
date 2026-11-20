@@ -371,6 +371,7 @@ async function launch(port) {
   const env = Object.fromEntries(Object.entries({
     API_ORIGIN: origin, RUNTIME_SHA256: createHash('sha256').update(artifact).digest('hex'),
     BIFROST_METER_ENGINE_CPU_MS: '30000', BIFROST_METER_SDK_REQUESTS: '40',
+    BIFROST_METER_BOOT_CPU_MS: '30000', BIFROST_METER_WARM_CPU_MS: '30000', BIFROST_METER_EXERCISE_CPU_MS: '30000',
     ...(config.phase6 ? {BIFROST_CLOUDFLARE_MANAGED: 'true'} : {
       BIFROST_CLOUDFLARE_LAUNCHER_ENABLED: 'true', BIFROST_WORKER_CONTROL_SECRET: config.controlKey,
       BIFROST_WORKER_INCARNATION_ID: config.incarnation, BIFROST_WORKER_LAUNCHER_ID: config.launcher,
