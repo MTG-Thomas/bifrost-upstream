@@ -631,6 +631,10 @@ async function containersChecks() {
   let vmProfileRead = false;
   execFileSync('docker', ['pause', ...launchers]);
   try {
+    if (git) {
+      execFileSync('docker', ['exec', config.project + '-api-1', 'python', '-m',
+        'scripts.containers_private_fixture', 'retire-paused-workers'], {timeout: 15_000});
+    }
     if (!hosted) await launch(proxy.address().port);
     if (hosted) evidence('hosted-relay-ready', {port: proxy.address().port});
     providerServer = await serveContainersProviders(config.phase6.providerHost, {
