@@ -9,7 +9,9 @@ from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from time import monotonic
 from urllib.parse import quote, unquote_to_bytes
+from uuid import UUID
 
+import h11
 import uvicorn
 from fastapi import FastAPI
 from fastapi.routing import APIRoute, APIWebSocketRoute
@@ -17,9 +19,10 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.routing import Match
 from starlette.types import Message, Receive, Scope, Send
+from uvicorn.protocols.http.h11_impl import H11Protocol
 
 from src.core.database import get_session_factory
-from src.core.security import decode_token
+from src.core.security import decode_expired_access_token, decode_token
 from src.models.orm.cloudflare_capacity import CloudflareInstallation
 from src.worker.remote.protocol import MAX_FRAME_BYTES
 
@@ -27,20 +30,50 @@ PORT = 8001
 INGRESS_HEADER = b"x-bifrost-worker-ingress"
 POLICY = json.loads(Path(__file__).with_name("worker_ingress_routes.json").read_text())
 CONTROL_PATH: str = POLICY["control"]
-ROUTES = {(method, path) for path, methods in POLICY["routes"].items() for method in methods}
+_SDK_POLICY = json.loads(
+    (Path(__file__).resolve().parents[2] / "bifrost" / "cloudflare_sdk_routes.json").read_text()
+)
+_UUID = re.compile(_SDK_POLICY["identifiers"]["uuid"])
+_EMAIL = re.compile(r"[A-Za-z0-9.!$&'*+=^_~-]+@[A-Za-z0-9.-]+")
+# Exact canonical operations come directly from the runtime policy. Its
+# prefix entries are an outer envelope; the matrix narrows those to handlers.
+_EXACT_TEMPLATES = {
+    "/api/roles/{uuid}": "/api/roles/{role_id}",
+    "/api/roles/{uuid}/users": "/api/roles/{role_id}/users",
+    "/api/roles/{uuid}/forms": "/api/roles/{role_id}/forms",
+    "/api/users/{uuid}": "/api/users/{user_id}",
+    "/api/users/{email}": "/api/users/{user_id}",
+    "/api/platform-jobs/{uuid}": "/api/platform-jobs/{job_id}",
+}
+ROUTES = {
+    (method, _EXACT_TEMPLATES.get(path, path))
+    for path, methods in _SDK_POLICY["routes"].items() for method in methods
+} | {
+    (method, path) for path, methods in POLICY["routes"].items() for method in methods
+    if any(path == prefix or path.startswith(prefix.rstrip("/") + "/") for prefix in _SDK_POLICY["prefixes"])
+}
 ALLOW_MARKER = f'v{POLICY["version"]}; allowed'.encode()
 DENY_MARKER = f'v{POLICY["version"]}; denied'.encode()
-_SDK_IDENTIFIERS = json.loads(
-    (Path(__file__).resolve().parents[2] / "bifrost" / "cloudflare_sdk_routes.json").read_text()
-)["identifiers"]
-_UUID = re.compile(_SDK_IDENTIFIERS["uuid"])
-_EMAIL = re.compile(_SDK_IDENTIFIERS["email"].replace("%5[Ee]", r"\^").replace("(?:@|%40)", "@"))
+PROBE_HEADER = b"x-bifrost-ingress-probe"
 _UUID_PARAMETERS = frozenset({"org_id", "role_id", "form_id", "agent_id", "run_id", "job_id", "execution_id"})
 _SOURCE_PREFIX = "/api/sdk/modules/"
 _ENCODED_BYTE = re.compile(rb"%([0-9a-fA-F]{2})")
 _UNRESERVED = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
 _BODY_LIMIT = 4 * 1024 * 1024
 _BODY_TIMEOUT = 10
+_HEADER_TIMEOUT = 10
+_INACTIVITY_TIMEOUT = 3
+_HELLO_TIMEOUT = 5
+_ORIGIN_TTL = 3
+_REFRESH_PATH = "/auth/refresh"
+
+
+def _marker_headers(scope: Scope, allowed: bool) -> list[tuple[bytes, bytes]]:
+    headers = [(INGRESS_HEADER, ALLOW_MARKER if allowed else DENY_MARKER), (b"cache-control", b"no-store")]
+    nonce = _header_values(scope, PROBE_HEADER)
+    if len(nonce) == 1 and re.fullmatch(rb"[0-9a-f]{32}", nonce[0]):
+        headers.append((PROBE_HEADER, nonce[0]))
+    return headers
 
 
 def _canonical_path(scope: Scope) -> bool:
@@ -117,10 +150,13 @@ def _content_length(scope: Scope) -> int:
 
 
 async def _respond(scope: Scope, send: Send, status: int, *, allowed: bool = False) -> None:
-    headers = [(INGRESS_HEADER, ALLOW_MARKER if allowed else DENY_MARKER), (b"cache-control", b"no-store")]
+    headers = _marker_headers(scope, allowed)
     if status == 429:
         headers.append((b"retry-after", b"1"))
+    if status == 401:
+        headers.append((b"www-authenticate", b"Bearer"))
     if scope["type"] == "http":
+        headers.append((b"connection", b"close"))
         await send({"type": "http.response.start", "status": status, "headers": headers})
         await send({"type": "http.response.body", "body": b""})
     elif "websocket.http.response" in scope.get("extensions", {}):
@@ -149,6 +185,24 @@ class _RequestBudget:
         return True
 
 
+class _IdentityBudgets:
+    def __init__(self, rate: int, concurrency: int) -> None:
+        self.rate = rate
+        self.concurrency = concurrency
+        self.budgets: dict[str, _RequestBudget] = {}
+        self.sweep_at = 0.0
+
+    def take(self, key: str) -> _RequestBudget | None:
+        now = monotonic()
+        if now >= self.sweep_at:
+            self.budgets = {
+                k: v for k, v in self.budgets.items() if v.active or now - v.updated < 60
+            }
+            self.sweep_at = now + 60
+        budget = self.budgets.setdefault(key, _RequestBudget(self.rate, self.concurrency))
+        return budget if budget.take() else None
+
+
 async def _installation_origin() -> str | None:
     async with get_session_factory()() as db:
         return await db.scalar(select(CloudflareInstallation.worker_ingress_origin).where(
@@ -156,13 +210,26 @@ async def _installation_origin() -> str | None:
         ))
 
 
-def _is_run_refresh(body: bytes) -> bool:
+def _access_claims(scope: Scope) -> dict | None:
+    headers = _header_values(scope, b"authorization")
+    if len(headers) != 1 or len(headers[0]) > 8192:
+        return None
+    scheme, _, token = headers[0].partition(b" ")
+    if scheme.lower() != b"bearer" or not token.isascii():
+        return None
+    value = token.decode()
+    # Preserve the normal API's expired-access challenge so the SDK can
+    # refresh a live run. JWT verification still precedes body admission.
+    return decode_token(value, expected_type="access") or decode_expired_access_token(value)
+
+
+def _refresh_claims(body: bytes) -> dict | None:
     try:
         payload = json.loads(body)
     except (ValueError, RecursionError):
-        return False
+        return None
     token = payload.get("refresh_token") if isinstance(payload, dict) else None
-    return isinstance(token, str) and decode_token(token, expected_type="run_refresh") is not None
+    return decode_token(token, expected_type="run_refresh") if isinstance(token, str) else None
 
 
 class WorkerIngress:
@@ -171,51 +238,114 @@ class WorkerIngress:
     ) -> None:
         self.app = app
         self.origin = origin
-        # Bound aggregate load per API replica independently of proxy-supplied
-        # identity or whether many workers share one egress address.
-        self.http = _RequestBudget(200, 32)
-        self.sockets = _RequestBudget(10, 64)
+        self.cached_origin: str | None = None
+        self.origin_until = 0.0
+        self.origin_lock = asyncio.Lock()
+        self.refresh = _RequestBudget(16, 8)
+        self.pending_hello = _RequestBudget(16, 8)
+        self.http = _IdentityBudgets(40, 8)
+        self.launchers = _IdentityBudgets(4, 2)
+
+    async def _origin(self) -> str | None:
+        if monotonic() >= self.origin_until:
+            async with self.origin_lock:
+                if monotonic() >= self.origin_until:
+                    async with asyncio.timeout(3):
+                        self.cached_origin = await self.origin()
+                    self.origin_until = monotonic() + _ORIGIN_TTL
+        return self.cached_origin
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        budget = self.sockets if scope["type"] == "websocket" else self.http
-        if not budget.take():
-            await _respond(scope, send, 429)
-            return
-        try:
-            await self._serve(scope, receive, send)
-        finally:
-            budget.active -= 1
-
-    async def _serve(self, scope: Scope, receive: Receive, send: Send) -> None:
         host = _header_values(scope, b"host")
         if len(host) != 1 or not allows_request(self.app, scope):
             await _respond(scope, send, 404)
             return
-        length = _content_length(scope)
-        limit = 8192 if scope["path"] == "/auth/refresh" else _BODY_LIMIT
-        if length < 0 or length > limit:
-            await _respond(scope, send, 413)
-            return
         try:
-            async with asyncio.timeout(3):
-                origin = await self.origin()
+            origin = await self._origin()
         except (TimeoutError, SQLAlchemyError):
             await _respond(scope, send, 503)
             return
         if origin is None or b"https://" + host[0].lower() != origin.rstrip("/").encode():
             await _respond(scope, send, 404)
             return
-        # TLS terminates at the operator proxy. The separate listener ignores
-        # forwarded headers and uses the verified Host with the public scheme.
-        scope = {**scope, "scheme": "https" if scope["type"] == "http" else "wss"}
+        scope = {
+            **scope,
+            "scheme": "https" if scope["type"] == "http" else "wss",
+            "headers": [
+                (key, value) for key, value in scope["headers"]
+                if key.lower() not in {b"cookie", b"forwarded", b"x-real-ip"}
+                and not key.lower().startswith(b"x-forwarded-")
+            ],
+        }
         if scope["type"] == "websocket":
-            await self.app(scope, receive, send)
+            await self._serve_control(scope, receive, send)
             return
+        limit = 8192 if scope["path"] == _REFRESH_PATH else _BODY_LIMIT
+        if not 0 <= _content_length(scope) <= limit:
+            await _respond(scope, send, 413)
+            return
+        refresh = scope["path"] == _REFRESH_PATH
+        if refresh:
+            budget = self.refresh if self.refresh.take() else None
+        else:
+            claims = _access_claims(scope)
+            if not claims or not isinstance(claims.get("sub"), str):
+                await _respond(scope, send, 401, allowed=True)
+                return
+            path = scope["path"]
+            if scope["method"] != "GET" and any(
+                path == root or path.startswith(root + "/")
+                for root in ("/api/users", "/api/organizations", "/api/roles")
+            ) and claims.get("credential_kind") != "workflow_execution":
+                await _respond(scope, send, 403, allowed=True)
+                return
+            budget = self.http.take(claims["sub"])
+        if budget is None:
+            await _respond(scope, send, 429)
+            return
+        try:
+            await self._serve_http(scope, receive, send, limit)
+        finally:
+            budget.active -= 1
+
+    async def _serve_control(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if not self.pending_hello.take():
+            await _respond(scope, send, 429)
+            return
+        active: _RequestBudget | None = None
+        deadline = asyncio.timeout(_HELLO_TIMEOUT)
+
+        def authenticate(launcher: UUID) -> bool:
+            nonlocal active
+            active = self.launchers.take(str(launcher))
+            if active is not None:
+                deadline.reschedule(None)
+                self.pending_hello.active -= 1
+            return active is not None
+
+        scope["worker_ingress_authenticate"] = authenticate
+
+        async def send_marked(message: Message) -> None:
+            if message["type"] == "websocket.accept":
+                message = {**message, "headers": message.get("headers", []) + _marker_headers(scope, True)}
+            await send(message)
+
+        try:
+            async with deadline:
+                await self.app(scope, receive, send_marked)
+        except TimeoutError:
+            if not deadline.expired():
+                raise
+            await send({"type": "websocket.close", "code": 1008})
+        finally:
+            (active or self.pending_hello).active -= 1
+
+    async def _serve_http(self, scope: Scope, receive: Receive, send: Send, limit: int) -> None:
         body = bytearray()
         try:
             async with asyncio.timeout(_BODY_TIMEOUT):
                 while True:
-                    event = await receive()
+                    event = await asyncio.wait_for(receive(), timeout=_INACTIVITY_TIMEOUT)
                     if event["type"] == "http.disconnect":
                         return
                     chunk = event.get("body", b"")
@@ -230,9 +360,28 @@ class WorkerIngress:
             return
         replay: bytes | None = bytes(body)
         del body
-        if scope["path"] == "/auth/refresh" and not _is_run_refresh(replay):
-            await _respond(scope, send, 401, allowed=True)
+        if scope["path"] == _REFRESH_PATH:
+            claims = _refresh_claims(replay)
+            if not claims or not isinstance(claims.get("sub"), str):
+                await _respond(scope, send, 401, allowed=True)
+                return
+            # Switch to the same run quota before the normal handler redeems
+            # the refresh credential. The body-reading budget stays bounded.
+            budget = self.http.take(claims["sub"])
+            if budget is None:
+                await _respond(scope, send, 429)
+                return
+            self.refresh.active -= 1
+            try:
+                await self._forward(scope, receive, send, replay)
+            finally:
+                budget.active -= 1
+                self.refresh.active += 1
             return
+        await self._forward(scope, receive, send, replay)
+
+    async def _forward(self, scope: Scope, receive: Receive, send: Send, body: bytes) -> None:
+        replay: bytes | None = body
 
         async def replay_body() -> Message:
             nonlocal replay
@@ -253,15 +402,54 @@ class WorkerIngress:
                     return
                 headers = [
                     (key, value) for key, value in message.get("headers", [])
-                    if key.lower() not in {INGRESS_HEADER, b"cache-control"}
+                    if key.lower() not in {INGRESS_HEADER, PROBE_HEADER, b"cache-control"}
                 ]
-                message = {**message, "headers": headers + [
-                    (INGRESS_HEADER, ALLOW_MARKER), (b"cache-control", b"no-store"),
-                ]}
+                message = {**message, "headers": headers + _marker_headers(scope, True)}
             if not redirected:
                 await send(message)
 
         await self.app(scope, replay_body, send_guarded)
+
+
+class _IngressHTTP(H11Protocol):
+    """Close incomplete HTTP headers before an ASGI request exists."""
+
+    header_timer: asyncio.TimerHandle | None = None
+    header_started: float | None = None
+
+    def connection_made(self, transport: asyncio.Transport) -> None:
+        super().connection_made(transport)
+        self._start_header_timer()
+
+    def connection_lost(self, exc: Exception | None) -> None:
+        self._stop_header_timer()
+        super().connection_lost(exc)
+
+    def handle_events(self) -> None:
+        self._stop_header_timer()
+        super().handle_events()
+        # h11 is IDLE only before a complete request header or after
+        # starting the next keep-alive cycle. The body has its own deadline.
+        if (
+            self.conn.their_state is h11.IDLE
+            and self.transport.get_protocol() is self
+            and not self.transport.is_closing()
+        ):
+            self._start_header_timer()
+        else:
+            self.header_started = None
+
+    def _start_header_timer(self) -> None:
+        now = self.loop.time()
+        if self.header_started is None:
+            self.header_started = now
+        delay = min(_INACTIVITY_TIMEOUT, self.header_started + _HEADER_TIMEOUT - now)
+        self.header_timer = self.loop.call_later(delay, self.transport.close)
+
+    def _stop_header_timer(self) -> None:
+        if self.header_timer is not None:
+            self.header_timer.cancel()
+            self.header_timer = None
 
 
 class _IngressServer(uvicorn.Server):
@@ -276,7 +464,7 @@ async def serve_worker_ingress(app: FastAPI) -> AsyncIterator[None]:
     """Share the API lifespan, DB pools and remote-control host on another port."""
     server = _IngressServer(uvicorn.Config(
         WorkerIngress(app), host="0.0.0.0", port=PORT, lifespan="off",
-        proxy_headers=False, log_config=None, access_log=False, ws="websockets",
+        proxy_headers=False, log_config=None, access_log=False, http=_IngressHTTP, ws="websockets",
         ws_max_size=MAX_FRAME_BYTES, ws_max_queue=4, ws_per_message_deflate=False,
         timeout_graceful_shutdown=10,
     ))

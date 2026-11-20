@@ -4,6 +4,7 @@ import asyncio
 import ipaddress
 import json
 import re
+import secrets
 import socket
 import ssl
 from collections.abc import Awaitable, Callable
@@ -21,11 +22,14 @@ from src.services.worker_ingress import (
     CONTROL_PATH,
     DENY_MARKER,
     INGRESS_HEADER,
+    PROBE_HEADER,
     ROUTES,
 )
 
 _REFUSALS = (
     ("POST", "/auth/login"),
+    ("POST", "/api/auth/login"),
+    ("GET", "/admin/x"),
     ("GET", "/openapi.json"),
     ("GET", "/docs"),
     ("GET", "/api/packages"),
@@ -93,16 +97,18 @@ async def _public_addresses(host: str) -> tuple[str, ...]:
 async def _check_route(
     client: httpx.AsyncClient, http_origin: str, host: str, method: str, path: str, *, allowed: bool,
 ) -> RouteProbe:
+    nonce = secrets.token_hex(16)
     try:
         async with client.stream(
-            method, http_origin + path, headers={"Host": host},
+            method, http_origin + path, headers={"Host": host, PROBE_HEADER.decode(): nonce},
             extensions={"sni_hostname": host}, json={} if method == "POST" else None,
         ) as response:
             witness = response.headers.get(INGRESS_HEADER.decode())
-            passed = (
+            expected = (
                 response.status_code in (401, 403, 422) and witness == ALLOW_MARKER.decode()
                 if allowed else response.status_code == 404 and witness == DENY_MARKER.decode()
             )
+            passed = expected and response.headers.get(PROBE_HEADER.decode()) == nonce
             return RouteProbe(method, path, response.status_code, passed)
     except httpx.HTTPError:
         return RouteProbe(method, path, None, False)
@@ -112,6 +118,7 @@ async def _check_control(
     origin: str, host: str, address: str, port: int, trust: ssl.SSLContext,
 ) -> tuple[bool, bool]:
     family = socket.AF_INET6 if ":" in address else socket.AF_INET
+    nonce = secrets.token_hex(16)
     upgraded = False
     try:
         async with asyncio.timeout(5):
@@ -123,8 +130,15 @@ async def _check_control(
                 async with connect(
                     "wss://" + origin.removeprefix("https://") + CONTROL_PATH,
                     sock=sock, ssl=trust, server_hostname=host, proxy=None, max_size=4096, close_timeout=1,
+                    additional_headers={PROBE_HEADER.decode(): nonce},
                 ) as ws:
                     upgraded = True
+                    if (
+                        ws.response is None
+                        or ws.response.headers.get(PROBE_HEADER.decode()) != nonce
+                        or ws.response.headers.get(INGRESS_HEADER.decode()) != ALLOW_MARKER.decode()
+                    ):
+                        return upgraded, False
                     await ws.send(json.dumps({"event": "probe"}))
                     await ws.recv()
     except ConnectionClosed as exc:

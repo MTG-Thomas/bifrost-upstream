@@ -4,8 +4,8 @@ Point the dedicated public HTTPS hostname at TCP port **8001** on Bifrost. The
 operator's proxy terminates TLS, preserves the public `Host`, and forwards
 HTTP/1.1 WebSocket upgrades and the original path. Keep WebSocket connections
 open through idle periods and disable caching for this hostname. The API
-replica accepts a matching host only while a non-retired Cloudflare
-installation owns that HTTPS origin. The listener remains available during
+replica checks the hostname against the non-retired installation's HTTPS
+origin and caches the result for three seconds. The listener remains available during
 Scale In and Disconnect so launchers can drain.
 
 - **Docker Compose** — Attach the proxy to the Bifrost network and target
@@ -25,10 +25,10 @@ to the normal API service or client web proxy.
 
 The [versioned route matrix](../../api/src/services/worker_ingress_routes.json)
 lists exact router templates and methods. The test compares it with the
-worker-local SDK facade and the normal API registrations. The
+normal API registrations and checks the runtime-specific calls at their SDK call sites. The
 [Cloudflare SDK route policy](../../api/bifrost/cloudflare_sdk_routes.json)
-sets the Workers capability envelope. A new operation requires an explicit
-matrix change even when its prefix falls within that envelope.
+supplies the explicit methods for roles, users, job polling, and refresh. The
+matrix narrows its prefix families to specific methods and registered handlers.
 
 | Family | Runtime contract |
 | --- | --- |
@@ -40,16 +40,25 @@ matrix change even when its prefix falls within that envelope.
 | Knowledge, artifacts, and AI | Existing SDK request, polling, and streaming contracts under normal caller authorization. |
 | Source and runtime | Module resolution, scoped Python source reads, runtime log writes and reads, and run-token refresh. The run refresh contract accepts a signed `run_refresh` token in the body. |
 
+User, organization, and role creation via `POST`, updates via `PATCH`,
+and deletion via `DELETE` are reachable by design, as are role-user and
+role-form assignment via `POST`. The listener requires a signed workflow
+run token for these mutations. The API still checks live run state and the
+original caller's permissions for each operation.
+
 The tenant gateway encodes the entire module storage key as one component.
 Only the source GET route permits that encoding, and only when the decoded
 path has no empty or traversal segments. The listener rejects path aliases,
 unsupported methods, and redirects. It does not expose login, OpenAPI, test
-fixtures, package administration, or unrelated administrative routes. Per
-replica, HTTP admission allows 200 requests per second with 32 concurrent
-requests. The control listener allows ten upgrades per second and 64 concurrent
-sockets. HTTP requests have a 4 MiB body limit, with 8 KiB for token refresh,
-and a ten-second body deadline. WebSocket messages use the control protocol's
-1 MiB limit.
+fixtures, package administration, or unrelated administrative routes. The
+listener strips cookies and forwarding headers before dispatch. A signed bearer subject
+gets 40 requests per second and eight concurrent SDK requests. The refresh
+route accepts 8 KiB with eight concurrent bodies before verification. Other
+request bodies are limited to 4 MiB. Headers and bodies have a three-second
+inactivity timeout and a ten-second total deadline. Eight pending
+WebSocket hellos per replica have five seconds to authenticate. Verified
+incarnations use separate quotas with two concurrent sockets per incarnation.
+WebSocket messages use the control protocol's 1 MiB limit.
 
 ## Enable Checks
 
@@ -57,11 +66,13 @@ and a ten-second body deadline. WebSocket messages use the control protocol's
 persisted HTTPS origin, pins public DNS addresses to verified TLS connections,
 checks credential-free SDK responses and explicit refusals, and verifies
 WebSocket upgrade and rejection of an invalid hello. It does not follow
-redirects. The probe expects the ingress response header and fails if the
-proxy accidentally targets the regular API.
+redirects. Each request needs the ingress response marker and its fresh random
+nonce, so a stale response cannot satisfy the probe. These checks provide
+defence in depth for proxy configuration. The listener and API authorization
+enforce the boundary on every request.
 
-The enable job supplies a canary callback for its reserved launcher. The
-callback must verify a signed hello for that reservation and a no-effect SDK
-read from the actual execution runtime on the same origin. The result's
-`reachable` field reports the transport and policy checks. Admission requires
-`ready`, which also requires both runtime canary observations.
+The Phase 1b enable job is responsible for calling this interface and supplying
+a canary callback for its reserved launcher. The callback verifies a signed
+hello and a no-effect SDK read from the runtime on the same origin.
+`reachable` reports the transport and policy checks. `ready` additionally
+reports both canary observations.

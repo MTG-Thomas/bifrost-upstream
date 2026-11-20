@@ -136,10 +136,21 @@ async def test_worker_ingress_over_tls(
             assert canary_calls == 1
             refusals = {route.path: route.status for route in result.routes if route.path in {
                 "/auth/login", "/api/packages", "/openapi.json", "/__fixture/v1/chat/completions",
+                "/api/auth/login", "/admin/x", "/docs",
             }}
             assert refusals == dict.fromkeys((
                 "/auth/login", "/api/packages", "/openapi.json", "/__fixture/v1/chat/completions",
+                "/api/auth/login", "/admin/x", "/docs",
             ), 404)
+
+            reader, writer = await asyncio.open_connection("127.0.0.1", port, ssl=trust, server_hostname=_HOST)
+            try:
+                writer.write(b"GET /api/sdk/context HTTP/1.1\r\nHost:")
+                await writer.drain()
+                assert await asyncio.wait_for(reader.read(), 5) == b""
+            finally:
+                writer.close()
+                await writer.wait_closed()
 
             wrong_tls = await probe_address(origin, "wrong.example.test", "127.0.0.1", port, trust=trust)
             assert not wrong_tls.tls
