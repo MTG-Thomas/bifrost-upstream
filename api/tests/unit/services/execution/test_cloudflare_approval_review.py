@@ -4,9 +4,10 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-
 from bifrost.cloudflare_analysis import AnalysisRejected
+from fastapi import HTTPException
 from src.models.contracts.cloudflare_approval import (
+    CloudflareApprovalAccept,
     CloudflareApprovalOptions,
     CloudflareApprovalState,
 )
@@ -22,7 +23,8 @@ from src.services.execution.cloudflare_analysis_runner import AnalysisBusy
         (AnalysisRejected("Source exceeds parsing budget", "CF_PARSE_BUDGET"), "ineligible", "CF_PARSE_BUDGET"),
     ],
 )
-async def test_review_distinguishes_admission_and_parse_budget(monkeypatch, error, status, rule):
+@pytest.mark.parametrize("accepting", [False, True])
+async def test_review_distinguishes_admission_and_parse_budget(monkeypatch, error, status, rule, accepting):
     workflow = Workflow(path="main.py", name="Test", function_name="run")
     monkeypatch.setattr(cloudflare_approval, "_authorized_workflow", AsyncMock(return_value=(workflow, True)))
     monkeypatch.setattr(
@@ -31,9 +33,16 @@ async def test_review_distinguishes_admission_and_parse_budget(monkeypatch, erro
     )
     monkeypatch.setattr(cloudflare_approval, "propose_approval", AsyncMock(side_effect=error))
 
-    review = await cloudflare_approval.review_approval(
-        AsyncMock(), AsyncMock(), uuid4(), CloudflareApprovalOptions(subrequest_allowance=10, cpu_budget_ms=1000),
-    )
+    options = CloudflareApprovalOptions(subrequest_allowance=10, cpu_budget_ms=1000)
+    if accepting:
+        request = CloudflareApprovalAccept(**options.model_dump(), review_sha256="a" * 64)
+        with pytest.raises(HTTPException) as refusal:
+            await cloudflare_approval.review_approval(AsyncMock(), AsyncMock(), uuid4(), request)
+        assert refusal.value.status_code == (503 if status == "temporarily_unavailable" else 409)
+        assert refusal.value.detail["message"]
+        review = CloudflareApprovalState.model_validate(refusal.value.detail["state"])
+    else:
+        review = await cloudflare_approval.review_approval(AsyncMock(), AsyncMock(), uuid4(), options)
 
     assert review.status == status
     assert review.proposal is None

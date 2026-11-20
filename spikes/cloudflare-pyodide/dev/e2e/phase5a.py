@@ -117,14 +117,14 @@ def local_api(hosted):
         raise SystemExit("The hosted run requires the random seeded admin password")
     origin = f"http://{address}"
 
-    def send(path, body, token=None, method="POST", *, content_type=None):
+    def send(path, body, token=None, method="POST", *, content_type=None, timeout=15):
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
         if token:
             headers = {"Content-Type": content_type or "application/json", "Authorization": f"Bearer {token}"}
             if content_type is None:
                 body = json.dumps(body).encode() if body is not None else None
         try:
-            with urlopen(Request(origin + path, data=body, headers=headers, method=method), timeout=15) as response:
+            with urlopen(Request(origin + path, data=body, headers=headers, method=method), timeout=timeout) as response:
                 return None if response.status == 204 else json.load(response)
         except HTTPError as error:
             raise SystemExit(f"{method} {path} returned HTTP {error.code}") from None
@@ -170,12 +170,16 @@ def seed_workflows(admin, send, hosted, *, tenant_fixtures=(), hosted_tenants=Fa
 def approve_workflow(send, admin, workflow_id, content, allowance, cpu, *, solution_id=None):
     path = f"/api/workflows/{workflow_id}/cloudflare-approval"
     options = {"subrequest_allowance": allowance, "cpu_budget_ms": cpu}
-    state = send(f"{path}/propose", options, admin)
+    # Allow 2 seconds for analyzer admission, 20 for analysis, and 8 for API/DB overhead.
+    analysis_timeout = 30
+    state = send(f"{path}/propose", options, admin, timeout=analysis_timeout)
     proposal = state["proposal"]
     if (proposal is None or proposal["workflow_id"] != workflow_id or proposal["entry_sha256"] != sha256(content)
         or (proposal.get("solution") or {}).get("install_id") != solution_id):
         raise SystemExit(f"Generated proposal does not match the disposable fixture: {state['diagnostics']}")
-    accepted = send(f"{path}/accept", {**options, "review_sha256": proposal["review_sha256"]}, admin)
+    accepted = send(
+        f"{path}/accept", {**options, "review_sha256": proposal["review_sha256"]}, admin, timeout=analysis_timeout,
+    )
     if accepted["status"] != "approved" or accepted["current_revision"] != proposal["review_sha256"]:
         raise SystemExit("The disposable fixture approval was not accepted")
     return accepted["proposal"]

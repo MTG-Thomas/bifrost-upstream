@@ -1,8 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
+import { ApiError } from "@/lib/api-client";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	ApprovalReviewError,
 	acceptCloudflareApproval,
 	getCloudflareApproval,
 	proposeCloudflareApproval,
@@ -11,7 +13,8 @@ import {
 } from "@/services/cloudflare-approval";
 import { CloudflareApprovalPanel } from "./CloudflareApprovalPanel";
 
-vi.mock("@/services/cloudflare-approval", () => ({
+vi.mock("@/services/cloudflare-approval", async (importOriginal) => ({
+	...await importOriginal<typeof import("@/services/cloudflare-approval")>(),
 	acceptCloudflareApproval: vi.fn(),
 	getCloudflareApproval: vi.fn(),
 	proposeCloudflareApproval: vi.fn(),
@@ -49,7 +52,7 @@ describe("CloudflareApprovalPanel", () => {
 		const user = open();
 		await user.type(await screen.findByLabelText("Additional HTTPS Hosts"), "*.example.com");
 		await user.click(screen.getByRole("button", { name: "Propose Approval" }));
-		expect(await screen.findByText("*.example.com")).toBeVisible();
+		expect(within(await screen.findByRole("alert")).getByText("Wildcard HTTPS Hosts")).toBeVisible();
 		await user.click(screen.getByRole("button", { name: "Accept Reviewed Digest" }));
 		expect(await screen.findByText("Approved")).toBeVisible();
 		expect(acceptCloudflareApproval).toHaveBeenCalledWith("workflow", {
@@ -60,18 +63,54 @@ describe("CloudflareApprovalPanel", () => {
 		expect(await screen.findByText("Pending Review")).toBeVisible();
 	});
 
-	it("shows diagnostics without exposing operator controls to readers", async () => {
-		const readOnly = { ...pending, can_manage: false };
-		vi.mocked(getCloudflareApproval).mockResolvedValue(readOnly);
-		vi.mocked(proposeCloudflareApproval).mockResolvedValue({
-			...readOnly, proposal, diagnostics: [{
-				rule_id: "CF_URL_REVIEW", severity: "info", message: "Host review required.", hint: "Ask a Global operator.",
+	it("shows status diagnostics without exposing analysis controls to readers", async () => {
+		vi.mocked(getCloudflareApproval).mockResolvedValue({
+			...pending, can_manage: false, status: "ineligible", diagnostics: [{
+				rule_id: "CF_FAST_PATH", severity: "warning", message: "Fast Path", hint: "Use the Normal lane.",
 			}],
 		});
+		open();
+		expect(await screen.findByText("Ineligible")).toBeVisible();
+		expect(screen.getByText("Use the Normal lane.")).toBeVisible();
+		expect(screen.queryByRole("button", { name: "Propose Approval" })).toBeNull();
+	});
+
+	it("clears the reviewed digest when the form changes", async () => {
+		vi.mocked(getCloudflareApproval).mockResolvedValue(pending);
+		vi.mocked(proposeCloudflareApproval).mockResolvedValue({ ...pending, proposal });
 		const user = open();
 		await user.click(await screen.findByRole("button", { name: "Propose Approval" }));
-		expect(await screen.findByText("CF_URL_REVIEW")).toBeVisible();
+		expect(await screen.findByRole("button", { name: "Accept Reviewed Digest" })).toBeVisible();
+		await user.type(screen.getByLabelText("Additional HTTPS Hosts"), "new.example.com");
 		expect(screen.queryByRole("button", { name: "Accept Reviewed Digest" })).toBeNull();
-		expect(screen.queryByLabelText("Additional HTTPS Hosts")).toBeNull();
+		expect(screen.queryByRole("heading", { name: "Approval Proposal" })).toBeNull();
+	});
+
+	it.each([
+		["revision_changed", "Revision Changed", "CF_SOURCE"],
+		["temporarily_unavailable", "Temporarily Unavailable", "CF_ANALYSIS_UNAVAILABLE"],
+	] as const)("renders the %s refusal and its remedy", async (status, label, rule) => {
+		vi.mocked(getCloudflareApproval).mockResolvedValue(pending);
+		vi.mocked(proposeCloudflareApproval).mockResolvedValue({ ...pending, proposal });
+		vi.mocked(acceptCloudflareApproval).mockRejectedValue(new ApprovalReviewError("Approval refused.", {
+			...pending, status, diagnostics: [{
+				rule_id: rule, severity: "warning", message: "Review refused", hint: "Generate a new proposal.",
+			}],
+		}));
+		const user = open();
+		await user.click(await screen.findByRole("button", { name: "Propose Approval" }));
+		await user.click(await screen.findByRole("button", { name: "Accept Reviewed Digest" }));
+		expect(await screen.findByText(label)).toBeVisible();
+		expect(screen.getByText(rule)).toBeVisible();
+		expect(screen.getByText("Generate a new proposal.")).toBeVisible();
+		expect(screen.queryByRole("button", { name: "Accept Reviewed Digest" })).toBeNull();
+	});
+
+	it.each([403, 404])("distinguishes HTTP %s on status reads", async (status) => {
+		vi.mocked(getCloudflareApproval).mockRejectedValue(new ApiError("Workflow approval is inaccessible.", status));
+		open();
+		expect(await screen.findByRole("alert")).toHaveTextContent("Workflow approval is inaccessible.");
+		expect(screen.getByRole("status")).toHaveTextContent(/^Unavailable$/);
+		expect(screen.queryByRole("button", { name: "Propose Approval" })).toBeNull();
 	});
 });

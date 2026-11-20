@@ -1,10 +1,12 @@
 import { useId, useState } from "react";
+import { ApiError } from "@/lib/api-client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+	ApprovalReviewError,
 	acceptCloudflareApproval,
 	getCloudflareApproval,
 	proposeCloudflareApproval,
@@ -32,8 +34,10 @@ export function CloudflareApprovalPanel({ workflowId }: { workflowId: string }) 
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState("");
 	const [confirmRevoke, setConfirmRevoke] = useState(false);
-	const state = review?.state ?? status.data;
-	const proposal = review?.state.proposal;
+	const accessDenied = status.error instanceof ApiError
+		&& (status.error.statusCode === 403 || status.error.statusCode === 404);
+	const state = accessDenied ? undefined : review?.state ?? status.data;
+	const proposal = accessDenied ? undefined : review?.state.proposal;
 	const declaration = proposal ?? state?.current_declaration;
 
 	async function request(action: () => Promise<void>) {
@@ -44,7 +48,11 @@ export function CloudflareApprovalPanel({ workflowId }: { workflowId: string }) 
 		} catch (cause) {
 			setReview(undefined);
 			setError(cause instanceof Error ? cause.message : "The approval request failed.");
-			await status.refetch();
+			if (cause instanceof ApprovalReviewError) {
+				queryClient.setQueryData(queryKey, cause.state);
+			} else {
+				await status.refetch();
+			}
 		} finally {
 			setBusy(false);
 		}
@@ -58,17 +66,17 @@ export function CloudflareApprovalPanel({ workflowId }: { workflowId: string }) 
 	return (
 		<section aria-label="Cloudflare Approval" className="space-y-4">
 			<Badge variant="outline" role="status">
-				{state ? statuses[state.status] : status.isPending ? "Loading" : "Temporarily Unavailable"}
+				{accessDenied ? "Unavailable" : state ? statuses[state.status] : status.isPending ? "Loading" : "Temporarily Unavailable"}
 			</Badge>
 			{(error || status.isError) && (
 				<p className="text-sm text-destructive" role="alert">
-					{error || "Approval status could not be loaded."}
+					{error || status.error?.message || "Approval status could not be loaded."}
 				</p>
 			)}
-			{!state && status.isError && (
+			{!state && status.isError && !accessDenied && (
 				<Button type="button" variant="outline" onClick={() => void status.refetch()}>Refresh Status</Button>
 			)}
-			{state && (
+			{state?.can_manage && !accessDenied && (
 				<form
 					onChange={() => setReview(undefined)}
 					onSubmit={(event) => {
@@ -128,8 +136,15 @@ export function CloudflareApprovalPanel({ workflowId }: { workflowId: string }) 
 					</dl>
 					<details>
 						<summary className="cursor-pointer">Review Source Pins and Scope</summary>
-						<pre className="mt-2 overflow-auto text-xs">{JSON.stringify(declaration, null, 2)}</pre>
+						<pre className="mt-2 max-h-64 overflow-auto text-xs">{JSON.stringify(declaration, null, 2)}</pre>
 					</details>
+					{proposal && proposal.wildcard_https_hosts.length > 0 && (
+						<p className="rounded-md border border-destructive p-3" role="alert">
+							<strong>Wildcard HTTPS Hosts</strong>
+							{" allow requests to any matching single-label subdomain: "}
+							{proposal.wildcard_https_hosts.join(", ")}
+						</p>
+					)}
 					{proposal && review && state?.can_manage && (
 						<Button type="button" disabled={busy} onClick={() => {
 							void request(async () => saveState(await acceptCloudflareApproval(workflowId, {

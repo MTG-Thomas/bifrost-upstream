@@ -131,6 +131,14 @@ async def test_competing_edit_or_owner_change_supersedes_job(scenario, worker, c
     reapproval.accept_proposal.assert_not_awaited()
 
 
+@pytest.mark.parametrize("rule", ["CF_EXECUTABLE_TYPE", "CF_FAST_PATH", "CF_OUTBOUND"])
+async def test_changed_placement_supersedes_reapproval(scenario, worker, rule):
+    _, _, payload, context = scenario
+    reapproval.propose_approval.side_effect = ObservationChanged("Placement changed", rule)
+    assert await reapproval._run_reapproval(context, payload) == {"outcome": "superseded"}
+    reapproval.accept_proposal.assert_not_awaited()
+
+
 async def test_lease_loss_prevents_acceptance(scenario, worker):
     _, _, payload, context = scenario
     reapproval.hold_lease.side_effect = LeaseLost()

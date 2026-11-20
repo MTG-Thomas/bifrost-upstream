@@ -5,13 +5,18 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from sqlalchemy import delete, select
-
 from bifrost.cloudflare_analysis import AnalysisRejected
+from sqlalchemy import delete, select
 from src.config import get_settings
 from src.core.redis_client import pending_execution_record
 from src.jobs.platform.cloudflare_reapproval import CLOUDFLARE_REAPPROVAL_DEFINITION
-from src.models.orm import CloudflareApproval, Organization, PlatformJob, Workflow
+from src.models.orm import (
+    CloudflareApproval,
+    Organization,
+    PlatformJob,
+    SolutionFileIndex,
+    Workflow,
+)
 from src.models.orm.audit import AuditLog
 from src.services.authorization.tokens import (
     HumanSubject,
@@ -30,6 +35,8 @@ from src.services.execution.cloudflare_eligibility import (
 )
 from src.services.file_index_service import FileIndexService
 from src.services.repo_storage import RepoStorage
+from src.services.solutions.storage import SolutionStorage
+
 from tests.unit.authorization.committed_runs import committed_world
 
 
@@ -71,11 +78,12 @@ async def test_api_identity_sdk_operations_apply_run_permissions(async_engine, e
 
 
 @pytest.mark.e2e
-async def test_workflow_approval_rest_reviews_wildcard_and_fences_two_accepts(async_engine, e2e_api_url):
+async def test_workflow_approval_rest_enforces_global_operator_and_audits_revision(async_engine, e2e_api_url):
     async with committed_world(async_engine) as world:
         org = await world.organization()
         admin = await world.person(org)
-        await world.platform_admin(admin)
+        operator_role = await world.role("platform.readwrite")
+        await world.assign(admin, operator_role.id, ("platform", None))
         reader = await world.person(org)
         role = await world.role("workflows.read")
         await world.assign(reader, role.id, ("organization", org.id))
@@ -107,12 +115,16 @@ async def test_workflow_approval_rest_reviews_wildcard_and_fences_two_accepts(as
                 admin_headers, reader_headers = await headers(admin), await headers(reader)
                 provider_headers = await headers(provider)
                 assert (await client.get(endpoint, headers=await headers(outsider))).status_code == 404
-                review = await client.post(f"{endpoint}/propose", json=options, headers=reader_headers)
+                read = await client.get(endpoint, headers=reader_headers)
+                assert read.status_code == 200 and not read.json()["can_manage"]
+                assert (await client.get(endpoint, headers=provider_headers)).status_code == 404
+                for actor in (reader_headers, provider_headers):
+                    assert (await client.post(f"{endpoint}/propose", json=options, headers=actor)).status_code == 403
+                assert (await client.post(f"{endpoint}/propose", json=wildcard, headers=provider_headers)).status_code == 403
+                review = await client.post(f"{endpoint}/propose", json=options, headers=admin_headers)
                 review.raise_for_status()
                 assert review.json()["proposal"]["https_hosts"] == []
                 assert review.json()["diagnostics"][0]["rule_id"] == "CF_URL_REVIEW"
-                forbidden = await client.post(f"{endpoint}/propose", json=wildcard, headers=reader_headers)
-                assert forbidden.status_code == 403
                 private_root = await client.post(
                     f"{endpoint}/propose", json={**options, "https_hosts": ["*.github.io"]}, headers=admin_headers,
                 )
@@ -133,9 +145,12 @@ async def test_workflow_approval_rest_reviews_wildcard_and_fences_two_accepts(as
                     return await client.post(f"{endpoint}/accept", json=body, headers=actor)
 
                 assert (await accept(latest, reader_headers)).status_code == 403
-                refused, accepted = await asyncio.gather(accept(stale, admin_headers), accept(latest, provider_headers))
+                assert (await accept(latest, provider_headers)).status_code == 403
+                refused = await accept(stale, admin_headers)
                 assert refused.status_code == 409
-                assert accepted.status_code == 200, accepted.text
+                assert refused.json()["detail"]["state"]["status"] == "revision_changed"
+                results = await asyncio.gather(accept(latest, admin_headers), accept(latest, admin_headers))
+                assert sorted(response.status_code for response in results) == [200, 409]
                 state = (await client.get(endpoint, headers=reader_headers)).json()
                 assert state["status"] == "approved"
                 assert state["current_revision"] == latest["review_sha256"]
@@ -143,11 +158,64 @@ async def test_workflow_approval_rest_reviews_wildcard_and_fences_two_accepts(as
                 changed = await client.get(endpoint, headers=reader_headers)
                 assert changed.json()["status"] == "revision_changed"
                 assert (await client.delete(endpoint, headers=reader_headers)).status_code == 403
-                revoked = await client.delete(endpoint, headers=provider_headers)
+                assert (await client.delete(endpoint, headers=provider_headers)).status_code == 403
+                before_revoke = await proposal()
+                revoked = await client.delete(endpoint, headers=admin_headers)
                 assert revoked.json()["status"] == "pending_review"
+                assert (await accept(before_revoke, admin_headers)).status_code == 409
+                events = (await world.session.scalars(select(AuditLog).where(
+                    AuditLog.resource_id == workflow.id,
+                    AuditLog.action.in_(("workflow.cloudflare_approval.accept", "workflow.cloudflare_approval.revoke")),
+                ))).all()
+                assert {(event.action, event.user_id, event.details["revision"]) for event in events} == {
+                    ("workflow.cloudflare_approval.accept", admin.id, latest["review_sha256"]),
+                    ("workflow.cloudflare_approval.revoke", admin.id, latest["review_sha256"]),
+                }
         finally:
             await world.session.rollback()
             await index.delete(path)
+            await world.session.execute(delete(AuditLog).where(AuditLog.resource_id == workflow.id))
+            await world.session.commit()
+
+
+@pytest.mark.e2e
+async def test_accept_rejects_a_republished_solution_generation(async_engine, e2e_api_url):
+    async with committed_world(async_engine) as world:
+        org = await world.organization()
+        admin = await world.person(org)
+        await world.platform_admin(admin)
+        solution = await world.solution(org)
+        solution.runtime_source_generation = uuid4()
+        solution.allow_outbound_access = False
+        workflow = await world.workflow(org, solution_id=solution.id)
+        path = workflow.path
+        storage = SolutionStorage(solution.id)
+        pin = await storage.write(path, f"def {workflow.function_name}(): return 1\n".encode())
+        endpoint = f"/api/workflows/{workflow.id}/cloudflare-approval"
+        options = {"subrequest_allowance": 5, "cpu_budget_ms": 100}
+        try:
+            world.session.add(SolutionFileIndex(solution_id=solution.id, path=path, content_hash=pin))
+            await world.session.commit()
+            access = await issue_access_token(HumanSubject(admin.id))
+            headers = {"Authorization": f"Bearer {access.token}"}
+            async with httpx.AsyncClient(base_url=e2e_api_url, timeout=30, headers=headers) as client:
+                review = await client.post(f"{endpoint}/propose", json=options)
+                review.raise_for_status()
+                proposal = review.json()["proposal"]
+                assert proposal["solution"]["source_generation"] == str(solution.runtime_source_generation)
+
+                solution.runtime_source_generation = uuid4()
+                await world.session.commit()
+                refusal = await client.post(f"{endpoint}/accept", json={
+                    **options, "review_sha256": proposal["review_sha256"],
+                })
+                assert refusal.status_code == 409
+                assert refusal.json()["detail"]["state"]["status"] == "revision_changed"
+                assert await current_approval(world.session, workflow.id) is None
+        finally:
+            await world.session.rollback()
+            await storage.delete(path)
+            await world.session.execute(delete(SolutionFileIndex).where(SolutionFileIndex.solution_id == solution.id))
             await world.session.commit()
 
 

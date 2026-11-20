@@ -7,10 +7,6 @@ import hashlib
 from dataclasses import dataclass
 from uuid import UUID
 
-from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from bifrost.cloudflare_analysis import (
     MAX_BUNDLE_BYTES,
     MAX_SOURCE_BYTES,
@@ -19,6 +15,10 @@ from bifrost.cloudflare_analysis import (
     SourceUnresolved,
     digest,
 )
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from src.core.database import get_db_context
 from src.core.storage.contracts import StorageError
 from src.models.contracts.cloudflare_approval import (
@@ -136,6 +136,25 @@ class ObservationChanged(AnalysisRejected):
     """Storage has moved beyond the source digests used to schedule the job."""
 
 
+async def approval_placement(db: AsyncSession, workflow: Workflow) -> SolutionApprovalScope | None:
+    """Resolve the source boundary before analysis or status reporting."""
+    if not workflow.is_active:
+        raise ObservationChanged("Expected an active workflow")
+    if workflow.type != "workflow":
+        raise ObservationChanged("Only workflows can be approved", "CF_EXECUTABLE_TYPE")
+    if workflow.execution_lane == "fast_path":
+        raise ObservationChanged("Cloudflare supplies Normal capacity only", "CF_FAST_PATH")
+    if workflow.solution_id is None:
+        return None
+    solution = await solution_approval_scope(db, workflow.solution_id, workflow.organization_id)
+    if solution is None:
+        outbound = await db.scalar(select(Solution.allow_outbound_access).where(Solution.id == workflow.solution_id))
+        if outbound:
+            raise ObservationChanged("The Solution install allows outbound access", "CF_OUTBOUND")
+        raise ObservationChanged("Expected an active Solution with published install-local source")
+    return solution
+
+
 async def propose_approval(
     workflow_id: UUID, *, subrequest_allowance: int, cpu_budget_ms: int,
     expected_pins: dict[str, str | None] | None = None,
@@ -145,23 +164,12 @@ async def propose_approval(
 ) -> ApprovalProposal:
     async with get_db_context() as db:
         workflow = await db.get(Workflow, workflow_id)
-        if workflow is None or not workflow.is_active:
+        if workflow is None:
             raise ObservationChanged("Expected an active workflow")
         if expected_scope is not None and workflow_review_scope(workflow) != expected_scope:
             raise ObservationChanged("Workflow scope changed before analysis")
-        if workflow.type != "workflow":
-            raise AnalysisRejected("Only workflows can be approved", "CF_EXECUTABLE_TYPE")
-        if workflow.execution_lane == "fast_path":
-            raise AnalysisRejected("Cloudflare supplies Normal capacity only", "CF_FAST_PATH")
+        solution = await approval_placement(db, workflow)
         install_id = workflow.solution_id
-        solution = None
-        if install_id is not None:
-            solution = await solution_approval_scope(db, install_id, workflow.organization_id)
-            if solution is None:
-                reason = await db.scalar(select(Solution.allow_outbound_access).where(Solution.id == install_id))
-                if reason:
-                    raise AnalysisRejected("The Solution install allows outbound access", "CF_OUTBOUND")
-                raise ObservationChanged("Expected an active Solution with published install-local source")
         current = await current_approval(db, workflow_id)
         previous_revision = current.revision if current else None
         history_count = 0 if current else await _history_count(db, workflow_id)

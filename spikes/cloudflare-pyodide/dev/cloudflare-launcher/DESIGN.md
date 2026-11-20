@@ -974,9 +974,13 @@ version, workflow and owning organization, prior approval, entry and module
 SHA-256 pins, canonical manifest digest, packages, HTTPS allowlist, and both
 estimates and limits. Accept regenerates the proposal and checks the reviewed
 digest. PostgreSQL stores the accepted revision and the authenticated operator ID.
-Platform admins and provider-organization operators can accept or revoke.
-Users with workflow read access can review proposals. Operator-supplied HTTPS
-hosts require Global operator authority.
+Global operators with `platform.readwrite` can generate, accept, and revoke
+approvals. Users with workflow read access can view approval status in their
+authorized scope. Proposal generation uses the same operator gate as acceptance
+so ordinary workflow reads cannot exhaust the shared analyzer.
+Reapproval treats changes to executable type, execution lane, or Solution
+outbound policy as superseded work. Interactive review reports the corresponding
+`CF_EXECUTABLE_TYPE`, `CF_FAST_PATH`, or `CF_OUTBOUND` diagnostic.
 Revocation clears the current approval and makes later runs Linux-only.
 Earlier approvals and derived children remain inactive in history with their
 lineage intact. A queued reanalysis becomes superseded and a queued dispatch

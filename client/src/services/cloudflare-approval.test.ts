@@ -1,17 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	ApprovalReviewError,
 	acceptCloudflareApproval,
 	getCloudflareApproval,
 	proposeCloudflareApproval,
 	revokeCloudflareApproval,
 } from "./cloudflare-approval";
 
-const { get, post, remove } = vi.hoisted(() => ({
+const { get, post, remove, handleApiError } = vi.hoisted(() => ({
 	get: vi.fn(),
 	post: vi.fn(),
 	remove: vi.fn(),
+	handleApiError: vi.fn(),
 }));
-vi.mock("@/lib/api-client", () => ({
+vi.mock("@/lib/api-client", async (importOriginal) => ({
+	...await importOriginal<typeof import("@/lib/api-client")>(),
+	handleApiError,
 	apiClient: { GET: get, POST: post, DELETE: remove },
 }));
 
@@ -33,6 +37,28 @@ describe("Cloudflare workflow approval API", () => {
 		await expect(revokeCloudflareApproval("workflow")).resolves.toEqual(state);
 		expect(get).toHaveBeenCalledWith(path, { params });
 		expect(remove).toHaveBeenCalledWith(path, { params });
+	});
+
+	it.each([
+		[409, "revision_changed"],
+		[503, "temporarily_unavailable"],
+	] as const)("retains the approval state and message for HTTP %s", async (status, approvalStatus) => {
+		const refused = { ...state, status: approvalStatus };
+		post.mockResolvedValue({
+			error: { detail: { message: "Review refused.", state: refused } }, response: new Response(null, { status }),
+		});
+		await expect(acceptCloudflareApproval("workflow", {
+			...options, review_sha256: "a".repeat(64),
+		})).rejects.toEqual(new ApprovalReviewError("Review refused.", refused));
+		expect(handleApiError).not.toHaveBeenCalled();
+	});
+
+	it("delegates other errors to the shared handler", async () => {
+		const error = { detail: "Invalid request" };
+		get.mockResolvedValue({ error, response: new Response(null, { status: 422 }) });
+		handleApiError.mockImplementation(() => { throw new Error("Invalid request"); });
+		await expect(getCloudflareApproval("workflow")).rejects.toThrow("Invalid request");
+		expect(handleApiError).toHaveBeenCalledExactlyOnceWith(error);
 	});
 
 	it("sends the reviewed options and digest", async () => {

@@ -3,16 +3,15 @@
 from dataclasses import asdict
 from uuid import UUID
 
-from fastapi import HTTPException
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from bifrost.cloudflare_analysis import (
     POLICY_VERSION,
     AnalysisRejected,
     Finding,
     SourceUnresolved,
 )
+from fastapi import HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from src.core.principal import UserPrincipal
 from src.core.storage.contracts import StorageError
 from src.models.contracts.cloudflare_approval import (
@@ -23,8 +22,10 @@ from src.models.contracts.cloudflare_approval import (
     CloudflareApprovalReview,
     CloudflareApprovalState,
 )
-from src.models.orm import Solution, Workflow
+from src.models.orm import Workflow
+from src.services.audit import emit_audit
 from src.services.authorization.enforce import (
+    allows_permission,
     load_caller,
     require_permission,
     user_reach,
@@ -33,11 +34,11 @@ from src.services.execution.cloudflare_eligibility import (
     ApprovalProposal,
     ObservationChanged,
     accept_proposal,
+    approval_placement,
     current_approval,
     indexed_pins,
     propose_approval,
     revoke_approval,
-    solution_approval_scope,
     workflow_review_scope,
 )
 
@@ -46,12 +47,12 @@ async def _authorized_workflow(
     db: AsyncSession, user: UserPrincipal, workflow_id: UUID, *, manage: bool,
 ) -> tuple[Workflow, bool]:
     caller = await load_caller(db, user)
-    can_manage = (
-        caller.ctx is not None and not caller.is_execution_credential
-        and (caller.is_platform_admin or user.is_provider_org)
-    )
-    if manage and not can_manage:
-        raise HTTPException(403, "Cloudflare approval requires a Global operator")
+    operator_permission = "platform.readwrite"
+    can_manage = not caller.is_execution_credential and allows_permission(caller, operator_permission, None)
+    if manage:
+        if caller.is_execution_credential:
+            raise HTTPException(403, "Cloudflare approval requires a human Global operator")
+        require_permission(caller, operator_permission, None)
     workflow = await db.get(Workflow, workflow_id, populate_existing=True)
     if workflow is None or (not can_manage and not user_reach(caller).covers(workflow.organization_id)):
         raise HTTPException(404, "Workflow not found")
@@ -62,16 +63,6 @@ async def _authorized_workflow(
 
 def _diagnostic(error: AnalysisRejected) -> CloudflareApprovalDiagnostic:
     return CloudflareApprovalDiagnostic(**asdict(Finding.from_refusal(error)))
-
-
-def _placement_refusal(workflow: Workflow) -> AnalysisRejected | None:
-    if not workflow.is_active:
-        return AnalysisRejected("Workflow is inactive")
-    if workflow.type != "workflow":
-        return AnalysisRejected("Only workflows can be approved", "CF_EXECUTABLE_TYPE")
-    if workflow.execution_lane == "fast_path":
-        return AnalysisRejected("Cloudflare supplies Normal capacity only", "CF_FAST_PATH")
-    return None
 
 
 async def _state(db: AsyncSession, workflow: Workflow, can_manage: bool) -> CloudflareApprovalState:
@@ -85,24 +76,12 @@ async def _state(db: AsyncSession, workflow: Workflow, can_manage: bool) -> Clou
         install_id = declaration.solution.install_id if declaration.solution else None
         if (current.organization_id, install_id) == (workflow.organization_id, workflow.solution_id):
             state.current_declaration = declaration
-    refusal = _placement_refusal(workflow)
-    if refusal is not None:
+    try:
+        solution = await approval_placement(db, workflow)
+    except ObservationChanged as error:
         state.status = "ineligible"
-        state.diagnostics = [_diagnostic(refusal)]
+        state.diagnostics = [_diagnostic(error)]
         return state
-    solution = None
-    if workflow.solution_id is not None:
-        solution = await solution_approval_scope(db, workflow.solution_id, workflow.organization_id)
-        if solution is None:
-            outbound = await db.scalar(
-                select(Solution.allow_outbound_access).where(Solution.id == workflow.solution_id),
-            )
-            state.status = "ineligible"
-            state.diagnostics = [_diagnostic(
-                AnalysisRejected("The Solution install allows outbound access", "CF_OUTBOUND")
-                if outbound else AnalysisRejected("The Solution has no eligible published source"),
-            )]
-            return state
     if current is not None:
         approved = state.current_declaration
         state.status = "revision_changed"
@@ -153,7 +132,7 @@ async def review_approval(
 ) -> CloudflareApprovalState:
     accepting = isinstance(options, CloudflareApprovalAccept)
     workflow, _ = await _authorized_workflow(
-        db, user, workflow_id, manage=accepting or bool(options.https_hosts),
+        db, user, workflow_id, manage=True,
     )
     scope = workflow_review_scope(workflow)
     candidate = None
@@ -165,13 +144,11 @@ async def review_approval(
         )
     except (StorageError, TimeoutError, SourceUnresolved):
         diagnostic = _temporary()
-    except ObservationChanged:
-        diagnostic = _diagnostic(AnalysisRejected("Workflow scope or source changed during review"))
     except AnalysisRejected as error:
         diagnostic = _diagnostic(error)
 
     workflow, can_manage = await _authorized_workflow(
-        db, user, workflow_id, manage=accepting or bool(options.https_hosts),
+        db, user, workflow_id, manage=True,
     )
     state = await _state(db, workflow, can_manage)
     if workflow_review_scope(workflow) != scope:
@@ -181,14 +158,15 @@ async def review_approval(
     if candidate is not None:
         declaration = candidate.declaration
         solution = declaration.solution
+        try:
+            placement_matches = await approval_placement(db, workflow) == solution
+        except ObservationChanged:
+            placement_matches = False
         if (
             (candidate.organization_id, solution.install_id if solution else None,
              declaration.entry_path, declaration.function_name)
             != scope
-            or _placement_refusal(workflow) is not None
-            or (solution is not None and await solution_approval_scope(
-                db, solution.install_id, candidate.organization_id,
-            ) != solution)
+            or not placement_matches
             or candidate.previous_revision != state.current_revision
             or await indexed_pins(db, set(declaration.manifest), install_id=workflow.solution_id)
             != declaration.manifest
@@ -203,20 +181,21 @@ async def review_approval(
         elif state.status == "pending_review":
             state.status = "ineligible"
         if accepting:
-            raise HTTPException(
-                503 if state.status == "temporarily_unavailable" else 409,
-                detail=state.model_dump(mode="json"),
-            )
+            raise _review_error(state, diagnostic.message)
         return state
 
     assert candidate is not None
     if isinstance(options, CloudflareApprovalAccept):
         if candidate.revision != options.review_sha256:
-            raise HTTPException(409, "The proposal changed. Generate and review a new proposal.")
+            raise _revision_conflict(state, "The proposal changed. Generate and review a new proposal.")
         try:
             await accept_proposal(db, candidate, accepted_by=str(user.user_id))
         except AnalysisRejected as error:
-            raise HTTPException(409, str(error)) from error
+            raise _revision_conflict(state, str(error)) from error
+        await emit_audit(
+            db, "workflow.cloudflare_approval.accept", resource_type="workflow", resource_id=workflow_id,
+            details={"revision": candidate.revision},
+        )
         state = await _state(db, workflow, can_manage)
     state.proposal = _review(candidate)
     state.diagnostics = _url_diagnostics(candidate.declaration)
@@ -228,8 +207,26 @@ async def revoke_review(
 ) -> CloudflareApprovalState:
     workflow, can_manage = await _authorized_workflow(db, user, workflow_id, manage=True)
     try:
-        await revoke_approval(db, workflow_id)
+        revision = await revoke_approval(db, workflow_id)
         await db.flush()
     except AnalysisRejected as error:
-        raise HTTPException(409, str(error)) from error
+        raise _revision_conflict(await _state(db, workflow, can_manage), str(error)) from error
+    if revision is not None:
+        await emit_audit(
+            db, "workflow.cloudflare_approval.revoke", resource_type="workflow", resource_id=workflow_id,
+            details={"revision": revision},
+        )
     return await _state(db, workflow, can_manage)
+
+
+def _review_error(state: CloudflareApprovalState, message: str) -> HTTPException:
+    return HTTPException(
+        503 if state.status == "temporarily_unavailable" else 409,
+        detail={"message": message, "state": state.model_dump(mode="json")},
+    )
+
+
+def _revision_conflict(state: CloudflareApprovalState, message: str) -> HTTPException:
+    state.status = "revision_changed"
+    state.diagnostics = [_diagnostic(AnalysisRejected(message))]
+    return _review_error(state, message)
