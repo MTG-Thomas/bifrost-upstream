@@ -1157,6 +1157,30 @@ CANONICAL_OPERATIONS = {
         "PUT", "/api/base-role-defaults", ("users", "defaults", "set"),
         "bifrost_base_role_default_update", False,
     ),
+    "workflows.cloudflare_approval.status": (
+        "GET",
+        "/api/workflows/{workflow_id}/cloudflare-approval",
+        ("workflows", "cloudflare-approval", "status"),
+        "bifrost_workflow_cloudflare_approval_status",
+    ),
+    "workflows.cloudflare_approval.propose": (
+        "POST",
+        "/api/workflows/{workflow_id}/cloudflare-approval/propose",
+        ("workflows", "cloudflare-approval", "propose"),
+        "bifrost_workflow_cloudflare_approval_propose",
+    ),
+    "workflows.cloudflare_approval.accept": (
+        "POST",
+        "/api/workflows/{workflow_id}/cloudflare-approval/accept",
+        ("workflows", "cloudflare-approval", "accept"),
+        "bifrost_workflow_cloudflare_approval_accept",
+    ),
+    "workflows.cloudflare_approval.revoke": (
+        "DELETE",
+        "/api/workflows/{workflow_id}/cloudflare-approval",
+        ("workflows", "cloudflare-approval", "revoke"),
+        "bifrost_workflow_cloudflare_approval_revoke",
+    ),
     "workflows.conversions.create": (
         "POST",
         "/api/workflow-conversions",
@@ -1339,6 +1363,7 @@ _CANONICAL_MCP_TOOL_MODULES = {
     "workflows": (
         "src.services.mcp_server.tools.workflow",
         "src.services.mcp_server.tools.workflow_conversion",
+        "src.services.mcp_server.tools.cloudflare_approval",
     ),
 }
 

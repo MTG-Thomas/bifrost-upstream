@@ -1852,28 +1852,28 @@ async def get_workflow(
     )
 
 
-@router.get("/{workflow_id}/cloudflare-approval")
+@router.get("/{workflow_id}/cloudflare-approval", **operation_route("workflows.cloudflare_approval.status"))
 async def get_workflow_cloudflare_approval(
     workflow_id: UUID, user: CurrentActiveUser, db: DbSession,
 ) -> CloudflareApprovalState:
     return await get_approval_state(db, user, workflow_id)
 
 
-@router.post("/{workflow_id}/cloudflare-approval/propose")
+@router.post("/{workflow_id}/cloudflare-approval/propose", **operation_route("workflows.cloudflare_approval.propose"))
 async def propose_workflow_cloudflare_approval(
     workflow_id: UUID, request: CloudflareApprovalOptions, user: CurrentActiveUser, db: DbSession,
 ) -> CloudflareApprovalState:
     return await review_approval(db, user, workflow_id, request)
 
 
-@router.post("/{workflow_id}/cloudflare-approval/accept")
+@router.post("/{workflow_id}/cloudflare-approval/accept", **operation_route("workflows.cloudflare_approval.accept"))
 async def accept_workflow_cloudflare_approval(
     workflow_id: UUID, request: CloudflareApprovalAccept, user: CurrentActiveUser, db: DbSession,
 ) -> CloudflareApprovalState:
     return await review_approval(db, user, workflow_id, request)
 
 
-@router.delete("/{workflow_id}/cloudflare-approval")
+@router.delete("/{workflow_id}/cloudflare-approval", **operation_route("workflows.cloudflare_approval.revoke"))
 async def revoke_workflow_cloudflare_approval(
     workflow_id: UUID, user: CurrentActiveUser, db: DbSession,
 ) -> CloudflareApprovalState:

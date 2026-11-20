@@ -2591,11 +2591,11 @@ export interface paths {
             cookie?: never;
         };
         /** Get Workflow Cloudflare Approval */
-        get: operations["get_workflow_cloudflare_approval_api_workflows__workflow_id__cloudflare_approval_get"];
+        get: operations["workflows.cloudflare_approval.status"];
         put?: never;
         post?: never;
         /** Revoke Workflow Cloudflare Approval */
-        delete: operations["revoke_workflow_cloudflare_approval_api_workflows__workflow_id__cloudflare_approval_delete"];
+        delete: operations["workflows.cloudflare_approval.revoke"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2611,7 +2611,7 @@ export interface paths {
         get?: never;
         put?: never;
         /** Propose Workflow Cloudflare Approval */
-        post: operations["propose_workflow_cloudflare_approval_api_workflows__workflow_id__cloudflare_approval_propose_post"];
+        post: operations["workflows.cloudflare_approval.propose"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2628,7 +2628,7 @@ export interface paths {
         get?: never;
         put?: never;
         /** Accept Workflow Cloudflare Approval */
-        post: operations["accept_workflow_cloudflare_approval_api_workflows__workflow_id__cloudflare_approval_accept_post"];
+        post: operations["workflows.cloudflare_approval.accept"];
         delete?: never;
         options?: never;
         head?: never;
@@ -37519,7 +37519,7 @@ export interface operations {
             };
         };
     };
-    get_workflow_cloudflare_approval_api_workflows__workflow_id__cloudflare_approval_get: {
+    "workflows.cloudflare_approval.status": {
         parameters: {
             query?: never;
             header?: never;
@@ -37550,7 +37550,7 @@ export interface operations {
             };
         };
     };
-    revoke_workflow_cloudflare_approval_api_workflows__workflow_id__cloudflare_approval_delete: {
+    "workflows.cloudflare_approval.revoke": {
         parameters: {
             query?: never;
             header?: never;
@@ -37581,7 +37581,7 @@ export interface operations {
             };
         };
     };
-    propose_workflow_cloudflare_approval_api_workflows__workflow_id__cloudflare_approval_propose_post: {
+    "workflows.cloudflare_approval.propose": {
         parameters: {
             query?: never;
             header?: never;
@@ -37616,7 +37616,7 @@ export interface operations {
             };
         };
     };
-    accept_workflow_cloudflare_approval_api_workflows__workflow_id__cloudflare_approval_accept_post: {
+    "workflows.cloudflare_approval.accept": {
         parameters: {
             query?: never;
             header?: never;

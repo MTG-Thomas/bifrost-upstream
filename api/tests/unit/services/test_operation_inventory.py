@@ -21,11 +21,12 @@ def test_every_observed_surface_is_classified_with_a_reason() -> None:
     # reflect main's pre-rename tool/command surface: R1b lands each domain's
     # MCP thin-wrapper rewrite and tool-name migration, closing that parity
     # domain by domain.
+    # Cloudflare workflow approval adds four CLI commands, MCP tools, and REST routes.
     assert inventory["counts"] == {
-        "cli": 182,  # Includes workflow validation and the offline Cloudflare report.
+        "cli": 186,  # Includes workflow validation and the offline Cloudflare report.
         "manifest": 16,
-        "mcp": 101,  # Includes inline Execute Code.
-        "rest": 724,  # Includes App setup, four Solution-source routes, and bulk Organization tags.
+        "mcp": 105,  # Includes inline Execute Code.
+        "rest": 728,  # Includes App setup, four Solution-source routes, and bulk Organization tags.
         "sdk": 21,
     }
     for surface, rows in inventory["uncataloged"].items():
@@ -145,6 +146,9 @@ def test_catalog_operations_report_exact_rest_parity() -> None:
     }
     for operation_id, row in operations.items():
         assert row["observed"]["rest"]["status"] == "exact_parity", operation_id
+        if operation_id.startswith("workflows.cloudflare_approval."):
+            for surface in ("cli", "mcp"):
+                assert row["observed"][surface]["status"] == "exact_parity", (operation_id, surface)
 
 
 def test_generated_operation_files_are_fresh() -> None:
