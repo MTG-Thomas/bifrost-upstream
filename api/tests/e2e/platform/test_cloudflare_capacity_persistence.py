@@ -15,7 +15,10 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareCredential,
     CloudflareInstallation,
     CloudflareOwnedResource,
+    CloudflareWorkerReservation,
 )
+from src.models.orm.execution_workers import ExecutionWorker
+from src.services.worker_pool.cloudflare_admission import cloudflare_claim_allowed
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
     open_credential,
@@ -171,6 +174,53 @@ async def test_scope_bearer_reference_is_versioned_and_scope_bound(
                 endpoint="https://other.example.test", deployment_revision=1, bearer_version=1,
             ))
             await db_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_claim_gate_tracks_scale_in_and_deployment_changes_without_restart(
+    db_session: AsyncSession, installation: CloudflareInstallation,
+) -> None:
+    worker_id = uuid4()
+    db_session.add(ExecutionWorker(
+        id=worker_id, form="external", state="ready", capacity_scope="workers",
+        runtime_profile="cloudflare-python-v1",
+    ))
+    db_session.add(seal_credential(
+        CredentialRef(installation.id, installation.account_id, "scope_bearer", "workers", 1),
+        SecretStr("synthetic-backend-test-bearer"), actor=str(OPERATOR_ID), now=datetime.now(UTC),
+    ))
+    await db_session.flush()
+    db_session.add(CloudflareWorkerReservation(
+        worker_id=worker_id, installation_id=installation.id, scope="workers", deployment_revision=1,
+    ))
+    scope = CloudflareCapacityScope(
+        installation_id=installation.id, scope="workers", endpoint="https://capacity.example.test",
+        deployment_revision=1, bearer_version=1,
+    )
+    db_session.add(scope)
+    await db_session.flush()
+    assert not await cloudflare_claim_allowed(db_session, worker_id)
+
+    installation.desired_state = "enabled"
+    installation.admitted_revision = 1
+    await db_session.flush()
+    assert await cloudflare_claim_allowed(db_session, worker_id)
+
+    installation.admitted_revision = None
+    installation.desired_state = "scaled_in"
+    installation.desired_revision = 2
+    await db_session.flush()
+    assert not await cloudflare_claim_allowed(db_session, worker_id)
+
+    installation.admitted_revision = 2
+    installation.desired_state = "enabled"
+    scope.deployment_revision = 2
+    await db_session.flush()
+    assert not await cloudflare_claim_allowed(db_session, worker_id)
+    await db_session.delete(scope)
+    await db_session.flush()
+    assert not await cloudflare_claim_allowed(db_session, worker_id)
+    assert await cloudflare_claim_allowed(db_session, uuid4())
 
 
 @pytest.mark.asyncio

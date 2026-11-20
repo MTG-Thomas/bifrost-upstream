@@ -18,6 +18,7 @@ from src.models.orm.executions import Execution
 from src.models.orm.work_dispatches import WorkDispatch
 from src.services.kubernetes_execution import load_kubernetes_policy
 from src.services.execution.summary_dispatch import LINUX_ONLY_SUMMARY
+from src.services.worker_pool.cloudflare_admission import cloudflare_claim_allowed
 from src.services.worker_pool.eligibility import cloudflare_active_claims, cloudflare_dispatch_sql, containers_dispatch_sql
 from src.worker.remote.fencing import fence_remote_owner
 from src.worker.remote.protocol import (
@@ -341,6 +342,8 @@ async def claim_next(
     try:
         for attempt in range(2):
             async with get_db_context() as db:
+                if not await cloudflare_claim_allowed(db, incarnation_id):
+                    return None
                 if not await fence_remote_owner(db, for_update=True):
                     return None
                 picked = (await db.execute(candidate)).one_or_none()

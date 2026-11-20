@@ -21,7 +21,9 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareCredential,
     CloudflareInstallation,
     CloudflareOwnedResource,
+    CloudflareWorkerReservation,
 )
+from src.models.orm.execution_workers import ExecutionWorker
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
     seal_credential,
@@ -167,7 +169,19 @@ async def retire_cloudflare_installation(
     scope = await db.scalar(select(CloudflareCapacityScope.scope).where(
         CloudflareCapacityScope.installation_id == installation_id,
     ).limit(1))
-    if remaining is not None or scope is not None:
+    unconfirmed_worker = await db.scalar(
+        select(CloudflareWorkerReservation.worker_id)
+        .join(ExecutionWorker, ExecutionWorker.id == CloudflareWorkerReservation.worker_id)
+        .where(
+            CloudflareWorkerReservation.installation_id == installation_id,
+            or_(
+                ExecutionWorker.state.not_in(("lost", "retired")),
+                ExecutionWorker.capacity_resource_deleted_at.is_(None),
+            ),
+        )
+        .limit(1)
+    )
+    if remaining is not None or scope is not None or unconfirmed_worker is not None:
         raise CloudflarePolicyConflict("Cloudflare cleanup is pending")
     row.api_token_version = None
     row.retired_at = datetime.now(UTC)

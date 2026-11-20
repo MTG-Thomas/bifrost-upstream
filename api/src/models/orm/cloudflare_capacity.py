@@ -120,6 +120,21 @@ class CloudflareCapacityScope(Base):
     bearer_version: Mapped[int]
 
 
+class CloudflareWorkerReservation(Base):
+    __tablename__ = "cloudflare_worker_reservations"
+    __table_args__ = (
+        CheckConstraint("deployment_revision > 0", name="ck_cf_reservation_revision"),
+        Index("ix_cf_reservations_installation", "installation_id"),
+    )
+
+    worker_id: Mapped[UUID] = mapped_column(
+        ForeignKey("execution_workers.id", ondelete="CASCADE"), primary_key=True,
+    )
+    installation_id: Mapped[UUID] = mapped_column(ForeignKey("cloudflare_installations.id", ondelete="RESTRICT"))
+    scope: Mapped[str] = mapped_column(String(64))
+    deployment_revision: Mapped[int]
+
+
 class CloudflareOwnedResource(Base):
     __tablename__ = "cloudflare_owned_resources"
     __table_args__ = (
