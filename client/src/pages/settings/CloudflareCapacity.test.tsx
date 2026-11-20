@@ -4,12 +4,14 @@ import { expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	get: vi.fn(),
+	configure: vi.fn(),
 	start: vi.fn(),
 	rotate: vi.fn(),
 	observe: vi.fn(),
 	subscribe: vi.fn(),
 }));
 vi.mock("@/services/cloudflareCapacity", () => ({
+	configureCloudflareCapacity: mocks.configure,
 	getCloudflareCapacity: mocks.get,
 	startCloudflareAction: mocks.start,
 	rotateCloudflareAccountToken: mocks.rotate,
@@ -79,6 +81,37 @@ it("drains using the displayed installation revision and the shared job observer
 		"job-id",
 		expect.any(Function),
 	);
+});
+
+it("submits the current consent version and clears the write-only token", async () => {
+	mocks.get.mockResolvedValue({
+		installation: null,
+		consent_text_version: "existing-https-v1",
+		consent_text: "Current operator consent",
+	});
+	mocks.configure.mockResolvedValue({});
+	render(
+		<QueryClientProvider client={new QueryClient()}>
+			<CloudflareCapacity />
+		</QueryClientProvider>,
+	);
+	fireEvent.change(await screen.findByLabelText("Cloudflare Account ID"), { target: { value: "a".repeat(32) } });
+	fireEvent.change(screen.getByLabelText("Existing HTTPS Endpoint"), { target: { value: "https://workers.example.test" } });
+	const token = screen.getByLabelText("Cloudflare API Token");
+	expect(token).toHaveAttribute("type", "password");
+	fireEvent.change(token, { target: { value: "synthetic-management-token" } });
+	expect(screen.getByText("Current operator consent")).toBeVisible();
+	fireEvent.click(screen.getByRole("checkbox", { name: "I Accept the Cloudflare Terms Above" }));
+	fireEvent.click(screen.getByRole("button", { name: "Connect Cloudflare" }));
+	expect(mocks.configure).toHaveBeenCalledWith(expect.objectContaining({
+		action: "connect",
+		account_id: "a".repeat(32),
+		worker_ingress_origin: "https://workers.example.test",
+		consent: true,
+		consent_version: "existing-https-v1",
+		api_token: "synthetic-management-token",
+	}));
+	expect(token).toHaveValue("");
 });
 
 it("recovers Action Required from the last visible job on page load", async () => {

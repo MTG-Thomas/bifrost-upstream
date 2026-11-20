@@ -46,7 +46,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def reject_retired_cloudflare_containers_controller(self) -> "Settings":
-        if any(value is not None for value in (
+        if any((
             self.cloudflare_containers_scope, self.cloudflare_containers_url, self.cloudflare_containers_token,
         )):
             raise ValueError("BIFROST_CLOUDFLARE_CONTAINERS_* require the Phase 6 spike's Containers controller")

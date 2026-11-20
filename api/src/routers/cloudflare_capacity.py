@@ -10,6 +10,7 @@ from shared.models import (
     CloudflareCapacityStatus,
     CloudflareConnectRequest,
     CloudflarePolicyUpdate,
+    CloudflareWorkerCredentialRotation,
 )
 
 from src.core.auth import CurrentActiveUser
@@ -18,6 +19,7 @@ from src.jobs.platform.cloudflare_capacity import (
     enqueue_cloudflare_account_token_rotation,
     enqueue_cloudflare_disable,
     enqueue_cloudflare_reconcile,
+    enqueue_cloudflare_worker_credential_rotation,
 )
 from src.jobs.platform.cloudflare_enable import enqueue_cloudflare_enable
 from src.models.contracts.platform_jobs import PlatformJobAccepted
@@ -180,14 +182,21 @@ async def disconnect_cloudflare_capacity(
     operation_id="capacity.cloudflare_rotate_account_token",
 )
 async def rotate_cloudflare_account_token(
-    body: CloudflareAccountTokenRotation, response: Response, db: DbSession, user: CurrentActiveUser,
+    body: CloudflareAccountTokenRotation | CloudflareWorkerCredentialRotation,
+    response: Response, db: DbSession, user: CurrentActiveUser,
 ) -> PlatformJobAccepted:
     caller = await load_caller(db, user)
     try:
-        job, reused = await enqueue_cloudflare_account_token_rotation(
-            db, caller, installation_id=body.installation_id, expected_revision=body.expected_revision,
-            replacement=body.api_token,
-        )
+        if isinstance(body, CloudflareAccountTokenRotation):
+            job, reused = await enqueue_cloudflare_account_token_rotation(
+                db, caller, installation_id=body.installation_id, expected_revision=body.expected_revision,
+                replacement=body.api_token,
+            )
+        else:
+            job, reused = await enqueue_cloudflare_worker_credential_rotation(
+                db, caller, installation_id=body.installation_id, expected_revision=body.expected_revision,
+                credential=body.credential,
+            )
     except CloudflarePolicyConflict as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     response.headers["Location"] = f"/api/platform-jobs/{job.id}"

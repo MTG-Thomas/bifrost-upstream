@@ -8,6 +8,7 @@ from uuid import UUID
 
 from pydantic import SecretStr
 from shared.worker_control_auth import managed_cloudflare_control_key
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.security import decrypt_secret, encrypt_secret
@@ -71,6 +72,18 @@ async def load_account_token(db: AsyncSession, installation: CloudflareInstallat
     if row is None:
         raise ValueError("Cloudflare management credential is unavailable")
     return open_credential(CredentialRef(installation.id, installation.account_id, "account_token", "", version), row)
+
+
+async def confirm_account_token_write(db: AsyncSession, installation: CloudflareInstallation) -> None:
+    """Purge predecessors after a fenced write and independently verified readback."""
+    version = installation.api_token_version
+    if version is not None:
+        await db.execute(update(CloudflareCredential).where(
+            CloudflareCredential.installation_id == installation.id,
+            CloudflareCredential.purpose == "account_token",
+            CloudflareCredential.version < version,
+            CloudflareCredential.ciphertext.is_not(None),
+        ).values(ciphertext=None))
 
 
 async def load_managed_control_key(db: AsyncSession, pin: CloudflareWorkerReservation, resource_uid: str) -> str:

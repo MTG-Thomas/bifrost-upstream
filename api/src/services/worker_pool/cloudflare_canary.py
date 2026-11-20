@@ -167,6 +167,11 @@ async def run_workers_canary(
 
     signed = scoped = False
     try:
+        await client.prepare(WorkerCapacityReservation(
+            worker_id=worker_id, worker_version=profile.worker_version, memory_limit_bytes=profile.memory_limit_bytes,
+            max_lifetime_seconds=min(deployment.policy.max_lifetime_seconds, 120),
+            drain_grace_seconds=WORKER_DRAIN_GRACE_SECONDS,
+        ), "workers", managed_identity=(resource_uid, key))
         async with get_db_context() as db:
             try:
                 await hold_lease(db, context.job_id, context.lease_token)
@@ -175,11 +180,6 @@ async def run_workers_canary(
             row = await db.get(CloudflareInstallation, installation_id, with_for_update={"read": True})
             if row is None or row.desired_revision != revision or row.desired_state != "enabled":
                 return RuntimeCanary(False, False)
-            await client.prepare(WorkerCapacityReservation(
-                worker_id=worker_id, worker_version=profile.worker_version, memory_limit_bytes=profile.memory_limit_bytes,
-                max_lifetime_seconds=min(deployment.policy.max_lifetime_seconds, 120),
-                drain_grace_seconds=WORKER_DRAIN_GRACE_SECONDS,
-            ), "workers", managed_identity=(resource_uid, key))
             await client.start(worker_id, "workers", resource_uid)
         try:
             async with asyncio.timeout(CANARY_DEADLINE_SECONDS):

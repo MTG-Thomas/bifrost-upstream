@@ -2,10 +2,11 @@
 
 import asyncio
 import json
+import logging
 import re
 import socket
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, suppress
 from pathlib import Path
 from time import monotonic
 from urllib.parse import quote, unquote_to_bytes
@@ -27,6 +28,7 @@ from src.models.orm.cloudflare_capacity import CloudflareInstallation
 from src.worker.remote.protocol import MAX_FRAME_BYTES
 
 PORT = 8001
+logger = logging.getLogger(__name__)
 INGRESS_HEADER = b"x-bifrost-worker-ingress"
 POLICY = json.loads(Path(__file__).with_name("worker_ingress_routes.json").read_text())
 CONTROL_PATH: str = POLICY["control"]
@@ -485,4 +487,27 @@ async def serve_worker_ingress(app: FastAPI) -> AsyncIterator[None]:
             yield
         finally:
             server.should_exit = True
+            await task
+
+
+@asynccontextmanager
+async def watch_worker_ingress(app: FastAPI) -> AsyncIterator[None]:
+    """Open the dedicated socket when an installation is connected."""
+    async def watch() -> None:
+        while True:
+            try:
+                if await _installation_origin() is not None:
+                    async with serve_worker_ingress(app):
+                        while await _installation_origin() is not None:
+                            await asyncio.sleep(1)
+            except (SQLAlchemyError, OSError, TimeoutError, RuntimeError):
+                logger.warning("Worker ingress is unavailable", exc_info=True)
+            await asyncio.sleep(1)
+
+    task = asyncio.create_task(watch(), name="worker-ingress-supervisor")
+    try:
+        yield
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
             await task

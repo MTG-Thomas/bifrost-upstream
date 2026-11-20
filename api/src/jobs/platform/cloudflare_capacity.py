@@ -1,6 +1,7 @@
 """Lease-fenced Cloudflare inventory and retirement jobs."""
 
 import asyncio
+import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal
@@ -8,7 +9,7 @@ from uuid import UUID
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
-from sqlalchemy import case, delete, func, select, text, true
+from sqlalchemy import case, delete, func, select, text, true, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import get_db_context
@@ -44,6 +45,7 @@ from src.services.work_dispatch import (
 )
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
+    confirm_account_token_write,
     load_account_token,
     open_credential,
     seal_credential,
@@ -72,6 +74,7 @@ from src.services.worker_pool.cloudflare_workers_rest import (
 DISABLE_JOB = "capacity.cloudflare_disable"
 RECONCILE_JOB = "capacity.cloudflare_reconcile"
 ROTATE_JOB = "capacity.cloudflare_rotate_account_token"
+ROTATE_WORKER_JOB = "capacity.cloudflare_rotate_worker_credential"
 RECONCILE_INTERVAL_SECONDS = 5 * 60
 DRAIN_DEADLINE = timedelta(minutes=10)
 CREATE_SETTLEMENT_WINDOW = timedelta(minutes=1)
@@ -104,6 +107,14 @@ class CloudflareRotateAccountPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     installation_id: UUID
     previous_version: int = Field(gt=0)
+    replacement_version: int = Field(gt=0)
+
+
+class CloudflareRotateWorkerPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    installation_id: UUID
+    revision: int = Field(gt=0)
+    credential: Literal["control_root", "scope_bearer"]
     replacement_version: int = Field(gt=0)
 
 
@@ -176,11 +187,13 @@ async def _cleanup_one(
     if resource.state != "deleting":
         resource.state = "deleting"
         return "progressed"  # Commit the deletion intent before issuing DELETE.
-    await resume_deletion(
+    wrote = await resume_deletion(
         adapter, api_token=token,
         committed_deletion=ResourceObservation(intent, resource.provider_id, resource.provider_version),
         namespace_ids=frozenset(resource.namespace_ids.values()),
     )
+    if wrote:
+        await confirm_account_token_write(db, row)
     resource.state = "absent"
     resource.observed_at = datetime.now(UTC)
     return "progressed"
@@ -247,7 +260,7 @@ async def _require_legacy_cleanup(db: AsyncSession) -> None:
         })
 
 
-async def _retire(db: AsyncSession, row: CloudflareInstallation, payload: CloudflareDisablePayload) -> None:
+async def _remove_verified_scopes(db: AsyncSession, row: CloudflareInstallation) -> None:
     unverified_scope = await db.scalar(select(CloudflareCapacityScope.scope).where(
         CloudflareCapacityScope.installation_id == row.id,
         ~select(CloudflareOwnedResource.id).where(
@@ -263,6 +276,10 @@ async def _retire(db: AsyncSession, row: CloudflareInstallation, payload: Cloudf
     if unverified_scope is not None:
         raise ObservationPending("Cloudflare scope absence is unverified")
     await db.execute(delete(CloudflareCapacityScope).where(CloudflareCapacityScope.installation_id == row.id))
+
+
+async def _retire(db: AsyncSession, row: CloudflareInstallation, payload: CloudflareDisablePayload) -> None:
+    await _remove_verified_scopes(db, row)
     await retire_cloudflare_installation(db, installation_id=row.id, expected_revision=payload.revision)
 
 
@@ -486,6 +503,106 @@ async def _rotate_account_token(context: PlatformJobContext, parsed: BaseModel) 
 CLOUDFLARE_ROTATE_ACCOUNT_DEFINITION = define_platform_job(
     ROTATE_JOB, CloudflareRotateAccountPayload, _rotate_account_token,
 )
+
+
+async def _rotate_worker_credential(context: PlatformJobContext, parsed: BaseModel) -> dict[str, str | int]:
+    payload = CloudflareRotateWorkerPayload.model_validate(parsed)
+    await context.report("Rotating Cloudflare Worker Credential")
+    scope = "workers" if payload.credential == "scope_bearer" else ""
+    try:
+        async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
+            adapter = WorkersRestCleanup(http)
+            while True:
+                async with get_db_context() as db:
+                    await _hold_installation_lease(db, context, payload.installation_id)
+                    row = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
+                    if (
+                        row is None or row.retired_at is not None or row.desired_revision != payload.revision
+                        or row.desired_state != "scaled_in"
+                    ):
+                        return {"outcome": "superseded"}
+                    key = (row.id, payload.credential, scope, payload.replacement_version)
+                    current = await db.get(CloudflareCredential, key)
+                    if current is not None and current.ciphertext is not None:
+                        break
+                    if await cloudflare_workers_remain(db, row.id):
+                        await _require_legacy_cleanup(db)
+                        raise PlatformJobRequiresAction("Wait for Cloudflare Workers to Retire", {"code": "CF_PRIOR_WORKERS_LIVE"})
+                    if scope:
+                        progress = await _cleanup_one(db, row, adapter)
+                        if progress == "progressed":
+                            continue
+                        if progress == "settling":
+                            raise PlatformJobRequiresAction("Wait for Cloudflare Creation to Settle", {"code": "CF_CLEANUP_PENDING"})
+                        await _remove_verified_scopes(db, row)
+                    ref = CredentialRef(row.id, row.account_id, payload.credential, scope, payload.replacement_version)
+                    db.add(seal_credential(
+                        ref, SecretStr(secrets.token_urlsafe(48)), actor=context.requested_by_user_id, now=datetime.now(UTC),
+                    ))
+                    if payload.credential == "control_root":
+                        row.control_root_version = ref.version
+                    await db.execute(update(CloudflareCredential).where(
+                        CloudflareCredential.installation_id == row.id,
+                        CloudflareCredential.purpose == payload.credential,
+                        CloudflareCredential.scope == scope,
+                        CloudflareCredential.version < ref.version,
+                    ).values(ciphertext=None))
+                    await emit_audit(
+                        db, "capacity.cloudflare_worker_credential_rotated", resource_type="cloudflare_installation",
+                        resource_id=row.id, details={"credential": ref.purpose, "credential_version": ref.version},
+                        actor_override=ActorContext(None, None, source="scheduler"),
+                    )
+                    break
+    except OwnershipConflict:
+        raise PlatformJobRequiresAction("Verify Cloudflare Ownership", {"code": "CF_OWNERSHIP_CONFLICT"}) from None
+    except ObservationPending:
+        raise PlatformJobRequiresAction("Cloudflare Cleanup Pending", {"code": "CF_CLEANUP_PENDING"}) from None
+    except CloudflareManagementDenied:
+        raise PlatformJobRequiresAction("Reconnect Cloudflare", {"code": "CF_MANAGEMENT_CREDENTIAL"}) from None
+    except CloudflareRestUnavailable:
+        raise PlatformJobFailure("CF_PROVIDER_UNAVAILABLE", "Cloudflare REST Is Temporarily Unavailable", retryable=True) from None
+    return {"outcome": "rotated", "credential_version": payload.replacement_version}
+
+
+CLOUDFLARE_ROTATE_WORKER_DEFINITION = define_platform_job(
+    ROTATE_WORKER_JOB, CloudflareRotateWorkerPayload, _rotate_worker_credential,
+)
+
+
+async def enqueue_cloudflare_worker_credential_rotation(
+    db: AsyncSession, caller: Caller, *, installation_id: UUID, expected_revision: int,
+    credential: Literal["control_root", "scope_bearer"],
+) -> tuple[PlatformJob, bool]:
+    require_operation(caller, "capacity.cloudflare_rotate_account_token", GLOBAL)
+    actor = caller.principal
+    row = await db.get(CloudflareInstallation, installation_id, with_for_update=True, populate_existing=True)
+    if row is None or row.retired_at is not None or row.desired_revision != expected_revision or row.desired_state != "scaled_in":
+        raise CloudflarePolicyConflict("Scale in the current Cloudflare deployment before rotating worker credentials.")
+    existing = await find_active_platform_job(db, ROTATE_WORKER_JOB, str(row.id))
+    if existing is not None:
+        raise CloudflarePolicyConflict("A worker credential rotation is already pending")
+    if credential == "scope_bearer":
+        row.desired_revision += 1
+        version = row.desired_revision
+    else:
+        version = (row.control_root_version or 0) + 1
+    payload = CloudflareRotateWorkerPayload(
+        installation_id=row.id, revision=row.desired_revision, credential=credential,
+        replacement_version=version,
+    )
+    job, reused = await enqueue_platform_job(
+        db, CLOUDFLARE_ROTATE_WORKER_DEFINITION, payload, dedupe_key=str(row.id),
+        resource_lock_key=f"cloudflare-installation:{row.id}",
+        organization_id=None, requested_by_user_id=actor.user_id, requested_by_email=actor.email,
+        requested_by_name=actor.name, resource_type="cloudflare_installation", resource_id=str(row.id),
+        title="Rotate Cloudflare Worker Credential", action_url=None,
+    )
+    if not reused:
+        await emit_audit(
+            db, "capacity.cloudflare_rotate_worker_credential", resource_type="cloudflare_installation",
+            resource_id=row.id, details={"credential": credential, "job_id": str(job.id)},
+        )
+    return job, reused
 
 
 async def enqueue_cloudflare_account_token_rotation(

@@ -77,7 +77,10 @@ PARITY_HANDLERS: dict[str, set[str]] = {
     },
     "code_editor": {"bifrost_file_search"},
     "code_execution": {"bifrost_execute_code"},
-    "cloudflare_capacity": {"bifrost_cloudflare_capacity_get", "_submit"},
+    "cloudflare_capacity": {
+        "bifrost_cloudflare_capacity_get", "_submit", "bifrost_cloudflare_policy_update",
+        "bifrost_cloudflare_worker_credential_rotate",
+    },
     "agents": {
         "bifrost_agent_list",
         "bifrost_agent_get",

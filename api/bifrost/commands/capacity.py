@@ -36,7 +36,7 @@ async def cloudflare_status(ctx: click.Context, *, client: BifrostClient, resolv
     output_result(response.json(), ctx=ctx)
 
 
-def _register_action(name: str, help_text: str) -> None:
+def _register_action(name: str, help_text: str, *, credential: str | None = None) -> None:
     @cloudflare_group.command(name, help=help_text)
     @click.option("--wait", is_flag=True, help="Wait for completion through the platform job.")
     @_apply_flags(_ACTION_FLAGS)
@@ -47,7 +47,10 @@ def _register_action(name: str, help_text: str) -> None:
         ctx: click.Context, wait: bool, *, client: BifrostClient, resolver: RefResolver, **fields: Any,
     ) -> None:
         body = CloudflareCapacityAction.model_validate(fields)
-        response = await client.post(f"{_PATH}/{name}", json=body.model_dump(mode="json"))
+        data = body.model_dump(mode="json")
+        if credential is not None:
+            data["credential"] = credential
+        response = await client.post(f"{_PATH}/{'rotate' if credential else name}", json=data)
         response.raise_for_status()
         accepted = response.json()
         result = await poll_platform_job(client, accepted["job_id"], label=help_text) if wait else accepted
@@ -58,6 +61,8 @@ _register_action("scale-in", "Drain Cloudflare workers and retain the connection
 _register_action("disconnect", "Drain Cloudflare workers and remove verified owned capacity.")
 _register_action("enable", "Provision and verify Cloudflare Workers capacity.")
 _register_action("reconcile", "Verify the current Cloudflare Workers deployment.")
+_register_action("rotate-root", "Rotate the derivation root after Scale In.", credential="control_root")
+_register_action("rotate-bearer", "Retire the previous Workers deployment and stage a new bearer.", credential="scope_bearer")
 
 
 def _read_policy(policy: TextIO) -> dict[str, Any]:

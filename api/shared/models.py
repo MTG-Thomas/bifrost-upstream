@@ -78,6 +78,10 @@ class CloudflareAccountTokenRotation(CloudflareCapacityAction):
     api_token: SecretStr = Field(min_length=16, max_length=512, json_schema_extra={"writeOnly": True})
 
 
+class CloudflareWorkerCredentialRotation(CloudflareCapacityAction):
+    credential: Literal["control_root", "scope_bearer"]
+
+
 class CloudflareConnectRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 

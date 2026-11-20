@@ -43,6 +43,7 @@ from src.services.worker_ingress_probes import probe_worker_ingress
 from src.services.worker_pool.cloudflare_canary import run_workers_canary
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
+    confirm_account_token_write,
     open_credential,
     seal_credential,
 )
@@ -210,6 +211,8 @@ async def _settle_enable(
                 bearer=bearer if is_capacity else None,
             )
             scripts[resource.target_name] = result.namespaces
+            if result.confirmed_write:
+                await confirm_account_token_write(db, row)
             if is_capacity:
                 capacity_endpoint = result.endpoint
     if capacity_endpoint is None:
@@ -272,6 +275,11 @@ async def _enable(context: PlatformJobContext, parsed: BaseModel) -> dict[str, s
         raise PlatformJobRequiresAction("Verify Cloudflare Deployment", {"code": "CF_DEPLOYMENT_UNVERIFIED"}) from None
     except CloudflareManagementDenied:
         raise PlatformJobRequiresAction("Reconnect Cloudflare", {"code": "CF_MANAGEMENT_CREDENTIAL"}) from None
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        if status in (408, 429) or status >= 500:
+            raise PlatformJobFailure("CF_PROVIDER_UNAVAILABLE", "Cloudflare Is Temporarily Unavailable", retryable=True) from None
+        raise PlatformJobRequiresAction("Verify Cloudflare Deployment", {"code": "CF_DEPLOYMENT_UNVERIFIED"}) from None
     except (CloudflareRestUnavailable, httpx.TransportError):
         raise PlatformJobFailure("CF_PROVIDER_UNAVAILABLE", "Cloudflare Is Temporarily Unavailable", retryable=True) from None
 

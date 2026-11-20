@@ -1,9 +1,14 @@
 """Thin REST bridge for the Cloudflare capacity operator actions."""
 
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
-from shared.models import CloudflareCapacityAction, CloudflareCapacityPolicy, CloudflarePolicyUpdate
+from shared.models import (
+    CloudflareCapacityAction,
+    CloudflareCapacityPolicy,
+    CloudflarePolicyUpdate,
+    CloudflareWorkerCredentialRotation,
+)
 
 from src.services.mcp_server.tool_result import ToolResult, error_result, success_result
 from src.services.mcp_server.tools._http_bridge import call_rest
@@ -42,6 +47,18 @@ async def bifrost_cloudflare_reconcile_execute(context: Any, installation_id: UU
     return await _submit(context, "reconcile", installation_id, expected_revision)
 
 
+async def bifrost_cloudflare_worker_credential_rotate(
+    context: Any, installation_id: UUID, expected_revision: int, credential: Literal["control_root", "scope_bearer"],
+) -> ToolResult:
+    request = CloudflareWorkerCredentialRotation(
+        installation_id=installation_id, expected_revision=expected_revision, credential=credential,
+    )
+    status, body = await call_rest(context, "POST", f"{_PATH}/rotate", json_body=request.model_dump(mode="json"))
+    if status != 202:
+        return error_result(f"Cloudflare action failed (HTTP {status})", {"body": body})
+    return success_result("Cloudflare Job Queued", body)
+
+
 async def bifrost_cloudflare_policy_update(
     context: Any, installation_id: UUID, expected_revision: int, policy: CloudflareCapacityPolicy,
 ) -> ToolResult:
@@ -60,6 +77,7 @@ _TOOLS = (
     (bifrost_cloudflare_disconnect_execute, "Disconnect Cloudflare", "Drain capacity and remove owned resources."),
     (bifrost_cloudflare_enable_execute, "Enable Cloudflare", "Provision and verify Cloudflare Workers capacity."),
     (bifrost_cloudflare_reconcile_execute, "Reconcile Cloudflare", "Verify the current Cloudflare Workers deployment."),
+    (bifrost_cloudflare_worker_credential_rotate, "Rotate Cloudflare Worker Credential", "After Scale In, rotate the internal control root or Workers scope bearer."),
     (bifrost_cloudflare_policy_update, "Update Cloudflare Policy", "Update the current Cloudflare capacity policy."),
 )
 TOOLS = [(tool.__name__, title, description) for tool, title, description in _TOOLS]

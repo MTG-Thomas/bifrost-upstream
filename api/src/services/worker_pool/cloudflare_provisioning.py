@@ -46,8 +46,8 @@ class OwnedResourceCleanup(Protocol):
         """Return None only on verified absence. Reject foreign occupants."""
         ...
 
-    async def delete(self, *, api_token: SecretStr, expected: ResourceObservation) -> None:
-        """Delete only if the target still matches the entire observation."""
+    async def delete(self, *, api_token: SecretStr, expected: ResourceObservation) -> bool:
+        """Delete only an exact observation and report whether the write succeeded."""
         ...
 
     async def verify_absent(
@@ -130,15 +130,17 @@ async def resume_deletion(
     api_token: SecretStr,
     committed_deletion: ResourceObservation,
     namespace_ids: frozenset[str] = frozenset(),
-) -> None:
+) -> bool:
     """Resume a committed deletion intent under the caller's mutation fence."""
     observed = await observe_owned(
         adapter, api_token=api_token, intent=committed_deletion.intent, recorded=committed_deletion,
     )
+    wrote = False
     if observed is not None:
-        await adapter.delete(api_token=api_token, expected=observed)
+        wrote = await adapter.delete(api_token=api_token, expected=observed)
         if await observe_owned(
             adapter, api_token=api_token, intent=committed_deletion.intent, recorded=committed_deletion,
         ) is not None:
             raise ObservationPending("Cloudflare resource deletion is unconfirmed")
     await adapter.verify_absent(api_token=api_token, target=committed_deletion.intent.target, namespace_ids=namespace_ids)
+    return wrote

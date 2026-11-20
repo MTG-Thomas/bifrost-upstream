@@ -11,7 +11,7 @@ export type CloudflareAccountTokenRotation =
 export type CloudflareConfiguration =
 	| components["schemas"]["CloudflareConnectRequest"]
 	| components["schemas"]["CloudflarePolicyUpdate"];
-export type CloudflareAction = "enable" | "reconcile" | "scale-in" | "disconnect";
+export type CloudflareAction = "enable" | "reconcile" | "scale-in" | "disconnect" | "rotate-root" | "rotate-bearer";
 
 const actionPaths = {
 	enable: "/api/capacity/cloudflare/enable",
@@ -42,7 +42,11 @@ export async function startCloudflareAction(
 	action: CloudflareAction,
 	body: CloudflareCapacityAction,
 ): Promise<components["schemas"]["PlatformJobAccepted"]> {
-	const { data, error } = await apiClient.POST(actionPaths[action], { body });
+	const { data, error } = action === "rotate-root" || action === "rotate-bearer"
+		? await apiClient.POST("/api/capacity/cloudflare/rotate", { body: {
+			...body, credential: action === "rotate-root" ? "control_root" : "scope_bearer",
+		} })
+		: await apiClient.POST(actionPaths[action], { body });
 	if (error) {
 		throw new Error(
 			getErrorMessage(error, "Could not start the Cloudflare job."),

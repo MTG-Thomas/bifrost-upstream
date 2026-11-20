@@ -107,6 +107,16 @@ async def test_worker_ingress_over_tls(
         await _relay(reader, writer, api.hostname, upstream_port)
 
     try:
+        async with asyncio.timeout(8):
+            while True:
+                try:
+                    _, ingress_socket = await asyncio.open_connection(api.hostname, PORT)
+                except OSError:
+                    await asyncio.sleep(0.1)
+                else:
+                    ingress_socket.close()
+                    await ingress_socket.wait_closed()
+                    break
         async with await asyncio.start_server(forward, "127.0.0.1", 0, ssl=tls) as proxy:
             port = proxy.sockets[0].getsockname()[1]
             probe_address = probes._probe_address

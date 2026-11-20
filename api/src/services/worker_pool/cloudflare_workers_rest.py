@@ -140,15 +140,19 @@ class WorkersRestCleanup:
             raise OwnershipConflict("Cloudflare Worker does not have one exact active version")
         return ResourceObservation(intent, deployment_id, versions[0]["version_id"])
 
-    async def delete(self, *, api_token: SecretStr, expected: ResourceObservation) -> None:
-        # Workers DELETE is by script name. Account-side writers outside the
-        # installation lease can still race this last ownership check.
+    async def delete(self, *, api_token: SecretStr, expected: ResourceObservation) -> bool:
+        # observe_owned ends with active-version readback. Translate only this
+        # exact receipt to the provider's unconditional DELETE by script name.
+        # Cloudflare offers no conditional delete. An account-side writer can
+        # race the last read, an accepted residual risk for owned script names.
         if await observe_owned(self, api_token=api_token, intent=expected.intent, recorded=expected) is not None:
             target = expected.intent.target
-            await self._request(
+            deleted = await self._request(
                 api_token, target.account_id, "DELETE", _script_path(target),
                 allow_missing=True, params={"force": "true"},
             )
+            return deleted is not None
+        return False
 
     async def _script_namespaces(
         self, token: SecretStr, target: ResourceTarget, *, namespace_ids: frozenset[str] = frozenset(),
@@ -227,12 +231,14 @@ class WorkersDeployment:
 class ConfiguredWorkersScript:
     endpoint: str | None
     namespaces: dict[str, str]
+    confirmed_write: bool = False
 
 
 class WorkersRestProvisioner(WorkersRestCleanup):
     def __init__(self, http: httpx.AsyncClient, deployment: WorkersDeployment) -> None:
         super().__init__(http)
         self._deployment = deployment
+        self._confirmed_uploads: set[str] = set()
 
     def _worker_role(self, intent: ResourceIntent) -> WorkerRole:
         if intent.artifact_digest != self._deployment.release.digest:
@@ -317,6 +323,7 @@ class WorkersRestProvisioner(WorkersRestCleanup):
         observed = await observe_owned(self, api_token=api_token, intent=intent, recorded=None)
         if observed is None:
             raise ObservationPending("Cloudflare upload could not be observed")
+        self._confirmed_uploads.add(intent.target.name)
 
     async def configure_endpoint(
         self, *, api_token: SecretStr, expected: ResourceObservation,
@@ -338,6 +345,7 @@ class WorkersRestProvisioner(WorkersRestCleanup):
         if namespaces.keys() != self._deployment.release.manifest.workers[role].exports.keys():
             raise ObservationPending("Cloudflare namespace exports differ from the packaged release")
         settings = {"enabled": role == "capacity", "previews_enabled": False}
+        confirmed_write = intent.target.name in self._confirmed_uploads
         response = await self._request(api_token, intent.target.account_id, "GET", f"{path}/subdomain", allow_missing=True)
         readback = response["result"] if response is not None else None
         if not isinstance(readback, dict) or any(readback.get(key) is not value for key, value in settings.items()):
@@ -348,10 +356,11 @@ class WorkersRestProvisioner(WorkersRestCleanup):
             readback = response["result"] if response is not None else None
             if not isinstance(readback, dict) or any(readback.get(key) is not value for key, value in settings.items()):
                 raise ObservationPending("Cloudflare Worker endpoint settings could not be verified")
+            confirmed_write = True
         if await observe_owned(self, api_token=api_token, intent=intent, recorded=expected) is None:
             raise ObservationPending("Cloudflare uploaded Worker has disappeared")
         if role == "launcher":
-            return ConfiguredWorkersScript(None, namespaces)
+            return ConfiguredWorkersScript(None, namespaces, confirmed_write)
         response = await self._request(
             api_token, intent.target.account_id, "GET", "workers/subdomain",
         )
@@ -359,4 +368,4 @@ class WorkersRestProvisioner(WorkersRestCleanup):
         subdomain = account.get("subdomain") if isinstance(account, dict) else None
         if not isinstance(subdomain, str) or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", subdomain):
             raise ObservationPending("Cloudflare account's Workers subdomain could not be verified")
-        return ConfiguredWorkersScript(f"https://{intent.target.name}.{subdomain}.workers.dev", namespaces)
+        return ConfiguredWorkersScript(f"https://{intent.target.name}.{subdomain}.workers.dev", namespaces, confirmed_write)

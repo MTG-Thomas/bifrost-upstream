@@ -157,6 +157,7 @@ export function CloudflareCapacity() {
 	const jobId = acceptedJobId ?? data?.latest_job_id;
 	const job = observedJob?.id === jobId ? observedJob : undefined;
 	const instructions = job?.result?.instructions;
+	const legacyWorkers = job?.result?.workers;
 	const mutation = useMutation({
 		mutationFn: (action: CloudflareAction) => {
 			if (!installation || !canWrite)
@@ -328,6 +329,12 @@ export function CloudflareCapacity() {
 								>
 									Reconcile
 								</Button>
+								{installation.desired_state === "scaled_in" && (
+									<>
+										<Button variant="outline" disabled={busy} onClick={() => mutation.mutate("rotate-root")}>Rotate Control Root</Button>
+										<Button variant="outline" disabled={busy} onClick={() => mutation.mutate("rotate-bearer")}>Rotate Scope Bearer</Button>
+									</>
+								)}
 								<Dialog open={rotateOpen} onOpenChange={setRotateOpen}>
 									<DialogTrigger asChild>
 										<Button variant="outline" disabled={busy}>Rotate API Token</Button>
@@ -422,6 +429,15 @@ export function CloudflareCapacity() {
 						{instructions.filter((instruction): instruction is string => typeof instruction === "string")
 							.map((instruction) => <li key={instruction}>{instruction}</li>)}
 					</ol>
+				)}
+				{Array.isArray(legacyWorkers) && (
+					<ul className="space-y-1 text-sm">
+						{legacyWorkers.map((worker) => (
+							<li className="break-all" key={String(worker.worker_id)}>
+								Worker {worker.worker_id} · Scope {worker.scope} · Resource UID {worker.resource_uid ?? "Unavailable"}
+							</li>
+						))}
+					</ul>
 				)}
 			</CardContent>
 		</Card>

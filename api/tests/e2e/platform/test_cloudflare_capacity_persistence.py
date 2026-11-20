@@ -57,6 +57,7 @@ from src.services.worker_pool.cloudflare_admission import (
 )
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
+    confirm_account_token_write,
     open_credential,
     seal_credential,
 )
@@ -280,6 +281,61 @@ async def test_account_rotation_switches_only_a_valid_same_account_version(
     ))
     assert audit is not None
     assert candidate.get_secret_value() not in json.dumps(audit.details)
+    await confirm_account_token_write(db_session, installation)
+    await db_session.refresh(previous)
+    assert previous.ciphertext is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("purpose", ["control_root", "scope_bearer"])
+async def test_rotate_worker_credential_is_drain_first(
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch, purpose,
+) -> None:
+    admin = _platform_operator()
+    scope = "workers" if purpose == "scope_bearer" else ""
+    previous_key = (installation.id, purpose, scope, 1)
+    if scope:
+        db_session.add(seal_credential(
+            CredentialRef(installation.id, installation.account_id, purpose, scope, 1),
+            SecretStr("previous-scope-bearer"), actor=str(OPERATOR_ID), now=datetime.now(UTC),
+        ))
+    installation.desired_state = "enabled"
+    with pytest.raises(CloudflarePolicyConflict, match="Scale in"):
+        await lifecycle_job.enqueue_cloudflare_worker_credential_rotation(
+            db_session, admin, installation_id=installation.id, expected_revision=1, credential=purpose,
+        )
+    installation.desired_state = "scaled_in"
+    await db_session.flush()
+    job, reused = await lifecycle_job.enqueue_cloudflare_worker_credential_rotation(
+        db_session, admin, installation_id=installation.id, expected_revision=1, credential=purpose,
+    )
+    assert not reused and job.payload["replacement_version"] == 2
+    token = uuid4()
+    job.lease_token = token
+    job.status = "running"
+    await db_session.flush()
+    connection = await db_session.connection()
+
+    @asynccontextmanager
+    async def context():
+        async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as session:
+            yield session
+            await session.commit()
+
+    monkeypatch.setattr(lifecycle_job, "get_db_context", context)
+    monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
+    payload = lifecycle_job.CloudflareRotateWorkerPayload.model_validate(job.payload)
+    running = PlatformJobContext(job.id, token, None, str(OPERATOR_ID), admin.principal.email, "")
+    assert await lifecycle_job.CLOUDFLARE_ROTATE_WORKER_DEFINITION.handler(running, payload) == {
+        "outcome": "rotated", "credential_version": 2,
+    }
+    previous = await db_session.get(CloudflareCredential, previous_key, populate_existing=True)
+    active = await db_session.get(CloudflareCredential, (*previous_key[:3], 2))
+    await db_session.refresh(installation)
+    assert previous is not None and previous.ciphertext is None
+    assert active is not None and active.ciphertext is not None
+    assert installation.control_root_version == (1 if scope else 2)
+    assert installation.desired_revision == (2 if scope else 1)
 
 
 @pytest.mark.asyncio
@@ -328,6 +384,8 @@ async def test_scale_in_job_uses_platform_authority_and_current_lease(
     running = PlatformJobContext(job.id, token, None, str(OPERATOR_ID), admin.principal.email, "")
     assert await lifecycle_job.CLOUDFLARE_DISABLE_DEFINITION.handler(running, payload) == {"outcome": "scaled_in"}
     assert installation.api_token_version == 1
+    actions = set(await db_session.scalars(select(AuditLog.action).where(AuditLog.resource_id == installation.id)))
+    assert {"capacity.cloudflare_scale_in", "capacity.cloudflare_scaled_in"} <= actions
 
 
 @pytest.mark.asyncio
@@ -417,6 +475,8 @@ async def test_disconnect_resumes_owned_script_delete_until_namespace_absence(
     assert mutations == ["DELETE"]
     assert resource.state == "absent" and resource.observed_at is not None
     assert installation.retired_at is not None and installation.api_token_version is None
+    actions = set(await db_session.scalars(select(AuditLog.action).where(AuditLog.resource_id == installation.id)))
+    assert {"capacity.cloudflare_disconnect", "capacity.cloudflare_retired"} <= actions
 
 
 @pytest.mark.asyncio
