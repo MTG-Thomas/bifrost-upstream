@@ -226,3 +226,75 @@ artifacts were created.
 The focused ingress, canary, and persistence suite passed 81 tests.
 The Worker release and provisioning suite passed all 21 tests,
 including the stale-read and mismatched-update fixtures.
+
+## Scoped SDK canary fix and full pilot
+
+The local trace loaded the exact previously deployed release manifest
+`d1b32e36bba0cf9ff63944d23ae311f114bec9284ded133d6073a73a24577ce2`
+in Miniflare/workerd. A local HTTP relay preserved the worker-ingress
+host and forwarded to a real Bifrost ingress listener on port 8001.
+For local job `fcef5a67-74ee-4bed-9c93-ab7819af0f5b`, the launcher
+recorded signed hello for `02b9d8a7-72a9-4f08-8e50-1f03c68d50da`.
+The relay saw no SDK request. A diagnostic copy exposed a workerd
+`TypeError` while constructing the `Request`. The Workers runtime
+accepts `follow` and `manual` for `redirect`. The bundled code used
+`error`, so the canary stopped before DNS, TLS, ingress, or proof
+verification. [Workers Request API](https://developers.cloudflare.com/workers/runtime-apis/request/)
+
+The launcher uses `manual` and demands HTTP 204 with the exact
+worker-ingress allow marker. Enable's Action Required reports a
+redacted stage, error class, and HTTP status when present. The API
+binds failure to the current job lease and launcher session. The
+acknowledgement requires the server's own persisted proof receipt.
+Local job `6aef916b-875b-48c1-aff5-006f9588ba8a` used rebuilt manifest
+`d8f997c86da0b66b441dfaf6a4438bf44f999fa2bbe60c92f0397b88e47e2b3d`
+and worker `df887906-7b7d-47cf-9310-e346f26f64a1`. The relay recorded
+the SDK GET and HTTP 204 with the ingress marker. Bifrost recorded the
+SDK receipt and ACK, then verified physical retirement. The local
+reproduction removed the need for a separate hosted diagnostic.
+
+The product trial used source `c0aa26b6e` and the rebuilt manifest.
+The host had one other Bifrost stack and 13 GiB available at boot.
+The Existing HTTPS Endpoint was `https://<trial-ingress>.<zone>`,
+with exact SDK and probe path rules to the dedicated port 8001
+listener and a catch-all 404. The connector ran from 16:14:30 to
+16:25:25 UTC within a 25-minute limit. The fleet allowed two one-slot
+launchers concurrently, with a 180-second maximum lifetime and a
+12-second idle policy. The guard and $25 monthly Bifrost usage limit
+were in effect. The static envelope was $14.17. The run used zero
+Containers and zero LLM calls.
+
+| Step | Result | Evidence |
+| --- | --- | --- |
+| 1. Connect | Pass | HTTP 200 for installation `c2cba184-51be-4491-91ed-f3424d66a620`, with `existing-https-v1` consent and staged reference `149153d0-c0a8-46b7-b5d2-7585f0f96bf8`. The dedicated account token granted Workers Scripts Write, Account Settings Read, and Account Analytics Read. |
+| 2. Enable | Pass on the follow-up | The initial job `2d7d9086-52fa-49e5-837e-0a929b222ef5` deployed the two scripts and returned Action Required at the earlier ingress check with `ingress / route_refused` and no HTTP status. Its exact transport error was unobserved. Independent probes from the API and job runner passed the complete matrix on the reachable IPv4 addresses. A single subsequent product Enable job `acc04d20-c423-4a2b-a411-7d62043362d3` passed the Paid check, verified the packaged REST deployment and opened admission. The reserved worker `34b698ed-b1cb-4ce4-9e83-6495b816fca7` recorded signed hello sequence and session generation 1, SDK receipt at 16:18:15.161 UTC, ACK at 16:18:15.183 UTC, and verified deletion at 16:18:15.796 UTC. |
+| 3. Burst | Pass | Two primary hold executions `cae9d964-a27a-461d-ab0f-6bfa5a2d13dc` and `bff02e66-c61f-4efb-a30b-bac52080ed56` left 24 MiB on each primary worker. In-product approvals accepted revisions `6e6ca300c1ecd787517f51c1a8c2475b219b83fa8257f94fda0c0c5f9fc30d56` and `6ba9df7c15b6b76977ef17acf06941668324df46e6f2f800ea305f955ea5394f`. Loose execution `eff6afe9-83f0-476a-8151-252547c4803f` and Solution execution `2f1f41d5-4a1c-45de-b474-05fa60200b08` ran concurrently and settled `Success`. Their `workers` claim rows are `164aba52-e523-4a40-99ed-6af5d342686f` and `9ab0f6a8-b21d-49fc-b247-f2bd1caf3805`. Their distinct launchers `95109e0e-44c1-44f1-abe8-22924418357c` and `abdbfa3d-a6f9-4956-bf76-ef35d6d42b48` retired with reason `idle` and physical deletion at 16:20:35.124 and 16:20:34.889 UTC. |
+| 4. Spend | Pass for Workers sampling | Bifrost estimated $0.11. The ledger recorded 69.876 launcher-seconds, 69.876 slot-seconds, three claims, and five scoped SDK requests. Cloudflare returned Worker request and CPU samples during the workload window. Both Durable Object datasets returned no rows. The observed Workers-only cost proxy and ratio are below. Admission closure at the limit remains E2E-only. The $13.31 minimum envelope exceeds the $1 hosted abort threshold. |
+| 5. Ingress refusal | Pass | External login, admin, and OpenAPI requests returned HTTP 404 with the Bifrost deny marker. SDK context returned HTTP 401 with the allow marker. The unmatched-path request returned the tunnel's HTTP 404. |
+| 6. Reconcile | Pass | Job `3024a3a8-2091-4853-9bd4-a86e9076e28a` returned `verified`. |
+| 7. Scale In | Pass | Job `52bf8827-99cd-430f-98bf-c8f91139d434` closed admission while Workers execution `9b45fd63-d0f6-4dc0-bdd6-4e398d3c7e50` was in flight under claim `e289a8b4-eba1-42ff-994d-a3d95876d99d`. The execution settled `Success`. The launcher retired with `cloudflare_admission_closed` and verified physical deletion. The job returned `scaled_in`. Independent readback found both scripts and all four namespaces retained. |
+| 8. Disconnect | Pass after product resume | Job `a8ff000b-ae6f-42e3-909b-d55d71a055bd` entered Cleanup Pending with one verified-absent journal row and one deleting row. Independent Cloudflare readback then found both scripts and all namespaces absent. Product resume `e00fb7af-bfbf-4bca-8ff8-cd1bd6a93c49` completed, verified both journal rows absent, returned `installation: null`, and left zero scopes, staged credentials, or credential ciphertext. The operator then removed the Existing HTTPS Endpoint resources and revoked the dedicated token. |
+| 9. Free-plan control | Not run | Only the Paid account was available. |
+
+The GraphQL window was 16:14:30–16:23:27 UTC. The launcher reported
+18 requests and 14,348 µs CPU, and the capacity Worker reported 125
+requests and 39,863 µs CPU. Both samples had interval 1. At the
+published marginal request and CPU rates, 143 requests and 54,211 µs
+CPU correspond to $0.00004398422. The ratio of Bifrost's $0.11
+conservative estimate to that Workers-only proxy was about 2,501×.
+Durable Object, storage, and log charges are outside this sample. The
+cumulative estimated usage across the two pilot rounds was $0.18.
+The account subscription remained separate. [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/)
+
+Independent `cf` readback found zero trial Workers, namespaces,
+Container apps, tokens, DNS records, live tunnels, or connections.
+The tunnel deletion record had zero connections. The registry had zero
+images matching the trial. Docker showed zero project containers, networks,
+volumes, and images, and the local test runtime and connector had
+stopped. Trial operator credential files were removed.
+
+The post-pilot ingress diagnostic change distinguishes bounded
+timeout, protocol, and transport errors when a route produces no
+HTTP response. The focused backend run passed 95 tests and the full
+capacity workerd suite passed eight tests, including its 17-case
+shared provider conformance run.
