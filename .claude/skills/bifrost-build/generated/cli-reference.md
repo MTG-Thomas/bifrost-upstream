@@ -243,12 +243,14 @@ Usage: app create [OPTIONS] [PATH]
   Create a Vite project and its remote App record.
 
 Options:
-  --name TEXT  App display name (default: directory name).
-  --slug TEXT  URL slug (default: derived from name).
-  --org TEXT   Organization UUID or name.
-  --global     Create a globally visible App.
-  --url TEXT   Bifrost instance URL.
-  --help       Show this message and exit.
+  --name TEXT                  App display name (default: directory name).
+  --slug TEXT                  URL slug (default: derived from name).
+  --org TEXT                   Organization UUID or name.
+  --global                     Create a globally visible App.
+  --url TEXT                   Bifrost instance URL.
+  --framework [react|foldkit]  UI framework. foldkit is experimental.
+                               [default: react]
+  --help                       Show this message and exit.
 ```
 
 ### `app deploy`

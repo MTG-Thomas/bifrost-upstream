@@ -136,6 +136,7 @@ These relationships produce the following hard boundaries:
 |---|---|
 | Any change that touches identity, access, integrations, tables/files/configs, or App UI | `best-practices/security.md` always; then `best-practices/workflows.md`, `integrations.md`, `data.md`, or `apps.md` per area (`best-practices/README.md` routes them) |
 | Create, bind, start, deploy, or migrate an independent App | `references/apps-independent.md`, `references/apps-v2.md`, `references/app-quality.md`, and `references/web-sdk-v2.md` |
+| Build an independent App in Foldkit (experimental; only when the user asks for Foldkit) | `references/apps-foldkit.md`, `references/apps-independent.md`, and `references/app-quality.md` |
 | Create, bind, start, capture, deploy, export, or install a Solution | `references/solutions.md` |
 | Read or write instance `_repo` source; maintain loose modules, workflows, or v1 apps | `references/repository.md` |
 | Author, register, execute, rename, or expose a Python workflow | `references/workflows.md` and the relevant section of `references/python-sdk.md` |

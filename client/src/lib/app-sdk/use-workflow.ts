@@ -31,17 +31,10 @@
  */
 import { useCallback, useRef, useState } from "react";
 
-import type { components } from "@/lib/v1";
-
-import { subscribeToExecution, type ExecutionStreamEvent } from "./execution-stream";
 import { useBifrostContext } from "./provider";
+import { runWorkflow, type WorkflowLogEntry } from "./workflow-run";
 
-export interface WorkflowLogEntry {
-  level: string;
-  message: string;
-  timestamp: string;
-  sequence?: number;
-}
+export type { WorkflowLogEntry } from "./workflow-run";
 
 export interface UseWorkflowState<T> {
   /** Last successful result, or null before the first run. */
@@ -58,34 +51,6 @@ export interface UseWorkflowState<T> {
   status: string | null;
   /** Latest run's execution id, or null before the first run. */
   executionId: string | null;
-}
-
-// The generated contract type: `status` is the PascalCase `ExecutionStatus`
-// literal union ("Success" | "Failed" | ...), so the compiler enforces the
-// exact wire casing in the failed-status check below.
-type ExecuteResponse = components["schemas"]["WorkflowExecutionResponse"];
-
-const TERMINAL_STATUSES = new Set([
-  "Success",
-  "Failed",
-  "CompletedWithErrors",
-  "Timeout",
-  "Cancelled",
-]);
-
-const POLL_INTERVAL_MS = 2000;
-
-class ExecutionFetchError extends Error {
-  readonly retryable: boolean;
-
-  constructor(status: number, statusText: string) {
-    super(`failed to fetch execution: ${status}${statusText ? ` ${statusText}` : ""}`);
-    this.name = "ExecutionFetchError";
-    // A just-created execution can briefly 404, and transient overload/server
-    // failures can recover. Other 4xx responses (notably an expired/forbidden
-    // token) will not improve by polling forever.
-    this.retryable = status === 404 || status === 408 || status === 429 || status >= 500;
-  }
 }
 
 /**
@@ -121,141 +86,23 @@ export function useWorkflow<T = unknown>(workflowRef: string): UseWorkflowState<
       setStatus("Pending");
       setExecutionId(null);
 
-      const settleFromExecution = (exec: {
-        status?: string;
-        result?: unknown;
-        error_message?: string | null;
-      }): T => {
-        if (exec.status === "Success" || exec.status === "CompletedWithErrors") {
-          return exec.result as T;
-        }
-        throw new Error(
-          exec.error_message ?? `Workflow failed (status: ${exec.status ?? "unknown"})`,
-        );
-      };
-      const fetchExecution = async (id: string) => {
-        const r = await authedFetch(`/api/executions/${id}`);
-        if (!r.ok) throw new ExecutionFetchError(r.status, r.statusText);
-        return (await r.json()) as {
-          status?: string;
-          result?: unknown;
-          error_message?: string | null;
-        };
-      };
-
       try {
-        const resp = await authedFetch("/api/workflows/execute", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            workflow_id: workflowRef,
-            input_data: input,
-            // Scope a path::function ref to THIS install's own workflow (so it
-						// can't resolve a sibling install's workflow sharing the path).
-						...(appId ? { app_id: appId } : {}),
-						...(orgScope ? { org_id: orgScope } : {}),
-					}),
-        });
-        if (!resp.ok) {
-          throw new Error(`workflow execution failed: ${resp.status} ${resp.statusText}`);
-        }
-        const body = (await resp.json()) as ExecuteResponse & { is_transient?: boolean };
-        const execId = body.execution_id;
-        if (seq === seqRef.current && execId) setExecutionId(execId);
-
-        // Transient (data-provider-style) and already-terminal responses
-        // settle inline — never touch the websocket.
-        if (body.is_transient || TERMINAL_STATUSES.has(body.status)) {
-          if (seq === seqRef.current) setStatus(body.status);
-          const result = settleFromExecution({
-            status: body.status,
-            result: body.result,
-            error_message: body.error,
-          });
-          if (seq === seqRef.current) setData(result);
-          return result;
-        }
-
-        const result = await new Promise<T>((resolve, reject) => {
-          let settled = false;
-          let pollTimer: ReturnType<typeof setInterval> | null = null;
-          let unsubscribe: () => void = () => {};
-          // Set once a terminal ws frame has been seen. There's no client
-          // deadline, so if the one post-terminal fetch fails transiently we
-          // must not just give up — arm the poll fallback so the run still
-          // settles instead of hanging forever.
-          let sawTerminal = false;
-          const settle = (fn: () => void) => {
-            if (settled) return;
-            settled = true;
-            if (pollTimer) clearInterval(pollTimer);
-            unsubscribe();
-            fn();
-          };
-          const checkOnce = async () => {
-            if (settled) return;
-            try {
-              const exec = await fetchExecution(execId);
-              // Another concurrent check (ready ack, terminal frame, or poll)
-              // may have settled while this request was in flight. Never let
-              // its older snapshot regress terminal state after resolution.
-              if (settled) return;
-              if (seq === seqRef.current && exec.status) setStatus(exec.status);
-              if (exec.status && TERMINAL_STATUSES.has(exec.status)) {
-                settle(() => {
-                  try {
-                    resolve(settleFromExecution(exec));
-                  } catch (e) {
-                    reject(e);
-                  }
-                });
-              }
-            } catch (fetchError) {
-              if (settled) return;
-              if (fetchError instanceof ExecutionFetchError && !fetchError.retryable) {
-                settle(() => reject(fetchError));
-                return;
-              }
-              // Transient fetch failure — the stream/poll keeps driving.
-              // If this was the post-terminal-event fetch, there's no further
-              // status frame coming and the socket may stay open (so
-              // onSocketDown never fires) — arm the poll fallback so the run
-              // still settles instead of hanging forever.
-              if (sawTerminal && !pollTimer) {
-                pollTimer = setInterval(checkOnce, POLL_INTERVAL_MS);
-              }
-            }
-          };
-          unsubscribe = subscribeToExecution(
-            execId,
-            (evt: ExecutionStreamEvent) => {
-              if (evt.type === "ready") {
-                // The server has installed the subscription. Re-check now so a
-                // terminal transition between the initial GET and this ack
-                // cannot be lost forever.
-                void checkOnce();
-              }
-              if (evt.type === "log" && evt.log && seq === seqRef.current) {
-                const log = evt.log;
-                setLogs((prev) => [...prev, log]);
-              }
-              if (evt.type === "status") {
-                if (seq === seqRef.current && evt.status) setStatus(evt.status);
-                if (evt.isTerminal) {
-                  sawTerminal = true;
-                  void checkOnce();
-                }
-              }
+        const isLatest = () => seq === seqRef.current;
+        const result = await runWorkflow<T>(
+          authedFetch,
+          { workflowRef, input, appId, orgScope },
+          {
+            onExecutionId: (id) => {
+              if (isLatest()) setExecutionId(id);
             },
-            () => {
-              // Socket died — degrade to polling. No deadline: the server
-              // enforces the workflow's own timeout and will flip it terminal.
-              if (!settled && !pollTimer) pollTimer = setInterval(checkOnce, POLL_INTERVAL_MS);
+            onStatus: (next) => {
+              if (isLatest()) setStatus(next);
             },
-          );
-          void checkOnce(); // fast runs can finish before the socket opens
-        });
-
+            onLog: (log) => {
+              if (isLatest()) setLogs((prev) => [...prev, log]);
+            },
+          },
+        );
         if (seq === seqRef.current) setData(result);
         return result;
       } catch (e) {

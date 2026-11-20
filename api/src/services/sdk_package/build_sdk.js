@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Build either the small installed binding or the hosted SDK factory artifact.
+ * Build the small installed binding, the hosted SDK factory artifact, or the
+ * framework-neutral `bifrost/core` entry (experimental).
  *
  * The SDK source (provider, tables, hooks) lives in the client repo at
  * client/src/lib/app-sdk and is COPYied into the api image at build time (see
@@ -10,7 +11,10 @@
  * non-runtime cross-project reference is `import type { components } from
  * "@/lib/v1"`, which esbuild drops (type-only imports carry no runtime code).
  *
- * Usage: node build_sdk.js <binding|hosted> <srcDir> <outFile>
+ * `core` is compiled into the App like an ordinary dependency. It must not
+ * import React: the build fails if anything in its graph does.
+ *
+ * Usage: node build_sdk.js <binding|hosted|core> <srcDir> <outFile>
  *   srcDir : directory holding the SDK .ts/.tsx sources + index.ts barrel
  *   outFile: path to write the bundled index.mjs
  */
@@ -21,15 +25,30 @@ const fs = require("fs");
 const path = require("path");
 
 const [, , mode, srcDir, outFile] = process.argv;
-if (!mode || !srcDir || !outFile || !["binding", "hosted"].includes(mode)) {
-  console.error("usage: build_sdk.js <binding|hosted> <srcDir> <outFile>");
+if (!mode || !srcDir || !outFile || !["binding", "hosted", "core"].includes(mode)) {
+  console.error("usage: build_sdk.js <binding|hosted|core> <srcDir> <outFile>");
   process.exit(2);
 }
 
 const hosted = mode === "hosted";
+const core = mode === "core";
 const external = hosted
   ? ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime", "bifrost-sdk-errors"]
-  : ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime"];
+  : core
+    ? []
+    : ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime"];
+const entryPoint = hosted ? "index.v2.ts" : core ? "core.ts" : "hosted-binding.tsx";
+
+const reactFreeCore = {
+  name: "react-free-core",
+  setup(build) {
+    if (core) {
+      build.onResolve({ filter: /^react(-dom)?(\/|$)/ }, (args) => ({
+        errors: [{ text: `bifrost/core must not import ${args.path} (from ${args.importer})` }],
+      }));
+    }
+  },
+};
 
 const errorsAlias = {
   name: "hosted-sdk-errors-peer",
@@ -56,7 +75,7 @@ const bundledSdkDependency = {
 
 esbuild
   .build({
-    entryPoints: [path.join(srcDir, hosted ? "index.v2.ts" : "hosted-binding.tsx")],
+    entryPoints: [path.join(srcDir, entryPoint)],
     bundle: true,
     format: hosted ? "cjs" : "esm",
     platform: "browser",
@@ -65,7 +84,7 @@ esbuild
     write: !hosted,
     jsx: "automatic",
     external,
-    plugins: [errorsAlias, bundledSdkDependency],
+    plugins: [errorsAlias, bundledSdkDependency, reactFreeCore],
     logLevel: "warning",
   })
   .then((result) => {
