@@ -1374,7 +1374,8 @@ async def test_admission_prices_the_qualified_ledger_bounds(
     }
     # The production guard charges a floor per meter and retains amounts
     # above the cap even for a regressing or uncertain final receipt.
-    lifetime_base = Decimal("0.01681260") + elapsed * Decimal("0.00068439050") + Decimal("0.02004280")
+    # The launcher, two control objects and two slots each reserve 0.128 GB.
+    lifetime_base = Decimal("0.01681260") + elapsed * Decimal("0.00068457800") + Decimal("0.02004280")
     fallback = lifetime_base + Decimal("0.000106")
     await db_session.flush()
     assert await db_session.scalar(price) == fallback
@@ -1484,7 +1485,7 @@ async def test_tenant_residency_reserves_route_and_warm_tail_in_the_spend_query(
     incarnation.deleted_at = now
     await db_session.flush()
     with_host = await db_session.scalar(price)
-    expected = (Decimal("0.040541628") + row.inventory_tenant_seconds * Decimal("0.0000015625")
+    expected = (Decimal("0.040541628") + row.inventory_tenant_seconds * Decimal("0.0000016")
                 + 32 * Decimal("0.002627408"))
     row.inventory_tenant_seconds = row.inventory_dispatches = row.inventory_warm_pings = 0
     await db_session.flush()

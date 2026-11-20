@@ -170,8 +170,8 @@ if a receipt-priced release has missing bounds.
 Cloudflare bills DO duration by non-hibernating wall time at 128 MB per
 object, with concurrent calls sharing an object's billed duration.
 Bifrost charges the launcher's entire reservation-to-verified-deletion
-lifetime at 0.125 GB, an upper bound for active time of that launcher in
-its owned lifetime. Each two-second control poll reserves two DO requests
+lifetime at 0.128 GB, using Cloudflare's published conversion and an upper
+bound on active time during ownership. Each two-second control poll reserves two DO requests
 for WorkerLedger and Launcher. The lifetime rate adds a cadence allowance
 for the watchdog, hello/reconnect, control frames, SQLite and logs, plus
 one lifecycle allowance for startup and release. It reserves WorkerLedger
@@ -191,7 +191,7 @@ affect the invoice.
 [Cloudflare Durable Object billing](https://developers.cloudflare.com/durable-objects/platform/pricing/)
 
 Repricing the previous pilot as a 60-second-deadline scenario gives
-**$0.50868890**, or **17,056.5×** its observed Worker request and CPU cost
+**$0.50885178**, or **17,061.9×** its observed Worker request and CPU cost
 of `$0.00002982382`. The ledger has 79.355808 launcher- and slot-seconds,
 3 dispatches, 43 SDK requests and 3 incarnations. The historical capture
 has no workload receipts or route-deadline reservations. This comparison

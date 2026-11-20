@@ -83,11 +83,15 @@ WORKERS_RATES = MappingProxyType({
 })
 WORKERS_PAID_SUBSCRIPTION_USD = Decimal("5.00")
 # Estimate at the published marginal rates, with no account-wide free tiers.
-# Each resident 128 MiB object is estimated separately. Work and gateway
+# Each resident object is estimated separately. Work and gateway
 # activity use the packaged Worker CPU cap and one request as pricing proxies.
 _CPU_MS_PER_ACTIVITY = 30_000
-_OBJECT_GIB = Decimal("0.125")
-_DURATION_USD_PER_SECOND = _OBJECT_GIB * WORKERS_RATES["do_gb_seconds"].usd / WORKERS_RATES["do_gb_seconds"].unit
+_DO_GB_SECOND_USD = WORKERS_RATES["do_gb_seconds"].usd / WORKERS_RATES["do_gb_seconds"].unit
+_DURATION_USD_PER_SECOND = Decimal("0.125") * _DO_GB_SECOND_USD
+# Cloudflare's billing examples convert the 128 MB class to 0.128 GB.
+# Earlier rate versions retain their original conversion.
+_INVENTORY_DURATION_USD_PER_SECOND = Decimal("0.128") * _DO_GB_SECOND_USD
+_INVENTORY_DURATION_DELTA = _INVENTORY_DURATION_USD_PER_SECOND - _DURATION_USD_PER_SECOND
 _METER_BOUNDS = json.loads(Path(__file__).with_name("cloudflare_meter_bounds.json").read_text())
 _LAUNCHER_BOUNDS = _METER_BOUNDS["per_launcher_second"]
 LAUNCHER_RECEIPT_METERS = ("do_requests", "log_events", "sqlite_rows_written")
@@ -147,7 +151,8 @@ _INVENTORY_TENANT_PING_USD = (
 
 
 def launcher_lifetime_rate(bounds: Mapping[str, Decimal]) -> Decimal:
-    return _DURATION_USD_PER_SECOND + _CONTROL_CADENCE_USD + sum(
+    # Launcher, WorkerLedger and ScopeRegistry each reserve one memory class.
+    return _DURATION_USD_PER_SECOND + _CONTROL_CADENCE_USD + 3 * _INVENTORY_DURATION_DELTA + sum(
         bounds[meter] * rate.usd / rate.unit
         for meter, rate in WORKERS_RATES.items()
         if meter not in LAUNCHER_RECEIPT_METERS and meter != "do_gb_seconds"
@@ -258,11 +263,15 @@ def _incarnation_cost_sql(installation: type[CloudflareInstallation]):
         rate = WORKERS_RATES[name]
         # Do not let the integer-scale counter coerce the fractional price.
         line_items.append(units * literal(rate.usd / rate.unit, type_=Numeric(24, 12)))
-    lifetime_rate = cast(usage.meter_bounds["second_usd"].as_string(), Numeric)
     version = usage.meter_rate_version
+    lifetime_rate = cast(usage.meter_bounds["second_usd"].as_string(), Numeric)
+    slot_delta = case(
+        (version == WORKERS_RATE_TABLE_VERSION, usage.slots * literal(_INVENTORY_DURATION_DELTA, type_=Numeric(24, 12))),
+        else_=0,
+    )
     receipt_price = case(
         (usage.meter_release_digest.is_not(None) & _has_launcher_caps(usage.meter_bounds) & (lifetime_rate > 0),
-         seconds * lifetime_rate + sum(line_items) + case(
+         seconds * (lifetime_rate + slot_delta) + sum(line_items) + case(
              (version.in_((WORKERS_RATE_TABLE_VERSION, WORKERS_CADENCE_RATE_TABLE_VERSION)), _CONTROL_LIFECYCLE_USD),
              else_=0,
          )),
@@ -440,7 +449,7 @@ def cloudflare_estimated_usage() -> ColumnElement[Decimal | None]:
     hosts = select(func.coalesce(func.sum(
         activity.tenant_host_seconds * literal(_LEGACY_TENANT_HOST_SECOND_USD, type_=Numeric(30, 20))
         + activity.tenant_dispatches * literal(_TENANT_DISPATCH_USD, type_=Numeric(24, 12))
-        + activity.inventory_tenant_seconds * literal(_DURATION_USD_PER_SECOND, type_=Numeric(30, 20))
+        + activity.inventory_tenant_seconds * literal(_INVENTORY_DURATION_USD_PER_SECOND, type_=Numeric(30, 20))
         + activity.inventory_dispatches * literal(_INVENTORY_DISPATCH_USD, type_=Numeric(24, 12))
         + activity.inventory_warm_pings * literal(_INVENTORY_TENANT_PING_USD, type_=Numeric(24, 12))
         + activity.capacity_requests * literal(_WORKER_REQUEST_USD, type_=Numeric(24, 12))
