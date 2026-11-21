@@ -48,7 +48,7 @@ from src.services.worker_pool.claims import (
     register_static_worker,
     report_worker_handlers,
 )
-from src.services.worker_pool.cloudflare_admission import cloudflare_claim_allowed
+from src.services.worker_pool.cloudflare_admission import scoped_cloudflare_claim_allowed
 from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
 from src.services.worker_pool.cloudflare_slots import (
     PREPARE_SECONDS,
@@ -312,10 +312,12 @@ class Bridge:
             async with get_db_context() as db:
                 if not await fence_remote_owner(db):
                     raise CredentialRouteChanged("Cloudflare ownership changed before dispatch")
+                queue_installation = None
                 if queue_warm_until is not None:
                     slot = await authorized_queue_preparation(db, lease.worker_id, UUID(route_id.rsplit(":", 1)[1]))
                     if slot is None or slot.ordinal != engine_slot or slot.tenant != (org_id or "platform"):
                         raise CredentialRouteChanged("Cloudflare queue preparation is no longer held")
+                    queue_installation = slot.installation_id
                 elif engine_slot is not None:
                     assert execution_id is not None
                     ticket = WorkflowSlotTicket(engine_slot, UUID(route_id.rsplit(":", 1)[1]))
@@ -333,8 +335,8 @@ class Bridge:
                     raise CloudflareRevisionRejected("Managed Cloudflare workflow usage could not be reserved")
                 # The activity upsert serializes competing bookings. Check the
                 # updated ledger before committing, without locking admission.
-                if queue_warm_until is not None and not await cloudflare_claim_allowed(
-                    db, lease.worker_id, lock_installation=False,
+                if queue_installation is not None and not await scoped_cloudflare_claim_allowed(
+                    db, lease.worker_id, queue_installation,
                 ):
                     raise CredentialRouteChanged("Cloudflare queue preparation admission closed")
 

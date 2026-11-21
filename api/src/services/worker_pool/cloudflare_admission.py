@@ -83,25 +83,18 @@ class PrimaryPool:
         return self.ceiling is not None and len(cohort) >= self.ceiling
 
 
-async def cloudflare_claim_allowed(db: AsyncSession, worker_id: UUID, *, lock_installation: bool = True) -> bool:
+async def cloudflare_claim_allowed(db: AsyncSession, worker_id: UUID) -> bool:
     """Serialize scoped assignments through the installation before locking the worker.
 
     A reservation pin survives scope removal. A missing or replaced deployment
     therefore closes this worker's claims while its terminal work can settle.
     Writers take the installation lock before changing its scope binding.
-    Queue preparation only reads admission after booking against the ledger
-    and validating the slot and remote owner.
     """
     pin = CloudflareWorkerReservation
     installation = CloudflareInstallation
-    scope = CloudflareCapacityScope
-    installation_query = select(installation.id).join(
+    installation_id = await db.scalar(select(installation.id).join(
         pin, pin.installation_id == installation.id,
-    ).where(pin.worker_id == worker_id)
-    if lock_installation:
-        # FOR NO KEY UPDATE serializes claimers and scope writers.
-        installation_query = installation_query.with_for_update(key_share=True, of=installation)
-    installation_id = await db.scalar(installation_query)
+    ).where(pin.worker_id == worker_id).with_for_update(key_share=True, of=installation))
     if installation_id is None:
         unpinned_scoped = await db.scalar(select(exists().where(
             ExecutionWorker.id == worker_id,
@@ -112,6 +105,14 @@ async def cloudflare_claim_allowed(db: AsyncSession, worker_id: UUID, *, lock_in
     # Read the scope in a fresh statement after taking the lock. The scope can
     # change while this transaction waits behind a writer, even if that writer
     # leaves the installation row unchanged.
+    return await scoped_cloudflare_claim_allowed(db, worker_id, installation_id)
+
+
+async def scoped_cloudflare_claim_allowed(db: AsyncSession, worker_id: UUID, installation_id: UUID) -> bool:
+    """Read scoped admission and spend for an already identified installation."""
+    pin = CloudflareWorkerReservation
+    installation = CloudflareInstallation
+    scope = CloudflareCapacityScope
     matches_scope = exists().where(
         scope.installation_id == pin.installation_id,
         scope.scope == pin.scope,

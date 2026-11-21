@@ -277,6 +277,31 @@ async def test_expired_queue_preparation_cannot_authorize_loader_entry() -> None
     assert not bridge.results
 
 
+async def test_preparation_send_oserror_keeps_the_booking() -> None:
+    socket = Mock(send_text=AsyncMock(side_effect=OSError("fixture transport failure")))
+    bridge = Bridge(socket, {
+        "hostname": "opaque", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE, "managed_cloudflare": True,
+    }, LEASE)
+    bridge.reconciliation_ready.set()
+    now = datetime.now(UTC)
+    booking = PreparationBooking(LEASE.worker_id, ((now, 90),), 100)
+
+    async def reserve(*_args, preparation_bookings, **_kwargs):
+        preparation_bookings.append(booking)
+
+    with (
+        patch.object(bridge, "_reserve_cloudflare_usage", reserve),
+        patch("src.worker.remote.host.settle_unsent_preparation", AsyncMock()) as settle,
+    ):
+        assert await bridge.request("prepare_workflow", {
+            "route_id": f"prepare:{LEASE.launcher_id}", "org_id": None,
+            "prepare_by": int(now.timestamp() * 1000) + 20_000,
+            "warm_until": int(now.timestamp() * 1000) + 90_000,
+        }) == {}
+    socket.send_text.assert_awaited_once()
+    settle.assert_not_awaited()
+
+
 async def test_preparation_send_timeout_leaves_live_control_session_usable() -> None:
     lease = replace(LEASE, declared_slots=1)
     socket = Mock(close=AsyncMock())

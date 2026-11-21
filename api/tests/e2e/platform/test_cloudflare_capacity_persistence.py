@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from time import perf_counter
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -102,6 +103,7 @@ from src.services.worker_pool.cloudflare_provisioning import (
 from src.services.worker_pool.claims import claim_next
 from src.services.worker_pool import claims as claim_service
 from src.services.worker_pool.cloudflare_slots import (
+    adoptable_workflow_slot,
     authorized_queue_preparation,
     confirm_workflow_slot_release,
     count_released_prewarms,
@@ -132,7 +134,11 @@ from src.services.execution.workflow_dispatch import release_workflow_run
 from src.worker.remote.fencing import LeaseRef, fence_remote_owner, remote_owner_context
 from src.worker.remote.host import ApiExecutor, Bridge, _cloudflare_tenant_key
 from src.worker.remote.ownership import RemoteOwnerLease
-from src.worker.remote.protocol import CLOUDFLARE_DEV_BUDGET_BYTES, CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+from src.worker.remote.protocol import (
+    CLOUDFLARE_DEV_BUDGET_BYTES,
+    CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+    CredentialRouteChanged,
+)
 from src.worker.remote.remote_pool import ThinRemoteProcessPool
 
 OPERATOR_ID = UUID("20cb7fe5-78e2-48d7-8f1e-8edcac69ffab")
@@ -1423,6 +1429,20 @@ async def test_queue_prewarm_respects_older_tenants_and_releases_on_drain(db_ses
     await db_session.flush()
     assert [hint.ordinal for hint in hints] == [2]  # Keep ordinal 1 warm on the other launcher.
     assert await count_released_prewarms(db_session, workers[0]) == 1
+    pinned = hints[0].execution_id
+    for orphan in (
+        update(Execution).where(Execution.id == pinned).values(status=ExecutionStatus.CANCELLED),
+        update(WorkDispatch).where(WorkDispatch.subject_id == pinned).values(assigned_worker_id=workers[1]),
+    ):
+        savepoint = await db_session.begin_nested()
+        await db_session.execute(orphan)
+        assert await count_released_prewarms(db_session, workers[0]) == 0
+        current = await read_workflow_slot_admission(db_session, installation.id, policy)
+        assert current.occupied.total() == 5
+        assert await db_session.scalar(select(
+            adoptable_workflow_slot(current, workers[0], literal(str(tenants[0]))),
+        ).select_from(WorkDispatch).where(WorkDispatch.subject_id != pinned).limit(1)) is None
+        await savepoint.rollback()
     await db_session.execute(update(ExecutionWorker).where(ExecutionWorker.id == workers[0]).values(state="draining"))
     assert await count_released_prewarms(db_session, workers[0]) == 0
     admission = await read_workflow_slot_admission(db_session, installation.id, policy)
@@ -1430,7 +1450,10 @@ async def test_queue_prewarm_respects_older_tenants_and_releases_on_drain(db_ses
 
 
 @pytest.mark.asyncio
-async def test_queue_depth_prepares_four_workflows_and_settles_their_usage(async_session_factory, monkeypatch) -> None:
+@pytest.mark.parametrize("limited_budget", [False, True], ids=["burst", "concurrent-budget"])
+async def test_queue_depth_prepares_four_workflows_and_settles_their_usage(
+    async_session_factory, monkeypatch, limited_budget: bool,
+) -> None:
     """The API claim and control host use a real ledger with an in-process launcher."""
     worker, tenant = uuid4(), uuid4()
     lease = RemoteOwnerLease(
@@ -1529,6 +1552,73 @@ async def test_queue_depth_prepares_four_workflows_and_settles_their_usage(async
     try:
         first = await claim()
         assert len(first.queue_preparations) == 3
+        if limited_budget:
+            async with async_session_factory() as db:
+                fixed_now = await db.scalar(select(func.clock_timestamp()))
+                assert fixed_now is not None
+                snapshot = await db.get(CloudflareInstallation, installation_id)
+                assert snapshot is not None
+                estimate = select(cloudflare_estimated_usage(fixed_now)).where(CloudflareInstallation.id == installation_id)
+                before = await db.scalar(estimate)
+                assert before is not None
+                monkeypatch.setattr(cloudflare_spend, "_ledger_now", AsyncMock(return_value=fixed_now))
+                monkeypatch.setattr(cloudflare_spend, "cloudflare_estimated_usage",
+                                    lambda *_args: cloudflare_estimated_usage(fixed_now))
+                probe = await db.begin_nested()
+                hint = first.queue_preparations[0]
+                assert await reserve_tenant_host_usage(
+                    db, worker, hint.prepare_by, tenant_id=_cloudflare_tenant_key(tenant, worker, hint.ordinal),
+                    route_id=f"prepare:{hint.fence}", queue_warm_until=hint.warm_until,
+                )
+                after_one = await db.scalar(estimate)
+                assert after_one is not None and after_one > before
+                await probe.rollback()
+                limit = before + (after_one - before) * Decimal("1.5")
+                snapshot.policy = {
+                    **snapshot.policy, "limits": {**snapshot.policy["limits"], "monthly_limit_usd": str(limit)},
+                }
+                await db.commit()
+
+            barrier = asyncio.Barrier(2)
+            pids = set()
+            written_at = {}
+            route_lock_ms = {}
+            from src.worker.remote import host as remote_host
+
+            async def concurrent_reserve(db, *args, route_id, **kwargs):
+                pids.add(await db.scalar(select(func.pg_backend_pid())))
+                await barrier.wait()
+                result = await reserve_tenant_host_usage(db, *args, route_id=route_id, **kwargs)
+                # Start immediately after the activity-row upsert has returned.
+                written_at[route_id] = perf_counter()
+                return result
+
+            monkeypatch.setattr(remote_host, "reserve_tenant_host_usage", concurrent_reserve)
+
+            async def book(hint):
+                route_id = f"prepare:{hint.fence}"
+                try:
+                    await bridge._reserve_cloudflare_usage(
+                        route_id, _cloudflare_tenant_key(tenant, worker, hint.ordinal), hint.prepare_by,
+                        engine_slot=hint.ordinal, org_id=str(tenant), queue_warm_until=hint.warm_until,
+                    )
+                finally:
+                    if route_id in written_at:
+                        route_lock_ms[route_id] = (perf_counter() - written_at[route_id]) * 1000
+
+            outcomes = await asyncio.gather(*(book(hint) for hint in first.queue_preparations[:2]), return_exceptions=True)
+            assert len(pids) == 2
+            assert outcomes.count(None) == 1
+            assert sum(isinstance(result, CredentialRouteChanged) for result in outcomes) == 1
+            async with async_session_factory() as db:
+                activity = await db.get(CloudflareUsageActivity, (installation_id, usage_period(fixed_now)[0]))
+                assert activity is not None and activity.qualified_preparations == 1
+                meter = cloudflare_spend.CloudflareDispatchMeter
+                routes = (await db.scalars(select(meter.route_id).where(meter.worker_id == worker))).all()
+                assert len(routes) == 1
+                assert await db.scalar(estimate) == after_one
+                print(f"prewarm lock after upsert through commit: {route_lock_ms[routes[0]]:.2f} ms")
+            return
         speculative = first.queue_preparations[0]
         async with async_session_factory() as db:
             assert await count_released_prewarms(db, worker) == 3
@@ -1563,18 +1653,18 @@ async def test_queue_depth_prepares_four_workflows_and_settles_their_usage(async
         assert {command["payload"]["engine_slot"] for command in outgoing} == {0, 1, 2, 3}
         assert sum("prepare_by" in command["payload"] for command in outgoing) == 3
 
-        # A different workflow can take the slot after the hint and before
-        # Loader authorization. It must get its own workflow fence.
+        # A claim consumes its pending dispatch before assigning the slot.
+        # Reordering the queue must preserve the exact live hold and fence.
         async with async_session_factory() as db:
             await db.execute(update(WorkDispatch).where(WorkDispatch.subject_id == runs[2]).values(created_at=now))
             await db.commit()
         claims = [first, await claim(), await claim(), await claim()]
         assert claims[1].subject_id == runs[2]
-        for index, item in enumerate(claims):
+        for expected_ordinal, item in zip((0, 2, 1, 3), claims, strict=True):
             ticket = item.workflow_slot
-            assert ticket is not None and ticket.ordinal == index
-            if index:
-                assert ticket.prewarming and ticket.fence != first.queue_preparations[index - 1].fence
+            assert ticket is not None and ticket.ordinal == expected_ordinal
+            if expected_ordinal:
+                assert ticket.prewarming and ticket.fence != first.queue_preparations[expected_ordinal - 1].fence
                 assert item.queue_preparations == ()
 
         # The stub reaches its Loader barrier on all four slots before any

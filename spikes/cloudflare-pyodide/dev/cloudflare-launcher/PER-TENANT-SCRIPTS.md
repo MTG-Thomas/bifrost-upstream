@@ -87,11 +87,16 @@ When a managed launcher claims a workflow, the API checks unassigned,
 Workers-eligible workflows for that tenant. It accounts for reusable engines
 on that launcher, then caps new prepares by the configured maximum, open
 tenant and launcher seats, and installation headroom minus the fair-admission
-seat. Older admissible workflows for another tenant take precedence.
+seat. If an older admissible dispatch for another tenant precedes any
+proposed hint, staging skips the batch. This conservative check only
+suppresses speculative pre-warming. Ordinary claims follow their existing
+ordering.
 The installation lock serializes the slot reservations with normal claims.
 The launcher serializes cold boots, including queue prepares. Those boots
 can overlap the queue wait and execution on other slots. Parallel Python
-boots remain a hosted qualification item.
+boots remain a hosted qualification item. Measure admitted boot latency
+behind speculative work in the shared warm queue. The worst-case wait
+before an admitted boot completes is about 20 seconds plus one boot.
 The owning launcher can adopt a reserved slot without consuming another seat.
 It gets a new workflow fence even when it takes a different queued workflow.
 The independent preparation fence authorizes only a metered boot on that
