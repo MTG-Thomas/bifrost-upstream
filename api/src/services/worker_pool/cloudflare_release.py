@@ -146,6 +146,25 @@ class MeterQualification(BaseModel):
         }
 
     @property
+    def expected_cpu_ms(self) -> dict[str, int]:
+        samples = self.cpu_reference.samples
+        workload = max(samples.loose.p99_us, samples.solution.p99_us)
+
+        def ms(us: int) -> int:
+            return (us + 999) // 1000
+
+        return {
+            "capacity": ms(max(samples.capacity_profile.p99_us, samples.capacity_observe.p99_us,
+                               samples.capacity_prepare.p99_us, samples.capacity_start.p99_us,
+                               samples.capacity_delete.p99_us)),
+            "gateway": ms(workload),
+            "workflow": ms(workload),
+            "boot": ms(samples.boot.p99_us),
+            "warm": ms(samples.warm.p99_us),
+            "exercise": ms(samples.exercise.p99_us),
+        }
+
+    @property
     def sdk_request_limit(self) -> int:
         return min(50, self.sdk_requests * self.safety_margin)
 

@@ -238,7 +238,7 @@ async def _settle_enable(
         raise ObservationPending("Cloudflare capacity has no confirmed public endpoint")
 
     await context.report("Checking Worker Ingress")
-    capacity_cpu_ms = release.manifest.workers["capacity"].cpu_ms
+    capacity_cpu_ms = release.manifest.meter_bounds.qualification.expected_cpu_ms["capacity"]
     client = ExternalCapacityClient(
         capacity_endpoint, bearer.get_secret_value(), http=http,
         reserve_request=capacity_request_reservation(payload.installation_id, capacity_cpu_ms),
@@ -254,7 +254,7 @@ async def _settle_enable(
             db.add(CloudflareCapacityScope(
                 installation_id=row.id, scope="workers", deployment_revision=payload.revision,
                 endpoint=capacity_endpoint, bearer_version=payload.revision,
-            capacity_cpu_ms=capacity_cpu_ms,
+                capacity_cpu_ms=capacity_cpu_ms,
                 gateway_required=True,
             ))
         elif scope.endpoint != capacity_endpoint or scope.bearer_version != payload.revision:
