@@ -24,3 +24,4 @@ class PlatformJobPolicy:
     hard_memory_ratio: float = 0.95
     allow_running_cancellation: bool = False
     execution_class: Literal["default", "build"] = "default"
+    record_execution_class: bool = False

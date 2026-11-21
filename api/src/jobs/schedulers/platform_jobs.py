@@ -14,9 +14,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Protocol
 from uuid import UUID, uuid4
 
-from shared.app_build_errors import APP_BUILD_JOB_TYPES, app_build_memory_message
 from sqlalchemy import func, or_, select, text
 
+from shared.app_build_errors import APP_BUILD_JOB_TYPES, app_build_memory_message
 from src.core.database import get_db_context
 from src.jobs.platform.catalog import get_platform_job_metadata
 from src.jobs.platform.policy import PlatformJobExecutor

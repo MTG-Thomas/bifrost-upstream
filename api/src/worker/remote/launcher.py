@@ -22,7 +22,6 @@ from uuid import UUID, uuid4
 
 from shared.solution_git_stage import SOLUTION_GIT_CAPABILITY
 from shared.version import get_version
-
 from src.jobs.platform.policy import PlatformJobExecutor
 from src.services.execution.cpu_sampler import CPUSampler, get_clock_ticks
 from src.services.execution.memory_monitor import (

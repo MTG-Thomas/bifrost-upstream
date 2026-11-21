@@ -10,9 +10,9 @@ from typing import TypedDict
 from uuid import UUID
 
 from pydantic import ValidationError
-from shared.app_build_errors import APP_BUILD_JOB_TYPES, app_build_memory_message
 from sqlalchemy import select
 
+from shared.app_build_errors import APP_BUILD_JOB_TYPES, app_build_memory_message
 from src.core.database import close_db, get_db_context, init_db
 from src.jobs.platform.base import (
     PlatformJobCancelled,
@@ -65,12 +65,6 @@ async def run_claimed_platform_job(
         ).scalar_one_or_none()
         if job is None or job.status == "cancel_requested":
             return False
-        execution_receipt = (
-            {"execution_class": executor.value}
-            if executor is not None and job.job_type == "capacity.cloudflare_enable"
-            else {}
-        )
-        receipt_args: _ReceiptArgs = {"result": execution_receipt} if execution_receipt else {}
         definition = get_platform_job_definition(job.job_type)
         if definition is None:
             if stage_handler is not None:
@@ -81,9 +75,14 @@ async def run_claimed_platform_job(
                 status="failed",
                 error_code="unknown_job_type",
                 error_message=f"No handler is registered for {job.job_type}.",
-                **receipt_args,
             )
             return False
+        execution_receipt = (
+            {"execution_class": executor.value}
+            if executor is not None and definition.policy.record_execution_class
+            else {}
+        )
+        receipt_args: _ReceiptArgs = {"result": execution_receipt} if execution_receipt else {}
         payload_model = definition.payload_model_for_version(job.payload_version)
         if payload_model is None:
             if stage_handler is not None:
@@ -231,11 +230,15 @@ async def _main(job_id: str, lease_token: str, executor: PlatformJobExecutor | N
         await close_db()
 
 
-if __name__ == "__main__":
+def _run_cli() -> int:
     if len(sys.argv) not in (3, 4):
         raise SystemExit("usage: platform.runner JOB_ID LEASE_TOKEN [EXECUTOR]")
     from src.services.execution.oom_priority import volunteer_for_oom_kill
 
     volunteer_for_oom_kill()
     executor = PlatformJobExecutor(sys.argv[3]) if len(sys.argv) == 4 else None
-    raise SystemExit(asyncio.run(_main(sys.argv[1], sys.argv[2], executor)))
+    return asyncio.run(_main(sys.argv[1], sys.argv[2], executor))
+
+
+if __name__ == "__main__":
+    raise SystemExit(_run_cli())
