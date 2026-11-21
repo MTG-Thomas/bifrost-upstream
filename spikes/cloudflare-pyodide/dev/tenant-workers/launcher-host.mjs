@@ -5,11 +5,8 @@ function terminal(attempt_state, error_type, error) {
   return {attempt_state, result: {success: false, error_type, error}};
 }
 
-async function boundedWarm(getHost, tenantId, {deadline, signal, beforeRun, now, queueWarm, reserveIdentity}) {
-  const check = () => {
-    if (beforeRun()) throw new Error('Attempt ended before warm-up');
-  };
-  check();
+async function whileDispatching(task, {deadline, signal, now}) {
+  if (signal.aborted || now() >= deadline) throw new Error('Attempt ended before warm-up');
   let timer;
   let cancel;
   const abort = new Promise((_, reject) => {
@@ -18,9 +15,7 @@ async function boundedWarm(getHost, tenantId, {deadline, signal, beforeRun, now,
     if (deadline !== Infinity) timer = setTimeout(cancel, Math.max(0, deadline - now()));
   });
   try {
-    return await Promise.race([queueWarm((rpcCheck) => warmHost(getHost, tenantId, {
-      check: () => { check(); rpcCheck(); }, engineOnly: true, reserveIdentity,
-    })), abort]);
+    return await Promise.race([task(), abort]);
   } finally {
     clearTimeout(timer);
     signal.removeEventListener('abort', cancel);
@@ -37,6 +32,7 @@ export function createLauncherWorkflowRunner(getHost, {warmRpcMs = ENGINE_BOOT_T
   // together. While a boot is in flight, retain the queue until it confirms
   // or reaches the RPC limit, independently of the waiting route's deadline.
   let warmTail = Promise.resolve();
+  const preparations = new Map();
   const queueWarm = (task) => {
     const next = warmTail.then(async () => {
       let timer;
@@ -59,8 +55,11 @@ export function createLauncherWorkflowRunner(getHost, {warmRpcMs = ENGINE_BOOT_T
     warmTail = next.catch(() => {});
     return next;
   };
-  return async (input) => {
-    if (!input.receipt) return runLauncherWorkflow(getHost, queueWarm, input);
+  async function run(input) {
+    const {route} = input;
+    const current = preparations.get(route.active_execution.org_id ?? null);
+    const preparation = current?.executionId === route.subject_id ? current.task : null;
+    if (!input.receipt) return runLauncherWorkflow(getHost, queueWarm, input, preparation);
     const invocations = [];
     let complete = true;
     const traced = (tenant) => {
@@ -80,14 +79,35 @@ export function createLauncherWorkflowRunner(getHost, {warmRpcMs = ENGINE_BOOT_T
       };
       return {run: request => call('run', request), warm: request => call('warm', request)};
     };
-    const outcome = await runLauncherWorkflow(traced, queueWarm, input);
+    const outcome = await runLauncherWorkflow(traced, queueWarm, input, preparation);
     return complete && outcome.attempt_state === 'completed' ? {...outcome, invocations} : outcome;
-  };
+  }
+  async function prepare({orgId, executionId, signal, reserveIdentity}) {
+    if (preparations.has(orgId)) return [];
+    const task = queueWarm(async (check) => {
+      const tenantId = await launcherTenantId({active_execution: {org_id: orgId}});
+      check();
+      if (signal.aborted) return {skipped: true};
+      return getHost(tenantId).warm({tenantId, executionId, admission: true,
+        ...(reserveIdentity ? {reserveIdentity} : {})});
+    });
+    preparations.set(orgId, {executionId, task});
+    try {
+      const result = await task;
+      if (result.invocation) return [result.invocation];
+      if (result.reused || result.skipped) return [];
+      return undefined;
+    } finally {
+      preparations.delete(orgId);
+    }
+  }
+  return Object.assign(run, {prepare});
 }
 
 // Warm-up may be retried, but a run RPC is repeated only after an explicit
 // needsWarm refusal. Every call carries the same absolute wire deadline.
-async function runLauncherWorkflow(getHost, queueWarm, {route, context, publicUrl, signal, reserveIdentity, now = Date.now}) {
+async function runLauncherWorkflow(getHost, queueWarm,
+  {route, context, publicUrl, signal, reserveIdentity, now = Date.now}, preparation) {
   const deadline = route.workflow_deadline === null ? Infinity : Date.parse(route.workflow_deadline);
   const beforeRun = () => {
     if (now() >= deadline) return {terminal: {phase: 'attempt-deadline', attempt_state: 'not_started'}};
@@ -101,7 +121,17 @@ async function runLauncherWorkflow(getHost, queueWarm, {route, context, publicUr
   try {
     hosted = await hostAttempt(() => getHost(tenantId), attempt, {
       beforeRun,
-      warm: (get, tenant) => boundedWarm(get, tenant, {deadline, signal, beforeRun, now, queueWarm, reserveIdentity}),
+      join: preparation ? () => whileDispatching(async () => {
+        const observed = await preparation.catch(() => null);
+        return Boolean(observed && !observed.skipped);
+      }, {deadline, signal, now}).catch(() => false) : undefined,
+      warm: (get, tenant) => whileDispatching(() => queueWarm((rpcCheck) => warmHost(get, tenant, {
+          check: () => {
+            if (beforeRun()) throw new Error('Attempt ended before warm-up');
+            rpcCheck();
+          },
+          engineOnly: true, reserveIdentity, executionId: route.subject_id,
+        })), {deadline, signal, now}),
     });
   } catch (error) {
     if (error?.attemptState === 'not_started' && error?.name === 'CloudflareLauncherMeterLimitExceeded') {

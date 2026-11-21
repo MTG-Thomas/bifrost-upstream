@@ -86,6 +86,7 @@ const workerDefinitions = {
     bindings: [
       { name: "LOADER", type: "worker_loader" },
       input("API_ORIGIN", "worker_ingress_origin"),
+      input("BIFROST_TENANT_LINGER_SECONDS", "linger_seconds"),
       { name: "BIFROST_CLOUDFLARE_MANAGED", type: "plain_text", text: "true" },
       { name: "BIFROST_METER_GENERATIONS", type: "plain_text", text: "true" },
       { name: "BIFROST_METER_RECEIPTS", type: "plain_text", text: "true" },

@@ -72,6 +72,7 @@ function CloudflareConfigurationForm({ status, onSaved }: {
 				launcher_cap: Number(fields.get("launcher_cap")),
 				slots_per_launcher: Number(fields.get("slots")),
 				max_lifetime_seconds: Number(fields.get("lifetime")),
+				linger_seconds: Number(fields.get("linger")),
 				work_kinds: fields.get("workflows") === "on" ? ["workflow" as const] : [],
 			},
 			monthly_limit_usd: String(fields.get("monthly_limit")),
@@ -126,6 +127,7 @@ function CloudflareConfigurationForm({ status, onSaved }: {
 				<div><Label htmlFor="cf-launcher-cap">Workers Launcher Limit</Label><Input id="cf-launcher-cap" name="launcher_cap" type="number" min={1} max={1000} defaultValue={settings?.workers.launcher_cap ?? 1} required /></div>
 				<div><Label htmlFor="cf-slots">Slots Per Launcher</Label><Input id="cf-slots" name="slots" type="number" min={1} max={4} defaultValue={settings?.workers.slots_per_launcher ?? 2} required /></div>
 				<div><Label htmlFor="cf-lifetime">Maximum Lifetime in Seconds</Label><Input id="cf-lifetime" name="lifetime" type="number" min={60} max={604800} defaultValue={settings?.workers.max_lifetime_seconds ?? 3600} required /></div>
+				<div><Label htmlFor="cf-linger">Tenant Engine Linger in Seconds</Label><Input id="cf-linger" name="linger" type="number" min={0} max={300} defaultValue={settings?.workers.linger_seconds ?? 90} required /></div>
 				<div><Label htmlFor="cf-monthly">Monthly Usage Target in USD</Label><Input id="cf-monthly" name="monthly_limit" type="number" min="0.01" step="0.01" defaultValue={settings?.monthly_limit_usd ?? "30.00"} required /></div>
 				<div><Label htmlFor="cf-shared-cap">Shared Managed Worker Limit</Label><Input id="cf-shared-cap" name="shared_cap" type="number" min={1} max={1000} defaultValue={settings?.shared_managed_worker_cap ?? undefined} /></div>
 			</div>

@@ -1,0 +1,362 @@
+{
+  "schema_version": 1,
+  "source": {
+    "baseline_revision": "ec14b6115884a0d9418527d50d8c654401527b42",
+    "candidate_revision": "8d08546f99856bf86e5486dfcc36f7d5e52579f7",
+    "compiled_baseline_sha256": "2f933c2fce86ea172f229b74dbb64b9d041b47318b09bd22b84fc9503f8c89c4",
+    "compiled_candidate_sha256": "7582fa1c11e36129adf78db7a06160eb2e55b58df17c5ec1ab8d28eb0cafb6ad",
+    "source_companion_sha256": "06a24befad22c8bf1fe7037fa558d575a46053b86f27d44b2157912f7896fc6d",
+    "supervisor_source_sha256": "2c0a36304e0a97fb04cfc6130cb2f252f9b9b08039f8105503e68e6810e75207",
+    "compatibility_date": "2026-10-30",
+    "node": "26.13.1",
+    "wrangler": "4.161.0"
+  },
+  "started_at": "2026-11-21T02:16:37.898Z",
+  "measurement_stopped_at": "2026-11-21T02:20:40.779Z",
+  "finished_at": "2026-11-21T02:20:45.208Z",
+  "scope": {
+    "mode": "full",
+    "rounds": 12
+  },
+  "run_status": "complete",
+  "stop_reason": null,
+  "limits": {
+    "external_requests": 100,
+    "billable_invocations": 300,
+    "configured_cpu_ms": 7500,
+    "authorized_cpu_ms": 10000,
+    "duration_seconds": 900,
+    "authorized_expected_usd": 0.05,
+    "authorized_worst_case_usd": 0.11
+  },
+  "results": {
+    "bare": {
+      "bare": {
+        "successes": 12,
+        "attempted": 12,
+        "wall_ms": {
+          "median": 940.5,
+          "min": 545,
+          "max": 2903
+        }
+      }
+    },
+    "runtime": {
+      "baseline": {
+        "successes": 12,
+        "attempted": 12,
+        "wall_ms": {
+          "median": 2632.5,
+          "min": 1629,
+          "max": 3744
+        }
+      },
+      "candidate": {
+        "successes": 12,
+        "attempted": 12,
+        "wall_ms": {
+          "median": 1511.5,
+          "min": 737,
+          "max": 2890
+        }
+      },
+      "paired": {
+        "count": 12,
+        "candidate_faster": 12,
+        "baseline_minus_candidate_ms": {
+          "median": 810.5,
+          "min": 212,
+          "max": 2434
+        },
+        "baseline_minus_bare_ms": {
+          "median": 1508,
+          "min": -502,
+          "max": 3113
+        },
+        "candidate_minus_bare_ms": {
+          "median": 742,
+          "min": -1312,
+          "max": 1334
+        }
+      }
+    },
+    "imports": {
+      "baseline": {
+        "successes": 12,
+        "attempted": 12,
+        "wall_ms": {
+          "median": 3659,
+          "min": 2559,
+          "max": 5480
+        }
+      },
+      "candidate": {
+        "successes": 12,
+        "attempted": 12,
+        "wall_ms": {
+          "median": 2547.5,
+          "min": 1121,
+          "max": 3875
+        }
+      },
+      "paired": {
+        "count": 12,
+        "candidate_faster": 11,
+        "baseline_minus_candidate_ms": {
+          "median": 1309,
+          "min": -1076,
+          "max": 3070
+        },
+        "baseline_minus_bare_ms": {
+          "median": 2734.5,
+          "min": 673,
+          "max": 4367
+        },
+        "candidate_minus_bare_ms": {
+          "median": 1089,
+          "min": 111,
+          "max": 3287
+        }
+      }
+    },
+    "attempt": {
+      "baseline": {
+        "successes": 12,
+        "attempted": 12,
+        "wall_ms": {
+          "median": 3618,
+          "min": 2369,
+          "max": 5457
+        }
+      },
+      "candidate": {
+        "successes": 12,
+        "attempted": 12,
+        "wall_ms": {
+          "median": 2034.5,
+          "min": 1485,
+          "max": 4028
+        }
+      },
+      "paired": {
+        "count": 12,
+        "candidate_faster": 12,
+        "baseline_minus_candidate_ms": {
+          "median": 1278,
+          "min": 443,
+          "max": 3603
+        },
+        "baseline_minus_bare_ms": {
+          "median": 2660.5,
+          "min": 62,
+          "max": 4552
+        },
+        "candidate_minus_bare_ms": {
+          "median": 1279,
+          "min": -1120,
+          "max": 2235
+        }
+      }
+    }
+  },
+  "samples": [
+    {"variant":"bare","stage":"bare","round":1,"at":"2026-11-21T02:17:05.887Z","success":true,"http":200,"wall_ms":1113},
+    {"variant":"baseline","stage":"runtime","round":1,"at":"2026-11-21T02:17:07.002Z","success":true,"http":200,"wall_ms":2400},
+    {"variant":"candidate","stage":"runtime","round":1,"at":"2026-11-21T02:17:09.403Z","success":true,"http":200,"wall_ms":1233},
+    {"variant":"baseline","stage":"imports","round":1,"at":"2026-11-21T02:17:10.638Z","success":true,"http":200,"wall_ms":5480},
+    {"variant":"candidate","stage":"imports","round":1,"at":"2026-11-21T02:17:16.120Z","success":true,"http":200,"wall_ms":3631},
+    {"variant":"baseline","stage":"attempt","round":1,"at":"2026-11-21T02:17:19.752Z","success":true,"http":200,"wall_ms":3786,"workflow_status":"Success","engine_ms":4},
+    {"variant":"candidate","stage":"attempt","round":1,"at":"2026-11-21T02:17:23.540Z","success":true,"http":200,"wall_ms":2617,"workflow_status":"Success","engine_ms":3},
+    {"variant":"bare","stage":"bare","round":2,"at":"2026-11-21T02:17:26.159Z","success":true,"http":200,"wall_ms":1358},
+    {"variant":"candidate","stage":"runtime","round":2,"at":"2026-11-21T02:17:27.518Z","success":true,"http":200,"wall_ms":1032},
+    {"variant":"baseline","stage":"runtime","round":2,"at":"2026-11-21T02:17:28.552Z","success":true,"http":200,"wall_ms":3466},
+    {"variant":"candidate","stage":"imports","round":2,"at":"2026-11-21T02:17:32.020Z","success":true,"http":200,"wall_ms":2982},
+    {"variant":"baseline","stage":"imports","round":2,"at":"2026-11-21T02:17:35.003Z","success":true,"http":200,"wall_ms":4095},
+    {"variant":"candidate","stage":"attempt","round":2,"at":"2026-11-21T02:17:39.100Z","success":true,"http":200,"wall_ms":1822,"workflow_status":"Success","engine_ms":3},
+    {"variant":"baseline","stage":"attempt","round":2,"at":"2026-11-21T02:17:40.923Z","success":true,"http":200,"wall_ms":2774,"workflow_status":"Success","engine_ms":4},
+    {"variant":"bare","stage":"bare","round":3,"at":"2026-11-21T02:17:43.699Z","success":true,"http":200,"wall_ms":1348},
+    {"variant":"baseline","stage":"runtime","round":3,"at":"2026-11-21T02:17:45.048Z","success":true,"http":200,"wall_ms":2864},
+    {"variant":"candidate","stage":"runtime","round":3,"at":"2026-11-21T02:17:47.914Z","success":true,"http":200,"wall_ms":2652},
+    {"variant":"baseline","stage":"imports","round":3,"at":"2026-11-21T02:17:50.568Z","success":true,"http":200,"wall_ms":4192},
+    {"variant":"candidate","stage":"imports","round":3,"at":"2026-11-21T02:17:54.761Z","success":true,"http":200,"wall_ms":3069},
+    {"variant":"baseline","stage":"attempt","round":3,"at":"2026-11-21T02:17:57.832Z","success":true,"http":200,"wall_ms":3996,"workflow_status":"Success","engine_ms":7},
+    {"variant":"candidate","stage":"attempt","round":3,"at":"2026-11-21T02:18:01.829Z","success":true,"http":200,"wall_ms":2622,"workflow_status":"Success","engine_ms":4},
+    {"variant":"bare","stage":"bare","round":4,"at":"2026-11-21T02:18:04.453Z","success":true,"http":200,"wall_ms":2903},
+    {"variant":"candidate","stage":"runtime","round":4,"at":"2026-11-21T02:18:07.357Z","success":true,"http":200,"wall_ms":1591},
+    {"variant":"baseline","stage":"runtime","round":4,"at":"2026-11-21T02:18:08.949Z","success":true,"http":200,"wall_ms":2401},
+    {"variant":"candidate","stage":"imports","round":4,"at":"2026-11-21T02:18:11.353Z","success":true,"http":200,"wall_ms":3534},
+    {"variant":"baseline","stage":"imports","round":4,"at":"2026-11-21T02:18:14.888Z","success":true,"http":200,"wall_ms":3576},
+    {"variant":"candidate","stage":"attempt","round":4,"at":"2026-11-21T02:18:18.466Z","success":true,"http":200,"wall_ms":1783,"workflow_status":"Success","engine_ms":4},
+    {"variant":"baseline","stage":"attempt","round":4,"at":"2026-11-21T02:18:20.251Z","success":true,"http":200,"wall_ms":2965,"workflow_status":"Success","engine_ms":5},
+    {"variant":"bare","stage":"bare","round":5,"at":"2026-11-21T02:18:23.218Z","success":true,"http":200,"wall_ms":1793},
+    {"variant":"baseline","stage":"runtime","round":5,"at":"2026-11-21T02:18:25.013Z","success":true,"http":200,"wall_ms":3230},
+    {"variant":"candidate","stage":"runtime","round":5,"at":"2026-11-21T02:18:28.244Z","success":true,"http":200,"wall_ms":2890},
+    {"variant":"baseline","stage":"imports","round":5,"at":"2026-11-21T02:18:31.136Z","success":true,"http":200,"wall_ms":3509},
+    {"variant":"candidate","stage":"imports","round":5,"at":"2026-11-21T02:18:34.646Z","success":true,"http":200,"wall_ms":1904},
+    {"variant":"baseline","stage":"attempt","round":5,"at":"2026-11-21T02:18:36.552Z","success":true,"http":200,"wall_ms":5457,"workflow_status":"Success","engine_ms":7},
+    {"variant":"candidate","stage":"attempt","round":5,"at":"2026-11-21T02:18:42.011Z","success":true,"http":200,"wall_ms":4028,"workflow_status":"Success","engine_ms":4},
+    {"variant":"bare","stage":"bare","round":6,"at":"2026-11-21T02:18:46.040Z","success":true,"http":200,"wall_ms":871},
+    {"variant":"candidate","stage":"runtime","round":6,"at":"2026-11-21T02:18:46.912Z","success":true,"http":200,"wall_ms":2205},
+    {"variant":"baseline","stage":"runtime","round":6,"at":"2026-11-21T02:18:49.120Z","success":true,"http":200,"wall_ms":3274},
+    {"variant":"candidate","stage":"imports","round":6,"at":"2026-11-21T02:18:52.398Z","success":true,"http":200,"wall_ms":1946},
+    {"variant":"baseline","stage":"imports","round":6,"at":"2026-11-21T02:18:54.346Z","success":true,"http":200,"wall_ms":3126},
+    {"variant":"candidate","stage":"attempt","round":6,"at":"2026-11-21T02:18:57.474Z","success":true,"http":200,"wall_ms":1926,"workflow_status":"Success","engine_ms":2},
+    {"variant":"baseline","stage":"attempt","round":6,"at":"2026-11-21T02:18:59.402Z","success":true,"http":200,"wall_ms":2369,"workflow_status":"Success","engine_ms":3},
+    {"variant":"bare","stage":"bare","round":7,"at":"2026-11-21T02:19:01.774Z","success":true,"http":200,"wall_ms":1010},
+    {"variant":"baseline","stage":"runtime","round":7,"at":"2026-11-21T02:19:02.786Z","success":true,"http":200,"wall_ms":1629},
+    {"variant":"candidate","stage":"runtime","round":7,"at":"2026-11-21T02:19:04.417Z","success":true,"http":200,"wall_ms":1368},
+    {"variant":"baseline","stage":"imports","round":7,"at":"2026-11-21T02:19:05.787Z","success":true,"http":200,"wall_ms":3742},
+    {"variant":"candidate","stage":"imports","round":7,"at":"2026-11-21T02:19:09.531Z","success":true,"http":200,"wall_ms":2113},
+    {"variant":"baseline","stage":"attempt","round":7,"at":"2026-11-21T02:19:11.646Z","success":true,"http":200,"wall_ms":3450,"workflow_status":"Success","engine_ms":5},
+    {"variant":"candidate","stage":"attempt","round":7,"at":"2026-11-21T02:19:15.098Z","success":true,"http":200,"wall_ms":2705,"workflow_status":"Success","engine_ms":3},
+    {"variant":"bare","stage":"bare","round":8,"at":"2026-11-21T02:19:17.804Z","success":true,"http":200,"wall_ms":621},
+    {"variant":"candidate","stage":"runtime","round":8,"at":"2026-11-21T02:19:18.427Z","success":true,"http":200,"wall_ms":737},
+    {"variant":"baseline","stage":"runtime","round":8,"at":"2026-11-21T02:19:19.166Z","success":true,"http":200,"wall_ms":2945},
+    {"variant":"candidate","stage":"imports","round":8,"at":"2026-11-21T02:19:22.113Z","success":true,"http":200,"wall_ms":1495},
+    {"variant":"baseline","stage":"imports","round":8,"at":"2026-11-21T02:19:23.610Z","success":true,"http":200,"wall_ms":3403},
+    {"variant":"candidate","stage":"attempt","round":8,"at":"2026-11-21T02:19:27.016Z","success":true,"http":200,"wall_ms":2613,"workflow_status":"Success","engine_ms":3},
+    {"variant":"baseline","stage":"attempt","round":8,"at":"2026-11-21T02:19:29.632Z","success":true,"http":200,"wall_ms":3173,"workflow_status":"Success","engine_ms":3},
+    {"variant":"bare","stage":"bare","round":9,"at":"2026-11-21T02:19:32.807Z","success":true,"http":200,"wall_ms":587},
+    {"variant":"baseline","stage":"runtime","round":9,"at":"2026-11-21T02:19:33.397Z","success":true,"http":200,"wall_ms":2038},
+    {"variant":"candidate","stage":"runtime","round":9,"at":"2026-11-21T02:19:35.437Z","success":true,"http":200,"wall_ms":1227},
+    {"variant":"baseline","stage":"imports","round":9,"at":"2026-11-21T02:19:36.667Z","success":true,"http":200,"wall_ms":4564},
+    {"variant":"candidate","stage":"imports","round":9,"at":"2026-11-21T02:19:41.234Z","success":true,"http":200,"wall_ms":3772},
+    {"variant":"baseline","stage":"attempt","round":9,"at":"2026-11-21T02:19:45.007Z","success":true,"http":200,"wall_ms":5139,"workflow_status":"Success","engine_ms":7},
+    {"variant":"candidate","stage":"attempt","round":9,"at":"2026-11-21T02:19:50.147Z","success":true,"http":200,"wall_ms":1871,"workflow_status":"Success","engine_ms":2},
+    {"variant":"bare","stage":"bare","round":10,"at":"2026-11-21T02:19:52.020Z","success":true,"http":200,"wall_ms":631},
+    {"variant":"candidate","stage":"runtime","round":10,"at":"2026-11-21T02:19:52.654Z","success":true,"http":200,"wall_ms":1631},
+    {"variant":"baseline","stage":"runtime","round":10,"at":"2026-11-21T02:19:54.289Z","success":true,"http":200,"wall_ms":3744},
+    {"variant":"candidate","stage":"imports","round":10,"at":"2026-11-21T02:19:58.034Z","success":true,"http":200,"wall_ms":1198},
+    {"variant":"baseline","stage":"imports","round":10,"at":"2026-11-21T02:19:59.235Z","success":true,"http":200,"wall_ms":4268},
+    {"variant":"candidate","stage":"attempt","round":10,"at":"2026-11-21T02:20:03.506Z","success":true,"http":200,"wall_ms":1485,"workflow_status":"Success","engine_ms":3},
+    {"variant":"baseline","stage":"attempt","round":10,"at":"2026-11-21T02:20:04.992Z","success":true,"http":200,"wall_ms":5088,"workflow_status":"Success","engine_ms":9},
+    {"variant":"bare","stage":"bare","round":11,"at":"2026-11-21T02:20:10.083Z","success":true,"http":200,"wall_ms":545},
+    {"variant":"baseline","stage":"runtime","round":11,"at":"2026-11-21T02:20:10.630Z","success":true,"http":200,"wall_ms":2337},
+    {"variant":"candidate","stage":"runtime","round":11,"at":"2026-11-21T02:20:12.969Z","success":true,"http":200,"wall_ms":1844},
+    {"variant":"baseline","stage":"imports","round":11,"at":"2026-11-21T02:20:14.815Z","success":true,"http":200,"wall_ms":2559},
+    {"variant":"candidate","stage":"imports","round":11,"at":"2026-11-21T02:20:17.376Z","success":true,"http":200,"wall_ms":1121},
+    {"variant":"baseline","stage":"attempt","round":11,"at":"2026-11-21T02:20:18.499Z","success":true,"http":200,"wall_ms":4370,"workflow_status":"Success","engine_ms":4},
+    {"variant":"candidate","stage":"attempt","round":11,"at":"2026-11-21T02:20:22.871Z","success":true,"http":200,"wall_ms":2143,"workflow_status":"Success","engine_ms":2},
+    {"variant":"bare","stage":"bare","round":12,"at":"2026-11-21T02:20:25.016Z","success":true,"http":200,"wall_ms":588},
+    {"variant":"candidate","stage":"runtime","round":12,"at":"2026-11-21T02:20:25.606Z","success":true,"http":200,"wall_ms":1432},
+    {"variant":"baseline","stage":"runtime","round":12,"at":"2026-11-21T02:20:27.039Z","success":true,"http":200,"wall_ms":2088},
+    {"variant":"candidate","stage":"imports","round":12,"at":"2026-11-21T02:20:29.129Z","success":true,"http":200,"wall_ms":3875},
+    {"variant":"baseline","stage":"imports","round":12,"at":"2026-11-21T02:20:33.006Z","success":true,"http":200,"wall_ms":2799},
+    {"variant":"candidate","stage":"attempt","round":12,"at":"2026-11-21T02:20:35.807Z","success":true,"http":200,"wall_ms":1611,"workflow_status":"Success","engine_ms":2},
+    {"variant":"baseline","stage":"attempt","round":12,"at":"2026-11-21T02:20:37.420Z","success":true,"http":200,"wall_ms":3357,"workflow_status":"Success","engine_ms":3}
+  ],
+  "metering": {
+    "external_lab_requests": 86,
+    "teardown_http_checks": 2,
+    "sent_creation_samples": 84,
+    "successful_distinct_children": 84,
+    "maximum_fixture_invocations": 96,
+    "billable_invocation_estimate_upper_with_teardown": 268,
+    "creation_meter_month_to_date_before": {
+      "month_to_date_creations": 663,
+      "remaining_included": 337
+    },
+    "creation_meter_month_to_date_after": 691,
+    "parent_graphql_coverage_matches_client": false,
+    "parent_cloudflare_metrics": {
+      "baseline": null,
+      "candidate": null
+    },
+    "parent_cpu_ms": null,
+    "child_cpu_measured": false,
+    "analytics_read_at": "2026-11-21T02:29:47.716Z",
+    "measurement_window_account_graphql": {
+      "distinct_dynamic_workers": 84,
+      "requests": 89,
+      "cpu_ms": 4171.248
+    },
+    "account_month_to_date_workers_requests": 18625,
+    "account_month_to_date_workers_cpu_ms": 898052.679,
+    "account_graphql_is_shared_and_may_lag": true,
+    "estimated_incremental_usd_at_reported_account_usage": 0,
+    "model_cpu_ceiling_ms": 2680000,
+    "model_incremental_usd_before_request_and_cpu_credits": 0.0536804,
+    "preflight": {
+      "planned_samples": 84,
+      "maximum_billable_invocations": 268,
+      "rates": {
+        "creation_usd": 0.002,
+        "request_usd_per_million": 0.3,
+        "cpu_usd_per_million_ms": 0.02
+      },
+      "cpu_ceiling_ms": 2680000,
+      "nominal_upper_usd": 0.0536804
+    }
+  },
+  "teardown": {
+    "verified": true,
+    "events": [
+      {
+        "variant": "baseline",
+        "action": "deploy-start"
+      },
+      {
+        "variant": "baseline",
+        "action": "deploy-result",
+        "ok": true,
+        "upload_kib": 18756.62,
+        "gzip_kib": 6401.51,
+        "startup_ms": 2
+      },
+      {
+        "variant": "candidate",
+        "action": "deploy-start"
+      },
+      {
+        "variant": "candidate",
+        "action": "deploy-result",
+        "ok": true,
+        "upload_kib": 18677.58,
+        "gzip_kib": 6382.23,
+        "startup_ms": 2
+      },
+      {
+        "variant": "baseline",
+        "action": "unauthenticated",
+        "http": 403
+      },
+      {
+        "variant": "candidate",
+        "action": "unauthenticated",
+        "http": 403
+      },
+      {
+        "variant": "baseline",
+        "action": "present-before-delete",
+        "present": true
+      },
+      {
+        "variant": "candidate",
+        "action": "present-before-delete",
+        "present": true
+      },
+      {
+        "variant": "candidate",
+        "action": "delete-result",
+        "ok": true
+      },
+      {
+        "variant": "baseline",
+        "action": "delete-result",
+        "ok": true
+      },
+      {
+        "variant": "baseline",
+        "action": "independent-teardown",
+        "listed": false,
+        "http": 404
+      },
+      {
+        "variant": "candidate",
+        "action": "independent-teardown",
+        "listed": false,
+        "http": 404
+      }
+    ]
+  }
+}

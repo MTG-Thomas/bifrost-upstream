@@ -92,7 +92,10 @@ describe("Cloudflare capacity service", () => {
 			expected_revision: 3,
 			policy: {
 				version: 1 as const,
-				workers: { launcher_cap: 1, slots_per_launcher: 2, max_lifetime_seconds: 3600, work_kinds: ["workflow" as const] },
+				workers: {
+					launcher_cap: 1, slots_per_launcher: 2, max_lifetime_seconds: 3600,
+					linger_seconds: 45, work_kinds: ["workflow" as const],
+				},
 				monthly_limit_usd: "10.00",
 			},
 		};

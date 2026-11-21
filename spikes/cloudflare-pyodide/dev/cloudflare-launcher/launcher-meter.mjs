@@ -10,7 +10,7 @@ const sqliteHeadroom = slots => slots * (4 * TERMINAL_ROWS + 12) + 8;
 export const SQLITE_HEADROOM = sqliteHeadroom(MAX_WORKFLOW_SLOTS);
 const MAX_RECEIPT_ROUTES = 128;
 const ROUTE_ENTRY_WRITES = 16;
-const ROUTE_ENTRY_REQUESTS = 5; // initial run, up to 3 warm calls, confirmed run
+const ROUTE_ENTRY_REQUESTS = 6; // initial run, preparation recheck, up to 3 warm calls, confirmed run
 
 export function launcherMeter(sql, binding, {settle = false} = {}) {
   if (binding === undefined) return null;
@@ -72,10 +72,15 @@ export function launcherMeter(sql, binding, {settle = false} = {}) {
       save({...state, counts: {...state.counts, log_events: state.counts.log_events + 1}});
       return true;
     },
+    hasRoute(routeId) { return Object.hasOwn(state.routes ?? {}, routeId); },
     recordRoute(routeId, invocations) {
       // Routes beyond the receipt capacity keep their Bifrost reservations.
-      if (settle && !state.final && !state.routes?.[routeId] &&
-          Object.keys(state.routes ?? {}).length < MAX_RECEIPT_ROUTES) {
+      const preparation = routeId.startsWith('prepare:');
+      // Speculative receipts cannot spend the writes reserved for workflow settlement.
+      if (preparation && state.counts.sqlite_rows_written + 1 > caps.sqlite_rows_written - sqliteHeadroom(slots)) return;
+      if (settle && !state.final && !Object.hasOwn(state.routes ?? {}, routeId) &&
+          Object.keys(state.routes ?? {}).filter(id => id.startsWith('prepare:') === preparation).length <
+            MAX_RECEIPT_ROUTES) {
         save({...state, routes: {...state.routes, [routeId]: invocations}});
       }
     },

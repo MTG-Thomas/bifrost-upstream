@@ -274,6 +274,7 @@ async function start() {
           ? {TenantHost: {type: 'durable-object', storage: 'sqlite'}, TenantApi: {type: 'worker'}}
           : {MeterProbe: {type: 'durable-object', storage: 'sqlite'}})},
         env: {API_ORIGIN: {type: 'text', value: 'https://test-api.invalid'},
+          BIFROST_TENANT_LINGER_SECONDS: {type: 'text', value: '90'},
           BIFROST_CLOUDFLARE_MANAGED: {type: 'text', value: 'true'}, ...(measuredLauncher ? {
             LOADER: {type: 'worker-loader'},
             RUNTIME_SHA256: {type: 'text', value: 'fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5'},

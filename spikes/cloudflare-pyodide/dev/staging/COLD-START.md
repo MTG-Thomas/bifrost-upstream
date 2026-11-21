@@ -1,8 +1,8 @@
 # Dynamic Python Worker cold start
 
 This experiment compares the fork baseline `ec14b6115` with the staging runtime
-built from the same companion sources. All new runs used local Miniflare and
-workerd with a synthetic workflow and an in-process module gateway.
+built from the same companion sources. The local and hosted runs used a
+synthetic workflow and an in-process module gateway.
 
 ## Snapshot verdict
 
@@ -182,6 +182,55 @@ node backend/verify-sdk-close.mjs
 node backend/verify-staged-runtime-execution.mjs
 ```
 
+## Admission boot and short linger
+
+CT128, Node 26.13.1, Wrangler 4.156.0, local Miniflare/workerd. The test
+compared baseline `8d08546f9` with `108f373d6`. Both used the same packaged
+Python runtime (SHA-256
+`7582fa1c11e36129adf78db7a06160eb2e55b58df17c5ec1ab8d28eb0cafb6ad`).
+The launcher completed its signed hello before timing began, as it does
+before a production claim. A loopback control peer applied the real launcher
+protocol and acknowledged each terminal. Both variants simulated one second
+of API-side preparation before the workflow command. The candidate sent the
+admission hint at the start of that interval. The workflow made a real SDK
+tables request to the loopback fixture and returned the count.
+
+Timing starts at simulated claim admission and ends at the first launcher
+result. Each cold trial used a new tenant, with execution order alternating
+per pair. The candidate repeated the workflow immediately on each of its
+tenants, inside the default 90-second linger. The measured interval includes
+the one-second preparation fixture in every sample.
+
+| Trial | Samples | Median | Min–max |
+| --- | ---: | ---: | ---: |
+| Baseline cold | 8 | 4,170 ms | 3,962–5,439 ms |
+| Admission boot cold | 8 | 3,166.5 ms | 3,057–3,915 ms |
+| Admission boot, burst reuse | 8 | 1,013 ms | 1,012–1,025 ms |
+
+The median cold time fell 24.1%, with a median paired reduction of 1,012 ms.
+All eight burst runs reused the child and required no new loader identity
+authorization. A separate workerd test advanced the clock past the linger
+deadline and observed the host require a fresh confirmation with no alarm
+scheduled. Linger is a readiness window. Workerd controls physical cache
+eviction and can evict an idle isolate sooner.
+
+Run the same comparison as
+`node spikes/cloudflare-pyodide/dev/e2e/admission-latency.mjs <baseline-spike-dir> <generated-runtime.mjs>`
+from a disposable candidate checkout with its Wrangler dependencies installed.
+The loopback peer emulates the API generation grant. It does not measure
+PostgreSQL claim latency, API-side token minting, hosted network latency,
+provider eviction or the invoice. The actual gain depends on how much real
+preparation overlaps startup.
+
+For a hosted follow-up, use one disposable launcher per version and eight
+interleaved fresh-tenant pairs. Include one candidate burst per pair, one
+cancelled preparation and one probe after linger expiry. Keep the run to 15
+minutes and require a pre-approved USD 1 incremental spend target. Capture
+claim, prep completion, command send and first-result timestamps, then verify
+the terminal/deletion receipts, identity deduplication and zero idle alarms.
+Stop on the first ownership or spend anomaly and verify both deployments
+were deleted. This hosted follow-up was not run.
+
 ## Hosted validation proposal
 
 With separate deployment approval, create two disposable supervisors on an
@@ -203,6 +252,90 @@ $0.06, so the worst case is about $0.11.
 Disable storage, durable objects and persisted logs for the two lab scripts.
 End the experiment at 15 minutes or the first cap or unexpected response,
 then remove both scripts and their lab routing and verify teardown.
-No hosted validation was run.
 [Dynamic Workers pricing](https://developers.cloudflare.com/dynamic-workers/pricing/)
 [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/)
+
+## Hosted results
+
+On 2026-11-21 UTC, all **84 cold samples** passed across 12 interleaved
+rounds on Cloudflare Workers. Median first-workflow wall time fell from
+**3,618 ms to 2,034.5 ms (44%)**. The candidate was faster in all 12
+workflow pairs, with a median paired reduction of **1,278 ms**.
+
+Two disposable supervisors used the compiled artifacts above and the same
+compatibility date, `2026-10-30`. Each round ran one bare-Pyodide control
+and a baseline/candidate pair for each of the other three stages. The order
+within each pair alternated, and every sample used a fresh loader identity.
+The first-workflow probes checked the exact synthetic result, including
+`America/Chicago`, and confirmed that the child had served one request.
+The fixture gateway served hash-pinned source in process. No storage,
+Durable Objects, keep-warm traffic or persisted logs were used.
+Wall time starts at the caller's request and ends after receipt of the
+full response. Each populated cell below represents 12/12 successes.
+
+| Stage | Baseline median (min–max), ms | Candidate median (min–max), ms | Bare median (min–max), ms |
+| --- | ---: | ---: | ---: |
+| Bare Pyodide | — | — | 940.5 (545–2,903) |
+| Runtime module map | 2,632.5 (1,629–3,744) | 1,511.5 (737–2,890) | — |
+| Boot imports | 3,659 (2,559–5,480) | 2,547.5 (1,121–3,875) | — |
+| First synthetic workflow | 3,618 (2,369–5,457) | 2,034.5 (1,485–4,028) | — |
+
+Paired differences subtract wall times within the same round. Positive
+baseline minus candidate values favor the candidate.
+
+| Stage | Baseline minus candidate, ms | Candidate faster | Baseline minus bare, ms | Candidate minus bare, ms |
+| --- | ---: | ---: | ---: | ---: |
+| Runtime module map | 810.5 (212–2,434) | 12/12 | 1,508 (−502–3,113) | 742 (−1,312–1,334) |
+| Boot imports | 1,309 (−1,076–3,070) | 11/12 | 2,734.5 (673–4,367) | 1,089 (111–3,287) |
+| First synthetic workflow | 1,278 (443–3,603) | 12/12 | 2,660.5 (62–4,552) | 1,279 (−1,120–2,235) |
+
+The bare control ranged from 545 ms to 2,903 ms. Several paired samples
+with a runtime took less wall time than that round's bare control. Those
+differences include variation between separate cold starts.
+
+### Usage and cost
+
+| Meter | Observed usage | Limit |
+| --- | ---: | ---: |
+| External requests | 86 to active scripts + 2 teardown checks | 100 |
+| Billable invocations | At most 268 by request-path count | 300 |
+| CPU limit configured on supervisors and children | 7,500 ms | 10,000 ms per invocation |
+| Elapsed through verified teardown | 4 min 7 s | 15 min |
+
+The request-path count includes 84 supervisor requests, 84 child requests,
+two unauthenticated probes, up to 96 in-process fixture calls, and the two
+post-delete URL checks. The 7,500 ms setting leaves margin for provider
+termination delay. The cost model prices up to 10,000 CPU-ms per invocation.
+
+The account-wide Cloudflare GraphQL meter reported **84 distinct Dynamic
+Workers** in the measurement window, matching the 84 successful fresh loader
+identities. It also reported 89 requests and 4,171.248 CPU-ms across the
+account in that window. The script-filtered metrics query returned no
+supervisor rows after deletion. The account totals have no parent/child
+split or attributable startup CPU, so they cannot settle the lab's CPU
+usage or its exact billing request count. The 2 ms startup value reported
+at each upload measures the supervisor startup associated with deployment.
+
+Estimated incremental charge was **$0.00** based on the included usage
+visible at readback. The month-to-date creation count was 663 before the
+run and 691 after it in the date-filtered view, which lagged the
+measurement-window count. Even adding all 84 lab children to the latter
+total keeps the estimate below the 1,000 included creations. The same
+month-to-date view showed 18,625 requests and about 898,053 CPU-ms against
+included usage of 10 million requests and 30 million CPU-ms. Charging
+the modeled request and CPU ceilings at full overage rates, with creations
+covered by the allowance, would cost **$0.05368**. The estimate is below the
+$0.05 expected-spend cap and that compute-and-request ceiling is below the
+approximately $0.11 worst-case cap. The charge remains an estimate until
+billing settles.
+
+### Teardown
+
+Only the two temporary supervisors and their default Workers URLs were
+created. Both supervisors returned HTTP 403 to unauthenticated probes.
+Deletion succeeded for both scripts, and an independent account script-list
+read confirmed both were gone. Both former URLs returned HTTP 404. The
+temporary local lab secret file was removed.
+
+The [sanitized receipt](../../results/cloudflare-cold-start-hosted.json)
+records the source hashes, per-sample measurements and teardown checks.

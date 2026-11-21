@@ -12,7 +12,7 @@ import json
 import logging
 import time
 from contextlib import AbstractAsyncContextManager, nullcontext
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from re import fullmatch
 from typing import Any
@@ -115,6 +115,13 @@ ADMISSION_FRESHNESS_SECONDS = 3
 router = APIRouter()
 
 COMMAND_REPLY_SECONDS = 15
+CLOUDFLARE_PREPARE_SECONDS = 20
+CLOUDFLARE_PREPARE_IO_SECONDS = 1
+
+
+def _cloudflare_tenant_key(org_id: UUID | str | None) -> str:
+    tenant = "launcher:platform" if org_id is None else f"launcher:org:{org_id}"
+    return sha256(tenant.encode()).hexdigest()[:32]
 
 
 def _reply_timeout(action: str) -> float:
@@ -125,6 +132,8 @@ def _reply_timeout(action: str) -> float:
     if action in ("agent_run", "agent_summary"):
         # It may wait while the launcher replaces a dead agent template.
         return TEMPLATE_START_TIMEOUT_SECONDS + COMMAND_REPLY_SECONDS
+    if action == "prepare_workflow":
+        return CLOUDFLARE_PREPARE_SECONDS
     return COMMAND_REPLY_SECONDS
 
 
@@ -179,6 +188,7 @@ class Bridge:
         self.meter_exhausted = False
         self._reset_freshness()
         self.pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._preparations: dict[str, tuple[int, str]] = {}
         self.jobs: dict[str, RemoteProcess] = {}
         self.platform_routes: dict[tuple[str, str], str] = {}
         self.pool: Any = None
@@ -277,6 +287,72 @@ class Bridge:
             return -1, self.limit
         return self.current, self.limit
 
+    async def _reserve_cloudflare_usage(
+        self, route_id: str, tenant_id: str, deadline: datetime | None,
+        *, workflow_cpu_ms: int | None = None, subrequests: int | None = None,
+    ) -> None:
+        # Reserve under the current owner before emitting any frames. The
+        # caller also fences the socket generation before sending secrets.
+        lease = self.lease
+        with remote_owner_context(LeaseRef(lease)):
+            async with get_db_context() as db:
+                if not await fence_remote_owner(db):
+                    raise CredentialRouteChanged("Cloudflare ownership changed before dispatch")
+                if not await reserve_tenant_host_usage(
+                    db, lease.worker_id, deadline, workflow_cpu_ms=workflow_cpu_ms,
+                    subrequests=subrequests, tenant_id=tenant_id, route_id=route_id,
+                ):
+                    raise CloudflareRevisionRejected("Managed Cloudflare workflow usage could not be reserved")
+
+    def _check_preparation_session(self, generation: int) -> None:
+        if self.lease.session_generation != generation or not self.connected or not self.reconciliation_ready.is_set():
+            raise CredentialRouteChanged("Cloudflare preparation session is no longer reconciled")
+        if self.freshness_age() > ADMISSION_FRESHNESS_SECONDS or self.meter_exhausted:
+            raise CredentialRouteChanged("Cloudflare preparation admission is no longer open")
+
+    async def _send_preparation(
+        self, request_id: str, payload: dict[str, Any], expected_generation: int | None,
+    ) -> bool:
+        if not self.managed_cloudflare or self.lock.locked():
+            return False
+        generation = self.lease.session_generation if expected_generation is None else expected_generation
+        socket = self.socket
+        self._check_preparation_session(generation)
+        tenant = _cloudflare_tenant_key(payload["org_id"])
+        try:
+            async with asyncio.timeout(CLOUDFLARE_PREPARE_IO_SECONDS):
+                await self._reserve_cloudflare_usage(
+                    payload["route_id"], tenant, datetime.now(UTC) + timedelta(seconds=CLOUDFLARE_PREPARE_SECONDS),
+                )
+            if self.lock.locked():
+                return False
+            async with contextlib.AsyncExitStack() as send_scope:
+                # A released lock can still have a waiter entitled to acquire it first.
+                async with asyncio.timeout(CLOUDFLARE_PREPARE_IO_SECONDS):
+                    await send_scope.enter_async_context(self.lock)
+                self._check_preparation_session(generation)
+                if self.socket is not socket:
+                    return False
+                message = ControlEnvelope(
+                    session_generation=generation, sequence=self._sequence + 1, kind="command",
+                    payload={"id": request_id, "action": "prepare_workflow", "payload": payload},
+                )
+                frames = list(fragment(message))
+                if len(frames) != 1 or frames[0].kind != "command":
+                    raise ProtocolError("Cloudflare preparation must fit one frame")
+                self._preparations[payload["route_id"]] = (generation, tenant)
+                # A lost single-frame send can leave a sequence gap without
+                # leaving a partial fragment. Normal control traffic owns disconnects.
+                self._sequence = message.sequence
+                try:
+                    async with asyncio.timeout(CLOUDFLARE_PREPARE_IO_SECONDS):
+                        await socket.send_text(frames[0].to_json())
+                except (WebSocketDisconnect, OSError, RuntimeError):
+                    return False
+        except TimeoutError:
+            return False
+        return True
+
     async def request(
         self, action: str, payload: dict[str, Any], *, expected_generation: int | None = None,
         authorization: AbstractAsyncContextManager[None] | None = None,
@@ -298,8 +374,14 @@ class Bridge:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
         self.pending[request_id] = future
+        preparation = action == "prepare_workflow"
         socket = None
         try:
+            if preparation:
+                if not await self._send_preparation(request_id, payload, expected_generation):
+                    return {}
+                async with asyncio.timeout(_reply_timeout(action)):
+                    return await asyncio.shield(future)
             try:
                 async with self.lock:
                     if expected_generation is not None and self.lease.session_generation != expected_generation:
@@ -339,25 +421,11 @@ class Bridge:
                         if action == "workflow" and self.managed_cloudflare:
                             deadline = payload.get("workflow_deadline")
                             workspace = payload["context"]["cloudflare_workspace"]
-                            org_id = payload["active_execution"].get("org_id")
-                            tenant = "launcher:platform" if org_id is None else f"launcher:org:{org_id}"
-                            tenant_id = sha256(tenant.encode()).hexdigest()[:32]
-                            # Commit the reservation before sending any frame. A
-                            # failed socket send can leave a conservative charge.
-                            with remote_owner_context(LeaseRef(self.lease)):
-                                async with get_db_context() as db:
-                                    if not await fence_remote_owner(db):
-                                        raise CredentialRouteChanged("Cloudflare ownership changed before dispatch")
-                                    if not await reserve_tenant_host_usage(
-                                        db, self.lease.worker_id, datetime.fromisoformat(deadline) if deadline else None,
-                                        workflow_cpu_ms=workspace["cpu_budget_ms"],
-                                        subrequests=workspace["subrequest_allowance"],
-                                        tenant_id=tenant_id,
-                                        route_id=payload["route_id"],
-                                    ):
-                                        raise CloudflareRevisionRejected(
-                                            "Managed Cloudflare workflow usage could not be reserved"
-                                        )
+                            await self._reserve_cloudflare_usage(
+                                payload["route_id"], _cloudflare_tenant_key(payload["active_execution"].get("org_id")),
+                                datetime.fromisoformat(deadline) if deadline else None,
+                                workflow_cpu_ms=workspace["cpu_budget_ms"], subrequests=workspace["subrequest_allowance"],
+                            )
                         sent = 0
                         send_deadline = loop.time() + _reply_timeout(action)
                         for frame in fragment(message):
@@ -396,6 +464,8 @@ class Bridge:
                 return await asyncio.shield(future)
         finally:
             self.pending.pop(request_id, None)
+            if preparation:
+                self._preparations.pop(payload["route_id"], None)
             if future.done() and not future.cancelled():
                 future.exception()  # A transport failure may precede awaiting the reply.
             elif not future.done():
@@ -622,14 +692,23 @@ class Bridge:
 
     async def _reserve_generation(self, event: dict[str, Any]) -> None:
         route_id, identity, request_id = (event.get(key) for key in ("route_id", "identity", "request_id"))
+        preparation = self._preparations.get(route_id) if isinstance(route_id, str) else None
+        if isinstance(route_id, str) and route_id.startswith("prepare:") and (
+            preparation is None or preparation[0] != self.lease.session_generation
+        ):
+            # The hint timed out or belonged to a replaced control session.
+            # Never authorize a late Loader lookup or disconnect the workflow.
+            return
         if (
-            not isinstance(route_id, str) or route_id not in self._opaque_routes
+            not isinstance(route_id, str) or (route_id not in self._opaque_routes and preparation is None)
             or not isinstance(identity, str)
             or len(identity) > 128
             or not fullmatch(r"tenant-eng-tenant-py-[a-f0-9]{32}-[a-f0-9]{16}-cpu(?:default|\d+)-sr(?:default|\d+)-g\d+", identity)
             or not isinstance(request_id, str) or not fullmatch(r"[A-Za-z0-9_-]{43}", request_id)
         ):
             raise ProtocolError("Invalid Cloudflare generation reservation")
+        if preparation is not None and not identity.startswith(f"tenant-eng-tenant-py-{preparation[1]}-"):
+            raise ProtocolError("Cloudflare preparation generation does not match the claim tenant")
         lease = self.lease
 
         async def reserve() -> None:
@@ -965,6 +1044,33 @@ class ApiExecutor(PoolWorker):
     async def _start_background_control(self) -> list[asyncio.Task[Any]]:
         # src.main already starts this API replica's canonical controllers.
         return []
+
+    def _start(self, claim: PoolClaim) -> None:
+        bridge = self.bridge
+        if (
+            bridge.managed_cloudflare and claim.handler == "workflow.execute"
+            and claim.claimed is not None and claim.cloudflare_revision is not None
+            and (bridge.inventory or {}).get("admission_prepare") is True
+        ):
+            generation = bridge.lease.session_generation
+            payload = {
+                "route_id": f"prepare:{uuid4()}", "execution_id": str(claim.subject_id),
+                "org_id": str(claim.tenant_id) if claim.tenant_id is not None else None,
+            }
+
+            async def prepare() -> None:
+                try:
+                    await bridge.request("prepare_workflow", payload, expected_generation=generation)
+                except (CredentialRouteChanged, ConnectionError, TimeoutError, RuntimeError):
+                    # Preparation has no authority to run the workflow. The
+                    # canonical dispatch owns normal entry and failure handling.
+                    logging.getLogger(__name__).debug("Cloudflare admission preparation did not complete", exc_info=True)
+
+            task = asyncio.create_task(prepare(), name=f"cloudflare-prepare-{claim.dispatch_id}")
+            bridge.results.add(task)
+            task.add_done_callback(bridge.results.discard)
+            task.add_done_callback(_observe_task)
+        super()._start(claim)
 
     def _make_workflow_consumer(self) -> Any:
         from src.jobs.consumers.workflow_execution import WorkflowExecutionConsumer

@@ -1739,6 +1739,50 @@ async def test_foreground_pricing_keeps_reserves_until_a_confirmed_seal(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("booted", [True, False])
+async def test_abandoned_prepare_settles_observed_load_without_idle_pings(
+    db_session: AsyncSession, installation: CloudflareInstallation, booted: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 11, 15, 12, tzinfo=UTC)
+    monkeypatch.setattr(cloudflare_spend, "_ledger_now", AsyncMock(return_value=now))
+    period, _ = usage_period(now)
+    worker_id, tenant_id, route_id = uuid4(), "e" * 32, f"prepare:{uuid4()}"
+    row = CloudflareUsageIncarnation(
+        worker_id=worker_id, installation_id=installation.id, started_at=now, slots=1,
+        meter_rate_version=WORKERS_RATE_TABLE_VERSION, meter_release_digest="f" * 64,
+        meter_bounds={**installation.policy["meter_launcher"], "linger_seconds": 90,
+                      "cpu_expected_ms": {**TEST_CPU_LIMITS, "boot": 10, "warm": 5}},
+    )
+    db_session.add(row)
+    await db_session.flush()
+    for _ in range(2):  # A repeated reservation never charges a second boot.
+        assert await reserve_tenant_host_usage(
+            db_session, worker_id, now + timedelta(seconds=20), tenant_id=tenant_id, route_id=route_id,
+        )
+    activity = await db_session.get(CloudflareUsageActivity, (installation.id, period))
+    assert activity is not None
+    assert activity.qualified_dispatches == 0
+    assert activity.qualified_preparations == 1
+    assert activity.qualified_warm_pings == 0
+    assert activity.inventory_tenant_seconds == 20
+    assert activity.qualified_cpu_ms == TEST_CPU_LIMITS["startup"] + 10
+    assert activity.released_engine_requests == 0
+    identity = f"tenant-eng-tenant-py-{tenant_id}-fixture"
+    if booted:
+        assert await cloudflare_spend.reserve_engine_generation(db_session, worker_id, identity)
+    row.deleted_at = now + timedelta(seconds=20)
+    await db_session.flush()
+    await cloudflare_spend.seal_launcher_meter(db_session, worker_id, CloudflareLauncherUsage.model_validate({
+        "sqlite_rows_written": 12, "do_requests": 3, "log_events": 0,
+        "routes": {route_id: [{"identity": identity, "kind": "boot", "cold": True, "started_at": now}] if booted else []},
+    }))
+    await db_session.refresh(activity)
+    assert activity.released_cpu_us == (TEST_CPU_LIMITS["startup"] + 10) * 1000 - (510_000 if booted else 0)
+    assert activity.released_engine_requests == int(not booted)
+    assert activity.qualified_creations == int(booted)
+
+
+@pytest.mark.asyncio
 async def test_foreground_receipt_settles_engine_identity_across_utc_midnight(
     db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1752,7 +1796,7 @@ async def test_foreground_receipt_settles_engine_identity_across_utc_midnight(
     row = CloudflareUsageIncarnation(
         worker_id=worker_id, installation_id=installation.id, slots=1, started_at=reserved_at,
         meter_rate_version=WORKERS_RATE_TABLE_VERSION, meter_release_digest="f" * 64,
-        meter_bounds=installation.policy["meter_launcher"],
+        meter_bounds={**installation.policy["meter_launcher"], "linger_seconds": 90},
     )
     db_session.add(row)
     await db_session.flush()
@@ -1791,13 +1835,16 @@ async def test_full_route_receipt_does_not_flag_busy_launcher(
     await db_session.flush()
     meter = cloudflare_spend.CloudflareDispatchMeter
     await db_session.execute(insert(meter), [
-        {"worker_id": worker_id, "route_id": f"route-{i}", "period_start": usage_period(now)[0], "tenant_id": "fixture"}
-        for i in range(513)
+        {"worker_id": worker_id, "route_id": f"{prefix}{i}", "period_start": usage_period(now)[0], "tenant_id": "fixture"}
+        for prefix in ("route-", "prepare:") for i in range(513)
     ])
     receipt = CloudflareLauncherUsage.model_validate({
         "sqlite_rows_written": 128, "do_requests": 128, "log_events": 0,
-        "routes": {f"route-{i}": [{"identity": "fixture", "kind": "boot", "cold": True, "started_at": now}]
-                   for i in range(128)},
+        "routes": {
+            **{f"route-{i}": [{"identity": "fixture", "kind": "boot", "cold": True, "started_at": now}]
+               for i in range(128)},
+            **{f"prepare:{i}": [] for i in range(128)},
+        },
     })
     await cloudflare_spend.seal_launcher_meter(db_session, worker_id, receipt)
     row = await db_session.get(CloudflareUsageIncarnation, worker_id)
