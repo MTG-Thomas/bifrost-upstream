@@ -64,15 +64,19 @@ Keep the scope closed if the supported API, bindings or permissions fail.
 
 Extend the existing installation policy and revision inventory, with
 Containers disabled for existing installations until explicit enablement.
-Persist desired scope enablement, instance cap, one workflow slot per
-instance, size from the release-qualified named types, idle and absolute
-lifetime bounds, queue wait/depth and cooldown, and egress limits. Reuse the
+Persist desired scope enablement, installation and tenant instance caps,
+workflow slots per instance, a release-qualified size, idle and absolute
+lifetime bounds, queue wait/depth and cooldown, and egress limits. Ship
+`standard-1` (0.5 vCPU, 4 GiB, 8 GB), two live instances installation-wide,
+one workflow per instance, one instance per tenant, and a two-minute idle
+stop as the pilot policy defaults. Provider and Global can each hold one
+instance, subject to the shared admission and spend gates. Reuse the
 existing primary, aggregate worker cap, shared cloud slot caps, reachability
 choice and monthly target. Size and digest are pinned by the admitted
 release and policy revision. Check image plus scratch and package footprint,
 memory headroom for supervisor/template/child, and account entitlement and
-resource limits. For qualification, use one live Container and propose
-`standard-1` (0.5 vCPU, 4 GiB, 8 GB) subject to local fit measurements.
+resource limits. Verify image and runtime fit on `standard-1` before hosted
+qualification.
 Current published account defaults include 60 TiB concurrent memory,
 15,000 concurrent vCPU, 300 TB concurrent disk and 50 GB of image storage.
 These are ceilings shared with other workloads. They provide no allocation
@@ -129,12 +133,15 @@ inventory installation-local and outside portable manifests.
    `CF_SUBREQUESTS` grants no Linux approval. `CF_NATIVE` and
    `CF_PROCESS` identify Linux candidates. `CF_PACKAGE` qualifies as a
    Linux reason only after exact approved Linux/amd64 package and dependency
-   pins resolve inside the image and size envelope. Other incompatible or
-   unresolved findings, including `CF_URL_REVIEW`, go to the primary.
+   pins resolve to wheels baked into the signed release image. Approved
+   loose and Solution-installed Normal workflows can use this lane.
+   Other incompatible or unresolved findings, including `CF_URL_REVIEW`,
+   go to the primary.
    Require a current Linux-specific reviewed digest binding source, import
-   and package closure, organization, install generation, allowed hosts or
-   outbound-disabled policy, and resource/deadline limits. Reuse the existing
-   approval/reapproval workflow and recheck the digest and consent at send.
+   and package closure, organization, install generation, the exact
+   worker-ingress-only egress envelope, and resource/deadline limits.
+   Reuse the existing approval/reapproval workflow and recheck the digest
+   and consent at send.
 3. Plan Containers from eligible backlog still uncovered by the primary.
    Bind demand to the selected incarnation for a bounded placement window
    using the existing queue/claim fences. Start with unassigned queued work.
@@ -164,9 +171,10 @@ inventory installation-local and outside portable manifests.
 5. Before network effects, serialize **reserve** under the existing pool and
    installation fences using the established lock order. In the transaction
    allocate unique worker and resource UID, pin tenant/scope/revision,
-   reserve spend and enforce shared worker, Container instance and tenant
-   limits. On Cloudflare, one persistent SQLite ScopeRegistry per scope
-   atomically reserves against its immutable physical cap. Its transaction
+   reserve spend and enforce shared worker, installation-wide Container
+   instance and per-tenant instance limits. On Cloudflare, one persistent
+   SQLite ScopeRegistry per scope atomically reserves against its pinned
+   installation and tenant physical caps. Its transaction
    counts prepared, starting, running, stopping and unconfirmed rows.
    The owning instance DO records one start intent for that UID before the
    start effect. Identical replay observes the same reservation, while a
@@ -217,18 +225,18 @@ inventory installation-local and outside portable manifests.
    scoped SDK canary before opening the scope. Reuse the Linux explicit
    configure/bootstrap content, fragmenting control frames as needed.
    Scope module resolution and source bytes to the live run, caller and
-   approved digest. Serve approved pinned wheels through a bounded
-   worker-ingress package read if needed, or include them in the signed
-   image. Qualify whichever paths ship. No platform package administration
-   routes. Children receive only their scoped run capability and pinned
+   approved digest. Resolve approved packages from pinned Linux wheels
+   baked into the signed image. Disable runtime package downloads and
+   refuse readiness if required wheels are missing or mismatched.
+   Children receive only their scoped run capability and pinned
    inputs. Strip inherited secrets and supervisor authority, run non-root,
    verify dump protection and absence of ptrace capability, and require
    a kernel boundary that blocks guest access to the supervisor and its
    signals, such as separate unprivileged identities set by the trusted
    image init before privilege drop. Qualify that boundary and cross-attempt
    scratch isolation as part of the release image. A child may use only
-   the qualified SDK/egress contract. Initial qualification uses synthetic
-   fixtures without public package fetching or third-party effects.
+   the qualified SDK contract through the exact worker ingress. Initial
+   qualification uses synthetic fixtures with baked wheels.
 4. `start()` returning proves acceptance of options. Use bounded monitor
    and exact management instance observation to distinguish pending,
    refused and allocated. Publish ready only on signed application
@@ -249,8 +257,9 @@ inventory installation-local and outside portable manifests.
    descendants exited, drain and stop the whole one-seat Container. Stop
    failure keeps the seat charged and occupied. ACK replay and liveness
    use the original identity, including during connector or API interruption.
-6. On idle, stop new claims, seal terminal and usage evidence, then request
-   graceful shutdown and use bounded signal/destroy when needed. Bifrost
+6. After two minutes idle by default, stop new claims, seal terminal and
+   usage evidence, then request graceful shutdown. Use bounded
+   signal/destroy when needed. Bifrost
    provides a renewable runtime lease and an absolute deadline. The
    supervisor exits when authority expires, and the provider enforces a
    one-shot hard-stop deadline. Arm provider inactivity timeout after
@@ -289,7 +298,7 @@ Charge elapsed live time at provisioned memory and disk and conservatively
 at provisioned vCPU until calibrated active CPU evidence is trustworthy.
 Settlement uses independently witnessed time bounds and measured egress
 where complete. Otherwise keep the relevant reserve and accrue unconfirmed
-exposure beyond its original horizon. Track source/package downloads and
+exposure beyond its original horizon. Track scoped source reads and
 outbound ACK, heartbeat, log, SDK and response bytes separately. Bound both
 directions through the relay and reserve for overhead and failed or retried
 transfers. Price egress at the maximum published regional rate until a
@@ -304,10 +313,17 @@ billing, shared account traffic and delayed cleanup can raise actual cost.
 
 At published gross rates, `standard-1` costs approximately
 `4 × $0.0000025 + 0.5 × $0.000020 + 8 × $0.00000007 = $0.00002056`
-per second at full CPU. That is about $0.074 per instance-hour before
-egress and control. For context, a 30-day always-live envelope is about
-$53 per instance at these rates. Use duty cycle and bounded bytes to
-forecast expected usage, and enforce the reserved ceiling on each start.
+per second at full CPU. That is about $0.074 per instance-hour and $0.0025
+per instance for a full two-minute idle window, before egress and control.
+The two-instance pilot has a 30-day always-live compute envelope of
+**$106.58** (5,184,000 instance-seconds). Forecast gross monthly usage as
+`$106.58 × average billable duty cycle + $0.05 × outbound GB + control costs`.
+Billable duty cycle includes boot, execution, idle and stop time relative
+to both instances running continuously. For illustration, 10% yields
+$10.66 of compute and 25% yields $26.65. Add the measured control budget and
+bounded ingress-route egress, and show the $5 Workers Paid fee separately.
+The monthly target and default forecast duty cycle remain open. Enforce
+the reserved ceiling on each start.
 
 ## Joint drain, replacement and teardown
 
@@ -343,10 +359,10 @@ tags. Complete the common retirement checkpoint **before staging either
 replacement**. Stage both scopes on the pinned revision, recompute the
 combined spend envelope, and verify each enabled scope's exact resources
 and signed no-effect canary through the retained ingress. Commit one admitted
-revision only when all selected scopes pass. Failed readiness leaves the
-new revision paused and repair resumes that revision. Independent scope
-status applies in steady state. A good peer canary cannot bypass the joint
-upgrade barrier.
+revision only when all selected scopes pass. Failed readiness keeps both
+lanes closed, with compatible work served by the primary. Repair resumes
+the same pinned joint revision. Scope-local status remains visible in
+steady state. The first release has no independent per-lane repair.
 
 Scale In drains both lanes to zero compute and retains provisioned resources,
 meter history and ingress. Require verified stop before reporting completion.
@@ -368,17 +384,18 @@ closed effects complete teardown.
 
 | Layer | Acceptance |
 | --- | --- |
-| Unit | Exercise artifact signature/digest/platform mismatch, named prepared image and app ownership, exact opaque IDs, provider/token/revision fences, ambiguous copy/create and digest collision, stale policy/approval and permission checks, all primary saturation predicates, combined slot and spend math, UTC rollover, unconfirmed charges, cooldown and exact absence. Race independent API claimers for the last instance/tenant seat and verify Workers pre-warms participate. |
-| Miniflare with Docker | Use the pinned Worker toolchain, real Linux release recipe and conformance harness. Prove protocol-2 prepare, same-UID duplicates and cap under concurrent distinct creates, reset during a pending start, signed bootstrap/refresh, correct bytes/fragmentation, scoped source and package paths, successful native import and subprocess, denial of supervisor and prohibited network access, cancel with descendants, ACK replay, clean idle exit and stop timeout. Inject scheduler and inactivity transitions at the provider boundary for deterministic coverage. Local Docker lifecycle does not establish hosted scheduling, network or provider expiry behavior. [Cloudflare local development](https://developers.cloudflare.com/containers/guides/local-dev/) |
-| API e2e with stubs | Use isolated repository Docker tests and the real PostgreSQL installation/effect, queue, approval and meter paths. Hold a healthy primary and overlap supported Workers and Linux jobs through scoped fixtures. Check eligible and excluded findings, parallel claims/preparations, exhausted shared budget, injected allocation refusal and uncertain send, runner loss, both ingress modes, joint drain and failed canary. Prove that neither upload happens while either lane lacks retirement witnesses. Exercise credential denial/replacement, late effects and disconnect absence. Verify UI shared job notifications and regenerated REST/CLI/MCP parity, OpenAPI, DTO flags, CLI contract and operation catalog. |
+| Unit | Exercise artifact signature/digest/platform mismatch, named prepared image and app ownership, exact opaque IDs, provider/token/revision fences, ambiguous copy/create and digest collision, stale policy/approval and permission checks, all primary saturation predicates, combined slot and spend math, UTC rollover, unconfirmed charges, cooldown and exact absence. Race independent API claimers for the last installation instance and for the sole tenant instance and verify Workers pre-warms participate. |
+| Miniflare with Docker | Use the pinned Worker toolchain, real Linux release recipe and conformance harness. Prove protocol-2 prepare, same-UID duplicates and cap under concurrent distinct creates, reset during a pending start, signed bootstrap/refresh, correct bytes/fragmentation, scoped source, baked-wheel resolution and blocked package downloads, successful native import and subprocess, denial of supervisor and prohibited network access, cancel with descendants, ACK replay, clean idle exit and stop timeout. Inject scheduler and inactivity transitions at the provider boundary for deterministic coverage. Local Docker lifecycle does not establish hosted scheduling, network or provider expiry behavior. [Cloudflare local development](https://developers.cloudflare.com/containers/guides/local-dev/) |
+| API e2e with stubs | Use isolated repository Docker tests and the real PostgreSQL installation/effect, queue, approval and meter paths. Hold a healthy primary and overlap supported Workers and Linux jobs through scoped fixtures. Check eligible and excluded findings, parallel claims/preparations, one Container per tenant and two per installation, exhausted shared budget, injected allocation refusal and uncertain send, runner loss, both ingress modes, joint drain and failed canary. Prove that neither upload happens while either lane lacks retirement witnesses. Exercise credential denial/replacement, late effects and disconnect absence. Verify UI shared job notifications and regenerated REST/CLI/MCP parity, OpenAPI, DTO flags, CLI contract and operation catalog. |
 
 Hosted qualification needs explicit approval of the disposable account lane,
 installation, grants, time window and spend bounds, with an independent
 readback operator. Use the exact signed release, a held primary, synthetic
 no-effect workflows and no live model or production credentials. Run
 preflight for entitlement, registry room, scoped grants, supported scheduling,
-ingress TLS, package/source path and available cleanup authority. Stop on
-unexpected ownership, cap, identity, ingress or teardown evidence. Do not
+ingress TLS, baked-wheel inventory, scoped source access and cleanup
+authority. Stop on unexpected ownership, cap, identity, ingress or
+teardown evidence. Do not
 blindly retry allocation. Reserve cleanup time before starting an instance.
 
 1. Prove release OCI copy/preparation, namespace/app join, successful
@@ -389,11 +406,14 @@ blindly retry allocation. Reserve cleanup time before starting an instance.
 2. With the primary held, overlap successful Workers and Linux execution.
    Hold each fixture at a deterministic barrier so all three active
    claims overlap. Verify only accepted Linux findings enter Containers,
-   exercise approved native import/subprocess and source/package access,
-   then correlate canonical results, attempt IDs and terminal ACKs.
-3. Race distinct creates against the same cap through parallel controllers,
-   including same-UID replay and a lost reply. Require one winning start
-   at cap one and independent application-wide instance readback.
+   exercise scoped source and baked native wheels for approved loose and
+   Solution-installed workflows, then correlate results and terminal ACKs.
+   Verify package downloads and egress outside the exact ingress fail.
+3. Race distinct creates through parallel controllers, including same-UID
+   replay and a lost reply. With eligible Provider and Global work, require
+   one instance each, refusal of another instance for either tenant, and
+   refusal of a third concurrent instance installation-wide. Verify
+   independently through application-wide instance readback.
    Exercise post-send cancellation and exact process retirement.
 4. Prove explicit idle stop and natural expiry on separate fresh
    incarnations. For expiry require prior running and signed ready,
@@ -403,12 +423,11 @@ blindly retry allocation. Reserve cleanup time before starting an instance.
 5. Prove allocation-refusal handback on the hosted product path. Use a
    deterministic, disposable-only refusal injection at the scheduling
    adapter to prove cooldown, primary claim and exactly one execution.
-   Separately seek and retain a genuine Cloudflare allocation refusal
-   with healthy application, exact-identity confirmation of no pending or
-   live instance and the same handback evidence. Avoid stressing the
-   shared account to force scarcity. Report the provider-refusal portion
-   as unverified if no genuine refusal is observed or provider-supported
-   injection is available only for local tests.
+   A passing hosted injection satisfies the refusal gate for admission.
+   Record genuine provider refusal as pending until observed in a later
+   approved run. Watch for a healthy application with a genuine refusal,
+   exact-identity confirmation of no pending or live instance and the
+   same handback evidence. Avoid stressing the account to force scarcity.
 6. With active work in both cloud lanes, interrupt control during upgrade
    and prove original terminal replay and both physical retirements before
    either replacement is staged. Check failed readiness leaves both
@@ -422,12 +441,14 @@ blindly retry allocation. Reserve cleanup time before starting an instance.
    evidence. No hosted criterion is satisfied by an emulator or stub.
 
 Proposed approval envelope for the combined trial is 60 minutes, including
-at least 20 minutes reserved for cleanup, one live `standard-1` Container,
-at most 3,600 aggregate instance-seconds and 0.5 GB egress. Allow roughly
-$0.15 for Workers, DO, logs and residue based on the small Phase 1 trial
-and bounded invocation counts, then verify the packaged rates and bounds
-before approval. Expected gross incremental usage is about **$0.25**
-at the full trial envelope ($0.074 compute + $0.025 egress + $0.15 control).
+at least 20 minutes reserved for cleanup, with up to two live
+`standard-1` Containers, 7,200 aggregate instance-seconds including
+cleanup exposure, and 1 GB outbound through the dedicated worker ingress.
+Budget roughly $0.30 for Workers, DO, logs and residue by doubling the
+one-instance allowance based on the small Phase 1 trial. Verify packaged
+rates and invocation bounds before approval. Estimated gross incremental
+usage at that envelope is about **$0.50**, including $0.148 compute,
+$0.05 egress and $0.30 control.
 Propose a **$1 incremental abort threshold**, separate from the $5 monthly
 base. Preflight the existing monthly policy validator and combined minimum
 fleet envelope independently from the run abort threshold. If the package
@@ -455,19 +476,24 @@ carry their focused tests and keep Containers gated until release qualification.
 
 ## Owner decisions
 
-- Which named size, instance and shared slot caps, idle window, queue
-  thresholds and tenant fairness limits should ship for the first pilot?
-- Which Linux package and workflow classes should be reviewable at launch?
-  Should the first eligible set include Solution-installed workflows and
-  approved dynamic package retrieval, or require wheels in the release image?
-- Which consent wording and workflow review fields authorize Linux execution
-  and any third-party egress? Is exact worker ingress plus a fixed package
-  path sufficient for the initial product envelope?
-- What monthly target and forecast duty cycle should the policy UI propose,
-  and what approved hosted spend, account lane and window should be used?
-- If Cloudflare provides no supported genuine-refusal injection and the trial
-  sees no shortage, who owns obtaining the remaining provider evidence
-  before opening the scope?
-- Should Operators be able to repair or disable one lane independently after
-  a jointly staged release fails readiness? The proposed first release has
-  one admitted revision and holds that revision closed during repair.
+Decided on 2026-11-21
+
+- Ship `standard-1`, two live instances per installation, one workflow
+  per instance, one instance per tenant and two-minute idle stop as
+  pilot policy defaults.
+- Admit approved loose and Solution-installed workflows with wheels baked
+  into the signed image. Runtime package downloads are disabled and the
+  exact worker ingress is the only egress destination.
+- Use one admitted revision across both lanes. Failed joint readiness
+  closes both lanes, returns compatible work to the primary and requires
+  joint repair.
+- Use hosted injected-refusal handback as the refusal admission gate.
+  Genuine provider-refusal evidence remains pending and subsequent runs
+  continue watching for it.
+
+Still open
+
+- Consent wording and Linux workflow review fields.
+- Monthly target and forecast duty-cycle defaults.
+- Hosted trial spend, account lane and window. A hosted run requires
+  separate explicit approval.
