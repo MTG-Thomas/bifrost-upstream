@@ -343,6 +343,7 @@ async def test_deadline_chooses_least_advanced_inflight_route(tls_contexts, monk
     expire_deadline = controlled_deadline()
     hello_seen = asyncio.Event()
     headers_seen = asyncio.Event()
+    release_peers = asyncio.Event()
 
     async def hold(reader, writer, *, tls):
         try:
@@ -352,9 +353,9 @@ async def test_deadline_chooses_least_advanced_inflight_route(tls_contexts, monk
             else:
                 await reader.readexactly(1)
                 hello_seen.set()
-            await reader.read()
+            await release_peers.wait()
         finally:
-            writer.close()
+            writer.transport.abort()
             await writer.wait_closed()
 
     async def hold_handshake(reader, writer):
@@ -386,9 +387,14 @@ async def test_deadline_chooses_least_advanced_inflight_route(tls_contexts, monk
 
         monkeypatch.setattr(probes, "_probe_address", loopback)
         monkeypatch.setattr(probes, "_public_addresses", AsyncMock(return_value=("127.0.0.1",)))
-        async with asyncio.TaskGroup() as tasks:
-            tasks.create_task(expire())
-            result = await probes.probe_public_worker_ingress(ORIGIN)
+        try:
+            async with asyncio.TaskGroup() as tasks:
+                tasks.create_task(expire())
+                result = await probes.probe_public_worker_ingress(ORIGIN)
+        finally:
+            # Cancellation during start_tls can leave the client TCP stream
+            # open. Release both accepted peers before the listeners exit.
+            release_peers.set()
 
     assert result.failure.error_class == "probe_deadline"
     assert result.failure.route_template == "/api/forms"
