@@ -192,6 +192,7 @@ class WorkersManifest(BaseModel):
 
     manifest_version: Literal[1]
     source_revision: str = Field(pattern=r"^[a-f0-9]{40}$")
+    release_sequence: int = Field(default=0, strict=True, ge=0, le=2**53 - 1)
     runtime_sha256: Digest
     pyodide_version: Literal["314.0.6"]
     compatibility_date: date
@@ -213,12 +214,24 @@ class WorkersRelease:
 
 
 @cache
+def _installed_workers_identity() -> tuple[str, int]:
+    raw = (WORKERS_RELEASE_PATH / "manifest.json").read_bytes()
+    return sha256(raw).hexdigest(), WorkersManifest.model_validate_json(raw).release_sequence
+
+
 def installed_workers_release_digest() -> str | None:
     """Identify the immutable package without reading every module on the claim path."""
     try:
-        return sha256((WORKERS_RELEASE_PATH / "manifest.json").read_bytes()).hexdigest()
-    except OSError:
+        return _installed_workers_identity()[0]
+    except (OSError, ValidationError):
         return None
+
+
+def installed_workers_release_sequence() -> int:
+    try:
+        return _installed_workers_identity()[1]
+    except (OSError, ValidationError):
+        return 0
 
 
 def load_workers_release(path: Path = WORKERS_RELEASE_PATH) -> WorkersRelease:

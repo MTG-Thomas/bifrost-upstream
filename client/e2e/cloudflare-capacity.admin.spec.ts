@@ -38,9 +38,10 @@ test("a platform operator enables and reconciles Cloudflare capacity", async ({ 
 	await expect(page.getByText("Enabled", { exact: true })).toBeVisible();
 	await expect(page.getByText("Deployed Revision", { exact: true })).toBeVisible();
 
-	const upgrade = page.waitForResponse((response) => response.url().endsWith("/api/capacity/cloudflare/upgrade"));
-	await page.getByRole("button", { name: "Upgrade Cloudflare" }).click();
-	const accepted = await upgrade;
+	await expect(page.getByRole("button", { name: "Upgrade Cloudflare" })).toBeDisabled();
+	const reconcile = page.waitForResponse((response) => response.url().endsWith("/api/capacity/cloudflare/reconcile"));
+	await page.getByRole("button", { name: "Reconcile Cloudflare" }).click();
+	const accepted = await reconcile;
 	expect(accepted.status()).toBe(202);
 	expect(accepted.headers().location).toBe(`/api/platform-jobs/${(await accepted.json()).job_id}`);
 

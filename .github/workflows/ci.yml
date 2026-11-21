@@ -911,8 +911,8 @@ jobs:
           npm ci --prefix api/src/services/app_bundler --omit=dev
           node --test deploy/capacity/cloudflare/build-workers.test.mjs
           node deploy/capacity/cloudflare/build-workers.mjs "$runtime" \
-            deploy/capacity/cloudflare/image-artifacts/workers "$GITHUB_SHA"
-          node deploy/capacity/cloudflare/build-workers.mjs "$runtime" "$staging/rebuilt" "$GITHUB_SHA"
+            deploy/capacity/cloudflare/image-artifacts/workers "$GITHUB_SHA" "$GITHUB_RUN_NUMBER"
+          node deploy/capacity/cloudflare/build-workers.mjs "$runtime" "$staging/rebuilt" "$GITHUB_SHA" "$GITHUB_RUN_NUMBER"
           diff -qr deploy/capacity/cloudflare/image-artifacts/workers "$staging/rebuilt"
           echo "required=1" >> "$GITHUB_OUTPUT"
 

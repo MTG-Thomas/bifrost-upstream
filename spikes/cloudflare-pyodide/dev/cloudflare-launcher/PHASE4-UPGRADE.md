@@ -21,12 +21,18 @@ Keep the previous worker-control, ingress, and credential protocols available
 through retirement. If a release cannot serve the previous wire contract,
 verify Scale In on the previous version before rolling the API. Run the
 capacity scheduler and job runners from the same target Bifrost release.
-Complete a pending replacement before moving the scheduler to another build.
+The image build workflow records its run number as the Workers release
+sequence. Legacy packages have sequence zero. A higher sequence can take
+over a pending replacement and must verify retirement of any partial
+deployment. Older sequences cannot select a target after a newer one is pinned.
 Existing saved limits and consent apply to the replacement. If the new
 release's measured envelope exceeds the saved budget, review the policy and
 then reconcile. If Cloudflare rejects the management credential, replace it
 for the same account and reconcile the pinned revision. Independent scope
 credentials continue to serve bounded retirement while available.
+The scheduler backs off from five minutes to one hour for drain timeouts,
+pending cleanup and release mismatches. Other failures wait for an operator
+action or a new desired revision.
 
 ## Pending Hosted Qualification
 

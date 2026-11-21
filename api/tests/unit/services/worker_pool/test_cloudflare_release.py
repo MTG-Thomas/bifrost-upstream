@@ -95,6 +95,20 @@ def test_release_loads_the_verified_bytes(release: Path) -> None:
     assert loaded.modules["capacity"]["capacity.mjs"] == (release / "capacity.mjs").read_bytes()
 
 
+def test_missing_manifest_read_is_not_cached(release: Path, monkeypatch) -> None:
+    missing = release / "missing"
+    monkeypatch.setattr(cloudflare_release, "WORKERS_RELEASE_PATH", missing)
+    cloudflare_release._installed_workers_identity.cache_clear()
+    try:
+        assert cloudflare_release.installed_workers_release_digest() is None
+        missing.mkdir()
+        manifest = (release / "manifest.json").read_bytes()
+        (missing / "manifest.json").write_bytes(manifest)
+        assert cloudflare_release.installed_workers_release_digest() == sha256(manifest).hexdigest()
+    finally:
+        cloudflare_release._installed_workers_identity.cache_clear()
+
+
 def test_release_rejects_an_incompatible_drain_protocol(release: Path) -> None:
     manifest = release / "manifest.json"
     data = json.loads(manifest.read_bytes())

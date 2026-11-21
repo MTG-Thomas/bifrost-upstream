@@ -3,6 +3,7 @@
 import secrets
 from asyncio import sleep
 from datetime import UTC, datetime
+from time import monotonic
 from typing import Protocol
 from uuid import UUID, uuid4
 
@@ -180,6 +181,8 @@ async def _settle_enable(
         if row is None:
             return {"outcome": "superseded"}
         upgrading = row.upgrade_release is not None
+        if release.manifest.release_sequence < row.workers_release_sequence:
+            raise PlatformJobRequiresAction("Install the Matched Workers Release", {"code": "CF_RELEASE_MISMATCH"})
         if (row.upgrade_release if upgrading else row.policy.get("bounds_release")) != release.digest:
             raise PlatformJobRequiresAction("Review Policy for the Packaged Workers Release", {"code": "CF_POLICY_RELEASE_CHANGED"})
         replacement_policy = None
@@ -312,6 +315,7 @@ async def _settle_enable(
         await _require_budget(db, row)
         row.admitted_revision = payload.revision
         row.deployed_revision = payload.revision
+        row.workers_release_sequence = release.manifest.release_sequence
         row.upgrade_release = None
         row.upgrade_drained_at = None
         wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
@@ -322,6 +326,7 @@ async def _drain_previous_revision(
     context: PlatformJobContext, payload: CloudflareEnablePayload, adapter: WorkersRestCleanup,
     *, upgrading: bool,
 ) -> bool:
+    deadline = monotonic() + DRAIN_DEADLINE.total_seconds()
     while True:
         async with get_db_context() as db:
             row = await _locked_current(db, context, payload)
@@ -354,8 +359,7 @@ async def _drain_previous_revision(
                 if workers_remain:
                     raise PlatformJobRequiresAction("Wait for Cloudflare Workers to Retire", {"code": "CF_PRIOR_WORKERS_LIVE"})
                 raise PlatformJobRequiresAction("Wait for Cloudflare Creation to Settle", {"code": "CF_CLEANUP_PENDING"})
-            started_at = await db.scalar(select(PlatformJob.started_at).where(PlatformJob.id == context.job_id))
-            if started_at is not None and datetime.now(UTC) >= started_at + DRAIN_DEADLINE:
+            if monotonic() >= deadline:
                 if result == "settling":
                     raise PlatformJobRequiresAction("Cloudflare Cleanup Pending", {"code": "CF_CLEANUP_PENDING"})
                 raise await _drain_timeout_action(db, row.id, workers_remain=workers_remain)

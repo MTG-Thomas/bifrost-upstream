@@ -382,7 +382,7 @@ export function CloudflareCapacity() {
 								>
 									Reconcile Cloudflare
 								</Button>
-								<Button variant="outline" disabled={busy || installation.desired_state !== "enabled"}
+								<Button variant="outline" disabled={busy || !installation.upgrade_available}
 									onClick={() => mutation.mutate("upgrade")}
 								>
 									Upgrade Cloudflare

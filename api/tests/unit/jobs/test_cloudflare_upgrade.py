@@ -22,10 +22,21 @@ from src.models.orm.cloudflare_capacity import CloudflareInstallation
 ])
 def test_replacement_revision(package, pending, admitted, repair, expected) -> None:
     row = CloudflareInstallation(
-        desired_revision=4, deployed_revision=4, admitted_revision=admitted,
+        desired_revision=4, deployed_revision=3, admitted_revision=admitted,
         upgrade_release=pending, policy={"bounds_release": "old"},
+        workers_release_sequence=0,
     )
     assert _replacement_revision(row, package, repair=repair) == expected
+
+
+def test_release_sequence_blocks_only_older_packages_and_allows_forward_repair() -> None:
+    row = CloudflareInstallation(
+        desired_revision=4, deployed_revision=3, upgrade_release="pending",
+        policy={"bounds_release": "old"}, workers_release_sequence=20,
+    )
+    assert _replacement_revision(row, "older", repair=True, sequence=19) is None
+    assert _replacement_revision(row, "pending", repair=True, sequence=20) is None
+    assert _replacement_revision(row, "new", repair=False, sequence=21) == 5
 
 
 @pytest.mark.asyncio

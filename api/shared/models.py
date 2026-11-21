@@ -78,6 +78,7 @@ class CloudflareInstallationStatus(BaseModel):
     desired_revision: int
     deployed_revision: int | None = None
     upgrade_pending: bool = False
+    upgrade_available: bool = False
     desired_state: Literal["scaled_in", "enabled", "disconnected"]
     admission_open: bool
     policy: CloudflareCapacityPolicy

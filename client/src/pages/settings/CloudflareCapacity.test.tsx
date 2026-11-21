@@ -38,6 +38,7 @@ it.each([
 		desired_revision: 3,
 		desired_state: "enabled",
 		admission_open: true,
+		upgrade_available: action === "upgrade",
 		worker_ingress_origin: "https://workers.example.test",
 		policy: {
 			monthly_limit_usd: "40.00",
@@ -78,6 +79,9 @@ it.each([
 		</QueryClientProvider>,
 	);
 	const button = await screen.findByRole("button", { name: label });
+	if (action !== "upgrade") {
+		expect(screen.getByRole("button", { name: "Upgrade Cloudflare" })).toBeDisabled();
+	}
 	expect(screen.getByText("Estimated Bifrost Usage This UTC Month")).toBeVisible();
 	expect(screen.getByText("0.12 USD")).toBeVisible();
 	expect(screen.getByText("Workers Paid Subscription (Billed by Cloudflare)")).toBeVisible();

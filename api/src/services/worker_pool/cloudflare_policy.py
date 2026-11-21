@@ -42,7 +42,11 @@ from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
     seal_credential,
 )
-from src.services.worker_pool.cloudflare_release import WorkersRelease, installed_workers_release_digest
+from src.services.worker_pool.cloudflare_release import (
+    WorkersRelease,
+    installed_workers_release_digest,
+    installed_workers_release_sequence,
+)
 from src.services.worker_pool.cloudflare_spend import (
     exhausted_managed_workers,
     LAUNCHER_RECEIPT_METERS,
@@ -80,6 +84,7 @@ class WorkersReleaseMeterBounds:
     startup_expected_us: int
     expected_cpu_ms: Mapping[str, int] | None = None
     bounded_linger: bool = False
+    release_sequence: int = 0
 
 
 def release_meter_bounds(release: WorkersRelease) -> WorkersReleaseMeterBounds:
@@ -100,7 +105,16 @@ def release_meter_bounds(release: WorkersRelease) -> WorkersReleaseMeterBounds:
             binding.name == "BIFROST_TENANT_LINGER_SECONDS" and binding.source == "linger_seconds"
             for binding in release.manifest.workers["launcher"].bindings
         ),
+        release_sequence=release.manifest.release_sequence,
     )
+
+
+def workers_upgrade_available(row: CloudflareInstallation, release: str | None, sequence: int) -> bool:
+    if row.desired_state != "enabled" or release is None or sequence < row.workers_release_sequence:
+        return False
+    if row.upgrade_release is not None:
+        return release == row.upgrade_release or sequence > row.workers_release_sequence
+    return release != row.policy.get("bounds_release")
 
 
 class CloudflarePolicyConflict(ValueError):
@@ -166,7 +180,7 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
             PlatformJob.requested_by_user_id != "system",
             PlatformJob.status.in_(("failed", "requires_action")),
             (PlatformJob.job_type == "capacity.cloudflare_reconcile")
-            & (PlatformJob.title == "Upgrade Cloudflare"),
+            & (PlatformJob.payload["operation"].as_string() == "upgrade"),
         ),
     ).order_by(PlatformJob.created_at.desc(), PlatformJob.id.desc()).limit(1))
     installed_release = installed_workers_release_digest()
@@ -183,6 +197,9 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
             "desired_revision": installation.desired_revision,
             "deployed_revision": installation.deployed_revision,
             "upgrade_pending": installation.upgrade_release is not None,
+            "upgrade_available": workers_upgrade_available(
+                installation, installed_release, installed_workers_release_sequence(),
+            ),
             "desired_state": installation.desired_state,
             "admission_open": (
                 installation.admitted_revision is not None and installation.upgrade_release is None
@@ -294,6 +311,7 @@ async def create_cloudflare_installation(
             consent_actor=actor,
             consent_at=now,
             policy=desired,
+            workers_release_sequence=bounds.release_sequence,
             desired_revision=1,
             desired_state="scaled_in",
             api_token_version=1,
@@ -391,6 +409,8 @@ async def save_cloudflare_policy(
     row = result.scalar_one_or_none()
     if row is None or row.desired_revision != expected_revision or row.desired_state == "disconnected":
         raise CloudflarePolicyConflict("Cloudflare installation changed. Reload its current policy.")
+    if bounds.release_sequence < row.workers_release_sequence:
+        raise CloudflarePolicyConflict("Update policy from the current or a newer Workers release.")
     if row.upgrade_release is not None and row.upgrade_release != bounds.release:
         raise CloudflarePolicyConflict("Edit policy from the matched Cloudflare release.")
     if row.policy != desired:

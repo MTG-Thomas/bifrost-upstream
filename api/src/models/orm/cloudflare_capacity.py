@@ -85,6 +85,7 @@ class CloudflareInstallation(Base):
     deployed_revision: Mapped[int | None]
     upgrade_release: Mapped[str | None] = mapped_column(String(64))
     upgrade_drained_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    workers_release_sequence: Mapped[int] = mapped_column(BigInteger, server_default="0", default=0)
     retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     usage_incomplete_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     usage_advisory: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
