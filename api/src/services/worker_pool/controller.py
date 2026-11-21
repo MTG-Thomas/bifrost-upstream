@@ -85,6 +85,7 @@ from src.services.worker_pool.cloudflare_admission import (
 from src.services.worker_pool.cloudflare_slots import (
     WorkflowSlotAdmission,
     read_workflow_slot_admission,
+    released_prewarm_counts,
     tenant_key,
 )
 from src.services.worker_pool.demand import pending_local_platform_job_ids
@@ -549,6 +550,9 @@ class WorkerCapacityController(ABC):
                 CloudflareWorkerReservation.worker_id.in_([worker.id for worker in cloudflare_workers]),
             ))) if cloudflare_workers and policy.warm_workers else set()
             active_counts = Counter(row.worker_id for row in active_claims)
+            prewarm_counts = await released_prewarm_counts(
+                db, [worker.id for worker in cloudflare_workers],
+            ) if cloudflare_workers else Counter()
             active_tenants = {row.tenant_id for row in active_claims if row.execution_id is not None}
             leased = set((await db.scalars(select(ExecutionWorker.id).where(
                 ExecutionWorker.id.in_([worker.id for worker in cloudflare_workers]),
@@ -569,7 +573,7 @@ class WorkerCapacityController(ABC):
                     or CLOUDFLARE_WORKFLOW_HANDLER[0] not in worker.supported_handlers
                 ):
                     continue
-                used = max(worker.active_runs, active_counts[worker.id])
+                used = max(worker.active_runs, active_counts[worker.id]) + prewarm_counts[worker.id]
                 if worker.memory_budget_bytes is None:
                     # Hello can promote a fresh start before its first report.
                     # Forecast that pending capacity without offering it for yield.

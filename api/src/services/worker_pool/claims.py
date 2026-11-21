@@ -344,6 +344,7 @@ async def claim_next(
         .order_by(
             (WorkDispatch.id == reserved_for).is_(True).desc(),
             WorkDispatch.created_at.asc(),
+            WorkDispatch.id.asc(),
         )
         .limit(1)
         .with_for_update(skip_locked=True)
@@ -635,7 +636,8 @@ async def begin_idle_drain(incarnation_id: UUID) -> bool:
         if worker_row is None:
             return False
         if worker_row.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and (
-            worker_row.active_runs or worker_row.memory_reserved_bytes or await db.scalar(
+            worker_row.active_runs or worker_row.memory_reserved_bytes
+            or await count_released_prewarms(db, incarnation_id) or await db.scalar(
                 cloudflare_active_claims().where(ExecutionWorkerClaim.worker_id == incarnation_id).exists().select()
             )
         ):

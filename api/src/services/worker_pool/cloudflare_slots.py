@@ -1,11 +1,12 @@
 """Durable, fenced ownership of managed Cloudflare workflow engines."""
 
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import String, and_, case, cast, delete, exists, func, or_, select, update
+from sqlalchemy import String, and_, case, cast, delete, exists, func, or_, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -95,7 +96,10 @@ async def read_workflow_slot_admission(
 
 def _live_prewarm() -> ColumnElement[bool]:
     slot = CloudflareWorkflowSlot
-    return and_(slot.prewarm_fence.is_not(None), slot.warm_until.is_not(None), slot.warm_until > func.now())
+    return and_(
+        slot.prewarm_fence.is_not(None), slot.warm_until.is_not(None), slot.warm_until > func.now(),
+        exists().where(ExecutionWorker.id == slot.worker_id, ExecutionWorker.state == "ready").correlate(slot),
+    )
 
 
 def adoptable_workflow_slot(
@@ -160,12 +164,13 @@ async def occupy_workflow_slot(
     tenant = tenant_key(tenant_id)
     # The caller holds the installation lock, including when the slot row is absent.
     slot = CloudflareWorkflowSlot
-    rows = {row.ordinal: row for row in await db.scalars(select(slot).where(
+    seats = (await db.execute(select(slot, _live_prewarm()).where(
         slot.installation_id == admission.installation_id, slot.tenant == tenant,
-    ))}
+    ))).all()
+    rows = {row.ordinal: row for row, _ in seats}
     now = await db.scalar(select(func.now()))
     assert now is not None
-    prepared = {i for i, row in rows.items() if row.prewarm_fence and row.warm_until and row.warm_until > now}
+    prepared = {row.ordinal for row, live in seats if live}
     adoptable = [
         i for i in prepared if i < admission.policy.slots_per_tenant
         and rows[i].released_at is not None and rows[i].worker_id == worker_id
@@ -196,11 +201,16 @@ async def occupy_workflow_slot(
     return WorkflowSlotTicket(ordinal, fence, prewarming)
 
 
-async def count_released_prewarms(db: AsyncSession, worker_id: UUID) -> int:
+async def released_prewarm_counts(db: AsyncSession, worker_ids: Sequence[UUID]) -> Counter[UUID]:
     slot = CloudflareWorkflowSlot
-    return await db.scalar(select(func.count()).select_from(slot).where(
-        slot.worker_id == worker_id, slot.released_at.is_not(None), _live_prewarm(),
-    )) or 0
+    counts = (await db.execute(select(slot.worker_id, func.count()).where(
+        slot.worker_id.in_(worker_ids), slot.released_at.is_not(None), _live_prewarm(),
+    ).group_by(slot.worker_id))).all()
+    return Counter({worker_id: count for worker_id, count in counts})
+
+
+async def count_released_prewarms(db: AsyncSession, worker_id: UUID) -> int:
+    return (await released_prewarm_counts(db, (worker_id,)))[worker_id]
 
 
 async def stage_queue_preparations(
@@ -215,12 +225,11 @@ async def stage_queue_preparations(
     tenant = tenant_key(tenant_id)
     now = await db.scalar(select(func.now()))
     assert now is not None
-    rows = {row.ordinal: row for row in await db.scalars(select(slot).where(
+    seats = (await db.execute(select(slot, _live_prewarm()).where(
         slot.installation_id == admission.installation_id, slot.tenant == tenant,
-    ))}
-    prepared = {
-        i: row for i, row in rows.items() if row.prewarm_fence and row.warm_until and row.warm_until > now
-    }
+    ))).all()
+    rows = {row.ordinal: row for row, _ in seats}
+    prepared = {row.ordinal: row for row, live in seats if live}
     reusable_ordinals = {
         i for i, row in rows.items() if i not in prepared and i < policy.slots_per_tenant
         and row.released_at is not None and row.worker_id == worker_id
@@ -235,20 +244,40 @@ async def stage_queue_preparations(
     already_prepared = [row.dispatch_id for row in prepared.values()]
     # Read only enough eligible queue entries to fill the remaining slots.
     # Their dispatch and execution are rechecked before Loader authorization.
-    queued = (await db.execute(select(WorkDispatch.id, Execution.id).join(
+    eligible = (
+        cloudflare_dispatch_sql(), WorkDispatch.assigned_worker_id.is_(None), Execution.status == ExecutionStatus.PENDING,
+    )
+    queue = select(WorkDispatch.id, Execution.id, WorkDispatch.created_at).join(
         Execution, Execution.id == WorkDispatch.subject_id,
-    ).where(
-        cloudflare_dispatch_sql(), WorkDispatch.assigned_worker_id.is_(None), WorkDispatch.id.not_in(already_prepared),
-        Execution.organization_id.is_not_distinct_from(tenant_id), Execution.status == ExecutionStatus.PENDING,
-    ).order_by(WorkDispatch.created_at, WorkDispatch.id).limit(headroom + reusable))).all()
+    ).where(*eligible)
+    queued = (await db.execute(queue.where(
+        WorkDispatch.id.not_in(already_prepared), Execution.organization_id.is_not_distinct_from(tenant_id),
+    ).order_by(WorkDispatch.created_at, WorkDispatch.id).limit(headroom + reusable))).all()[reusable:]
+    if not queued:
+        return ()
+    # Keep the ordinary queue order before allocating seats that an adoption
+    # could later use despite a full launcher or the installation's last seat.
+    youngest = queued[-1]
+    older_other_tenant = queue.where(
+        Execution.organization_id.is_distinct_from(tenant_id),
+        func.coalesce(cast(Execution.organization_id, String), "platform").not_in(admission.blocked_tenants),
+        tuple_(WorkDispatch.created_at, WorkDispatch.id) < tuple_(youngest.created_at, youngest[0]),
+    )
+    if await db.scalar(select(older_other_tenant.exists())):
+        return ()
     available = [
         i for i in range(policy.slots_per_tenant) if i not in prepared and i not in reusable_ordinals
         and (i not in rows or rows[i].released_at is not None)
     ]
+    available.sort(key=lambda i: (
+        i in rows and rows[i].worker_id != worker_id
+        and (until := rows[i].warm_until) is not None and until > now,
+        i,
+    ))
     warm_until = now + timedelta(seconds=policy.linger_seconds)
     prepare_by = min(warm_until, now + timedelta(seconds=PREPARE_SECONDS))
     preparations = []
-    for ordinal, (dispatch_id, execution_id) in zip(available[:headroom], queued[reusable:], strict=False):
+    for ordinal, (dispatch_id, execution_id, _) in zip(available[:headroom], queued, strict=False):
         fence = uuid4()
         row = rows.get(ordinal)
         if row is None:

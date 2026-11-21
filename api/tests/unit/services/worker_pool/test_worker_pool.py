@@ -26,6 +26,7 @@ from src.core.cache.redis_client import get_redis
 from src.models.enums import ExecutionStatus
 from src.models.orm.agent_runs import AgentRun, AgentRunStep, CloudflareAgentAttempt
 from src.models.orm.agents import Agent, AgentTool
+from src.models.orm.cloudflare_capacity import CloudflareInstallation, CloudflareWorkflowSlot
 from src.models.orm.config import SystemConfig
 from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
 from src.models.orm.executions import Execution
@@ -1206,6 +1207,35 @@ async def test_idle_cloudflare_worker_yields_a_capped_slot_for_linux_demand(db, 
     assert await _state(db.sessions, worker_id) == (
         ("draining", "capacity_replacement") if capacity in ("idle", "settled-claim") else ("ready", None)
     )
+
+
+@pytest.mark.parametrize("approved", [True, False], ids=["foreign-tenant", "linux-only"])
+async def test_controller_counts_a_released_prewarm_as_used_capacity(db, approved) -> None:
+    worker_id = await _declared_worker(db)
+    now = datetime.now(UTC)
+    async with db.context() as session:
+        installation_id = uuid4()
+        session.add(CloudflareInstallation(
+            id=installation_id, account_id=uuid4().hex, worker_ingress_origin="https://workers.example.test",
+            consent_version="fixture", consent_actor="fixture", consent_at=now, policy={},
+            desired_revision=1, desired_state="disconnected", retired_at=now,
+        ))
+        await session.flush()
+        session.add(CloudflareWorkflowSlot(
+            installation_id=installation_id, tenant=str(uuid4()), ordinal=0, worker_id=worker_id,
+            execution_id=uuid4(), dispatch_id=uuid4(), fence=uuid4(),
+            released_at=now, warm_until=now + timedelta(seconds=90), prewarm_fence=uuid4(),
+        ))
+    queued = await _accept_pool_run()
+    await _set_request(db.sessions, queued, 64 * MIB, approved=approved)
+    pool = _controller(FakeCluster(), get_version())
+    # The held seat cannot cover another tenant, and it cannot yield to Linux.
+    if approved:
+        assert len(await pool.launch_for_demand(replace(POLICY, max_workers=2))) == 1
+    else:
+        assert await pool.launch_for_demand(replace(POLICY, max_workers=1)) == []
+        assert not await claims.begin_idle_drain(worker_id)
+    assert await _state(db.sessions, worker_id) == ("ready", None)
 
 
 async def test_idle_cloudflare_yields_when_eligible_demand_belongs_to_a_busy_tenant(db) -> None:
