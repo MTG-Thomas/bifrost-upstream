@@ -32,6 +32,7 @@ class CloudflareWorkersPolicy(BaseModel):
     launcher_cap: int = Field(ge=1, le=1000)
     slots_per_launcher: int = Field(ge=1, le=4)
     max_lifetime_seconds: int = Field(ge=60, le=604800)
+    linger_seconds: int = Field(default=90, ge=0, le=300, description="Tenant engine reuse window after a workflow.")
     work_kinds: frozenset[Literal["workflow"]]
 
 
@@ -491,7 +492,7 @@ class CloudflareLauncherUsage(CloudflareLauncherCounts):
     sqlite_database_bytes: int | None = Field(default=None, ge=0, le=2**53 - 1, exclude_if=lambda value: value is None)
     routes: dict[
         Annotated[str, Field(min_length=1, max_length=128)],
-        Annotated[list[CloudflareEngineInvocation], Field(min_length=1, max_length=4)],
+        Annotated[list[CloudflareEngineInvocation], Field(max_length=4)],
     ] | None = Field(
         default=None, max_length=128, exclude_if=lambda value: value is None,
     )

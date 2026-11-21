@@ -149,15 +149,17 @@ as the proxy for variable approved work and for the combined gateway and
 Fetcher path. The reviewed workflow CPU limit still caps the pricing
 input and the deployed invocation limit. Dispatch planning counts one
 workflow, up to three boot or prime calls, and each approved gateway call.
-Idle alarms can use only a confirmed generation. Readiness is held in
-memory. A failed exercise or host restart ends the warm tail.
+Admission can overlap one separately reserved boot with dispatch preparation.
+A ready host skips the admission ping. Readiness is held in memory for a
+default of 90 seconds after the last attempt (policy range 0–300 seconds).
+There are no idle alarms. Workerd can evict an idle child earlier.
 
 The loader authorization books each distinct loader identity, including its
-engine code digest once per UTC day. A tenant-day forecast for the dispatch and warm tail
-pays for the first identity and covers detached alarms after midnight.
+engine code digest once per UTC day. A tenant-day forecast for the dispatch
+pays for the first identity. Preparation books the identity before Loader entry.
 Additional identities pay separately, even on the same day. A seal can
 also witness a new UTC day after the loader authorization. Count a dispatch
-once in its starting UTC month and place warm tails in each month touched.
+once in its starting UTC month and place linger duration in each month touched.
 [Cloudflare Dynamic Worker pricing](https://developers.cloudflare.com/dynamic-workers/pricing/)
 
 The foreground receipt uses the engine isolate's first-request signal.
@@ -165,12 +167,13 @@ Counting WorkerLoader calls or code callbacks would miscount when an
 existing identity starts another isolate from cached code. The TenantHost
 returns the identity, request class, UTC timestamp, and first-request flag
 for each observed boot, prime, and workflow invocation. The launcher records
-the evidence after Bifrost acknowledges the durable terminal. A complete,
+workflow evidence after Bifrost acknowledges the durable terminal. It records
+admission evidence independently, including an empty list for a reused engine
+and a boot receipt when the workflow never arrives. A complete,
 verified deletion receipt settles child request counts and removes unused
 boot or prime CPU reservations. Workflow execution retains its expected CPU price. Missing responses, uncertain terminals, and incomplete receipts
 retain the full reservation for the corresponding route. The measurement
-covers observed foreground loads. Detached exercise alarms can outlive or
-lose contact with the launcher, so their full startup reserve and estimated exercise CPU remain. [WorkerLoader API](https://developers.cloudflare.com/dynamic-workers/api-reference/)
+covers observed loads. [WorkerLoader API](https://developers.cloudflare.com/dynamic-workers/api-reference/)
 
 The exact packaged launcher completed loose Python workflow
 `0b9c414b-d42c-4454-bb88-42abbeb2b578`, remained running for 170 real
@@ -234,10 +237,11 @@ for the watchdog, hello/reconnect, control frames, SQLite and logs, plus
 one lifecycle allowance for startup and release. It reserves WorkerLedger
 and ScopeRegistry residency at 128 MB each for the launcher lifetime.
 Managed workflow dispatch
-reserves TenantHost residency through its finite route deadline, the
-20-minute warm window, a final 45-second alarm interval, 20 seconds
-for an abandoned warm RPC and 17 seconds for the final exercise and
-origin check. Bifrost rounds up each dispatch's ping count per UTC month.
+reserves TenantHost residency through its finite route deadline plus the
+configured linger. Admission uses a separate 20-second boot allowance plus the
+same linger. Overlapping reservations can price the same host duration twice.
+The idle tail adds only a duration allowance and does not schedule keep-alive
+traffic. Historical releases retain their deployed alarm pricing.
 Provider request and CPU reservations are committed immediately before
 each request, including capability checks with zero live launchers.
 Managed capacity requests use the measured estimate recorded with their deployment.
@@ -333,10 +337,10 @@ billing classifications before another package can ship.
 | `capacity-http` | Worker request and CPU for `capacity.mjs` health, auth/refusal, capabilities, GET, prepare, start and delete. Enable canary and supervisor use the same client. The REST management and Analytics APIs are outside the Worker invocation path. | Book one request and 9 ms estimated CPU before each managed capacity call. The deployed CPU backstop remains 87 ms. Public requests made outside Bifrost are excluded. |
 | `capacity-state` | WorkerLedger HTTP, Launcher RPC and ScopeRegistry HTTP on reserve/observe/release. WorkerLedger reads and updates its intent row; ScopeRegistry reads and updates the slot set. Both DOs have duration and retained KV backed by SQLite. | Poll and lifecycle reserve for requests, row operations and duration. Scope state and journal retention have storage reserves. |
 | `launcher-control` | Launcher enrollment, topology GET/RPC, 15-second alarm, alarm deletion, hello/welcome, inventory, control/ACK, generation grants, 1-second outbound heartbeat, reconnect logs and control journal reads/writes. | Cadence, lifecycle and lifetime reserves. Release the private script's outer Worker request and CPU reserve after verified deletion with its seal. The script has no default fetch or scheduled entrypoint. Per dispatch, reserve 26 DO units for command fragments, terminate and ACK, plus four for generation replies. Outgoing WebSocket messages are free. Reconnect backoff resets on acknowledged progress. |
-| `launcher-workload` | TenantHost run/warm/stop RPCs, route and slot journal, terminal persistence, ACK cleanup, SQLite meter row and application terminal logs. | Live admission cap and settled counts for writes, DO request units, and log events. Missing or uncertain seals preserve the cap. Lifetime and dispatch reserves cover reads. The stop wait is bounded, and a continuation after seal cannot issue a new charged RPC. |
+| `launcher-workload` | TenantHost prepare/run/warm/stop RPCs, route and slot journal, terminal persistence, ACK cleanup, SQLite meter row and application terminal logs. | Live admission cap and settled counts for writes, DO request units, and log events. Missing or uncertain seals preserve the cap. Lifetime and dispatch reserves cover reads. Preparation reuses the dispatch's ancillary request/read allowance conservatively. |
 | `gateway` | The launcher Fetcher passes the request and a tenant-scoped DO stub to the private SDK gateway. Routing covers SDK fetch, refresh, diagnostics, snapshot reads and third-party egress. | Price the gateway and relay at the inclusive 110 ms sample proxy per planned call, with up to 100 TenantHost RPCs per route. The deployed CPU backstops remain 1,097 ms and 30,000 ms. The service-binding invocation adds CPU but no standard Worker request fee. API counters miss snapshot, external, and failed calls. The terminal cannot attest every relay or gateway arrival, so the reserve remains. |
-| `tenant-state` | TenantHost generation/prime/inflight/stop state, warm metadata, storage sync, deletion, 45-second alarm and rearm. Late hosts can outlive their launcher. | Per-dispatch storage/read/log/RPC reserve and full 128 MB duration through the deadline and extended warm tail. Each reserved alarm includes two DO units, eight reads and two writes for a failed ping and rearm. |
-| `dynamic-engine` | WorkerLoader lookup, engine boot and warm retry, workflow, alarm exercise, import and SDK code, generation replacement. Dynamic Workers bill requests, CPU and unique creations per day. | Price foreground invocations from measured usage. Reserve 48,522 ms for each possible load and settle witnessed foreground starts at the expected 4,852.122 ms per observed load. Detached exercise and missing receipts keep their startup reserves. Daily creation pricing deduplicates by loader identity with its engine code digest. |
+| `tenant-state` | TenantHost generation, prime, in-flight and stop state. Linger is an in-memory readiness window. | Per-dispatch storage/read/log/RPC reserve and 128 MB duration allowance for each operation and its idle tail. No ping or alarm reserve for the bounded linger. |
+| `dynamic-engine` | WorkerLoader lookup, admission boot, dispatch boot or prime retry, workflow, import and SDK code, generation replacement. Dynamic Workers bill requests, CPU and unique creations per day. | Reserve 48,522 ms for each possible load and settle startup at the expected 4,852.122 ms per observed load. Missing receipts keep their startup reserves. Daily creation pricing deduplicates by loader identity with its engine code digest. |
 | `storage-logs` | SQLite bytes for route chunks, journals, provider tombstones and tenant state. Cloudflare Observability can charge for logging volume, including tenant stdout. | Use the launcher's high-water `databaseSize` with a 10× sizing margin and 100 MB before receipt. Estimate retained control and tenant state at 10 MB per incarnation and the capacity scope baseline at 1 MB. Prorate at gross rates through verified namespace deletion. Operator-enabled logs remain outside the estimate. |
 | `policy-helpers` | Protocol parsing, path validation, egress host matching, response shaping and output limits inside the calling invocation. | Covered by the caller's CPU and storage bounds. These helpers use no separately billed service. |
 | `inactive-features` | Agent and summary providers, manual scheduling, diagnostics and runtime probe paths reachable only in other spike configurations. | Outside the packaged managed workload surface. External traffic, provider-generated retries or overages, and account allowances and invoice rounding remain explicit exclusions. |

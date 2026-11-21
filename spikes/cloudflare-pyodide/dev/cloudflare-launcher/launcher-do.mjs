@@ -241,6 +241,10 @@ export class CloudflareLauncher extends DurableObject {
         receipt: this.env.BIFROST_METER_RECEIPTS === 'true',
         ...(this.env.BIFROST_METER_GENERATIONS === 'true' ? {reserveIdentity} : {}),
       }),
+      prepareHost: this.env.BIFROST_TENANT_LINGER_SECONDS !== undefined ?
+        ({reserveIdentity, ...input}) => runWorkflow.prepare({
+          ...input, ...(this.env.BIFROST_METER_GENERATIONS === 'true' ? {reserveIdentity} : {}),
+        }) : undefined,
       stopHost: async (route) => getHost(await launcherTenantId(route)).stopWorkflow(route.route_id),
       background: (task) => this.#observe(this.#connection, task),
     });

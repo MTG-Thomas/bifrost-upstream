@@ -76,11 +76,14 @@ export function runtimeErrorClass(error) {
 // retried with a fresh stub, as broken DO stubs must not be reused.
 export const WARM_ATTEMPTS = 3;
 export const ENGINE_BOOT_TIMEOUT_MS = 15_000;
-export async function warmHost(getHost, tenantId, {check = () => {}, engineOnly = false, reserveIdentity} = {}) {
+export async function warmHost(getHost, tenantId, {
+  check = () => {}, engineOnly = false, reserveIdentity, executionId,
+} = {}) {
   for (let attempt = 1; ; attempt++) {
     check();
     try {
       return {...await getHost().warm({tenantId, ...(engineOnly ? {engineOnly} : {}),
+        ...(executionId ? {executionId} : {}),
         ...(reserveIdentity ? {reserveIdentity} : {})}), warm_attempts: attempt};
     } catch (error) {
       if (error?.retryable !== true || attempt >= WARM_ATTEMPTS) throw error;

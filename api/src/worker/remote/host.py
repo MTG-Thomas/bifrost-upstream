@@ -115,6 +115,12 @@ ADMISSION_FRESHNESS_SECONDS = 3
 router = APIRouter()
 
 COMMAND_REPLY_SECONDS = 15
+CLOUDFLARE_PREPARE_SECONDS = 20
+
+
+def _cloudflare_tenant_key(org_id: UUID | str | None) -> str:
+    tenant = "launcher:platform" if org_id is None else f"launcher:org:{org_id}"
+    return sha256(tenant.encode()).hexdigest()[:32]
 
 
 def _reply_timeout(action: str) -> float:
@@ -125,6 +131,8 @@ def _reply_timeout(action: str) -> float:
     if action in ("agent_run", "agent_summary"):
         # It may wait while the launcher replaces a dead agent template.
         return TEMPLATE_START_TIMEOUT_SECONDS + COMMAND_REPLY_SECONDS
+    if action == "prepare_workflow":
+        return CLOUDFLARE_PREPARE_SECONDS
     return COMMAND_REPLY_SECONDS
 
 
@@ -179,6 +187,7 @@ class Bridge:
         self.meter_exhausted = False
         self._reset_freshness()
         self.pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._preparations: dict[str, tuple[int, str]] = {}
         self.jobs: dict[str, RemoteProcess] = {}
         self.platform_routes: dict[tuple[str, str], str] = {}
         self.pool: Any = None
@@ -298,6 +307,7 @@ class Bridge:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
         self.pending[request_id] = future
+        preparation = action == "prepare_workflow"
         socket = None
         try:
             try:
@@ -307,7 +317,7 @@ class Bridge:
                             f"launcher session {expected_generation} was replaced by "
                             f"{self.lease.session_generation} before {action} dispatch"
                         )
-                    if opaque:
+                    if opaque or preparation:
                         summary_stop = (
                             action == "terminate" and self.summaries is not None
                             and self.inventory_ready.is_set()
@@ -315,9 +325,9 @@ class Bridge:
                         )
                         if not self.connected or (not self.reconciliation_ready.is_set() and not summary_stop):
                             raise CredentialRouteChanged("Opaque launcher inventory is not reconciled")
-                        if dispatch and self.freshness_age() > ADMISSION_FRESHNESS_SECONDS:
+                        if (dispatch or preparation) and self.freshness_age() > ADMISSION_FRESHNESS_SECONDS:
                             raise CredentialRouteChanged("Opaque launcher heartbeat is stale")
-                        if dispatch and self.meter_exhausted:
+                        if (dispatch or preparation) and self.meter_exhausted:
                             raise CredentialRouteChanged("Cloudflare launcher workload allowance ended")
                         socket = self.socket
                     elif authorization is not None:
@@ -336,12 +346,17 @@ class Bridge:
                             if action == "workflow":
                                 raise CloudflareRevisionRejected("Cloudflare workflow exceeds the control payload limit")
                             raise ProtocolError("Cloudflare command exceeds the control payload limit")
-                        if action == "workflow" and self.managed_cloudflare:
-                            deadline = payload.get("workflow_deadline")
-                            workspace = payload["context"]["cloudflare_workspace"]
-                            org_id = payload["active_execution"].get("org_id")
-                            tenant = "launcher:platform" if org_id is None else f"launcher:org:{org_id}"
-                            tenant_id = sha256(tenant.encode()).hexdigest()[:32]
+                        if (action == "workflow" or preparation) and self.managed_cloudflare:
+                            if preparation:
+                                deadline = datetime.now(UTC) + timedelta(seconds=CLOUDFLARE_PREPARE_SECONDS)
+                                org_id = payload["org_id"]
+                                workspace = {}
+                            else:
+                                wire_deadline = payload.get("workflow_deadline")
+                                deadline = datetime.fromisoformat(wire_deadline) if wire_deadline else None
+                                org_id = payload["active_execution"].get("org_id")
+                                workspace = payload["context"]["cloudflare_workspace"]
+                            tenant_id = _cloudflare_tenant_key(org_id)
                             # Commit the reservation before sending any frame. A
                             # failed socket send can leave a conservative charge.
                             with remote_owner_context(LeaseRef(self.lease)):
@@ -349,15 +364,17 @@ class Bridge:
                                     if not await fence_remote_owner(db):
                                         raise CredentialRouteChanged("Cloudflare ownership changed before dispatch")
                                     if not await reserve_tenant_host_usage(
-                                        db, self.lease.worker_id, datetime.fromisoformat(deadline) if deadline else None,
-                                        workflow_cpu_ms=workspace["cpu_budget_ms"],
-                                        subrequests=workspace["subrequest_allowance"],
+                                        db, self.lease.worker_id, deadline,
+                                        workflow_cpu_ms=workspace.get("cpu_budget_ms"),
+                                        subrequests=workspace.get("subrequest_allowance"),
                                         tenant_id=tenant_id,
                                         route_id=payload["route_id"],
                                     ):
                                         raise CloudflareRevisionRejected(
                                             "Managed Cloudflare workflow usage could not be reserved"
                                         )
+                            if preparation:
+                                self._preparations[payload["route_id"]] = (self.lease.session_generation, tenant_id)
                         sent = 0
                         send_deadline = loop.time() + _reply_timeout(action)
                         for frame in fragment(message):
@@ -396,6 +413,8 @@ class Bridge:
                 return await asyncio.shield(future)
         finally:
             self.pending.pop(request_id, None)
+            if preparation:
+                self._preparations.pop(payload["route_id"], None)
             if future.done() and not future.cancelled():
                 future.exception()  # A transport failure may precede awaiting the reply.
             elif not future.done():
@@ -622,14 +641,23 @@ class Bridge:
 
     async def _reserve_generation(self, event: dict[str, Any]) -> None:
         route_id, identity, request_id = (event.get(key) for key in ("route_id", "identity", "request_id"))
+        preparation = self._preparations.get(route_id) if isinstance(route_id, str) else None
+        if isinstance(route_id, str) and route_id.startswith("prepare:") and (
+            preparation is None or preparation[0] != self.lease.session_generation
+        ):
+            # The hint timed out or belonged to a replaced control session.
+            # Never authorize a late Loader lookup or disconnect the workflow.
+            return
         if (
-            not isinstance(route_id, str) or route_id not in self._opaque_routes
+            not isinstance(route_id, str) or (route_id not in self._opaque_routes and preparation is None)
             or not isinstance(identity, str)
             or len(identity) > 128
             or not fullmatch(r"tenant-eng-tenant-py-[a-f0-9]{32}-[a-f0-9]{16}-cpu(?:default|\d+)-sr(?:default|\d+)-g\d+", identity)
             or not isinstance(request_id, str) or not fullmatch(r"[A-Za-z0-9_-]{43}", request_id)
         ):
             raise ProtocolError("Invalid Cloudflare generation reservation")
+        if preparation is not None and not identity.startswith(f"tenant-eng-tenant-py-{preparation[1]}-"):
+            raise ProtocolError("Cloudflare preparation generation does not match the claim tenant")
         lease = self.lease
 
         async def reserve() -> None:
@@ -965,6 +993,33 @@ class ApiExecutor(PoolWorker):
     async def _start_background_control(self) -> list[asyncio.Task[Any]]:
         # src.main already starts this API replica's canonical controllers.
         return []
+
+    def _start(self, claim: PoolClaim) -> None:
+        bridge = self.bridge
+        if (
+            bridge.managed_cloudflare and claim.handler == "workflow.execute"
+            and claim.claimed is not None and claim.cloudflare_revision is not None
+            and (bridge.inventory or {}).get("admission_prepare") is True
+        ):
+            generation = bridge.lease.session_generation
+            payload = {
+                "route_id": f"prepare:{uuid4()}", "execution_id": str(claim.subject_id),
+                "org_id": str(claim.tenant_id) if claim.tenant_id is not None else None,
+            }
+
+            async def prepare() -> None:
+                try:
+                    await bridge.request("prepare_workflow", payload, expected_generation=generation)
+                except (CredentialRouteChanged, ConnectionError, TimeoutError, RuntimeError):
+                    # Preparation has no authority to run the workflow. The
+                    # canonical dispatch owns normal entry and failure handling.
+                    logger.debug("Cloudflare admission preparation did not complete", exc_info=True)
+
+            task = asyncio.create_task(prepare(), name=f"cloudflare-prepare-{claim.dispatch_id}")
+            bridge.results.add(task)
+            task.add_done_callback(bridge.results.discard)
+            task.add_done_callback(_observe_task)
+        super()._start(claim)
 
     def _make_workflow_consumer(self) -> Any:
         from src.jobs.consumers.workflow_execution import WorkflowExecutionConsumer

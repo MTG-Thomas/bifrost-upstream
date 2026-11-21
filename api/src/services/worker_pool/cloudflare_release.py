@@ -54,7 +54,7 @@ class WorkerBinding(BaseModel):
     type: Literal["worker_loader", "durable_object_namespace", "secret_text", "plain_text", "service"]
     source: Literal[
         "worker_ingress_origin", "scope_bearer", "launcher_cap", "max_lifetime_seconds",
-        "slots_per_launcher", "worker_version",
+        "slots_per_launcher", "linger_seconds", "worker_version",
     ] | None = None
     class_name: str | None = None
     script: Literal["launcher", "gateway"] | None = None

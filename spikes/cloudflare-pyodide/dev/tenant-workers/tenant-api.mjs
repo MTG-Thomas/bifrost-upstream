@@ -9,8 +9,8 @@
 //   * serializes attempts for its tenant (Pyodide is single-threaded),
 //   * holds each attempt's run token IN MEMORY under an opaque handle, for the
 //     attempt's duration only (never written to storage),
-//   * keeps the child warm with an alarm for WARM_WINDOW_MS after the last
-//     attempt, so a re-boot after eviction happens off the request path.
+//   * confirms the child during admission and reuses it for a bounded idle
+//     window, without sending idle keep-alives.
 //
 // TenantApi is the child's globalOutbound. It is created with props naming the
 // tenant, so a handle can only be resolved by that tenant's own host. It
@@ -27,17 +27,12 @@ import {createTenantGateway} from './tenant-gateway.mjs';
 import {ENGINE_BOOT_TIMEOUT_MS, runtimeErrorClass} from './tenant-dispatch.mjs';
 
 const MAX_NOTED_CALLS = 64;
-// Warm-pool policy: a tenant that ran in the last WARM_WINDOW_MS keeps a
-// resident child. This is the knob that trades idle cost for latency, the
-// counterpart of the Linux process pool's always-warm workers.
-export const WARM_WINDOW_MS = 20 * 60 * 1000;
-export const WARM_PING_MS = 45 * 1000;
 // Matches the Linux pool's default per-workflow timeout (src/config.py);
 // ATTEMPT_DEADLINE_MS overrides it per deploy.
 const DEFAULT_ATTEMPT_DEADLINE_MS = 1800 * 1000;
 const DEADLINE = Symbol('attempt-deadline');
 const STOPPED = Symbol('attempt-stopped');
-// Bookkeeping writes (warm window, alarms, warm-up list, retirement, marker
+// Bookkeeping writes (warm-up list, retirement, marker
 // cleanup) never hold outgoing messages at the output gate. A held send would
 // leave after its liveness check had passed, possibly after the deadline.
 // Losing one of them in a crash is safe: the in-flight marker, the one gated
@@ -59,7 +54,17 @@ export class TenantHost extends DurableObject {
   // an attempt (see run()), and a late answer from a retired generation can
   // never vouch for its replacement.
   #readyGeneration = null;
+  #readyUntil = 0;
+  #readyFor;
   #reservedDailyIdentity = null;
+
+  #lingerMs() {
+    const seconds = Number(this.env.BIFROST_TENANT_LINGER_SECONDS ?? 90);
+    if (!Number.isInteger(seconds) || seconds < 0 || seconds > 300) {
+      throw new Error('Invalid tenant engine linger');
+    }
+    return seconds * 1000;
+  }
 
   async #engine(tenantId, reserveIdentity) {
     const engineId = `tenant-eng-${tenantId}-${(await engineDigest(this.env.RUNTIME_SHA256)).slice(0, 16)}`;
@@ -78,7 +83,7 @@ export class TenantHost extends DurableObject {
       if (this.#reservedDailyIdentity !== dailyIdentity && typeof reserveIdentity === 'function') {
         await reserveIdentity(identity);
         this.#reservedDailyIdentity = dailyIdentity;
-      } else if (!this.#reservedDailyIdentity?.startsWith(`${identity}:`)) {
+      } else if (this.#reservedDailyIdentity !== dailyIdentity) {
         throw new Error('Cloudflare generation needs a usage reservation');
       }
     }
@@ -132,8 +137,10 @@ export class TenantHost extends DurableObject {
     }
   }
 
-  #childIsReady() {
-    return this.#readyGeneration !== null && this.#readyGeneration === this.#generation;
+  #childIsReady(executionId) {
+    return this.#readyGeneration !== null && this.#readyGeneration === this.#generation &&
+      (this.#current !== null || Date.now() < this.#readyUntil) &&
+      (this.#readyFor === undefined || this.#readyFor === executionId);
   }
 
   // Only an upstream refresh spends the attempt's subrequest allowance. Once
@@ -300,6 +307,7 @@ export class TenantHost extends DurableObject {
 
   async run({tenantId, executionId, context, publicUrl, egressHosts = [], dispatchedAt, routeId, workflowDeadline,
     reserveIdentity}) {
+    const lingerMs = this.#lingerMs();
     const stopKey = routeId ? `stopped:${routeId}` : null;
     const stoppedInQueue = () => ({terminal: {phase: 'attempt-stopped', attempt_state: 'not_started', api_calls: []}});
     // Booting a child inside a fresh host can reset the host
@@ -308,7 +316,7 @@ export class TenantHost extends DurableObject {
     // be safely retried. So a host that has not confirmed its child refuses
     // before doing anything; the supervisor warms it (idempotent, retryable)
     // and dispatches once.
-    if (!this.#childIsReady()) {
+    if (!this.#childIsReady(executionId)) {
       if (stopKey && await this.ctx.storage.get(stopKey)) return stoppedInQueue();
       return {needsWarm: true, attempt_state: 'not_started'};
     }
@@ -368,7 +376,7 @@ export class TenantHost extends DurableObject {
       release();
       return expiredInQueue(queueWaitMs);
     }
-    if (!this.#childIsReady()) {
+    if (!this.#childIsReady(executionId)) {
       // The predecessor retired the child: this attempt needs a confirmed
       // warm-up like any other, and has done no work.
       release();
@@ -483,14 +491,17 @@ export class TenantHost extends DurableObject {
       }
       throw error;
     } finally {
+      if (dispatched) {
+        this.#readyUntil = Date.now() + lingerMs;
+        this.#readyFor = undefined;
+      }
       this.#current = null;
       this.#credentials.close(handle);
       this.#calls.delete(handle);
-      await this.ctx.storage.delete('inflight', UNGATED);
-      release();
-      await this.ctx.storage.put({tenantId, lastAttempt: Date.now()}, UNGATED);
-      if (await this.ctx.storage.getAlarm() === null) {
-        await this.ctx.storage.setAlarm(Date.now() + WARM_PING_MS, UNGATED);
+      try {
+        await this.ctx.storage.delete('inflight', UNGATED);
+      } finally {
+        release();
       }
     }
   }
@@ -515,12 +526,13 @@ export class TenantHost extends DurableObject {
   // With exercise, the child also runs one dry engine attempt under a handle
   // this host never registered: TenantApi refuses its first SDK call (401,
   // "unknown handle") before anything reaches the API. That keeps the engine's
-  // pre-first-call path hot between real attempts. Both ping variants
+  // pre-first-call path for diagnostic measurements. Both ping variants
   // hold #exclusive through priming and any required retirement.
-  async #ping(tenantId, {exercise = false, reserveIdentity} = {}) {
+  async #ping(tenantId, {exercise = false, reserveIdentity, executionId} = {}) {
     const limits = this.env.BIFROST_METER_ENGINE_CPU_MS !== undefined ||
       this.env.BIFROST_CLOUDFLARE_MANAGED === 'true' ? this.#releaseLimits() : null;
-    const warm = this.#childIsReady();
+    const warm = this.#childIsReady(executionId);
+    const lingerMs = this.#lingerMs();
     const cpuMs = limits && (exercise ? limits.exerciseMs : warm ? limits.warmMs : limits.bootMs);
     const {worker, generation, identity} = await this.#engine(tenantId, reserveIdentity);
     const modules = await this.#primeList();
@@ -542,7 +554,13 @@ export class TenantHost extends DurableObject {
         exercise: exercised} = await response.json();
       // Only the generation that answered is ready; if it was retired while
       // this ping was in flight, its answer vouches for nothing.
-      if (generation === this.#generation) this.#readyGeneration = generation;
+      if (generation === this.#generation) {
+        this.#readyGeneration = generation;
+        // At zero linger the ping still has a bounded handoff to the exact
+        // incoming execution. A completed attempt clears that window.
+        this.#readyUntil = Date.now() + (lingerMs || ENGINE_BOOT_TIMEOUT_MS);
+        this.#readyFor = lingerMs === 0 ? executionId : undefined;
+      }
       return {child_ms: Date.now() - mark, first_request: firstRequest,
         ...(exercise ? {} : this.#invocation(identity, warm ? 'prime' : 'boot', firstRequest, new Date(mark).toISOString())),
         prime_listed: modules.length, primed, prime_skipped: primeSkipped,
@@ -569,7 +587,7 @@ export class TenantHost extends DurableObject {
     return {origin_status: status, origin_ms: Date.now() - mark};
   }
 
-  // Diagnostic: one exercising ping on demand, serialized like the alarm's.
+  // Diagnostic: one exercising ping on demand.
   async exercise({tenantId, readyOnly = false}) {
     const boot = await this.#exclusive(() =>
       readyOnly && !this.#childIsReady() ? null : this.#ping(tenantId, {exercise: true}));
@@ -585,45 +603,15 @@ export class TenantHost extends DurableObject {
     return response.json();
   }
 
-  // Pre-warm: a dispatcher that knows an attempt is coming can pay the boot
-  // ahead of it. Opens the same warm window an attempt does.
-  async warm({tenantId, engineOnly = false, reserveIdentity}) {
-    const boot = await this.#exclusive(() => this.#ping(tenantId, {reserveIdentity}));
-    await this.#rememberWarm(tenantId);
+  async warm({tenantId, engineOnly = false, reserveIdentity, executionId, admission = false}) {
+    const boot = await this.#exclusive(() => admission && this.#childIsReady(executionId) ?
+      {reused: true} : this.#ping(tenantId, {reserveIdentity, executionId}));
+    if (admission) return boot;
     if (engineOnly) {
       this.ctx.waitUntil(this.#warmOrigin());
       return boot;
     }
     return {...boot, ...await this.#warmOrigin()};
-  }
-
-  async #rememberWarm(tenantId) {
-    await this.ctx.storage.put({tenantId, lastAttempt: Date.now()}, UNGATED);
-    if (await this.ctx.storage.getAlarm() === null) {
-      await this.ctx.storage.setAlarm(Date.now() + WARM_PING_MS, UNGATED);
-    }
-    await this.ctx.storage.sync();
-  }
-
-  async alarm() {
-    const state = await this.ctx.storage.get(['tenantId', 'lastAttempt']);
-    const tenantId = state.get('tenantId');
-    const lastAttempt = state.get('lastAttempt') ?? 0;
-    // Outside the window the host lets the child (and itself) go cold.
-    if (!tenantId || Date.now() - lastAttempt > WARM_WINDOW_MS) return;
-    const managed = this.env.BIFROST_CLOUDFLARE_MANAGED === 'true';
-    let rearm = !managed;
-    try {
-      // Keep-warm pings run off the request path, so they also exercise the
-      // engine. Warm-ups on the request path (warm()) do not: an attempt is
-      // waiting on them.
-      // In managed mode only real work can open a new engine generation.
-      // Evicting the isolate may reload the same identity, but an alarm may
-      // not manufacture a different one or keep retrying a retired child.
-      rearm = Boolean(await this.exercise({tenantId, readyOnly: managed}));
-    } finally {
-      if (rearm) await this.ctx.storage.setAlarm(Date.now() + WARM_PING_MS, UNGATED);
-    }
   }
 }
 

@@ -78,6 +78,7 @@ class WorkersReleaseMeterBounds:
     cpu_limits_ms: Mapping[str, int]
     startup_expected_us: int
     expected_cpu_ms: Mapping[str, int] | None = None
+    bounded_linger: bool = False
 
 
 def release_meter_bounds(release: WorkersRelease) -> WorkersReleaseMeterBounds:
@@ -94,6 +95,10 @@ def release_meter_bounds(release: WorkersRelease) -> WorkersReleaseMeterBounds:
         {**bounds.per_fleet_fixed, "worker_cpu_ms": bounds.per_fleet_fixed["worker_requests"] * expected["capacity"]},
         release.digest, release.manifest.max_slots_per_launcher,
         bounds.qualification.launcher_caps, bounds.qualification.cpu_limits_ms, startup_us, expected,
+        bounded_linger=any(
+            binding.name == "BIFROST_TENANT_LINGER_SECONDS" and binding.source == "linger_seconds"
+            for binding in release.manifest.workers["launcher"].bindings
+        ),
     )
 
 
@@ -206,6 +211,8 @@ def _price_policy(
     }
     if bounds.expected_cpu_ms is not None:
         meter_launcher["cpu_expected_ms"] = dict(bounds.expected_cpu_ms)
+    if bounds.bounded_linger:
+        meter_launcher["linger_seconds"] = policy.workers.linger_seconds
     envelope = workers_fleet_envelope_usd(
         launcher_cap=policy.workers.launcher_cap,
         max_lifetime_seconds=policy.workers.max_lifetime_seconds,

@@ -257,7 +257,7 @@ async def spend_coverage(db: AsyncSession, account_id: str, period_start: dateti
         versions.add(WORKERS_INVENTORY_RATE_TABLE_VERSION)
     coverage = [f"{rate}\u00a0– {_COVERAGE[rate]}" for rate in sorted(versions) if rate in _COVERAGE]
     if rated_activity[3] and not versions.intersection(_QUALIFIED_RATE_VERSIONS):
-        coverage.append("Retained tenant usage includes qualified dispatch and warm-tail reservations.")
+        coverage.append("Retained tenant usage includes qualified dispatch and idle-tail reservations.")
     if rated_activity[2]:
         coverage.append("Managed capacity calls include requests and estimated CPU.")
     drift = await db.scalar(select(usage.worker_id).join(owner, owner.id == usage.installation_id).where(
@@ -479,8 +479,14 @@ async def reserve_tenant_host_usage(
     bounds = usage.meter_bounds or {}
     cpu = bounds.get("cpu_ms") if qualified else None
     expected = bounds.get("cpu_expected_ms")
-    if qualified and (not valid_cpu_limits(cpu) or type(workflow_cpu_ms) is not int or workflow_cpu_ms < 1
-                      or type(subrequests) is not int or not 0 <= subrequests <= 50):
+    linger = bounds.get("linger_seconds")
+    preparation = route_id is not None and route_id.startswith("prepare:")
+    if preparation and (usage.meter_rate_version != WORKERS_RATE_TABLE_VERSION or expected is None
+                        or type(linger) is not int or not 0 <= linger <= 300):
+        return False
+    if qualified and (not valid_cpu_limits(cpu) or (not preparation and (
+        type(workflow_cpu_ms) is not int or workflow_cpu_ms < 1 or type(subrequests) is not int or not 0 <= subrequests <= 50
+    ))):
         return False
     now = await db.scalar(select(func.clock_timestamp()))
     assert now is not None
@@ -494,10 +500,13 @@ async def reserve_tenant_host_usage(
         ).on_conflict_do_nothing().returning(meter.route_id))
         if reserved is None:
             return True
-    # Reserve warm residency and the last possible alarm after the warm window.
-    # Keep the portions on either side of UTC rollover in their own periods.
+    # Prior releases retain their deployed alarm pricing. The bounded linger
+    # adds duration only, with no scheduled requests or detached engine starts.
     inventory_rate = usage.meter_rate_version in _INVENTORY_RATE_VERSIONS
-    tail = _INVENTORY_TAIL_SECONDS if inventory_rate else _TENANT_WARM_SECONDS + _TENANT_WATCHDOG_SECONDS
+    bounded_linger = type(linger) is int and 0 <= linger <= 300
+    tail = linger if bounded_linger else (
+        _INVENTORY_TAIL_SECONDS if inventory_rate else _TENANT_WARM_SECONDS + _TENANT_WATCHDOG_SECONDS
+    )
     seconds_field = "inventory_tenant_seconds" if inventory_rate else "tenant_host_seconds"
     dispatch_field = (
         "qualified_dispatches" if qualified else "inventory_dispatches" if inventory_rate else "tenant_dispatches"
@@ -517,30 +526,35 @@ async def reserve_tenant_host_usage(
             dispatch_field: int(cursor == now),
         }
         if inventory_rate:
-            segment[pings_field] = ceil(seconds / _TENANT_WATCHDOG_SECONDS)
+            segment[pings_field] = 0 if bounded_linger else ceil(seconds / _TENANT_WATCHDOG_SECONDS)
         if qualified:
-            assert cpu is not None and workflow_cpu_ms is not None and subrequests is not None
+            assert cpu is not None
             dispatch = int(cursor == now)
             pings = segment[pings_field]
             if lifecycle_meter:
                 if tenant_id is None:
                     return False
-                # The idle tail reuses the dispatch's daily tenant identity.
+                # Only time that can contain engine entry needs a daily identity.
                 day = cursor.replace(hour=0, minute=0, second=0, microsecond=0)
-                while day < until:
-                    await _reserve_engine_identity(
-                        db, usage.installation_id, f"day:{tenant_id}:{day.date()}", day, 1,
-                    )
-                    day += timedelta(days=1)
-                segment["generation_control_requests"] = 4 * dispatch
+                if not preparation:
+                    while day < (min(until, max(now, deadline)) if bounded_linger else until):
+                        await _reserve_engine_identity(
+                            db, usage.installation_id, f"day:{tenant_id}:{day.date()}", day, 1,
+                        )
+                        day += timedelta(days=1)
+                segment["generation_control_requests"] = (1 if preparation else 4) * dispatch
             else:
                 days = ((until - timedelta(microseconds=1)).date() - cursor.date()).days + 1
                 segment["qualified_creations"] = 4 * dispatch + days
-            segment.update(qualified_dispatches=dispatch,
-                           qualified_cpu_ms=qualified_cpu_reserve(
-                               cpu, workflow_cpu_ms, subrequests, dispatch, pings,
-                               split_gateway=lifecycle_meter, expected=expected,
-                           ))
+            if preparation:
+                segment["qualified_cpu_ms"] = dispatch * _prepare_cpu_reserve(cpu, expected)
+                segment["released_engine_requests"] = 3 * dispatch  # One possible engine request, not four.
+            else:
+                assert workflow_cpu_ms is not None and subrequests is not None
+                segment["qualified_cpu_ms"] = qualified_cpu_reserve(
+                    cpu, workflow_cpu_ms, subrequests, dispatch, pings,
+                    split_gateway=lifecycle_meter, expected=expected,
+                )
         periods.append(segment)
         cursor = until
     activity = CloudflareUsageActivity
@@ -551,6 +565,8 @@ async def reserve_tenant_host_usage(
     if qualified:
         fields.append("qualified_cpu_ms")
         fields.append("generation_control_requests" if lifecycle_meter else "qualified_creations")
+    if preparation:
+        fields.append("released_engine_requests")
     await db.execute(reservation.on_conflict_do_update(
         index_elements=[activity.installation_id, activity.period_start],
         set_={field: activity.__table__.c[field] + reservation.excluded[field] for field in fields},
@@ -593,8 +609,8 @@ async def _book_daily_engine(
     day = started_at.astimezone(UTC).date()
     # The Loader identity already embeds the engine entry and runtime digest.
     daily_key = f"daily:{identity}:{day}"
-    # A tenant-day forecast pays for one identity, including detached alarms
-    # after midnight. Every additional identity pays its own creation fee.
+    # The tenant-day forecast pays for one identity. Every additional identity
+    # pays its own creation fee.
     tenant = identity.removeprefix("tenant-eng-tenant-py-").split("-", 1)[0]
     day_key = f"day:{tenant}:{day}"
     await _reserve_engine_identity(db, usage.installation_id, day_key, started_at, 1)
@@ -620,12 +636,19 @@ async def _settle_foreground(
     oldest, _ = usage_period(month - timedelta(days=1))
     activity = CloudflareUsageActivity
     for record in records:
-        invocations = observed.get(record.route_id, [])
+        invocations = observed[record.route_id]
         kinds = [call.kind for call in invocations]
-        if (kinds[-1:] != ["workflow"] or kinds.count("workflow") != 1
-                or any(not call.identity.startswith(f"tenant-eng-tenant-py-{record.tenant_id}-") for call in invocations)):
+        if any(not call.identity.startswith(f"tenant-eng-tenant-py-{record.tenant_id}-") for call in invocations):
             continue
-        possible = (4 * cpu["startup"] + 3 * max(expected["boot"], expected["warm"])) * 1000
+        if record.route_id.startswith("prepare:"):
+            if kinds not in ([], ["boot"], ["prime"]):
+                continue
+            entry_reserve, cpu_reserve = 1, _prepare_cpu_reserve(cpu, expected)
+        else:
+            if kinds[-1:] != ["workflow"] or kinds.count("workflow") != 1:
+                continue
+            entry_reserve = 4
+            cpu_reserve = 4 * cpu["startup"] + 3 * max(expected["boot"], expected["warm"])
         actual = sum(
             startup_us * call.cold
             + (expected["boot"] if call.kind == "boot" else expected["warm"] if call.kind == "prime" else 0) * 1000
@@ -633,8 +656,8 @@ async def _settle_foreground(
         )
         await db.execute(update(activity).where(
             activity.installation_id == usage.installation_id, activity.period_start == record.period_start,
-        ).values(released_cpu_us=activity.released_cpu_us + possible - actual,
-                 released_engine_requests=activity.released_engine_requests + 4 - len(invocations)))
+        ).values(released_cpu_us=activity.released_cpu_us + cpu_reserve * 1000 - actual,
+                 released_engine_requests=activity.released_engine_requests + entry_reserve - len(invocations)))
         for call in invocations:
             if max(oldest, usage.started_at) <= call.started_at <= usage.deleted_at:
                 generations[call.identity, call.started_at.astimezone(UTC).date()] = call.started_at
@@ -647,6 +670,10 @@ def valid_cpu_limits(cpu: object) -> bool:
     return isinstance(cpu, Mapping) and set(cpu) == set(CPU_LIMIT_PATHS) and all(
         type(value) is int and 0 < value <= (300_000 if name == "startup" else 30_000) for name, value in cpu.items()
     )
+
+
+def _prepare_cpu_reserve(limits: Mapping[str, int], expected: Mapping[str, int]) -> int:
+    return limits["startup"] + max(expected["boot"], expected["warm"])
 
 
 def qualified_cpu_reserve(

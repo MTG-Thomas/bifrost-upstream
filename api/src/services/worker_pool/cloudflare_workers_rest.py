@@ -358,6 +358,7 @@ class WorkersRestProvisioner(WorkersRestCleanup):
             "launcher_cap": str(deployment.policy.launcher_cap),
             "max_lifetime_seconds": str(deployment.policy.max_lifetime_seconds),
             "slots_per_launcher": str(deployment.policy.slots_per_launcher),
+            "linger_seconds": str(deployment.policy.linger_seconds),
             "worker_version": deployment.release.digest,
         }
         if deployment.policy.slots_per_launcher > manifest.max_slots_per_launcher:

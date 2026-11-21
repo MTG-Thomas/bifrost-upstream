@@ -30,7 +30,7 @@ function workflow(suffix = '1') {
   };
 }
 
-function peer({data = new Map(), runHost, runSummary, runAgent, beforePut, onSend, meter, slots = 1, stopHost} = {}) {
+function peer({data = new Map(), runHost, prepareHost, runSummary, runAgent, beforePut, onSend, meter, slots = 1, stopHost} = {}) {
   let now = START;
   let order = 0;
   let session;
@@ -70,7 +70,7 @@ function peer({data = new Map(), runHost, runSummary, runAgent, beforePut, onSen
       entered.resolve();
       return runHost ? runHost(route, context, signal) : COMPLETED;
     },
-    runSummary, runAgent,
+    prepareHost, runSummary, runAgent,
     stopHost: async (route) => {
       stopped.push(route.route_id);
       await stopHost?.();
@@ -111,6 +111,26 @@ async function connect(api, generation = 1) {
   await api.dial();
   await api.welcome(generation);
 }
+
+test('a preparation records its boot even when the workflow never arrives', async () => {
+  const recorded = [];
+  const receipt = [{kind: 'boot', cold: true}];
+  const api = peer({
+    meter: {recordRoute: (...args) => recorded.push(args)},
+    async prepareHost({orgId, executionId}) {
+      assert.equal(orgId, null);
+      assert.equal(executionId, SUBJECT);
+      return receipt;
+    },
+  });
+  const routeId = `prepare:${SUBJECT}`;
+  await connect(api);
+  assert.equal(api.frames()[0].inventory.admission_prepare, true);
+  await api.command('prepare_workflow', {route_id: routeId, org_id: null, execution_id: SUBJECT});
+  await api.finish();
+  assert.deepEqual(recorded, [[routeId, receipt]]);
+  assert.deepEqual(api.calls, []);
+});
 
 test('an autonomous broker call replays across a lost reply without rerunning the loop', async () => {
   let runs = 0;
