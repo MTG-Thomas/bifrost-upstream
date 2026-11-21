@@ -49,6 +49,7 @@ test('stop confirmation uses reserved DO requests within the hard cap', (t) => {
   const meter = launcherMeter(sql, JSON.stringify({
     sqlite_rows_written: SQLITE_HEADROOM + 300, do_requests: 10, log_events: 10,
   }));
+  meter.setSlots(1);
   assert.equal(meter.charge({do_requests: 9}), true);
   assert.equal(meter.charge({do_requests: 1}, true, true), true);
   assert.equal(meter.charge({do_requests: 1}, true, true), false);
