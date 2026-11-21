@@ -900,7 +900,8 @@ async def test_acknowledge_receipt_requires_matching_compacted_fence(reply):
 
 
 async def test_controller_retries_receipt_ack_after_committing_settlement(db, capacity, managed_pool, monkeypatch):
-    await _accept_pool_run()
+    age = timedelta(seconds=controller.SWEEP_SECONDS + 1)
+    await _set_request(db.sessions, await _accept_pool_run(), 1, age=age, approved=True)
     [worker_id] = await managed_pool.launch_for_demand(capacity.policy)
     async with db.context() as session:
         worker = await session.get(ExecutionWorker, worker_id)
