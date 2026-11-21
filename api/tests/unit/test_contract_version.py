@@ -456,7 +456,9 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Cloudflare spend coverage is additive. The CLI minimum stays unchanged.
     # The optional SQLite size in capacity receipts leaves existing clients compatible.
     # Cloudflare spend descriptions explain the estimate and its admission target.
-    "ffd1e807a1d5ac5da58f8e1ffb584c18cbd9cc400d7b8a0be7451d1567d44278"
+    # Tenant engine linger defaults to 90 seconds when an existing CLI omits it.
+    # A reused engine can produce an empty preparation receipt.
+    "c4c92b02ba11b7b9b8c549ab004c9eb6a86364efd5999e2365583932c842f199"
 )
 
 
