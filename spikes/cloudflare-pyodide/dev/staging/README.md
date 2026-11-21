@@ -256,24 +256,30 @@ source. Every source step therefore refuses a runtime that contains `.pyc`
 files (`assertSourceRuntime`), and the compile step refuses one too.
 
 ```powershell
+cd spikes/cloudflare-pyodide
 # 1. Seam-only rebuild: base and output are the SOURCE runtime
-node dev/staging/build-runtime.mjs spikes/cloudflare-pyodide api dev/runtime/source-runtime.mjs
+node dev/staging/build-runtime.mjs . ../../api dev/runtime/source-runtime.mjs
 # 2. Vendor patches (verified, idempotent) + packages the runtime must add
 py -m pip download tzdata --no-deps --only-binary :all: -d $env:TEMP\wheels
 node dev/staging/vendor-patches.mjs dev/runtime/source-runtime.mjs --add-wheel $env:TEMP\wheels\tzdata-*.whl
 # 3. Compile: vendor packages ship bytecode only, Bifrost modules keep source
 #    plus bytecode (so tracebacks keep source lines). Needs CPython 3.14.
 node dev/staging/precompile-runtime.mjs dev/runtime/source-runtime.mjs dev/runtime/generated-runtime.mjs
+# Refresh the loader beside the compiled artifact.
+node --input-type=module -e "import {stageRuntimeLoader} from './dev/stage-runtime-loader.mjs'; await stageRuntimeLoader(new URL('./dev/runtime/', import.meta.url));"
 ```
 
-Step 3 is not optional. Interleaved cold-boot A/B on 2026-11-18, compiled
+Step 3 also applies the companion cold-start import changes and excludes
+vendor typing-only files before bytecode compilation. See
+[COLD-START.md](COLD-START.md) for the local A/B and snapshot findings.
+Interleaved cold-boot A/B on 2026-11-18, compiled
 canary against an otherwise identical source-runtime lab worker, `boot_probe`
 importing `runtime_runner`, 16 rounds: **median 4.1–4.8 s vs 7.1–7.6 s**
 (about 40 % faster), with the compiled child faster in every paired round. The
 source child also hit `Worker exceeded resource limits` once. Both were slower
 than the 2026-11-15 measurements (3.2 vs 3.6 s), so absolute cold boot varies
-by day; the gap held. Upload: 18.8 MB / 6.4 MB gzip (source: 15.4 / 4.3 MB),
-under the 10 MB compressed limit.
+by day; the gap held. Upload was 18.8 MB / 6.4 MB gzip (source: 15.4 / 4.3 MB).
+The current upload limit is 64 MiB uncompressed. [Worker size limits](https://developers.cloudflare.com/workers/platform/limits/#worker-size)
 
 `vendor-patches.mjs` currently carries one patch: httpx's Pyodide fetch
 transport called `.getReader()` on a null body, so **every SDK call answered
