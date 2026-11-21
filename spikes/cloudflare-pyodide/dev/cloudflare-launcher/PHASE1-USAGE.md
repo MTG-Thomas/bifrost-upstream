@@ -355,7 +355,7 @@ The monthly target applies to the Bifrost estimate used for admission.
 Provider overrun, detached work, usage outside Bifrost, and billing adjustments
 can change the invoice. Cloudflare Analytics remains advisory.
 
-At seal, compare independent Postgres dispatch counts with launcher route
+At seal, compare independent Postgres dispatch and preparation counts with launcher route
 receipts. Report differences greater than 4× with a two-route noise floor.
 A receipt claiming over 4× as many routes as either reported DO calls or
 SQLite writes keeps the full launcher reserve. Record at most 128 routes

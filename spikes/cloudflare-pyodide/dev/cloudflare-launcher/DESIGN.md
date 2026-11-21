@@ -938,10 +938,19 @@ tags. Private handoffs and raw logs were removed.
   TenantHost run queue serializes attempts for the tenant under their original
   dispatch deadlines. A claim whose execution row is missing counts toward
   occupancy only.
+  On a committed managed claim, the API sends an optional tenant preparation
+  command over the reconciled launcher session. Its payload contains only
+  the prepare ID, execution ID and tenant ID. A cold workflow joins a pending
+  preparation after the usual pre-entry refusal. The API continues credential
+  minting and workspace verification without waiting for the preparation
+  reply. Preparation never opens a workflow slot in the launcher journal or
+  carries authority to execute code. It has its own spend reservation and
+  deletion receipt, including when dispatch is abandoned.
   Launchers serialize cold Python boots with a 20-second RPC limit and a
   15-second child ping limit. The bounded origin health check runs separately.
   Workflows on ready children overlap, and the original dispatch deadline
-  covers the wait for a cold warm-up.
+  covers the wait for a cold warm-up. A ready tenant can reuse its engine
+  during the policy's short linger. The host schedules no idle requests.
 - Each slot journals its route and terminal independently. Inventory includes
   all live routes and retained terminals before replay. ACK and stop select
   only their target. A reset fences each entering route independently and

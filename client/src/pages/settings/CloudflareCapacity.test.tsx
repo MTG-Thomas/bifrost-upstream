@@ -108,6 +108,9 @@ it("submits the current consent version and clears the write-only token", async 
 	);
 	fireEvent.change(await screen.findByLabelText("Cloudflare Account ID"), { target: { value: "a".repeat(32) } });
 	fireEvent.change(screen.getByLabelText("Existing HTTPS Endpoint"), { target: { value: "https://workers.example.test" } });
+	const linger = screen.getByLabelText("Tenant Engine Linger in Seconds");
+	expect(linger).toHaveValue(90);
+	fireEvent.change(linger, { target: { value: "0" } });
 	const token = screen.getByLabelText("Cloudflare API Token");
 	expect(token).toHaveAttribute("type", "password");
 	fireEvent.change(token, { target: { value: "synthetic-management-token" } });
@@ -123,6 +126,7 @@ it("submits the current consent version and clears the write-only token", async 
 		consent: true,
 		consent_version: "existing-https-v1",
 		api_token: "synthetic-management-token",
+		policy: expect.objectContaining({ workers: expect.objectContaining({ linger_seconds: 0 }) }),
 	}));
 	expect(token).toHaveValue("");
 });

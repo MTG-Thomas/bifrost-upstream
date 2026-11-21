@@ -109,6 +109,42 @@ async def test_cloudflare_claim_starts_preparation_without_waiting_for_reply() -
             await asyncio.gather(*preparations)
 
 
+async def test_preparation_reservation_does_not_hold_the_control_send_lock() -> None:
+    socket = Mock()
+    lease = replace(LEASE, declared_slots=1)
+    bridge = Bridge(socket, {
+        "hostname": "opaque", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE, "managed_cloudflare": True,
+    }, lease)
+    bridge.reconciliation_ready.set()
+    reserving = asyncio.Event()
+    finish = asyncio.Event()
+    sent = []
+
+    async def reserve(*_args):
+        reserving.set()
+        await finish.wait()
+
+    async def send(frame):
+        command = json.loads(frame)["payload"]
+        sent.append(command["action"])
+        await bridge.receive({"reply": command["id"], "result": {}})
+
+    socket.send_text = send
+    with patch.object(bridge, "_reserve_cloudflare_usage", reserve):
+        task = asyncio.create_task(bridge.request(
+            "prepare_workflow", {"route_id": f"prepare:{lease.launcher_id}", "org_id": None},
+            expected_generation=lease.session_generation,
+        ))
+        try:
+            await asyncio.wait_for(reserving.wait(), 2)
+            await asyncio.wait_for(bridge.request("ready", {}), 2)
+            assert sent == ["ready"]
+        finally:
+            finish.set()
+            await task
+    assert sent == ["ready", "prepare_workflow"]
+
+
 @pytest.mark.parametrize("kind", ["result", "summary_result", "cloudflare_agent_result"])
 async def test_terminal_receipts_in_all_cloudflare_domains_are_checked_before_ack(kind) -> None:
     bridge = Bridge(Mock(), {"hostname": "runner", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE}, LEASE)

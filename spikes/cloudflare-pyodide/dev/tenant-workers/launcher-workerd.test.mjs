@@ -159,6 +159,17 @@ const main = `
         Date.now = now;
       }
     }
+    async runWithoutLinger(input, next) {
+      this.env.BIFROST_TENANT_LINGER_SECONDS = '0';
+      try {
+        await super.warm({tenantId: input.tenantId, admission: true, executionId: input.executionId});
+        const unrelated = await super.run(next);
+        const prepared = await super.run(input);
+        return {unrelated, prepared: prepared.attempt_state, subsequent: await super.run(next)};
+      } finally {
+        delete this.env.BIFROST_TENANT_LINGER_SECONDS;
+      }
+    }
     async runWithoutReleaseBinding({binding, route}) {
       const value = this.env[binding];
       delete this.env[binding];
@@ -186,6 +197,7 @@ const main = `
       if (action === 'cpu-witness') return Response.json(await host.withCpuWitness(
         input.action, input.action === 'run' ? input.payload : {tenantId}));
       if (action === 'run-after-linger') return Response.json(await host.runAfterLinger(input.route, input.elapsed));
+      if (action === 'run-without-linger') return Response.json(await host.runWithoutLinger(input.route, input.next));
       if (action === 'missing-meter') return Response.json(await host.runWithoutReleaseBinding(input));
       if (action === 'warm') return Response.json(await host.warm({tenantId, ...input}));
       if (action === 'metered-warm') return Response.json(await host.meteredWarm(tenantId));
@@ -732,6 +744,16 @@ test('admission reuses a ready child without a ping and linger expiry schedules 
   assert.deepEqual(await host(tenant, 'warm', {admission: true}), {reused: true});
   assert.deepEqual(await host(tenant, 'run-after-linger', {route: input, elapsed: 91_000}), {
     result: {needsWarm: true, attempt_state: 'not_started'}, alarm: null,
+  });
+});
+
+test('zero linger hands off a preparation only to its own execution', async () => {
+  const tenant = 'zero-linger';
+  const cold = {needsWarm: true, attempt_state: 'not_started'};
+  const input = route(tenant, {routeId: 'prepared'});
+  const next = route(tenant, {routeId: 'unrelated'});
+  assert.deepEqual(await host(tenant, 'run-without-linger', {route: input, next}), {
+    unrelated: cold, prepared: 'completed', subsequent: cold,
   });
 });
 

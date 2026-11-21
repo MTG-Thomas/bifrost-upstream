@@ -286,6 +286,23 @@ class Bridge:
             return -1, self.limit
         return self.current, self.limit
 
+    async def _reserve_cloudflare_usage(
+        self, route_id: str, tenant_id: str, deadline: datetime | None,
+        *, workflow_cpu_ms: int | None = None, subrequests: int | None = None,
+    ) -> None:
+        # Reserve under the current owner before emitting any frames. The
+        # caller also fences the socket generation before sending secrets.
+        lease = self.lease
+        with remote_owner_context(LeaseRef(lease)):
+            async with get_db_context() as db:
+                if not await fence_remote_owner(db):
+                    raise CredentialRouteChanged("Cloudflare ownership changed before dispatch")
+                if not await reserve_tenant_host_usage(
+                    db, lease.worker_id, deadline, workflow_cpu_ms=workflow_cpu_ms,
+                    subrequests=subrequests, tenant_id=tenant_id, route_id=route_id,
+                ):
+                    raise CloudflareRevisionRejected("Managed Cloudflare workflow usage could not be reserved")
+
     async def request(
         self, action: str, payload: dict[str, Any], *, expected_generation: int | None = None,
         authorization: AbstractAsyncContextManager[None] | None = None,
@@ -310,6 +327,15 @@ class Bridge:
         preparation = action == "prepare_workflow"
         socket = None
         try:
+            prepared_tenant = None
+            if preparation and self.managed_cloudflare:
+                prepared_tenant = _cloudflare_tenant_key(payload["org_id"])
+                # Do this outside the send lock so the workflow command does
+                # not queue behind the speculative reservation.
+                await self._reserve_cloudflare_usage(
+                    payload["route_id"], prepared_tenant,
+                    datetime.now(UTC) + timedelta(seconds=CLOUDFLARE_PREPARE_SECONDS),
+                )
             try:
                 async with self.lock:
                     if expected_generation is not None and self.lease.session_generation != expected_generation:
@@ -346,35 +372,16 @@ class Bridge:
                             if action == "workflow":
                                 raise CloudflareRevisionRejected("Cloudflare workflow exceeds the control payload limit")
                             raise ProtocolError("Cloudflare command exceeds the control payload limit")
-                        if (action == "workflow" or preparation) and self.managed_cloudflare:
-                            if preparation:
-                                deadline = datetime.now(UTC) + timedelta(seconds=CLOUDFLARE_PREPARE_SECONDS)
-                                org_id = payload["org_id"]
-                                workspace = {}
-                            else:
-                                wire_deadline = payload.get("workflow_deadline")
-                                deadline = datetime.fromisoformat(wire_deadline) if wire_deadline else None
-                                org_id = payload["active_execution"].get("org_id")
-                                workspace = payload["context"]["cloudflare_workspace"]
-                            tenant_id = _cloudflare_tenant_key(org_id)
-                            # Commit the reservation before sending any frame. A
-                            # failed socket send can leave a conservative charge.
-                            with remote_owner_context(LeaseRef(self.lease)):
-                                async with get_db_context() as db:
-                                    if not await fence_remote_owner(db):
-                                        raise CredentialRouteChanged("Cloudflare ownership changed before dispatch")
-                                    if not await reserve_tenant_host_usage(
-                                        db, self.lease.worker_id, deadline,
-                                        workflow_cpu_ms=workspace.get("cpu_budget_ms"),
-                                        subrequests=workspace.get("subrequest_allowance"),
-                                        tenant_id=tenant_id,
-                                        route_id=payload["route_id"],
-                                    ):
-                                        raise CloudflareRevisionRejected(
-                                            "Managed Cloudflare workflow usage could not be reserved"
-                                        )
-                            if preparation:
-                                self._preparations[payload["route_id"]] = (self.lease.session_generation, tenant_id)
+                        if action == "workflow" and self.managed_cloudflare:
+                            deadline = payload.get("workflow_deadline")
+                            workspace = payload["context"]["cloudflare_workspace"]
+                            await self._reserve_cloudflare_usage(
+                                payload["route_id"], _cloudflare_tenant_key(payload["active_execution"].get("org_id")),
+                                datetime.fromisoformat(deadline) if deadline else None,
+                                workflow_cpu_ms=workspace["cpu_budget_ms"], subrequests=workspace["subrequest_allowance"],
+                            )
+                        if prepared_tenant is not None:
+                            self._preparations[payload["route_id"]] = (self.lease.session_generation, prepared_tenant)
                         sent = 0
                         send_deadline = loop.time() + _reply_timeout(action)
                         for frame in fragment(message):
@@ -1009,7 +1016,8 @@ class ApiExecutor(PoolWorker):
 
             async def prepare() -> None:
                 try:
-                    await bridge.request("prepare_workflow", payload, expected_generation=generation)
+                    async with asyncio.timeout(CLOUDFLARE_PREPARE_SECONDS):
+                        await bridge.request("prepare_workflow", payload, expected_generation=generation)
                 except (CredentialRouteChanged, ConnectionError, TimeoutError, RuntimeError):
                     # Preparation has no authority to run the workflow. The
                     # canonical dispatch owns normal entry and failure handling.

@@ -15,7 +15,6 @@ const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const UUID_RE = new RegExp(`^${UUID}$`);
 const WORKFLOW_ROUTE = new RegExp(`^workflow:(${UUID}):${UUID}$`);
 const PREPARE_ROUTE = new RegExp(`^prepare:${UUID}$`);
-const UUID_VALUE = new RegExp(`^${UUID}$`);
 const SUMMARY_ROUTE = new RegExp(`^summary:(${UUID}):(${UUID})$`);
 const AGENT_ROUTE = new RegExp(`^agent:(${UUID}):(${UUID})$`);
 const INSTANT = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?(?:Z|[+-]\d\d:\d\d)$/;
@@ -398,8 +397,8 @@ export class LauncherCore {
       case 'prepare_workflow': {
         const {route_id, execution_id, org_id} = payload;
         if (!this.prepareHost || typeof route_id !== 'string' || !PREPARE_ROUTE.test(route_id) ||
-            typeof execution_id !== 'string' || !UUID_VALUE.test(execution_id) ||
-            !(org_id === null || (typeof org_id === 'string' && UUID_VALUE.test(org_id)))) {
+            typeof execution_id !== 'string' || !UUID_RE.test(execution_id) ||
+            !(org_id === null || (typeof org_id === 'string' && UUID_RE.test(org_id)))) {
           refuse('ValueError', 'Invalid Cloudflare workflow preparation');
           return;
         }

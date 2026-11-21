@@ -470,8 +470,9 @@ async def reserve_tenant_host_usage(
     usage = await db.get(CloudflareUsageIncarnation, worker_id)
     if usage is None or usage.deleted_at is not None:
         return False
+    preparation = route_id is not None and route_id.startswith("prepare:")
     if usage.meter_rate_version not in (*_INVENTORY_RATE_VERSIONS, WORKERS_CADENCE_RATE_TABLE_VERSION):
-        return True
+        return not preparation
     if deadline is None:
         return False
     qualified = usage.meter_rate_version in _QUALIFIED_RATE_VERSIONS
@@ -480,9 +481,9 @@ async def reserve_tenant_host_usage(
     cpu = bounds.get("cpu_ms") if qualified else None
     expected = bounds.get("cpu_expected_ms")
     linger = bounds.get("linger_seconds")
-    preparation = route_id is not None and route_id.startswith("prepare:")
+    bounded_linger = type(linger) is int and 0 <= linger <= 300
     if preparation and (usage.meter_rate_version != WORKERS_RATE_TABLE_VERSION or expected is None
-                        or type(linger) is not int or not 0 <= linger <= 300):
+                        or not bounded_linger):
         return False
     if qualified and (not valid_cpu_limits(cpu) or (not preparation and (
         type(workflow_cpu_ms) is not int or workflow_cpu_ms < 1 or type(subrequests) is not int or not 0 <= subrequests <= 50
@@ -491,6 +492,8 @@ async def reserve_tenant_host_usage(
     now = await db.scalar(select(func.clock_timestamp()))
     assert now is not None
     now = now.astimezone(UTC)
+    if bounded_linger and deadline <= now:
+        return False
     if usage.meter_rate_version == WORKERS_RATE_TABLE_VERSION:
         if not tenant_id or not route_id:
             return False
@@ -503,7 +506,6 @@ async def reserve_tenant_host_usage(
     # Prior releases retain their deployed alarm pricing. The bounded linger
     # adds duration only, with no scheduled requests or detached engine starts.
     inventory_rate = usage.meter_rate_version in _INVENTORY_RATE_VERSIONS
-    bounded_linger = type(linger) is int and 0 <= linger <= 300
     tail = linger if bounded_linger else (
         _INVENTORY_TAIL_SECONDS if inventory_rate else _TENANT_WARM_SECONDS + _TENANT_WATCHDOG_SECONDS
     )
@@ -536,8 +538,9 @@ async def reserve_tenant_host_usage(
                     return False
                 # Only time that can contain engine entry needs a daily identity.
                 day = cursor.replace(hour=0, minute=0, second=0, microsecond=0)
+                identity_until = min(until, deadline) if bounded_linger else until
                 if not preparation:
-                    while day < (min(until, max(now, deadline)) if bounded_linger else until):
+                    while day < identity_until:
                         await _reserve_engine_identity(
                             db, usage.installation_id, f"day:{tenant_id}:{day.date()}", day, 1,
                         )
@@ -547,6 +550,7 @@ async def reserve_tenant_host_usage(
                 days = ((until - timedelta(microseconds=1)).date() - cursor.date()).days + 1
                 segment["qualified_creations"] = 4 * dispatch + days
             if preparation:
+                assert expected is not None
                 segment["qualified_cpu_ms"] = dispatch * _prepare_cpu_reserve(cpu, expected)
                 segment["released_engine_requests"] = 3 * dispatch  # One possible engine request, not four.
             else:
