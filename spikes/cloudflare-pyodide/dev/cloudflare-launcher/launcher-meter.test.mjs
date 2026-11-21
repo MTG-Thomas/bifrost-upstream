@@ -34,3 +34,23 @@ test('the sealed route receipt stays bounded across meter reloads', (t) => {
   assert.deepEqual(routes['route-0'], [invocation]);
   assert.equal(routes['route-128'], undefined);
 });
+
+test('stop confirmation uses reserved DO requests within the hard cap', (t) => {
+  const db = new DatabaseSync(':memory:');
+  t.after(() => db.close());
+  const sql = {
+    databaseSize: 4096,
+    exec(query, ...args) {
+      const statement = db.prepare(query);
+      if (query.startsWith('SELECT')) return {toArray: () => statement.all(...args)};
+      statement.run(...args);
+    },
+  };
+  const meter = launcherMeter(sql, JSON.stringify({
+    sqlite_rows_written: SQLITE_HEADROOM + 300, do_requests: 10, log_events: 10,
+  }));
+  assert.equal(meter.charge({do_requests: 9}), true);
+  assert.equal(meter.charge({do_requests: 1}, true, true), true);
+  assert.equal(meter.charge({do_requests: 1}, true, true), false);
+  assert.equal(meter.snapshot().do_requests, 10);
+});

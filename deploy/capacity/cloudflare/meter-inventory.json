@@ -59,7 +59,7 @@
         ]
       },
       "spikes/cloudflare-pyodide/dev/cloudflare-launcher/launcher-core.mjs": {
-        "sha256": "73291312c911e4871905780778c13bf708574c629477c91f242b0f8c1343e1e7",
+        "sha256": "41a34620d42964c0f179a5214afbed058624b262c96adc8c246848a13810d1a7",
         "paths": [
           "launcher-control",
           "launcher-workload"

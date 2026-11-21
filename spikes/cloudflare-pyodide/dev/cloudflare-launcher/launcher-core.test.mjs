@@ -400,8 +400,12 @@ test('managed cancellation keeps the acknowledged slot until child termination i
   assert.equal(api.data.get('slot').route.route_id, attempt.route_id);
   await assert.rejects(api.core.release(), /stop is unconfirmed/);
   assert.equal(api.data.get('slot').route.engine_slot, 0);
+  const stopCalls = api.stopped.length;
+  await assert.rejects(api.core.release(), /backing off/);
+  assert.equal(api.stopped.length, stopCalls);
   ended = true;
   finish.resolve(COMPLETED);
+  api.setClock(START + 2000);
   await api.core.release();
   await api.finish();
   assert.equal(await api.dial(), null);

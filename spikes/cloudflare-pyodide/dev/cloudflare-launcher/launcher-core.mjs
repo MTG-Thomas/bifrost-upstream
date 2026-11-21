@@ -111,6 +111,8 @@ export class LauncherCore {
   #preparations = new Map();
   #agentRequests = new Map();
   #released = false;
+  #cleanupRetryAt = 0;
+  #cleanupDelayMs = 2000;
 
   constructor({identity, secret, clock, storage, send, runHost, prepareHost, stopHost, runSummary, runAgent,
     runCapacityCanary, background, meter, slots = 1, tenantSlots = false, newId = newNonce}) {
@@ -165,11 +167,15 @@ export class LauncherCore {
       if (this.tenantSlots) {
         // A delete witness must cover the child, even if canonical settlement
         // was already acknowledged or the launcher reset after dispatch.
-        await Promise.all(slots.filter(slot => slot?.route.kind === 'workflow' &&
-          (slot.state === 'entering' || slot.terminal?.attempt_state === 'uncertain')).map(async ({route}) => {
-          this.#aborts.get(route.route_id)?.abort();
-          if (!await this.#confirmStop(route)) throw new Error('Workflow stop is unconfirmed');
-        }));
+        if (this.clock() < this.#cleanupRetryAt) throw new Error('Workflow stop confirmation is backing off');
+        const proof = await Promise.all(slots.filter(slot => slot?.route.kind === 'workflow' &&
+          (slot.state === 'entering' || slot.terminal?.attempt_state === 'uncertain')).map(({route}) =>
+          this.#confirmStop(route)));
+        if (proof.includes(false)) {
+          this.#cleanupRetryAt = this.clock() + this.#cleanupDelayMs;
+          this.#cleanupDelayMs = Math.min(this.#cleanupDelayMs * 2, 30_000);
+          throw new Error('Workflow stop is unconfirmed');
+        }
       }
       for (const slot of slots) {
         if (slot?.state === 'entering' && !(this.tenantSlots && slot.route.kind === 'workflow')) this.#stop(slot.route);
