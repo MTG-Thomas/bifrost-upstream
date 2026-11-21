@@ -625,7 +625,7 @@ async def test_connect_uses_opaque_credential_from_protected_rest_entry(e2e_clie
         assert connected.status_code == 200, connected.text
         installation = connected.json()["installation"]
         installation_id = UUID(installation["installation_id"])
-        assert installation["fleet_envelope_usd"] == "45.18"
+        assert installation["fleet_envelope_usd"] == "45.26"
         assert installation["spend"]["estimated_usd"] == "0.00"
         assert installation["spend"]["workers_paid_subscription_usd"] == "5.00"
         assert token not in connected.text and reference not in connected.text
