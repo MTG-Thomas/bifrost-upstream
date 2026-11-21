@@ -8,6 +8,7 @@ export const STORAGE_CHUNK = 1 << 20;
 const TERMINAL_ROWS = Math.ceil(CLOUDFLARE_MAX_LOGICAL_BYTES / STORAGE_CHUNK) + 1;
 const sqliteHeadroom = slots => slots * (4 * TERMINAL_ROWS + 12) + 8;
 export const SQLITE_HEADROOM = sqliteHeadroom(MAX_WORKFLOW_SLOTS);
+const MAX_RECEIPT_ROUTES = 128;
 const ROUTE_ENTRY_WRITES = 16;
 const ROUTE_ENTRY_REQUESTS = 5; // initial run, up to 3 warm calls, confirmed run
 
@@ -72,7 +73,9 @@ export function launcherMeter(sql, binding, {settle = false} = {}) {
       return true;
     },
     recordRoute(routeId, invocations) {
-      if (settle && !state.final && !state.routes?.[routeId]) {
+      // Routes beyond the receipt capacity keep their Bifrost reservations.
+      if (settle && !state.final && !state.routes?.[routeId] &&
+          Object.keys(state.routes ?? {}).length < MAX_RECEIPT_ROUTES) {
         save({...state, routes: {...state.routes, [routeId]: invocations}});
       }
     },

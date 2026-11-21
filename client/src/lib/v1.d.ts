@@ -16548,7 +16548,10 @@ export interface components {
              */
             version: 1;
             workers: components["schemas"]["CloudflareWorkersPolicy"];
-            /** Monthly Limit Usd */
+            /**
+             * Monthly Limit Usd
+             * @description Monthly admission target for Bifrost's estimated usage. The Workers Paid subscription is separate.
+             */
             monthly_limit_usd: number | string;
             /** Shared Managed Worker Cap */
             shared_managed_worker_cap?: number | null;
@@ -16562,7 +16565,10 @@ export interface components {
              */
             version: 1;
             workers: components["schemas"]["CloudflareWorkersPolicy"];
-            /** Monthly Limit Usd */
+            /**
+             * Monthly Limit Usd
+             * @description Monthly admission target for Bifrost's estimated usage. The Workers Paid subscription is separate.
+             */
             monthly_limit_usd: string;
             /** Shared Managed Worker Cap */
             shared_managed_worker_cap?: number | null;
@@ -16629,7 +16635,10 @@ export interface components {
             /** Admission Open */
             admission_open: boolean;
             policy: components["schemas"]["CloudflareCapacityPolicy-Output"];
-            /** Fleet Envelope Usd */
+            /**
+             * Fleet Envelope Usd
+             * @description Estimated fleet usage for the configured lifetime and cleanup margin.
+             */
             fleet_envelope_usd: string;
             /** Owned Resources Pending */
             owned_resources_pending: number;
@@ -16658,7 +16667,10 @@ export interface components {
              * @enum {string}
              */
             state: "ready" | "budget_reached" | "ledger_unavailable";
-            /** Estimated Usd */
+            /**
+             * Estimated Usd
+             * @description Bifrost ledger estimate with unsettled usage reserves.
+             */
             estimated_usd: string | null;
             /**
              * Workers Paid Subscription Usd

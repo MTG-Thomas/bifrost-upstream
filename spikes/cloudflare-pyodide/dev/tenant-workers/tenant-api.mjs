@@ -59,7 +59,7 @@ export class TenantHost extends DurableObject {
   // an attempt (see run()), and a late answer from a retired generation can
   // never vouch for its replacement.
   #readyGeneration = null;
-  #reservedIdentity = null;
+  #reservedDailyIdentity = null;
 
   async #engine(tenantId, reserveIdentity) {
     const engineId = `tenant-eng-${tenantId}-${(await engineDigest(this.env.RUNTIME_SHA256)).slice(0, 16)}`;
@@ -73,10 +73,14 @@ export class TenantHost extends DurableObject {
     // that is still running can never act for a later attempt.
     const generation = await this.#currentGeneration();
     const identity = `${engineId}-cpu${cpuMs ?? 'default'}-sr${subRequests ?? 'default'}-g${generation}`;
-    if (this.env.BIFROST_METER_GENERATIONS === 'true' && this.#reservedIdentity !== identity) {
-      if (typeof reserveIdentity !== 'function') throw new Error('Cloudflare generation needs a usage reservation');
-      await reserveIdentity(identity);
-      this.#reservedIdentity = identity;
+    if (this.env.BIFROST_METER_GENERATIONS === 'true') {
+      const dailyIdentity = `${identity}:${new Date().toISOString().slice(0, 10)}`;
+      if (this.#reservedDailyIdentity !== dailyIdentity && typeof reserveIdentity === 'function') {
+        await reserveIdentity(identity);
+        this.#reservedDailyIdentity = dailyIdentity;
+      } else if (!this.#reservedDailyIdentity?.startsWith(`${identity}:`)) {
+        throw new Error('Cloudflare generation needs a usage reservation');
+      }
     }
     return {generation, identity, worker: this.env.LOADER.get(
       identity,

@@ -217,7 +217,7 @@ async def test_connect_uses_opaque_credential_from_protected_rest_entry(e2e_clie
         assert connected.status_code == 200, connected.text
         installation = connected.json()["installation"]
         installation_id = UUID(installation["installation_id"])
-        assert installation["fleet_envelope_usd"] == "13.32"
+        assert installation["fleet_envelope_usd"] == "12.85"
         assert installation["spend"]["estimated_usd"] == "0.00"
         assert installation["spend"]["workers_paid_subscription_usd"] == "5.00"
         assert token not in connected.text and reference not in connected.text
@@ -389,7 +389,9 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
     payload = enable_job.CloudflareEnablePayload.model_validate(job.payload)
     release = SimpleNamespace(
         digest="d" * 64,
-        manifest=SimpleNamespace(workers={"capacity": SimpleNamespace(cpu_ms=400)}),
+        manifest=SimpleNamespace(
+            meter_bounds=SimpleNamespace(qualification=SimpleNamespace(expected_cpu_ms={"capacity": 9})),
+        ),
     )
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider_read)) as http:
         with pytest.raises(PlatformJobRequiresAction) as ingress_denied:
@@ -1381,16 +1383,21 @@ async def test_admission_prices_the_qualified_ledger_bounds(
     # above the cap even for a regressing or uncertain final receipt.
     # The launcher, two control objects and two slots each reserve 0.128 GB.
     lifetime_base = Decimal("0.01681260") + elapsed * Decimal("0.00068457800") + Decimal("0.00004280")
+    month_seconds = Decimal((usage_period(start)[1] - start).total_seconds())
+    lifetime_base += Decimal("0.022") * elapsed / month_seconds
     fallback = lifetime_base + Decimal("0.000106")
     await db_session.flush()
-    assert await db_session.scalar(price) == fallback
+    observed = await db_session.scalar(price)
+    assert observed is not None and abs(observed - (fallback)) < Decimal("1e-12")
     current.meter_final = receipt.model_dump()
     await db_session.flush()
-    assert await db_session.scalar(price) == lifetime_base + Decimal("0.00012810")
+    observed = await db_session.scalar(price)
+    assert observed is not None and abs(observed - (lifetime_base + Decimal("0.00012810"))) < Decimal("1e-12")
     current.meter_terminal = {"sqlite_rows_written": 150, "do_requests": 18, "log_events": 1}
     current.meter_uncertain = True
     await db_session.flush()
-    assert await db_session.scalar(price) == lifetime_base + Decimal("0.00015810")
+    observed = await db_session.scalar(price)
+    assert observed is not None and abs(observed - (lifetime_base + Decimal("0.00015810"))) < Decimal("1e-12")
     saved_bounds = current.meter_bounds
     current.meter_bounds = {"caps": {"do_requests": 1}, "second_usd": "0.00068126550"}
     await db_session.flush()
@@ -1540,13 +1547,14 @@ async def test_qualified_dispatch_prices_pinned_cpu_and_keeps_sdk_events_attribu
         db_session, worker_id, now + timedelta(seconds=120), workflow_cpu_ms=123, subrequests=12,
         tenant_id="f" * 32, route_id="fixture-1",
     )
-    assert await cloudflare_spend.reserve_engine_generation(db_session, worker_id, "tenant-generation-0")
-    assert await cloudflare_spend.reserve_engine_generation(db_session, worker_id, "tenant-generation-0")
+    identity = f"tenant-eng-tenant-py-{'f' * 32}-fixture"
+    assert await cloudflare_spend.reserve_engine_generation(db_session, worker_id, f"{identity}-g0")
+    assert await cloudflare_spend.reserve_engine_generation(db_session, worker_id, f"{identity}-g0")
     row = await db_session.get(CloudflareUsageActivity, (installation.id, usage_period(now)[0]))
     assert row is not None
     assert (row.dispatched_runs, row.sdk_requests, row.qualified_legacy_events) == (1, 1, 2)
     assert (row.qualified_dispatches, row.qualified_warm_pings, row.qualified_cpu_ms) == (1, 32, 1_367_523)
-    assert row.qualified_creations in (5, 6)  # four for the generation, one per tenant day
+    assert row.qualified_creations == 1
     assert row.generation_control_requests == 4
     incarnation = await db_session.get(CloudflareUsageIncarnation, worker_id)
     assert incarnation is not None
@@ -1573,10 +1581,23 @@ async def test_qualified_dispatch_prices_pinned_cpu_and_keeps_sdk_events_attribu
         tenant_id="f" * 32, route_id="fixture-2",
     )
     await db_session.refresh(row)
-    assert row.qualified_creations in (5, 6)
-    assert await cloudflare_spend.reserve_engine_generation(db_session, worker_id, "tenant-generation-1")
+    assert row.qualified_creations == 1
+    assert await cloudflare_spend.reserve_engine_generation(db_session, worker_id, f"{identity}-g1")
     await db_session.refresh(row)
-    assert row.qualified_creations in (9, 10)
+    assert row.qualified_creations == 2
+    # A different launcher package can carry the same loader code and identity.
+    incarnation.meter_release_digest = "a" * 64
+    assert await cloudflare_spend.reserve_engine_generation(db_session, worker_id, f"{identity}-g1")
+    await db_session.refresh(row)
+    assert row.qualified_creations == 2
+
+    tomorrow = now + timedelta(days=1)
+    await cloudflare_spend._book_daily_engine(db_session, incarnation, f"{identity}-g1", tomorrow)
+    await cloudflare_spend._book_daily_engine(db_session, incarnation, f"{identity}-g1", tomorrow)
+    next_day = await db_session.get(CloudflareUsageActivity, (installation.id, usage_period(tomorrow)[0]))
+    assert next_day is not None
+    await db_session.refresh(next_day)
+    assert next_day.qualified_creations == (3 if usage_period(tomorrow)[0] == usage_period(now)[0] else 1)
 
     next_period = usage_period(now)[1]
     previous_rollover = await db_session.get(CloudflareUsageActivity, (installation.id, next_period))
@@ -1593,7 +1614,7 @@ async def test_qualified_dispatch_prices_pinned_cpu_and_keeps_sdk_events_attribu
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("evidence", ["complete", "reloaded", "missing", "uncertain", "incomplete", "regressing"])
+@pytest.mark.parametrize("evidence", ["complete", "reloaded", "missing", "uncertain", "incomplete", "regressing", "drift"])
 async def test_foreground_pricing_keeps_reserves_until_a_confirmed_seal(
     db_session: AsyncSession, installation: CloudflareInstallation, evidence: str,
 ) -> None:
@@ -1617,12 +1638,16 @@ async def test_foreground_pricing_keeps_reserves_until_a_confirmed_seal(
     assert await cloudflare_spend.reserve_engine_generation(db_session, worker_id, identity)
     event = {"sqlite_rows_written": 12, "do_requests": 3, "log_events": 1}
     await cloudflare_spend.record_launcher_terminal_meter(
-        db_session, worker_id, {**event, "sqlite_rows_written": 13 if evidence == "regressing" else 12},
+        db_session, worker_id, {
+            **event, "sqlite_rows_written": 13 if evidence == "regressing" else 12,
+            "do_requests": 0 if evidence == "drift" else event["do_requests"],
+        },
         uncertain=evidence == "uncertain",
     )
     price = select(cloudflare_estimated_usage()).where(CloudflareInstallation.id == installation.id)
     payload = CloudflareLauncherUsage.model_validate({
-        **event, "routes": {} if evidence == "incomplete" else {"fixture": [
+        **event, "do_requests": 0 if evidence == "drift" else event["do_requests"],
+        "routes": {} if evidence == "incomplete" else {"fixture": [
             {"identity": identity, "kind": "boot", "cold": True, "started_at": now},
             {"identity": identity, "kind": "workflow", "cold": evidence == "reloaded", "started_at": now},
         ]},
@@ -1646,18 +1671,23 @@ async def test_foreground_pricing_keeps_reserves_until_a_confirmed_seal(
         extra_load_us = 500_000 if evidence == "reloaded" else 0
         assert activity.released_cpu_us == 7_500_000 - extra_load_us
         assert activity.released_engine_requests == 2
-        assert activity.qualified_creations in (1, 2)
-        assert reserved - settled == counter_and_root_release + Decimal("0.00815060") - extra_load_us * Decimal("2e-11")
+        assert activity.qualified_creations == 1
+        assert reserved - settled == counter_and_root_release + Decimal("0.00015060") - extra_load_us * Decimal("2e-11")
     elif evidence == "incomplete":
         assert activity.released_cpu_us == activity.released_engine_requests == 0
         assert reserved - settled == counter_and_root_release
     else:
         assert activity.released_cpu_us == activity.released_engine_requests == 0
         assert reserved == settled
+    if evidence == "drift":
+        coverage = await cloudflare_spend.spend_coverage(db_session, installation.account_id, period, WORKERS_RATE_TABLE_VERSION)
+        assert any("counts diverged" in line for line in coverage)
+    if evidence != "missing":
+        assert await db_session.get(cloudflare_spend.CloudflareDispatchMeter, (worker_id, "fixture")) is None
 
 
 @pytest.mark.asyncio
-async def test_launcher_sqlite_high_water_uses_the_included_allowance_and_stops_on_delete(
+async def test_launcher_sqlite_high_water_accrues_until_namespace_deletion(
     db_session: AsyncSession, installation: CloudflareInstallation,
 ) -> None:
     now = await db_session.scalar(select(func.clock_timestamp()))
@@ -1666,9 +1696,15 @@ async def test_launcher_sqlite_high_water_uses_the_included_allowance_and_stops_
     worker_id = uuid4()
     row = CloudflareUsageIncarnation(
         worker_id=worker_id, installation_id=installation.id, started_at=start, slots=1,
-        meter_rate_version=WORKERS_RATE_TABLE_VERSION,
+        meter_rate_version=WORKERS_RATE_TABLE_VERSION, meter_release_digest="f" * 64,
     )
-    db_session.add(row)
+    namespace = CloudflareOwnedResource(
+        id=uuid4(), installation_id=installation.id, account_id=installation.account_id,
+        scope="workers", kind="worker_script", target_name="fixture-launcher", desired_revision=1,
+        artifact_digest=row.meter_release_digest, effect_id=uuid4(), state="present",
+        provider_id="fixture", provider_version="1", observed_at=start,
+    )
+    db_session.add_all([row, namespace])
     await db_session.flush()
     estimate = select(cloudflare_spend._retained_storage_cost(CloudflareInstallation)).where(
         CloudflareInstallation.id == installation.id,
@@ -1678,19 +1714,27 @@ async def test_launcher_sqlite_high_water_uses_the_included_allowance_and_stops_
         db_session, worker_id, {**event, "sqlite_database_bytes": 12_288}, uncertain=False,
     )
     await db_session.flush()
-    assert await db_session.scalar(estimate) == 0
+    initial = await db_session.scalar(estimate)
+    assert initial is not None and initial > 0
 
     await cloudflare_spend.record_launcher_terminal_meter(
         db_session, worker_id, {**event, "sqlite_database_bytes": 9_000_000_000}, uncertain=False,
     )
     await cloudflare_spend.record_launcher_terminal_meter(db_session, worker_id, event, uncertain=False)
     assert row.meter_terminal is not None and row.meter_terminal["sqlite_database_bytes"] == 9_000_000_000
-    row.deleted_at = now
+    just_after_start = min(start + timedelta(seconds=1), now)
+    row.deleted_at = just_after_start
     await db_session.flush()
-    month_fraction = Decimal(str((now - start).total_seconds())) / Decimal(str((end - start).total_seconds()))
-    accrued = max(Decimal(0), Decimal(90) * month_fraction - 5) * Decimal("0.20")
+    still_accruing = await db_session.scalar(estimate)
+    namespace.state = "absent"
+    verified_at = min(start + timedelta(seconds=2), now)
+    namespace.observed_at = verified_at
+    await db_session.flush()
+    month_fraction = Decimal(str((verified_at - start).total_seconds())) / Decimal(str((end - start).total_seconds()))
+    accrued = Decimal("90.01") * month_fraction * Decimal("0.20")
     price = await db_session.scalar(estimate)
     assert price is not None and abs(price - accrued) < Decimal("0.00000000001")
+    assert still_accruing is not None and still_accruing >= price
 
 
 @pytest.mark.asyncio

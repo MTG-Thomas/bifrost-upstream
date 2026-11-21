@@ -40,7 +40,10 @@ class CloudflareCapacityPolicy(BaseModel):
 
     version: Literal[1] = 1
     workers: CloudflareWorkersPolicy
-    monthly_limit_usd: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+    monthly_limit_usd: Decimal = Field(
+        gt=0, max_digits=12, decimal_places=2,
+        description="Monthly admission target for Bifrost's estimated usage. The Workers Paid subscription is separate.",
+    )
     shared_managed_worker_cap: int | None = Field(default=None, ge=1, le=1000)
 
 
@@ -54,7 +57,7 @@ class CloudflareUsageAdvisory(BaseModel):
 
 class CloudflareSpendStatus(BaseModel):
     state: Literal["ready", "budget_reached", "ledger_unavailable"]
-    estimated_usd: Decimal | None
+    estimated_usd: Decimal | None = Field(description="Bifrost ledger estimate with unsettled usage reserves.")
     workers_paid_subscription_usd: Decimal = Field(description="Monthly Workers Paid subscription billed separately by Cloudflare")
     rate_table_version: str
     coverage: list[str] = Field(default_factory=list)
@@ -73,7 +76,7 @@ class CloudflareInstallationStatus(BaseModel):
     desired_state: Literal["scaled_in", "enabled", "disconnected"]
     admission_open: bool
     policy: CloudflareCapacityPolicy
-    fleet_envelope_usd: Decimal
+    fleet_envelope_usd: Decimal = Field(description="Estimated fleet usage for the configured lifetime and cleanup margin.")
     owned_resources_pending: int
     spend: CloudflareSpendStatus | None = None
 
@@ -485,8 +488,11 @@ class CloudflareEngineInvocation(BaseModel):
 class CloudflareLauncherUsage(CloudflareLauncherCounts):
     """Terminal or deletion receipt including workload admission state."""
 
-    sqlite_database_bytes: int | None = Field(default=None, ge=0, exclude_if=lambda value: value is None)
-    routes: dict[str, Annotated[list[CloudflareEngineInvocation], Field(min_length=1, max_length=4)]] | None = Field(
+    sqlite_database_bytes: int | None = Field(default=None, ge=0, le=2**53 - 1, exclude_if=lambda value: value is None)
+    routes: dict[
+        Annotated[str, Field(min_length=1, max_length=128)],
+        Annotated[list[CloudflareEngineInvocation], Field(min_length=1, max_length=4)],
+    ] | None = Field(
         default=None, max_length=128, exclude_if=lambda value: value is None,
     )
     exhausted: bool = Field(default=False, strict=True)

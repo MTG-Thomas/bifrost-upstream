@@ -67,7 +67,7 @@ CONSENT_TEXT = (
 
 @dataclass(frozen=True, slots=True)
 class WorkersReleaseMeterBounds:
-    """Verified metering ceilings supplied by the trusted release artifact."""
+    """Release-bound measurements and admission backstops."""
 
     cleanup_margin_seconds: int
     per_launcher_second: Mapping[str, Decimal]
@@ -76,16 +76,24 @@ class WorkersReleaseMeterBounds:
     max_slots_per_launcher: int
     launcher_caps: Mapping[str, int]
     cpu_limits_ms: Mapping[str, int]
-    startup_p99_us: int
+    startup_expected_us: int
+    expected_cpu_ms: Mapping[str, int] | None = None
 
 
 def release_meter_bounds(release: WorkersRelease) -> WorkersReleaseMeterBounds:
     bounds = release.manifest.meter_bounds
+    expected = bounds.qualification.expected_cpu_ms
+    # One cold dispatch and one managed capacity request per launcher-second
+    # give the fleet projection a measured CPU scenario. Keep the artifact's
+    # request, duration, storage and cleanup allowances.
+    startup_us = bounds.qualification.cpu_reference.samples.cold_exercise.p99_us
+    cpu_per_second = expected["workflow"] + expected["boot"] + expected["capacity"] + Decimal(startup_us) / 1000
     return WorkersReleaseMeterBounds(
-        bounds.cleanup_margin_seconds, bounds.per_launcher_second, bounds.per_fleet_fixed,
+        bounds.cleanup_margin_seconds,
+        {**bounds.per_launcher_second, "worker_cpu_ms": cpu_per_second},
+        {**bounds.per_fleet_fixed, "worker_cpu_ms": bounds.per_fleet_fixed["worker_requests"] * expected["capacity"]},
         release.digest, release.manifest.max_slots_per_launcher,
-        bounds.qualification.launcher_caps, bounds.qualification.cpu_limits_ms,
-        bounds.qualification.cpu_reference.samples.cold_exercise.p99_us,
+        bounds.qualification.launcher_caps, bounds.qualification.cpu_limits_ms, startup_us, expected,
     )
 
 
@@ -176,7 +184,7 @@ def _price_policy(
         raise ValueError("Workers release needs positive caps for all launcher meters")
     if not valid_cpu_limits(bounds.cpu_limits_ms):
         raise ValueError("Workers release needs positive CPU limits for all qualified paths")
-    if not 0 < bounds.startup_p99_us <= bounds.cpu_limits_ms["startup"] * 1000:
+    if not 0 < bounds.startup_expected_us <= bounds.cpu_limits_ms["startup"] * 1000:
         raise ValueError("Workers release needs a measured startup cost within its live reservation")
     digest = sha256(json.dumps({
         "cleanup_margin_seconds": bounds.cleanup_margin_seconds,
@@ -185,8 +193,19 @@ def _price_policy(
         "per_fleet_fixed": {k: str(v.normalize()) for k, v in bounds.per_fleet_fixed.items()},
         "launcher_caps": dict(bounds.launcher_caps),
         "cpu_limits_ms": dict(bounds.cpu_limits_ms),
-        "startup_p99_us": bounds.startup_p99_us,
+        "startup_p99_us": bounds.startup_expected_us,
+        "cpu_expected_ms": dict(bounds.expected_cpu_ms) if bounds.expected_cpu_ms is not None else None,
     }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    root_rate = Decimal(0) if bounds.expected_cpu_ms is not None else launcher_root_rate(bounds.per_launcher_second)
+    meter_launcher = {
+        "caps": dict(bounds.launcher_caps),
+        "second_usd": str(launcher_lifetime_rate(bounds.per_launcher_second) - launcher_root_rate(bounds.per_launcher_second) + root_rate),
+        "cpu_ms": dict(bounds.cpu_limits_ms),
+        "startup_p99_us": bounds.startup_expected_us,
+        "root_second_usd": str(root_rate),
+    }
+    if bounds.expected_cpu_ms is not None:
+        meter_launcher["cpu_expected_ms"] = dict(bounds.expected_cpu_ms)
     envelope = workers_fleet_envelope_usd(
         launcher_cap=policy.workers.launcher_cap,
         max_lifetime_seconds=policy.workers.max_lifetime_seconds,
@@ -195,7 +214,7 @@ def _price_policy(
         per_fleet_fixed=bounds.per_fleet_fixed,
     )
     if envelope > policy.monthly_limit_usd:
-        raise CloudflareBudgetTooLow(f"The fleet spend envelope is USD {envelope}")
+        raise CloudflareBudgetTooLow(f"The estimated fleet usage is USD {envelope}")
     limits = policy.model_dump(mode="json")
     limits["workers"]["work_kinds"] = sorted(policy.workers.work_kinds)
     return {
@@ -204,13 +223,7 @@ def _price_policy(
         "fleet_envelope_usd": str(envelope),
         "bounds_digest": digest,
         "bounds_release": bounds.release,
-        "meter_launcher": {
-            "caps": dict(bounds.launcher_caps),
-            "second_usd": str(launcher_lifetime_rate(bounds.per_launcher_second)),
-            "cpu_ms": dict(bounds.cpu_limits_ms),
-            "startup_p99_us": bounds.startup_p99_us,
-            "root_second_usd": str(launcher_root_rate(bounds.per_launcher_second)),
-        },
+        "meter_launcher": meter_launcher,
     }
 
 

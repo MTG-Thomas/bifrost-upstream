@@ -75,7 +75,7 @@
         ]
       },
       "spikes/cloudflare-pyodide/dev/cloudflare-launcher/launcher-meter.mjs": {
-        "sha256": "e10217d1697b15568952cdac7f254660e999db9413bee0a7da5a646fc39302de",
+        "sha256": "190a34ad586e4223c226d85fab446a98e3af3ad7498537845f7193bcbc5a02f1",
         "paths": [
           "launcher-workload",
           "storage-logs"
@@ -171,7 +171,7 @@
         ]
       },
       "spikes/cloudflare-pyodide/dev/tenant-workers/tenant-api.mjs": {
-        "sha256": "0862b5fafd1a43d0018ea9b24c613c323ad6314b538dfb4741924fb8cafe7f34",
+        "sha256": "575fb405fe4aada503db325d35ef351d0749394f0a2ce50fcf7718d52a607b41",
         "paths": [
           "tenant-state",
           "dynamic-engine",
