@@ -156,8 +156,12 @@ export class LauncherCore {
 
   release() {
     return this.#serialize(async () => {
+      if (this.#released && !this.tenantSlots) return;
       const slots = this.#control ? this.#slots :
         await Promise.all(this.#slots.map((_, index) => this.storage.get(slotKey(index))));
+      this.#released = true;
+      this.#session = null;
+      for (const controller of this.#preparations.values()) controller.abort();
       if (this.tenantSlots) {
         // A delete witness must cover the child, even if canonical settlement
         // was already acknowledged or the launcher reset after dispatch.
@@ -167,10 +171,6 @@ export class LauncherCore {
           if (await this.stopHost(route, true) !== true) throw new Error('Workflow stop is unconfirmed');
         }));
       }
-      if (this.#released) return;
-      this.#released = true;
-      this.#session = null;
-      for (const controller of this.#preparations.values()) controller.abort();
       for (const slot of slots) {
         if (slot?.state === 'entering' && !(this.tenantSlots && slot.route.kind === 'workflow')) this.#stop(slot.route);
       }

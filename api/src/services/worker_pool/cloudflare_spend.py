@@ -708,8 +708,9 @@ async def _book_daily_engine(
     day = started_at.astimezone(UTC).date()
     # The Loader identity already embeds the engine entry and runtime digest.
     daily_key = f"daily:{identity}:{day}"
-    # The tenant-day forecast pays for one identity. Every additional identity
-    # pays its own creation fee.
+    # The hashed host component identifies a managed slot and incarnation.
+    # Its daily forecast pays for one generation. Additional generations pay
+    # a separate creation fee.
     tenant = identity.removeprefix("tenant-eng-tenant-py-").split("-", 1)[0]
     day_key = f"day:{tenant}:{day}"
     await _reserve_engine_identity(db, usage.installation_id, day_key, started_at, 1)

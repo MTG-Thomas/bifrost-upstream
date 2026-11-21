@@ -46,8 +46,12 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareUsageActivity,
     CloudflareUsageIncarnation,
     CloudflareWorkerReservation,
+    CloudflareWorkflowSlot,
 )
+from src.models.enums import ExecutionStatus
 from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
+from src.models.orm.executions import Execution
+from src.models.orm.organizations import Organization
 from src.models.orm.platform_jobs import PlatformJob
 from src.models.orm.work_dispatches import WorkDispatch
 from src.services import worker_ingress_probes as ingress_probes
@@ -60,7 +64,7 @@ from src.services.authorization.context import (
 )
 from src.services.authorization.enforce import Caller
 from src.services.kubernetes_execution import KubernetesExecutionService
-from src.services.work_dispatch import WAKE_WORKFLOW
+from src.services.work_dispatch import WAKE_WORKFLOW, stage_dispatch
 from src.services.worker_pool import (
     cloudflare_canary,
     cloudflare_spend,
@@ -94,6 +98,12 @@ from src.services.worker_pool.cloudflare_provisioning import (
     ResourceIntent,
     ResourceObservation,
     ResourceTarget,
+)
+from src.services.worker_pool.claims import claim_next
+from src.services.worker_pool.cloudflare_slots import (
+    fence_workflow_slot_send,
+    release_workflow_slot,
+    settle_workflow_slot,
 )
 from src.services.worker_pool.cloudflare_spend import (
     WORKERS_CALIBRATED_RATE_TABLE_VERSION,
@@ -1129,6 +1139,110 @@ async def test_usage_envelope_migration_preserves_saved_policy(
     await connection.run_sync(migrate, module.upgrade)
     await db_session.refresh(installation)
     assert installation.policy == original
+
+
+@pytest.mark.asyncio
+async def test_workflow_slots_hold_headroom_and_serialize_different_tenants(async_session_factory) -> None:
+    workers = [uuid4(), uuid4()]
+    tenants = [uuid4(), uuid4()]
+    runs = [uuid4() for _ in range(7)]
+    budget = 512 * 2**20
+    now = datetime.now(UTC)
+    async with async_session_factory() as db:
+        account = uuid4().hex
+        installation_id = await create_installation(db, account)
+        installation = await db.get(CloudflareInstallation, installation_id)
+        assert installation is not None
+        limits = installation.policy["limits"]
+        installation.policy = {
+            **installation.policy,
+            "limits": {**limits, "workers": {**limits["workers"], "installation_slots": 5}},
+        }
+        installation.desired_state = "enabled"
+        installation.admitted_revision = 1
+        db.add(seal_credential(
+            CredentialRef(installation_id, account, "scope_bearer", "workers", 1),
+            SecretStr("synthetic-scope-bearer"), actor=str(OPERATOR_ID), now=now,
+        ))
+        db.add_all(ExecutionWorker(
+            id=worker, form="external", state="ready", capacity_scope="workers",
+            runtime_profile="cloudflare-python-v1", memory_limit_bytes=budget,
+            remote_owner_lease_expires_at=now + timedelta(minutes=5),
+        ) for worker in workers)
+        db.add_all(Organization(id=tenant, name=str(tenant), created_by="slot test") for tenant in tenants)
+        await db.flush()
+        db.add(CloudflareCapacityScope(
+            installation_id=installation_id, scope="workers", endpoint="https://capacity.example.test",
+            deployment_revision=1, bearer_version=1,
+        ))
+        db.add_all(CloudflareWorkerReservation(
+            worker_id=worker, installation_id=installation_id, scope="workers",
+            deployment_revision=1, control_root_version=1,
+        ) for worker in workers)
+        for index, (execution, tenant) in enumerate(zip(runs, [None] * 5 + tenants, strict=True)):
+            db.add(Execution(id=execution, organization_id=tenant, workflow_name="slot", executed_by_name="fixture"))
+            stage_dispatch(
+                db, family=WAKE_WORKFLOW, subject_id=execution, handler="workflow.execute", handler_version=1,
+                payload={"execution_id": str(execution)}, message={}, memory_request_bytes=1,
+                cloudflare_revision="a" * 64, queued_at=now + timedelta(microseconds=index),
+            )
+        await db.commit()
+
+    try:
+        initial = [await claim_next(workers[i % 2], fits_bytes=budget, budget_bytes=budget) for i in range(4)]
+        assert all(claim is not None and claim.tenant_id is None for claim in initial)
+        tickets = [claim.workflow_slot for claim in initial if claim is not None]
+        assert [ticket.ordinal for ticket in tickets if ticket is not None] == [0, 1, 2, 3]
+        barrier = asyncio.Barrier(2)
+
+        async def compete(worker: UUID):
+            await barrier.wait()
+            return await claim_next(worker, fits_bytes=budget, budget_bytes=budget)
+
+        winners = [claim for claim in await asyncio.gather(*(compete(worker) for worker in workers)) if claim is not None]
+        assert len(winners) == 1
+        assert winners[0].tenant_id in tenants
+        async with async_session_factory() as db:
+            assert await db.scalar(select(func.count()).select_from(CloudflareWorkflowSlot).where(
+                CloudflareWorkflowSlot.installation_id == installation_id, CloudflareWorkflowSlot.released_at.is_(None),
+            )) == 5
+            # Completed and definitively refused attempts release their exact
+            # tickets. A stale fence and an uncertain stop leave theirs held.
+            first, second, third, fourth = tickets
+            assert first is not None and second is not None and third is not None and fourth is not None
+            for index, ticket in enumerate((first, second, third)):
+                worker = workers[index % 2]
+                assert await fence_workflow_slot_send(db, worker, runs[index], ticket, preparation=False)
+            await release_workflow_slot(db, workers[0], runs[0], uuid4(), confirmed=True)
+            await settle_workflow_slot(db, workers[0], runs[0], first.fence, "completed")
+            await settle_workflow_slot(db, workers[1], runs[1], second.fence, "not_started")
+            await settle_workflow_slot(db, workers[0], runs[2], third.fence, "uncertain")
+            await db.execute(update(ExecutionWorker).where(ExecutionWorker.id == workers[1]).values(
+                remote_owner_lease_expires_at=now - timedelta(seconds=1),
+            ))
+            await db.commit()
+        reused = await claim_next(workers[1], fits_bytes=budget, budget_bytes=budget)
+        assert reused is not None and reused.subject_id == runs[4]
+        assert reused.workflow_slot is not None and reused.workflow_slot.ordinal == 0
+        async with async_session_factory() as db:
+            assert await db.scalar(select(CloudflareWorkflowSlot.released_at).where(
+                CloudflareWorkflowSlot.fence == third.fence,
+            )) is None
+            assert await db.scalar(select(CloudflareWorkflowSlot.fence).where(
+                CloudflareWorkflowSlot.fence == fourth.fence,
+            )) is None
+    finally:
+        async with async_session_factory() as db:
+            await db.execute(delete(WorkDispatch).where(WorkDispatch.subject_id.in_(runs)))
+            await db.execute(delete(Execution).where(Execution.id.in_(runs)))
+            await db.execute(delete(Organization).where(Organization.id.in_(tenants)))
+            await db.execute(delete(ExecutionWorker).where(ExecutionWorker.id.in_(workers)))
+            await db.execute(delete(CloudflareCapacityScope).where(CloudflareCapacityScope.installation_id == installation_id))
+            await db.execute(update(CloudflareInstallation).where(CloudflareInstallation.id == installation_id).values(
+                desired_state="disconnected", admitted_revision=None,
+            ))
+            await retire_cloudflare_installation(db, installation_id=installation_id, expected_revision=1)
+            await db.commit()
 
 
 @pytest.mark.asyncio

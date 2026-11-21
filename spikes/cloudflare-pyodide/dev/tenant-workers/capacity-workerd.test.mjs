@@ -81,41 +81,56 @@ const upgrades = new WebSocketServer({noServer: true});
 const measuredBundle = process.env.BIFROST_QUALIFIED_CAPACITY_BUNDLE;
 const measuredLauncher = process.env.BIFROST_QUALIFIED_LAUNCHER_BUNDLE;
 const measuredGateway = process.env.BIFROST_QUALIFIED_GATEWAY_BUNDLE;
+const slotQualification = process.env.BIFROST_LOCAL_TENANT_SLOTS === 'true';
+const launcherSlots = slotQualification ? 4 : measuredLauncher ? 2 : 1;
 const controllerPolls = Number(process.env.BIFROST_QUALIFIED_CONTROLLER_POLLS ?? 0);
 const controllerSource = new URL('../../../../api/src/services/pool_cadence.py', import.meta.url);
 const reconcileSeconds = Number(/^POOL_RECONCILE_SPACING_SECONDS = (\d+(?:\.\d+)?)$/m.exec(
   readFileSync(controllerSource, 'utf8').replaceAll('\r\n', '\n'))[1]);
 
 const sha256 = input => createHash('sha256').update(input).digest('hex');
+const heldSlots = new Map();
 
-async function referenceAttempt(record, solution) {
+async function referenceAttempt(record, solution, slotCase) {
   const beforeSdk = apiSdkCalls;
   const id = randomUUID();
   const now = Date.now();
   const workflow_deadline = new Date(now + 60_000).toISOString();
   const file_path = 'workflows/reference.py';
   const function_name = 'phase5a_fixture';
-  const caseName = solution ? 'solution' : 'loose';
+  const caseName = slotCase?.name ?? (solution ? 'solution' : 'loose');
   let source = readFileSync(new URL('../e2e/fixture.py', import.meta.url), 'utf8');
+  if (slotCase) {
+    source = source.replace('rows = await tables.list()', 'rows = await tables.list(app=case)')
+      .replace('from js import fetch', 'from js import fetch, globalThis\n    globalThis.slotFixture = case')
+      .replace('"table_count": len(rows)', '"table_count": len(rows), "isolated": globalThis.slotFixture == case');
+  }
   const sources = {[file_path]: source};
   if (solution) {
     source = source.replace('import logging', 'import logging\nfrom phase6_support.values import INSTALL_VALUE')
       .replace('"table_count": len(rows)', '"table_count": len(rows), "install_value": INSTALL_VALUE');
     Object.assign(sources, {[file_path]: source, 'phase6_support/values.py': 'INSTALL_VALUE = "solution"\n'});
   }
-  const org = randomUUID();
+  const org = slotCase?.org ?? randomUUID();
   const solution_id = solution ? randomUUID() : null;
-  const route_id = `workflow:${id}:${randomUUID()}`;
+  const fence = randomUUID();
+  const route_id = `workflow:${id}:${fence}`;
   const command = randomUUID();
   const result = Promise.withResolvers();
   record.terminals.set(route_id, result);
   record.replies.set(command, result);
+  const engineSlot = slotCase?.ordinal ?? 0;
+  if (slotCase) record.send('command', {id: randomUUID(), action: 'prepare_workflow', payload: {
+    route_id: `prepare:${fence}`, execution_id: id, org_id: org, engine_slot: engineSlot,
+  }});
   record.send('command', {id: command, action: 'workflow', payload: {
     route_id, execution_id: id, started_at: new Date(now).toISOString(), workflow_deadline,
+    engine_slot: engineSlot,
     timeout_seconds: 60, memory_request_bytes: 64 * 1024 ** 2,
     active_execution: {execution_id: id, sync: true, org_id: org},
     context: {workflow_deadline, file_path, function_name, name: function_name, content_hash: sha256(source),
-      parameters: {case: caseName}, engine_token: 'fixture-only-access', transient: true, no_cache: true,
+      parameters: {case: caseName}, engine_token: slotCase ? `fixture-access-${caseName}` : 'fixture-only-access',
+      transient: true, no_cache: true,
       organization_id: org, organization: null, solution_id,
       caller: {user_id: org, email: 'fixture@example.invalid', name: 'Qualifying fixture'},
       cloudflare_workspace: {manifest: Object.fromEntries(Object.entries(sources).map(([file, value]) =>
@@ -125,7 +140,8 @@ async function referenceAttempt(record, solution) {
   const terminal = await result.promise;
   assert.equal(terminal.attempt_state, 'completed', JSON.stringify(terminal));
   assert.equal(terminal.result.success, true, JSON.stringify(terminal));
-  assert.deepEqual(terminal.result.result, {case: caseName, table_count: 0, ...(solution ? {install_value: 'solution'} : {})});
+  assert.deepEqual(terminal.result.result, {case: caseName, table_count: 0,
+    ...(solution ? {install_value: 'solution'} : {}), ...(slotCase ? {isolated: true} : {})});
   return {id, route_id, sdk_requests: apiSdkCalls - beforeSdk, usage: terminal.usage};
 }
 
@@ -169,12 +185,23 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (measuredLauncher && req.url === '/api/sdk/tables/list' && req.method === 'POST') {
-      assert.equal(req.headers.authorization, 'Bearer fixture-only-access');
+      if (slotQualification) {
+        const {app} = JSON.parse(await buffer(req));
+        assert.ok(heldSlots.has(app));
+        assert.equal(req.headers.authorization, `Bearer fixture-access-${app}`);
+        heldSlots.get(app).sdk = true;
+      } else assert.equal(req.headers.authorization, 'Bearer fixture-only-access');
       apiSdkCalls++;
       res.writeHead(200, {'content-type': 'application/json'}).end('[]');
       return;
     }
     if (measuredLauncher && req.url.startsWith('/hold/')) {
+      if (slotQualification) {
+        const held = heldSlots.get(req.url.slice('/hold/'.length));
+        assert.ok(held?.sdk, 'Held request must follow its own credential-bound SDK call');
+        held.entered.resolve();
+        await held.release.promise;
+      }
       res.end('released');
       return;
     }
@@ -266,7 +293,7 @@ async function start() {
     return fetch(new Request(${JSON.stringify(base)} + new URL(request.url).pathname, request));
   }};`;
   mf = new Miniflare({cf: false, resourcePersistencePath: storage, workers: [
-    capacityWorker({...settings, bundle: measuredBundle, slots: measuredLauncher ? 2 : 1}),
+    capacityWorker({...settings, bundle: measuredBundle, slots: launcherSlots}),
     {
       dev: {outboundService: {type: 'worker', worker: 'relay'}},
       config: {name: 'launcher', compatibilityDate: '2026-10-30',
@@ -332,7 +359,7 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
   const uid = randomBytes(16).toString('hex');
   const key = randomBytes(32).toString('hex');
   const reservation = {worker_id: id, worker_version: settings.version,
-    memory_limit_bytes: (measuredLauncher ? 256 : 128) * 1024 ** 2,
+    memory_limit_bytes: launcherSlots * 128 * 1024 ** 2,
     max_lifetime_seconds: controllerPolls ? Math.ceil(controllerPolls * reconcileSeconds) + 120 : 60,
     drain_grace_seconds: 5,
     resource_uid: uid, control_key: key};
@@ -360,7 +387,34 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
   assert.equal(seen.inventory.payload.event, 'inventory');
   assert.equal((await (await request(path)).json()).state, 'running');
   let references = null;
-  if (controllerPolls) {
+  if (slotQualification) {
+    assert.equal(seen.inventory.payload.inventory.tenant_slot_protocol, 1);
+    const org = randomUUID();
+    const startSlot = ordinal => {
+      const name = randomUUID();
+      const held = {entered: Promise.withResolvers(), release: Promise.withResolvers(), sdk: false};
+      heldSlots.set(name, held);
+      return {...held, terminal: referenceAttempt(seen, false, {ordinal, name, org})};
+    };
+    const concurrent = Array.from({length: 4}, (_, slot) => startSlot(slot));
+    const allTerminals = Promise.all(concurrent.map(slot => slot.terminal));
+    try {
+      await Promise.race([
+        Promise.all(concurrent.map(slot => slot.entered.promise)),
+        allTerminals.then(() => assert.fail('Workflows finished before all four reached the barrier')),
+      ]);
+    } finally {
+      concurrent.forEach(slot => slot.release.resolve());
+    }
+    const results = await allTerminals;
+    await next(() => seen.heartbeat?.occupied_routes?.length === 0 &&
+      seen.heartbeat.received_sequence >= seen.terminalAckSequence);
+    const repeated = startSlot(0);
+    repeated.release.resolve();
+    references = [...results, await repeated.terminal];
+    assert.equal(seen.generations.size, 4);
+    console.info('tenant-slot-overlap', JSON.stringify({overlapping: 4, credentialBound: 5, distinctGenerations: 4}));
+  } else if (controllerPolls) {
     assert.ok(measuredLauncher);
     const loose = await referenceAttempt(seen, false);
     await observeAtControllerCadence(path);
@@ -394,7 +448,7 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
   if (references) {
     assert.ok(references.every(attempt => attempt.usage));
     assert.ok(deleted.usage);
-    if (measuredGateway) {
+    if (measuredGateway && !slotQualification) {
       assert.equal(seen.generations.size, 2);
       for (const {route_id} of references) {
         const calls = deleted.usage.routes[route_id];
@@ -403,73 +457,82 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
         assert.ok(Number.isSafeInteger(calls[1].wall_ms) && calls[1].wall_ms >= 0);
       }
     }
+    if (slotQualification) {
+      const identities = references.map(({route_id}) =>
+        deleted.usage.routes[route_id].find(call => call.kind === 'workflow').identity);
+      assert.equal(new Set(identities.slice(0, 4)).size, 4);
+      assert.equal(identities[4], identities[0]);
+    }
     console.info('launcher-reference', JSON.stringify({attempts: references, final: deleted.usage,
       lifetime_seconds: (Date.now() - startedAt) / 1000, capacity_requests: capacityCalls - initialCapacityCalls,
       sha256: sha256(readFileSync(measuredLauncher))}));
   }
 });
 
-test('compacting a WorkerLedger KV receipt releases its SQLite pages', async () => {
-  const probes = await mf.getDurableObjectNamespace('MeterProbe', 'launcher');
-  const {before, after} = await probes.getByName('fence').witnessFenceSize();
-  assert.ok(before >= 100_000 && after <= 16_000, `receipt ${before} bytes, fence ${after} bytes`);
-});
-
-for (const [meter, count, counted] of [
-  ['sqlite_rows_written', 19, 423], ['do_requests', 6, 406], ['log_events', 2, 2],
-]) {
-  test(`workerd counts and refuses launcher ${meter} at the workload ceiling`, async () => {
+if (!slotQualification) {
+  test('compacting a WorkerLedger KV receipt releases its SQLite pages', async () => {
     const probes = await mf.getDurableObjectNamespace('MeterProbe', 'launcher');
-    const receipt = JSON.parse(await probes.getByName(meter).witness(meter, count));
-    assert.equal(receipt.accepted, true);
-    assert.equal(receipt.rejected, false);
-    assert.equal(receipt.exhausted, meter !== 'log_events');
-    assert.equal(receipt.sealed.exhausted, meter !== 'log_events');
-    assert.equal(receipt.sealed[meter], counted);
-    assert.ok(receipt.sealed.sqlite_database_bytes > 0);
+    const {before, after} = await probes.getByName('fence').witnessFenceSize();
+    assert.ok(before >= 100_000 && after <= 16_000, `receipt ${before} bytes, fence ${after} bytes`);
   });
+
+  for (const [meter, count, counted] of [
+    ['sqlite_rows_written', 19, 423], ['do_requests', 6, 406], ['log_events', 2, 2],
+  ]) {
+    test(`workerd counts and refuses launcher ${meter} at the workload ceiling`, async () => {
+      const probes = await mf.getDurableObjectNamespace('MeterProbe', 'launcher');
+      const receipt = JSON.parse(await probes.getByName(meter).witness(meter, count));
+      assert.equal(receipt.accepted, true);
+      assert.equal(receipt.rejected, false);
+      assert.equal(receipt.exhausted, meter !== 'log_events');
+      assert.equal(receipt.sealed.exhausted, meter !== 'log_events');
+      assert.equal(receipt.sealed[meter], counted);
+      assert.ok(receipt.sealed.sqlite_database_bytes > 0);
+    });
+  }
+
+  for (const {name, status, headers, proof, expected} of [
+    {name: 'accepts authenticated 204', status: 204,
+      headers: {'x-bifrost-worker-ingress': `v${ingressPolicy.version}; allowed`}, expected: {}},
+    {name: 'rejects ingress 404', status: 404, expected: {stage: 'sdk_response', error_class: 'http_status', status: 404}},
+    {name: 'reports proof refusal', status: 401, expected: {stage: 'sdk_response', error_class: 'http_status', status: 401}},
+    {name: 'does not follow redirects', status: 302, headers: {Location: '/unexpected'},
+      expected: {stage: 'sdk_response', error_class: 'http_status', status: 302}},
+    {name: 'rejects a response without its ingress marker', status: 204,
+      expected: {stage: 'sdk_response', error_class: 'missing_ingress_marker', status: 204}},
+    {name: 'refuses a malformed proof before fetch', status: 204, proof: 'invalid',
+      expected: {stage: 'proof', error_class: 'invalid_command'}},
+  ]) {
+    test(`the workerd SDK canary ${name}`, async () => {
+      const worker_id = randomUUID();
+      const resource_uid = randomBytes(16).toString('hex');
+      const path = `workers/${worker_id}`;
+      const trace = {status, headers, requests: 0};
+      canaries.set(`/api/sdk/capacity-canary/${worker_id}`, trace);
+      try {
+        assert.equal((await request(path, 'PUT', {
+          worker_id, worker_version: settings.version, memory_limit_bytes: 128 * 1024 ** 2,
+          max_lifetime_seconds: 60, drain_grace_seconds: 5, resource_uid, control_key: randomBytes(32).toString('hex'),
+        })).status, 200);
+        assert.equal((await request(path + '/start', 'POST', {resource_uid})).status, 200);
+        const record = await next(() => hellos.get(worker_id)?.find(item => item.inventory));
+        sockets.get(worker_id).send(JSON.stringify(envelope(1, 1, 'command', {
+          id: 'canary-test', action: 'capacity_canary', payload: {proof: proof ?? 'a'.repeat(64)},
+        })));
+        const reply = await next(() => record.canary);
+        assert.deepEqual(reply.result, Object.keys(expected).length ? {failure: expected} : {});
+        assert.equal(trace.requests, proof ? 0 : 1);
+      } finally {
+        canaries.delete(`/api/sdk/capacity-canary/${worker_id}`);
+        await request(path, 'DELETE', {resource_uid});
+      }
+    });
+  }
+
+  // Conformance ends by simulating process loss for a reserved worker. Keep
+  // that reservation out of the canary cases, which share a one-worker scope.
 }
 
-for (const {name, status, headers, proof, expected} of [
-  {name: 'accepts authenticated 204', status: 204,
-    headers: {'x-bifrost-worker-ingress': `v${ingressPolicy.version}; allowed`}, expected: {}},
-  {name: 'rejects ingress 404', status: 404, expected: {stage: 'sdk_response', error_class: 'http_status', status: 404}},
-  {name: 'reports proof refusal', status: 401, expected: {stage: 'sdk_response', error_class: 'http_status', status: 401}},
-  {name: 'does not follow redirects', status: 302, headers: {Location: '/unexpected'},
-    expected: {stage: 'sdk_response', error_class: 'http_status', status: 302}},
-  {name: 'rejects a response without its ingress marker', status: 204,
-    expected: {stage: 'sdk_response', error_class: 'missing_ingress_marker', status: 204}},
-  {name: 'refuses a malformed proof before fetch', status: 204, proof: 'invalid',
-    expected: {stage: 'proof', error_class: 'invalid_command'}},
-]) {
-  test(`the workerd SDK canary ${name}`, async () => {
-    const worker_id = randomUUID();
-    const resource_uid = randomBytes(16).toString('hex');
-    const path = `workers/${worker_id}`;
-    const trace = {status, headers, requests: 0};
-    canaries.set(`/api/sdk/capacity-canary/${worker_id}`, trace);
-    try {
-      assert.equal((await request(path, 'PUT', {
-        worker_id, worker_version: settings.version, memory_limit_bytes: 128 * 1024 ** 2,
-        max_lifetime_seconds: 60, drain_grace_seconds: 5, resource_uid, control_key: randomBytes(32).toString('hex'),
-      })).status, 200);
-      assert.equal((await request(path + '/start', 'POST', {resource_uid})).status, 200);
-      const record = await next(() => hellos.get(worker_id)?.find(item => item.inventory));
-      sockets.get(worker_id).send(JSON.stringify(envelope(1, 1, 'command', {
-        id: 'canary-test', action: 'capacity_canary', payload: {proof: proof ?? 'a'.repeat(64)},
-      })));
-      const reply = await next(() => record.canary);
-      assert.deepEqual(reply.result, Object.keys(expected).length ? {failure: expected} : {});
-      assert.equal(trace.requests, proof ? 0 : 1);
-    } finally {
-      canaries.delete(`/api/sdk/capacity-canary/${worker_id}`);
-      await request(path, 'DELETE', {resource_uid});
-    }
-  });
-}
-
-// Conformance ends by simulating process loss for a reserved worker. Keep
-// that reservation out of the canary cases, which share a one-worker scope.
 test('shared capacity conformance exercises the real local HTTP provider', async () => {
   const suite = fileURLToPath(new URL('../../../../deploy/capacity/conformance/conformance.py', import.meta.url));
   const hook = fileURLToPath(new URL('../e2e/workers-local.py', import.meta.url));

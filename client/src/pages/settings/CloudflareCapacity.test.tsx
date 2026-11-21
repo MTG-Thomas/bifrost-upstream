@@ -111,6 +111,12 @@ it("submits the current consent version and clears the write-only token", async 
 	const linger = screen.getByLabelText("Tenant Engine Linger in Seconds");
 	expect(linger).toHaveValue(90);
 	fireEvent.change(linger, { target: { value: "0" } });
+	const tenantSlots = screen.getByLabelText("Slots Per Tenant");
+	const installationSlots = screen.getByLabelText("Installation Slot Limit");
+	expect(tenantSlots).toHaveValue(4);
+	expect(installationSlots).toHaveValue(9);
+	fireEvent.change(tenantSlots, { target: { value: "3" } });
+	fireEvent.change(installationSlots, { target: { value: "8" } });
 	const token = screen.getByLabelText("Cloudflare API Token");
 	expect(token).toHaveAttribute("type", "password");
 	fireEvent.change(token, { target: { value: "synthetic-management-token" } });
@@ -126,7 +132,9 @@ it("submits the current consent version and clears the write-only token", async 
 		consent: true,
 		consent_version: "existing-https-v1",
 		api_token: "synthetic-management-token",
-		policy: expect.objectContaining({ workers: expect.objectContaining({ linger_seconds: 0 }) }),
+		policy: expect.objectContaining({
+			workers: expect.objectContaining({ linger_seconds: 0, slots_per_tenant: 3, installation_slots: 8 }),
+		}),
 	}));
 	expect(token).toHaveValue("");
 });

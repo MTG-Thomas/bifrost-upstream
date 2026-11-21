@@ -240,6 +240,14 @@ class ExternalWorkerPoolController(WorkerCapacityController):
         if uid is not None and resource is not None and resource.resource_uid != uid:
             raise CapacityProtocolError("Provider resource UID changed for an existing incarnation")
         if state in self.cleanup_states:
+            if resource is None and self.managed_cloudflare_scope is not None:
+                async with get_db_context() as db:
+                    may_be_running = await db.scalar(select(select(CloudflareWorkflowSlot.fence).where(
+                        CloudflareWorkflowSlot.worker_id == worker_id,
+                        CloudflareWorkflowSlot.sent, CloudflareWorkflowSlot.released_at.is_(None),
+                    ).exists()))
+                if may_be_running:
+                    return  # A missing ledger is not a stop receipt.
             if resource is None and (uid is None or self.profile.protocol_version == 2) and (
                 not bounded_prepare
                 or ended_at is None or _now() - ended_at < UNBOUND_PREPARE_GRACE

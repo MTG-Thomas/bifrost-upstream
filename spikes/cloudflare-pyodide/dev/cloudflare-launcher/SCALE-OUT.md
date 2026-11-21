@@ -107,7 +107,7 @@ In Phase 1, scope bearer rotation begins after Scale In. It verifies deletion of
 
 ## Workload Eligibility and Evidence
 
-The [spike results](DESIGN.md) and [27-kind PlatformJob inventory](POOL-WORKER-VIABILITY.md) describe the proof at this source baseline. Hosted evidence below comes from different trials. The final mixed tenant workflow overlap ran in Workers-only mode.
+The [spike results](DESIGN.md) and [27-kind PlatformJob inventory](POOL-WORKER-VIABILITY.md) describe the original proof. The [managed tenant-slot design](PER-TENANT-SCRIPTS.md) adds four concurrent engines for one tenant in local workerd and installation-wide admission in PostgreSQL. Hosted evidence below comes from earlier trials. The final mixed tenant workflow overlap ran in Workers-only mode.
 
 | Work kind | Evidence | Initial product policy |
 | --- | --- | --- |

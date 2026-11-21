@@ -35,7 +35,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
-from shared.models import WorkerCapacityProfile
+from shared.models import CloudflareWorkersPolicy, WorkerCapacityProfile
 from shared.solution_git_stage import SOLUTION_GIT_CAPABILITY, SOLUTION_UPDATE_CHECK_JOB
 from shared.version import get_version
 from sqlalchemy import and_, func, literal, select, text, update
@@ -81,6 +81,11 @@ from src.services.worker_pool.claims import CAPACITY_LOCK, REMOTE_WORKER_HANDLER
 from src.services.worker_pool.cloudflare_admission import (
     ManagedCloudflareScope,
     PrimaryPool,
+)
+from src.services.worker_pool.cloudflare_slots import (
+    WorkflowSlotAdmission,
+    read_workflow_slot_admission,
+    tenant_key,
 )
 from src.services.worker_pool.demand import pending_local_platform_job_ids
 from src.services.worker_pool.eligibility import (
@@ -370,10 +375,19 @@ class WorkerCapacityController(ABC):
                 return []
             managed_scope = self.managed_cloudflare_scope
             control_root_version = None
+            workflow_slots = None
             if managed_scope is not None:
                 control_root_version = await managed_scope.lock_admission(db)
                 if control_root_version is None:
                     return []
+                policy_data = await db.scalar(select(CloudflareInstallation.policy).where(
+                    CloudflareInstallation.id == managed_scope.installation_id,
+                ))
+                assert policy_data is not None
+                workflow_slots = await read_workflow_slot_admission(
+                    db, managed_scope.installation_id,
+                    CloudflareWorkersPolicy.model_validate(policy_data["limits"]["workers"]),
+                )
             platform_job_ids = await pending_local_platform_job_ids(db, policy, _now())
             waiting = (
                 await db.execute(
@@ -631,6 +645,7 @@ class WorkerCapacityController(ABC):
                 new_declared=new_declared,
                 new_containers=self.containers_mode,
                 active_tenants=active_tenants,
+                workflow_slots=workflow_slots,
             )
             now = _now()
             # Only standard Jobs make up the warm minimum; a sized Job exists
@@ -1246,6 +1261,7 @@ def _plan_launches(
     new_declared: FreeBudget | None = None,
     new_containers: bool = False,
     active_tenants: set[UUID | None] | None = None,
+    workflow_slots: WorkflowSlotAdmission | None = None,
 ) -> LaunchPlan:
     """Place requests (oldest first) into free budgets, then into new Jobs.
 
@@ -1261,13 +1277,25 @@ def _plan_launches(
     slots = [dict(budget.handler_slots) for budget in bins]
     limited = dict(HANDLER_CONCURRENCY_LIMITS)
     busy_tenants = set(active_tenants or ())
+    if workflow_slots is not None:
+        workflow_slots = replace(workflow_slots, occupied=workflow_slots.occupied.copy())
+
+    def allows(tenant_id: UUID | None) -> bool:
+        return workflow_slots.allows(tenant_id) if workflow_slots is not None else tenant_id not in busy_tenants
+
+    def occupy(tenant_id: UUID | None) -> None:
+        if workflow_slots is None:
+            busy_tenants.add(tenant_id)
+        else:
+            workflow_slots.occupied[tenant_key(tenant_id)] += 1
+
     sized: list[tuple[UUID, int]] = []
     for item in waiting:
         dispatch_id, request = item.id, item.bytes
         placed = False
         for index, budget in enumerate(bins):
             opaque = budget.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
-            if opaque and item.tenant_id in busy_tenants:
+            if opaque and not allows(item.tenant_id):
                 continue
             remaining_slots = slots[index]
             handler = (
@@ -1286,7 +1314,7 @@ def _plan_launches(
                 if handler is not None and available_slots is not None:
                     remaining_slots[handler] = available_slots - 1
                 if opaque:
-                    busy_tenants.add(item.tenant_id)
+                    occupy(item.tenant_id)
                 placed = True
                 break
         if placed:
@@ -1296,8 +1324,8 @@ def _plan_launches(
         if new_containers and not new_budget.takes(item):
             continue
         if new_declared is not None:
-            if item.tenant_id not in busy_tenants and new_declared.fits(item):
-                busy_tenants.add(item.tenant_id)
+            if allows(item.tenant_id) and new_declared.fits(item):
+                occupy(item.tenant_id)
                 bins.append(new_declared)
                 rooms.append(new_declared.bytes - request)
                 handler = CLOUDFLARE_WORKFLOW_HANDLER[0]

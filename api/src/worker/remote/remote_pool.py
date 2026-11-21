@@ -400,6 +400,7 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                 entries[route_id] = (entry, execution, reservation, receipt)
 
         worker_id = UUID(self.worker_id)
+        managed = getattr(self.transport, "managed_cloudflare", False)
         async with get_db_context() as db:
             with remote_owner_context(LeaseRef(lease)):
                 # Serialize the claim comparison and loss decision with claims,
@@ -413,6 +414,17 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                 ExecutionWorkerClaim.worker_id == worker_id,
                 ExecutionWorkerClaim.family == WAKE_WORKFLOW,
             ))).all())
+            slot_routes = {}
+            if managed:
+                from src.models.orm.cloudflare_capacity import CloudflareWorkflowSlot
+
+                slot = CloudflareWorkflowSlot
+                slot_routes = {
+                    row.execution_id: (row.ordinal, row.tenant, row.fence)
+                    for row in await db.scalars(select(slot).where(
+                        slot.worker_id == worker_id, slot.released_at.is_(None),
+                    ))
+                }
             tracked = {
                 UUID(handle.current_execution.execution_id): handle
                 for handle in self._routes.values() if handle.current_execution is not None
@@ -442,6 +454,16 @@ class ThinRemoteProcessPool(ProcessPoolManager):
             subject = UUID(execution.execution_id)
             if subject not in claims or subject in duplicates:
                 continue  # No canonical claim to settle, or ambiguous route identity.
+            if managed and inventory.get("tenant_slot_protocol") == 1:
+                ticket = slot_routes.get(subject)
+                if (
+                    ticket is None or type(entry.get("engine_slot")) is not int
+                    or (entry["engine_slot"], entry["active_execution"].get("org_id") or "platform",
+                        UUID(route_id.rsplit(":", 1)[1])) != ticket
+                    or entry.get("incarnation_id") != str(worker_id)
+                ):
+                    mismatch = True
+                    continue
             handle = tracked.get(subject)
             if handle is not None and not self._opaque_inventory_matches(
                 handle, route_id, entry, execution, reservation, receipt,

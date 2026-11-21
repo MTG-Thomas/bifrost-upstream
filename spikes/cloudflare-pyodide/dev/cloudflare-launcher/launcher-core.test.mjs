@@ -30,7 +30,8 @@ function workflow(suffix = '1') {
   };
 }
 
-function peer({data = new Map(), runHost, prepareHost, runSummary, runAgent, beforePut, onSend, meter, slots = 1, stopHost} = {}) {
+function peer({data = new Map(), runHost, prepareHost, runSummary, runAgent, beforePut, onSend, meter, slots = 1,
+  stopHost, tenantSlots = false} = {}) {
   let now = START;
   let order = 0;
   let session;
@@ -43,7 +44,7 @@ function peer({data = new Map(), runHost, prepareHost, runSummary, runAgent, bef
   const entered = deferred();
   const assembler = new FragmentAssembler();
   const core = new LauncherCore({
-    identity: IDENTITY, secret: SECRET, clock: () => now, meter, slots,
+    identity: IDENTITY, secret: SECRET, clock: () => now, meter, slots, tenantSlots,
     newId: () => `id-${String(++order).padStart(24, '0')}`,
     storage: {
       get: async (key) => structuredClone(data.get(key)),
@@ -71,9 +72,9 @@ function peer({data = new Map(), runHost, prepareHost, runSummary, runAgent, bef
       return runHost ? runHost(route, context, signal) : COMPLETED;
     },
     prepareHost, runSummary, runAgent,
-    stopHost: async (route) => {
+    stopHost: async (route, confirm) => {
       stopped.push(route.route_id);
-      await stopHost?.();
+      return stopHost?.(route, confirm);
     },
     background: (promise) => background.push(promise),
   });
@@ -366,6 +367,28 @@ test('an uncertain terminal blocks the same tenant until its ACK', async () => {
   finish.resolve(COMPLETED);
   await api.finish();
   assert.equal(api.calls.length, 2);
+});
+
+test('managed cancellation keeps the acknowledged slot until child termination is confirmed', async () => {
+  let ended = false;
+  const finish = deferred();
+  const api = peer({tenantSlots: true, runHost: () => finish.promise, stopHost: (_, confirm) => confirm && ended});
+  await connect(api);
+  const attempt = {...workflow(), engine_slot: 0};
+  await api.command('workflow', attempt);
+  await api.entered;
+  await api.command('terminate', {route_id: attempt.route_id, error_type: 'CancelledError', error: 'cancelled'});
+  const terminal = api.frames().at(-1);
+  assert.equal(terminal.attempt_state, 'uncertain');
+  await api.ack(terminal._event_id);
+  assert.equal(api.data.get('slot').route.route_id, attempt.route_id);
+  await assert.rejects(api.core.release(), /stop is unconfirmed/);
+  assert.equal(api.data.get('slot').route.engine_slot, 0);
+  ended = true;
+  finish.resolve(COMPLETED);
+  await api.core.release();
+  await api.finish();
+  assert.equal(await api.dial(), null);
 });
 
 test('reset fences every entering route and replays independently acknowledged terminals', async () => {

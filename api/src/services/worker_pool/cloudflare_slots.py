@@ -46,6 +46,24 @@ class WorkflowSlotAdmission:
             if last_slot or count >= self.policy.slots_per_tenant
         )
 
+    def allows(self, tenant_id: UUID | None) -> bool:
+        return not self.full and tenant_key(tenant_id) not in self.blocked_tenants
+
+
+def tenant_key(tenant_id: UUID | None) -> str:
+    return str(tenant_id) if tenant_id is not None else "platform"
+
+
+async def read_workflow_slot_admission(
+    db: AsyncSession, installation_id: UUID, policy: CloudflareWorkersPolicy,
+) -> WorkflowSlotAdmission:
+    slot = CloudflareWorkflowSlot
+    counts = (await db.execute(
+        select(slot.tenant, func.count()).where(slot.installation_id == installation_id, slot.released_at.is_(None))
+        .group_by(slot.tenant)
+    )).all()
+    return WorkflowSlotAdmission(installation_id, policy, Counter({tenant: count for tenant, count in counts}))
+
 
 async def load_workflow_slot_admission(db: AsyncSession, worker_id: UUID) -> WorkflowSlotAdmission | None:
     """Read occupancy after the installation admission lock has been taken."""
@@ -73,13 +91,9 @@ async def load_workflow_slot_admission(db: AsyncSession, worker_id: UUID) -> Wor
         slot.installation_id == installation_id, slot.released_at.is_(None),
         ~slot.sent, ~(live_execution & live_owner),
     ))
-    counts = (await db.execute(
-        select(slot.tenant, func.count()).where(slot.installation_id == installation_id, slot.released_at.is_(None))
-        .group_by(slot.tenant)
-    )).all()
-    return WorkflowSlotAdmission(
+    return await read_workflow_slot_admission(
+        db,
         installation_id, CloudflareWorkersPolicy.model_validate(policy["limits"]["workers"]),
-        Counter({tenant: count for tenant, count in counts}),
     )
 
 
@@ -87,7 +101,7 @@ async def occupy_workflow_slot(
     db: AsyncSession, admission: WorkflowSlotAdmission, worker_id: UUID, tenant_id: UUID | None,
     execution_id: UUID, dispatch_id: UUID, fence: UUID,
 ) -> WorkflowSlotTicket:
-    tenant = str(tenant_id) if tenant_id is not None else "platform"
+    tenant = tenant_key(tenant_id)
     # Installation before tenant. The installation lock also covers the
     # absent-row case and prevents two replicas from taking the last slot.
     await db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), {
