@@ -389,7 +389,9 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
     payload = enable_job.CloudflareEnablePayload.model_validate(job.payload)
     release = SimpleNamespace(
         digest="d" * 64,
-        manifest=SimpleNamespace(workers={"capacity": SimpleNamespace(cpu_ms=400)}),
+        manifest=SimpleNamespace(
+            meter_bounds=SimpleNamespace(qualification=SimpleNamespace(expected_cpu_ms={"capacity": 9})),
+        ),
     )
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider_read)) as http:
         with pytest.raises(PlatformJobRequiresAction) as ingress_denied:
