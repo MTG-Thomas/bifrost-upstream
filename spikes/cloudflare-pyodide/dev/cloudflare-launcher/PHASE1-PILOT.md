@@ -4,11 +4,11 @@
 
 ## Usage-only limit
 
-The pilot used a previous conservative fleet projection. The current monthly
+The pilot used a previous conservative fleet projection. The monthly
 target applies to Bifrost's estimate of attributable usage. The fleet envelope
 and admission meter exclude the $5 Workers Paid subscription. Status shows
 the subscription separately as **Workers Paid Subscription (Billed by
-Cloudflare)**. Using the same release bounds, the minimum fleet envelope is
+Cloudflare)**. At the time of the pilot, the minimum fleet envelope was
 $13.31 and the two-launcher, 300-second envelope is $14.51.
 
 ## First pilot
@@ -551,29 +551,24 @@ backend can be claimed by either of these classes. For Kubernetes, use an approv
 qualification pod with the same platform-job pod spec and replace the job
 entrypoint with the preflight command. Match the worker image, trust store,
 service account, DNS configuration, namespace, network policy, egress and
-scheduling constraints. Run the Python below there with the origin supplied
-through `WORKER_INGRESS_ORIGIN`. It calls the same public probe as Enable,
-using that execution class's trust store, DNS and
-address-family policy, literal-IP SNI and Host headers, refusal sequence,
-eight-request batches, HTTP pool lifecycle, and unsigned WebSocket check.
+scheduling constraints. The single-host Compose qualification uses one
+running `worker` replica and no enrolled remote launcher. From the project
+root, pass the same project options used to start the stack:
 
 ```sh
-python - <<'PY'
-import asyncio
-import json
-import os
-
-from src.services.worker_ingress_probes import probe_public_worker_ingress
-
-result = asyncio.run(probe_public_worker_ingress(os.environ["WORKER_INGRESS_ORIGIN"].rstrip("/")))
-print(json.dumps({"reachable": result.reachable, "route_checks": len(result.routes),
-                  "failure": None if result.reachable else result.failure.as_result()}))
-raise SystemExit(0 if result.reachable else 1)
-PY
+sh spikes/cloudflare-pyodide/dev/cloudflare-launcher/preflight-compose-worker.sh \
+  "$WORKER_INGRESS_ORIGIN" --project-name "$QUALIFICATION_PROJECT"
 ```
 
-Record `preflight_execution_class` and copy Enable's result field
-`execution_class` into `enable_execution_class` in the hosted receipt.
+Add any `--file` and `--env-file` options used at startup after the origin.
+The command calls `probe_public_worker_ingress` directly inside `worker`.
+It uses Enable's resolver, trust store, address-family policy, literal-IP
+SNI and Host headers, refusal sequence, ordered eight-request batches, HTTP
+pool lifecycle, and final unsigned WebSocket check. For another approved
+execution class, invoke the same Python function in that class's environment.
+
+Retain the JSON result, including `preflight_execution_class`, and copy
+Enable's `execution_class` into `enable_execution_class` in the hosted receipt.
 The values are `worker_pool`, `kubernetes_platform_job`, and `remote_launcher`.
 If the qualified topology lets multiple classes claim Enable, qualify each
 eligible class or establish which class will claim the job before submitting.
@@ -583,3 +578,129 @@ runtime receipt or the Enable failure details. Proceed to the approved
 workload only after Enable succeeds, then verify cleanup by independent
 readback. Local tests establish the diagnostic fix. They leave the next
 hosted run's outcome uncertain.
+
+## Combined Hosted Qualification Plan
+
+The run needs explicit owner approval for the exact two release manifests,
+existing Workers Paid account, active zone, two dedicated origins, temporary
+grants, and a single disposable Compose project. Cap each deployment at three
+Workers scripts and three concurrent launcher incarnations, with zero Cloudflare
+Containers and zero model calls. Start with at least 8 GiB available and no
+other Bifrost test stack. Allow 25 minutes from the first connector start,
+with the last five minutes reserved for teardown. Build both release images
+and stage the approved no-effect fixtures before starting the clock.
+
+Use the two committed preparation revisions with distinct source SHAs and
+increasing SemVer precedence. Validate both release manifests, the meter
+bounds, and the release loader offline. Use the same qualified Workers
+modules for the two releases. Confirm that their deployment digests differ
+and that the replacement serves the previous ingress and worker-control
+protocols. This exercises the upgrade fence and replacement under load
+without introducing a runtime or wire change. Roll the API and worker
+together with the database, storage, and connector projection retained.
+
+For each release checkout, use Node 26 and the pinned runtime artifact. Build
+into a new Workers artifact directory and require it in the local API image.
+Keep the two images available by immutable local digest before provisioning.
+
+```sh
+npm ci --prefix api/src/services/app_bundler --omit=dev
+export BIFROST_RELEASE_WORKERS_METER_BOUNDS="$(cat api/src/services/worker_pool/cloudflare_meter_bounds.json)"
+node deploy/capacity/cloudflare/build-workers.mjs "$QUALIFIED_RUNTIME" \
+  deploy/capacity/cloudflare/image-artifacts/workers "$RELEASE_SOURCE" \
+  "$RELEASE_VERSION" "$RELEASE_SEQUENCE"
+docker build --file api/Dockerfile --build-arg BIFROST_REQUIRE_WORKERS_RELEASE=1 \
+  --build-arg BIFROST_VERSION="$RELEASE_VERSION" --tag "$LOCAL_RELEASE_IMAGE" .
+```
+
+Start with Existing HTTPS Endpoint to qualify the previously failing lane.
+Use a dedicated route to worker ingress on port 8001. Use Account Settings
+Read, Workers Scripts Write and Account Analytics Read. For Managed Tunnel
+also grant Tunnel Write on the selected account and Zone Read and DNS Write
+on the selected zone only. Complete the first Disconnect and verify resource
+absence before connecting the second origin as a Managed Tunnel in the same
+Compose project. Managed Tunnel provisions its route
+during the first Enable. That job performs the full ingress probe after the
+connector is ready. Run the operator command against the actual managed
+origin before the post-rotation Enable. If the initial Managed Tunnel job
+returns the retryable connector-readiness result, observe its existing job
+until the connector is healthy or the phase deadline arrives. Preserve its
+effect identities and avoid a second provisioning submission.
+
+| Order | Action and required evidence | Incremental budget |
+| --- | --- | ---: |
+| 1 | Requalify and build both releases offline. Verify the three module digests, bounds hash, deployment digests and image/manifest pairs. Bind each hosted job to the appropriate release. | $0.00 |
+| 2 | Existing HTTPS Connect. Stage an expiring scoped token, record consent and the policy envelope, and verify admission is closed. From the sole worker replica, require the complete preflight to pass. Submit Enable once. Require `worker_pool` and a passing signed hello, scoped SDK receipt and terminal ACK before admission opens. | $0.03 |
+| 3 | Measure a cold approved loose workflow and a warm repeat on the same tenant, launcher and ordinal within linger. Record queue-to-entry and end-to-end latency, loader identity, generation, cold/warm flags and terminal receipts. Verify scoped SDK results for a Solution fixture in the burst. | $0.04 |
+| 4 | Hold four Provider and four Global executions simultaneously at a no-effect barrier. Offer a ninth execution to a different tenant with zero slots, then prove a tenth from a fourth tenant stays queued through two controller observations without a ticket or entry. Cancel one running execution mid-burst. Require confirmed stop and exact fence release, unchanged sibling fences, and admission of the waiting execution only after release. Open the barrier and collect the remaining terminal ACKs. | $0.14 |
+| 5 | Reconcile and verify the owned revision and canary without duplicate resources. Start one harmless hold, request Scale In, then let it finish. Verify admission and sends close, the original claim settles, launchers retire, and scripts remain. Disconnect, retain spend evidence, and verify the first installation's resource absence. | $0.04 |
+| 6 | Managed Tunnel Connect and Enable. Independently read back the exact CNAME, tunnel and connector session. Require `worker_pool`, the signed canary and ingress refusal checks. Verify normalized ingress GET rules, empty origin-request fields and the actual disabled `warp-routing` echo. With the same Tunnel Write grant, list account `teamnet/routes` and verify no private IP route targets the tunnel. | $0.04 |
+| 7 | Scale In and rotate the connector token. Compare live session sets and require all prior session IDs absent and a replacement session present. With approved bounded tooling, check the old token cannot establish a session while keeping it out of the receipt. Run the worker preflight on the managed origin, Enable, and verify the signed canary on the same tunnel and CNAME. | $0.04 |
+| 8 | Upgrade once with one harmless held execution. Stage the newer compatible release. Require the admission and send fence, then interrupt only the old attempt's control connection. Release the hold and verify replay and terminal ACK under the original claim. Require old runtime retirement, exact script and namespace absence before any replacement upload, then provider readback and a signed canary before reopening. | $0.07 |
+| 9 | Capture the spend comparison. Scale In and Disconnect. Verify both installations' cleanup independently, including the replacement revision. Reserve for bounded cleanup and remaining observation. | $0.05 |
+| | **Cumulative estimate with $0.00 carried from the two failed combined attempts** | **$0.45** |
+| | Optional queue pre-warm with one extra parallel boot per tenant | **+$0.04** |
+
+Use three launchers with four seats each, nine installation slots, four per
+tenant, 120-second launcher lifetime, 90-second engine linger, and queue
+pre-warming disabled. Occupy or cap the primary with controlled local
+fixtures so it cannot consume the approved Workers dispatches. Confirm
+each admission witness is an actual Workers claim. Set the monthly policy
+at or above the $415.59 requalified fleet envelope with the owner's
+approval. That modeled monthly capacity value and the existing Paid
+subscription are separate from the trial cap. Use the packaged marginal
+rates without assumed free allowances. The table allocates live estimate
+headroom for at most 14 fixture attempts, canaries and their control and
+retirement operations. For scale, ten new engine identities are $0.020 at
+$0.002 each. Three full 120-second launcher lifetimes, even at the
+qualified per-second CPU ceiling, contribute about $0.045 in CPU. The
+remaining allocation covers temporary dispatch reserves, Durable Object
+duration and storage, logging, and lifecycle operations. These are planning
+allocations. Confirm the carry-in for the approved trial series and
+recalculate before provisioning if it differs from the table. Record the
+high-water live estimate and settled usage by phase.
+
+Baseline pre-warm stays off. Drop the optional run first. Only add it if the
+original burst, rotation and upgrade have passed and the observed high-water
+plus remaining exposure and teardown still project below $0.50. If time or
+spend tightens, drop Upgrade next and defer the entire Managed Tunnel pass
+if it cannot be completed with cleanup headroom. Keep the original burst
+shape and teardown intact. Record any dropped item as unqualified. Defer
+Kubernetes, Containers, DNS failure injection, account-token replacement,
+and a deliberately failed upgrade canary to separately approved runs.
+
+Use the same UTC window and the exact script/namespace sets for the Bifrost
+estimate and independent Cloudflare Analytics. Record the raw aggregate
+request, CPU and Durable Object samples and attribution limits. Calculate
+Bifrost divided by the nonzero provider cost proxy for each installation
+and the combined window. Label a Workers-only denominator as such. If
+provider rows or the denominator are missing, preserve the samples and
+report the ratio unavailable. Preserve both run windows outside the stack so
+read-only Analytics readback can finish after cleanup within the approved
+window.
+
+Stop workload and begin teardown on failed preflight or canary, class
+mismatch, unexpectedly open admission, cross-tenant access or release,
+unproven stop or slot release, unexpected grant or route drift, duplicate
+resource, unresolved receipt, or loss of spend visibility. Stop optional
+work if the next phase and cleanup would put the projection at $0.50.
+Close admission and abort all further workload at $1 cumulative observed
+or projected usage, at the teardown cutoff, or before exceeding an approved
+resource cap. Keep cleanup authorized through independent absence verification.
+Read back journaled identities after an uncertain result before deciding
+any cleanup action. Preserve sanitized job state and diagnostics before
+removing the stack.
+
+For each retired revision require the product Disconnect outcome and
+absent installation, plus independent exact reads and inventory absence
+for all three scripts and four namespaces. Check no live launcher, held
+slot, pending cleanup effect, or staged credential remains. Check each
+owned DNS record gone through the provider and both authoritative DNS
+servers, zero live connector sessions, tunnel tombstone or exact absence,
+and empty local credential projection. Revoke temporary management tokens
+and verify absence with independent authority. Finally verify zero
+project containers, networks, volumes and project images, and remove local
+connector processes, scratch files and secrets. Retain only sanitized
+digests, dispositions, counts, durations and aggregate costs. Escalate any
+unverified teardown with its remaining cleanup witness before the approved
+window closes.
