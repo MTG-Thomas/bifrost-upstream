@@ -484,3 +484,102 @@ initial HTTP check had passed. The job result did not identify the failing
 HTTP request or the underlying TLS exception.
 
 See the [sanitized hosted retry receipt](../../results/cloudflare-scaleout-hosted-retry.json).
+
+### Local ingress diagnosis
+
+Loopback TLS reproduced the two empty TLS diagnostic fields with both an
+interrupted TLS wait and a stalled HTTP response. In each timeout, HTTPX and
+httpcore reported `ConnectTimeout` or `ReadTimeout`, followed by
+`TimeoutError`, cancellation, and `SSLWantReadError` in the exception chain.
+AnyIO waits for socket I/O from inside the SSL want-read handler. The original
+probe treated that internal wait signal as a TLS failure. A real certificate
+hostname mismatch produced `SSLCertVerificationError` with
+`CERTIFICATE_VERIFY_FAILED` and verification code 62. Closing during the
+handshake produced `SSLEOFError` with `UNEXPECTED_EOF_WHILE_READING`.
+
+The proposed post-handshake SSL closure explanation was **not confirmed**.
+In the loopback tests a TLS close or TCP reset while reading response headers
+surfaced as HTTPX and httpcore `RemoteProtocolError`. The old probe already
+classified those particular errors as HTTP protocol failures. The hosted
+receipts lack the underlying class and route, so either timeout phase remains
+a candidate and the original trigger is unresolved.
+
+Concurrent requests exposed an origin-cache defect. When its TTL expired,
+every request waiting behind a failed DB lookup started a new lookup under
+the same lock. Each lookup had a three-second bound, so an eight-request
+batch could produce a series of three-second waits while using the API's
+shared database pool. The listener watcher queries the same pool. A healthy
+single-request check followed by a batch during a database stall fits this
+sequence. The hosted receipts lack the timing needed to establish that this
+was the trigger. Concurrent ingress requests now await one bounded lookup
+and receive its shared result. A failed lookup returns HTTP 503 to its
+waiters and leaves the cache expired for the next independent request.
+
+The probe reads response headers and closes without consuming the body. In
+the loopback test even a keep-alive response with `Content-Length: 0` led to
+a fresh TLS handshake on the next probe. A separate test that consumed the
+initial response did reuse the socket. The origin deliberately marks its
+early denials `Connection: close`. Most allowed routes reject unsigned
+requests in ingress before dispatching to the application. The refresh probe
+sends a complete two-byte JSON object and takes the ordinary invalid-token
+path. On HTTP/1.1 the eight-way batch can open eight separate edge connections.
+The local TLS-to-API qualification exercises the same batch and route shapes.
+The hosted receipts do not establish an edge or tunnel concurrency limit.
+
+Enable now reports the method, route template, address family, handshake
+completion, connection reuse, exception class, and last HTTP transport phase.
+The phase distinguishes `tcp_connect`, `tls_handshake`, `request_write`, and
+`response_headers`. Where the exception chain exposes a socket errno, the
+receipt includes its symbolic name. TLS record failures preserve their
+sanitized OpenSSL reason. An overall deadline reports the least-advanced
+in-flight route on the current address. A deadline during the WebSocket
+check reports the `websocket` phase and preserves the earlier HTTP TLS proof.
+The result keeps certificate messages, peer names, and generated path values
+out of diagnostics. Once a refusal or allowed batch fails, the probe returns
+that result before issuing further probes. The certificate, route-witness,
+WebSocket, and signed runtime gates still apply.
+
+### Next hosted qualification
+
+Obtain separate owner approval before provisioning or spending. After staging
+Connect with admission closed, identify the platform-job execution backend
+configured to claim Enable. Run the preflight inside the worker container
+for a local worker-pool claim. For a physical Linux remote launcher, run
+it in the launcher runner's network namespace or container with the same
+Python environment, resolver, trust store, and egress. The local execution
+backend can be claimed by either of these classes. For Kubernetes, use an approved
+qualification pod with the same platform-job pod spec and replace the job
+entrypoint with the preflight command. Match the worker image, trust store,
+service account, DNS configuration, namespace, network policy, egress and
+scheduling constraints. Run the Python below there with the origin supplied
+through `WORKER_INGRESS_ORIGIN`. It calls the same public probe as Enable,
+using that execution class's trust store, DNS and
+address-family policy, literal-IP SNI and Host headers, refusal sequence,
+eight-request batches, HTTP pool lifecycle, and unsigned WebSocket check.
+
+```sh
+python - <<'PY'
+import asyncio
+import json
+import os
+
+from src.services.worker_ingress_probes import probe_public_worker_ingress
+
+result = asyncio.run(probe_public_worker_ingress(os.environ["WORKER_INGRESS_ORIGIN"].rstrip("/")))
+print(json.dumps({"reachable": result.reachable, "route_checks": len(result.routes),
+                  "failure": None if result.reachable else result.failure.as_result()}))
+raise SystemExit(0 if result.reachable else 1)
+PY
+```
+
+Record `preflight_execution_class` and copy Enable's result field
+`execution_class` into `enable_execution_class` in the hosted receipt.
+The values are `worker_pool`, `kubernetes_platform_job`, and `remote_launcher`.
+If the qualified topology lets multiple classes claim Enable, qualify each
+eligible class or establish which class will claim the job before submitting.
+If the preflight fails, retain the sanitized result, keep admission closed,
+and tear down the trial. If it passes, submit Enable once and retain the signed
+runtime receipt or the Enable failure details. Proceed to the approved
+workload only after Enable succeeds, then verify cleanup by independent
+readback. Local tests establish the diagnostic fix. They leave the next
+hosted run's outcome uncertain.

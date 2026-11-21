@@ -2,18 +2,13 @@
 
 import asyncio
 import json
-import ssl
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from urllib.parse import urlsplit
 from uuid import uuid4
 
 import httpx
 import pytest
-from cryptography import x509
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.x509.oid import NameOID
 from pydantic import SecretStr
 from sqlalchemy import delete, select
 from src.config import get_settings
@@ -27,8 +22,8 @@ from src.models.orm.cloudflare_capacity import (
 from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
 from src.services import worker_ingress_probes as probes
 from src.services.authorization.tokens import RuntimeSubject, issue_run_refresh_token
-from src.services.worker_ingress import ALLOW_MARKER, CONTROL_PATH, INGRESS_HEADER, PORT
 from src.services.work_dispatch import WAKE_WORKFLOW
+from src.services.worker_ingress import ALLOW_MARKER, CONTROL_PATH, INGRESS_HEADER, PORT
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
     seal_credential,
@@ -36,32 +31,12 @@ from src.services.worker_pool.cloudflare_credentials import (
 from src.worker.remote.protocol import Hello, new_nonce, sign_hello
 from websockets.asyncio.client import connect
 
+from tests.loopback_tls import loopback_tls
 from tests.unit.authorization.committed_runs import committed_world
 
 pytestmark = [pytest.mark.e2e, pytest.mark.asyncio]
 
 _HOST = "worker-ingress.example.test"
-
-
-def _tls(tmp_path):
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, _HOST)])
-    now = datetime.now(UTC)
-    cert = (
-        x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
-        .serial_number(x509.random_serial_number()).not_valid_before(now - timedelta(minutes=1))
-        .not_valid_after(now + timedelta(hours=1))
-        .add_extension(x509.SubjectAlternativeName([x509.DNSName(_HOST)]), critical=False)
-        .sign(key, hashes.SHA256())
-    )
-    cert_path, key_path = tmp_path / "tls.pem", tmp_path / "tls.key"
-    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
-    key_path.write_bytes(key.private_bytes(
-        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption(),
-    ))
-    server = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    server.load_cert_chain(cert_path, key_path)
-    return server, ssl.create_default_context(cafile=str(cert_path))
 
 
 async def _relay(downstream, client, api_host, upstream_port):
@@ -119,7 +94,7 @@ async def test_worker_ingress_over_tls(
         hostname="ingress-e2e", form="static", issued_at=int(time.time()), nonce=new_nonce(), hello_sequence=1,
     )
     cloud_worker_id = uuid4()
-    tls, trust = _tls(tmp_path)
+    tls, trust = loopback_tls(tmp_path, _HOST)
     upstream_port = PORT
 
     async def forward(reader, writer):
@@ -145,8 +120,8 @@ async def test_worker_ingress_over_tls(
                 assert host == _HOST
                 return ("127.0.0.1",)
 
-            async def use_test_proxy(probed_origin, host, address):
-                return await probe_address(probed_origin, host, address, port, trust=trust)
+            async def use_test_proxy(probed_origin, host, address, *, progress):
+                return await probe_address(probed_origin, host, address, port, trust=trust, progress=progress)
 
             monkeypatch.setattr(probes, "_public_addresses", resolve_test_host)
             monkeypatch.setattr(probes, "_probe_address", use_test_proxy)
@@ -257,6 +232,12 @@ async def test_worker_ingress_over_tls(
                 "address_family": "ipv4",
                 "tls_reason": "CERTIFICATE_VERIFY_FAILED",
                 "tls_verify_code": 62,
+                "method": "GET",
+                "route_template": "/api/sdk/context",
+                "handshake_completed": False,
+                "connection_reused": False,
+                "exception_class": "SSLCertVerificationError",
+                "phase": "tls_handshake",
             }
             # Confirm the probe rejects a proxy that accidentally targets the unrestricted API.
             upstream_port = api.port

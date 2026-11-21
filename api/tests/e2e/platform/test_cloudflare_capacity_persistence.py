@@ -3,12 +3,12 @@
 import asyncio
 import base64
 import json
-from time import perf_counter
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from time import perf_counter
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
@@ -20,16 +20,17 @@ from alembic.operations import Operations
 from alembic.script import ScriptDirectory
 from fastapi import HTTPException, Response
 from pydantic import SecretStr
+from sqlalchemy import delete, func, insert, literal, select, text, update
+from sqlalchemy.engine import Connection
+from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from shared.models import (
     CloudflareReconcileAction,
     CloudflareCapacityPolicy,
     CloudflareLauncherUsage,
     CloudflareWorkersPolicy,
 )
-from sqlalchemy import delete, func, insert, literal, select, text, update
-from sqlalchemy.engine import Connection
-from sqlalchemy.exc import DBAPIError, IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import Settings
 from src.core.principal import UserPrincipal
 from src.jobs.platform import cloudflare_capacity as lifecycle_job
@@ -832,9 +833,14 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
         installation.worker_ingress_origin, True, True, True,
         (ingress_probes.RouteProbe("GET", "/api/sdk/context", 401, True),),
     )
+    route = "/api/forms/{form_id}"
+    failure = ingress_probes.CanaryFailure(
+        "ingress_http", "route_timeout", address_family="ipv4", method="GET", route_template=route,
+        handshake_completed=True, connection_reused=False, exception_class="ReadTimeout", phase="response_headers",
+    )
     refused = ingress_probes.WorkerIngressProbeResult(
         installation.worker_ingress_origin, True, False, False,
-        (ingress_probes.RouteProbe("GET", "/api/sdk/context", 521, False, error_class="unexpected_status"),),
+        (ingress_probes.RouteProbe("GET", route, None, False, error_class="route_timeout", failure=failure),),
     )
     monkeypatch.setattr(ingress_probes, "_probe_address", AsyncMock(side_effect=[refused, reachable, reachable]))
     canary = AsyncMock(side_effect=[
@@ -890,9 +896,14 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
             await enable_job._settle_enable(running, payload, http, release)
         assert ingress_denied.value.result == {
             "code": "CF_WORKER_INGRESS_UNVERIFIED",
-            "canary_failure": {"stage": "ingress_http", "error_class": "unexpected_status", "status": 521},
+            "canary_failure": {
+                "stage": "ingress_http", "error_class": "route_timeout", "address_family": "ipv4",
+                "method": "GET", "route_template": "/api/forms/{form_id}",
+                "handshake_completed": True, "connection_reused": False, "exception_class": "ReadTimeout",
+                "phase": "response_headers",
+            },
         }
-        assert ingress_denied.value.phase == "Worker Ingress Probe Failed (Ingress HTTP, Unexpected Status, HTTP 521)"
+        assert ingress_denied.value.phase == "Worker Ingress Probe Failed (Ingress HTTP, Route Timeout)"
         canary.assert_not_awaited()
         with pytest.raises(PlatformJobRequiresAction) as denied:
             await enable_job._settle_enable(running, payload, http, release)
@@ -2867,7 +2878,6 @@ async def test_disconnect_recovery_allows_other_revision_owner_updates_during_pr
                 ExecutionWorker.id == live_worker,
             ).with_for_update(nowait=True))
             assert locked == live_worker
-        return None
 
     try:
         async with async_session_factory() as db:
