@@ -19,6 +19,7 @@ from sqlalchemy.exc import OperationalError
 from src.services.execution.template_process import TEMPLATE_START_TIMEOUT_SECONDS
 from src.services.memory_requests import AGENT_RUN_REQUEST_BYTES
 from src.services.worker_pool.claims import PoolClaim
+from src.services.worker_pool.cloudflare_slots import WorkflowSlotTicket
 from src.worker.admission import Admission
 from src.worker.pool_main import PoolWorker
 from src.worker.remote.agent_route import AgentRoute
@@ -86,6 +87,8 @@ async def test_cloudflare_claim_starts_preparation_without_waiting_for_reply() -
         assert action == "prepare_workflow"
         assert payload["org_id"] == str(lease.owner_id)
         assert payload["execution_id"] == str(lease.worker_id)
+        assert payload["route_id"] == f"prepare:{lease.launcher_id}"
+        assert payload["engine_slot"] == 2
         assert expected_generation == lease.session_generation
         sent.set()
         await finish.wait()
@@ -98,6 +101,7 @@ async def test_cloudflare_claim_starts_preparation_without_waiting_for_reply() -
     claim = PoolClaim(
         lease.launcher_id, "workflow.execute", {}, lease.worker_id, 1, datetime.now(UTC),
         claimed={}, cloudflare_revision="approved", tenant_id=lease.owner_id,
+        workflow_slot=WorkflowSlotTicket(2, lease.launcher_id),
     )
     with patch.object(bridge, "request", request), patch.object(worker, "_run_claim", run):
         worker._start(claim)
