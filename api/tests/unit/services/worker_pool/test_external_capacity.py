@@ -162,7 +162,9 @@ async def managed_pool(db, capacity):
     account_id, now = "a" * 32, datetime.now(UTC)
     policy = CloudflareCapacityPolicy.model_validate({
         "workers": {"launcher_cap": 1, "slots_per_launcher": 1, "max_lifetime_seconds": 120, "work_kinds": ["workflow"]},
-        "monthly_limit_usd": "10.00",
+        # The lifecycle fixture uses a two-minute incarnation. Keep its
+        # synthetic budget above the projected monthly creation cost.
+        "monthly_limit_usd": "50.00",
     })
     units = dict.fromkeys(WORKERS_RATES, Decimal(0))
     bounds = WorkersReleaseMeterBounds(
