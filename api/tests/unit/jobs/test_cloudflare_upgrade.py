@@ -6,11 +6,12 @@ from uuid import uuid4
 import pytest
 
 from src.jobs.platform import cloudflare_enable
-from src.jobs.platform.base import PlatformJobCancelled, PlatformJobContext
+from src.jobs.platform.base import PlatformJobCancelled, PlatformJobContext, PlatformJobRequiresAction
 from src.jobs.platform.cloudflare_capacity import _replacement_revision
 from src.models.orm.cloudflare_capacity import CloudflareInstallation
 from src.services.worker_pool.cloudflare_policy import workers_release_error
 from src.services.worker_pool.cloudflare_release import WorkersReleaseOrder
+from src.services.worker_pool.cloudflare_tunnel import TunnelUnavailable
 
 
 def test_replacement_requires_a_new_artifact_or_cutover_marker() -> None:
@@ -59,3 +60,17 @@ async def test_stale_upgrade_lease_cannot_inspect_or_mutate_provider(monkeypatch
     hold.assert_awaited_once_with(database, run, payload.installation_id)
     database.get.assert_not_awaited()
     assert adapter.mock_calls == []
+
+
+@pytest.mark.asyncio
+async def test_enable_reports_unavailable_tunnel_inventory_as_unverified(monkeypatch) -> None:
+    monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
+    monkeypatch.setattr(cloudflare_enable, "load_workers_release", object)
+    monkeypatch.setattr(cloudflare_enable, "_settle_enable", AsyncMock(side_effect=TunnelUnavailable))
+    run = PlatformJobContext(uuid4(), uuid4(), None, "system", "", "Bifrost")
+    payload = cloudflare_enable.CloudflareEnablePayload(installation_id=uuid4(), revision=5)
+
+    with pytest.raises(PlatformJobRequiresAction) as action:
+        await cloudflare_enable._enable(run, payload, repair_tunnel_ingress=True)
+
+    assert action.value.result == {"code": "CF_DEPLOYMENT_UNVERIFIED"}

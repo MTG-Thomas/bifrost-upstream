@@ -218,10 +218,6 @@ async def _settle_enable(
         if row.admitted_revision == payload.revision:
             return {"outcome": "enabled"}
         await _require_legacy_cleanup(db)
-    if upgrading:
-        await context.report("Draining Cloudflare Capacity")
-    if not await _drain_previous_revision(context, payload, cleanup_adapter, upgrading=upgrading):
-        return {"outcome": "superseded"}
     if installation.reachability_mode == "managed_tunnel":
         await context.report("Provisioning Managed Tunnel")
         async with get_db_context() as db:
@@ -249,6 +245,11 @@ async def _settle_enable(
             tunnel = cloudflare_tunnel.adapter(http, row, await _management_token(db, row))
             if not await cloudflare_tunnel.connector_ready(db, row, tunnel):
                 raise PlatformJobFailure("CF_CONNECTOR_UNAVAILABLE", "Waiting for Managed Tunnel Connector", retryable=True)
+
+    if upgrading:
+        await context.report("Draining Cloudflare Capacity")
+    if not await _drain_previous_revision(context, payload, cleanup_adapter, upgrading=upgrading):
+        return {"outcome": "superseded"}
 
     async with get_db_context() as db:
         row = await _locked_current(db, context, payload)
@@ -430,8 +431,6 @@ async def _enable(
         raise PlatformJobRequiresAction("Verify Cloudflare Connection Configuration", {"code": "CF_CONNECTION_INVALID"}) from exc
     except OwnershipConflict:
         raise PlatformJobRequiresAction("Verify Cloudflare Ownership", {"code": "CF_OWNERSHIP_CONFLICT"}) from None
-    except cloudflare_tunnel.TunnelUnavailable:
-        raise PlatformJobFailure("CF_CONNECTOR_UNAVAILABLE", "Waiting for Managed Tunnel Connector", retryable=True) from None
     except (ObservationPending, CapacityProtocolError):
         raise PlatformJobRequiresAction("Verify Cloudflare Deployment", {"code": "CF_DEPLOYMENT_UNVERIFIED"}) from None
     except CloudflareManagementDenied:
