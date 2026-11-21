@@ -169,6 +169,7 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
             & (PlatformJob.title == "Upgrade Cloudflare"),
         ),
     ).order_by(PlatformJob.created_at.desc(), PlatformJob.id.desc()).limit(1))
+    installed_release = installed_workers_release_digest()
     return CloudflareCapacityStatus(
         consent_text_version=CONSENT_TEXT_VERSION,
         consent_text=CONSENT_TEXT,
@@ -185,7 +186,7 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
             "desired_state": installation.desired_state,
             "admission_open": (
                 installation.admitted_revision is not None and installation.upgrade_release is None
-                and installed_workers_release_digest() == installation.policy.get("bounds_release")
+                and installed_release is not None and installed_release == installation.policy.get("bounds_release")
                 and spend.state == "ready"
             ),
             "policy": policy,

@@ -3102,6 +3102,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/capacity/cloudflare/upgrade": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Upgrade Cloudflare Capacity */
+        post: operations["capacity.cloudflare_upgrade"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/capacity/cloudflare/scale-in": {
         parameters: {
             query?: never;
@@ -16627,6 +16644,13 @@ export interface components {
             consent_at: string;
             /** Desired Revision */
             desired_revision: number;
+            /** Deployed Revision */
+            deployed_revision?: number | null;
+            /**
+             * Upgrade Pending
+             * @default false
+             */
+            upgrade_pending: boolean;
             /**
              * Desired State
              * @enum {string}
@@ -39187,6 +39211,39 @@ export interface operations {
         };
     };
     "capacity.cloudflare_reconcile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CloudflareCapacityAction"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformJobAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "capacity.cloudflare_upgrade": {
         parameters: {
             query?: never;
             header?: never;

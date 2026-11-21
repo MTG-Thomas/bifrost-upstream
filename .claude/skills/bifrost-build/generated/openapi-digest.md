@@ -137,6 +137,7 @@
 | POST | `/api/capacity/cloudflare/reconcile` |
 | POST | `/api/capacity/cloudflare/rotate` |
 | POST | `/api/capacity/cloudflare/scale-in` |
+| POST | `/api/capacity/cloudflare/upgrade` |
 | GET | `/api/chat/artifacts` |
 | DELETE | `/api/chat/artifacts/{attachment_id}` |
 | PATCH | `/api/chat/artifacts/{attachment_id}` |

@@ -181,12 +181,25 @@ export function CloudflareCapacity() {
 	});
 
 	useEffect(() => {
+		if (!canRead) return;
+		return webSocketService.onAnyPlatformJobUpdate((next) => {
+			if (next.resource_type === "cloudflare_installation" && next.id !== jobId) void refetch();
+		});
+	}, [canRead, jobId, refetch]);
+
+	useEffect(() => {
 		if (!jobId) return;
 		const update = (next: PlatformJob) => {
 			setObservedJob((current) =>
 				current?.id === next.id && current.revision >= next.revision ? current : next,
 			);
-			if (terminal.has(next.status)) void refetch();
+			if (terminal.has(next.status)) {
+				void refetch().then(({ data: current }) => {
+					if (current?.latest_job_id) {
+						setAcceptedJobId((accepted) => accepted === next.id ? undefined : accepted);
+					}
+				});
+			}
 		};
 		const unsubscribe = webSocketService.onPlatformJobUpdate(jobId, update);
 		const observation = observePlatformJob(jobId, update);
@@ -231,11 +244,11 @@ export function CloudflareCapacity() {
 			? "Disconnecting"
 			: installation?.desired_state === "scaled_in"
 				? "Scaled In"
-			: installation?.upgrade_pending
-				? "Upgrade Pending"
-				: installation?.admission_open
-					? "Enabled"
-					: "Admission Closed";
+				: installation?.upgrade_pending
+					? "Upgrade Pending"
+					: installation?.admission_open
+						? "Enabled"
+						: "Admission Closed";
 
 	return (
 		<Card>

@@ -524,7 +524,70 @@
           "response_model": "PlatformJobAccepted"
         },
         "side_effects": [],
-        "summary": "Verify Cloudflare Deployment",
+        "summary": "Reconcile Cloudflare",
+        "target_kind": "platform"
+      }
+    },
+    {
+      "observed": {
+        "cli": {
+          "path": [
+            "capacity",
+            "cloudflare",
+            "upgrade"
+          ],
+          "status": "exact_parity"
+        },
+        "manifest": {
+          "entity": null,
+          "status": "intentionally_unsupported"
+        },
+        "mcp": {
+          "name": "bifrost_cloudflare_upgrade_execute",
+          "status": "exact_parity"
+        },
+        "rest": {
+          "operation_id": "capacity.cloudflare_upgrade",
+          "status": "exact_parity"
+        },
+        "sdk": {
+          "binding": null,
+          "status": "intentionally_unsupported"
+        }
+      },
+      "operation": {
+        "action_scopes": [
+          "platform.readwrite"
+        ],
+        "async_policy": "platform_job",
+        "audit_event": "capacity.cloudflare_upgrade",
+        "authorization_resolver": "platform.readwrite at Global",
+        "cli": {
+          "path": [
+            "capacity",
+            "cloudflare",
+            "upgrade"
+          ]
+        },
+        "exclusions": {
+          "manifest": "Capacity installations are bound to the deployment.",
+          "native_builder": "Cloudflare capacity is platform administration.",
+          "sdk": "Runtime SDKs do not administer capacity."
+        },
+        "manifest": null,
+        "mcp": {
+          "name": "bifrost_cloudflare_upgrade_execute"
+        },
+        "native_builder": false,
+        "operation_id": "capacity.cloudflare_upgrade",
+        "rest": {
+          "method": "POST",
+          "path": "/api/capacity/cloudflare/upgrade",
+          "request_model": "CloudflareCapacityAction",
+          "response_model": "PlatformJobAccepted"
+        },
+        "side_effects": [],
+        "summary": "Upgrade Cloudflare",
         "target_kind": "platform"
       }
     },
@@ -11529,10 +11592,10 @@
     }
   ],
   "counts": {
-    "cli": 197,
+    "cli": 198,
     "manifest": 16,
-    "mcp": 114,
-    "rest": 737,
+    "mcp": 115,
+    "rest": 738,
     "sdk": 21
   },
   "schema_version": 1,

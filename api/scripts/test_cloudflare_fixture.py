@@ -6,6 +6,7 @@ import ssl
 import tempfile
 import time
 from datetime import UTC, datetime, timedelta
+from functools import cache
 from hashlib import sha256
 from pathlib import Path
 from unittest.mock import patch
@@ -19,7 +20,7 @@ from pydantic import SecretStr
 from shared.models import WorkerCapacityProfile, WorkerCapacityResource
 from src.services import worker_ingress_probes as probes
 from src.services.worker_ingress import ALLOW_MARKER, CONTROL_PATH, INGRESS_HEADER, PORT
-from src.services.worker_pool import cloudflare_connection, cloudflare_release
+from src.services.worker_pool import cloudflare_admission, cloudflare_connection, cloudflare_policy, cloudflare_release
 from src.services.worker_pool.cloudflare_provisioning import ResourceObservation
 from src.services.worker_pool.cloudflare_release import (
     QUALIFIED_RUNTIME_SHA256,
@@ -40,6 +41,7 @@ CAPACITY = "https://capacity.browser-fixture.test"
 EXPORTS = cloudflare_release.WORKER_EXPORTS
 
 
+@cache
 def _release():
     manifest = {
         "manifest_version": 1, "source_revision": "a" * 40, "runtime_sha256": QUALIFIED_RUNTIME_SHA256,
@@ -184,6 +186,12 @@ async def _forward(reader, writer):
 def install_api():
     cloudflare_connection.load_workers_release = _release
     cloudflare_connection.WorkersRestCleanup = _Cloudflare
+    cloudflare_admission.installed_workers_release_digest = _fixture_digest
+    cloudflare_policy.installed_workers_release_digest = _fixture_digest
+
+
+def _fixture_digest():
+    return _release().digest
 
 
 def install_enable(job_module):
@@ -290,3 +298,4 @@ def install_enable(job_module):
 
 def install_lifecycle(job_module):
     job_module.WorkersRestCleanup = _Cloudflare
+    job_module.installed_workers_release_digest = _fixture_digest

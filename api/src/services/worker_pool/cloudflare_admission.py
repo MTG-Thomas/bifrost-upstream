@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from sqlalchemy import and_, exists, select
+from sqlalchemy import and_, exists, false, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -65,10 +65,11 @@ class ManagedCloudflareScope:
 
 def workers_release_matches() -> ColumnElement[bool]:
     release = installed_workers_release_digest()
+    if release is None:
+        return false()
     return and_(
         CloudflareInstallation.upgrade_release.is_(None),
         CloudflareInstallation.policy["bounds_release"].astext == release,
-        CloudflareInstallation.policy["bounds_release"].astext.is_not(None),
     )
 
 

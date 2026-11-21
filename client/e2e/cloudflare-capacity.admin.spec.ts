@@ -1,6 +1,6 @@
 import { expect, test } from "./fixtures/api-fixture";
 
-test("a platform operator connects and enables Cloudflare capacity", async ({ page }) => {
+test("a platform operator enables and reconciles Cloudflare capacity", async ({ page }) => {
 	const origin = "https://workers.browser-fixture.test";
 	const token = "browser-fixture-cloudflare-token";
 	await page.goto("/settings/ai");
@@ -36,6 +36,13 @@ test("a platform operator connects and enables Cloudflare capacity", async ({ pa
 	expect((await enable).status()).toBe(202);
 	await admitted;
 	await expect(page.getByText("Enabled", { exact: true })).toBeVisible();
+	await expect(page.getByText("Deployed Revision", { exact: true })).toBeVisible();
+
+	const upgrade = page.waitForResponse((response) => response.url().endsWith("/api/capacity/cloudflare/upgrade"));
+	await page.getByRole("button", { name: "Upgrade Cloudflare" }).click();
+	const accepted = await upgrade;
+	expect(accepted.status()).toBe(202);
+	expect(accepted.headers().location).toBe(`/api/platform-jobs/${(await accepted.json()).job_id}`);
 
 	const retired = page.waitForResponse(async (response) =>
 		response.url().endsWith("/api/capacity/cloudflare") &&

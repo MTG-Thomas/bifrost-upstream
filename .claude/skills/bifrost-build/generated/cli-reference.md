@@ -659,13 +659,14 @@ Commands:
   disconnect        Drain Cloudflare workers and remove verified owned...
   enable            Provision and verify Cloudflare Workers capacity.
   policy            Update the current Cloudflare capacity policy.
-  reconcile         Verify the current Cloudflare Workers deployment.
+  reconcile         Verify or repair the current Cloudflare Workers...
   rotate            Validate and replace the Cloudflare account API token.
   rotate-bearer     Retire the previous Workers deployment and stage a...
   rotate-root       Rotate the derivation root after Scale In.
   scale-in          Drain Cloudflare workers and retain the connection.
   stage-credential  Enter a Cloudflare token for a one-time MCP...
   status            Show the current Cloudflare connection and capacity...
+  upgrade           Apply the Workers release packaged with Bifrost.
 ```
 
 #### `capacity cloudflare connect`
@@ -735,7 +736,7 @@ Options:
 ```
 Usage: capacity cloudflare reconcile [OPTIONS]
 
-  Verify the current Cloudflare Workers deployment.
+  Verify or repair the current Cloudflare Workers deployment.
 
 Options:
   --wait                       Wait for completion through the platform job.
@@ -829,6 +830,21 @@ Usage: capacity cloudflare status [OPTIONS]
 Options:
   --json  Emit JSON instead of human-readable output.
   --help  Show this message and exit.
+```
+
+#### `capacity cloudflare upgrade`
+
+```
+Usage: capacity cloudflare upgrade [OPTIONS]
+
+  Apply the Workers release packaged with Bifrost.
+
+Options:
+  --wait                       Wait for completion through the platform job.
+  --installation-id TEXT       installation_id (UUID).  [required]
+  --expected-revision INTEGER  expected_revision  [required]
+  --json                       Emit JSON instead of human-readable output.
+  --help                       Show this message and exit.
 ```
 
 ## `claims`

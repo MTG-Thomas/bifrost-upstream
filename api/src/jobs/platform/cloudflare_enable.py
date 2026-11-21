@@ -1,7 +1,7 @@
 """Provision and admit one exact, verified Workers deployment."""
 
-import asyncio
 import secrets
+from asyncio import sleep
 from datetime import UTC, datetime
 from typing import Protocol
 from uuid import UUID, uuid4
@@ -201,7 +201,8 @@ async def _settle_enable(
         row = await _locked_current(db, context, payload)
         if row is None or row.api_token_version != installation.api_token_version:
             return {"outcome": "superseded"}
-        await _require_budget(db, row)
+        if not upgrading:
+            await _require_budget(db, row)
         if row.admitted_revision == payload.revision:
             return {"outcome": "enabled"}
         await _require_legacy_cleanup(db)
@@ -358,7 +359,7 @@ async def _drain_previous_revision(
                 if result == "settling":
                     raise PlatformJobRequiresAction("Cloudflare Cleanup Pending", {"code": "CF_CLEANUP_PENDING"})
                 raise await _drain_timeout_action(db, row.id, workers_remain=workers_remain)
-        await asyncio.sleep(2)
+        await sleep(2)
 
 
 async def _require_budget(db: AsyncSession, row: CloudflareInstallation) -> None:

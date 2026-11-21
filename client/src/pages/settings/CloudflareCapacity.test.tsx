@@ -23,12 +23,16 @@ vi.mock("@/services/platformJobs", () => ({
 	observePlatformJob: mocks.observe,
 }));
 vi.mock("@/services/websocket", () => ({
-	webSocketService: { onPlatformJobUpdate: mocks.subscribe },
+	webSocketService: { onPlatformJobUpdate: mocks.subscribe, onAnyPlatformJobUpdate: () => vi.fn() },
 }));
 
 import { CloudflareCapacity } from "./CloudflareCapacity";
 
-it("drains using the displayed installation revision and the shared job observer", async () => {
+it.each([
+	["Scale In", "scale-in", "scaled_in", "Scaled In"],
+	["Reconcile Cloudflare", "reconcile", "enabled", "Admission Closed"],
+	["Upgrade Cloudflare", "upgrade", "enabled", "Upgrade Pending"],
+])("queues %s using the displayed revision and shared job observer", async (label, action, desiredState, status) => {
 	const installation = {
 		installation_id: "installation-id",
 		desired_revision: 3,
@@ -49,8 +53,9 @@ it("drains using the displayed installation revision and the shared job observer
 			installation: {
 				...installation,
 				desired_revision: 4,
-				desired_state: "scaled_in",
+				desired_state: desiredState,
 				admission_open: false,
+				upgrade_pending: action === "upgrade",
 			},
 		});
 		return { job_id: "job-id", status: "queued" };
@@ -72,7 +77,7 @@ it("drains using the displayed installation revision and the shared job observer
 			<CloudflareCapacity />
 		</QueryClientProvider>,
 	);
-	const scaleIn = await screen.findByRole("button", { name: "Scale In" });
+	const button = await screen.findByRole("button", { name: label });
 	expect(screen.getByText("Estimated Bifrost Usage This UTC Month")).toBeVisible();
 	expect(screen.getByText("0.12 USD")).toBeVisible();
 	expect(screen.getByText("Workers Paid Subscription (Billed by Cloudflare)")).toBeVisible();
@@ -81,10 +86,10 @@ it("drains using the displayed installation revision and the shared job observer
 	expect(screen.getByText("Current reservations")).toBeVisible();
 	expect(screen.getByText("Earlier rate coverage")).toBeVisible();
 	expect(screen.getByText("External traffic is outside the estimate.")).toBeVisible();
-	fireEvent.click(scaleIn);
+	fireEvent.click(button);
 	expect(await screen.findByText("Completed")).toBeVisible();
-	expect(screen.getByText("Scaled In")).toBeVisible();
-	expect(mocks.start).toHaveBeenCalledWith("scale-in", {
+	expect(screen.getByText(status)).toBeVisible();
+	expect(mocks.start).toHaveBeenCalledWith(action, {
 		installation_id: "installation-id",
 		expected_revision: 3,
 	});

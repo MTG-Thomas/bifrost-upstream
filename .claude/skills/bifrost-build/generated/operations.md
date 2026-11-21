@@ -15,6 +15,7 @@ caller's own items.
 | `capacity.cloudflare_rotate_account_token` | `bifrost capacity cloudflare rotate` | `bifrost_cloudflare_worker_credential_replace` | `platform.readwrite` |
 | `capacity.cloudflare_enable` | `bifrost capacity cloudflare enable` | `bifrost_cloudflare_enable_execute` | `platform.readwrite` |
 | `capacity.cloudflare_reconcile` | `bifrost capacity cloudflare reconcile` | `bifrost_cloudflare_reconcile_execute` | `platform.readwrite` |
+| `capacity.cloudflare_upgrade` | `bifrost capacity cloudflare upgrade` | `bifrost_cloudflare_upgrade_execute` | `platform.readwrite` |
 | `users.defaults.get` | `bifrost users defaults get` | `bifrost_base_role_default_get` | `roleassignments.read`, `settings.read`, `organizations.read` |
 | `users.defaults.update` | `bifrost users defaults set` | `bifrost_base_role_default_update` | `settings.readwrite`, `organizations.readwrite`, `userlifecycle.readwrite` |
 | `productupdates.get` | — | — | `settings.read` |

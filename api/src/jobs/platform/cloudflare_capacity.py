@@ -785,7 +785,7 @@ async def _rotate_account_token(context: PlatformJobContext, parsed: BaseModel) 
             return {"outcome": "superseded"}
         account_id = installation.account_id
         desired_revision = installation.desired_revision
-        upgrading = installation.upgrade_release is not None and installation.upgrade_drained_at is not None
+        upgrading = installation.upgrade_release is not None
         ciphertext = candidate.ciphertext
         inventory = await _inventory_snapshot(db, installation.id)
         ref = CredentialRef(installation.id, account_id, "account_token", "", payload.replacement_version)

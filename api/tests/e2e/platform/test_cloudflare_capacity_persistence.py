@@ -604,7 +604,7 @@ async def test_upgrade_drains_before_replacement_and_resumes_after_lost_lease(
         revoked = True
         await db_session.flush()
 
-    monkeypatch.setattr(enable_job.asyncio, "sleep", lose_runner)
+    monkeypatch.setattr(enable_job, "sleep", lose_runner)
     payload = lifecycle_job.CloudflareReconcilePayload.model_validate(job.payload)
     handler = lifecycle_job.CLOUDFLARE_RECONCILE_DEFINITION.handler
     running = PlatformJobContext(job.id, lease, None, str(OPERATOR_ID), admin.principal.email, "")
