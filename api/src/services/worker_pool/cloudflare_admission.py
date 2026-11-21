@@ -83,25 +83,26 @@ class PrimaryPool:
         return self.ceiling is not None and len(cohort) >= self.ceiling
 
 
-async def cloudflare_claim_allowed(db: AsyncSession, worker_id: UUID) -> bool:
+async def cloudflare_claim_allowed(db: AsyncSession, worker_id: UUID, *, lock_installation: bool = True) -> bool:
     """Serialize scoped assignments through the installation before locking the worker.
 
     A reservation pin survives scope removal. A missing or replaced deployment
     therefore closes this worker's claims while its terminal work can settle.
-    Writers must take the installation lock before changing its scope binding.
+    Writers take the installation lock before changing its scope binding.
+    Queue preparation only reads admission after booking against the ledger
+    and validating the slot and remote owner.
     """
     pin = CloudflareWorkerReservation
     installation = CloudflareInstallation
     scope = CloudflareCapacityScope
-    locked_installation = await db.scalar(
-        select(installation.id)
-        .join(pin, pin.installation_id == installation.id)
-        .where(pin.worker_id == worker_id)
-        # FOR NO KEY UPDATE is exclusive against other claimers and scope
-        # writers, and compatible with the FK checks made by usage writers.
-        .with_for_update(key_share=True, of=installation)
-    )
-    if locked_installation is None:
+    installation_query = select(installation.id).join(
+        pin, pin.installation_id == installation.id,
+    ).where(pin.worker_id == worker_id)
+    if lock_installation:
+        # FOR NO KEY UPDATE serializes claimers and scope writers.
+        installation_query = installation_query.with_for_update(key_share=True, of=installation)
+    installation_id = await db.scalar(installation_query)
+    if installation_id is None:
         unpinned_scoped = await db.scalar(select(exists().where(
             ExecutionWorker.id == worker_id,
             ExecutionWorker.capacity_scope.is_not(None),
@@ -134,6 +135,6 @@ async def cloudflare_claim_allowed(db: AsyncSession, worker_id: UUID) -> bool:
         .select_from(pin)
         .join(installation, installation.id == pin.installation_id)
         .join(ExecutionWorker, ExecutionWorker.id == pin.worker_id)
-        .where(pin.worker_id == worker_id, pin.installation_id == locked_installation)
+        .where(pin.worker_id == worker_id, pin.installation_id == installation_id)
     )
     return result is True

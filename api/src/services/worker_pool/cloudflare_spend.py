@@ -614,10 +614,18 @@ async def _ledger_now(db: AsyncSession) -> datetime:
     return now.astimezone(UTC)
 
 
+@dataclass(frozen=True)
+class PreparationBooking:
+    installation_id: UUID
+    periods: tuple[tuple[datetime, int], ...]
+    cpu_ms: int
+
+
 async def reserve_tenant_host_usage(
     db: AsyncSession, worker_id: UUID, deadline: datetime | None, *,
     workflow_cpu_ms: int | None = None, subrequests: int | None = None, tenant_id: str | None = None,
     route_id: str | None = None, queue_warm_until: datetime | None = None,
+    preparation_bookings: list[PreparationBooking] | None = None,
 ) -> bool:
     """Book expected usage and startup headroom before dispatch."""
     usage = await db.get(CloudflareUsageIncarnation, worker_id)
@@ -674,6 +682,7 @@ async def reserve_tenant_host_usage(
     end = max(max(now, deadline) + timedelta(seconds=tail), queue_warm_until or now)
     cursor = now
     periods = []
+    preparation_seconds = []
     while cursor < end:
         start, boundary = usage_period(cursor)
         until = min(boundary, end)
@@ -709,6 +718,8 @@ async def reserve_tenant_host_usage(
             if preparation:
                 assert expected is not None
                 segment["qualified_cpu_ms"] = dispatch * _prepare_cpu_reserve(cpu, expected)
+                if preparation_bookings is not None:
+                    preparation_seconds.append((start, seconds))
             else:
                 assert workflow_cpu_ms is not None and subrequests is not None
                 segment["qualified_cpu_ms"] = qualified_cpu_reserve(
@@ -729,7 +740,38 @@ async def reserve_tenant_host_usage(
         index_elements=[activity.installation_id, activity.period_start],
         set_={field: activity.__table__.c[field] + reservation.excluded[field] for field in fields},
     ))
+    if preparation_seconds:
+        assert preparation_bookings is not None and cpu is not None and expected is not None
+        preparation_bookings.append(PreparationBooking(
+            usage.installation_id, tuple(preparation_seconds), _prepare_cpu_reserve(cpu, expected),
+        ))
     return True
+
+
+async def settle_unsent_preparation(
+    db: AsyncSession, worker_id: UUID, route_id: str, booking: PreparationBooking,
+) -> None:
+    """Record zero provider work for a frame the API never attempted to send."""
+    meter = CloudflareDispatchMeter
+    if await db.scalar(delete(meter).where(
+        meter.worker_id == worker_id, meter.route_id == route_id,
+    ).returning(meter.route_id)) is None:
+        return
+    start, _ = booking.periods[0]
+    await _reserve_engine_identity(
+        db, booking.installation_id, f"never-sent:{worker_id}:{route_id}", await _ledger_now(db), 0,
+    )
+    activity = CloudflareUsageActivity
+    for period, seconds in booking.periods:
+        first = int(period == start)
+        await db.execute(update(activity).where(
+            activity.installation_id == booking.installation_id, activity.period_start == period,
+        ).values(
+            inventory_tenant_seconds=activity.inventory_tenant_seconds - seconds,
+            qualified_preparations=activity.qualified_preparations - first,
+            generation_control_requests=activity.generation_control_requests - first,
+            qualified_cpu_ms=activity.qualified_cpu_ms - booking.cpu_ms * first,
+        ))
 
 
 async def _reserve_engine_identity(
