@@ -1,0 +1,91 @@
+{
+  "date_utc": "2026-11-21",
+  "source_revision": "709e377955dc65ba74a16ff74b44a9ed8110283b",
+  "release_manifest_sha256": "5834840f2e6cd73f2f0c0ba8640b373a6ee477549cc61f47dc431024ea0e73fc",
+  "release_bundle_sha256": "37290640e82d96ab534e97c6c4e871d4ccf381f89f42ff87cd43260b62c0e2c8",
+  "local": {
+    "build_workers_tests_passed": 11,
+    "repeated_build_identical": true,
+    "services_accepted_release": 3,
+    "approved_fixture_scopes": 4
+  },
+  "preflight": {
+    "available_memory_kib": 9403130,
+    "available_disk_kib": 15899108,
+    "other_bifrost_stacks": 0,
+    "workers_paid": true,
+    "ingress_http_status": [
+      404,
+      401,
+      404
+    ],
+    "notification_guard_enabled": true
+  },
+  "connect": {
+    "http_status": 200,
+    "monthly_fleet_envelope_usd": 415.59
+  },
+  "enable": {
+    "started_at_utc": "2026-11-21T08:47:10.530743Z",
+    "completed_at_utc": "2026-11-21T08:47:31.872296Z",
+    "status": "requires_action",
+    "code": "CF_WORKER_INGRESS_UNVERIFIED",
+    "stage": "ingress_http",
+    "error_class": "tls_error",
+    "admission_open": false,
+    "canary_run": false
+  },
+  "workload": {
+    "launcher_incarnations": 0,
+    "workflow_slot_rows": 0,
+    "cold_latency_ms": null,
+    "warm_latency_ms": null,
+    "slot_burst": "not_run",
+    "mid_run_cancel": "not_run",
+    "reconcile": "not_run",
+    "active_scale_in": "not_run"
+  },
+  "spend": {
+    "bifrost_max_observed_estimate_usd": 0,
+    "incremental_target_usd": 0.5,
+    "hard_abort_usd": 1,
+    "cloudflare_workers_analytics_rows": {
+      "capacity": 0,
+      "launcher": 0,
+      "gateway": 0
+    },
+    "settled_workload_spend_usd": null,
+    "bifrost_to_cloudflare_ratio": null
+  },
+  "teardown": {
+    "first_disconnect_code": "CF_CLEANUP_PENDING",
+    "followup_disconnect": "succeeded",
+    "installation_absent": true,
+    "script_journal_absent": 3,
+    "worker_settings_http_status": [
+      404,
+      404,
+      404
+    ],
+    "namespace_objects_http_status": [
+      404,
+      404,
+      404,
+      404
+    ],
+    "provider_worker_inventory_matches": 0,
+    "provider_namespace_inventory_matches": 0,
+    "token_exact_absence": true,
+    "dns_record_exact_absence": true,
+    "authoritative_dns_absence_checks": 2,
+    "tunnel_deletion_record": true,
+    "tunnel_live_connections": 0,
+    "connector_process_absent": true,
+    "staged_credentials": 0,
+    "trial_containers": 0,
+    "trial_networks": 0,
+    "trial_volumes": 0,
+    "trial_project_images": 0,
+    "guest_and_workstation_scratch_absent": true
+  }
+}

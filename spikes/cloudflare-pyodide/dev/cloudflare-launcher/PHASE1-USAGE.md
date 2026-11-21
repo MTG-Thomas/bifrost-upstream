@@ -481,3 +481,16 @@ exact script or namespace ID. All five issued account tokens returned absence
 on exact-ID readback after deletion and were absent from the independent token
 list. The last token readback was 09:57:48 UTC. The rejected Billing Read token
 also had zero matches. The trial created no other hosted resources.
+
+### Combined Bundle Hosted Attempt
+
+The locally qualified release created the three managed scripts and four
+Durable Object namespaces. Its Enable job stopped at the product's ingress
+TLS probe before the signed runtime canary. No launcher or workflow ran.
+Bifrost displayed $0.00 with no workload to settle, and Workers Analytics
+returned zero samples for the three trial scripts. The historical SDK
+request reference therefore remains the SDK input to the locally
+qualified package. Hosted calibration of the combined release and the
+Bifrost-to-Cloudflare spend ratio remain open.
+
+See the [hosted attempt receipt](../../results/cloudflare-scaleout-hosted-attempt.json).

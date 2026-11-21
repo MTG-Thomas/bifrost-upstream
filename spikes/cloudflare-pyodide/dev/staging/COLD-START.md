@@ -339,3 +339,13 @@ temporary local lab secret file was removed.
 
 The [sanitized receipt](../../results/cloudflare-cold-start-hosted.json)
 records the source hashes, per-sample measurements and teardown checks.
+
+## Managed Product Trial With Admission Boot
+
+The November 21 combined release included boot at admission and configured
+90-second linger. Its product pilot stopped at the Enable ingress TLS
+probe before the runtime canary. It produced no managed cold-first or
+warm-reuse latency. The hosted staircase above used the separate
+synthetic supervisor and gateway setup.
+
+See the [hosted attempt receipt](../../results/cloudflare-scaleout-hosted-attempt.json).

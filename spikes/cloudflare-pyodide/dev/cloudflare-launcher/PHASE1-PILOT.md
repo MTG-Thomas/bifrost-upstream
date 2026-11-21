@@ -394,3 +394,39 @@ The focused backend run passed 82 tests, including the Alembic
 single-head check. The two workerd suites passed 28 tests and the
 release CI validation passed six tests. Focused Ruff and Pyright
 also passed.
+
+## Combined Bundle and Slot Pilot
+
+**November 21, 2026 UTC · Release source `709e37795`**
+
+Linux workerd requalified the exact three-module bundle. Two release builds
+matched byte for byte, and the API, scheduler and worker loaded manifest
+`5834840f2e6cd73f2f0c0ba8640b373a6ee477549cc61f47dc431024ea0e73fc`.
+The pilot used one disposable stack on an existing Workers Paid account.
+Before launch, the shared host had 9,403,130 KiB available memory, 15,899,108
+KiB available disk and zero other Bifrost stacks. The existing Workers
+notification remained enabled. The trial targeted $0.50 with a $1.00 hard
+stop on the Bifrost usage meter. Its $415.59 modeled monthly fleet envelope
+was a separate Connect policy check.
+
+| Step | Result | Evidence |
+| --- | --- | --- |
+| Connect | Pass | HTTP 200 with a staged account token, explicit consent and admission closed. |
+| Public ingress smoke check | Pass | The workstation saw login HTTP 404 with the deny marker, SDK context HTTP 401 with the allow marker, and HTTP 404 for the catch-all. |
+| Enable and signed canary | Fail | Enable returned `CF_WORKER_INGRESS_UNVERIFIED` at `ingress_http` with `tls_error`. Admission stayed closed. The API's TLS probe failed before the canary. The specific handshake failure was unavailable in the job response. |
+| Cold and warm workflows, slot burst and cancel | Not run | The attempt stopped at the failed Enable. The ledger contained zero launcher incarnations and zero workflow slots. |
+| Reconcile and active Scale In | Not run | The attempt moved directly to teardown. |
+| Spend comparison | Unavailable | Bifrost displayed $0.00 throughout the observed attempt. Cloudflare Workers Analytics returned zero rows for all three scripts. No settled workload or comparison ratio was available. |
+| Disconnect | Pass after provider readback | The first job reported `CF_CLEANUP_PENDING`. Exact provider readback showed the capacity script and its namespaces had disappeared, and a cleanup-only follow-up completed. Status returned an absent installation and the journal marked all three script rows absent. |
+
+Independent Cloudflare inventory returned zero matching scripts and
+namespaces. Exact reads returned HTTP 404 for three Worker settings and four
+Durable Object namespace object listings. Independent account and zone
+checks confirmed token and DNS record absence. The tunnel deletion record
+showed zero connections, and both authoritative nameservers confirmed the
+trial hostname was absent. The connector process, disposable stack
+containers, networks, volumes and project images, and the trial scratch
+and secret files were removed and checked for absence. No Containers or LLM
+calls were made.
+
+See the [sanitized hosted attempt receipt](../../results/cloudflare-scaleout-hosted-attempt.json).

@@ -93,3 +93,13 @@ Eight-way hosted concurrency, hosted memory headroom, and release-specific
 billing still require qualification. The package builder's measured-bundle
 gate applies to the new launcher bytes. See [usage accounting](PHASE1-USAGE.md)
 and the [scale-out plan](SCALE-OUT.md).
+
+## Combined Bundle Hosted Attempt
+
+The disposable stack accepted approved Provider, Global and two other
+organization fixtures. Enable returned `CF_WORKER_INGRESS_UNVERIFIED`
+at the ingress TLS probe and kept admission closed. No workflow slots
+were created. The hosted four-plus-four overlap, ninth-slot admission,
+tenth-workflow wait and single-slot cancel remain unverified.
+
+See the [hosted attempt receipt](../../results/cloudflare-scaleout-hosted-attempt.json).
