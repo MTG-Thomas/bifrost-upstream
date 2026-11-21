@@ -164,8 +164,10 @@ roughly fractions of a cent per fresh slot, dominated by a new daily engine
 identity, plus CPU, requests and TenantHost duration. Reusing the same identity
 reduces the creation component. A burst with three extra cold slots can add
 roughly a cent before reuse. The installation spend gate checks before each
-new speculative reservation, and the launcher request caps and receipt
-reserves also apply. Missing receipts retain their reserves. The policy
+speculative reservation commits. The usage activity update serializes
+bookings without holding the installation claim lock. Known-unsent frames
+receive a zero entry in the ledger. Ambiguous send outcomes retain their
+reserves, and the launcher request caps and receipt reserves also apply. The policy
 default is zero, so ordinary admission alone does not add speculative spend.
 
 A local PostgreSQL test queued four workflows for one tenant and held the

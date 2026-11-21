@@ -266,7 +266,7 @@ for (const [phase, error_type, error] of [
 }
 
 
-test('speculative prepares boot distinct slots concurrently and a different workflow joins its slot', async () => {
+test('queue prepares serialize boots and a different workflow joins its slot', async () => {
   const pending = [Promise.withResolvers(), Promise.withResolvers()];
   const entered = [Promise.withResolvers(), Promise.withResolvers()];
   const routes = pending.map((_, slot) => ({...route, workflow_deadline: null,
@@ -274,12 +274,14 @@ test('speculative prepares boot distinct slots concurrently and a different work
   const refusal = Promise.withResolvers();
   const hosts = new Map();
   const ready = [false, false];
+  const booting = [];
   const now = Date.now();
   for (const [slot, workflow] of routes.entries()) {
     hosts.set(await launcherTenantId(workflow), {
       async warm({prepareBy, warmUntil}) {
         assert.equal(prepareBy, now + 20_000);
         assert.equal(warmUntil, now + 90_000);
+        booting.push(slot);
         entered[slot].resolve();
         await pending[slot].promise;
         ready[slot] = true;
@@ -299,10 +301,14 @@ test('speculative prepares boot distinct slots concurrently and a different work
     engineSlot: workflow.engine_slot, incarnationId: workflow.incarnation_id,
     fence: 'original-fence', prepareBy: now + 20_000, warmUntil: now + 90_000,
   }));
-  await Promise.all(entered.map(({promise}) => promise));
+  await entered[0].promise;
   const adopted = run({route: routes[0], context: {}, signal});
   await refusal.promise;
-  pending.forEach(({resolve}) => resolve());
+  assert.deepEqual(booting, [0]);
+  pending[0].resolve();
+  await entered[1].promise;
+  assert.deepEqual(booting, [0, 1]);
+  pending[1].resolve();
   assert.deepEqual(await Promise.all(preparations), [[{kind: 'boot'}], [{kind: 'boot'}]]);
   assert.equal((await adopted).attempt_state, 'completed');
 });

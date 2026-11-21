@@ -87,8 +87,11 @@ When a managed launcher claims a workflow, the API checks unassigned,
 Workers-eligible workflows for that tenant. It accounts for reusable engines
 on that launcher, then caps new prepares by the configured maximum, open
 tenant and launcher seats, and installation headroom minus the fair-admission
-seat. Separate hosts can boot those additional engines concurrently.
+seat. Older admissible workflows for another tenant take precedence.
 The installation lock serializes the slot reservations with normal claims.
+The launcher serializes cold boots, including queue prepares. Those boots
+can overlap the queue wait and execution on other slots. Parallel Python
+boots remain a hosted qualification item.
 The owning launcher can adopt a reserved slot without consuming another seat.
 It gets a new workflow fence even when it takes a different queued workflow.
 The independent preparation fence authorizes only a metered boot on that
@@ -96,7 +99,8 @@ same physical slot.
 
 An unsent hint is invalid once the pinned queue entry is gone, unless the
 slot has been adopted by a live workflow. Owner changes, drain and the
-absolute prepare deadline close Loader authorization. A hint already in
+absolute prepare deadline close Loader authorization. Draining launchers
+release their unadopted holds. A hint already in
 flight can finish. An unused slot expires within the configured linger,
 measured from reservation. Loader entry has at most 20 seconds within that
 window. The launcher sends no idle pings or alarms. A completed workflow

@@ -35,26 +35,25 @@ export function createLauncherWorkflowRunner(getHost, {warmRpcMs = ENGINE_BOOT_T
   // or reaches the RPC limit, independently of the waiting route's deadline.
   let warmTail = Promise.resolve();
   const preparations = new Map();
-  const warmRpc = async (task) => {
-    let timer;
-    let expired = false;
-    const check = () => {
-      if (expired) throw new Error('TenantHost warm-up RPC timed out');
-    };
-    const timeout = new Promise((_, reject) => {
-      timer = setTimeout(() => {
-        expired = true;
-        reject(new Error('TenantHost warm-up RPC timed out'));
-      }, warmRpcMs);
-    });
-    try {
-      return await Promise.race([task(check), timeout]);
-    } finally {
-      clearTimeout(timer);
-    }
-  };
   const queueWarm = (task) => {
-    const next = warmTail.then(() => warmRpc(task));
+    const next = warmTail.then(async () => {
+      let timer;
+      let expired = false;
+      const check = () => {
+        if (expired) throw new Error('TenantHost warm-up RPC timed out');
+      };
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          expired = true;
+          reject(new Error('TenantHost warm-up RPC timed out'));
+        }, warmRpcMs);
+      });
+      try {
+        return await Promise.race([task(check), timeout]);
+      } finally {
+        clearTimeout(timer);
+      }
+    });
     warmTail = next.catch(() => {});
     return next;
   };
@@ -92,7 +91,7 @@ export function createLauncherWorkflowRunner(getHost, {warmRpcMs = ENGINE_BOOT_T
       engine_slot: engineSlot, incarnation_id: incarnationId});
     if (preparations.has(tenantId)) return [];
     const queuePrewarm = prepareBy !== undefined;
-    const task = (queuePrewarm ? warmRpc : queueWarm)(async (check) => {
+    const task = queueWarm(async (check) => {
       check();
       if (signal.aborted) return {skipped: true};
       return getHost(tenantId).warm({tenantId, executionId, admission: true,
