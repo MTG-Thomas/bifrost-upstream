@@ -1387,14 +1387,17 @@ async def test_admission_prices_the_qualified_ledger_bounds(
     lifetime_base += Decimal("0.022") * elapsed / month_seconds
     fallback = lifetime_base + Decimal("0.000106")
     await db_session.flush()
-    assert abs((await db_session.scalar(price)) - (fallback)) < Decimal("1e-12")
+    observed = await db_session.scalar(price)
+    assert observed is not None and abs(observed - (fallback)) < Decimal("1e-12")
     current.meter_final = receipt.model_dump()
     await db_session.flush()
-    assert abs((await db_session.scalar(price)) - (lifetime_base + Decimal("0.00012810"))) < Decimal("1e-12")
+    observed = await db_session.scalar(price)
+    assert observed is not None and abs(observed - (lifetime_base + Decimal("0.00012810"))) < Decimal("1e-12")
     current.meter_terminal = {"sqlite_rows_written": 150, "do_requests": 18, "log_events": 1}
     current.meter_uncertain = True
     await db_session.flush()
-    assert abs((await db_session.scalar(price)) - (lifetime_base + Decimal("0.00015810"))) < Decimal("1e-12")
+    observed = await db_session.scalar(price)
+    assert observed is not None and abs(observed - (lifetime_base + Decimal("0.00015810"))) < Decimal("1e-12")
     saved_bounds = current.meter_bounds
     current.meter_bounds = {"caps": {"do_requests": 1}, "second_usd": "0.00068126550"}
     await db_session.flush()
@@ -1711,7 +1714,8 @@ async def test_launcher_sqlite_high_water_accrues_until_namespace_deletion(
         db_session, worker_id, {**event, "sqlite_database_bytes": 12_288}, uncertain=False,
     )
     await db_session.flush()
-    assert (await db_session.scalar(estimate)) > 0
+    initial = await db_session.scalar(estimate)
+    assert initial is not None and initial > 0
 
     await cloudflare_spend.record_launcher_terminal_meter(
         db_session, worker_id, {**event, "sqlite_database_bytes": 9_000_000_000}, uncertain=False,
@@ -1723,9 +1727,10 @@ async def test_launcher_sqlite_high_water_accrues_until_namespace_deletion(
     await db_session.flush()
     still_accruing = await db_session.scalar(estimate)
     namespace.state = "absent"
-    namespace.observed_at = min(start + timedelta(seconds=2), now)
+    verified_at = min(start + timedelta(seconds=2), now)
+    namespace.observed_at = verified_at
     await db_session.flush()
-    month_fraction = Decimal(str((namespace.observed_at - start).total_seconds())) / Decimal(str((end - start).total_seconds()))
+    month_fraction = Decimal(str((verified_at - start).total_seconds())) / Decimal(str((end - start).total_seconds()))
     accrued = Decimal("90.01") * month_fraction * Decimal("0.20")
     price = await db_session.scalar(estimate)
     assert price is not None and abs(price - accrued) < Decimal("0.00000000001")
