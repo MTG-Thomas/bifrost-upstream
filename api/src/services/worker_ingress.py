@@ -38,6 +38,8 @@ CONTROL_PATH: str = POLICY["control"]
 _SDK_POLICY = json.loads(
     (Path(__file__).resolve().parents[2] / "bifrost" / "cloudflare_sdk_routes.json").read_text()
 )
+_SDK_ROUTE_METHODS: dict[str, list[str]] = _SDK_POLICY["routes"]
+_INGRESS_ROUTE_METHODS: dict[str, list[str]] = POLICY["routes"]
 _UUID = re.compile(_SDK_POLICY["identifiers"]["uuid"])
 _EMAIL = re.compile(r"[A-Za-z0-9.!$&'*+=^_~-]+@[A-Za-z0-9.-]+")
 # Exact canonical operations come directly from the runtime policy. Its
@@ -50,11 +52,11 @@ _EXACT_TEMPLATES = {
     "/api/users/{email}": "/api/users/{user_id}",
     "/api/platform-jobs/{uuid}": "/api/platform-jobs/{job_id}",
 }
-ROUTES = {
+ROUTES: set[tuple[str, str]] = {
     (method, _EXACT_TEMPLATES.get(path, path))
-    for path, methods in _SDK_POLICY["routes"].items() for method in methods
+    for path, methods in _SDK_ROUTE_METHODS.items() for method in methods
 } | {
-    (method, path) for path, methods in POLICY["routes"].items() for method in methods
+    (method, path) for path, methods in _INGRESS_ROUTE_METHODS.items() for method in methods
     if any(path == prefix or path.startswith(prefix.rstrip("/") + "/") for prefix in _SDK_POLICY["prefixes"])
 }
 ALLOW_MARKER = f'v{POLICY["version"]}; allowed'.encode()
