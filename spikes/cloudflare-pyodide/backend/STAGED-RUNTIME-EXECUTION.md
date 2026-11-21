@@ -39,7 +39,9 @@ f49d4ba99cebd24aa497f1244833b940e640885f; SDK source
 139596497d57b219ddcc3616aa66ec58e1b3cf3c. Staged payload SHA256
 61d818aef7f66a129951c7eb0cc4dc638277da35e635e13965b90f8a23575731,
 unchanged from the qualified source/wheel artifact. The current loader/cleanup
-pins are in the receipt's staged_runtime_provenance. Runtime bundle remains
+pins are in the receipt's staged_runtime_provenance; the verifier reads that
+loader from revision 0b3b84f8, before the loader switched to native base64
+decoding. Runtime bundle remains
 Pyodide 314.0.6 / CPython 3.14.2 with the existing qualified native wheels.
 
 Actual command in CT128:

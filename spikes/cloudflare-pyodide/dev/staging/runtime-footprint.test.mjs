@@ -75,3 +75,16 @@ test('refuses a companion source whose Redis paths changed', () => {
   input[cache].py = input[cache].py.replace('client = _get_sync_redis()', 'client = other()');
   assert.throws(() => trimRuntime(input), /expected 3 occurrence/);
 });
+
+for (const [file, anchor] of [
+  [cache, '\nimport redis\n'],
+  [cache, '_sync_redis_client = redis.Redis.from_url('],
+  [sdk, '\nimport webbrowser\n'],
+  [sdk, 'webbrowser.open(full_url)'],
+]) {
+  test(`refuses a companion source missing ${JSON.stringify(anchor.trim())}`, () => {
+    const input = sourceRuntime();
+    input[file].py = input[file].py.replace(anchor, '\n');
+    assert.throws(() => trimRuntime(input), /expected 1 occurrence/);
+  });
+}

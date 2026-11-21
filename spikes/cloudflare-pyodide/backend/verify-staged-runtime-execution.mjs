@@ -17,8 +17,13 @@ assert.equal(receipt.cloud_invocations,0);
 assert.equal(receipt.physical_termination_verified,false);
 assert.deepEqual(receipt.running_after_cleanup,[]);
 assert.equal(receipt.packet_sha256['project/backend/generated-runtime.mjs'],'61d818aef7f66a129951c7eb0cc4dc638277da35e635e13965b90f8a23575731');
+// The receipt binds the loader revision that ran this qualification; the
+// current loader decodes natively and is covered by stage-runtime-loader.test.mjs.
 for(const [name,digest] of Object.entries(receipt.staged_runtime_provenance.loader_files_sha256)) {
-  assert.equal(hash(readFileSync(new URL(name,import.meta.url))),digest);
+  const bytes=name==='runtime-code.mjs'
+    ? execFileSync('git',['show','0b3b84f8ebb2406bb9cd627b976065c1e97bb044:spikes/cloudflare-pyodide/backend/runtime-code.mjs'])
+    : readFileSync(new URL(name,import.meta.url));
+  assert.equal(hash(bytes),digest);
   assert.equal(receipt.packet_sha256['project/backend/'+name],digest);
 }
 assert.deepEqual(preflight.refused,['generated-runtime.mjs','runtime-code.mjs','sdk-cleanup-code.mjs','runtime-provenance.json']);

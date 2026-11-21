@@ -165,8 +165,12 @@ Compiled candidate SHA-256
   `dotenv`, `typing_extensions`, `tzdata`, `ssl` and `sqlite3` in a fresh
   child. The staircase also exercised timezone data through the workflow.
 - The unchanged companion input precompiled successfully with CPython
-  3.14.4. Windows Node 26.13.1 passed all 26 focused tests and both archived
-  SDK-close verifiers. Paths below are relative to the spike root.
+  3.14.4. Windows Node 26.13.1 passed all 26 focused tests. The native-decoding
+  loader is covered by `stage-runtime-loader.test.mjs` and the workerd runs
+  above; the archived SDK-close and staged-runtime verifiers check historical
+  receipts against the loader revision that produced them, not this loader.
+  Node-side callers of `runtimeCode` need Node 25 or later. Paths below are
+  relative to the spike root.
 
 ```sh
 node --test dev/staging/runtime-footprint.test.mjs \
@@ -175,6 +179,7 @@ node --test dev/staging/runtime-footprint.test.mjs \
   dev/executor/capability-requirements.test.mjs
 node backend/verify-owned-sdk-close.mjs
 node backend/verify-sdk-close.mjs
+node backend/verify-staged-runtime-execution.mjs
 ```
 
 ## Hosted validation proposal
@@ -190,9 +195,11 @@ full staircase creates 84 unique children and requires at least 84 remaining
 included creations before starting. With insufficient allowance, measure
 only the first-attempt pair in each round, for 24 unique children at most.
 Cap either run at 100 external requests, 300 billable invocations and
-30 seconds of CPU per invocation. Estimated incremental cost is **under
-$0.049**, including up to $0.048 in creation charges and about $0.00027
-in request and CPU overage at the stated caps.
+10 seconds of CPU per invocation. Expected incremental cost is **under
+$0.05**: up to $0.048 in creation charges plus well under a cent of request
+and CPU overage at the measured ~3–5 s of CPU per cold child. At the caps
+(300 × 10 s = 3,000,000 CPU-ms at $0.02 per million) CPU could add about
+$0.06, so the worst case is about $0.11.
 Disable storage, durable objects and persisted logs for the two lab scripts.
 End the experiment at 15 minutes or the first cap or unexpected response,
 then remove both scripts and their lab routing and verify teardown.

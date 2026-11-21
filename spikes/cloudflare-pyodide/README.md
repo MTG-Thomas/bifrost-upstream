@@ -225,8 +225,9 @@ Warm execution passes with real run-scoped SDK identity; cold concurrent startup
 fails in the tested native workerd runtime. This does not resolve physical CPU
 termination or deployed end-to-end acceptance.
 
-Requirements: Docker, Python 3.13+ for source preparation, Node 24+, Git Bash on
-Windows for the repository debug launcher. From the worktree root:
+Requirements: Docker, Python 3.13+ for source preparation, Node 26 (the runtime
+loader and its tests use `Uint8Array.fromBase64`), Git Bash on Windows for the
+repository debug launcher. From the worktree root:
 
 ```powershell
 py -3 spikes/cloudflare-pyodide/prepare.py
