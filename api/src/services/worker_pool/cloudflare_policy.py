@@ -137,7 +137,10 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
         CloudflareUsageAdvisory.model_validate(installation.usage_advisory)
         if installation.usage_advisory else None
     )
-    coverage = await spend_coverage(db, installation.account_id, period_start) if estimate is not None and isinstance(rate, str) else []
+    coverage = (
+        await spend_coverage(db, installation.account_id, period_start)
+        if estimate is not None and isinstance(rate, str) else []
+    )
     exhausted = await exhausted_managed_workers(db, installation.id)
     if exhausted:
         coverage.append(

@@ -222,24 +222,40 @@ async def test_managed_cleanup_backoff_books_each_attempt_until_window_expires(d
     age = timedelta(seconds=controller.SWEEP_SECONDS + 1)
     await _set_request(db.sessions, await _accept_pool_run(), 1, age=age, approved=True)
     [worker_id] = await managed_pool.launch_for_demand(capacity.policy)
+    await managed_pool.reconcile_worker(worker_id, capacity.policy)
+    provider = capacity.provider
+    provider.fail_deletions = True
+    provider.resources[str(worker_id)]["state"] = "stopped"
+    async with db.context() as session:
+        worker = await session.get(ExecutionWorker, worker_id)
+        assert worker is not None
+        worker.state, worker.ended_at = "retired", datetime.now(UTC)
     attempts = 9  # Transient failures can outlast the former eight-attempt cap.
-    for _ in range(attempts):
-        assert await managed_pool._reserve_managed_cleanup(worker_id)
-        assert not await managed_pool._reserve_managed_cleanup(worker_id)
+    for attempt in range(attempts):
+        with pytest.raises(httpx.ReadTimeout):
+            await managed_pool.reconcile_worker(worker_id, capacity.policy)
         async with db.context() as session:
             pin = await session.get(CloudflareWorkerReservation, worker_id)
             assert pin is not None
+            assert pin.cleanup_attempts == attempt + 1
+            assert pin.cleanup_retry_at is not None
             pin.cleanup_retry_at = datetime.now(UTC) - timedelta(seconds=1)
     async with db.context() as session:
         pin = await session.get(CloudflareWorkerReservation, worker_id)
         assert pin is not None and pin.cleanup_started_at is not None
         pin.cleanup_started_at -= external_controller.MANAGED_CLEANUP_WINDOW
-    assert not await managed_pool._reserve_managed_cleanup(worker_id)
+    # A successful DELETE would release it if the expired window still sent one.
+    provider.fail_deletions = False
+    await managed_pool.reconcile_worker(worker_id, capacity.policy)
+    assert sum(method == "DELETE" for method, _ in provider.requests) == attempts
     async with db.context() as session:
         requests = await session.scalar(select(CloudflareUsageActivity.capacity_cleanup_do_requests).where(
             CloudflareUsageActivity.installation_id == capacity.provider.installation_id,
         ))
         assert requests == 2 * attempts
+        meter = await session.get(CloudflareUsageIncarnation, worker_id)
+        assert meter is not None and meter.launcher_stopped_at is not None
+        assert meter.deleted_at is None
 
 
 async def test_managed_prepare_uses_the_uid_committed_before_provider_io(db, capacity, managed_pool):

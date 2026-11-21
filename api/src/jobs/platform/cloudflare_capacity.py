@@ -361,7 +361,7 @@ async def _verify_stuck_workflow_slots(
                 )
             except (DeletionSettling, ObservationPending):
                 continue
-            except OwnershipConflict:
+            except (OwnershipConflict, CloudflareManagementDenied):
                 resources = await _owned_revision_scripts(db, row.id, launcher.scope, launcher.desired_revision)
                 raise _stranded_cleanup_action(
                     launcher.desired_revision, [wid for wid, script in entries if script == launcher],

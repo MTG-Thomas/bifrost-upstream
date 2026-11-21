@@ -407,6 +407,25 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
         ),
     )
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider_read)) as http:
+        with monkeypatch.context() as patch:
+            patch.setattr(enable_job, "cloudflare_workers_remain", AsyncMock(return_value=True))
+            recovering = AsyncMock(return_value="settling")
+            patch.setattr(enable_job, "_cleanup_stranded_workflow_slots", recovering)
+            month, _ = usage_period(datetime.now(UTC))
+            blocked = CloudflareUsageActivity(installation_id=installation.id, period_start=month, sdk_requests=200_000)
+            db_session.add(blocked)
+            await db_session.flush()
+            with pytest.raises(PlatformJobRequiresAction) as budget:
+                await enable_job._settle_enable(running, payload, http, release)
+            assert budget.value.result == {"code": "CF_BUDGET_REACHED"}
+            recovering.assert_not_awaited()
+            await db_session.delete(blocked)
+            await db_session.flush()
+            with pytest.raises(PlatformJobFailure) as settling:
+                await enable_job._settle_enable(running, payload, http, release)
+            assert settling.value.code == "CF_CLEANUP_SETTLING" and settling.value.retryable
+            recovering.assert_awaited_once()
+        paid_reads.clear()
         with pytest.raises(PlatformJobRequiresAction) as ingress_denied:
             await enable_job._settle_enable(running, payload, http, release)
         assert ingress_denied.value.result == {
@@ -1489,6 +1508,63 @@ async def test_stranded_revision_deletes_owned_scripts_before_releasing_slots(
     unobserved = await db_session.get(CloudflareUsageIncarnation, exhausted)
     assert unobserved is not None and unobserved.deleted_at is not None
     assert unobserved.meter_uncertain and unobserved.meter_final is None
+
+
+@pytest.mark.asyncio
+async def test_disconnect_recovery_allows_other_revision_owner_updates_during_provider_io(async_session_factory) -> None:
+    old_worker, live_worker = uuid4(), uuid4()
+    account = uuid4().hex
+    async with async_session_factory() as db:
+        installation_id = await create_installation(db, account)
+        db.add_all([
+            ExecutionWorker(id=old_worker, form="external", state="lost", runtime_profile="cloudflare-python-v1"),
+            ExecutionWorker(id=live_worker, form="external", state="ready", runtime_profile="cloudflare-python-v1"),
+        ])
+        await db.flush()
+        db.add_all(CloudflareWorkerReservation(
+            worker_id=worker_id, installation_id=installation_id, scope="workers",
+            deployment_revision=revision, control_root_version=1,
+            cleanup_started_at=(
+                datetime.now(UTC) - cloudflare_spend.MANAGED_CLEANUP_WINDOW if worker_id == old_worker else None
+            ),
+        ) for worker_id, revision in [(old_worker, 1), (live_worker, 2)])
+        for role, namespaces in (
+            ("capacity", {"WorkerLedger": "ledger", "ScopeRegistry": "registry"}),
+            ("launcher", {"CloudflareLauncher": "launcher", "TenantHost": "tenant"}),
+        ):
+            db.add(CloudflareOwnedResource(
+                id=uuid4(), installation_id=installation_id, account_id=account, scope="workers",
+                kind="worker_script", target_name=f"fixture-{role}", desired_revision=1,
+                artifact_digest="c" * 64, effect_id=uuid4(), state="deleting",
+                provider_id=str(uuid4()), provider_version=str(uuid4()), namespace_ids=namespaces,
+            ))
+        await db.commit()
+    verified = AsyncMock()
+
+    async def observe(**kwargs):
+        assert kwargs["intent"].target.name == "fixture-capacity"
+        # Simulate an owner renewal while the REST response is still pending.
+        async with async_session_factory() as owner_db:
+            locked = await owner_db.scalar(select(ExecutionWorker.id).where(
+                ExecutionWorker.id == live_worker,
+            ).with_for_update(nowait=True))
+            assert locked == live_worker
+        return None
+
+    try:
+        async with async_session_factory() as db:
+            row = await db.get(CloudflareInstallation, installation_id, with_for_update=True)
+            assert row is not None
+            adapter = SimpleNamespace(observe=observe, verify_absent=verified)
+            assert await lifecycle_job._cleanup_stranded_workflow_slots(db, row, adapter) == "progressed"
+            verified.assert_awaited_once()
+    finally:
+        async with async_session_factory() as db:
+            await db.execute(delete(ExecutionWorker).where(ExecutionWorker.id.in_([old_worker, live_worker])))
+            for model in (CloudflareOwnedResource, CloudflareUsageIncarnation, CloudflareCredential):
+                await db.execute(delete(model).where(model.installation_id == installation_id))
+            await db.execute(delete(CloudflareInstallation).where(CloudflareInstallation.id == installation_id))
+            await db.commit()
 
 
 @pytest.mark.asyncio

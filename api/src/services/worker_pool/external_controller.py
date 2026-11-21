@@ -87,11 +87,11 @@ class ExternalWorkerPoolController(WorkerCapacityController):
                 return False
             now = await db.scalar(select(func.clock_timestamp()))
             assert now is not None
+            if pin.cleanup_retry_at is not None and now < pin.cleanup_retry_at:
+                return False
             if pin.cleanup_started_at is None:
                 pin.cleanup_started_at = now
             if now >= pin.cleanup_started_at + MANAGED_CLEANUP_WINDOW:
-                return False
-            if pin.cleanup_retry_at is not None and now < pin.cleanup_retry_at:
                 return False
             pin.cleanup_retry_at = now + timedelta(seconds=min(2 ** min(pin.cleanup_attempts + 1, 6), 60))
             pin.cleanup_attempts += 1
