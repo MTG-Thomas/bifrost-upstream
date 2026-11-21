@@ -278,21 +278,33 @@ class WorkerIngress:
         self.origin = origin
         self.cached_origin: str | None = None
         self.origin_until = 0.0
-        self.origin_lock = asyncio.Lock()
+        self.origin_refresh: asyncio.Task[str | None] | None = None
         self.refresh = _RequestBudget(16, 8)
         self.capacity_canary = _IdentityBudgets(4, 2)
         self.pending_hello = _RequestBudget(16, 8)
         self.http = _IdentityBudgets(40, 8)
         self.launchers = _IdentityBudgets(4, 2)
 
+    async def _refresh_origin(self) -> str | None:
+        async with asyncio.timeout(3):
+            origin = await self.origin()
+        self.cached_origin = origin
+        self.origin_until = monotonic() + _ORIGIN_TTL
+        return origin
+
+    def _finish_origin_refresh(self, task: asyncio.Task[str | None]) -> None:
+        self.origin_refresh = None
+        if not task.cancelled():
+            # Observe a failure even when every request that joined it disconnected.
+            task.exception()
+
     async def _origin(self) -> str | None:
-        if monotonic() >= self.origin_until:
-            async with self.origin_lock:
-                if monotonic() >= self.origin_until:
-                    async with asyncio.timeout(3):
-                        self.cached_origin = await self.origin()
-                    self.origin_until = monotonic() + _ORIGIN_TTL
-        return self.cached_origin
+        if monotonic() < self.origin_until:
+            return self.cached_origin
+        if self.origin_refresh is None:
+            self.origin_refresh = asyncio.create_task(self._refresh_origin())
+            self.origin_refresh.add_done_callback(self._finish_origin_refresh)
+        return await asyncio.shield(self.origin_refresh)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         host = _header_values(scope, b"host")

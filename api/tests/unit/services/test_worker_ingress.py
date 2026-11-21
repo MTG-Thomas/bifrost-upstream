@@ -12,18 +12,18 @@ from uuid import UUID, uuid4
 import httpx
 import pytest
 import yaml
+from bifrost import _runtime_io
+from bifrost import client as sdk_client
+from bifrost.cloudflare_analysis import _api_path_allowed
+from bifrost.commands import agents as agent_commands
+from bifrost.executions import executions
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.routing import APIRoute, APIWebSocketRoute
 from sqlalchemy.exc import SQLAlchemyError
-from starlette.responses import RedirectResponse
-
-from bifrost.cloudflare_analysis import _api_path_allowed
-from bifrost import _runtime_io, client as sdk_client
-from bifrost.commands import agents as agent_commands
-from bifrost.executions import executions
 from src.routers.cli import acknowledge_capacity_canary
 from src.services import worker_ingress as ingress
 from src.services.worker_pool import cloudflare_canary
+from starlette.responses import RedirectResponse
 
 
 async def test_listener_survives_transient_installation_read_error(monkeypatch):
@@ -403,6 +403,42 @@ async def test_origin_cache_expires_and_checks_new_host(endpoint, monkeypatch):
         now += ingress._ORIGIN_TTL
         assert (await client.get(path)).status_code == 404
     assert origin.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [401, 503])
+async def test_concurrent_requests_share_one_origin_lookup(endpoint, monkeypatch, status):
+    app, sdk, origin = endpoint
+    all_joined = asyncio.Event()
+    entrants = 0
+    lookup = app._origin
+
+    async def read_origin():
+        await all_joined.wait()
+        if status == 503:
+            raise SQLAlchemyError("Origin lookup failed")
+        return "https://workers.example.test"
+
+    async def enter_lookup():
+        nonlocal entrants
+        entrants += 1
+        if entrants == 8:
+            all_joined.set()
+        return await lookup()
+
+    origin.side_effect = read_origin
+    monkeypatch.setattr(app, "_origin", enter_lookup)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://workers.example.test",
+    ) as client:
+        responses = await asyncio.gather(*(client.get("/api/sdk/context") for _ in range(8)))
+        assert [response.status_code for response in responses] == [status] * 8
+        origin.assert_awaited_once()
+        sdk.assert_not_awaited()
+        if status == 503:
+            origin.side_effect = None
+            assert (await client.get("/api/sdk/context")).status_code == 401
+            assert origin.await_count == 2
 
 
 @pytest.mark.asyncio
