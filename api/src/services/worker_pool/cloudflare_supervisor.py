@@ -91,7 +91,10 @@ async def _installations() -> list[ManagedCloudflareScope]:
         rows = await db.execute(
             select(CloudflareInstallation.id, CloudflareCapacityScope.scope, CloudflareCapacityScope.deployment_revision)
             .join(CloudflareCapacityScope, CloudflareCapacityScope.installation_id == CloudflareInstallation.id)
-            .where(CloudflareInstallation.retired_at.is_(None))
+            .where(
+                CloudflareInstallation.retired_at.is_(None),
+                CloudflareCapacityScope.scope == "workers",
+            )
         )
         return [ManagedCloudflareScope(*row) for row in rows.tuples()]
 

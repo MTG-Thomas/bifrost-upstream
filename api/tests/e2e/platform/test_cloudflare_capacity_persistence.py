@@ -1986,6 +1986,10 @@ async def test_container_reservation_serializes_shared_capacity(async_session_fa
                 db, installation_id, CloudflareWorkersPolicy.model_validate(saved.policy["limits"]["workers"]),
             )
             assert slots.occupied.total() == (1 if race == "tenant" else 2)
+            charge = await db.scalar(select(cloudflare_estimated_usage()).where(
+                CloudflareInstallation.id == installation_id,
+            ))
+            assert charge is not None and charge > 0
     finally:
         async with async_session_factory() as db:
             worker_ids = select(CloudflareWorkerReservation.worker_id).where(
@@ -2000,8 +2004,10 @@ async def test_container_reservation_serializes_shared_capacity(async_session_fa
             await db.execute(delete(FileIndex).where(FileIndex.path.in_(paths)))
             await db.execute(delete(Organization).where(Organization.id.in_(tenants)))
             await db.execute(delete(CloudflareCapacityScope).where(CloudflareCapacityScope.installation_id == installation_id))
-            await db.execute(delete(CloudflareCredential).where(CloudflareCredential.installation_id == installation_id))
-            await db.execute(delete(CloudflareInstallation).where(CloudflareInstallation.id == installation_id))
+            await db.execute(update(CloudflareInstallation).where(CloudflareInstallation.id == installation_id).values(
+                desired_state="disconnected", admitted_revision=None,
+            ))
+            await retire_cloudflare_installation(db, installation_id=installation_id, expected_revision=1)
             await db.commit()
 
 
