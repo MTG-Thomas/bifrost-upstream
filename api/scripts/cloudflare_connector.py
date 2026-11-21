@@ -33,7 +33,7 @@ async def launch(path: Path) -> asyncio.subprocess.Process:
     return await asyncio.create_subprocess_exec(
         CLOUDFLARED, "tunnel", "--no-autoupdate", "run", "--token-file", str(path),
         env={"HOME": "/tmp", "PATH": "/usr/bin:/bin"},
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.DEVNULL,
     )
 
 

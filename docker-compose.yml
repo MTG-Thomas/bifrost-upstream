@@ -49,7 +49,7 @@ services:
       POSTGRES_USER: bifrost
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -64,7 +64,7 @@ services:
     container_name: bifrost-redis
     command: redis-server --appendonly yes
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -85,7 +85,7 @@ services:
       AWS_SECRET_ACCESS_KEY: ${SEAWEEDFS_SECRET_KEY:?SEAWEEDFS_SECRET_KEY is required}
       S3_BUCKET: ${BIFROST_S3_BUCKET:-bifrost-local}
     ports:
-      - "8333:8333"
+      - "127.0.0.1:8333:8333"
     volumes:
       - seaweedfs_data:/data
 
@@ -135,7 +135,7 @@ services:
       # Auth
       AUTH_TYPE: plain
     ports:
-      - "6432:5432" # pgbouncer listens on 5432 internally
+      - "127.0.0.1:6432:5432" # pgbouncer listens on 5432 internally
     depends_on:
       postgres:
         condition: service_healthy
@@ -194,6 +194,7 @@ services:
       - "8001" # Worker ingress. Route the dedicated TLS proxy here with Host preserved.
     volumes:
       - cloudflare-connector:/run/bifrost-tunnel
+    networks: [default, cloudflare-connector]
     # Debug port (5678) only exposed in docker-compose.dev.yml
     depends_on:
       init:
@@ -228,6 +229,7 @@ services:
     stop_grace_period: 15s
     volumes:
       - cloudflare-connector:/run/bifrost-tunnel:ro
+    networks: [cloudflare-connector]
     depends_on:
       api:
         condition: service_healthy
@@ -326,6 +328,9 @@ services:
           memory: 2G
     stop_grace_period: 310s
     command: python -m src.worker.main
+
+networks:
+  cloudflare-connector:
 
 volumes:
   cloudflare-connector:

@@ -4,19 +4,40 @@ import asyncio
 import base64
 import json
 import sys
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from cryptography.fernet import InvalidToken
 from pydantic import ValidationError
 from shared.models import CloudflareConnectRequest
 from src.jobs.platform.kubernetes_client import KubernetesApiError, KubernetesJobClient
+from src.services import worker_ingress
 from src.services.worker_pool.cloudflare_connector_channel import _publish_file
 from src.services.worker_pool.cloudflare_provisioning import OwnershipConflict
 from src.services.worker_pool.cloudflare_tunnel_rest import connector_secret
 
 from scripts import cloudflare_connector
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [OwnershipConflict, InvalidToken])
+async def test_projection_failure_does_not_stop_worker_ingress(monkeypatch, caplog, failure):
+    started = asyncio.Event()
+
+    @asynccontextmanager
+    async def serve(_app):
+        started.set()
+        yield
+
+    monkeypatch.setattr(worker_ingress, "project_connector", AsyncMock(side_effect=failure("private fixture value")))
+    monkeypatch.setattr(worker_ingress, "_installation_origin", AsyncMock(return_value="https://worker.example.test"))
+    monkeypatch.setattr(worker_ingress, "serve_worker_ingress", serve)
+    async with worker_ingress.watch_worker_ingress(None):
+        await asyncio.wait_for(started.wait(), 3)
+    assert "Could not project the Managed Tunnel connector credential" in caplog.text
+    assert "private fixture value" not in caplog.text
 
 
 def connection(**fields):

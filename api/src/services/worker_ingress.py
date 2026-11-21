@@ -14,7 +14,6 @@ from urllib.parse import quote, unquote_to_bytes
 from uuid import UUID
 
 import h11
-import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.routing import APIRoute, APIWebSocketRoute
@@ -27,10 +26,6 @@ from uvicorn.protocols.http.h11_impl import H11Protocol
 from src.config import get_settings
 from src.core.database import get_db_context, get_session_factory
 from src.core.security import decode_expired_access_token, decode_token
-from src.jobs.platform.kubernetes_client import (
-    KubernetesApiError,
-    KubernetesConfigurationError,
-)
 from src.models.orm.cloudflare_capacity import CloudflareInstallation
 from src.services.worker_pool.cloudflare_connector_channel import (
     Projection,
@@ -574,8 +569,7 @@ async def watch_worker_ingress(app: FastAPI) -> AsyncIterator[None]:
         nonlocal projection
         try:
             projection = await project_connector(projection)
-        except (SQLAlchemyError, OSError, TimeoutError, ValueError, httpx.HTTPError,
-                KubernetesApiError, KubernetesConfigurationError):
+        except Exception:  # noqa: BLE001 - Projection is optional and may handle secret material.
             logger.warning("Could not project the Managed Tunnel connector credential")
 
     async def watch() -> None:
