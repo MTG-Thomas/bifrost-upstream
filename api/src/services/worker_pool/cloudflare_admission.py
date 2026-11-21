@@ -100,20 +100,14 @@ async def cloudflare_claim_allowed(db: AsyncSession, worker_id: UUID) -> bool:
 
     A reservation pin survives scope removal. A missing or replaced deployment
     therefore closes this worker's claims while its terminal work can settle.
-    Writers must take the installation lock before changing its scope binding.
+    Writers take the installation lock before changing its scope binding.
     """
     pin = CloudflareWorkerReservation
     installation = CloudflareInstallation
-    scope = CloudflareCapacityScope
-    locked_installation = await db.scalar(
-        select(installation.id)
-        .join(pin, pin.installation_id == installation.id)
-        .where(pin.worker_id == worker_id)
-        # FOR NO KEY UPDATE is exclusive against other claimers and scope
-        # writers, and compatible with the FK checks made by usage writers.
-        .with_for_update(key_share=True, of=installation)
-    )
-    if locked_installation is None:
+    installation_id = await db.scalar(select(installation.id).join(
+        pin, pin.installation_id == installation.id,
+    ).where(pin.worker_id == worker_id).with_for_update(key_share=True, of=installation))
+    if installation_id is None:
         unpinned_scoped = await db.scalar(select(exists().where(
             ExecutionWorker.id == worker_id,
             ExecutionWorker.capacity_scope.is_not(None),
@@ -123,6 +117,14 @@ async def cloudflare_claim_allowed(db: AsyncSession, worker_id: UUID) -> bool:
     # Read the scope in a fresh statement after taking the lock. The scope can
     # change while this transaction waits behind a writer, even if that writer
     # leaves the installation row unchanged.
+    return await scoped_cloudflare_claim_allowed(db, worker_id, installation_id)
+
+
+async def scoped_cloudflare_claim_allowed(db: AsyncSession, worker_id: UUID, installation_id: UUID) -> bool:
+    """Read scoped admission and spend for an already identified installation."""
+    pin = CloudflareWorkerReservation
+    installation = CloudflareInstallation
+    scope = CloudflareCapacityScope
     matches_scope = exists().where(
         scope.installation_id == pin.installation_id,
         scope.scope == pin.scope,
@@ -147,6 +149,6 @@ async def cloudflare_claim_allowed(db: AsyncSession, worker_id: UUID) -> bool:
         .select_from(pin)
         .join(installation, installation.id == pin.installation_id)
         .join(ExecutionWorker, ExecutionWorker.id == pin.worker_id)
-        .where(pin.worker_id == worker_id, pin.installation_id == locked_installation)
+        .where(pin.worker_id == worker_id, pin.installation_id == installation_id)
     )
     return result is True

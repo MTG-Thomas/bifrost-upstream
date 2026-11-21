@@ -450,3 +450,37 @@ or establish the edge certificate state at the time of Enable.
 Enable now reports the IP family, symbolic OpenSSL reason when present,
 and numerical certificate verification code when available. The TLS failure
 still closes admission.
+
+## Combined Bundle Hosted Retry
+
+**November 21, 2026 UTC · Release source `7739c8e92`**
+
+The package matched the locally qualified three-module fingerprint. All 11
+packaging tests passed, and the API, scheduler and worker loaded the release.
+The retry began with $0.00 observed cumulative spend. Before stack startup
+the shared host had 10,025,901 KiB available memory, 14,746,796 KiB available
+disk and zero other Bifrost stacks.
+
+| Step | Result | Evidence |
+| --- | --- | --- |
+| Connect | Pass | HTTP 200 with a staged account token and admission closed. |
+| TLS preflight | Pass | The running API container resolved four addresses and verified both IPv4 handshakes with hostname SNI. Both IPv6 sockets returned `ENETUNREACH`. The first pass took 0.51 seconds and needed no backoff. The literal-address HTTP SDK context check passed on both IPv4 peers. |
+| Enable and signed canary | Fail | Enable returned `CF_WORKER_INGRESS_UNVERIFIED` at `ingress_http`, `tls_error`, family `ipv4`. The result provided neither a symbolic reason nor a certificate verification code. No launcher incarnation was recorded. |
+| Cold and warm workflows, slot burst and cancel | Not run | Enable kept admission closed. No workflow slot rows were created. |
+| Reconcile and active Scale In | Not run | The retry stopped after Enable and proceeded to Disconnect. |
+| Spend comparison | Unavailable | Bifrost displayed $0.00 across both attempts, below the $0.50 target and $1.00 stop. Cloudflare returned zero Worker and Durable Object analytics rows for the retry's resources. |
+| Disconnect and teardown | Pass | Disconnect succeeded on its first submission and the product no longer reported an installation. Independent inventories showed zero trial scripts and namespaces. Exact reads returned HTTP 404 for all three scripts and four namespaces. |
+
+The scoped token and DNS record were absent by inventory and exact read.
+The tunnel deletion record showed zero connections. Both authoritative
+DNS servers confirmed the route was absent. The connector process, CT128
+stack containers, volumes, networks, project images and trial credential
+files were removed and checked for absence. The workstation scratch was
+removed. Sanitized API, worker and scheduler log extracts were retained
+locally outside the repository.
+
+Enable reported an IPv4 probe failure after the preflight handshake and
+initial HTTP check had passed. The job result did not identify the failing
+HTTP request or the underlying TLS exception.
+
+See the [sanitized hosted retry receipt](../../results/cloudflare-scaleout-hosted-retry.json).

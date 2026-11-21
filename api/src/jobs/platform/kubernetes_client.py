@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
 import ssl
@@ -283,6 +284,32 @@ class KubernetesJobClient:
         )
         containers = response.json().get("spec", {}).get("containers") or []
         return containers[0] if containers else None
+
+    async def publish_cloudflare_connector(self, token: str, *, fence: str) -> None:
+        """Update only the connector Secret preinstalled by the component."""
+        namespace = quote(self.namespace, safe="")
+        path = f"/api/v1/namespaces/{namespace}/secrets/bifrost-cloudflare-connector"
+        response = await self._request("GET", path, expected={200})
+        current = response.json()
+        metadata = current.get("metadata", {})
+        if (
+            metadata.get("name") != "bifrost-cloudflare-connector" or metadata.get("namespace") != self.namespace
+            or metadata.get("labels", {}).get("app.kubernetes.io/component") != "cloudflare-connector"
+            or not metadata.get("resourceVersion") or current.get("type") != "Opaque"
+            or set(current.get("data", {})) - {"token"}
+        ):
+            raise KubernetesApiError("GET", path, 409)
+        data = {"token": base64.b64encode(token.encode("ascii")).decode("ascii")}
+        fence_key = "bifrost.gobifrost.com/connector-fence"
+        if current.get("data", {}) != data or metadata.get("annotations", {}).get(fence_key) != fence:
+            await self._request(
+                "PATCH", path, expected={200},
+                headers={"Content-Type": "application/merge-patch+json"},
+                json={
+                    "metadata": {"resourceVersion": metadata["resourceVersion"], "annotations": {fence_key: fence}},
+                    "data": data,
+                },
+            )
 
     def _create_http_client(self) -> httpx.AsyncClient:
         host = os.environ.get("KUBERNETES_SERVICE_HOST")

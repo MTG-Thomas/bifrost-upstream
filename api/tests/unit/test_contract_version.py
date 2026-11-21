@@ -465,7 +465,10 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Cloudflare status adds optional deployed revision and upgrade state fields.
     # Cloudflare status optionally reports whether an upgrade is available.
     # Cloudflare reconcile and upgrade accept an optional release-fence reset.
-    "cd60ee4485d268ad4d94e83890de29524a4d0a81f99b77d615ad45b751e34fcd"
+    # Managed Tunnel fields and the connector rotation option are additive.
+    # Omitted reachability still selects Existing HTTPS Endpoint.
+    # Queue pre-warming is opt-in. Existing clients can omit the cap.
+    "1923bb6f6be1f73ed282bf8d92355e45d70205410b4e313391538c631323ee0e"
 )
 
 

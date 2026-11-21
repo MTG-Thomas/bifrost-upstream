@@ -55,6 +55,7 @@ function CloudflareConfigurationForm({ status, onSaved }: {
 	const settings = installation?.policy;
 	const [saving, setSaving] = useState(false);
 	const [failure, setFailure] = useState<string>();
+	const [managedTunnel, setManagedTunnel] = useState(false);
 
 	async function save(event: FormEvent<HTMLFormElement>) {
 		event.preventDefault();
@@ -75,6 +76,7 @@ function CloudflareConfigurationForm({ status, onSaved }: {
 				installation_slots: Number(fields.get("installation_slots")),
 				max_lifetime_seconds: Number(fields.get("lifetime")),
 				linger_seconds: Number(fields.get("linger")),
+				queue_prewarm_per_tenant: Number(fields.get("queue_prewarm")),
 				work_kinds: fields.get("workflows") === "on" ? ["workflow" as const] : [],
 			},
 			monthly_limit_usd: String(fields.get("monthly_limit")),
@@ -89,6 +91,8 @@ function CloudflareConfigurationForm({ status, onSaved }: {
 			action: "connect",
 			account_id: String(fields.get("account_id")),
 			worker_ingress_origin: String(fields.get("origin")),
+			reachability_mode: managedTunnel ? "managed_tunnel" : "existing_https_endpoint",
+			...(managedTunnel ? { zone_id: String(fields.get("zone_id")) } : {}),
 			api_token: String(fields.get("api_token")),
 			consent: true,
 			consent_version: status.consent_text_version,
@@ -114,7 +118,26 @@ function CloudflareConfigurationForm({ status, onSaved }: {
 				<div className="space-y-3">
 					<Label htmlFor="cf-account-id">Cloudflare Account ID</Label>
 					<Input id="cf-account-id" name="account_id" pattern="[a-f0-9]{32}" required />
-					<Label htmlFor="cf-ingress-origin">Existing HTTPS Endpoint</Label>
+					{status.managed_tunnel_available && (
+						<div className="grid gap-2">
+							<Label htmlFor="cf-reachability-mode">Reachability</Label>
+							<select id="cf-reachability-mode" className="rounded-md border bg-background p-2"
+								value={managedTunnel ? "managed_tunnel" : "existing_https_endpoint"}
+								onChange={(event) => setManagedTunnel(event.target.value === "managed_tunnel")}
+							>
+								<option value="existing_https_endpoint">Existing HTTPS Endpoint</option>
+								<option value="managed_tunnel">Managed Tunnel</option>
+							</select>
+						</div>
+					)}
+					{managedTunnel && (
+						<>
+							<Label htmlFor="cf-zone-id">Cloudflare DNS Zone ID</Label>
+							<Input id="cf-zone-id" name="zone_id" pattern="[a-f0-9]{32}" required />
+							<p className="text-sm text-muted-foreground">Grant Cloudflare Tunnel Write on the account and Zone Read and DNS Write on this zone.</p>
+						</>
+					)}
+					<Label htmlFor="cf-ingress-origin">{managedTunnel ? "Dedicated Tunnel HTTPS Origin" : "Existing HTTPS Endpoint"}</Label>
 					<Input id="cf-ingress-origin" name="origin" type="url" required />
 					<Label htmlFor="cf-connect-token">Cloudflare API Token</Label>
 					<Input id="cf-connect-token" name="api_token" type="password" autoComplete="new-password" required />
@@ -132,6 +155,7 @@ function CloudflareConfigurationForm({ status, onSaved }: {
 				<div><Label htmlFor="cf-installation-slots">Installation Slot Limit</Label><Input id="cf-installation-slots" name="installation_slots" type="number" min={2} max={256} defaultValue={settings?.workers.installation_slots ?? 9} required /></div>
 				<div><Label htmlFor="cf-lifetime">Maximum Lifetime in Seconds</Label><Input id="cf-lifetime" name="lifetime" type="number" min={60} max={604800} defaultValue={settings?.workers.max_lifetime_seconds ?? 3600} required /></div>
 				<div><Label htmlFor="cf-linger">Tenant Engine Linger in Seconds</Label><Input id="cf-linger" name="linger" type="number" min={0} max={300} defaultValue={settings?.workers.linger_seconds ?? 90} required /></div>
+				<div><Label htmlFor="cf-queue-prewarm">Max Queue Pre-Warms Per Tenant</Label><Input id="cf-queue-prewarm" name="queue_prewarm" type="number" min={0} max={32} defaultValue={settings?.workers.queue_prewarm_per_tenant ?? 0} required /><p className="text-sm text-muted-foreground">Set to 0 to disable. Requires a positive engine linger.</p></div>
 				<div><Label htmlFor="cf-monthly">Monthly Usage Target in USD</Label><Input id="cf-monthly" name="monthly_limit" type="number" min="0.01" step="0.01" defaultValue={settings?.monthly_limit_usd ?? "30.00"} required /></div>
 				<div><Label htmlFor="cf-shared-cap">Shared Managed Worker Limit</Label><Input id="cf-shared-cap" name="shared_cap" type="number" min={1} max={1000} defaultValue={settings?.shared_managed_worker_cap ?? undefined} /></div>
 			</div>
@@ -299,7 +323,7 @@ export function CloudflareCapacity() {
 							)}
 							<div>
 								<dt className="text-muted-foreground">
-									Existing HTTPS Endpoint
+									{installation.reachability_mode === "managed_tunnel" ? "Managed Tunnel" : "Existing HTTPS Endpoint"}
 								</dt>
 								<dd className="break-all">
 									{installation.worker_ingress_origin}
@@ -390,6 +414,11 @@ export function CloudflareCapacity() {
 								{installation.desired_state === "scaled_in" && (
 									<>
 										<Button variant="outline" disabled={busy} onClick={() => mutation.mutate("rotate-root")}>Rotate Control Root</Button>
+										{installation.connector_token_version != null && (
+											<Button variant="outline" disabled={busy} onClick={() => mutation.mutate("rotate-connector")}>
+												Rotate Connector Token
+											</Button>
+										)}
 										<AlertDialog>
 											<AlertDialogTrigger asChild>
 												<Button variant="outline" disabled={busy}>Rotate Scope Bearer</Button>

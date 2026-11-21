@@ -4,7 +4,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "20261121_cf_workers_upgrade"
-down_revision = "20261121_cf_cleanup_window"
+down_revision = "20261121_cf_queue_prewarm"
 branch_labels = None
 depends_on = None
 

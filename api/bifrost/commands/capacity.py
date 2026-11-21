@@ -67,6 +67,7 @@ _register_action("reconcile", "Verify or repair the current Cloudflare Workers d
 _register_action("upgrade", "Apply the Workers release packaged with Bifrost.")
 _register_action("rotate-root", "Rotate the derivation root after Scale In.", credential="control_root")
 _register_action("rotate-bearer", "Retire the previous Workers deployment and stage a new bearer.", credential="scope_bearer")
+_register_action("rotate-connector", "Rotate the Managed Tunnel connector token after Scale In.", credential="connector_token")
 
 
 def _read_policy(policy: TextIO) -> dict[str, Any]:
@@ -100,15 +101,20 @@ async def stage_credential(
 @cloudflare_group.command("connect")
 @click.option("--account-id", required=True)
 @click.option("--worker-ingress-origin", required=True)
+@click.option("--reachability-mode", type=click.Choice(["existing_https_endpoint", "managed_tunnel"]), default="existing_https_endpoint")
+@click.option("--zone-id", help="Cloudflare DNS zone ID for Managed Tunnel.")
 @click.option("--policy", type=click.File("r", encoding="utf-8"), required=True, help="Cloudflare capacity policy JSON file.")
 @click.pass_context
 @pass_resolver
 @run_async
 async def connect(
-    ctx: click.Context, account_id: str, worker_ingress_origin: str, policy: TextIO, *,
+    ctx: click.Context, account_id: str, worker_ingress_origin: str, policy: TextIO,
+    reachability_mode: str, zone_id: str | None, *,
     client: BifrostClient, resolver: RefResolver,
 ) -> None:
     """Validate an account token and connect Cloudflare."""
+    if (reachability_mode == "managed_tunnel") != (zone_id is not None):
+        raise click.UsageError("Provide --zone-id only for --reachability-mode managed_tunnel.")
     limits = _read_policy(policy)
     current = await client.get(_PATH)
     current.raise_for_status()
@@ -117,6 +123,7 @@ async def connect(
     click.confirm("Accept the current Cloudflare consent", abort=True)
     response = await client.patch(_PATH, json={
         "action": "connect", "account_id": account_id, "worker_ingress_origin": worker_ingress_origin,
+        "reachability_mode": reachability_mode, "zone_id": zone_id,
         "consent_version": consent["consent_text_version"], "consent": True,
         "api_token": click.prompt("Cloudflare API Token", hide_input=True), "policy": limits,
     })

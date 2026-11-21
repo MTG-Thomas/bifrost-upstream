@@ -349,3 +349,11 @@ warm-reuse latency. The hosted staircase above used the separate
 synthetic supervisor and gateway setup.
 
 See the [hosted attempt receipt](../../results/cloudflare-scaleout-hosted-attempt.json).
+
+## Managed Product Retry
+
+The API image passed the TLS preflight on both routable addresses. Enable
+then reported an IPv4 ingress TLS failure before the signed canary. No
+managed cold-first or warm-reuse latency was measured in the retry.
+
+See the [sanitized hosted retry receipt](../../results/cloudflare-scaleout-hosted-retry.json).

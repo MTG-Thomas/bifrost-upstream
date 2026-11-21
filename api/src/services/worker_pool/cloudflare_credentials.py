@@ -19,7 +19,7 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareWorkerReservation,
 )
 
-CredentialPurpose = Literal["account_token", "control_root", "scope_bearer"]
+CredentialPurpose = Literal["account_token", "control_root", "scope_bearer", "tunnel_secret", "connector_token"]
 StagePurpose = Literal["connect", "rotate"]
 
 

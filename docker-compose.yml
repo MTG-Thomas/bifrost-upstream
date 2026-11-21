@@ -156,6 +156,7 @@ services:
       <<: *object-storage-environment
       # Core
       BIFROST_ENVIRONMENT: ${BIFROST_ENVIRONMENT:-production}
+      BIFROST_CLOUDFLARE_TUNNEL_CHANNEL: compose
       BIFROST_DEBUG: ${BIFROST_DEBUG:-false}
       BIFROST_USAGE_REPORTING_ENABLED: ${BIFROST_USAGE_REPORTING_ENABLED:-true}
       BIFROST_SECRET_KEY: ${BIFROST_SECRET_KEY:?BIFROST_SECRET_KEY is required (32+ chars)}
@@ -191,6 +192,9 @@ services:
     # Note: API port 8000 not exposed - access via client proxy at http://localhost:3000
     expose:
       - "8001" # Worker ingress. Route the dedicated TLS proxy here with Host preserved.
+    volumes:
+      - cloudflare-connector:/run/bifrost-tunnel
+    networks: [default, cloudflare-connector]
     # Debug port (5678) only exposed in docker-compose.dev.yml
     depends_on:
       init:
@@ -213,6 +217,22 @@ services:
     # Compose otherwise sends SIGKILL ten seconds after SIGTERM.
     stop_grace_period: 310s
     command: uvicorn src.main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 300
+
+  cloudflare-connector:
+    image: ghcr.io/gobifrost/bifrost-api:${BIFROST_VERSION:-latest}
+    entrypoint: ["python", "/app/scripts/cloudflare_connector.py"]
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    stop_grace_period: 15s
+    volumes:
+      - cloudflare-connector:/run/bifrost-tunnel:ro
+    networks: [cloudflare-connector]
+    depends_on:
+      api:
+        condition: service_healthy
 
   # Frontend (Vite)
   client:
@@ -246,6 +266,7 @@ services:
       <<: *object-storage-environment
       # Core (must match API)
       BIFROST_ENVIRONMENT: ${BIFROST_ENVIRONMENT:-production}
+      BIFROST_CLOUDFLARE_TUNNEL_CHANNEL: compose
       BIFROST_SECRET_KEY: ${BIFROST_SECRET_KEY:?BIFROST_SECRET_KEY is required (32+ chars)}
       # Database (via PgBouncer for connection pooling)
       BIFROST_DATABASE_URL: postgresql+asyncpg://bifrost:${POSTGRES_PASSWORD}@pgbouncer:5432/bifrost
@@ -308,7 +329,11 @@ services:
     stop_grace_period: 310s
     command: python -m src.worker.main
 
+networks:
+  cloudflare-connector:
+
 volumes:
+  cloudflare-connector:
   postgres_data:
   redis_data:
   seaweedfs_data:

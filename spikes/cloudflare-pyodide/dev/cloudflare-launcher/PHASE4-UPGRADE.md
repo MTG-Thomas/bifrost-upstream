@@ -49,7 +49,10 @@ for the same account and reconcile the pinned revision. Independent scope
 credentials continue to serve bounded retirement while available.
 The scheduler backs off from five minutes to one hour for drain timeouts,
 pending cleanup, release mismatches, provider outages, and unavailable spend
-evidence. A successful verification resets the backoff. Admitted scopes
+evidence. An unavailable Managed Tunnel connector can recover when its
+supervisor connects. Reconcile checks the connector before uploading
+replacement Workers and applies the same backoff. A successful verification
+resets the backoff. Admitted scopes
 keep their periodic verification. Paused upgrades with other failures wait
 for an operator action or a new desired revision.
 

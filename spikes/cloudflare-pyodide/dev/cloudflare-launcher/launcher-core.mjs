@@ -345,7 +345,7 @@ export class LauncherCore {
     }
     this.#emit(session, {event: 'inventory', inventory: {
       version: 1, routes, terminal_routes: terminalRoutes,
-      ...(this.prepareHost ? {admission_prepare: true} : {}),
+      ...(this.prepareHost ? {admission_prepare: true, ...(this.tenantSlots ? {queue_prewarm: true} : {})} : {}),
       ...(this.tenantSlots ? {tenant_slot_protocol: 1} : {}),
       ...(this.meter?.exhausted ? {meter_exhausted: true} : {}),
       ...(this.#slots.length > 1 ? {workflow_slots: this.#slots.length} : {}),
@@ -428,10 +428,13 @@ export class LauncherCore {
           (request, handle) => workflowRoute(request, handle, this.tenantSlots ? this.identity.incarnationId : null));
       }
       case 'prepare_workflow': {
-        const {route_id, execution_id, org_id, engine_slot} = payload;
+        const {route_id, execution_id, org_id, engine_slot, prepare_by, warm_until} = payload;
+        const queuePrewarm = prepare_by !== undefined || warm_until !== undefined;
         if (!this.prepareHost || typeof route_id !== 'string' || !PREPARE_ROUTE.test(route_id) ||
             typeof execution_id !== 'string' || !UUID_RE.test(execution_id) ||
             (this.tenantSlots && !slotOrdinal(engine_slot)) ||
+            (queuePrewarm && (!this.tenantSlots || !Number.isSafeInteger(prepare_by) ||
+              !Number.isSafeInteger(warm_until) || warm_until < prepare_by || warm_until - prepare_by > 300_000)) ||
             !(org_id === null || (typeof org_id === 'string' && UUID_RE.test(org_id)))) {
           refuse('ValueError', 'Invalid Cloudflare workflow preparation');
           return;
@@ -441,19 +444,21 @@ export class LauncherCore {
           accept({});
           return;
         }
-        if (this.retired || this.meter?.exhausted || this.#preparations.size >= this.#slots.length) {
+        const remaining = queuePrewarm ? Math.min(19_000, prepare_by - this.clock()) : 19_000;
+        if (this.retired || remaining <= 0 || this.meter?.exhausted || this.#preparations.size >= this.#slots.length) {
           this.meter?.recordRoute(route_id, []);
           accept({});
           return;
         }
         const controller = new AbortController();
         this.#preparations.set(route_id, controller);
-        const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(19_000)]);
+        const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(remaining)]);
         this.background((async () => {
           let invocations;
           try {
             invocations = await this.prepareHost({
               orgId: org_id, executionId: execution_id, signal,
+              ...(queuePrewarm ? {prepareBy: prepare_by, warmUntil: warm_until} : {}),
               ...(this.tenantSlots ? {engineSlot: engine_slot, incarnationId: this.identity.incarnationId,
                 fence: route_id.slice('prepare:'.length)} : {}),
               reserveIdentity: (identity) => this.#requestControl({route_id}, 'cloudflare_generation_request',

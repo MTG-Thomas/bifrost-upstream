@@ -9,7 +9,6 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from hashlib import sha256
 from typing import Literal
-from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 from pydantic import SecretStr
@@ -17,6 +16,7 @@ from shared.models import (
     CloudflareCapacityPolicy,
     CloudflareCapacityStatus,
     CloudflareInstallationStatus,
+    CloudflareReachabilityMode,
     CloudflareSpendStatus,
     CloudflareUsageAdvisory,
 )
@@ -24,6 +24,7 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.config import get_settings
 from src.models.orm.cloudflare_capacity import (
     CloudflareCapacityScope,
     CloudflareCredential,
@@ -50,11 +51,11 @@ from src.services.worker_pool.cloudflare_release import (
     installed_workers_release_order,
 )
 from src.services.worker_pool.cloudflare_spend import (
-    exhausted_managed_workers,
     LAUNCHER_RECEIPT_METERS,
     WORKERS_PAID_SUBSCRIPTION_USD,
     WORKERS_RATE_TABLE_VERSION,
     cloudflare_estimated_usage,
+    exhausted_managed_workers,
     launcher_lifetime_rate,
     launcher_root_rate,
     spend_coverage,
@@ -62,11 +63,17 @@ from src.services.worker_pool.cloudflare_spend import (
     valid_cpu_limits,
     workers_fleet_envelope_usd,
 )
+from src.services.worker_pool.cloudflare_tunnel_rest import dedicated_hostname
 
-CONSENT_TEXT_VERSION = "existing-https-v1"
+CONSENT_TEXT_VERSION = "cloudflare-reachability-v5"
 CONSENT_TEXT = (
     "Cloudflare will process approved workflow code, workload data, and run-scoped credentials. "
-    "Your HTTPS endpoint controls how Cloudflare reaches Bifrost. The Workers Scripts Write "
+    "With Managed Tunnel, Cloudflare terminates TLS and Bifrost manages the dedicated hostname, "
+    "tunnel, and DNS record. In Compose, the connector can reach the API's main port over their dedicated bridge. "
+    "It can reach host-published ports through the host gateway, including the Bifrost client port. "
+    "Depending on host routing and firewall rules, "
+    "it can also reach the LAN, the instance metadata IP, and the internet. "
+    "With Existing HTTPS Endpoint, your proxy controls ingress. The Workers Scripts Write "
     "grant can change other Workers in the selected account. You authorize Bifrost to provision "
     "and remove its verified owned resources in that account."
 )
@@ -169,7 +176,10 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
         ).where(CloudflareInstallation.retired_at.is_(None)).execution_options(populate_existing=True)
     )).tuples().one_or_none()
     if row is None:
-        return CloudflareCapacityStatus(consent_text_version=CONSENT_TEXT_VERSION, consent_text=CONSENT_TEXT, installation=None)
+        return CloudflareCapacityStatus(
+            consent_text_version=CONSENT_TEXT_VERSION, consent_text=CONSENT_TEXT, installation=None,
+            managed_tunnel_available=get_settings().cloudflare_tunnel_channel is not None,
+        )
     installation, estimate, as_of, owned_resources_pending = row
     policy = CloudflareCapacityPolicy.model_validate(installation.policy["limits"])
     period_start, period_end = usage_period(as_of)
@@ -214,11 +224,15 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
     return CloudflareCapacityStatus(
         consent_text_version=CONSENT_TEXT_VERSION,
         consent_text=CONSENT_TEXT,
+        managed_tunnel_available=get_settings().cloudflare_tunnel_channel is not None,
         latest_job_id=latest_job_id,
         installation=CloudflareInstallationStatus.model_validate({
             "installation_id": installation.id,
             "account_id": installation.account_id,
             "worker_ingress_origin": installation.worker_ingress_origin,
+            "reachability_mode": installation.reachability_mode,
+            "zone_id": installation.zone_id,
+            "connector_token_version": installation.tunnel_token_version,
             "consent_version": installation.consent_version,
             "consent_at": installation.consent_at,
             "desired_revision": installation.desired_revision,
@@ -308,20 +322,13 @@ async def create_cloudflare_installation(
     verified_api_token: SecretStr,
     policy: CloudflareCapacityPolicy,
     bounds: WorkersReleaseMeterBounds,
+    reachability_mode: CloudflareReachabilityMode = "existing_https_endpoint",
+    zone_id: str | None = None,
 ) -> UUID:
     """Persist an already validated connection in the caller's transaction."""
     if not re.fullmatch("[a-f0-9]{32}", account_id):
         raise ValueError("Invalid Cloudflare account ID")
-    hostname = urlsplit(worker_ingress_origin).hostname
-    canonical_origin = f"https://{hostname}"
-    if (
-        not hostname
-        or worker_ingress_origin not in (canonical_origin, f"{canonical_origin}/")
-        or len(canonical_origin) > 255
-        or "." not in hostname
-        or any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", part) for part in hostname.split("."))
-    ):
-        raise ValueError("Cloudflare worker ingress requires a dedicated HTTPS origin")
+    canonical_origin = f"https://{dedicated_hostname(worker_ingress_origin)}"
     if consent_version != CONSENT_TEXT_VERSION:
         raise ValueError("Cloudflare installation requires consent to the current text")
     actor = str(actor_id)
@@ -334,6 +341,8 @@ async def create_cloudflare_installation(
             id=installation_id,
             account_id=account_id,
             worker_ingress_origin=canonical_origin,
+            reachability_mode=reachability_mode,
+            zone_id=zone_id,
             consent_version=consent_version,
             consent_actor=actor,
             consent_at=now,

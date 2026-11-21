@@ -11,7 +11,7 @@ export type CloudflareAccountTokenRotation =
 export type CloudflareConfiguration =
 	| components["schemas"]["CloudflareConnectRequest"]
 	| components["schemas"]["CloudflarePolicyUpdate"];
-export type CloudflareAction = "enable" | "reconcile" | "upgrade" | "scale-in" | "disconnect" | "rotate-root" | "rotate-bearer";
+export type CloudflareAction = "enable" | "reconcile" | "upgrade" | "scale-in" | "disconnect" | "rotate-root" | "rotate-bearer" | "rotate-connector";
 
 const actionPaths = {
 	enable: "/api/capacity/cloudflare/enable",
@@ -19,6 +19,12 @@ const actionPaths = {
 	upgrade: "/api/capacity/cloudflare/upgrade",
 	"scale-in": "/api/capacity/cloudflare/scale-in",
 	disconnect: "/api/capacity/cloudflare/disconnect",
+} as const;
+
+const credentials = {
+	"rotate-root": "control_root",
+	"rotate-bearer": "scope_bearer",
+	"rotate-connector": "connector_token",
 } as const;
 
 export async function getCloudflareCapacity(): Promise<CloudflareCapacityStatus> {
@@ -43,9 +49,9 @@ export async function startCloudflareAction(
 	action: CloudflareAction,
 	body: CloudflareCapacityAction,
 ): Promise<components["schemas"]["PlatformJobAccepted"]> {
-	const { data, error } = action === "rotate-root" || action === "rotate-bearer"
+	const { data, error } = action === "rotate-root" || action === "rotate-bearer" || action === "rotate-connector"
 		? await apiClient.POST("/api/capacity/cloudflare/rotate", { body: {
-			...body, credential: action === "rotate-root" ? "control_root" : "scope_bearer",
+			...body, credential: credentials[action],
 		} })
 		: await apiClient.POST(actionPaths[action], { body });
 	if (error) {

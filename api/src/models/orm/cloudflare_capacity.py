@@ -31,6 +31,11 @@ class CloudflareInstallation(Base):
     __table_args__ = (
         CheckConstraint("singleton", name="ck_cf_installation_singleton"),
         CheckConstraint("desired_revision > 0", name="ck_cf_installation_revision"),
+        CheckConstraint(
+            "(reachability_mode = 'existing_https_endpoint' AND zone_id IS NULL) OR "
+            "(reachability_mode = 'managed_tunnel' AND zone_id IS NOT NULL AND zone_id ~ '^[a-f0-9]{32}$')",
+            name="ck_cf_installation_reachability",
+        ),
         CheckConstraint("desired_state IN ('scaled_in', 'enabled', 'disconnected')", name="ck_cf_desired_state"),
         CheckConstraint(
             "admitted_revision IS NULL OR (desired_state = 'enabled' AND admitted_revision = desired_revision)",
@@ -79,6 +84,10 @@ class CloudflareInstallation(Base):
     singleton: Mapped[bool] = mapped_column(Boolean, server_default=true())
     account_id: Mapped[str] = mapped_column(String(32))
     worker_ingress_origin: Mapped[str] = mapped_column(String(255))
+    reachability_mode: Mapped[str] = mapped_column(String(32), server_default="existing_https_endpoint")
+    zone_id: Mapped[str | None] = mapped_column(String(32))
+    tunnel_token_version: Mapped[int | None]
+    tunnel_token_projected_version: Mapped[int | None]
     consent_version: Mapped[str] = mapped_column(String(64))
     consent_actor: Mapped[str] = mapped_column(String(255))
     consent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -114,7 +123,7 @@ class CloudflareCredential(Base):
         ),
         CheckConstraint("version > 0", name="ck_cf_credential_version"),
         CheckConstraint(
-            "(purpose IN ('account_token', 'control_root') AND scope = '') OR "
+            "(purpose IN ('account_token', 'control_root', 'tunnel_secret', 'connector_token') AND scope = '') OR "
             "(purpose = 'scope_bearer' AND scope <> '')",
             name="ck_cf_credential_scope",
         ),
@@ -216,6 +225,7 @@ class CloudflareWorkflowSlot(Base):
         CheckConstraint("ordinal >= 0 AND ordinal < 32", name="ck_cf_workflow_slot_ordinal"),
         Index("ix_cf_workflow_slot_worker", "worker_id"),
         UniqueConstraint("fence", name="uq_cf_workflow_slot_fence"),
+        UniqueConstraint("prewarm_fence", name="uq_cf_workflow_slot_prewarm"),
     )
 
     installation_id: Mapped[UUID] = mapped_column(
@@ -230,6 +240,9 @@ class CloudflareWorkflowSlot(Base):
     sent: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     warm_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Independent of the workflow fence: a claim can adopt this physical
+    # slot while the preparation's usage authorization is still in flight.
+    prewarm_fence: Mapped[UUID | None]
 
 
 class CloudflareOwnedResource(Base):
@@ -265,6 +278,7 @@ class CloudflareOwnedResource(Base):
     provider_id: Mapped[str | None] = mapped_column(String(255))
     provider_version: Mapped[str | None] = mapped_column(String(255))
     namespace_ids: Mapped[dict[str, str]] = mapped_column(JSONB, server_default="{}")
+    provider_details: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default="{}")
     observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 

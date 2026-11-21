@@ -26,6 +26,7 @@ from src.core.cache.redis_client import get_redis
 from src.models.enums import ExecutionStatus
 from src.models.orm.agent_runs import AgentRun, AgentRunStep, CloudflareAgentAttempt
 from src.models.orm.agents import Agent, AgentTool
+from src.models.orm.cloudflare_capacity import CloudflareInstallation, CloudflareWorkflowSlot
 from src.models.orm.config import SystemConfig
 from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
 from src.models.orm.executions import Execution
@@ -1206,6 +1207,44 @@ async def test_idle_cloudflare_worker_yields_a_capped_slot_for_linux_demand(db, 
     assert await _state(db.sessions, worker_id) == (
         ("draining", "capacity_replacement") if capacity in ("idle", "settled-claim") else ("ready", None)
     )
+
+
+@pytest.mark.parametrize("demand", ["held", "foreign-tenant", "linux-only"])
+async def test_controller_counts_a_released_prewarm_as_used_capacity(db, demand) -> None:
+    worker_id = await _declared_worker(db)
+    now = datetime.now(UTC)
+    tenant = uuid4()
+    async with db.context() as session:
+        session.add(Organization(id=tenant, name=str(tenant), created_by="fixture"))
+    execution = await _accept_pool_run(org_id=str(tenant))
+    await _set_request(db.sessions, execution, 64 * MIB, approved=True)
+    async with db.context() as session:
+        installation_id = uuid4()
+        session.add(CloudflareInstallation(
+            id=installation_id, account_id=uuid4().hex, worker_ingress_origin="https://workers.example.test",
+            consent_version="fixture", consent_actor="fixture", consent_at=now, policy={},
+            desired_revision=1, desired_state="disconnected", retired_at=now,
+        ))
+        await session.flush()
+        dispatch_id = await session.scalar(select(WorkDispatch.id).where(WorkDispatch.subject_id == UUID(execution)))
+        assert dispatch_id is not None
+        session.add(CloudflareWorkflowSlot(
+            installation_id=installation_id, tenant=str(tenant), ordinal=0, worker_id=worker_id,
+            execution_id=UUID(execution), dispatch_id=dispatch_id, fence=uuid4(),
+            released_at=now, warm_until=now + timedelta(seconds=90), prewarm_fence=uuid4(),
+        ))
+    if demand != "held":
+        queued = await _accept_pool_run()
+        await _set_request(db.sessions, queued, 64 * MIB, approved=demand == "foreign-tenant")
+    pool = _controller(FakeCluster(), get_version())
+    # The held dispatch is covered, the seat cannot cover a second tenant,
+    # and the launcher cannot yield to Linux while holding the seat.
+    if demand != "linux-only":
+        assert len(await pool.launch_for_demand(replace(POLICY, max_workers=2))) == int(demand == "foreign-tenant")
+    else:
+        assert await pool.launch_for_demand(replace(POLICY, max_workers=1)) == []
+        assert not await claims.begin_idle_drain(worker_id)
+    assert await _state(db.sessions, worker_id) == ("ready", None)
 
 
 async def test_idle_cloudflare_yields_when_eligible_demand_belongs_to_a_busy_tenant(db) -> None:

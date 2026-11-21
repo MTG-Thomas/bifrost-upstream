@@ -662,6 +662,7 @@ Commands:
   reconcile         Verify or repair the current Cloudflare Workers...
   rotate            Validate and replace the Cloudflare account API token.
   rotate-bearer     Retire the previous Workers deployment and stage a...
+  rotate-connector  Rotate the Managed Tunnel connector token after Scale...
   rotate-root       Rotate the derivation root after Scale In.
   scale-in          Drain Cloudflare workers and retain the connection.
   stage-credential  Enter a Cloudflare token for a one-time MCP...
@@ -677,12 +678,14 @@ Usage: capacity cloudflare connect [OPTIONS]
   Validate an account token and connect Cloudflare.
 
 Options:
-  --account-id TEXT             [required]
-  --worker-ingress-origin TEXT  [required]
-  --policy FILENAME             Cloudflare capacity policy JSON file.
-                                [required]
-  --json                        Emit JSON instead of human-readable output.
-  --help                        Show this message and exit.
+  --account-id TEXT               [required]
+  --worker-ingress-origin TEXT    [required]
+  --reachability-mode [existing_https_endpoint|managed_tunnel]
+  --zone-id TEXT                  Cloudflare DNS zone ID for Managed Tunnel.
+  --policy FILENAME               Cloudflare capacity policy JSON file.
+                                  [required]
+  --json                          Emit JSON instead of human-readable output.
+  --help                          Show this message and exit.
 ```
 
 #### `capacity cloudflare disconnect`
@@ -771,6 +774,21 @@ Options:
 Usage: capacity cloudflare rotate-bearer [OPTIONS]
 
   Retire the previous Workers deployment and stage a new bearer.
+
+Options:
+  --wait                       Wait for completion through the platform job.
+  --installation-id TEXT       installation_id (UUID).  [required]
+  --expected-revision INTEGER  expected_revision  [required]
+  --json                       Emit JSON instead of human-readable output.
+  --help                       Show this message and exit.
+```
+
+#### `capacity cloudflare rotate-connector`
+
+```
+Usage: capacity cloudflare rotate-connector [OPTIONS]
+
+  Rotate the Managed Tunnel connector token after Scale In.
 
 Options:
   --wait                       Wait for completion through the platform job.
