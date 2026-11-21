@@ -67,13 +67,19 @@ def workers_release_matches() -> ColumnElement[bool]:
     release = installed_workers_release_digest()
     if release is None:
         return false()
+    containers_ready = exists(select(CloudflareCapacityScope.installation_id).where(
+        CloudflareCapacityScope.installation_id == CloudflareInstallation.id,
+        CloudflareCapacityScope.scope == "containers",
+        CloudflareCapacityScope.deployment_revision == CloudflareInstallation.admitted_revision,
+    ).correlate(CloudflareInstallation))
     return and_(
         CloudflareInstallation.upgrade_release.is_(None),
         CloudflareInstallation.policy["bounds_release"].astext == release,
         or_(
             ~CloudflareInstallation.containers_policy.has_key("enabled"),
             CloudflareInstallation.containers_policy["enabled"].as_boolean().is_(False),
-            CloudflareInstallation.containers_ready_revision == CloudflareInstallation.admitted_revision,
+            (CloudflareInstallation.containers_ready_revision == CloudflareInstallation.admitted_revision)
+            & containers_ready,
         ),
     )
 

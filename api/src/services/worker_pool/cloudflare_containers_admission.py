@@ -159,14 +159,13 @@ def primary_has_no_fit(
             or worker.execution_lane != "normal"
         ):
             continue
-        if worker.state in ("starting", "reserved") or (
-            worker.state == "ready" and worker.memory_budget_bytes is None
-        ):
+        budget = worker.memory_budget_bytes
+        if worker.state in ("starting", "reserved") or (worker.state == "ready" and budget is None):
             return False
         if (
             worker.state == "ready" and not worker.memory_pressured
             and CLOUDFLARE_WORKFLOW_HANDLER[0] in worker.supported_handlers
-            and worker.memory_budget_bytes - worker.memory_reserved_bytes >= requested_bytes
+            and budget is not None and budget - worker.memory_reserved_bytes >= requested_bytes
         ):
             return False
     return True
