@@ -5,17 +5,16 @@ import socket
 import ssl
 import sys
 from dataclasses import replace
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
-from src.models.orm.cloudflare_capacity import CloudflareInstallation
-from src.services import worker_ingress_probes as probes
 from websockets.datastructures import Headers
 from websockets.exceptions import InvalidStatus
 from websockets.http11 import Response
 
+from src.models.orm.cloudflare_capacity import CloudflareInstallation
+from src.services import worker_ingress_probes as probes
 from tests.loopback_tls import loopback_tls
 
 ORIGIN = "https://workers.example.test"
@@ -311,7 +310,7 @@ async def test_public_probe_deadline_retains_inflight_route(tls_contexts, monkey
         result = await probes.probe_public_worker_ingress(ORIGIN)
         await served.wait()
 
-    assert result.tls and not result.reachable
+    assert not result.tls and not result.reachable
     assert result.failure.as_result() == {
         "stage": "ingress_http",
         "error_class": "probe_deadline",
@@ -328,10 +327,7 @@ async def test_public_probe_deadline_retains_inflight_route(tls_contexts, monkey
 def controlled_deadline(monkeypatch):
     def arm():
         deadline = asyncio.timeout(None)
-        monkeypatch.setattr(probes, "asyncio", SimpleNamespace(
-            timeout=lambda _: deadline, CancelledError=asyncio.CancelledError, gather=asyncio.gather,
-            get_running_loop=asyncio.get_running_loop,
-        ))
+        monkeypatch.setattr(probes, "_deadline", lambda _: deadline)
         return lambda: deadline.reschedule(asyncio.get_running_loop().time())
 
     return arm
@@ -343,7 +339,7 @@ async def test_deadline_chooses_least_advanced_inflight_route(tls_contexts, monk
     expire_deadline = controlled_deadline()
     hello_seen = asyncio.Event()
     headers_seen = asyncio.Event()
-    release_peers = asyncio.Event()
+    handshake_eof = asyncio.Event()
 
     async def hold(reader, writer, *, tls):
         try:
@@ -353,9 +349,12 @@ async def test_deadline_chooses_least_advanced_inflight_route(tls_contexts, monk
             else:
                 await reader.readexactly(1)
                 hello_seen.set()
-            await release_peers.wait()
+            await reader.read()
+            if not tls:
+                assert reader.at_eof()
+                handshake_eof.set()
         finally:
-            writer.transport.abort()
+            writer.close()
             await writer.wait_closed()
 
     async def hold_handshake(reader, writer):
@@ -387,15 +386,11 @@ async def test_deadline_chooses_least_advanced_inflight_route(tls_contexts, monk
 
         monkeypatch.setattr(probes, "_probe_address", loopback)
         monkeypatch.setattr(probes, "_public_addresses", AsyncMock(return_value=("127.0.0.1",)))
-        try:
-            async with asyncio.TaskGroup() as tasks:
-                tasks.create_task(expire())
-                result = await probes.probe_public_worker_ingress(ORIGIN)
-        finally:
-            # Cancellation during start_tls can leave the client TCP stream
-            # open. Release both accepted peers before the listeners exit.
-            release_peers.set()
+        async with asyncio.TaskGroup() as tasks:
+            tasks.create_task(expire())
+            result = await probes.probe_public_worker_ingress(ORIGIN)
 
+    assert handshake_eof.is_set()
     assert result.failure.error_class == "probe_deadline"
     assert result.failure.route_template == "/api/forms"
     assert result.failure.phase == "tls_handshake"
@@ -447,7 +442,6 @@ async def test_websocket_deadline_reports_phase_and_verified_http_tls(ingress, c
         "address_family": "ipv4",
         "method": "GET",
         "route_template": probes.CONTROL_PATH,
-        "handshake_completed": True,
         "connection_reused": False,
         "phase": "websocket",
     }

@@ -10,7 +10,7 @@ import socket
 import ssl
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
-from typing import Literal
+from typing import TYPE_CHECKING, Literal, cast
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -28,6 +28,9 @@ from src.services.worker_ingress import (
     ROUTES,
 )
 
+if TYPE_CHECKING:
+    from httpcore import AsyncNetworkStream
+
 _REFUSALS = (
     ("POST", "/auth/login"),
     ("POST", "/api/auth/login"),
@@ -44,6 +47,7 @@ _REFUSALS = (
 )
 _MISSING_ROUTE_ERRNOS = {errno.ENETUNREACH, errno.EHOSTUNREACH, errno.EAFNOSUPPORT, errno.EADDRNOTAVAIL}
 _PROBE_DEADLINE_SECONDS = 30
+_deadline = asyncio.timeout
 ProbePhase = Literal["tcp_connect", "tls_handshake", "request_write", "response_headers", "websocket"]
 _PHASE_ORDER: tuple[ProbePhase | None, ...] = (
     None, "tcp_connect", "tls_handshake", "request_write", "response_headers", "websocket",
@@ -119,6 +123,7 @@ class CanaryFailure:
 class _ProbeProgress:
     inflight: dict[object, CanaryFailure] = field(default_factory=dict)
     deadline_failure: CanaryFailure | None = None
+    tls_verified: bool = False
 
     def capture_deadline(self) -> None:
         # A gather cancellation unwinds its children one by one. Snapshot
@@ -254,6 +259,7 @@ async def _check_route(
     family = "ipv6" if ":" in address else "ipv4"
     tls_started = handshake_completed = connection_reused = False
     phase: ProbePhase | None = None
+    raw_stream: AsyncNetworkStream | None = None
     tracked = object()
     if progress is not None:
         progress.inflight[tracked] = CanaryFailure(
@@ -261,15 +267,18 @@ async def _check_route(
             handshake_completed=False, connection_reused=False,
         )
 
-    async def trace(event: str, _info: dict[str, object]) -> None:
-        nonlocal phase, tls_started, handshake_completed, connection_reused
+    async def trace(event: str, info: dict[str, object]) -> None:
+        nonlocal phase, tls_started, handshake_completed, connection_reused, raw_stream
         if event == "connection.connect_tcp.started":
             phase = "tcp_connect"
+        elif event == "connection.connect_tcp.complete":
+            raw_stream = cast("AsyncNetworkStream", info["return_value"])
         elif event == "connection.start_tls.started":
             phase = "tls_handshake"
             tls_started = True
         elif event == "connection.start_tls.complete":
             handshake_completed = True
+            raw_stream = None  # The pool now owns the TLS connection.
         elif event == "http11.send_request_headers.started":
             phase = "request_write"
             # A direct HTTPS request can send headers without its own TLS
@@ -311,6 +320,10 @@ async def _check_route(
     except asyncio.CancelledError:
         if progress is not None:
             progress.capture_deadline()
+        # httpcore does not own the stream in its pool until TLS completes,
+        # and its handshake cleans up Exception but not external cancellation.
+        if raw_stream is not None and not handshake_completed:
+            await raw_stream.aclose()
         raise
     except (httpx.HTTPError, ssl.SSLError) as exc:
         tls_error = _find_tls_error(exc)
@@ -405,6 +418,8 @@ async def _probe_address(
         if first.status is None:
             tls = first.failure is not None and first.failure.handshake_completed is True
             return WorkerIngressProbeResult(origin, tls, False, False, tuple(results))
+        if progress is not None:
+            progress.tls_verified = True
         if not first.passed:
             return WorkerIngressProbeResult(origin, True, False, False, tuple(results))
         for method, path in _REFUSALS:
@@ -432,7 +447,7 @@ async def _probe_address(
         progress.inflight[tracked] = CanaryFailure(
             "ingress_websocket", "probe_deadline", address_family="ipv6" if ":" in address else "ipv4",
             method="GET", route_template=CONTROL_PATH, connection_reused=False,
-            handshake_completed=True, phase="websocket",
+            phase="websocket",
         )
     try:
         upgraded, failure = await _check_control(origin, host, address, port, trust)
@@ -458,7 +473,7 @@ async def probe_public_worker_ingress(origin: str) -> WorkerIngressProbeResult:
     stage = "ingress_dns"
     progress = _ProbeProgress()
     try:
-        async with asyncio.timeout(_PROBE_DEADLINE_SECONDS):
+        async with _deadline(_PROBE_DEADLINE_SECONDS):
             addresses = await _public_addresses(host)
             stage = "ingress_http"
             for address in addresses:
@@ -482,10 +497,10 @@ async def probe_public_worker_ingress(origin: str) -> WorkerIngressProbeResult:
         failure = progress.deadline_failure
         if failure is not None:
             return replace(
-                unavailable, tls=failure.handshake_completed is True,
+                unavailable, tls=progress.tls_verified,
                 probe_failure=failure,
             )
-        return replace(unavailable, probe_failure=CanaryFailure(stage, "probe_deadline"))
+        return replace(unavailable, tls=progress.tls_verified, probe_failure=CanaryFailure(stage, "probe_deadline"))
     except OSError:
         reason = "resolution_error" if stage == "ingress_dns" else "transport_error"
         return replace(unavailable, probe_failure=CanaryFailure(stage, reason))
