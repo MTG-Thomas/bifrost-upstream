@@ -52,7 +52,7 @@ class RouteProbe:
     passed: bool
     connect_unavailable: bool = False
     error_class: str | None = None
-    tls_failure: "CanaryFailure | None" = None
+    failure: "CanaryFailure | None" = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,18 +63,28 @@ class CanaryFailure:
     address_family: str | None = None
     tls_reason: str | None = None
     tls_verify_code: int | None = None
+    method: str | None = None
+    route_template: str | None = None
+    handshake_completed: bool | None = None
+    connection_reused: bool | None = None
+    exception_class: str | None = None
 
-    def as_result(self) -> dict[str, str | int]:
-        result: dict[str, str | int] = {"stage": self.stage, "error_class": self.error_class}
-        if self.status is not None:
-            result["status"] = self.status
-        if self.address_family is not None:
-            result["address_family"] = self.address_family
-        if self.tls_reason is not None:
-            result["tls_reason"] = self.tls_reason
-        if self.tls_verify_code is not None:
-            result["tls_verify_code"] = self.tls_verify_code
-        return result
+    def as_result(self) -> dict[str, str | int | bool]:
+        return {
+            key: value for key, value in (
+                ("stage", self.stage),
+                ("error_class", self.error_class),
+                ("status", self.status),
+                ("address_family", self.address_family),
+                ("tls_reason", self.tls_reason),
+                ("tls_verify_code", self.tls_verify_code),
+                ("method", self.method),
+                ("route_template", self.route_template),
+                ("handshake_completed", self.handshake_completed),
+                ("connection_reused", self.connection_reused),
+                ("exception_class", self.exception_class),
+            ) if value is not None
+        }
 
     @classmethod
     def from_result(cls, value: object) -> "CanaryFailure":
@@ -137,9 +147,10 @@ class WorkerIngressProbeResult:
             return CanaryFailure("ack" if signed else "hello", "timeout")
         failed = next((route for route in self.routes if not route.passed), None)
         if failed is not None:
-            if failed.tls_failure is not None:
-                return failed.tls_failure
-            return CanaryFailure("ingress_http", failed.error_class or "route_refused", failed.status)
+            return failed.failure or CanaryFailure(
+                "ingress_http", failed.error_class or "route_refused", failed.status,
+                method=failed.method, route_template=failed.path,
+            )
         return CanaryFailure("ingress_websocket", "upgrade_unverified")
 
 
@@ -159,7 +170,9 @@ async def _public_addresses(host: str) -> tuple[str, ...]:
 
 def _find_tls_error(cause: BaseException | None) -> ssl.SSLError | None:
     while cause is not None:
-        if isinstance(cause, ssl.SSLError):
+        # TLSStream awaits the socket inside SSLWantRead/WriteError handlers.
+        # Any timeout or socket error can carry one of these as its context.
+        if isinstance(cause, ssl.SSLError) and not isinstance(cause, (ssl.SSLWantReadError, ssl.SSLWantWriteError)):
             return cause
         if isinstance(cause, BaseExceptionGroup):
             for member in cause.exceptions:
@@ -195,39 +208,71 @@ def _missing_tcp_route(cause: BaseException | None) -> bool:
 
 async def _check_route(
     client: httpx.AsyncClient, http_origin: str, host: str, method: str, path: str, *, allowed: bool,
+    route_template: str | None = None,
 ) -> RouteProbe:
+    route = route_template or path
     nonce = secrets.token_hex(16)
+    address = httpx.URL(http_origin).host
+    family = "ipv6" if ":" in address else "ipv4"
+    tls_started = handshake_completed = connection_reused = False
+
+    async def trace(event: str, _info: dict[str, object]) -> None:
+        nonlocal tls_started, handshake_completed, connection_reused
+        if event == "connection.start_tls.started":
+            tls_started = True
+        elif event == "connection.start_tls.complete":
+            handshake_completed = True
+        elif event == "http11.send_request_headers.started":
+            # A direct HTTPS request can send headers without its own TLS
+            # trace only when httpcore has assigned an existing connection.
+            handshake_completed = True
+            connection_reused = not tls_started
+
     try:
         async with client.stream(
             method, http_origin + path, headers={"Host": host, PROBE_HEADER.decode(): nonce},
-            extensions={"sni_hostname": host}, json={} if method == "POST" else None,
+            extensions={"sni_hostname": host, "trace": trace}, json={} if method == "POST" else None,
         ) as response:
             witness = response.headers.get(INGRESS_HEADER.decode())
             status = response.status_code
             if status not in ((401, 403, 422) if allowed else (404,)):
-                return RouteProbe(method, path, status, False, error_class="unexpected_status")
-            if witness != (ALLOW_MARKER if allowed else DENY_MARKER).decode():
-                return RouteProbe(method, path, status, False, error_class="invalid_ingress_marker")
-            if response.headers.get(PROBE_HEADER.decode()) != nonce:
-                return RouteProbe(method, path, status, False, error_class="invalid_probe_nonce")
-            return RouteProbe(method, path, status, True)
+                kind = "unexpected_status"
+            elif witness != (ALLOW_MARKER if allowed else DENY_MARKER).decode():
+                kind = "invalid_ingress_marker"
+            elif response.headers.get(PROBE_HEADER.decode()) != nonce:
+                kind = "invalid_probe_nonce"
+            else:
+                return RouteProbe(method, route, status, True)
+            failure = CanaryFailure(
+                "ingress_http", kind, status, address_family=family, method=method, route_template=route,
+                handshake_completed=True, connection_reused=connection_reused,
+            )
+            return RouteProbe(method, route, status, False, error_class=kind, failure=failure)
     except httpx.HTTPError as exc:
-        if (tls_error := _find_tls_error(exc)) is not None:
-            failure = _tls_failure("ingress_http", tls_error, httpx.URL(http_origin).host)
-            return RouteProbe(method, path, None, False, error_class=failure.error_class, tls_failure=failure)
+        tls_error = _find_tls_error(exc)
         unavailable = False
         if isinstance(exc, httpx.ConnectTimeout):
             kind = "connect_timeout"
         elif isinstance(exc, httpx.ConnectError):
-            kind = "connect_error"
-            unavailable = _missing_tcp_route(exc)
+            kind = "tls_error" if tls_error is not None and not handshake_completed else "connect_error"
+            unavailable = kind == "connect_error" and _missing_tcp_route(exc)
         elif isinstance(exc, httpx.TimeoutException):
             kind = "route_timeout"
         elif isinstance(exc, httpx.ProtocolError):
             kind = "route_protocol_error"
         else:
             kind = "route_transport_error"
-        return RouteProbe(method, path, None, False, unavailable, kind)
+        failure = (
+            _tls_failure("ingress_http", tls_error, address)
+            if kind == "tls_error" and tls_error is not None
+            else CanaryFailure("ingress_http", kind, address_family=family)
+        )
+        failure = replace(
+            failure, method=method, route_template=route, handshake_completed=handshake_completed,
+            connection_reused=connection_reused,
+            exception_class=type(tls_error if kind == "tls_error" else exc).__name__,
+        )
+        return RouteProbe(method, route, None, False, unavailable, kind, failure)
 
 
 async def _check_control(
@@ -282,50 +327,45 @@ async def _probe_address(
     http_origin = f"https://{authority}:{port}"
     results: list[RouteProbe] = []
     async with httpx.AsyncClient(timeout=4, follow_redirects=False, trust_env=False, verify=trust) as client:
-        async def check(method: str, path: str, *, allowed: bool) -> RouteProbe:
-            return await _check_route(client, http_origin, host, method, path, allowed=allowed)
+        async def check(method: str, path: str, *, allowed: bool, template: str | None = None) -> RouteProbe:
+            return await _check_route(client, http_origin, host, method, path, allowed=allowed, route_template=template)
 
         first = await check("GET", "/api/sdk/context", allowed=True)
         results.append(first)
         if first.status is None:
-            return WorkerIngressProbeResult(origin, False, False, False, tuple(results))
+            tls = first.failure is not None and first.failure.handshake_completed is True
+            return WorkerIngressProbeResult(origin, tls, False, False, tuple(results))
         if not first.passed:
             return WorkerIngressProbeResult(origin, True, False, False, tuple(results))
         for method, path in _REFUSALS:
             results.append(await check(method, path, allowed=False))
-        if any(not result.passed for result in results):
-            return WorkerIngressProbeResult(origin, True, False, False, tuple(results))
+            if not results[-1].passed:
+                return WorkerIngressProbeResult(origin, True, False, False, tuple(results))
         sample_id = str(uuid4())
         samples = [
-            (method, re.sub(
+            (method, template, re.sub(
                 r"\{[^}]+\}", "probe.py" if "{path:path}" in template else sample_id, template,
             ))
             for method, template in sorted(ROUTES - {("GET", "/api/sdk/context")})
         ]
-        samples.append(("GET", "/api/sdk/modules/probe%2Fmodule.py"))
+        samples.append(("GET", "/api/sdk/modules/{path:path}", "/api/sdk/modules/probe%2Fmodule.py"))
         for index in range(0, len(samples), 8):
-            results.extend(await asyncio.gather(*(
-                check(method, path, allowed=True) for method, path in samples[index:index + 8]
-            )))
+            batch = await asyncio.gather(*(
+                check(method, path, allowed=True, template=template)
+                for method, template, path in samples[index:index + 8]
+            ))
+            results.extend(batch)
+            if any(not route.passed for route in batch):
+                return WorkerIngressProbeResult(origin, True, False, False, tuple(results))
     upgraded, failure = await _check_control(origin, host, address, port, trust)
     return WorkerIngressProbeResult(origin, True, upgraded, failure is None, tuple(results), probe_failure=failure)
 
 
-async def probe_worker_ingress(
-    installation: CloudflareInstallation,
-    *,
-    runtime_canary: Callable[[str], Awaitable[RuntimeCanary]],
-) -> WorkerIngressProbeResult:
-    """Probe the persisted HTTPS endpoint, then delegate signed canary ownership.
-
-    The callback belongs to the enable job. It starts/probes only the reserved
-    canary launcher and checks its server-observed signed admission and a
-    no-effect SDK read from the runtime. Public probes send no credentials.
-    """
-    origin = installation.worker_ingress_origin.rstrip("/")
+async def probe_public_worker_ingress(origin: str) -> WorkerIngressProbeResult:
+    """Run Enable's credential-free address, HTTP route and WebSocket checks."""
     host = urlsplit(origin).hostname
-    if host is None or origin != f"https://{host}" or installation.retired_at is not None:
-        raise ValueError("A current installation with a dedicated HTTPS origin is required")
+    if host is None or origin != f"https://{host}":
+        raise ValueError("A dedicated HTTPS origin is required")
     unavailable = WorkerIngressProbeResult(origin, False, False, False, ())
     result = unavailable
     unavailable_families: dict[int, WorkerIngressProbeResult] = {}
@@ -358,6 +398,19 @@ async def probe_worker_ingress(
         return replace(unavailable, probe_failure=CanaryFailure(stage, reason))
     except ValueError:
         return replace(unavailable, probe_failure=CanaryFailure(stage, "invalid_public_address"))
+    return result
+
+
+async def probe_worker_ingress(
+    installation: CloudflareInstallation,
+    *,
+    runtime_canary: Callable[[str], Awaitable[RuntimeCanary]],
+) -> WorkerIngressProbeResult:
+    """Probe the persisted endpoint, then ask Enable to verify the signed runtime."""
+    if installation.retired_at is not None:
+        raise ValueError("A current installation with a dedicated HTTPS origin is required")
+    origin = installation.worker_ingress_origin.rstrip("/")
+    result = await probe_public_worker_ingress(origin)
     if not result.reachable:
         return result
     canary = await runtime_canary(origin)

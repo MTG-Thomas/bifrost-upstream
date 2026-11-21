@@ -12,6 +12,8 @@ from websockets.datastructures import Headers
 from websockets.exceptions import InvalidStatus
 from websockets.http11 import Response
 
+from tests.loopback_tls import loopback_tls
+
 ORIGIN = "https://workers.example.test"
 IPV4 = "1.1.1.1"
 OTHER_IPV4 = "1.0.0.1"
@@ -83,7 +85,7 @@ async def test_unreachable_hostname_does_not_start_canary(ingress) -> None:
 
     result = await probes.probe_worker_ingress(installation, runtime_canary=canary)
     assert not result.reachable
-    assert result.failure == probes.CanaryFailure("ingress_http", "connect_timeout")
+    assert result.failure.error_class == "connect_timeout"
     control.assert_not_awaited()
     canary.assert_not_awaited()
 
@@ -101,9 +103,114 @@ async def test_route_transport_failure_reports_only_its_class(ingress, error, ki
     result = await probes.probe_worker_ingress(installation, runtime_canary=canary)
 
     assert result.tls and not result.reachable
-    assert result.failure.as_result() == {"stage": "ingress_http", "error_class": kind}
+    assert len(result.routes) == 2
+    assert result.failure.as_result() == {
+        "stage": "ingress_http",
+        "error_class": kind,
+        "address_family": "ipv4",
+        "method": "POST",
+        "route_template": "/auth/login",
+        "handshake_completed": False,
+        "connection_reused": False,
+        "exception_class": error.__name__,
+    }
     control.assert_not_awaited()
     canary.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_allowed_route_failure_stops_after_its_batch(monkeypatch, ingress) -> None:
+    installation, _, control, canary = ingress((IPV4,), None)
+    template = "/api/forms/{form_id}"
+    routes = {("GET", template), *(("GET", f"/probe/{index}") for index in range(8))}
+    monkeypatch.setattr(probes, "ROUTES", routes)
+
+    async def check(_client, _origin, _host, method, path, *, allowed, route_template):
+        return probes.RouteProbe(method, route_template or path, 404, route_template != template)
+
+    monkeypatch.setattr(probes, "_check_route", check)
+    result = await probes.probe_worker_ingress(installation, runtime_canary=canary)
+
+    assert result.failure.route_template == template
+    assert len(result.routes) == 1 + len(probes._REFUSALS) + 8
+    control.assert_not_awaited()
+    canary.assert_not_awaited()
+
+
+@pytest.fixture(scope="module")
+def tls_contexts(tmp_path_factory: pytest.TempPathFactory) -> tuple[ssl.SSLContext, ssl.SSLContext]:
+    return loopback_tls(tmp_path_factory.mktemp("ingress-tls"), "workers.example.test")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("mode", "kind", "exception_class", "handshake"), [
+    ("wrong_certificate", "tls_error", "SSLCertVerificationError", False),
+    ("handshake_close", "tls_error", "SSLEOFError", False),
+    ("handshake_timeout", "connect_timeout", "ConnectTimeout", False),
+    ("read_timeout", "route_timeout", "ReadTimeout", True),
+    ("fresh_close", "route_protocol_error", "RemoteProtocolError", True),
+    ("reused_close", "route_protocol_error", "RemoteProtocolError", True),
+])
+async def test_classifies_failures_on_real_tls_sockets(
+    tls_contexts: tuple[ssl.SSLContext, ssl.SSLContext],
+    mode: str, kind: str, exception_class: str, handshake: bool,
+) -> None:
+    server_tls, trust = tls_contexts
+    reused = mode == "reused_close"
+    before_tls = mode.startswith("handshake_")
+    served = asyncio.Event()
+
+    async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            if before_tls:
+                await reader.read(4096)  # Receive ClientHello without completing TLS.
+            else:
+                await reader.readuntil(b"\r\n\r\n")
+                if reused:
+                    writer.write(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n")
+                    await writer.drain()
+                    await reader.readuntil(b"\r\n\r\n")
+            if mode.endswith("_timeout"):
+                await reader.read()  # Keep the socket open until the client times out.
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            finally:
+                served.set()
+
+    server = await asyncio.start_server(serve, "127.0.0.1", 0, ssl=None if before_tls else server_tls)
+    async with server:
+        origin = f"https://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+        host = "wrong.example.test" if mode == "wrong_certificate" else "workers.example.test"
+        async with httpx.AsyncClient(verify=trust, trust_env=False, timeout=0.5) as client:
+            if reused:
+                await client.get(origin + "/api/sdk/context", extensions={"sni_hostname": host})
+            route = await probes._check_route(
+                client, origin, host, "GET", "/api/forms/local-sample", allowed=True,
+                route_template="/api/forms/{form_id}",
+            )
+        if mode != "wrong_certificate":
+            await served.wait()
+
+    assert not route.passed
+    assert route.path == "/api/forms/{form_id}"
+    assert route.failure is not None
+    expected = {
+        "stage": "ingress_http",
+        "error_class": kind,
+        "address_family": "ipv4",
+        "method": "GET",
+        "route_template": "/api/forms/{form_id}",
+        "handshake_completed": handshake,
+        "connection_reused": reused,
+        "exception_class": exception_class,
+    }
+    if mode == "wrong_certificate":
+        expected.update(tls_reason="CERTIFICATE_VERIFY_FAILED", tls_verify_code=62)
+    elif mode == "handshake_close":
+        expected.update(tls_reason="UNEXPECTED_EOF_WHILE_READING")
+    assert route.failure.as_result() == expected
 
 
 @pytest.mark.parametrize(("signed", "stage"), [(False, "hello"), (True, "ack")])
@@ -134,6 +241,11 @@ async def test_dual_stack_probe_refuses_invalid_certificate_on_reachable_peer(in
         "address_family": "ipv6",
         "tls_reason": "CERTIFICATE_VERIFY_FAILED",
         "tls_verify_code": 62,
+        "method": "GET",
+        "route_template": "/api/sdk/context",
+        "handshake_completed": False,
+        "connection_reused": False,
+        "exception_class": "SSLCertVerificationError",
     }
     assert attempted == [IPV4, IPV6]
     canary.assert_not_awaited()
@@ -155,10 +267,16 @@ async def test_reachable_family_requires_all_addresses(ingress, transport, cause
 
     assert not result.reachable
     assert attempted == [IPV4, OTHER_IPV4]
-    expected = {"stage": "ingress_http", "error_class": kind}
-    if kind == "tls_error":
-        expected["address_family"] = "ipv4"
-    assert result.failure.as_result() == expected
+    assert result.failure.as_result() == {
+        "stage": "ingress_http",
+        "error_class": kind,
+        "address_family": "ipv4",
+        "method": "GET",
+        "route_template": "/api/sdk/context",
+        "handshake_completed": False,
+        "connection_reused": False,
+        "exception_class": "SSLEOFError" if kind == "tls_error" else transport.__name__,
+    }
     canary.assert_not_awaited()
 
 
@@ -186,7 +304,16 @@ async def test_http_probe_reports_failed_response_witness(status, marker, reason
     }))) as client:
         route = await probes._check_route(client, ORIGIN, "workers.example.test", "GET", "/api/sdk/context", allowed=True)
     result = probes.WorkerIngressProbeResult(ORIGIN, True, False, False, (route,))
-    assert result.failure == probes.CanaryFailure("ingress_http", reason, status)
+    assert result.failure.as_result() == {
+        "stage": "ingress_http",
+        "error_class": reason,
+        "status": status,
+        "address_family": "ipv4",
+        "method": "GET",
+        "route_template": "/api/sdk/context",
+        "handshake_completed": True,
+        "connection_reused": False,
+    }
 
 
 @pytest.mark.asyncio

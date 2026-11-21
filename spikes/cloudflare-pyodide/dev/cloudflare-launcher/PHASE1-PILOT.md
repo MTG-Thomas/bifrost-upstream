@@ -484,3 +484,71 @@ initial HTTP check had passed. The job result did not identify the failing
 HTTP request or the underlying TLS exception.
 
 See the [sanitized hosted retry receipt](../../results/cloudflare-scaleout-hosted-retry.json).
+
+### Local ingress diagnosis
+
+Loopback TLS reproduced the two empty TLS diagnostic fields with both an
+interrupted TLS wait and a stalled HTTP response. In each timeout, HTTPX and
+httpcore reported `ConnectTimeout` or `ReadTimeout`, followed by
+`TimeoutError`, cancellation, and `SSLWantReadError` in the exception chain.
+AnyIO waits for socket I/O from inside the SSL want-read handler. The original
+probe treated that internal wait signal as a TLS failure. A real certificate
+hostname mismatch produced `SSLCertVerificationError` with
+`CERTIFICATE_VERIFY_FAILED` and verification code 62. Closing during the
+handshake produced `SSLEOFError` with `UNEXPECTED_EOF_WHILE_READING`.
+
+The proposed post-handshake SSL closure explanation was **not confirmed**.
+In the loopback tests a TLS close or TCP reset while reading response headers
+surfaced as HTTPX and httpcore `RemoteProtocolError`. The old probe already
+classified those particular errors as HTTP protocol failures. The hosted
+receipts lack the underlying class and route, so either timeout phase remains
+a candidate and the original trigger is unresolved.
+
+The probe reads response headers and closes without consuming the body. In
+the loopback test even a keep-alive response with `Content-Length: 0` led to
+a fresh TLS handshake on the next probe. A separate test that consumed the
+initial response did reuse the socket. The origin deliberately marks its
+early denials `Connection: close`. Most allowed routes reject unsigned
+requests in ingress before dispatching to the application. The refresh probe
+sends a complete two-byte JSON object and takes the ordinary invalid-token
+path. On HTTP/1.1 the eight-way batch can open eight separate edge connections.
+The local TLS-to-API qualification exercises the same batch and route shapes.
+The hosted receipts do not establish an edge or tunnel concurrency limit.
+
+Enable now reports the method, route template, address family, handshake
+completion, connection reuse, and exception class on HTTP transport failures.
+The result keeps certificate messages, peer names, and generated path values
+out of diagnostics. Once a refusal or allowed batch fails, the probe returns
+that result before issuing further probes. The certificate, route-witness,
+WebSocket, and signed runtime gates still apply.
+
+### Next hosted qualification
+
+Obtain separate owner approval before provisioning or spending. After staging
+Connect with admission closed, run the following from the candidate API
+container using the origin supplied through `WORKER_INGRESS_ORIGIN`. This is
+the same public probe Enable calls. It uses the same trust store, DNS and
+address-family policy, literal-IP SNI and Host headers, refusal sequence,
+eight-request batches, HTTP pool lifecycle, and unsigned WebSocket check.
+
+```sh
+python - <<'PY'
+import asyncio
+import json
+import os
+
+from src.services.worker_ingress_probes import probe_public_worker_ingress
+
+result = asyncio.run(probe_public_worker_ingress(os.environ["WORKER_INGRESS_ORIGIN"].rstrip("/")))
+print(json.dumps({"reachable": result.reachable, "route_checks": len(result.routes),
+                  "failure": None if result.reachable else result.failure.as_result()}))
+raise SystemExit(0 if result.reachable else 1)
+PY
+```
+
+If the preflight fails, retain the sanitized result, keep admission closed,
+and tear down the trial. If it passes, submit Enable once and retain the signed
+runtime receipt or the Enable failure details. Proceed to the approved
+workload only after Enable succeeds, then verify cleanup by independent
+readback. Local tests establish the diagnostic fix. They leave the next
+hosted run's outcome uncertain.
