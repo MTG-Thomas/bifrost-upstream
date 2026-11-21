@@ -223,7 +223,10 @@ async def _verify_stuck_workflow_slots(
     ).order_by(worker.id).with_for_update(of=worker))
     checked: set[UUID] = set()
     for worker_id, launcher in held.all():
-        if launcher is None or not launcher.namespace_ids or launcher.provider_id is None:
+        if (
+            launcher is None or launcher.provider_id is None
+            or not {"CloudflareLauncher", "TenantHost"} <= launcher.namespace_ids.keys()
+        ):
             continue
         if launcher.id not in checked:
             try:

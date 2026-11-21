@@ -1319,19 +1319,26 @@ async def test_workflow_slots_hold_headroom_and_serialize_different_tenants(asyn
             assert remaining == {third.fence}
             install = await db.get(CloudflareInstallation, installation_id)
             assert install is not None
-            db.add(CloudflareOwnedResource(
+            launcher = CloudflareOwnedResource(
                 id=uuid4(), installation_id=installation_id, account_id=account, scope="workers",
                 target_name="fixture-launcher", kind="worker_script", desired_revision=1,
                 artifact_digest="a" * 64, effect_id=uuid4(), state="present",
                 provider_id="fixture-launcher", provider_version="fixture",
                 namespace_ids={"TenantHost": "fixture-tenant-host"},
-            ))
+            )
+            db.add(launcher)
             await db.flush()
             adapter = SimpleNamespace(verify_absent=AsyncMock(side_effect=lifecycle_job.DeletionSettling("pending")))
             assert not await lifecycle_job._verify_stuck_workflow_slots(db, install, adapter)
+            adapter.verify_absent.assert_not_awaited()
+            launcher.namespace_ids = {**launcher.namespace_ids, "CloudflareLauncher": "fixture-launcher-host"}
+            await db.flush()
+            assert not await lifecycle_job._verify_stuck_workflow_slots(db, install, adapter)
             adapter.verify_absent.side_effect = None
             assert await lifecycle_job._verify_stuck_workflow_slots(db, install, adapter)
-            assert adapter.verify_absent.await_args.kwargs["namespace_ids"] == frozenset({"fixture-tenant-host"})
+            assert adapter.verify_absent.await_args.kwargs["namespace_ids"] == frozenset({
+                "fixture-tenant-host", "fixture-launcher-host",
+            })
             assert await db.scalar(select(CloudflareWorkflowSlot.fence).where(
                 CloudflareWorkflowSlot.fence == third.fence,
             )) is None
