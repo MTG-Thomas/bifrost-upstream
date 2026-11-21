@@ -5,6 +5,7 @@ import json
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
@@ -13,7 +14,7 @@ import httpx
 import pytest
 import pytest_asyncio
 from pydantic import SecretStr
-from shared.models import WorkerCapacityProfile, WorkerCapacityReservation
+from shared.models import CloudflareCapacityPolicy, WorkerCapacityProfile, WorkerCapacityReservation
 from shared.solution_git_stage import SOLUTION_GIT_CAPABILITY
 from shared.worker_control_auth import managed_cloudflare_control_key
 from sqlalchemy import delete, func, select
@@ -37,7 +38,8 @@ from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
     seal_credential,
 )
-from src.services.worker_pool.cloudflare_spend import WORKERS_RATE_TABLE_VERSION
+from src.services.worker_pool.cloudflare_policy import WorkersReleaseMeterBounds, _price_policy
+from src.services.worker_pool.cloudflare_spend import CPU_LIMIT_PATHS, LAUNCHER_RECEIPT_METERS, WORKERS_RATES
 from src.services.worker_pool.external_client import (
     CapacityProtocolError,
     ExternalCapacityClient,
@@ -158,14 +160,20 @@ async def managed_pool(db, capacity):
     })
     installation_id, scope_name = provider.installation_id, provider.profile.scope
     account_id, now = "a" * 32, datetime.now(UTC)
+    policy = CloudflareCapacityPolicy.model_validate({
+        "workers": {"launcher_cap": 1, "slots_per_launcher": 1, "max_lifetime_seconds": 120, "work_kinds": ["workflow"]},
+        "monthly_limit_usd": "10.00",
+    })
+    units = dict.fromkeys(WORKERS_RATES, Decimal(0))
+    bounds = WorkersReleaseMeterBounds(
+        60, units, units, provider.profile.worker_version, 1,
+        dict.fromkeys(LAUNCHER_RECEIPT_METERS, 100), dict.fromkeys(CPU_LIMIT_PATHS, 1), 100,
+    )
     async with db.context() as session:
         session.add(CloudflareInstallation(
             id=installation_id, account_id=account_id, worker_ingress_origin="https://workers.example.test",
             consent_version="test", consent_actor="fixture", consent_at=now,
-            policy={
-                "limits": {"workers": {"work_kinds": ["workflow"]}, "monthly_limit_usd": "10.00"},
-                "rate_table_version": WORKERS_RATE_TABLE_VERSION, "bounds_digest": "b" * 64,
-            },
+            policy=_price_policy(policy, bounds),
             desired_state="enabled", desired_revision=1, admitted_revision=1, api_token_version=1, control_root_version=1,
         ))
         await session.flush()
