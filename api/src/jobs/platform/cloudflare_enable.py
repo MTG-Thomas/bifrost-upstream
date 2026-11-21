@@ -181,8 +181,8 @@ async def _settle_enable(
         row = await _locked_current(db, context, payload)
         if row is None or row.api_token_version != installation.api_token_version:
             return {"outcome": "superseded"}
+        await _require_budget(db, row)
         if row.admitted_revision == payload.revision:
-            await _require_budget(db, row)
             return {"outcome": "enabled"}
         await _require_legacy_cleanup(db)
     while True:

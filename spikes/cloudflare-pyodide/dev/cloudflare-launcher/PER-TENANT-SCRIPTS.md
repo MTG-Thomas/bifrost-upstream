@@ -40,15 +40,20 @@ capacity settings permission applies at Global.
   child response or missing provider ledger can leave capacity held. Reset
   is insufficient evidence because the child can outlive its host. Stop
   confirmation RPCs use the launcher meter ceiling. The Bifrost controller
-  persists backoff and permits up to eight outer provider deletion attempts
-  per managed incarnation. Each attempt reserves the provider request and
-  two Durable Object calls. Disconnect and revision replacement can retire
+  persists exponential backoff up to one minute and attempts outer provider
+  deletion for up to 24 hours after the first attempt. Each attempt reserves
+  the provider request and two Durable Object calls. Expiry appears in
+  capacity status and preserves the worker reservation. After an authenticated
+  stopped observation, the estimate retains residency and unresolved work
+  while dropping the root request reserve for the stopped interval.
+  Disconnect and revision replacement can retire
   an owned revision after its remaining incarnations are all terminal and
   stranded. They release the slots after script and namespace absence is
   verified. Missing meter receipts retain their usage reserves, and confirmed
   ledger namespace destruction closes outstanding receipt acknowledgement.
-  Scale In retains the deployment and reports the Disconnect recovery option
-  if it cannot verify retirement.
+  Scale In retains the deployment. When retirement evidence is missing, its
+  Action Required result identifies the worker IDs, revision, scripts and
+  namespaces and gives the Disconnect recovery option.
 
 ## Engine identity and readiness
 

@@ -399,6 +399,64 @@ test('managed cancellation keeps the acknowledged slot until child termination i
   assert.equal(await api.dial(), null);
 });
 
+test('a persisted stopping slot survives reset and serves control frames while awaiting proof', async () => {
+  const run = deferred();
+  const firstProof = deferred();
+  const started = peer({tenantSlots: true, slots: 2, runHost: () => run.promise, stopHost: () => firstProof.promise});
+  await connect(started);
+  const attempt = {...workflow(), engine_slot: 0};
+  const terminate = {route_id: attempt.route_id, error_type: 'CancelledError', error: 'cancelled'};
+  await started.command('workflow', attempt);
+  await started.entered;
+  await started.command('terminate', terminate);
+  assert.equal(started.data.get('slot').state, 'stopping');
+
+  const restoredProof = deferred();
+  const reset = peer({tenantSlots: true, slots: 2, data: new Map(started.data), stopHost: () => restoredProof.promise});
+  await connect(reset, 2);
+  await reset.command('terminate', terminate);
+  assert.deepEqual(reset.frames().at(-1).result, {received: true});
+  reset.setClock(START + 1000);
+  await reset.tick();
+  assert.deepEqual(reset.frames().at(-1).occupied_routes, [attempt.route_id]);
+  assert.deepEqual(reset.stopped, [attempt.route_id]);
+  restoredProof.resolve(true);
+  await reset.finish();
+  assert.equal(reset.frames().at(-1).attempt_state, 'stopped');
+  await reset.ack(reset.frames().at(-1)._event_id);
+  assert.equal(reset.data.has('slot'), false);
+  firstProof.resolve(false);
+  run.resolve(COMPLETED);
+  await started.finish();
+});
+
+test('release of a stopping slot requires its own confirmed child stop', async () => {
+  const run = deferred();
+  const observation = deferred();
+  const releaseProof = deferred();
+  const releaseEntered = deferred();
+  let confirmations = 0;
+  const api = peer({tenantSlots: true, runHost: () => run.promise, stopHost: () => {
+    if (++confirmations === 1) return observation.promise;
+    releaseEntered.resolve();
+    return releaseProof.promise;
+  }});
+  await connect(api);
+  const attempt = {...workflow(), engine_slot: 0};
+  await api.command('workflow', attempt);
+  await api.entered;
+  await api.command('terminate', {route_id: attempt.route_id, error_type: 'CancelledError', error: 'cancelled'});
+  const releasing = api.core.release();
+  await releaseEntered.promise;
+  assert.equal(api.data.get('slot').state, 'stopping');
+  releaseProof.resolve(false);
+  await assert.rejects(releasing, /stop is unconfirmed/);
+  assert.equal(api.data.get('slot').state, 'stopping');
+  observation.resolve(true);
+  run.resolve(COMPLETED);
+  await api.finish();
+});
+
 test('reset fences every entering route and replays independently acknowledged terminals', async () => {
   const held = deferred();
   const api = peer({slots: 2, runHost: () => held.promise});

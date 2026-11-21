@@ -421,31 +421,33 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
     console.info('tenant-slot-overlap', JSON.stringify({overlapping: 4, credentialBound: 5, distinctGenerations: 4}));
     await next(() => seen.heartbeat?.occupied_routes?.length === 0 &&
       seen.heartbeat.received_sequence >= seen.terminalAckSequence);
+    const sibling = startSlot(1);
     const cancelled = startSlot(0, true);
     try {
-      await cancelled.entered.promise;
+      await Promise.all([sibling.entered.promise, cancelled.entered.promise]);
+      const siblingRoute = await sibling.routeReady.promise;
       const route_id = await cancelled.routeReady.promise;
-      seen.send('command', {id: randomUUID(), action: 'terminate', payload: {
+      const id = randomUUID();
+      const stopReceived = Promise.withResolvers();
+      seen.commandAcks.set(id, stopReceived);
+      seen.send('command', {id, action: 'terminate', payload: {
         route_id, error_type: 'CancelledError', error: 'Local fixture cancelled',
       }});
-      const ready = Promise.withResolvers();
-      seen.commandAcks.set('ready-during-stop', ready);
-      seen.send('command', {id: 'ready-during-stop', action: 'ready', payload: {}});
-      await Promise.race([
-        ready.promise,
-        cancelled.terminal.then(() => assert.fail('Stop settled before the child was released')),
-      ]);
+      assert.deepEqual(await stopReceived.promise, {received: true});
+      cancelled.release.resolve();
+      assert.equal((await cancelled.terminal).attempt_state, 'stopped');
+      await next(() => seen.heartbeat?.received_sequence >= seen.terminalAckSequence);
+      assert.deepEqual(seen.heartbeat.occupied_routes, [siblingRoute]);
+      const replacement = startSlot(0);
+      replacement.release.resolve();
+      await replacement.terminal;
+      assert.equal(seen.generations.size, 5);
     } finally {
       cancelled.release.resolve();
+      sibling.release.resolve();
     }
-    assert.equal((await cancelled.terminal).attempt_state, 'stopped');
-    await next(() => seen.heartbeat?.occupied_routes?.length === 0 &&
-      seen.heartbeat.received_sequence >= seen.terminalAckSequence);
-    const replacement = startSlot(0);
-    replacement.release.resolve();
-    await replacement.terminal;
-    assert.equal(seen.generations.size, 5);
-    console.info('tenant-slot-cancel', JSON.stringify({confirmed: true, replacement: true}));
+    assert.equal((await sibling.terminal).route_id, await sibling.routeReady.promise);
+    console.info('tenant-slot-cancel', JSON.stringify({confirmed: true, replacement: true, siblingCompleted: true}));
   } else if (controllerPolls) {
     assert.ok(measuredLauncher);
     const loose = await referenceAttempt(seen, false);

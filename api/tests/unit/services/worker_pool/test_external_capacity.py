@@ -218,24 +218,28 @@ async def managed_pool(db, capacity):
         await session.delete(row)
 
 
-async def test_managed_cleanup_backoff_books_each_attempt_and_stops_at_cap(db, capacity, managed_pool):
+async def test_managed_cleanup_backoff_books_each_attempt_until_window_expires(db, capacity, managed_pool):
     age = timedelta(seconds=controller.SWEEP_SECONDS + 1)
     await _set_request(db.sessions, await _accept_pool_run(), 1, age=age, approved=True)
     [worker_id] = await managed_pool.launch_for_demand(capacity.policy)
-    cap = external_controller.MAX_MANAGED_CLEANUP_ATTEMPTS
-    for _ in range(cap):
+    attempts = 9  # Transient failures can outlast the former eight-attempt cap.
+    for _ in range(attempts):
         assert await managed_pool._reserve_managed_cleanup(worker_id)
         assert not await managed_pool._reserve_managed_cleanup(worker_id)
         async with db.context() as session:
             pin = await session.get(CloudflareWorkerReservation, worker_id)
             assert pin is not None
             pin.cleanup_retry_at = datetime.now(UTC) - timedelta(seconds=1)
+    async with db.context() as session:
+        pin = await session.get(CloudflareWorkerReservation, worker_id)
+        assert pin is not None and pin.cleanup_started_at is not None
+        pin.cleanup_started_at -= external_controller.MANAGED_CLEANUP_WINDOW
     assert not await managed_pool._reserve_managed_cleanup(worker_id)
     async with db.context() as session:
         requests = await session.scalar(select(CloudflareUsageActivity.capacity_cleanup_do_requests).where(
             CloudflareUsageActivity.installation_id == capacity.provider.installation_id,
         ))
-        assert requests == 2 * cap
+        assert requests == 2 * attempts
 
 
 async def test_managed_prepare_uses_the_uid_committed_before_provider_io(db, capacity, managed_pool):

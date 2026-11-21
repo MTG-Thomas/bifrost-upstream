@@ -69,9 +69,10 @@ from src.services.worker_pool.cloudflare_provisioning import (
     resume_deletion,
 )
 from src.services.worker_pool.cloudflare_spend import (
-    MAX_MANAGED_CLEANUP_ATTEMPTS,
+    clear_destroyed_ledger_receipts,
     cloudflare_estimated_usage,
     finalize_destroyed_launcher_meter,
+    managed_worker_stop_unverified,
     read_workers_usage,
     usage_period,
 )
@@ -214,10 +215,14 @@ async def _cleanup_one(
     )
     resource.state = "absent"
     resource.observed_at = datetime.now(UTC)
+    if resource.target_name.endswith("-capacity") and "WorkerLedger" in resource.namespace_ids:
+        await clear_destroyed_ledger_receipts(db, row.id, resource.desired_revision)
     return "progressed"
 
 
-def _stranded_cleanup_action(*, scale_in: bool = False) -> PlatformJobRequiresAction:
+def _stranded_cleanup_action(
+    revision: int, worker_ids: list[UUID], resources: list[CloudflareOwnedResource], *, scale_in: bool = False,
+) -> PlatformJobRequiresAction:
     instructions = [
         "Keep Cloudflare admission closed while you verify the retired revision.",
         "Check the exact owned script and namespace identities in the deployment inventory. Restore management access if Cloudflare refused verification.",
@@ -226,8 +231,54 @@ def _stranded_cleanup_action(*, scale_in: bool = False) -> PlatformJobRequiresAc
     if scale_in:
         instructions.insert(1, "Use Disconnect to remove the owned deployment if the worker cannot supply a stop receipt.")
     return PlatformJobRequiresAction(
-        "Verify Cloudflare Worker Retirement", {"code": "CF_SLOT_STOP_UNVERIFIED", "instructions": instructions},
+        "Verify Cloudflare Worker Retirement", {
+            "code": "CF_SLOT_STOP_UNVERIFIED", "revision": revision,
+            "worker_ids": [str(worker_id) for worker_id in worker_ids],
+            "scripts": {resource.target_name: resource.namespace_ids for resource in resources},
+            "instructions": instructions,
+        },
     )
+
+
+async def _owned_revision_scripts(
+    db: AsyncSession, installation_id: UUID, scope: str, revision: int,
+) -> list[CloudflareOwnedResource]:
+    resource = CloudflareOwnedResource
+    return list(await db.scalars(select(resource).where(
+        resource.installation_id == installation_id, resource.scope == scope,
+        resource.desired_revision == revision, resource.kind == "worker_script",
+    ).order_by(resource.target_name)))
+
+
+async def _stranded_timeout_action(
+    db: AsyncSession, installation_id: UUID, *, scale_in: bool,
+) -> PlatformJobRequiresAction | None:
+    worker, pin = ExecutionWorker, CloudflareWorkerReservation
+    rows = (await db.execute(select(worker.id, pin.scope, pin.deployment_revision).join(
+        pin, pin.worker_id == worker.id,
+    ).where(
+        pin.installation_id == installation_id, worker.capacity_resource_deleted_at.is_(None),
+        worker.state.in_(("lost", "retired")), managed_worker_stop_unverified(),
+    ).order_by(pin.deployment_revision, pin.scope, worker.id))).all()
+    if not rows:
+        return None
+    _, scope, revision = rows[0]
+    resources = await _owned_revision_scripts(db, installation_id, scope, revision)
+    return _stranded_cleanup_action(
+        revision, [worker_id for worker_id, name, rev in rows if (name, rev) == (scope, revision)],
+        resources, scale_in=scale_in,
+    )
+
+
+async def _finalize_destroyed_worker(db: AsyncSession, worker_id: UUID, *, ledger_destroyed: bool) -> None:
+    worker = ExecutionWorker
+    matched = await db.scalar(update(worker).where(
+        worker.id == worker_id, worker.state.in_(("lost", "retired")),
+        worker.capacity_resource_deleted_at.is_(None),
+    ).values(capacity_resource_deleted_at=func.clock_timestamp()).returning(worker.id))
+    if matched is not None:
+        await finalize_destroyed_launcher_meter(db, worker_id, ledger_destroyed=ledger_destroyed)
+        await delete_workflow_slots(db, CloudflareWorkflowSlot.worker_id == worker_id)
 
 
 async def _cleanup_stranded_workflow_slots(
@@ -235,18 +286,16 @@ async def _cleanup_stranded_workflow_slots(
     *, before_revision: int | None = None,
 ) -> Literal["blocked", "progressed", "settling"]:
     """Retire one closed revision only after every remaining incarnation is stranded."""
-    worker, pin, slot = ExecutionWorker, CloudflareWorkerReservation, CloudflareWorkflowSlot
+    worker, pin = ExecutionWorker, CloudflareWorkerReservation
     revision_filter = () if before_revision is None else (pin.deployment_revision < before_revision,)
     remaining = (await db.execute(select(
-        worker.id, worker.state, pin.scope, pin.deployment_revision,
-        (
-            select(slot.fence).where(slot.worker_id == worker.id, slot.sent, slot.released_at.is_(None)).exists()
-            | (pin.cleanup_attempts >= MAX_MANAGED_CLEANUP_ATTEMPTS)
-        ),
+        worker.id, worker.state, pin.scope, pin.deployment_revision, managed_worker_stop_unverified(),
     ).join(pin, pin.worker_id == worker.id).where(
         pin.installation_id == row.id, *revision_filter,
         worker.capacity_resource_deleted_at.is_(None) | worker.state.not_in(("lost", "retired")),
-    ).order_by(worker.id).with_for_update(of=worker))).all()
+    ).order_by(worker.id))).all()
+    # The installation lease serializes revision changes. Terminal workers
+    # cannot return to service. Keep worker rows unlocked during provider I/O.
     for _, _, scope, revision, _ in remaining:
         if row.admitted_revision == revision:
             continue
@@ -254,11 +303,8 @@ async def _cleanup_stranded_workflow_slots(
                   if (name, rev) == (scope, revision)]
         if any(state not in ("lost", "retired") or not held for _, state, held in cohort):
             continue
-        resources = (await db.scalars(select(CloudflareOwnedResource).where(
-            CloudflareOwnedResource.installation_id == row.id,
-            CloudflareOwnedResource.scope == scope, CloudflareOwnedResource.desired_revision == revision,
-            CloudflareOwnedResource.kind == "worker_script",
-        ))).all()
+        resources = await _owned_revision_scripts(db, row.id, scope, revision)
+        worker_ids = [worker_id for worker_id, _, _ in cohort]
         for suffix, namespaces in (
             ("-launcher", {"CloudflareLauncher", "TenantHost"}),
             ("-capacity", {"WorkerLedger", "ScopeRegistry"}),
@@ -268,19 +314,18 @@ async def _cleanup_stranded_workflow_slots(
                 len(matches) != 1 or matches[0].provider_id is None or not namespaces <= matches[0].namespace_ids.keys()
                 or (matches[0].state == "absent" and matches[0].observed_at is None)
             ):
-                raise _stranded_cleanup_action()
+                raise _stranded_cleanup_action(revision, worker_ids, resources)
         try:
             cleanup = await _cleanup_one(db, row, adapter, stranded_scope=(scope, revision))
         except DeletionSettling:
             return "settling"
         except (ObservationPending, OwnershipConflict, CloudflareManagementDenied):
-            raise _stranded_cleanup_action() from None
+            raise _stranded_cleanup_action(revision, worker_ids, resources) from None
         if cleanup != "complete":
             return cleanup
-        for worker_id, _, _ in cohort:
-            await db.execute(update(worker).where(worker.id == worker_id).values(capacity_resource_deleted_at=func.now()))
-            await finalize_destroyed_launcher_meter(db, worker_id, ledger_destroyed=True)
-            await delete_workflow_slots(db, slot.worker_id == worker_id)
+        for worker_id in worker_ids:
+            await _finalize_destroyed_worker(db, worker_id, ledger_destroyed=True)
+        await clear_destroyed_ledger_receipts(db, row.id, revision)
         return "progressed"
     return "blocked"
 
@@ -298,9 +343,11 @@ async def _verify_stuck_workflow_slots(
         pin.installation_id == row.id, worker.capacity_resource_deleted_at.is_(None),
         worker.state.in_(("lost", "retired")),
         select(slot.fence).where(slot.worker_id == worker.id, slot.sent, slot.released_at.is_(None)).exists(),
-    ).order_by(worker.id).with_for_update(of=worker))
+    ).order_by(worker.id))
+    entries = held.all()
     checked: set[UUID] = set()
-    for worker_id, launcher in held.all():
+    confirmed: list[UUID] = []
+    for worker_id, launcher in entries:
         if (
             launcher is None or launcher.provider_id is None
             or not {"CloudflareLauncher", "TenantHost"} <= launcher.namespace_ids.keys()
@@ -315,12 +362,16 @@ async def _verify_stuck_workflow_slots(
             except (DeletionSettling, ObservationPending):
                 continue
             except OwnershipConflict:
-                raise _stranded_cleanup_action(scale_in=True) from None
+                resources = await _owned_revision_scripts(db, row.id, launcher.scope, launcher.desired_revision)
+                raise _stranded_cleanup_action(
+                    launcher.desired_revision, [wid for wid, script in entries if script == launcher],
+                    resources, scale_in=True,
+                ) from None
             checked.add(launcher.id)
-        await db.execute(update(worker).where(worker.id == worker_id).values(capacity_resource_deleted_at=func.now()))
-        await finalize_destroyed_launcher_meter(db, worker_id, ledger_destroyed=False)
-        await delete_workflow_slots(db, slot.worker_id == worker_id)
-    return bool(checked)
+        confirmed.append(worker_id)
+    for worker_id in confirmed:
+        await _finalize_destroyed_worker(db, worker_id, ledger_destroyed=False)
+    return bool(confirmed)
 
 
 async def _settle_disable(
@@ -368,13 +419,13 @@ async def _settle_disable(
             if started_at is not None and datetime.now(UTC) >= started_at + DRAIN_DEADLINE:
                 if workers_remain and payload.action == "scale_in" and await _verify_stuck_workflow_slots(db, row, adapter):
                     continue
+                if workers_remain:
+                    stranded = await _stranded_timeout_action(db, row.id, scale_in=payload.action == "scale_in")
+                    if stranded is not None:
+                        raise stranded
                 if waiting_for_deletion:
-                    if workers_remain:
-                        raise _stranded_cleanup_action()
                     raise PlatformJobRequiresAction("Cloudflare Cleanup Pending", {"code": "CF_CLEANUP_PENDING"})
                 phase = "Wait for Cloudflare Creation to Settle" if not workers_remain else "Verify Cloudflare Worker Retirement"
-                if workers_remain and payload.action == "scale_in":
-                    raise _stranded_cleanup_action(scale_in=True)
                 raise PlatformJobRequiresAction(phase, {"code": "CF_DRAIN_TIMEOUT"})
         if waiting_for_deletion:
             await context.report("Verifying Cloudflare Deletion")

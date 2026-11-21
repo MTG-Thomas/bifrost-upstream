@@ -44,6 +44,7 @@ from src.services.worker_pool.cloudflare_credentials import (
 )
 from src.services.worker_pool.cloudflare_release import WorkersRelease
 from src.services.worker_pool.cloudflare_spend import (
+    exhausted_managed_workers,
     LAUNCHER_RECEIPT_METERS,
     WORKERS_PAID_SUBSCRIPTION_USD,
     WORKERS_RATE_TABLE_VERSION,
@@ -136,6 +137,13 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
         CloudflareUsageAdvisory.model_validate(installation.usage_advisory)
         if installation.usage_advisory else None
     )
+    coverage = await spend_coverage(db, installation.account_id, period_start) if estimate is not None and isinstance(rate, str) else []
+    exhausted = await exhausted_managed_workers(db, installation.id)
+    if exhausted:
+        coverage.append(
+            f"Managed cleanup expired for {exhausted} Cloudflare worker(s). Unverified capacity remains reserved. "
+            "See the Cloudflare capacity action for retirement details."
+        )
     spend = CloudflareSpendStatus(
         state="ledger_unavailable" if estimate is None else (
             "budget_reached" if estimate >= policy.monthly_limit_usd else "ready"
@@ -143,8 +151,7 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
         estimated_usd=estimate.quantize(Decimal("0.01")) if estimate is not None else None,
         workers_paid_subscription_usd=WORKERS_PAID_SUBSCRIPTION_USD,
         rate_table_version=rate if estimate is not None and isinstance(rate, str) else "unavailable",
-        coverage=await spend_coverage(db, installation.account_id, period_start)
-        if estimate is not None and isinstance(rate, str) else [],
+        coverage=coverage,
         period_start=period_start, period_end=period_end,
         analytics=advisory if advisory is not None and advisory.period_start == period_start else None,
     )

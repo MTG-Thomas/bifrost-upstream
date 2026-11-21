@@ -28,8 +28,9 @@ from src.services.worker_pool.cloudflare_canary import active_cloudflare_canary
 from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
 from src.services.worker_pool.cloudflare_slots import delete_workflow_slots
 from src.services.worker_pool.cloudflare_spend import (
-    MAX_MANAGED_CLEANUP_ATTEMPTS,
+    MANAGED_CLEANUP_WINDOW,
     compact_ledger_receipt,
+    observe_launcher_stop,
     pending_ledger_receipt,
     record_capacity_cleanup_do_requests,
     seal_launcher_meter,
@@ -82,13 +83,17 @@ class ExternalWorkerPoolController(WorkerCapacityController):
     async def _reserve_managed_cleanup(self, worker_id: UUID) -> bool:
         async with get_db_context() as db:
             pin = await db.get(CloudflareWorkerReservation, worker_id, with_for_update=True)
-            if pin is None or pin.cleanup_attempts >= MAX_MANAGED_CLEANUP_ATTEMPTS:
+            if pin is None:
                 return False
             now = await db.scalar(select(func.clock_timestamp()))
             assert now is not None
+            if pin.cleanup_started_at is None:
+                pin.cleanup_started_at = now
+            if now >= pin.cleanup_started_at + MANAGED_CLEANUP_WINDOW:
+                return False
             if pin.cleanup_retry_at is not None and now < pin.cleanup_retry_at:
                 return False
-            pin.cleanup_retry_at = now + timedelta(seconds=min(2 ** (pin.cleanup_attempts + 1), 60))
+            pin.cleanup_retry_at = now + timedelta(seconds=min(2 ** min(pin.cleanup_attempts + 1, 6), 60))
             pin.cleanup_attempts += 1
             await record_capacity_cleanup_do_requests(db, pin.installation_id)
         return True
@@ -277,8 +282,11 @@ class ExternalWorkerPoolController(WorkerCapacityController):
                 # Absence does not fence that delayed mutation; retain cleanup.
                 return
             if resource is not None and resource.state != "deleted":
-                if self.managed_cloudflare_scope is not None and not await self._reserve_managed_cleanup(worker_id):
-                    return
+                if self.managed_cloudflare_scope is not None:
+                    async with get_db_context() as db:
+                        await observe_launcher_stop(db, worker_id, stopped=resource.state == "stopped")
+                    if not await self._reserve_managed_cleanup(worker_id):
+                        return
                 resource = await self.client.remove(worker_id, self.profile.scope, resource.resource_uid)
             # GET absence/a deleted tombstone or a validated DELETE response confirms
             # cleanup. Persist only for this still-terminal, unchanged incarnation.

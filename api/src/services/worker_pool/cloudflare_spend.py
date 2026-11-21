@@ -29,7 +29,7 @@ from sqlalchemy import (
     tuple_,
     update,
 )
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from sqlalchemy.sql.elements import ColumnElement
@@ -44,8 +44,9 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareUsageActivity,
     CloudflareUsageIncarnation,
     CloudflareWorkerReservation,
+    CloudflareWorkflowSlot,
 )
-from src.models.orm.execution_workers import ExecutionWorkerClaim
+from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
 from src.services.pool_cadence import POOL_RECONCILE_SPACING_SECONDS
 from src.worker.remote.protocol import CLOUDFLARE_MAX_CONTROL_FRAGMENTS
 
@@ -135,7 +136,30 @@ _CONTROL_CADENCE_USD = (
 )
 _CONTROL_LIFECYCLE_USD = 24 * _DO_REQUEST_USD + 32 * _SQL_WRITE_USD + 12 * _LOG_EVENT_USD
 _RECEIPT_ACK_USD = _DO_REQUEST_USD + _SQL_WRITE_USD
-MAX_MANAGED_CLEANUP_ATTEMPTS = 8
+MANAGED_CLEANUP_WINDOW = timedelta(hours=24)
+
+
+def managed_cleanup_exhausted():
+    return CloudflareWorkerReservation.cleanup_started_at <= func.statement_timestamp() - MANAGED_CLEANUP_WINDOW
+
+
+def managed_worker_stop_unverified():
+    slot = CloudflareWorkflowSlot
+    return select(slot.fence).where(
+        slot.worker_id == ExecutionWorker.id, slot.sent, slot.released_at.is_(None),
+    ).exists() | managed_cleanup_exhausted()
+
+
+async def exhausted_managed_workers(db: AsyncSession, installation_id: UUID) -> int:
+    return (await db.execute(select(func.count()).select_from(CloudflareWorkerReservation).join(
+        ExecutionWorker, ExecutionWorker.id == CloudflareWorkerReservation.worker_id,
+    ).where(
+        CloudflareWorkerReservation.installation_id == installation_id,
+        ExecutionWorker.state.in_(("lost", "retired")), ExecutionWorker.capacity_resource_deleted_at.is_(None),
+        managed_cleanup_exhausted(),
+    ))).scalar_one()
+
+
 # Each child gets at most 50 approved subrequests. Reserve up to two TenantHost
 # RPCs per call, plus 24 storage writes and diagnostics per dispatch.
 _TENANT_DISPATCH_USD = 100 * _DO_REQUEST_USD + 24 * _SQL_WRITE_USD + 4 * _LOG_EVENT_USD
@@ -346,7 +370,18 @@ def _incarnation_cost_sql(installation: type[CloudflareInstallation], now):
     lifetime_rate = cast(usage.meter_bounds["second_usd"].as_string(), Numeric)
     # The receipt release is private and has no default fetch or scheduled
     # entrypoint. Its named Fetcher relay is reserved independently.
-    lifetime_rate -= case((settled, cast(usage.meter_bounds["root_second_usd"].as_string(), Numeric)), else_=0)
+    root_rate = cast(usage.meter_bounds["root_second_usd"].as_string(), Numeric)
+    lifetime_rate -= case((settled, root_rate), else_=0)
+    # A stopped launcher has ceased initiating root requests. Keep residency,
+    # unresolved workflows and separately booked capacity GET/DELETE charges.
+    stopped_seconds = func.greatest(0, func.extract(
+        "epoch", func.least(func.coalesce(usage.deleted_at, now), now)
+        - func.greatest(usage.launcher_stopped_at, usage.started_at, period),
+    ))
+    stopped_root_reserve = case((
+        (version == WORKERS_RATE_TABLE_VERSION) & usage.launcher_stopped_at.is_not(None) & ~settled,
+        stopped_seconds * root_rate,
+    ), else_=0)
     slot_delta = case(
         (version.in_(_INVENTORY_RATE_VERSIONS), usage.slots * literal(_INVENTORY_DURATION_DELTA, type_=Numeric(24, 12))),
         else_=0,
@@ -355,7 +390,7 @@ def _incarnation_cost_sql(installation: type[CloudflareInstallation], now):
         (usage.meter_release_digest.is_not(None) & _has_launcher_caps(usage.meter_bounds) & (lifetime_rate > 0)
          & or_(version.not_in(_QUALIFIED_RATE_VERSIONS), _has_cpu_limits(usage.meter_bounds))
          & or_(version != WORKERS_RATE_TABLE_VERSION, _has_settlement_bounds(usage.meter_bounds)),
-         seconds * (lifetime_rate + slot_delta) + sum(line_items) + case(
+         seconds * (lifetime_rate + slot_delta) - stopped_root_reserve + sum(line_items) + case(
              (version.in_((*_INVENTORY_RATE_VERSIONS, WORKERS_CADENCE_RATE_TABLE_VERSION)), _CONTROL_LIFECYCLE_USD),
              else_=0,
          ) + case((version == WORKERS_RATE_TABLE_VERSION, _RECEIPT_ACK_USD), else_=0)),
@@ -544,6 +579,24 @@ async def finalize_destroyed_launcher_meter(db: AsyncSession, worker_id: UUID, *
     elif ledger_destroyed and row.meter_final.get("ledger_receipt_pending"):
         row.meter_final = {**row.meter_final, "ledger_receipt_pending": False, "ledger_namespace_destroyed": True}
     await db.execute(delete(CloudflareDispatchMeter).where(CloudflareDispatchMeter.worker_id == worker_id))
+
+
+async def clear_destroyed_ledger_receipts(db: AsyncSession, installation_id: UUID, revision: int) -> None:
+    usage = CloudflareUsageIncarnation
+    await db.execute(update(usage).where(
+        usage.installation_id == installation_id, usage.deployment_revision == revision,
+        usage.meter_final["ledger_receipt_pending"].as_boolean().is_(True),
+    ).values(meter_final=usage.meter_final.op("||")(literal({
+        "ledger_receipt_pending": False, "ledger_namespace_destroyed": True,
+    }, type_=JSONB))))
+
+
+async def observe_launcher_stop(db: AsyncSession, worker_id: UUID, *, stopped: bool) -> None:
+    usage = CloudflareUsageIncarnation
+    changed = usage.launcher_stopped_at.is_(None) if stopped else usage.launcher_stopped_at.is_not(None)
+    await db.execute(update(usage).where(
+        usage.worker_id == worker_id, usage.deleted_at.is_(None), changed,
+    ).values(launcher_stopped_at=func.clock_timestamp() if stopped else None))
 
 
 def pending_ledger_receipt(worker_id):
