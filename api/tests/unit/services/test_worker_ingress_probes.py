@@ -326,17 +326,21 @@ async def test_public_probe_deadline_retains_inflight_route(tls_contexts, monkey
 
 @pytest.fixture
 def controlled_deadline(monkeypatch):
-    deadline = asyncio.timeout(None)
-    monkeypatch.setattr(probes, "asyncio", SimpleNamespace(
-        timeout=lambda _: deadline, CancelledError=asyncio.CancelledError, gather=asyncio.gather,
-        get_running_loop=asyncio.get_running_loop,
-    ))
-    return lambda: deadline.reschedule(asyncio.get_running_loop().time())
+    def arm():
+        deadline = asyncio.timeout(None)
+        monkeypatch.setattr(probes, "asyncio", SimpleNamespace(
+            timeout=lambda _: deadline, CancelledError=asyncio.CancelledError, gather=asyncio.gather,
+            get_running_loop=asyncio.get_running_loop,
+        ))
+        return lambda: deadline.reschedule(asyncio.get_running_loop().time())
+
+    return arm
 
 
 @pytest.mark.asyncio
 async def test_deadline_chooses_least_advanced_inflight_route(tls_contexts, monkeypatch, controlled_deadline) -> None:
     server_tls, trust = tls_contexts
+    expire_deadline = controlled_deadline()
     hello_seen = asyncio.Event()
     headers_seen = asyncio.Event()
 
@@ -362,7 +366,7 @@ async def test_deadline_chooses_least_advanced_inflight_route(tls_contexts, monk
     async def expire():
         await hello_seen.wait()
         await headers_seen.wait()
-        controlled_deadline()
+        expire_deadline()
 
     async with await asyncio.start_server(hold_handshake, "127.0.0.1", 0) as handshake_server, (
         await asyncio.start_server(hold_headers, "127.0.0.1", 0, ssl=server_tls)
@@ -397,6 +401,7 @@ async def test_deadline_between_addresses_does_not_report_prior_failure(
     tls_contexts, monkeypatch, controlled_deadline,
 ) -> None:
     _, trust = tls_contexts
+    expire_deadline = controlled_deadline()
     with socket.socket() as reserved:
         reserved.bind(("127.0.0.1", 0))
         port = reserved.getsockname()[1]
@@ -407,7 +412,7 @@ async def test_deadline_between_addresses_does_not_report_prior_failure(
                 failed = await probe_address(origin, host, address, port, trust=trust, progress=progress)
                 assert failed.failure.phase == "tcp_connect"
                 return replace(failed, routes=(replace(failed.routes[0], connect_unavailable=True),))
-            controlled_deadline()
+            expire_deadline()
             await asyncio.Event().wait()
             pytest.fail("The second address should be interrupted before a route starts")
 
@@ -421,9 +426,10 @@ async def test_deadline_between_addresses_does_not_report_prior_failure(
 @pytest.mark.asyncio
 async def test_websocket_deadline_reports_phase_and_verified_http_tls(ingress, controlled_deadline) -> None:
     _, _, control, _ = ingress([IPV4], None)
+    expire_deadline = controlled_deadline()
 
     async def hold(*_args):
-        controlled_deadline()
+        expire_deadline()
         await asyncio.Event().wait()
 
     control.side_effect = hold
