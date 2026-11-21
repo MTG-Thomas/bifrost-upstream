@@ -164,11 +164,16 @@ The foreground receipt uses the engine isolate's first-request signal.
 Counting WorkerLoader calls or code callbacks would miscount when an
 existing identity starts another isolate from cached code. The TenantHost
 returns the identity, request class, UTC timestamp, and first-request flag
-for each observed boot, prime, and workflow invocation. The launcher records
+for each observed boot, prime, and workflow invocation. Workflow entries
+also carry the TenantHost's wall time across the child request and response.
+The launcher records
 the evidence after Bifrost acknowledges the durable terminal. A complete,
 verified deletion receipt settles child request counts and removes unused
-boot or prime CPU reservations. Workflow execution retains its expected CPU price. Missing responses, uncertain terminals, and incomplete receipts
-retain the full reservation for the corresponding route. The measurement
+boot or prime CPU reservations. Live workflow attempts reserve their approved
+CPU up to the engine ceiling. Settlement prices workflow CPU using the
+witnessed child wall time up to that reservation. Wall time includes I/O, so
+I/O-heavy work may cost less than estimated. Missing or uncertain evidence
+keeps the corresponding reservations. The measurement
 covers observed foreground loads. Detached exercise alarms can outlive or
 lose contact with the launcher, so their full startup reserve and estimated exercise CPU remain. [WorkerLoader API](https://developers.cloudflare.com/dynamic-workers/api-reference/)
 
@@ -337,7 +342,7 @@ billing classifications before another package can ship.
 | `gateway` | The launcher Fetcher passes the request and a tenant-scoped DO stub to the private SDK gateway. Routing covers SDK fetch, refresh, diagnostics, snapshot reads and third-party egress. | Price the gateway and relay at the inclusive 110 ms sample proxy per planned call, with up to 100 TenantHost RPCs per route. The deployed CPU backstops remain 1,097 ms and 30,000 ms. The service-binding invocation adds CPU but no standard Worker request fee. API counters miss snapshot, external, and failed calls. The terminal cannot attest every relay or gateway arrival, so the reserve remains. |
 | `tenant-state` | TenantHost generation/prime/inflight/stop state, warm metadata, storage sync, deletion, 45-second alarm and rearm. Late hosts can outlive their launcher. | Per-dispatch storage/read/log/RPC reserve and full 128 MB duration through the deadline and extended warm tail. Each reserved alarm includes two DO units, eight reads and two writes for a failed ping and rearm. |
 | `dynamic-engine` | WorkerLoader lookup, engine boot and warm retry, workflow, alarm exercise, import and SDK code, generation replacement. Dynamic Workers bill requests, CPU and unique creations per day. | Price foreground invocations from measured usage. Reserve 48,522 ms for each possible load and settle witnessed foreground starts at the expected 4,852.122 ms per observed load. Detached exercise and missing receipts keep their startup reserves. Daily creation pricing deduplicates by loader identity with its engine code digest. |
-| `storage-logs` | SQLite bytes for route chunks, journals, provider tombstones and tenant state. Cloudflare Observability can charge for logging volume, including tenant stdout. | Use the launcher's high-water `databaseSize` with a 10× sizing margin and 100 MB before receipt. Estimate retained control and tenant state at 10 MB per incarnation and the capacity scope baseline at 1 MB. Prorate at gross rates through verified namespace deletion. Operator-enabled logs remain outside the estimate. |
+| `storage-logs` | SQLite bytes for route chunks, journals, provider tombstones and tenant state. Cloudflare Observability can charge for logging volume, including tenant stdout. | Price the active launcher's high-water `databaseSize` with a 10× sizing margin, or 100 MB before a receipt. Reserve 10 MB for associated active state. After retirement, the capacity ledger keeps the seal and clears the launcher database. Estimate uncleared launcher residue at its measured high-water size or 1 MB when unknown, the capacity tombstone at 128 KB, and shared capacity scope state at 1 MB. Prorate residue until the corresponding namespace is deleted. Operator-enabled logs remain outside the estimate. |
 | `policy-helpers` | Protocol parsing, path validation, egress host matching, response shaping and output limits inside the calling invocation. | Covered by the caller's CPU and storage bounds. These helpers use no separately billed service. |
 | `inactive-features` | Agent and summary providers, manual scheduling, diagnostics and runtime probe paths reachable only in other spike configurations. | Outside the packaged managed workload surface. External traffic, provider-generated retries or overages, and account allowances and invoice rounding remain explicit exclusions. |
 
@@ -352,12 +357,15 @@ Provider overrun, detached work, usage outside Bifrost, and billing adjustments
 can change the invoice. Cloudflare Analytics remains advisory.
 
 At seal, compare independent Postgres dispatch counts with launcher route
-receipts. Report differences greater than 4× with a two-route noise floor.
+receipts within the same 128-route limit. Report differences greater than 4×
+with a two-route noise floor.
 A receipt claiming over 4× as many routes as either reported DO calls or
 SQLite writes keeps the full launcher reserve. Record at most 128 routes
 per launcher receipt. Unmatched routes keep their own dispatch reserve.
-Discard sealed route keys and prune older deduplication records after the
-previous UTC billing month.
+Discard sealed route keys and prune older deduplication and incarnation
+records after the previous UTC billing month. Roll up storage residue by
+installation and release so admission can price it without reading each
+retired incarnation.
 
 #### Hosted SDK Measurement
 

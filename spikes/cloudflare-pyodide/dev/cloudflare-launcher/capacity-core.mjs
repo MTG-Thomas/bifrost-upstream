@@ -40,7 +40,7 @@ async function keyDigest(key) {
  * @param {object} options
  * @param {object} options.profile   advertised hardware/build profile
  * @param {object} options.store     { read, write, reserve, release, discard } — all async
- * @param {object} options.runtime   { prepare, start, destroy, observe } — all async
+ * @param {object} options.runtime   { prepare, start, destroy, clearStorage, observe } — all async
  * @param {object} [options.clock]   { now } injectable for tests
  */
 export function createEngine({ profile, store, runtime, clock = { now: () => Date.now() } }) {
@@ -286,12 +286,19 @@ export function createEngine({ profile, store, runtime, clock = { now: () => Dat
                 }
                 if (row.state === STATE.DELETED) return resource(row);
 
-                row.intent = "delete";
-                await store.write(workerId, row);
                 try {
-                    const observation = await runtime.destroy(row);
-                    if (observation.state !== STATE.DELETED) throw new Error("launcher not stopped");
-                    row.usage = observation.usage;
+                    if (!row.launcher_stopped) {
+                        row.intent = "delete";
+                        await store.write(workerId, row);
+                        const observation = await runtime.destroy(row);
+                        if (observation.state !== STATE.DELETED) throw new Error("launcher not stopped");
+                        // A durable receipt must survive erasing the DO and a lost purge response.
+                        row.launcher_stopped = true;
+                        row.usage = observation.usage;
+                        await store.write(workerId, row);
+                    }
+                    await runtime.clearStorage(row);
+                    if (row.usage) row.usage.launcher_storage_cleared = true;
                 } catch (error) {
                     throw new ProtocolError(502, `delete outcome unknown: ${error.name}`);
                 }
@@ -300,6 +307,7 @@ export function createEngine({ profile, store, runtime, clock = { now: () => Dat
                 await store.release(workerId);
                 row.state = STATE.DELETED;
                 row.intent = null;
+                delete row.launcher_stopped;
                 delete row.control_key;
                 delete row.control_key_digest;
                 row.revision = (row.revision ?? 0) + 1;

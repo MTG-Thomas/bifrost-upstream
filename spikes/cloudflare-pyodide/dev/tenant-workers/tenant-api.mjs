@@ -447,7 +447,6 @@ export class TenantHost extends DurableObject {
         await response.body?.cancel();
         return {terminal: {phase: 'sdk-meter-limit', attempt_state: 'completed', limit: limits.requests}};
       }
-      const childMs = Date.now() - mark;
       let output;
       try {
         output = await readBudgetedJson(response);
@@ -459,12 +458,14 @@ export class TenantHost extends DurableObject {
           response_bytes: error.observedBytes, retention_limit_bytes: error.limitBytes,
           api_calls: this.#calls.get(handle)}};
       }
+      const childMs = Date.now() - mark;
       // The import trace feeds the next child's warm-up; only its size is
       // reported upward.
       const {imported, ...child} = output.child ?? {};
       await this.#learnImports(imported);
-      return {output: output.upstream_result, queueWaitMs, attempt_state: 'completed',
-        ...this.#invocation(identity, 'workflow', output.child?.first_request, meteredAt),
+      const trace = this.#invocation(identity, 'workflow', output.child?.first_request, meteredAt);
+      if (trace.invocation) trace.invocation.wall_ms = childMs;
+      return {output: output.upstream_result, queueWaitMs, attempt_state: 'completed', ...trace,
         timings: {child_ms: childMs,
           child: output.child ? {...child, imported: Array.isArray(imported) ? imported.length : 0} : null,
           api_calls: this.#calls.get(handle)}};

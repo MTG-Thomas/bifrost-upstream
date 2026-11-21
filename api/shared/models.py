@@ -483,17 +483,22 @@ class CloudflareEngineInvocation(BaseModel):
     kind: Literal["boot", "prime", "workflow"]
     cold: bool = Field(strict=True)
     started_at: AwareDatetime
+    wall_ms: int | None = Field(default=None, strict=True, ge=0, le=2**53 - 1, exclude_if=lambda value: value is None)
+
+
+CLOUDFLARE_MAX_RECEIPT_ROUTES = 128
 
 
 class CloudflareLauncherUsage(CloudflareLauncherCounts):
     """Terminal or deletion receipt including workload admission state."""
 
     sqlite_database_bytes: int | None = Field(default=None, ge=0, le=2**53 - 1, exclude_if=lambda value: value is None)
+    launcher_storage_cleared: Literal[True] | None = Field(default=None, exclude_if=lambda value: value is None)
     routes: dict[
         Annotated[str, Field(min_length=1, max_length=128)],
         Annotated[list[CloudflareEngineInvocation], Field(min_length=1, max_length=4)],
     ] | None = Field(
-        default=None, max_length=128, exclude_if=lambda value: value is None,
+        default=None, max_length=CLOUDFLARE_MAX_RECEIPT_ROUTES, exclude_if=lambda value: value is None,
     )
     exhausted: bool = Field(default=False, strict=True)
 

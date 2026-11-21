@@ -207,9 +207,14 @@ async def cloudflare_supervisor_loop(
                     try:
                         async with asyncio.timeout(lease.seconds_remaining()), get_db_context() as db:
                             await schedule_cloudflare_reconcile(db, now=datetime.now(UTC))
-                            await prune_spend_receipt_keys(db)
                     except Exception:
                         logger.warning("Could not schedule Cloudflare inventory reconciliation", exc_info=True)
+                    if lease.holds_lease():
+                        try:
+                            async with asyncio.timeout(lease.seconds_remaining()), get_db_context() as db:
+                                await prune_spend_receipt_keys(db)
+                        except Exception:
+                            logger.warning("Could not prune Cloudflare spend history", exc_info=True)
                 await wait_for_next_pass(stop_event, wake, since=started, spacing=RECONCILE_SECONDS, sweep=SWEEP_SECONDS)
         finally:
             listener.cancel()

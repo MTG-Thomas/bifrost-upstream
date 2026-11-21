@@ -138,7 +138,7 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
         estimated_usd=estimate.quantize(Decimal("0.01")) if estimate is not None else None,
         workers_paid_subscription_usd=WORKERS_PAID_SUBSCRIPTION_USD,
         rate_table_version=rate if estimate is not None and isinstance(rate, str) else "unavailable",
-        coverage=await spend_coverage(db, installation.account_id, period_start, rate)
+        coverage=await spend_coverage(db, installation.account_id, period_start)
         if estimate is not None and isinstance(rate, str) else [],
         period_start=period_start, period_end=period_end,
         analytics=advisory if advisory is not None and advisory.period_start == period_start else None,

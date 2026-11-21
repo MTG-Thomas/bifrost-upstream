@@ -256,6 +256,7 @@ class CloudflareDispatchMeter(Base):
     route_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     tenant_id: Mapped[str] = mapped_column(String(32))
+    workflow_cpu_ms: Mapped[int | None]
 
 
 class CloudflareUsageActivity(Base):
@@ -291,6 +292,7 @@ class CloudflareUsageIncarnation(Base):
         CheckConstraint("slots BETWEEN 1 AND 4", name="ck_cf_usage_slots"),
         CheckConstraint("deleted_at >= started_at", name="ck_cf_usage_lifetime"),
         Index("ix_cf_usage_incarnation_installation", "installation_id", "deleted_at"),
+        Index("ix_cf_usage_incarnation_deleted", "deleted_at"),
     )
 
     worker_id: Mapped[UUID] = mapped_column(primary_key=True)
@@ -304,3 +306,14 @@ class CloudflareUsageIncarnation(Base):
     meter_release_digest: Mapped[str | None] = mapped_column(String(100))
     meter_rate_version: Mapped[str | None] = mapped_column(String(64))
     meter_bounds: Mapped[dict | None] = mapped_column(JSONB)
+
+
+class CloudflareStorageResidue(Base):
+    """Estimated storage from archived incarnations, grouped by deployment."""
+
+    __tablename__ = "cloudflare_storage_residue"
+
+    installation_id: Mapped[UUID] = mapped_column(ForeignKey("cloudflare_installations.id"), primary_key=True)
+    release_digest: Mapped[str] = mapped_column(String(100), primary_key=True)
+    launcher_bytes: Mapped[int] = mapped_column(BigInteger)
+    ledger_bytes: Mapped[int] = mapped_column(BigInteger)

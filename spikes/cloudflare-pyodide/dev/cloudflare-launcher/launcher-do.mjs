@@ -83,11 +83,6 @@ function confirmedStorage(ctx, meter) {
         sql.exec(`SELECT count(*) AS n FROM ledger ${predicate}`, slot, tombstone).one().n}, true);
       return confirm(() => sql.exec(`DELETE FROM ledger ${predicate}`, slot, tombstone));
     },
-    clearReleased() {
-      if (meter) meter.charge({sqlite_rows_written: 2 *
-        sql.exec("SELECT count(*) AS n FROM ledger WHERE key NOT IN ('enrollment', 'control')").one().n}, true);
-      return confirm(() => sql.exec("DELETE FROM ledger WHERE key != 'enrollment'"));
-    },
   };
 }
 
@@ -311,7 +306,7 @@ export class CloudflareLauncher extends DurableObject {
       const fact = this.#binding(resourceUid);
       if (this.#meter?.final) return this.#meter.seal();
       if (fact?.state === 'deleted') {
-        await this.#stopReleased();
+        await this.ctx.storage.deleteAlarm();
         return this.#meter?.seal();
       }
       // The API already fenced this incarnation. Release cannot deliver a
@@ -322,17 +317,23 @@ export class CloudflareLauncher extends DurableObject {
     });
   }
 
+  clearReleasedStorage(resourceUid) {
+    return this.#serialize(async () => {
+      const fact = this.#binding(resourceUid);
+      if (fact && fact.state !== 'deleted') throw new Error('Launcher must be stopped before storage is cleared');
+      // Only the capacity ledger calls this RPC, after storing the seal and
+      // fencing prepare/start. An absent fact is safe on a retried purge.
+      await this.ctx.storage.deleteAll();
+      await this.ctx.storage.sync();
+    });
+  }
+
   async #finishRelease(resourceUid) {
     await this.#saveFact({resourceUid, state: 'deleted'});
     const connection = this.#connection;
     if (connection) await this.#disconnect(connection);
     this.#settings = null;
     this.#core = null;
-    await this.#stopReleased();
-  }
-
-  async #stopReleased() {
-    await this.#storage.clearReleased();
     await this.ctx.storage.deleteAlarm();
   }
 

@@ -33,10 +33,33 @@ function fixture() {
       return facts;
     },
     destroy: async () => ({state: STATE.DELETED}),
+    clearStorage: async () => {},
   };
   const restart = () => createEngine({profile, store, runtime});
   return {restart, runtime, facts, slots};
 }
+
+test('a lost storage-clear reply preserves the final receipt and the retirement fence', async () => {
+  const {restart, runtime, slots} = fixture();
+  const {resource_uid} = await restart().prepare(id, reservation);
+  let seals = 0;
+  const usage = {sqlite_rows_written: 21, do_requests: 3, log_events: 1};
+  runtime.destroy = async () => {
+    seals++;
+    return {state: STATE.DELETED, usage};
+  };
+  runtime.clearStorage = async () => { throw new Error('lost clear response'); };
+  await assert.rejects(restart().remove(id, {resource_uid}), /delete outcome unknown/);
+  await assert.rejects(restart().prepare(id, reservation), /deletion is pending/);
+  assert.equal(slots.size, 1);
+  runtime.clearStorage = async () => {};
+  const removed = await restart().remove(id, {resource_uid});
+  assert.equal(removed.state, STATE.DELETED);
+  assert.deepEqual(removed.usage, {...usage, launcher_storage_cleared: true});
+  assert.deepEqual(await restart().get(id), removed);
+  assert.equal(seals, 1);
+  assert.equal(slots.size, 0);
+});
 
 test('uncertain prepare releases its slot and readback leaves retry to start', async () => {
   const {restart, runtime, slots} = fixture();

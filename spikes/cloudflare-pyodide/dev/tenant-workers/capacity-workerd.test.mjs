@@ -351,6 +351,7 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
   }
   const deleted = await (await request(path, 'DELETE', {resource_uid})).json();
   assert.equal(deleted.state, 'deleted');
+  assert.deepEqual(await (await request(path, 'DELETE', {resource_uid})).json(), deleted);
   await next(() => sockets.get(id).readyState === 3);
   assert.equal((await request(path + '/start', 'POST', {resource_uid})).status, 409);
   assert.equal(hellos.get(id).length, 1);
@@ -363,6 +364,7 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
         const calls = deleted.usage.routes[route_id];
         assert.deepEqual(calls.map(({kind, cold}) => [kind, cold]), [['boot', true], ['workflow', false]]);
         assert.equal(calls[0].identity, calls[1].identity);
+        assert.ok(Number.isSafeInteger(calls[1].wall_ms) && calls[1].wall_ms >= 0);
       }
     }
     console.info('launcher-reference', JSON.stringify({attempts: references, final: deleted.usage,
