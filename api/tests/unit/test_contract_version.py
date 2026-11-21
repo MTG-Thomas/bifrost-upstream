@@ -456,7 +456,8 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Cloudflare spend coverage is additive. The CLI minimum stays unchanged.
     # The optional SQLite size in capacity receipts leaves existing clients compatible.
     # Cloudflare spend descriptions explain the estimate and its admission target.
-    "ffd1e807a1d5ac5da58f8e1ffb584c18cbd9cc400d7b8a0be7451d1567d44278"
+    # Workflow wall time and storage-clear evidence are optional capacity receipt fields.
+    "f0301900e052a6a305ca0b67d1c85814ae840e6f4ad75a452de35b1e01be0c9a"
 )
 
 
