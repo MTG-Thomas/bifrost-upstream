@@ -2539,8 +2539,17 @@ async def test_queue_depth_prepares_four_workflows_and_settles_their_usage(
                 print(f"prewarm lock after upsert through commit: {route_lock_ms[routes[0]]:.2f} ms")
             return
         speculative = first.queue_preparations[0]
+        with monkeypatch.context() as older_runner:
+            older_runner.setattr(cloudflare_admission, "installed_workers_release_digest", lambda: "older-release")
+            with pytest.raises(CredentialRouteChanged, match="preparation admission closed"):
+                await bridge._reserve_cloudflare_usage(
+                    f"prepare:{speculative.fence}", _cloudflare_tenant_key(tenant, worker, speculative.ordinal),
+                    speculative.prepare_by, engine_slot=speculative.ordinal, org_id=str(tenant),
+                    queue_warm_until=speculative.warm_until,
+                )
         async with async_session_factory() as db:
             assert await count_released_prewarms(db, worker) == 3
+            assert await db.get(cloudflare_spend.CloudflareDispatchMeter, (worker, f"prepare:{speculative.fence}")) is None
             # These transactions roll back. Each refusal uses the same
             # prewarm fence before the normal send and adoption below.
             for statement in (

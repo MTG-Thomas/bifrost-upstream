@@ -311,10 +311,11 @@ class Bridge:
         # Reserve under the current owner before emitting any frames. The
         # caller also fences the socket generation before sending secrets.
         lease = self.lease
+        preparation = route_id.startswith("prepare:")
         with remote_owner_context(LeaseRef(lease)):
             async with get_db_context() as db:
                 if (
-                    engine_slot is not None and queue_warm_until is None
+                    engine_slot is not None and not preparation
                     and not await cloudflare_claim_allowed(db, lease.worker_id)
                 ):
                     raise CredentialRouteChanged("Cloudflare admission closed before dispatch")
@@ -332,7 +333,7 @@ class Bridge:
                     if not await fence_workflow_slot_send(
                         db, lease.worker_id, UUID(execution_id), ticket,
                         tenant_id=org_id,
-                        preparation=route_id.startswith("prepare:"),
+                        preparation=preparation,
                     ):
                         raise CredentialRouteChanged("Cloudflare workflow slot is no longer held")
                 if not await reserve_tenant_host_usage(
@@ -343,10 +344,10 @@ class Bridge:
                     raise CloudflareRevisionRejected("Managed Cloudflare workflow usage could not be reserved")
                 # The activity upsert serializes competing bookings. Check the
                 # updated ledger before committing, without locking admission.
-                if queue_installation is not None and not await scoped_cloudflare_claim_allowed(
+                if preparation and not await scoped_cloudflare_claim_allowed(
                     db, lease.worker_id, queue_installation,
                 ):
-                    raise CredentialRouteChanged("Cloudflare queue preparation admission closed")
+                    raise CredentialRouteChanged("Cloudflare preparation admission closed")
 
     def _check_preparation_session(self, generation: int) -> None:
         if self.lease.session_generation != generation or not self.connected or not self.reconciliation_ready.is_set():

@@ -120,8 +120,10 @@ async def cloudflare_claim_allowed(db: AsyncSession, worker_id: UUID) -> bool:
     return await scoped_cloudflare_claim_allowed(db, worker_id, installation_id)
 
 
-async def scoped_cloudflare_claim_allowed(db: AsyncSession, worker_id: UUID, installation_id: UUID) -> bool:
-    """Read scoped admission and spend for an already identified installation."""
+async def scoped_cloudflare_claim_allowed(
+    db: AsyncSession, worker_id: UUID, installation_id: UUID | None = None,
+) -> bool:
+    """Read a managed worker's scoped admission and spend without taking the installation lock."""
     pin = CloudflareWorkerReservation
     installation = CloudflareInstallation
     scope = CloudflareCapacityScope
@@ -144,11 +146,13 @@ async def scoped_cloudflare_claim_allowed(db: AsyncSession, worker_id: UUID, ins
         ExecutionWorker.capacity_scope.is_not_distinct_from(pin.scope),
         matches_scope,
     )
-    result = await db.scalar(
+    query = (
         select(allowed)
         .select_from(pin)
         .join(installation, installation.id == pin.installation_id)
         .join(ExecutionWorker, ExecutionWorker.id == pin.worker_id)
-        .where(pin.worker_id == worker_id, pin.installation_id == installation_id)
+        .where(pin.worker_id == worker_id)
     )
-    return result is True
+    if installation_id is not None:
+        query = query.where(pin.installation_id == installation_id)
+    return await db.scalar(query) is True
