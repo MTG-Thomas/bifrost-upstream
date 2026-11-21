@@ -1381,6 +1381,9 @@ async def test_upgrade_migration_pauses_prior_pilot_and_scheduler_pins_the_new_r
     assert migration is not None
 
     def migrate(connection: Connection) -> None:
+        # The seed transaction defers credential FKs. A release migration
+        # runs after those triggers have settled in the prior transaction.
+        connection.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
         with Operations.context(MigrationContext.configure(connection)):
             migration.module.downgrade()
             migration.module.upgrade()
