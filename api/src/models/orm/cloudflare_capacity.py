@@ -306,6 +306,7 @@ class CloudflareUsageIncarnation(Base):
     meter_release_digest: Mapped[str | None] = mapped_column(String(100))
     meter_rate_version: Mapped[str | None] = mapped_column(String(64))
     meter_bounds: Mapped[dict | None] = mapped_column(JSONB)
+    deployment_revision: Mapped[int | None]
 
 
 class CloudflareStorageResidue(Base):
@@ -315,5 +316,6 @@ class CloudflareStorageResidue(Base):
 
     installation_id: Mapped[UUID] = mapped_column(ForeignKey("cloudflare_installations.id"), primary_key=True)
     release_digest: Mapped[str] = mapped_column(String(100), primary_key=True)
+    deployment_revision: Mapped[int] = mapped_column(primary_key=True)
     launcher_bytes: Mapped[int] = mapped_column(BigInteger)
     ledger_bytes: Mapped[int] = mapped_column(BigInteger)

@@ -364,7 +364,7 @@ SQLite writes keeps the full launcher reserve. Record at most 128 routes
 per launcher receipt. Unmatched routes keep their own dispatch reserve.
 Discard sealed route keys and prune older deduplication and incarnation
 records after the previous UTC billing month. Roll up storage residue by
-installation and release so admission can price it without reading each
+installation and deployment revision so admission can price it without reading each
 retired incarnation.
 
 #### Hosted SDK Measurement

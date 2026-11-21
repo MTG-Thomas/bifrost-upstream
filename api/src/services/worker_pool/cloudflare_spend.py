@@ -373,12 +373,14 @@ def _launcher_residue_bytes(usage):
 
 def _namespace_storage_end(source, digest, suffix: str, now):
     resource = CloudflareOwnedResource
+    revision = func.coalesce(source.deployment_revision, 0)
     return func.coalesce(select(func.max(case(
         (resource.state == "absent", func.coalesce(resource.observed_at, now)),
         else_=now,
     ))).where(
         resource.installation_id == source.installation_id,
         resource.artifact_digest == digest,
+        or_(revision == 0, resource.desired_revision == revision),
         resource.kind == "worker_script",
         resource.target_name.endswith(suffix),
     ).correlate(source).scalar_subquery(), now)
@@ -726,19 +728,20 @@ async def prune_spend_receipt_keys(db: AsyncSession) -> None:
     ).order_by(usage.deleted_at).limit(1000)
     archived = delete(usage).where(usage.worker_id.in_(expired)).returning(
         usage.installation_id, usage.meter_release_digest, usage.meter_rate_version,
-        usage.meter_terminal, usage.meter_final,
+        usage.meter_terminal, usage.meter_final, usage.deployment_revision,
     ).cte("archived_incarnations")
     old = archived.c
     digest = func.coalesce(old.meter_release_digest, "")
+    revision = func.coalesce(old.deployment_revision, 0)
     residue = CloudflareStorageResidue
     rollup = insert(residue).from_select(
-        ["installation_id", "release_digest", "launcher_bytes", "ledger_bytes"],
-        select(old.installation_id, digest, func.sum(_launcher_residue_bytes(old)),
+        ["installation_id", "release_digest", "deployment_revision", "launcher_bytes", "ledger_bytes"],
+        select(old.installation_id, digest, revision, func.sum(_launcher_residue_bytes(old)),
                func.count() * _SQLITE_LEDGER_TOMBSTONE_BYTES)
-        .where(old.meter_rate_version.in_(_INVENTORY_RATE_VERSIONS)).group_by(old.installation_id, digest),
+        .where(old.meter_rate_version.in_(_INVENTORY_RATE_VERSIONS)).group_by(old.installation_id, digest, revision),
     )
     await db.execute(rollup.on_conflict_do_update(
-        index_elements=[residue.installation_id, residue.release_digest],
+        index_elements=[residue.installation_id, residue.release_digest, residue.deployment_revision],
         set_={
             "launcher_bytes": residue.launcher_bytes + rollup.excluded.launcher_bytes,
             "ledger_bytes": residue.ledger_bytes + rollup.excluded.ledger_bytes,

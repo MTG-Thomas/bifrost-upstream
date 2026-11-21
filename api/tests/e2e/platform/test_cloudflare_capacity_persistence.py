@@ -1777,12 +1777,12 @@ async def test_launcher_storage_separates_live_bytes_from_retained_residue(
     digest = "f" * 64
     row = CloudflareUsageIncarnation(
         worker_id=worker_id, installation_id=installation.id, started_at=start, slots=1,
-        meter_rate_version=WORKERS_RATE_TABLE_VERSION, meter_release_digest=digest,
+        meter_rate_version=WORKERS_RATE_TABLE_VERSION, meter_release_digest=digest, deployment_revision=1,
     )
     old = CloudflareUsageIncarnation(
         worker_id=old_id, installation_id=installation.id,
         started_at=datetime(2026, 8, 1, tzinfo=UTC), deleted_at=datetime(2026, 9, 1, tzinfo=UTC), slots=1,
-        meter_rate_version=WORKERS_RATE_TABLE_VERSION, meter_release_digest=digest,
+        meter_rate_version=WORKERS_RATE_TABLE_VERSION, meter_release_digest=digest, deployment_revision=1,
         meter_final={"sqlite_database_bytes": 1_001_000},
     )
     namespace = CloudflareOwnedResource(
@@ -1826,6 +1826,12 @@ async def test_launcher_storage_separates_live_bytes_from_retained_residue(
 
     namespace.state = "absent"
     namespace.observed_at = start + timedelta(days=2)
+    db_session.add(CloudflareOwnedResource(
+        id=uuid4(), installation_id=installation.id, account_id=installation.account_id,
+        scope="workers", kind="worker_script", target_name="replacement-launcher", desired_revision=2,
+        artifact_digest=digest, effect_id=uuid4(), state="present",
+        provider_id="replacement", provider_version="1", observed_at=start + timedelta(days=3),
+    ))
     await db_session.flush()
     after_deletion = await db_session.scalar(estimate)
     assert after_deletion is not None
