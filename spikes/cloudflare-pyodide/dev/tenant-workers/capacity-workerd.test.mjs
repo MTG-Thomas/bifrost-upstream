@@ -34,9 +34,6 @@ modules['entry.mjs'] = {type: 'esm', contents: `
   import {launcherMeter, SQLITE_HEADROOM} from './cloudflare-launcher/launcher-meter.mjs';
   import {CloudflareLauncher as Launcher} from './cloudflare-launcher/launcher-do.mjs';
   export class CloudflareLauncher extends Launcher {
-    resetForFixture() {
-      this.ctx.abort('fixture reset');
-    }
     async witnessIdleStorage() {
       await this.alarm();
       return this.ctx.storage.sql.exec(
@@ -389,8 +386,9 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
     assert.deepEqual(await (await request(path)).json(), compacted);
   }
   if (!measuredLauncher) {
+    await mf.dispose();
+    await start();
     const launchers = await mf.getDurableObjectNamespace('CLOUDFLARE_LAUNCHER', 'capacity');
-    await assert.rejects(launchers.getByName(id).resetForFixture(), /fixture reset/);
     assert.deepEqual(await launchers.getByName(id).witnessIdleStorage(), []);
   }
   if (references) {
