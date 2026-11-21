@@ -217,7 +217,7 @@ async def test_connect_uses_opaque_credential_from_protected_rest_entry(e2e_clie
         assert connected.status_code == 200, connected.text
         installation = connected.json()["installation"]
         installation_id = UUID(installation["installation_id"])
-        assert installation["fleet_envelope_usd"] == "12.85"
+        assert installation["fleet_envelope_usd"] == "13.06"
         assert installation["spend"]["estimated_usd"] == "0.00"
         assert installation["spend"]["workers_paid_subscription_usd"] == "5.00"
         assert token not in connected.text and reference not in connected.text
@@ -1343,8 +1343,9 @@ async def test_ledger_splits_open_incarnation_at_utc_rollover(
 async def test_admission_prices_the_qualified_ledger_bounds(
     db_session: AsyncSession, installation: CloudflareInstallation,
 ) -> None:
-    start, _ = usage_period(datetime.now(UTC))
-    elapsed = min(1000, int((datetime.now(UTC) - start).total_seconds()))
+    start = datetime(2026, 11, 1, tzinfo=UTC)
+    as_of = start + timedelta(days=2)
+    elapsed = 1000
     current = CloudflareUsageIncarnation(
         worker_id=uuid4(), installation_id=installation.id, started_at=start,
         deleted_at=start + timedelta(seconds=elapsed), slots=2,
@@ -1361,7 +1362,7 @@ async def test_admission_prices_the_qualified_ledger_bounds(
         ),
     ])
     await db_session.flush()
-    price = select(cloudflare_estimated_usage()).where(CloudflareInstallation.id == installation.id)
+    price = select(cloudflare_estimated_usage(as_of)).where(CloudflareInstallation.id == installation.id)
     # Per-second launcher and slot charges from the qualified bounds and
     # published rates. The out-of-period closed incarnation contributes zero.
     assert await db_session.scalar(price) == (
@@ -1385,6 +1386,8 @@ async def test_admission_prices_the_qualified_ledger_bounds(
     lifetime_base = Decimal("0.01681260") + elapsed * Decimal("0.00068457800") + Decimal("0.00004280")
     month_seconds = Decimal((usage_period(start)[1] - start).total_seconds())
     lifetime_base += Decimal("0.022") * elapsed / month_seconds
+    residue_seconds = Decimal((as_of - start).total_seconds()) - elapsed
+    lifetime_base += Decimal("0.0002256") * residue_seconds / month_seconds
     fallback = lifetime_base + Decimal("0.000106")
     await db_session.flush()
     observed = await db_session.scalar(price)
@@ -1473,11 +1476,45 @@ async def test_supervisor_waits_for_its_cadence_after_a_timeout(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
+async def test_supervisor_commits_reconcile_even_if_spend_pruning_fails(monkeypatch) -> None:
+    stop = asyncio.Event()
+    commits = []
+    schedule = AsyncMock()
+    prune = AsyncMock(side_effect=RuntimeError("injected pruning failure"))
+
+    @asynccontextmanager
+    async def transaction():
+        session = object()
+        yield session
+        commits.append(session)
+
+    async def wait(*_args, **_kwargs):
+        stop.set()
+
+    monkeypatch.setattr(cloudflare_supervisor, "listen_for_pool_wake", AsyncMock())
+    monkeypatch.setattr(cloudflare_supervisor, "_installations", AsyncMock(return_value=[]))
+    monkeypatch.setattr(cloudflare_supervisor, "wait_for_next_pass", wait)
+    monkeypatch.setattr(cloudflare_supervisor, "get_db_context", transaction)
+    monkeypatch.setattr(cloudflare_supervisor, "schedule_cloudflare_reconcile", schedule)
+    monkeypatch.setattr(cloudflare_supervisor, "prune_spend_receipt_keys", prune)
+    await cloudflare_supervisor.cloudflare_supervisor_loop(
+        stop, SimpleNamespace(redis_url="redis://fixture"), lease=SimpleNamespace(
+            holds_lease=lambda: True, seconds_remaining=lambda: 1,
+        ),
+    )
+    assert schedule.await_args is not None and prune.await_args is not None
+    assert commits == [schedule.await_args.args[0]]
+    assert prune.await_args.args[0] is not commits[0]
+
+
+@pytest.mark.asyncio
 async def test_tenant_residency_reserves_route_and_warm_tail_in_the_spend_query(
-    db_session: AsyncSession, installation: CloudflareInstallation,
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     now = await db_session.scalar(select(func.clock_timestamp()))
     assert now is not None
+    noon = now.astimezone(UTC).replace(hour=12, minute=0, second=0, microsecond=0)
+    monkeypatch.setattr(cloudflare_spend, "_ledger_now", AsyncMock(return_value=noon))
     worker_id = uuid4()
     incarnation = CloudflareUsageIncarnation(
         worker_id=worker_id, installation_id=installation.id, started_at=now - timedelta(minutes=1),
@@ -1486,13 +1523,13 @@ async def test_tenant_residency_reserves_route_and_warm_tail_in_the_spend_query(
     )
     db_session.add(incarnation)
     await db_session.flush()
-    price = select(cloudflare_estimated_usage()).where(CloudflareInstallation.id == installation.id)
+    price = select(cloudflare_estimated_usage(now)).where(CloudflareInstallation.id == installation.id)
     assert not await reserve_tenant_host_usage(db_session, uuid4(), now)
     assert not await reserve_tenant_host_usage(db_session, worker_id, None)
-    assert await reserve_tenant_host_usage(db_session, worker_id, now + timedelta(seconds=120))
+    assert await reserve_tenant_host_usage(db_session, worker_id, noon + timedelta(seconds=120))
     row = await db_session.get(CloudflareUsageActivity, (installation.id, usage_period(now)[0]))
     assert row is not None
-    assert 119 <= row.inventory_tenant_seconds - 1282 <= 120
+    assert row.inventory_tenant_seconds == 1402
     assert row.inventory_dispatches == 1 and row.inventory_warm_pings == 32
     incarnation.deleted_at = now
     await db_session.flush()
@@ -1562,7 +1599,7 @@ async def test_qualified_dispatch_prices_pinned_cpu_and_keeps_sdk_events_attribu
     assert incarnation is not None
     incarnation.deleted_at = now
     await db_session.flush()
-    price = select(cloudflare_estimated_usage()).where(CloudflareInstallation.id == installation.id)
+    price = select(cloudflare_estimated_usage(now)).where(CloudflareInstallation.id == installation.id)
     qualified_price = await db_session.scalar(price)
     row.qualified_legacy_events = 0
     await db_session.flush()
@@ -1655,7 +1692,7 @@ async def test_foreground_pricing_keeps_reserves_until_a_confirmed_seal(
         },
         uncertain=evidence == "uncertain",
     )
-    price = select(cloudflare_estimated_usage()).where(CloudflareInstallation.id == installation.id)
+    price = select(cloudflare_estimated_usage(now)).where(CloudflareInstallation.id == installation.id)
     payload = CloudflareLauncherUsage.model_validate({
         **event, "do_requests": 0 if evidence == "drift" else event["do_requests"],
         "routes": {} if evidence == "incomplete" else {"fixture": [
@@ -1769,7 +1806,9 @@ async def test_launcher_storage_separates_live_bytes_from_retained_residue(
     await db_session.flush()
     uncleared = await db_session.scalar(estimate)
     await cloudflare_spend.seal_launcher_meter(
-        db_session, worker_id, CloudflareLauncherUsage(**event, launcher_storage_cleared=True),
+        db_session, worker_id, CloudflareLauncherUsage(
+            sqlite_rows_written=1, do_requests=1, log_events=1, launcher_storage_cleared=True,
+        ),
     )
     await db_session.flush()
     cleared = await db_session.scalar(estimate)

@@ -32,7 +32,14 @@ const modules = Object.fromEntries([
 modules['entry.mjs'] = {type: 'esm', contents: `
   import {DurableObject} from 'cloudflare:workers';
   import {launcherMeter, SQLITE_HEADROOM} from './cloudflare-launcher/launcher-meter.mjs';
-  export {CloudflareLauncher} from './cloudflare-launcher/launcher-do.mjs';
+  import {CloudflareLauncher as Launcher} from './cloudflare-launcher/launcher-do.mjs';
+  export class CloudflareLauncher extends Launcher {
+    async clearReleasedStorage(uid) {
+      await super.clearReleasedStorage(uid);
+      const rows = this.ctx.storage.sql.exec("SELECT name FROM sqlite_master WHERE name = 'ledger'").toArray();
+      if (rows.length) throw new Error('Launcher SQLite ledger survived release');
+    }
+  }
   export class MeterProbe extends DurableObject {
     witness(name, count) {
       const meter = launcherMeter(this.ctx.storage.sql,

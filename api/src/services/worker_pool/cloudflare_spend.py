@@ -300,9 +300,8 @@ def _has_settlement_bounds(bounds):
     )
 
 
-def _incarnation_cost_sql(installation: type[CloudflareInstallation]):
+def _incarnation_cost_sql(installation: type[CloudflareInstallation], now):
     usage = CloudflareUsageIncarnation
-    now = func.statement_timestamp()
     period = func.date_trunc("month", now, "UTC")
     seconds = func.extract("epoch", func.least(func.coalesce(usage.deleted_at, now), now)
                            - func.greatest(usage.started_at, period))
@@ -793,10 +792,11 @@ async def read_workers_usage(db: AsyncSession, installation_id: UUID, as_of: dat
     return WorkersLedgerUsage(row.launcher_seconds, row.slot_seconds, int(row.dispatched_runs), int(row.sdk_requests))
 
 
-def cloudflare_estimated_usage() -> ColumnElement[Decimal | None]:
-    """Price the live account ledger in the same database snapshot as admission."""
+def cloudflare_estimated_usage(as_of: datetime | None = None) -> ColumnElement[Decimal | None]:
+    """Price the account ledger, using the admission statement clock by default."""
     installation = CloudflareInstallation
-    totals = _totals(installation.id, func.statement_timestamp())
+    now = func.statement_timestamp() if as_of is None else literal(as_of)
+    totals = _totals(installation.id, now)
     policy_version = installation.policy["rate_table_version"].as_string()
     bounds = installation.policy["meter_launcher"]
     known_policy = or_(
@@ -829,13 +829,13 @@ def cloudflare_estimated_usage() -> ColumnElement[Decimal | None]:
         owner, owner.id == activity.installation_id,
     ).where(
         owner.account_id == installation.account_id,
-        activity.period_start == func.date_trunc("month", func.statement_timestamp(), "UTC"),
+        activity.period_start == func.date_trunc("month", now, "UTC"),
     ).correlate(installation).scalar_subquery()
     return select(case(
         (totals.c.complete & known_policy,
-         _incarnation_cost_sql(installation) + _DURATION_USD_PER_SECOND * totals.c.slot_seconds
+         _incarnation_cost_sql(installation, now) + _DURATION_USD_PER_SECOND * totals.c.slot_seconds
          + _ACTIVITY_USD * (totals.c.dispatched_runs + totals.c.sdk_requests) + hosts
-         + _retained_storage_cost(installation, func.statement_timestamp())),
+         + _retained_storage_cost(installation, now)),
     )).select_from(totals).correlate(installation).scalar_subquery()
 
 

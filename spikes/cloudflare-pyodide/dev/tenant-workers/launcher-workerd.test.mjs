@@ -96,6 +96,9 @@ function engine() {
         await response.body?.cancel();
       }
       if (body.context.scenario === 'large-output') result = 'x'.repeat(768 * 1024);
+      if (scenario === 'wall-receipt') {
+        return Response.json({upstream_result: {status: 'Success', result}, child: {first_request: false}});
+      }
       return Response.json({upstream_result: {status: 'Success', result}});
     },
   };
@@ -138,6 +141,14 @@ const main = `
       const attempt = super.run(input);
       this.#signal(input.routeId).resolve();
       return attempt;
+    }
+    async runWithReceipt(input) {
+      this.env.BIFROST_METER_RECEIPTS = 'true';
+      try {
+        return await super.run(input);
+      } finally {
+        delete this.env.BIFROST_METER_RECEIPTS;
+      }
     }
     async waitForRun(id) { await this.#signal(id).promise; }
     async withCpuWitness(action, input) {
@@ -200,6 +211,7 @@ const main = `
       const {tenantId, action, input} = await request.json();
       const host = ctx.exports.TenantHost.getByName(tenantId);
       if (action === 'run') return Response.json(await host.run(input));
+      if (action === 'run-with-receipt') return Response.json(await host.runWithReceipt(input));
       if (action === 'cpu-witness') return Response.json(await host.withCpuWitness(
         input.action, input.action === 'run' ? input.payload : {tenantId}));
       if (action === 'managed-alarm') return Response.json(await host.runManagedAlarm(input?.success));
@@ -734,6 +746,16 @@ test('the WorkerLoader receives the smaller of the release CPU limit and the wor
     assert.equal(limit, expected);
     assert.equal(result.output.status, 'Success');
   }
+});
+
+test('a completed workflow receipt reports measured child wall time', async () => {
+  const tenant = 'wall-receipt';
+  await host(tenant, 'warm', {engineOnly: true});
+  const result = await host(tenant, 'run-with-receipt', route(tenant, {scenario: 'wall-receipt'}));
+  assert.equal(result.attempt_state, 'completed');
+  assert.equal(result.invocation.kind, 'workflow');
+  assert.ok(Number.isSafeInteger(result.invocation.wall_ms) && result.invocation.wall_ms >= 0);
+  assert.equal(result.invocation.wall_ms, result.timings.child_ms);
 });
 
 test('boot, warm priming and exercise pass separate CPU limits to WorkerLoader', async () => {
