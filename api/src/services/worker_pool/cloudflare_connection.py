@@ -1,7 +1,11 @@
 """Verify and configure a platform Cloudflare connection."""
 
 import httpx
-from shared.models import CloudflareCapacityStatus, CloudflareConnectRequest, CloudflarePolicyUpdate
+from shared.models import (
+    CloudflareCapacityStatus,
+    CloudflareConnectRequest,
+    CloudflarePolicyUpdate,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.services.audit import emit_audit
@@ -15,7 +19,13 @@ from src.services.worker_pool.cloudflare_policy import (
     release_meter_bounds,
     save_cloudflare_policy,
 )
+from src.services.worker_pool.cloudflare_provisioning import OwnershipConflict
 from src.services.worker_pool.cloudflare_release import load_workers_release
+from src.services.worker_pool.cloudflare_tunnel import tunnel_origin
+from src.services.worker_pool.cloudflare_tunnel_rest import (
+    TunnelRest,
+    dedicated_hostname,
+)
 from src.services.worker_pool.cloudflare_workers_rest import WorkersRestCleanup
 
 
@@ -34,16 +44,27 @@ async def configure_cloudflare(
             )
         if token is None:
             raise ValueError("Cloudflare credential is unavailable")
+        hostname = dedicated_hostname(body.worker_ingress_origin)
         async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
             await WorkersRestCleanup(http).verify_workers_paid(body.account_id, token)
+            if body.zone_id is not None:
+                tunnel_origin()
+                try:
+                    await TunnelRest(
+                        http, account_id=body.account_id, zone_id=body.zone_id, hostname=hostname, token=token,
+                    ).verify_zone()
+                except OwnershipConflict:
+                    raise ValueError("Managed Tunnel requires a DNS zone owned by the selected Cloudflare account") from None
         installation_id = await create_cloudflare_installation(
             db, account_id=body.account_id, worker_ingress_origin=body.worker_ingress_origin,
             consent_version=body.consent_version, actor_id=actor_id,
             verified_api_token=token, policy=body.policy, bounds=bounds,
+            reachability_mode=body.reachability_mode, zone_id=body.zone_id,
         )
         await emit_audit(
             db, "capacity.cloudflare_connect", resource_type="cloudflare_installation", resource_id=installation_id,
-            details={"account_id": body.account_id, "consent_version": body.consent_version},
+            details={"account_id": body.account_id, "consent_version": body.consent_version,
+                     "reachability_mode": body.reachability_mode, "zone_id": body.zone_id},
         )
     else:
         revision = await save_cloudflare_policy(

@@ -14,6 +14,7 @@ from urllib.parse import quote, unquote_to_bytes
 from uuid import UUID
 
 import h11
+import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.routing import APIRoute, APIWebSocketRoute
@@ -26,7 +27,15 @@ from uvicorn.protocols.http.h11_impl import H11Protocol
 from src.config import get_settings
 from src.core.database import get_db_context, get_session_factory
 from src.core.security import decode_expired_access_token, decode_token
+from src.jobs.platform.kubernetes_client import (
+    KubernetesApiError,
+    KubernetesConfigurationError,
+)
 from src.models.orm.cloudflare_capacity import CloudflareInstallation
+from src.services.worker_pool.cloudflare_connector_channel import (
+    Projection,
+    project_connector,
+)
 from src.services.worker_pool.cloudflare_spend import record_sdk_gateway_request
 from src.worker.remote.protocol import MAX_FRAME_BYTES
 
@@ -559,15 +568,27 @@ async def serve_worker_ingress(app: FastAPI) -> AsyncIterator[None]:
 @asynccontextmanager
 async def watch_worker_ingress(app: FastAPI) -> AsyncIterator[None]:
     """Open the dedicated socket when an installation is connected."""
+    projection: Projection | None = None
+
+    async def refresh_connector() -> None:
+        nonlocal projection
+        try:
+            projection = await project_connector(projection)
+        except (SQLAlchemyError, OSError, TimeoutError, ValueError, httpx.HTTPError,
+                KubernetesApiError, KubernetesConfigurationError):
+            logger.warning("Could not project the Managed Tunnel connector credential")
+
     async def watch() -> None:
         while True:
             try:
+                await refresh_connector()
                 if await _installation_origin() is not None:
                     async with serve_worker_ingress(app):
                         absent = False
                         while True:
                             await asyncio.sleep(1)
                             try:
+                                await refresh_connector()
                                 current_absent = await _installation_origin() is None
                             except (SQLAlchemyError, TimeoutError):
                                 logger.warning("Could not refresh the worker ingress installation", exc_info=True)

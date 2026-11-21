@@ -44,6 +44,7 @@ from src.services.work_dispatch import (
     WAKE_CLOUDFLARE_CAPACITY,
     wake_pool_workers_after_commit,
 )
+from src.services.worker_pool import cloudflare_tunnel
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
     consume_staged_token,
@@ -68,6 +69,7 @@ from src.services.worker_pool.cloudflare_provisioning import (
     observe_owned,
     resume_deletion,
 )
+from src.services.worker_pool.cloudflare_slots import delete_workflow_slots
 from src.services.worker_pool.cloudflare_spend import (
     clear_destroyed_ledger_receipts,
     cloudflare_estimated_usage,
@@ -76,7 +78,6 @@ from src.services.worker_pool.cloudflare_spend import (
     read_workers_usage,
     usage_period,
 )
-from src.services.worker_pool.cloudflare_slots import delete_workflow_slots
 from src.services.worker_pool.cloudflare_workers_rest import (
     CloudflareManagementDenied,
     CloudflareRestUnavailable,
@@ -128,7 +129,7 @@ class CloudflareRotateWorkerPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     installation_id: UUID
     revision: int = Field(gt=0)
-    credential: Literal["control_root", "scope_bearer"]
+    credential: Literal["control_root", "scope_bearer", "connector_token"]
     replacement_version: int = Field(gt=0)
 
 
@@ -169,6 +170,7 @@ async def _cleanup_one(
     query = select(CloudflareOwnedResource).where(
         CloudflareOwnedResource.installation_id == row.id,
         CloudflareOwnedResource.state != "absent",
+        CloudflareOwnedResource.scope == "workers",
     )
     if before_revision is not None:
         query = query.where(CloudflareOwnedResource.desired_revision < before_revision)
@@ -376,6 +378,7 @@ async def _verify_stuck_workflow_slots(
 
 async def _settle_disable(
     context: PlatformJobContext, payload: CloudflareDisablePayload, adapter: OwnedResourceCleanup,
+    *, tunnel_http: httpx.AsyncClient | None = None,
 ) -> dict[str, str]:
     delay = 2
     while True:
@@ -397,6 +400,12 @@ async def _settle_disable(
             if not workers_remain:
                 try:
                     cleanup = await _cleanup_one(db, row, adapter) if payload.action == "disconnect" else "complete"
+                    if cleanup == "complete" and payload.action == "disconnect" and row.reachability_mode == "managed_tunnel":
+                        if tunnel_http is None:
+                            raise RuntimeError("Managed Tunnel requires the Cloudflare REST client")
+                        tunnel = cloudflare_tunnel.adapter(tunnel_http, row, await _management_token(db, row))
+                        if not await cloudflare_tunnel.cleanup(db, row, tunnel):
+                            cleanup = "progressed"
                 except DeletionSettling:
                     # The journaled deletion intent survives the wait and any
                     # runner loss. The next pass verifies ownership again.
@@ -515,7 +524,7 @@ async def _disable(context: PlatformJobContext, parsed: BaseModel) -> dict[str, 
     await context.report("Draining Cloudflare Capacity")
     try:
         async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
-            return await _settle_disable(context, payload, WorkersRestCleanup(http))
+            return await _settle_disable(context, payload, WorkersRestCleanup(http), tunnel_http=http)
     except OwnershipConflict:
         raise PlatformJobRequiresAction("Verify Cloudflare Ownership", {"code": "CF_OWNERSHIP_CONFLICT"}) from None
     except (ObservationPending, CloudflarePolicyConflict):
@@ -541,7 +550,9 @@ class _InventoryReceipt:
 async def _inventory_snapshot(
     db: AsyncSession, installation_id: UUID, *, revision: int | None = None,
 ) -> tuple[_InventoryReceipt, ...]:
-    query = select(CloudflareOwnedResource).where(CloudflareOwnedResource.installation_id == installation_id)
+    query = select(CloudflareOwnedResource).where(
+        CloudflareOwnedResource.installation_id == installation_id, CloudflareOwnedResource.scope == "workers",
+    )
     if revision is None:
         query = query.where(CloudflareOwnedResource.state.in_(("present", "deleting")))
     else:
@@ -595,6 +606,7 @@ def _current_reconcile(installation: CloudflareInstallation | None, revision: in
 
 async def _settle_reconcile(
     context: PlatformJobContext, payload: CloudflareReconcilePayload, adapter: WorkersRestCleanup,
+    *, tunnel_http: httpx.AsyncClient | None = None,
 ) -> dict[str, str]:
     issue = None
     token = None
@@ -611,10 +623,19 @@ async def _settle_reconcile(
         usage_identities = await usage_script_identities(db, installation.id)
         try:
             token = await _management_token(db, installation)
+            if installation.reachability_mode == "managed_tunnel":
+                if tunnel_http is None:
+                    raise RuntimeError("Managed Tunnel requires the Cloudflare REST client")
+                tunnel = cloudflare_tunnel.adapter(tunnel_http, installation, token)
+                await cloudflare_tunnel.verify(db, installation, tunnel)
         except CloudflareManagementDenied:
             issue = ("Reconnect Cloudflare", "CF_MANAGEMENT_CREDENTIAL")
+        except OwnershipConflict:
+            issue = ("Verify Cloudflare Tunnel Ownership", "CF_OWNERSHIP_CONFLICT")
+        except (ObservationPending, CloudflareRestUnavailable, ValueError):
+            issue = ("Verify Managed Tunnel Connector and DNS", "CF_CONNECTOR_UNAVAILABLE")
 
-    if token is not None:
+    if token is not None and issue is None:
         try:
             roles = {receipt.intent.target.name.rsplit("-", 1)[-1] for receipt in inventory}
             expected_roles = {"launcher", "capacity"}
@@ -677,7 +698,7 @@ async def _reconcile(context: PlatformJobContext, parsed: BaseModel) -> dict[str
     await context.report("Verifying Cloudflare Deployment")
     try:
         async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
-            return await _settle_reconcile(context, payload, WorkersRestCleanup(http))
+            return await _settle_reconcile(context, payload, WorkersRestCleanup(http), tunnel_http=http)
     except CloudflareRestUnavailable:
         raise PlatformJobFailure("CF_PROVIDER_UNAVAILABLE", "Cloudflare REST Is Temporarily Unavailable", retryable=True) from None
 
@@ -810,6 +831,8 @@ async def _rotate_worker_credential(context: PlatformJobContext, parsed: BaseMod
     scope = "workers" if payload.credential == "scope_bearer" else ""
     try:
         async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
+            if payload.credential == "connector_token":
+                return await _rotate_connector(context, payload, http)
             adapter = WorkersRestCleanup(http)
             while True:
                 async with get_db_context() as db:
@@ -865,6 +888,51 @@ async def _rotate_worker_credential(context: PlatformJobContext, parsed: BaseMod
     return {"outcome": "rotated", "credential_version": payload.replacement_version}
 
 
+async def _rotate_connector(
+    context: PlatformJobContext, payload: CloudflareRotateWorkerPayload, http: httpx.AsyncClient,
+) -> dict[str, str | int]:
+    async def current(db: AsyncSession) -> CloudflareInstallation | None:
+        await _hold_installation_lease(db, context, payload.installation_id)
+        row = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
+        if row is None or row.retired_at is not None or row.desired_revision != payload.revision or row.desired_state != "scaled_in":
+            return None
+        return row
+
+    async with get_db_context() as db:
+        row = await current(db)
+        if row is None:
+            return {"outcome": "superseded"}
+        if await cloudflare_workers_remain(db, row.id):
+            raise PlatformJobRequiresAction("Wait for Cloudflare Workers to Retire", {"code": "CF_PRIOR_WORKERS_LIVE"})
+        tunnel = cloudflare_tunnel.adapter(http, row, await _management_token(db, row))
+        if row.tunnel_token_version != payload.replacement_version:
+            await cloudflare_tunnel.record_rotation_intent(db, row, tunnel, version=payload.replacement_version)
+    async with get_db_context() as db:
+        row = await current(db)
+        if row is None:
+            return {"outcome": "superseded"}
+        tunnel = cloudflare_tunnel.adapter(http, row, await _management_token(db, row))
+        if row.tunnel_token_version != payload.replacement_version:
+            await cloudflare_tunnel.rotate(
+                db, row, tunnel, version=payload.replacement_version, actor=context.requested_by_user_id,
+            )
+            await emit_audit(
+                db, "capacity.cloudflare_worker_credential_rotated", resource_type="cloudflare_installation",
+                resource_id=row.id, details={"credential": "connector_token", "credential_version": payload.replacement_version},
+                actor_override=ActorContext(None, None, source="scheduler"),
+            )
+    await context.report("Verifying Managed Tunnel Connector Rollout")
+    async with get_db_context() as db:
+        row = await current(db)
+        if row is None:
+            return {"outcome": "superseded"}
+        tunnel = cloudflare_tunnel.adapter(http, row, await _management_token(db, row))
+        ready = await cloudflare_tunnel.connector_ready(db, row, tunnel)
+    if not ready:
+        raise PlatformJobFailure("CF_CONNECTOR_UNAVAILABLE", "Waiting for Managed Tunnel Connector Rollout", retryable=True)
+    return {"outcome": "rotated", "credential_version": payload.replacement_version}
+
+
 CLOUDFLARE_ROTATE_WORKER_DEFINITION = define_platform_job(
     ROTATE_WORKER_JOB, CloudflareRotateWorkerPayload, _rotate_worker_credential,
 )
@@ -872,7 +940,7 @@ CLOUDFLARE_ROTATE_WORKER_DEFINITION = define_platform_job(
 
 async def enqueue_cloudflare_worker_credential_rotation(
     db: AsyncSession, caller: Caller, *, installation_id: UUID, expected_revision: int,
-    credential: Literal["control_root", "scope_bearer"],
+    credential: Literal["control_root", "scope_bearer", "connector_token"],
 ) -> tuple[PlatformJob, bool]:
     require_operation(caller, "capacity.cloudflare_rotate_account_token", GLOBAL)
     actor = caller.principal
@@ -882,7 +950,14 @@ async def enqueue_cloudflare_worker_credential_rotation(
     existing = await find_active_platform_job(db, ROTATE_WORKER_JOB, str(row.id))
     if existing is not None:
         raise CloudflarePolicyConflict("A worker credential rotation is already pending")
-    if credential == "scope_bearer":
+    if credential == "connector_token":
+        if row.reachability_mode != "managed_tunnel" or row.tunnel_token_version is None:
+            raise CloudflarePolicyConflict("Provision Managed Tunnel before rotating its connector token.")
+        receipt = await cloudflare_tunnel.resource(db, row, cloudflare_tunnel.TUNNEL)
+        pending = receipt.provider_details.get("rotation_version") if receipt is not None else None
+        version = pending if isinstance(pending, int) else row.tunnel_token_version + 1
+        await cloudflare_tunnel.stage_rotation(db, row, version=version, actor=str(actor.user_id))
+    elif credential == "scope_bearer":
         row.desired_revision += 1
         version = row.desired_revision
     else:

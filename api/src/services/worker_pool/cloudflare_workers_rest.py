@@ -119,9 +119,20 @@ class WorkersRestCleanup:
         files: dict[str, tuple[str, str | bytes, str]] | None = None,
         json_body: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
+        resource_path = f"accounts/{account}" + (f"/{path}" if path else "")
+        return await self._request_resource(
+            token, method, resource_path, allow_missing=allow_missing, params=params, files=files, json_body=json_body,
+        )
+
+    async def _request_resource(
+        self, token: SecretStr, method: str, path: str, *,
+        allow_missing: bool = False, params: dict[str, int | str] | None = None,
+        files: dict[str, tuple[str, str | bytes, str]] | None = None,
+        json_body: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         try:
             response = await self._http.request(
-                method, f"{API}/accounts/{account}" + (f"/{path}" if path else ""), params=params,
+                method, f"{API}/{path}", params=params,
                 headers={"Authorization": f"Bearer {token.get_secret_value()}"},
                 files=files, json=json_body,
             )

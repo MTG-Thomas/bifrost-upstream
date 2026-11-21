@@ -43,6 +43,7 @@ from src.services.work_dispatch import (
     wake_pool_workers_after_commit,
 )
 from src.services.worker_ingress_probes import probe_worker_ingress
+from src.services.worker_pool import cloudflare_tunnel
 from src.services.worker_pool.cloudflare_canary import run_workers_canary
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
@@ -185,6 +186,33 @@ async def _settle_enable(
         if row.admitted_revision == payload.revision:
             return {"outcome": "enabled"}
         await _require_legacy_cleanup(db)
+    if installation.reachability_mode == "managed_tunnel":
+        await context.report("Provisioning Managed Tunnel")
+        async with get_db_context() as db:
+            row = await _locked_current(db, context, payload)
+            if row is None:
+                return {"outcome": "superseded"}
+            await cloudflare_tunnel.prepare(db, row, actor=context.requested_by_user_id)
+        async with get_db_context() as db:
+            row = await _locked_current(db, context, payload)
+            if row is None:
+                return {"outcome": "superseded"}
+            tunnel = cloudflare_tunnel.adapter(http, row, await _management_token(db, row))
+            await cloudflare_tunnel.provision_tunnel(db, row, tunnel)
+        async with get_db_context() as db:
+            row = await _locked_current(db, context, payload)
+            if row is None:
+                return {"outcome": "superseded"}
+            tunnel = cloudflare_tunnel.adapter(http, row, await _management_token(db, row))
+            await cloudflare_tunnel.provision_dns(db, row, tunnel, actor=context.requested_by_user_id)
+        await context.report("Checking Managed Tunnel Connector")
+        async with get_db_context() as db:
+            row = await _locked_current(db, context, payload)
+            if row is None:
+                return {"outcome": "superseded"}
+            tunnel = cloudflare_tunnel.adapter(http, row, await _management_token(db, row))
+            if not await cloudflare_tunnel.connector_ready(db, row, tunnel):
+                raise PlatformJobFailure("CF_CONNECTOR_UNAVAILABLE", "Waiting for Managed Tunnel Connector", retryable=True)
     while True:
         async with get_db_context() as db:
             row = await _locked_current(db, context, payload)
@@ -315,6 +343,8 @@ async def _enable(context: PlatformJobContext, parsed: BaseModel) -> dict[str, s
         raise PlatformJobRequiresAction("Install a Qualified Workers Release", {"code": "CF_RELEASE_UNAVAILABLE"}) from None
     except WorkersPaidUnverified as exc:
         raise PlatformJobRequiresAction(str(exc), {"code": "CF_WORKERS_PAID_UNVERIFIED"}) from None
+    except ValueError as exc:
+        raise PlatformJobRequiresAction("Verify Cloudflare Connection Configuration", {"code": "CF_CONNECTION_INVALID"}) from exc
     except OwnershipConflict:
         raise PlatformJobRequiresAction("Verify Cloudflare Ownership", {"code": "CF_OWNERSHIP_CONFLICT"}) from None
     except (ObservationPending, CapacityProtocolError):
