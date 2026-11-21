@@ -618,6 +618,13 @@ async def test_upgrade_drains_before_replacement_and_resumes_after_lost_lease(
     payload = lifecycle_job.CloudflareReconcilePayloadV2.model_validate(job.payload)
     handler = lifecycle_job.CLOUDFLARE_RECONCILE_DEFINITION.handler
     running = PlatformJobContext(job.id, lease, None, str(OPERATOR_ID), admin.principal.email, "")
+    with monkeypatch.context() as older_runner:
+        older_runner.setattr(lifecycle_job, "installed_workers_release_digest", lambda: "fixture-release")
+        older_runner.setattr(lifecycle_job, "installed_workers_release_order", lambda: WorkersReleaseOrder("1.0.0", 21))
+        with pytest.raises(PlatformJobRequiresAction) as mismatch:
+            await handler(running, payload)
+        assert mismatch.value.result == {"code": "CF_RELEASE_MISMATCH"}
+        assert effects == []
     with pytest.raises(PlatformJobCancelled):
         await handler(running, payload)
     await db_session.refresh(slot)

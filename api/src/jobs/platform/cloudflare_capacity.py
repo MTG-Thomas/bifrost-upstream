@@ -737,6 +737,9 @@ async def _reconcile(context: PlatformJobContext, parsed: BaseModel) -> dict[str
         target = row.upgrade_release or row.policy.get("bounds_release")
         release, order = installed_workers_release_digest(), installed_workers_release_order()
         if release is not None and order is not None and (code := workers_release_error(row, release, order)):
+            if code == "CF_RELEASE_DOWNGRADE" and row.upgrade_release is not None:
+                # A newer target is already pinned. A matched runner can resume it.
+                raise PlatformJobRequiresAction("Install the Matched Workers Release", {"code": "CF_RELEASE_MISMATCH"})
             raise PlatformJobRequiresAction("Review the Workers Release Fence", {
                 "code": code, "instructions": [RELEASE_FENCE_REMEDY],
             })
