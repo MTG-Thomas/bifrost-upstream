@@ -69,6 +69,7 @@ from src.services.worker_pool.cloudflare_provisioning import (
     resume_deletion,
 )
 from src.services.worker_pool.cloudflare_spend import (
+    MAX_MANAGED_CLEANUP_ATTEMPTS,
     cloudflare_estimated_usage,
     finalize_destroyed_launcher_meter,
     read_workers_usage,
@@ -238,7 +239,10 @@ async def _cleanup_stranded_workflow_slots(
     revision_filter = () if before_revision is None else (pin.deployment_revision < before_revision,)
     remaining = (await db.execute(select(
         worker.id, worker.state, pin.scope, pin.deployment_revision,
-        select(slot.fence).where(slot.worker_id == worker.id, slot.sent, slot.released_at.is_(None)).exists(),
+        (
+            select(slot.fence).where(slot.worker_id == worker.id, slot.sent, slot.released_at.is_(None)).exists()
+            | (pin.cleanup_attempts >= MAX_MANAGED_CLEANUP_ATTEMPTS)
+        ),
     ).join(pin, pin.worker_id == worker.id).where(
         pin.installation_id == row.id, *revision_filter,
         worker.capacity_resource_deleted_at.is_(None) | worker.state.not_in(("lost", "retired")),

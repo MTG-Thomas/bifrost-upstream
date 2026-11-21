@@ -1337,17 +1337,19 @@ async def test_workflow_slots_hold_headroom_and_serialize_different_tenants(asyn
 async def test_stranded_revision_deletes_owned_scripts_before_releasing_slots(
     db_session: AsyncSession, installation: CloudflareInstallation,
 ) -> None:
-    stranded, live = uuid4(), uuid4()
+    stranded, exhausted, live = uuid4(), uuid4(), uuid4()
     now = datetime.now(UTC)
     db_session.add_all([
         ExecutionWorker(id=stranded, form="external", state="lost", runtime_profile="cloudflare-python-v1"),
+        ExecutionWorker(id=exhausted, form="external", state="retired", runtime_profile="cloudflare-python-v1"),
         ExecutionWorker(id=live, form="external", state="ready", runtime_profile="cloudflare-python-v1"),
     ])
     await db_session.flush()
     db_session.add_all(CloudflareWorkerReservation(
         worker_id=worker, installation_id=installation.id, scope="workers",
         deployment_revision=1, control_root_version=1,
-    ) for worker in (stranded, live))
+        cleanup_attempts=cloudflare_spend.MAX_MANAGED_CLEANUP_ATTEMPTS if worker == exhausted else 0,
+    ) for worker in (stranded, exhausted, live))
     ticket = CloudflareWorkflowSlot(
         installation_id=installation.id, tenant="platform", ordinal=0, worker_id=stranded,
         dispatch_id=uuid4(), execution_id=uuid4(), fence=uuid4(), sent=True,
@@ -1431,6 +1433,9 @@ async def test_stranded_revision_deletes_owned_scripts_before_releasing_slots(
         ExecutionWorker.id == stranded,
     )) is not None
     assert meter.meter_final == {"ledger_receipt_pending": False, "ledger_namespace_destroyed": True}
+    unobserved = await db_session.get(CloudflareUsageIncarnation, exhausted)
+    assert unobserved is not None and unobserved.deleted_at is not None
+    assert unobserved.meter_uncertain and unobserved.meter_final is None
 
 
 @pytest.mark.asyncio

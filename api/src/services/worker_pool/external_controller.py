@@ -28,6 +28,7 @@ from src.services.worker_pool.cloudflare_canary import active_cloudflare_canary
 from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
 from src.services.worker_pool.cloudflare_slots import delete_workflow_slots
 from src.services.worker_pool.cloudflare_spend import (
+    MAX_MANAGED_CLEANUP_ATTEMPTS,
     compact_ledger_receipt,
     pending_ledger_receipt,
     record_capacity_cleanup_do_requests,
@@ -65,7 +66,6 @@ logger = logging.getLogger(__name__)
 # Allow bounded in-flight PUTs and provider work to finish before accepting
 # absence for a terminal incarnation whose UID was never bound.
 UNBOUND_PREPARE_GRACE = timedelta(minutes=1)
-MAX_MANAGED_CLEANUP_ATTEMPTS = 8
 
 class ExternalWorkerPoolController(WorkerCapacityController):
     def __init__(self, client: ExternalCapacityClient, settings: Settings, profile: WorkerCapacityProfile) -> None:

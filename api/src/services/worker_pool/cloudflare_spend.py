@@ -135,6 +135,7 @@ _CONTROL_CADENCE_USD = (
 )
 _CONTROL_LIFECYCLE_USD = 24 * _DO_REQUEST_USD + 32 * _SQL_WRITE_USD + 12 * _LOG_EVENT_USD
 _RECEIPT_ACK_USD = _DO_REQUEST_USD + _SQL_WRITE_USD
+MAX_MANAGED_CLEANUP_ATTEMPTS = 8
 # Each child gets at most 50 approved subrequests. Reserve up to two TenantHost
 # RPCs per call, plus 24 storage writes and diagnostics per dispatch.
 _TENANT_DISPATCH_USD = 100 * _DO_REQUEST_USD + 24 * _SQL_WRITE_USD + 4 * _LOG_EVENT_USD
