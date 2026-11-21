@@ -86,7 +86,9 @@ def _release():
             f'{module["name"]}:{module["sha256"]}' for module in modules
         ).encode()).hexdigest()
         digest = cloudflare_release.meter_bounds_digest(cloudflare_release.MeterBounds.model_validate(bounds))
-        (path / "manifest.json").write_text(json.dumps(manifest))
+        # The API and job runner generate this fixture in separate processes
+        # with different hash seeds for the Durable Object export sets.
+        (path / "manifest.json").write_text(json.dumps(manifest, sort_keys=True))
         with patch.object(cloudflare_release, "QUALIFIED_METER_BOUNDS_SHA256", digest):
             return load_workers_release(path)
 
@@ -184,8 +186,11 @@ async def _forward(reader, writer):
 
 
 def install_api():
+    from src.jobs.platform import cloudflare_capacity
+
     cloudflare_connection.load_workers_release = _release
     cloudflare_connection.WorkersRestCleanup = _Cloudflare
+    cloudflare_capacity.installed_workers_release_digest = _fixture_digest
     cloudflare_admission.installed_workers_release_digest = _fixture_digest
     cloudflare_policy.installed_workers_release_digest = _fixture_digest
 
@@ -217,7 +222,7 @@ def install_enable(job_module):
                     return await probes.probe_worker_ingress(installation, runtime_canary=runtime_canary)
 
     class Launcher:
-        def __init__(self, endpoint, bearer, *, http):
+        def __init__(self, endpoint, bearer, *, http, reserve_request):
             assert endpoint == CAPACITY and len(bearer) >= 32
             self.resource = None
             self.task = None
