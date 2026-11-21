@@ -157,6 +157,10 @@ class _TunnelAPI:
         self.tunnel_creates = 0
         self.dns_creates = 0
         self.rotations = 0
+        self.evicted = []
+        self.denied_write = None
+        self.lose_dns_probe = False
+        self.read_outage = False
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         assert request.url.host == "api.cloudflare.com"
@@ -171,6 +175,13 @@ class _TunnelAPI:
         def result(value):
             return httpx.Response(200, json={"success": True, "result": value})
 
+        if path == f"/accounts/{self.account}":
+            return result({"id": self.account})
+        if path == f"/accounts/{self.account}/entitlements":
+            return result([
+                {"id": feature, "deleted_date": "", "allocation": {"type": "bool", "value": True}}
+                for feature in ("workers.enabled", "containers.enabled")
+            ])
         if path == zone and method == "GET":
             return result({"account": {"id": self.account}, "id": self.zone, "name": "example.test", "status": "active"})
         if path == tunnels and method == "GET":
@@ -187,7 +198,8 @@ class _TunnelAPI:
         if path == tunnel and method == "GET":
             return result(self.tunnel)
         if path == tunnel and method == "DELETE":
-            assert self.tunnel and self.dns is None and not self.connectors
+            assert self.tunnel and not self.connectors
+            assert self.dns is None or self.dns.get("comment") == "foreign"
             self.tunnel["deleted_at"] = "fixture-delete"
             return result(self.tunnel)
         if path == tunnel and method == "PATCH":
@@ -198,12 +210,21 @@ class _TunnelAPI:
             token = json.dumps({"a": self.account, "t": self.tunnel_id, "s": self.secret})
             return result(base64.b64encode(token.encode()).decode())
         if path == tunnel + "/connections" and method == "GET":
+            if self.read_outage:
+                return httpx.Response(503)
             return result([{"id": connector} for connector in self.connectors])
+        if path == tunnel + "/connections" and method == "DELETE":
+            connector = request.url.params["client_id"]
+            self.evicted.append(connector)
+            self.connectors.remove(connector)
+            return result({})
         if path == tunnel + "/configurations" and method == "GET":
             if self.config is None:
                 return httpx.Response(404)
             return result({"account_id": self.account, "tunnel_id": self.tunnel_id, "config": self.config})
         if path == tunnel + "/configurations" and method == "PUT":
+            if self.denied_write == "tunnel":
+                return httpx.Response(403)
             self.config = json.loads(request.content)["config"]
             return result({})
         if path == records and method == "GET":
@@ -217,6 +238,16 @@ class _TunnelAPI:
             raise httpx.ReadError("lost DNS create response", request=request)
         if path == f"{records}/{self.dns_id}" and method == "GET":
             return result(self.dns) if self.dns else httpx.Response(404)
+        if path == f"{records}/{self.dns_id}" and method == "PATCH":
+            if self.denied_write == "dns":
+                return httpx.Response(403)
+            assert self.dns and json.loads(request.content) == {
+                key: value for key, value in self.dns.items() if key not in ("id", "modified_on")
+            }
+            self.dns["modified_on"] += "-updated"
+            if self.lose_dns_probe:
+                raise httpx.ReadError("lost DNS probe response", request=request)
+            return result(self.dns)
         if path == f"{records}/{self.dns_id}" and method == "DELETE":
             assert self.dns
             self.dns = None
@@ -308,7 +339,71 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
             assert first == (await client.connector_token(provider.tunnel_id)).get_secret_value()
             old, new = str(uuid4()), str(uuid4())
             provider.connectors = [old]
+            assert provider.config
+            provider.config = {
+                "originRequest": {}, "warp-routing": {"enabled": False},
+                "ingress": [{**rule, "originRequest": {}} for rule in provider.config["ingress"]],
+            }
             await change(cloudflare_tunnel.verify, client)
+            monkeypatch.setattr(lifecycle_job, "get_db_context", context)
+            monkeypatch.setattr(lifecycle_job, "_hold_installation_lease", AsyncMock())
+            monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
+            with monkeypatch.context() as patch:
+                patch.setattr(lifecycle_job, "WorkersRestCleanup", lambda _: WorkersRestCleanup(http))
+                patch.setattr(cloudflare_tunnel, "adapter", lambda *_: client)
+                for version, permission in enumerate(("tunnel", "dns", None), start=2):
+                    provider.denied_write = permission
+                    job, _ = await lifecycle_job.enqueue_cloudflare_account_token_rotation(
+                        db_session, _platform_operator(), installation_id=installation_id, expected_revision=1,
+                        replacement=SecretStr("synthetic-cloudflare-management-token"),
+                    )
+                    await db_session.flush()
+                    payload = lifecycle_job.CloudflareRotateAccountPayload.model_validate(job.payload)
+                    running = PlatformJobContext(job.id, uuid4(), None, str(OPERATOR_ID), "operator@example.test", "")
+                    if permission:
+                        with pytest.raises(PlatformJobRequiresAction) as denied:
+                            await lifecycle_job._rotate_account_token(running, payload)
+                        assert denied.value.result == {"code": "CF_MANAGEMENT_CREDENTIAL"}
+                        await db_session.refresh(installation)
+                        assert installation.api_token_version == 1
+                        job.status = "requires_action"
+                    else:
+                        assert await lifecycle_job._rotate_account_token(running, payload) == {
+                            "outcome": "rotated", "credential_version": version,
+                        }
+                        await db_session.refresh(installation)
+                        assert installation.api_token_version == version
+                        job.status = "succeeded"
+                    await db_session.flush()
+            provider.denied_write = None
+            provider.lose_dns_probe = True
+            with pytest.raises(CloudflareRestUnavailable):
+                await change(cloudflare_tunnel.verify_management_writes, client)
+            provider.lose_dns_probe = False
+            await change(cloudflare_tunnel.verify_management_writes, client)
+            async with context() as db:
+                row = await db.get(CloudflareInstallation, installation_id)
+                row.desired_state = "enabled"
+                row.admitted_revision = 1
+            reconcile = lifecycle_job.CloudflareReconcilePayload(installation_id=installation_id, revision=1)
+            running = PlatformJobContext(uuid4(), uuid4(), None, str(OPERATOR_ID), "operator@example.test", "")
+            provider.read_outage = True
+            with pytest.raises(CloudflareRestUnavailable):
+                await lifecycle_job._settle_reconcile(running, reconcile, WorkersRestCleanup(http), tunnel_http=http)
+            await db_session.refresh(installation)
+            assert installation.admitted_revision == 1
+            provider.read_outage = False
+            provider.config["ingress"].append({"service": "http://unexpected.example.test"})
+            with pytest.raises(PlatformJobRequiresAction) as mismatch:
+                await lifecycle_job._settle_reconcile(running, reconcile, WorkersRestCleanup(http), tunnel_http=http)
+            assert mismatch.value.result == {"code": "CF_TUNNEL_INGRESS_MISMATCH"}
+            await db_session.refresh(installation)
+            assert installation.admitted_revision is None
+            assert provider.config == {"ingress": [
+                {"hostname": "workers.example.test", "service": origin}, {"service": "http_status:404"},
+            ]}
+            installation.desired_state = "scaled_in"
+            await db_session.flush()
             provider.connectors = []
             with pytest.raises(ObservationPending, match="no connected"):
                 await change(cloudflare_tunnel.verify, client)
@@ -318,6 +413,8 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
                 row = await db.get(CloudflareInstallation, installation_id)
                 await cloudflare_tunnel.stage_rotation(db, row, version=2, actor=actor)
             await change(cloudflare_tunnel.record_rotation_intent, client, version=2)
+            assert await change(cloudflare_tunnel.connector_ready, client)
+            assert not provider.evicted
             with pytest.raises(CloudflareRestUnavailable):
                 await change(cloudflare_tunnel.rotate, client, version=2, actor=actor)
             await change(cloudflare_tunnel.rotate, client, version=2, actor=actor)
@@ -326,6 +423,13 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
             assert delivered() != first
             assert delivered() == (await client.connector_token(provider.tunnel_id)).get_secret_value()
             assert not await change(cloudflare_tunnel.connector_ready, client)
+            assert provider.evicted == [old]
+            async with context() as db:
+                job, _ = await lifecycle_job.enqueue_cloudflare_worker_credential_rotation(
+                    db, _platform_operator(), installation_id=installation_id, expected_revision=1,
+                    credential="connector_token",
+                )
+                assert job.payload["replacement_version"] == 3
             provider.connectors = [new]
             assert await change(cloudflare_tunnel.connector_ready, client)
             assert not await change(cloudflare_tunnel.cleanup, client)
@@ -341,6 +445,35 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
             assert await change(cloudflare_tunnel.cleanup, client)
             assert provider.dns is None
             assert provider.tunnel and provider.tunnel["deleted_at"]
+
+
+@pytest.mark.asyncio
+async def test_managed_tunnel_disconnect_preserves_foreign_dns(db_session, installation, monkeypatch):
+    installation.reachability_mode = "managed_tunnel"
+    installation.zone_id = _TunnelAPI.zone
+    monkeypatch.setattr(cloudflare_tunnel, "get_settings", lambda: SimpleNamespace(cloudflare_tunnel_channel="compose"))
+    provider = _TunnelAPI()
+    foreign = {"name": "workers.example.test", "type": "CNAME", "comment": "foreign", "content": "foreign.example.test"}
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+        client = cloudflare_tunnel.adapter(http, installation, SecretStr("synthetic-cloudflare-management-token"))
+        await cloudflare_tunnel.prepare(db_session, installation, actor=str(OPERATOR_ID))
+        await db_session.flush()
+        with pytest.raises(CloudflareRestUnavailable):
+            await cloudflare_tunnel.provision_tunnel(db_session, installation, client)
+        await cloudflare_tunnel.provision_tunnel(db_session, installation, client)
+        provider.dns = foreign
+        with pytest.raises(lifecycle_job.OwnershipConflict):
+            await cloudflare_tunnel.provision_dns(db_session, installation, client, actor=str(OPERATOR_ID))
+        await db_session.flush()
+        assert not await cloudflare_tunnel.cleanup(db_session, installation, client)
+        with pytest.raises(DeletionSettling, match="late Managed Tunnel write"):
+            await cloudflare_tunnel.cleanup(db_session, installation, client)
+        record = await cloudflare_tunnel.resource(db_session, installation, cloudflare_tunnel.DNS)
+        assert record is not None
+        record.observed_at = datetime.now(UTC) - timedelta(minutes=2)
+        assert not await cloudflare_tunnel.cleanup(db_session, installation, client)
+        assert await cloudflare_tunnel.cleanup(db_session, installation, client)
+    assert provider.dns == foreign and provider.tunnel and provider.tunnel["deleted_at"]
 
 
 def _platform_operator() -> Caller:
@@ -534,10 +667,34 @@ async def test_canary_proof_requires_current_lease_worker_generation_and_revisio
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("aborted_rotation", [False, True])
 async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
-    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch,
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch, aborted_rotation,
 ) -> None:
     installation.policy = {**installation.policy, "bounds_release": "d" * 64}
+    if aborted_rotation:
+        installation.reachability_mode = "managed_tunnel"
+        installation.zone_id = _TunnelAPI.zone
+        installation.tunnel_token_version = installation.tunnel_token_projected_version = 1
+        receipt = CloudflareOwnedResource(
+            id=uuid4(), installation_id=installation.id, account_id=installation.account_id,
+            scope="reachability", kind=cloudflare_tunnel.TUNNEL, target_name="fixture-tunnel", desired_revision=1,
+            artifact_digest="c" * 64, effect_id=uuid4(), state="present",
+            provider_id=str(uuid4()), provider_version="fixture-created",
+        )
+        db_session.add(receipt)
+        await db_session.flush()
+        connector = str(uuid4())
+        tunnel = SimpleNamespace(
+            tunnel=AsyncMock(side_effect=lambda _, expected: expected),
+            connectors=AsyncMock(return_value=frozenset({connector})),
+        )
+        await cloudflare_tunnel.record_rotation_intent(db_session, installation, tunnel, version=2)
+        assert receipt.provider_details["rotation_previous_connectors"] == [connector]
+        # The replacement failed before activation, so the incumbent connector must remain eligible.
+        monkeypatch.setattr(cloudflare_tunnel, "adapter", lambda *_: tunnel)
+        for step in ("prepare", "provision_tunnel", "provision_dns"):
+            monkeypatch.setattr(cloudflare_tunnel, step, AsyncMock())
     job, reused = await enable_job.enqueue_cloudflare_enable(
         db_session, _platform_operator(), installation_id=installation.id, expected_revision=1,
     )

@@ -78,6 +78,7 @@ from src.services.worker_pool.cloudflare_spend import (
     read_workers_usage,
     usage_period,
 )
+from src.services.worker_pool.cloudflare_tunnel_rest import IngressMismatch
 from src.services.worker_pool.cloudflare_workers_rest import (
     CloudflareManagementDenied,
     CloudflareRestUnavailable,
@@ -551,10 +552,10 @@ async def _inventory_snapshot(
     db: AsyncSession, installation_id: UUID, *, revision: int | None = None,
 ) -> tuple[_InventoryReceipt, ...]:
     query = select(CloudflareOwnedResource).where(
-        CloudflareOwnedResource.installation_id == installation_id, CloudflareOwnedResource.scope == "workers",
+        CloudflareOwnedResource.installation_id == installation_id,
     )
     if revision is None:
-        query = query.where(CloudflareOwnedResource.state.in_(("present", "deleting")))
+        query = query.where(CloudflareOwnedResource.state.in_(("creating", "present", "deleting")))
     else:
         query = query.where(
             CloudflareOwnedResource.desired_revision == revision,
@@ -611,6 +612,7 @@ async def _settle_reconcile(
     issue = None
     token = None
     advisory = None
+    repair_tunnel_ingress = False
     async with get_db_context() as db:
         await _hold_installation_lease(db, context, payload.installation_id)
         installation = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
@@ -627,13 +629,22 @@ async def _settle_reconcile(
                 if tunnel_http is None:
                     raise RuntimeError("Managed Tunnel requires the Cloudflare REST client")
                 tunnel = cloudflare_tunnel.adapter(tunnel_http, installation, token)
-                await cloudflare_tunnel.verify(db, installation, tunnel)
+                try:
+                    await cloudflare_tunnel.verify(db, installation, tunnel)
+                except IngressMismatch:
+                    issue = ("Verify Cloudflare Tunnel Ingress", "CF_TUNNEL_INGRESS_MISMATCH")
+                    # Commit closure before asking the provider to change its route.
+                    installation.admitted_revision = admitted_revision = None
+                    wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
+                    repair_tunnel_ingress = True
         except CloudflareManagementDenied:
             issue = ("Reconnect Cloudflare", "CF_MANAGEMENT_CREDENTIAL")
         except OwnershipConflict:
             issue = ("Verify Cloudflare Tunnel Ownership", "CF_OWNERSHIP_CONFLICT")
-        except (ObservationPending, CloudflareRestUnavailable, ValueError):
+        except (cloudflare_tunnel.TunnelUnavailable, ValueError):
             issue = ("Verify Managed Tunnel Connector and DNS", "CF_CONNECTOR_UNAVAILABLE")
+        except ObservationPending:
+            raise CloudflareRestUnavailable("Managed Tunnel inventory could not be confirmed") from None
 
     if token is not None and issue is None:
         try:
@@ -680,6 +691,12 @@ async def _settle_reconcile(
             return {"outcome": "superseded"}
         if issue is not None:
             installation.admitted_revision = None
+            if repair_tunnel_ingress and tunnel_http is not None and token is not None:
+                try:
+                    tunnel = cloudflare_tunnel.adapter(tunnel_http, installation, token)
+                    await cloudflare_tunnel.repair_ingress(db, installation, tunnel)
+                except (CloudflareManagementDenied, CloudflareRestUnavailable, ObservationPending, OwnershipConflict):
+                    issue = ("Repair Cloudflare Tunnel Ingress", "CF_TUNNEL_INGRESS_MISMATCH")
         else:
             installation.usage_advisory = advisory
             estimated_usage = await db.scalar(
@@ -760,20 +777,17 @@ async def _rotate_account_token(context: PlatformJobContext, parsed: BaseModel) 
         async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
             adapter = WorkersRestCleanup(http)
             await adapter.verify_workers_paid(account_id, bearer)
-            if installation.reachability_mode == "managed_tunnel":
-                await cloudflare_tunnel.adapter(http, installation, bearer).verify_zone()
-            writes_verified = False
-            for receipt in inventory:
+            workers = [receipt for receipt in inventory if receipt.intent.target.scope == "workers"]
+            for receipt in workers:
                 if receipt.provider_id is None or receipt.provider_version is None:
-                    raise OwnershipConflict("Cloudflare Worker has no exact deployment receipt")
-                expected = ResourceObservation(receipt.intent, receipt.provider_id, receipt.provider_version)
-                if await adapter.verify_workers_write(bearer, expected):
-                    writes_verified = True
-            if not writes_verified:
-                raise WorkersWriteUnverified(
-                    "There is no live owned Worker for a write check. Enable with the current token, "
-                    "or finish Disconnect and connect again with the replacement token.",
-                )
+                    if receipt.state != "creating":
+                        raise OwnershipConflict("Cloudflare Worker has no exact deployment receipt")
+                    expected = await observe_owned(adapter, api_token=bearer, intent=receipt.intent, recorded=None)
+                    if expected is None:
+                        continue
+                else:
+                    expected = ResourceObservation(receipt.intent, receipt.provider_id, receipt.provider_version)
+                await adapter.verify_workers_write(bearer, expected)
     except CloudflareManagementDenied:
         denial = ("Submit a Replacement Cloudflare API Token", "CF_MANAGEMENT_CREDENTIAL")
     except WorkersPaidUnverified as exc:
@@ -800,6 +814,17 @@ async def _rotate_account_token(context: PlatformJobContext, parsed: BaseModel) 
         ):
             candidate.ciphertext = None
             return {"outcome": "superseded"}
+        if denial is None and installation.reachability_mode == "managed_tunnel":
+            try:
+                async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
+                    tunnel = cloudflare_tunnel.adapter(http, installation, bearer)
+                    await cloudflare_tunnel.verify_management_writes(db, installation, tunnel)
+            except CloudflareManagementDenied:
+                denial = ("Check Cloudflare Tunnel and DNS Write Permissions", "CF_MANAGEMENT_CREDENTIAL")
+            except (ObservationPending, OwnershipConflict, ValueError):
+                denial = ("Verify Cloudflare Tunnel and DNS Ownership", "CF_DEPLOYMENT_UNVERIFIED")
+            except CloudflareRestUnavailable:
+                raise PlatformJobFailure("CF_PROVIDER_UNAVAILABLE", "Cloudflare REST Is Temporarily Unavailable", retryable=True) from None
         if denial is not None:
             candidate.ciphertext = None
         else:
@@ -957,7 +982,11 @@ async def enqueue_cloudflare_worker_credential_rotation(
             raise CloudflarePolicyConflict("Provision Managed Tunnel before rotating its connector token.")
         receipt = await cloudflare_tunnel.resource(db, row, cloudflare_tunnel.TUNNEL)
         pending = receipt.provider_details.get("rotation_version") if receipt is not None else None
-        version = pending if isinstance(pending, int) else row.tunnel_token_version + 1
+        version = row.tunnel_token_version + 1
+        if receipt is not None and pending != version:
+            receipt.provider_details = {
+                key: value for key, value in receipt.provider_details.items() if not key.startswith("rotation_")
+            }
         await cloudflare_tunnel.stage_rotation(db, row, version=version, actor=str(actor.user_id))
     elif credential == "scope_bearer":
         row.desired_revision += 1
