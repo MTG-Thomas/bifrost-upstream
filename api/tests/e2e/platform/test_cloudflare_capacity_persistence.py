@@ -1933,10 +1933,17 @@ async def test_container_reservation_serializes_shared_capacity(async_session_fa
                 ))
         await db.commit()
 
-    async def claim() -> tuple[int, UUID | None]:
+    contender_pids: list[int] = []
+    both_connected = asyncio.Event()
+
+    async def claim(*, contender: bool = False) -> tuple[int, UUID | None]:
         async with async_session_factory() as db:
             pid = await db.scalar(select(func.pg_backend_pid()))
             assert pid is not None
+            if contender:
+                contender_pids.append(pid)
+                if len(contender_pids) == 2:
+                    both_connected.set()
             result = await reserve_container(
                 db, installation_id=installation_id, controller_id=uuid4(),
                 primary=primary_pool, release=release,
@@ -1959,20 +1966,18 @@ async def test_container_reservation_serializes_shared_capacity(async_session_fa
                 CloudflareInstallation.id == installation_id,
             ).with_for_update())
             # Both claimers connect before the blocker releases the row.
-            contenders = [asyncio.create_task(claim()) for _ in range(2)]
+            contenders = [asyncio.create_task(claim(contender=True)) for _ in range(2)]
             try:
                 async with asyncio.timeout(5), async_session_factory() as observer:
                     blocker_pid = await blocker.scalar(select(func.pg_backend_pid()))
+                    await both_connected.wait()
                     while True:
-                        blocked = await observer.scalar(text("""
-                            SELECT count(*) FROM pg_stat_activity
-                            WHERE wait_event_type = 'Lock' AND cardinality(pg_blocking_pids(pid)) > 0
-                            AND (CAST(:root AS integer) = ANY(pg_blocking_pids(pid))
-                                 OR query LIKE '%pg_advisory_xact_lock(hashtext%')
-                            AND pid <> pg_backend_pid()
-                        """), {"root": blocker_pid})
-                        if blocked == 2:
+                        chains = [await observer.scalar(select(func.pg_blocking_pids(pid))) for pid in contender_pids]
+                        if any(blocker_pid in chain for chain in chains) and all(
+                            set(chain) & {*contender_pids, blocker_pid} for chain in chains
+                        ):
                             break
+                        assert not any(task.done() for task in contenders), "reservation bypassed the lock"
                         await asyncio.sleep(0.01)
             finally:
                 await blocker.rollback()
