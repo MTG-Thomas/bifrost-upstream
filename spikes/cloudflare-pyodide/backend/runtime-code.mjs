@@ -65,7 +65,7 @@ export function runtimeCode(outbound=null,entrypoint=main) {
   const modules={};
   for(const [name,value] of Object.entries(packaged)) {
     modules[name]=value.base64 === undefined ? value : {
-      data:Uint8Array.from(atob(value.base64),c=>c.charCodeAt(0)).buffer,
+      data:Uint8Array.fromBase64(value.base64).buffer,
     };
   }
   modules['main.py']={py:entrypoint};

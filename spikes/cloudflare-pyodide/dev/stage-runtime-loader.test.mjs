@@ -11,12 +11,16 @@ test('fresh staged loader resolves its SDK cleanup dependency and injects the re
   const directory=await mkdtemp(join(tmpdir(),'bifrost-loader-stage-'));
   const url=pathToFileURL(directory+'/');
   try {
-    await writeFile(new URL('generated-runtime.mjs',url),'export default {"sentinel.py":{"py":"value = 7"}};\n');
+    await writeFile(new URL('generated-runtime.mjs',url),`export default ${JSON.stringify({
+      'sentinel.py': {py: 'value = 7'},
+      'native.so': {base64: 'AH+A/w=='},
+    })};\n`);
     const hashes=await stageRuntimeLoader(url);
     const {runtimeCode}=await import(new URL('runtime-code.mjs',url));
     const {sdkCleanupCode}=await import(new URL('sdk-cleanup-code.mjs',url));
     const code=runtimeCode(null);
     assert.equal(code.modules['sentinel.py'].py,'value = 7');
+    assert.deepEqual(new Uint8Array(code.modules['native.so'].data),Uint8Array.of(0,127,128,255));
     assert.equal(code.modules['sdk_cleanup.py'].py,sdkCleanupCode);
     assert.match(code.modules['main.py'].py,/await close_sdk\(get_client\(\)\)/);
     for(const name of ['runtime-code.mjs','sdk-cleanup-code.mjs']) {

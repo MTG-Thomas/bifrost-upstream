@@ -25,6 +25,7 @@ import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {assertSourceRuntime} from './vendor-patches.mjs';
+import {trimRuntime} from './runtime-footprint.mjs';
 
 const EXPECTED_MAGIC = '2b0e0d0a';
 const CACHE_TAG = 'cpython-314';
@@ -42,9 +43,10 @@ if (!input || !output || !['cache', 'sourceless-vendor'].includes(mode)) {
   throw new Error('usage: precompile-runtime.mjs <in> <out> --mode cache|sourceless-vendor');
 }
 
-const packaged = (await import(pathToFileURL(input).href)).default;
+const sourceRuntime = (await import(pathToFileURL(input).href)).default;
 // Compiling a compiled runtime would re-emit bytecode with its sources gone.
-assertSourceRuntime(packaged, input);
+assertSourceRuntime(sourceRuntime, input);
+const packaged = trimRuntime(sourceRuntime);
 const sourceOf = (value) => value.py ?? (value.base64 !== undefined
   ? Buffer.from(value.base64, 'base64').toString('utf8') : null);
 
@@ -103,7 +105,8 @@ json.dump(failed, open(work + "/failed.json", "w"))
     return `${JSON.stringify(key)}:${encoded}`;
   });
   writeFileSync(output, `// Precompiled (${mode}) from ${input}.\nexport default {\n${entries.join(',\n')}\n};\n`);
-  console.log(JSON.stringify({mode, modules_in: Object.keys(packaged).length, modules_out: out.size,
+  console.log(JSON.stringify({mode, modules_in: Object.keys(sourceRuntime).length,
+    typing_files_removed: Object.keys(sourceRuntime).length - Object.keys(packaged).length, modules_out: out.size,
     py_sources: sources.length, compiled, sourceless, compile_failed: [...failed]}, null, 2));
 } finally {
   rmSync(work, {recursive: true, force: true});

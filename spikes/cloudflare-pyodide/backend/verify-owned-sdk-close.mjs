@@ -20,7 +20,8 @@ for (const name of ['updated', 'baseline']) {
   assert.equal(receipt.physical_termination_verified, false);
   assert.deepEqual(receipt.running_after_cleanup, []);
   assert.equal(hash(readFileSync(new URL('backend/sdk-cleanup-code.mjs', root))), receipt.packet_sha256['project/backend/sdk-cleanup-code.mjs']);
-  let code = readFileSync(new URL('backend/runtime-code.mjs', root), 'utf8');
+  // The receipts bind the loader revision that ran the historical qualification.
+  let code = execFileSync('git', ['show', '0b3b84f8ebb2406bb9cd627b976065c1e97bb044:spikes/cloudflare-pyodide/backend/runtime-code.mjs'], {encoding: 'utf8'});
   if (name === 'updated') code = code.replace("'./generated-runtime.mjs'", "'./generated-runtime-sdk.mjs'");
   assert.equal(hash(code), receipt.packet_sha256['project/backend/runtime-code.mjs']);
   const proof = receipt.shared_pool_result;
