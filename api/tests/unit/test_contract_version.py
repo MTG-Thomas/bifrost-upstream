@@ -461,7 +461,8 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Preparation receipts have a separate allowance within the routes map.
     # Workflow wall time and storage-clear evidence are optional capacity receipt fields.
     # The optional ledger acknowledgement marker extends provider receipts.
-    "146e09c014c31d07be3dc54a66709a67ce6d6531026bc13b66b3b8ccdb56f6f1"
+    # Managed workflow slot caps default when omitted by an existing client.
+    "9cc56a1792ba0222306545da30c7ce38798c6ff20f9ed2f857a568e27d004377"
 )
 
 
