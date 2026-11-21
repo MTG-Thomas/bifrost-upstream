@@ -43,7 +43,6 @@ def test_connector_bridge_excludes_backend_services() -> None:
     assert set(services["api"]["networks"]) == {"default", "cloudflare-connector"}
     for name in ("postgres", "pgbouncer", "redis", "seaweedfs"):
         assert "cloudflare-connector" not in services[name].get("networks", [])
-        assert all(port.startswith("127.0.0.1:") for port in services[name].get("ports", []))
 
 
 def test_compose_forwards_blob_selection_to_every_storage_process() -> None:

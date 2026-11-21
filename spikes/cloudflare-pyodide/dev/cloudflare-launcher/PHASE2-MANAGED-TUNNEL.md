@@ -7,9 +7,10 @@ Cloudflare Tunnel Write on that account. Grant Zone Read and DNS Write only
 for the selected zone. Leave the dedicated hostname unoccupied.
 
 Every Compose installation includes a dormant connector with the API release
-image. The connector shares a dedicated bridge with the API. Its access to
-the API's main port remains possible on that bridge. Database, connection
-pooler, Redis and object-store host ports bind to loopback. The API owns
+image. The connector can reach the API's main port on their dedicated bridge.
+It can also reach host-published ports through the host gateway, including
+the Bifrost client port. Host routing and firewall rules govern its reach to
+the LAN, the instance metadata IP, and the outbound internet. The API owns
 the private token volume. The connector mounts that volume read-only and runs
 cloudflared with a token file. Kubernetes users add
 `k8s/cloudflare-tunnel` to the consuming overlay's `components` and roll
@@ -18,16 +19,28 @@ gives the API ServiceAccount get and patch access to one pre-created Secret.
 The connector mounts only that Secret and has no ServiceAccount token.
 The component's egress policy permits worker ingress on TCP 8001, cluster DNS,
 and documented global Cloudflare Tunnel endpoints on TCP/UDP 7844. Validate
-Service and DNS handling with the installed CNI. Installations with a
-nonstandard DNS resolver need a matching DNS policy.
+Service and DNS handling with the installed CNI. A CNI without NetworkPolicy
+enforcement silently ignores this policy. For NodeLocal DNSCache or another
+nonstandard resolver, patch the DNS egress rule in the consuming Kustomize
+overlay to match the actual resolver destination and CNI behavior.
+The global edge IPs are hard-coded in the component's `network-policy.yaml`.
+Refresh the IPv4 and IPv6 entries against the published region1 and region2
+addresses in that file or a consuming overlay, then render and validate
+connectivity with the installed CNI.
 [Cloudflare Tunnel firewall rules](https://developers.cloudflare.com/tunnel/configuration/#firewall-rules)
+
+**Proposed separate hardening.** Loopback-bind backend ports is a separate
+proposed change outside this branch. It requires a breaking-change Product
+Updates disposition and an upgrade note showing how to replace port mappings
+with `ports: !override`.
 
 Use Enable to create and verify the tunnel, ingress and proxied CNAME before
 running the existing signed Worker canary. If a connector is lost, Reconcile
 closes admission when it observes the loss. A transient Cloudflare REST
 outage leaves admission as observed before the failed reconcile. On ingress
 drift, Reconcile closes admission before reasserting the approved config on
-the exact owned tunnel. After the connector returns, run
+the exact owned tunnel. Private-network routes targeting the tunnel also close
+admission and require operator removal. After the connector returns, run
 Enable to verify ingress and the signed canary before reopening admission.
 Use Scale In before Rotate Connector Token. The supervisor restarts its
 cloudflared child when it receives the new token. Bifrost then evicts the
@@ -39,7 +52,8 @@ before removing the Kustomize component or Compose token volume.
 
 Account-token replacement proves write authority per owned resource class.
 Workers retain the live-script endpoint write check. For the exact tunnel,
-Bifrost reasserts the observed, approved ingress and verifies the readback.
+Bifrost writes its approved ingress and verifies the readback. On ingress
+drift, it closes admission before using that fenced repair as the write proof.
 It PATCHes the exact DNS record with its current owned body. DNS identity
 uses the provider ID and approved body, including the installation and effect
 IDs in the comment. This lets a lost same-body PATCH response advance the
