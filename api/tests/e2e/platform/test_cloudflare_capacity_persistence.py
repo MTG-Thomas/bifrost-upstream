@@ -466,6 +466,48 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
                 assert installation.admitted_revision is None
                 assert provider.config["warp-routing"] == {"enabled": False}
                 provider.connectors = [old]
+
+                savepoint = await db_session.begin_nested()
+                try:
+                    installation.desired_revision = 2
+                    installation.deployed_revision = 1
+                    installation.upgrade_release = "fixture-release"
+                    prior = CloudflareOwnedResource(
+                        id=uuid4(), installation_id=installation_id, account_id=installation.account_id,
+                        scope="workers", kind="worker_script", target_name="prior-capacity", desired_revision=1,
+                        artifact_digest="c" * 64, effect_id=uuid4(), state="present",
+                        provider_id="prior-deployment", provider_version="prior-version",
+                    )
+                    db_session.add(prior)
+                    await db_session.flush()
+                    observation = ResourceObservation(
+                        lifecycle_job._resource_intent(prior), "prior-deployment", "prior-version",
+                    )
+                    workers = SimpleNamespace(
+                        verify_workers_paid=AsyncMock(), observe=AsyncMock(side_effect=[observation, None]),
+                        delete=AsyncMock(), verify_absent=AsyncMock(),
+                    )
+                    patch.setattr(enable_job, "WorkersRestCleanup", lambda _: workers)
+                    zero = dict.fromkeys(WORKERS_RATES, Decimal(0))
+                    patch.setattr(enable_job, "release_meter_bounds", lambda _: WorkersReleaseMeterBounds(
+                        60, zero, zero, "fixture-release", 2, TEST_LAUNCHER_CAPS, TEST_CPU_LIMITS, 500_000, TEST_ORDER,
+                    ))
+                    provider.private_routes = [{"tunnel_id": provider.tunnel_id, "network": "192.0.2.0/24"}]
+                    upgrade = lifecycle_job.CloudflareReconcilePayloadV2(
+                        installation_id=installation_id, revision=2, operation="upgrade",
+                    )
+                    with pytest.raises(PlatformJobRequiresAction) as upgrade_conflict:
+                        await lifecycle_job._reconcile(running, upgrade)
+                    assert upgrade_conflict.value.result == {"code": "CF_OWNERSHIP_CONFLICT"}
+                    workers.delete.assert_not_awaited()
+                    await db_session.refresh(prior)
+                    await db_session.refresh(installation)
+                    assert prior.state == "present"
+                    assert installation.deployed_revision == 1 and installation.upgrade_drained_at is None
+                finally:
+                    provider.private_routes = []
+                    await savepoint.rollback()
+                    await db_session.refresh(installation)
             installation.admitted_revision = 1
             await db_session.flush()
             provider.private_routes = [{"tunnel_id": provider.tunnel_id, "network": "192.0.2.0/24"}]
@@ -2547,6 +2589,39 @@ async def test_queue_depth_prepares_four_workflows_and_settles_their_usage(
                     speculative.prepare_by, engine_slot=speculative.ordinal, org_id=str(tenant),
                     queue_warm_until=speculative.warm_until,
                 )
+
+        slot = first.workflow_slot
+        assert slot is not None
+        claim_route = f"prepare:{slot.fence}"
+
+        async def assert_claim_preparation_closed() -> None:
+            with pytest.raises(CredentialRouteChanged, match="preparation admission closed"):
+                await bridge._reserve_cloudflare_usage(
+                    claim_route, _cloudflare_tenant_key(tenant, worker, slot.ordinal),
+                    speculative.prepare_by,
+                    execution_id=str(first.subject_id), engine_slot=slot.ordinal, org_id=str(tenant),
+                )
+            async with async_session_factory() as db:
+                assert await db.get(cloudflare_spend.CloudflareDispatchMeter, (worker, claim_route)) is None
+
+        with monkeypatch.context() as older_runner:
+            older_runner.setattr(cloudflare_admission, "installed_workers_release_digest", lambda: "older-release")
+            await assert_claim_preparation_closed()
+
+        async with async_session_factory() as db:
+            await db.execute(update(CloudflareInstallation).where(CloudflareInstallation.id == installation_id).values(
+                upgrade_release="fixture-release", admitted_revision=None,
+            ))
+            await db.commit()
+        try:
+            await assert_claim_preparation_closed()
+        finally:
+            async with async_session_factory() as db:
+                await db.execute(update(CloudflareInstallation).where(CloudflareInstallation.id == installation_id).values(
+                    upgrade_release=None, admitted_revision=1,
+                ))
+                await db.commit()
+
         async with async_session_factory() as db:
             assert await count_released_prewarms(db, worker) == 3
             assert await db.get(cloudflare_spend.CloudflareDispatchMeter, (worker, f"prepare:{speculative.fence}")) is None
