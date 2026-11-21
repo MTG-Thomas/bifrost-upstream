@@ -1,4 +1,4 @@
-"""Track the cleanup retry window and observed launcher quiescence."""
+"""Track the managed cleanup retry window."""
 
 import sqlalchemy as sa
 from alembic import op
@@ -11,9 +11,7 @@ depends_on = None
 
 def upgrade() -> None:
     op.add_column("cloudflare_worker_reservations", sa.Column("cleanup_started_at", sa.DateTime(timezone=True)))
-    op.add_column("cloudflare_usage_incarnations", sa.Column("launcher_stopped_at", sa.DateTime(timezone=True)))
 
 
 def downgrade() -> None:
-    op.drop_column("cloudflare_usage_incarnations", "launcher_stopped_at")
     op.drop_column("cloudflare_worker_reservations", "cleanup_started_at")

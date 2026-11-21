@@ -9,6 +9,7 @@ from sqlalchemy import delete
 from src.core.database import get_db_context
 from src.models.orm.execution_workers import ExecutionWorker
 from src.scheduler.registry import ScheduledTaskOutcome
+from src.services.worker_pool.cloudflare_spend import pending_ledger_receipt
 
 ENDED_RETENTION = timedelta(days=7)
 
@@ -25,6 +26,8 @@ async def prune_execution_workers() -> ScheduledTaskOutcome:
                     ExecutionWorker.ended_at < now - ENDED_RETENTION,
                     (ExecutionWorker.form != "external")
                     | ExecutionWorker.capacity_resource_deleted_at.is_not(None),
+                    # Keep the reservation's scope until WorkerLedger is settled.
+                    ~pending_ledger_receipt(ExecutionWorker.id).exists(),
                 )
             )
         ).rowcount

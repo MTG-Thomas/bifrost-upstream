@@ -29,7 +29,7 @@ from src.models.orm.cloudflare_capacity import (
 )
 from src.models.orm.execution_workers import ExecutionWorker
 from src.models.orm.executions import Execution
-from src.services.worker_pool import claims, cloudflare_spend, controller, external_controller
+from src.services.worker_pool import claims, cloudflare_spend, controller, external_controller, maintenance
 from src.services.worker_pool.cloudflare_admission import (
     ManagedCloudflareScope,
     PrimaryPool,
@@ -83,6 +83,7 @@ class Provider:
         self.before_start: Callable[[UUID], Awaitable[None]] | None = None
         self.lose_start_response = False
         self.fail_deletions = False
+        self.fail_reads = False
         self.refuse_prepare = False
         self.lose_prepare_response = False
         self.installation_id = uuid4()
@@ -96,6 +97,8 @@ class Provider:
         worker_id = request.url.path.split("/")[3]
         resource = self.resources.get(worker_id)
         if request.method == "GET":
+            if self.fail_reads:
+                raise httpx.ReadTimeout("synthetic provider read outage", request=request)
             return httpx.Response(404) if resource is None else httpx.Response(200, json=resource)
         body = json.loads(request.content)
         if request.method == "PUT":
@@ -254,8 +257,35 @@ async def test_managed_cleanup_backoff_books_each_attempt_until_window_expires(d
         ))
         assert requests == 2 * attempts
         meter = await session.get(CloudflareUsageIncarnation, worker_id)
-        assert meter is not None and meter.launcher_stopped_at is not None
-        assert meter.deleted_at is None
+        assert meter is not None and meter.deleted_at is None
+
+
+async def test_managed_cleanup_window_starts_when_the_first_get_fails(db, capacity, managed_pool):
+    age = timedelta(seconds=controller.SWEEP_SECONDS + 1)
+    await _set_request(db.sessions, await _accept_pool_run(), 1, age=age, approved=True)
+    [worker_id] = await managed_pool.launch_for_demand(capacity.policy)
+    async with db.context() as session:
+        worker = await session.get(ExecutionWorker, worker_id)
+        assert worker is not None
+        worker.state, worker.ended_at = "retired", datetime.now(UTC)
+
+    provider = capacity.provider
+    provider.fail_reads = True
+    with pytest.raises(httpx.ReadTimeout):
+        await managed_pool.reconcile_worker(worker_id, capacity.policy)
+    async with db.context() as session:
+        pin = await session.get(CloudflareWorkerReservation, worker_id)
+        assert pin is not None and pin.cleanup_started_at is not None and pin.cleanup_attempts == 0
+        expired_start = pin.cleanup_started_at - external_controller.MANAGED_CLEANUP_WINDOW
+        pin.cleanup_started_at = expired_start
+
+    with pytest.raises(httpx.ReadTimeout):
+        await managed_pool.reconcile_worker(worker_id, capacity.policy)
+    async with db.context() as session:
+        pin = await session.get(CloudflareWorkerReservation, worker_id)
+        assert pin is not None and pin.cleanup_started_at == expired_start
+        assert await cloudflare_spend.exhausted_managed_workers(session, provider.installation_id) == 1
+    assert not any(method == "DELETE" for method, _ in provider.requests)
 
 
 async def test_managed_prepare_uses_the_uid_committed_before_provider_io(db, capacity, managed_pool):
@@ -950,7 +980,8 @@ async def test_controller_retries_receipt_ack_after_committing_settlement(db, ca
         assert worker is not None
         uid = worker.capacity_resource_uid
         assert uid is not None
-        worker.state, worker.ended_at = "retired", controller._now()
+        worker.state = "retired"
+        worker.ended_at = controller._now() - maintenance.ENDED_RETENTION - timedelta(days=1)
     scope = capacity.provider.profile.scope
     receipt = WorkerCapacityResource.model_validate({
         "scope": scope, "worker_id": worker_id, "worker_version": capacity.provider.profile.worker_version,
@@ -975,13 +1006,18 @@ async def test_controller_retries_receipt_ack_after_committing_settlement(db, ca
     monkeypatch.setattr(managed_pool.client, "acknowledge_receipt", acknowledge)
     with pytest.raises(httpx.ReadTimeout):
         await managed_pool.reconcile_worker(worker_id, capacity.policy)
+    await maintenance.prune_execution_workers()
     cleanup = select(ExecutionWorker.id).where(ExecutionWorker.id == worker_id, managed_pool._cleanup_scope())
     async with db.context() as session:
         assert await session.scalar(cleanup) == worker_id
+        assert await session.get(CloudflareWorkerReservation, worker_id) is not None
     await managed_pool.reconcile_worker(worker_id, capacity.policy)
     assert attempts == 2
     async with db.context() as session:
         assert await session.scalar(cleanup) is None
+    await maintenance.prune_execution_workers()
+    async with db.context() as session:
+        assert await session.get(ExecutionWorker, worker_id) is None
 
 
 @pytest.mark.parametrize("terminal_state", ["lost", "retired"])

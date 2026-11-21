@@ -812,6 +812,16 @@ async def test_cleanup_deadline_excludes_queue_time(
         db_session, admin, installation_id=installation.id, expected_revision=1, action="scale_in",
     )
     token = uuid4()
+    worker_id = uuid4()
+    db_session.add(ExecutionWorker(
+        id=worker_id, form="external", state="lost", capacity_resource_uid="pending-worker",
+        runtime_profile="cloudflare-python-v1",
+    ))
+    await db_session.flush()
+    db_session.add(CloudflareWorkerReservation(
+        worker_id=worker_id, installation_id=installation.id, scope="workers",
+        deployment_revision=1, control_root_version=1, cleanup_started_at=datetime.now(UTC),
+    ))
     job.status = "running"
     job.lease_token = token
     job.created_at = datetime.now(UTC) - timedelta(days=1)
@@ -826,10 +836,6 @@ async def test_cleanup_deadline_excludes_queue_time(
             await session.commit()
 
     monkeypatch.setattr(lifecycle_job, "get_db_context", context)
-    # A worker remains in the drain phase. Observe the decision to wait before
-    # moving the attempt timestamp past its deadline.
-    monkeypatch.setattr(lifecycle_job, "cloudflare_workers_remain", AsyncMock(return_value=True))
-
     class DrainWaiting(Exception):
         pass
 
@@ -842,12 +848,18 @@ async def test_cleanup_deadline_excludes_queue_time(
     await db_session.flush()
     with pytest.raises(PlatformJobRequiresAction) as expired:
         await lifecycle_job._settle_disable(running, payload, SimpleNamespace())
-    assert expired.value.result == {"code": "CF_DRAIN_TIMEOUT"}
+    assert expired.value.result == {
+        "code": "CF_DRAIN_TIMEOUT",
+        "workers": [{
+            "worker_id": str(worker_id), "resource_uid": "pending-worker", "scope": "workers", "revision": 1,
+        }],
+    }
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("workers_remain", [False, True])
 async def test_deletion_deadline_requires_action_across_attempts(
-    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch,
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch, workers_remain: bool,
 ) -> None:
     admin = _platform_operator()
     job, _ = await lifecycle_job.enqueue_cloudflare_disable(
@@ -863,8 +875,11 @@ async def test_deletion_deadline_requires_action_across_attempts(
             yield session
 
     monkeypatch.setattr(lifecycle_job, "get_db_context", context)
-    monkeypatch.setattr(lifecycle_job, "cloudflare_workers_remain", AsyncMock(return_value=False))
+    monkeypatch.setattr(lifecycle_job, "cloudflare_workers_remain", AsyncMock(return_value=workers_remain))
     monkeypatch.setattr(lifecycle_job, "_cleanup_one", AsyncMock(side_effect=lifecycle_job.DeletionSettling()))
+    monkeypatch.setattr(lifecycle_job, "_cleanup_stranded_workflow_slots", AsyncMock(return_value="settling"))
+    diagnose = AsyncMock()
+    monkeypatch.setattr(lifecycle_job, "_stranded_timeout_action", diagnose)
     payload = lifecycle_job.CloudflareDisablePayload.model_validate(job.payload)
     for attempt in (1, 2, 3):
         job.attempt = attempt
@@ -874,6 +889,7 @@ async def test_deletion_deadline_requires_action_across_attempts(
         with pytest.raises(PlatformJobRequiresAction) as expired:
             await lifecycle_job._settle_disable(running, payload, SimpleNamespace())
         assert expired.value.result == {"code": "CF_CLEANUP_PENDING"}
+    diagnose.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1356,19 +1372,23 @@ async def test_workflow_slots_hold_headroom_and_serialize_different_tenants(asyn
 async def test_stranded_revision_deletes_owned_scripts_before_releasing_slots(
     db_session: AsyncSession, installation: CloudflareInstallation, operation: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    stranded, exhausted, live = uuid4(), uuid4(), uuid4()
+    stranded, exhausted, live, foreign = uuid4(), uuid4(), uuid4(), uuid4()
     now = datetime.now(UTC)
     db_session.add_all([
         ExecutionWorker(id=stranded, form="external", state="lost", runtime_profile="cloudflare-python-v1"),
         ExecutionWorker(id=exhausted, form="external", state="retired", runtime_profile="cloudflare-python-v1"),
         ExecutionWorker(id=live, form="external", state="ready", runtime_profile="cloudflare-python-v1"),
+        ExecutionWorker(
+            id=foreign, form="external", state="retired", runtime_profile="cloudflare-python-v1",
+            created_at=now, capacity_resource_deleted_at=now,
+        ),
     ])
     await db_session.flush()
     db_session.add_all(CloudflareWorkerReservation(
-        worker_id=worker, installation_id=installation.id, scope="workers",
+        worker_id=worker, installation_id=installation.id, scope="other-scope" if worker == foreign else "workers",
         deployment_revision=1, control_root_version=1,
         cleanup_started_at=now - cloudflare_spend.MANAGED_CLEANUP_WINDOW if worker == exhausted else None,
-    ) for worker in (stranded, exhausted, live))
+    ) for worker in (stranded, exhausted, live, foreign))
     ticket = CloudflareWorkflowSlot(
         installation_id=installation.id, tenant="platform", ordinal=0, worker_id=stranded,
         dispatch_id=uuid4(), execution_id=uuid4(), fence=uuid4(), sent=True,
@@ -1392,10 +1412,14 @@ async def test_stranded_revision_deletes_owned_scripts_before_releasing_slots(
     meter = await db_session.get(CloudflareUsageIncarnation, stranded)
     assert meter is not None
     meter.meter_final = {"ledger_receipt_pending": True}
+    other_meter = await db_session.get(CloudflareUsageIncarnation, foreign)
+    assert other_meter is not None
+    other_meter.meter_final = {"ledger_receipt_pending": True}
     await db_session.flush()
     status = await get_cloudflare_capacity_status(db_session, _platform_operator())
     assert status.installation is not None and status.installation.spend is not None
-    assert any("Managed cleanup expired for 1" in line for line in status.installation.spend.coverage)
+    guidance = next(line for line in status.installation.spend.coverage if "Managed cleanup expired for 1" in line)
+    assert "Run Scale In" in guidance and "Use Disconnect" in guidance
     present = set(scripts)
     visible_namespaces = set(scripts)
     deleted = []
@@ -1505,6 +1529,8 @@ async def test_stranded_revision_deletes_owned_scripts_before_releasing_slots(
     assert deleted_meter.meter_final == {
         "ledger_receipt_pending": False, "ledger_namespace_destroyed": True, "preserved": 42,
     }
+    await db_session.refresh(other_meter)
+    assert other_meter.meter_final == {"ledger_receipt_pending": True}
     unobserved = await db_session.get(CloudflareUsageIncarnation, exhausted)
     assert unobserved is not None and unobserved.deleted_at is not None
     assert unobserved.meter_uncertain and unobserved.meter_final is None
@@ -1773,29 +1799,6 @@ async def test_ledger_splits_open_incarnation_at_utc_rollover(
     jan = await read_workers_usage(db_session, installation.id, boundary + timedelta(seconds=4))
     assert dec is not None and (dec.launcher_seconds, dec.slot_seconds, dec.dispatched_runs, dec.sdk_requests) == (8, 24, 5, 9)
     assert jan is not None and (jan.launcher_seconds, jan.slot_seconds, jan.dispatched_runs, jan.sdk_requests) == (4, 12, 0, 0)
-
-
-@pytest.mark.asyncio
-async def test_stopped_launcher_releases_only_the_root_request_reserve(
-    db_session: AsyncSession, installation: CloudflareInstallation,
-) -> None:
-    start = datetime(2026, 11, 1, tzinfo=UTC)
-    as_of = start + timedelta(seconds=90)
-    row = CloudflareUsageIncarnation(
-        worker_id=uuid4(), installation_id=installation.id, started_at=start, slots=1,
-        meter_rate_version=WORKERS_RATE_TABLE_VERSION, meter_release_digest="f" * 64,
-        meter_bounds={**installation.policy["meter_launcher"], "second_usd": "0.0013", "root_second_usd": "0.0012"},
-    )
-    db_session.add(row)
-    await db_session.flush()
-    query = select(cloudflare_estimated_usage(as_of)).where(CloudflareInstallation.id == installation.id)
-    running = await db_session.scalar(query)
-    assert running is not None
-    row.launcher_stopped_at = start + timedelta(seconds=30)
-    await db_session.flush()
-    assert await db_session.scalar(query) == running - 60 * Decimal("0.0012")
-    await cloudflare_spend.observe_launcher_stop(db_session, row.worker_id, stopped=False)
-    assert await db_session.scalar(query) == running
 
 
 @pytest.mark.asyncio

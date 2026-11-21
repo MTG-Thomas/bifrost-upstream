@@ -372,16 +372,6 @@ def _incarnation_cost_sql(installation: type[CloudflareInstallation], now):
     # entrypoint. Its named Fetcher relay is reserved independently.
     root_rate = cast(usage.meter_bounds["root_second_usd"].as_string(), Numeric)
     lifetime_rate -= case((settled, root_rate), else_=0)
-    # A stopped launcher has ceased initiating root requests. Keep residency,
-    # unresolved workflows and separately booked capacity GET/DELETE charges.
-    stopped_seconds = func.greatest(0, func.extract(
-        "epoch", func.least(func.coalesce(usage.deleted_at, now), now)
-        - func.greatest(usage.launcher_stopped_at, usage.started_at, period),
-    ))
-    stopped_root_reserve = case((
-        (version == WORKERS_RATE_TABLE_VERSION) & usage.launcher_stopped_at.is_not(None) & ~settled,
-        stopped_seconds * root_rate,
-    ), else_=0)
     slot_delta = case(
         (version.in_(_INVENTORY_RATE_VERSIONS), usage.slots * literal(_INVENTORY_DURATION_DELTA, type_=Numeric(24, 12))),
         else_=0,
@@ -390,7 +380,7 @@ def _incarnation_cost_sql(installation: type[CloudflareInstallation], now):
         (usage.meter_release_digest.is_not(None) & _has_launcher_caps(usage.meter_bounds) & (lifetime_rate > 0)
          & or_(version.not_in(_QUALIFIED_RATE_VERSIONS), _has_cpu_limits(usage.meter_bounds))
          & or_(version != WORKERS_RATE_TABLE_VERSION, _has_settlement_bounds(usage.meter_bounds)),
-         seconds * (lifetime_rate + slot_delta) - stopped_root_reserve + sum(line_items) + case(
+         seconds * (lifetime_rate + slot_delta) + sum(line_items) + case(
              (version.in_((*_INVENTORY_RATE_VERSIONS, WORKERS_CADENCE_RATE_TABLE_VERSION)), _CONTROL_LIFECYCLE_USD),
              else_=0,
          ) + case((version == WORKERS_RATE_TABLE_VERSION, _RECEIPT_ACK_USD), else_=0)),
@@ -581,22 +571,18 @@ async def finalize_destroyed_launcher_meter(db: AsyncSession, worker_id: UUID, *
     await db.execute(delete(CloudflareDispatchMeter).where(CloudflareDispatchMeter.worker_id == worker_id))
 
 
-async def clear_destroyed_ledger_receipts(db: AsyncSession, installation_id: UUID, revision: int) -> None:
-    usage = CloudflareUsageIncarnation
+async def clear_destroyed_ledger_receipts(db: AsyncSession, installation_id: UUID, scope: str, revision: int) -> None:
+    usage, pin = CloudflareUsageIncarnation, CloudflareWorkerReservation
     await db.execute(update(usage).where(
         usage.installation_id == installation_id, usage.deployment_revision == revision,
+        select(pin.worker_id).where(
+            pin.worker_id == usage.worker_id, pin.installation_id == installation_id,
+            pin.scope == scope, pin.deployment_revision == revision,
+        ).exists(),
         usage.meter_final["ledger_receipt_pending"].as_boolean().is_(True),
     ).values(meter_final=usage.meter_final.op("||")(literal({
         "ledger_receipt_pending": False, "ledger_namespace_destroyed": True,
     }, type_=JSONB))))
-
-
-async def observe_launcher_stop(db: AsyncSession, worker_id: UUID, *, stopped: bool) -> None:
-    usage = CloudflareUsageIncarnation
-    changed = usage.launcher_stopped_at.is_(None) if stopped else usage.launcher_stopped_at.is_not(None)
-    await db.execute(update(usage).where(
-        usage.worker_id == worker_id, usage.deleted_at.is_(None), changed,
-    ).values(launcher_stopped_at=func.clock_timestamp() if stopped else None))
 
 
 def pending_ledger_receipt(worker_id):

@@ -216,7 +216,7 @@ async def _cleanup_one(
     resource.state = "absent"
     resource.observed_at = datetime.now(UTC)
     if resource.target_name.endswith("-capacity") and "WorkerLedger" in resource.namespace_ids:
-        await clear_destroyed_ledger_receipts(db, row.id, resource.desired_revision)
+        await clear_destroyed_ledger_receipts(db, row.id, resource.scope, resource.desired_revision)
     return "progressed"
 
 
@@ -325,7 +325,7 @@ async def _cleanup_stranded_workflow_slots(
             return cleanup
         for worker_id in worker_ids:
             await _finalize_destroyed_worker(db, worker_id, ledger_destroyed=True)
-        await clear_destroyed_ledger_receipts(db, row.id, revision)
+        await clear_destroyed_ledger_receipts(db, row.id, scope, revision)
         return "progressed"
     return "blocked"
 
@@ -417,22 +417,41 @@ async def _settle_disable(
                     return {"outcome": payload.desired_state}
             started_at = await db.scalar(select(PlatformJob.started_at).where(PlatformJob.id == context.job_id))
             if started_at is not None and datetime.now(UTC) >= started_at + DRAIN_DEADLINE:
+                if waiting_for_deletion:
+                    raise PlatformJobRequiresAction("Cloudflare Cleanup Pending", {"code": "CF_CLEANUP_PENDING"})
                 if workers_remain and payload.action == "scale_in" and await _verify_stuck_workflow_slots(db, row, adapter):
                     continue
                 if workers_remain:
                     stranded = await _stranded_timeout_action(db, row.id, scale_in=payload.action == "scale_in")
                     if stranded is not None:
                         raise stranded
-                if waiting_for_deletion:
-                    raise PlatformJobRequiresAction("Cloudflare Cleanup Pending", {"code": "CF_CLEANUP_PENDING"})
-                phase = "Wait for Cloudflare Creation to Settle" if not workers_remain else "Verify Cloudflare Worker Retirement"
-                raise PlatformJobRequiresAction(phase, {"code": "CF_DRAIN_TIMEOUT"})
+                raise await _drain_timeout_action(db, row.id, workers_remain=workers_remain)
         if waiting_for_deletion:
             await context.report("Verifying Cloudflare Deletion")
             await asyncio.sleep(delay)
             delay = min(delay * 2, 30)
         else:
             await asyncio.sleep(2)
+
+
+async def _drain_timeout_action(
+    db: AsyncSession, installation_id: UUID, *, workers_remain: bool,
+) -> PlatformJobRequiresAction:
+    if not workers_remain:
+        return PlatformJobRequiresAction("Wait for Cloudflare Creation to Settle", {"code": "CF_DRAIN_TIMEOUT"})
+    worker, pin = ExecutionWorker, CloudflareWorkerReservation
+    workers = (await db.execute(select(
+        worker.id, worker.capacity_resource_uid, pin.scope, pin.deployment_revision,
+    ).join(pin, pin.worker_id == worker.id).where(
+        pin.installation_id == installation_id,
+        worker.capacity_resource_deleted_at.is_(None) | worker.state.not_in(("lost", "retired")),
+    ).order_by(pin.deployment_revision, pin.scope, worker.id))).all()
+    return PlatformJobRequiresAction("Verify Cloudflare Worker Retirement", {
+        "code": "CF_DRAIN_TIMEOUT",
+        "workers": [{
+            "worker_id": str(worker_id), "resource_uid": uid, "scope": scope, "revision": revision,
+        } for worker_id, uid, scope, revision in workers],
+    })
 
 
 async def _require_legacy_cleanup(db: AsyncSession) -> None:

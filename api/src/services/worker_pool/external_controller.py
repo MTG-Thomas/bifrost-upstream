@@ -30,7 +30,6 @@ from src.services.worker_pool.cloudflare_slots import delete_workflow_slots
 from src.services.worker_pool.cloudflare_spend import (
     MANAGED_CLEANUP_WINDOW,
     compact_ledger_receipt,
-    observe_launcher_stop,
     pending_ledger_receipt,
     record_capacity_cleanup_do_requests,
     seal_launcher_meter,
@@ -85,12 +84,11 @@ class ExternalWorkerPoolController(WorkerCapacityController):
             pin = await db.get(CloudflareWorkerReservation, worker_id, with_for_update=True)
             if pin is None:
                 return False
+            assert pin.cleanup_started_at is not None
             now = await db.scalar(select(func.clock_timestamp()))
             assert now is not None
             if pin.cleanup_retry_at is not None and now < pin.cleanup_retry_at:
                 return False
-            if pin.cleanup_started_at is None:
-                pin.cleanup_started_at = now
             if now >= pin.cleanup_started_at + MANAGED_CLEANUP_WINDOW:
                 return False
             pin.cleanup_retry_at = now + timedelta(seconds=min(2 ** min(pin.cleanup_attempts + 1, 6), 60))
@@ -239,6 +237,12 @@ class ExternalWorkerPoolController(WorkerCapacityController):
             created_at = worker.created_at
             deleted_at = worker.capacity_resource_deleted_at
             ended_at = worker.ended_at
+            if self.managed_cloudflare_scope is not None and state in self.cleanup_states and deleted_at is None:
+                # Commit the clock before GET so outages also consume the cleanup window.
+                pin = CloudflareWorkerReservation
+                await db.execute(update(pin).where(
+                    pin.worker_id == worker_id, pin.cleanup_started_at.is_(None),
+                ).values(cleanup_started_at=func.clock_timestamp()))
         bounded_prepare = runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE or self.containers_mode
         if bounded_prepare and state in ("reserved", "starting"):
             if _now() - created_at >= timedelta(seconds=self.settings.pool_start_timeout_seconds):
@@ -282,11 +286,8 @@ class ExternalWorkerPoolController(WorkerCapacityController):
                 # Absence does not fence that delayed mutation; retain cleanup.
                 return
             if resource is not None and resource.state != "deleted":
-                if self.managed_cloudflare_scope is not None:
-                    async with get_db_context() as db:
-                        await observe_launcher_stop(db, worker_id, stopped=resource.state == "stopped")
-                    if not await self._reserve_managed_cleanup(worker_id):
-                        return
+                if self.managed_cloudflare_scope is not None and not await self._reserve_managed_cleanup(worker_id):
+                    return
                 resource = await self.client.remove(worker_id, self.profile.scope, resource.resource_uid)
             # GET absence/a deleted tombstone or a validated DELETE response confirms
             # cleanup. Persist only for this still-terminal, unchanged incarnation.

@@ -41,12 +41,10 @@ capacity settings permission applies at Global.
   is insufficient evidence because the child can outlive its host. Stop
   confirmation RPCs use the launcher meter ceiling. The Bifrost controller
   persists exponential backoff up to one minute and attempts outer provider
-  deletion for up to 24 hours after the first attempt. Each attempt reserves
-  the provider request and two Durable Object calls. Expiry appears in
-  capacity status and preserves the worker reservation. After an authenticated
-  stopped observation, the estimate retains residency and unresolved work
-  while dropping the root request reserve for the stopped interval.
-  Disconnect and revision replacement can retire
+  deletion for up to 24 hours after the first cleanup GET, including a
+  failed GET. Each DELETE reserves the provider request and two Durable
+  Object calls. Expiry appears in capacity status and preserves the worker
+  reservation. Disconnect and revision replacement can retire
   an owned revision after its remaining incarnations are all terminal and
   stranded. They release the slots after script and namespace absence is
   verified. Missing meter receipts retain their usage reserves, and confirmed

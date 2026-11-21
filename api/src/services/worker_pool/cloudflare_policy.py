@@ -145,7 +145,7 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
     if exhausted:
         coverage.append(
             f"Managed cleanup expired for {exhausted} Cloudflare worker(s). Unverified capacity remains reserved. "
-            "See the Cloudflare capacity action for retirement details."
+            "Run Scale In to verify retirement. Use Disconnect to remove the owned deployment if retirement cannot be verified."
         )
     spend = CloudflareSpendStatus(
         state="ledger_unavailable" if estimate is None else (

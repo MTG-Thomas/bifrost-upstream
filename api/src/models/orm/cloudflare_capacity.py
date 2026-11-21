@@ -328,7 +328,6 @@ class CloudflareUsageIncarnation(Base):
     installation_id: Mapped[UUID] = mapped_column(ForeignKey("cloudflare_installations.id"))
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    launcher_stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     slots: Mapped[int | None] = mapped_column(SmallInteger)
     meter_terminal: Mapped[dict[str, int] | None] = mapped_column(JSONB)
     meter_final: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
