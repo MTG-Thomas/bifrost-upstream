@@ -155,6 +155,8 @@ _SQLITE_SCOPE_BYTES = 1_000_000
 _SQLITE_MISSING_RECEIPT_BYTES = 10_000_000
 _SQLITE_UNCONFIRMED_LAUNCHER_BYTES = 1_000_000
 _SQLITE_LEDGER_TOMBSTONE_BYTES = 128_000
+_SQLITE_LEDGER_FENCE_BYTES = 16_000
+_SQLITE_TENANT_RESIDUE_BYTES = 4_096
 # Three possible warm calls, one execution and up to 50 gateway entries.
 _INVENTORY_DISPATCH_USD = (
     _TENANT_DISPATCH_USD + (CLOUDFLARE_MAX_CONTROL_FRAGMENTS + 4) * _DO_REQUEST_USD
@@ -234,11 +236,22 @@ _COVERAGE = {
 
 async def spend_coverage(db: AsyncSession, account_id: str, period_start: datetime) -> list[str]:
     usage, owner = CloudflareUsageIncarnation, CloudflareInstallation
+    now = func.statement_timestamp()
+    residue = CloudflareStorageResidue
     historical = await db.scalars(select(usage.meter_rate_version).distinct().join(
         owner, owner.id == usage.installation_id,
     ).where(
         owner.account_id == account_id,
-        or_(usage.deleted_at.is_(None), usage.deleted_at > period_start),
+        or_(
+            usage.deleted_at.is_(None), usage.deleted_at > period_start,
+            usage.meter_rate_version.in_(_INVENTORY_RATE_VERSIONS)
+            & _storage_overlaps(usage, usage.meter_release_digest, period_start, now),
+        ),
+    ))
+    archived = await db.scalars(select(func.jsonb_object_keys(residue.rate_versions)).select_from(residue).join(
+        owner, owner.id == residue.installation_id,
+    ).where(
+        owner.account_id == account_id, _storage_overlaps(residue, residue.release_digest, period_start, now),
     ))
     activity = CloudflareUsageActivity
     # Tenant tails and idle capacity requests can contribute independently
@@ -252,6 +265,7 @@ async def spend_coverage(db: AsyncSession, account_id: str, period_start: dateti
         owner.account_id == account_id, activity.period_start == period_start,
     ))).one()
     versions = {value or WORKERS_LEGACY_RATE_TABLE_VERSION for value in historical}
+    versions.update(archived)
     if rated_activity[0]:
         versions.add(WORKERS_CADENCE_RATE_TABLE_VERSION)
     if rated_activity[1]:
@@ -365,9 +379,17 @@ def _launcher_high_water(usage):
 
 
 def _launcher_residue_bytes(usage):
-    return case(
+    # TenantHost cancellation markers persist in the launcher's namespace.
+    return _SQLITE_TENANT_RESIDUE_BYTES + case(
         (usage.meter_final["launcher_storage_cleared"].as_boolean().is_(True), 0),
         else_=func.coalesce(_launcher_high_water(usage), _SQLITE_UNCONFIRMED_LAUNCHER_BYTES),
+    )
+
+
+def _ledger_residue_bytes(usage):
+    return case(
+        (usage.meter_final["ledger_receipt_compacted"].as_boolean().is_(True), _SQLITE_LEDGER_FENCE_BYTES),
+        else_=_SQLITE_LEDGER_TOMBSTONE_BYTES,
     )
 
 
@@ -386,6 +408,13 @@ def _namespace_storage_end(source, digest, suffix: str, now):
     ).correlate(source).scalar_subquery(), now)
 
 
+def _storage_overlaps(source, digest, period, now):
+    return or_(
+        _namespace_storage_end(source, digest, "-launcher", now) > period,
+        _namespace_storage_end(source, digest, "-capacity", now) > period,
+    )
+
+
 def _retained_storage_cost(installation: type[CloudflareInstallation], now):
     usage = CloudflareUsageIncarnation
     residue = CloudflareStorageResidue
@@ -401,13 +430,13 @@ def _retained_storage_cost(installation: type[CloudflareInstallation], now):
     ledger_end = _namespace_storage_end(usage, usage.meter_release_digest, "-capacity", now)
     stopped = func.coalesce(usage.deleted_at, now)
     working_bytes = func.coalesce(_launcher_high_water(usage), _SQLITE_MISSING_RECEIPT_BYTES) * _STORAGE_MARGIN
-    # Launcher cleanup removes the working database. WorkerLedger must keep
-    # its replay fence and final receipt; TenantHost storage is scope-shared.
+    # Launcher cleanup removes the working database. WorkerLedger keeps the
+    # receipt until acknowledgement, then a replay fence.
     current = select(func.coalesce(func.sum(
         working_bytes * fraction(usage.started_at, func.least(stopped, launcher_end))
         + _SQLITE_OTHER_DO_BYTES_PER_LAUNCHER * fraction(usage.started_at, func.least(stopped, ledger_end))
         + _launcher_residue_bytes(usage) * fraction(stopped, launcher_end)
-        + _SQLITE_LEDGER_TOMBSTONE_BYTES * fraction(stopped, ledger_end)
+        + _ledger_residue_bytes(usage) * fraction(stopped, ledger_end)
     ), 0)).select_from(usage).join(owner, owner.id == usage.installation_id).where(
         owner.account_id == installation.account_id,
         usage.meter_rate_version.in_(_INVENTORY_RATE_VERSIONS),
@@ -442,7 +471,7 @@ async def record_launcher_terminal_meter(
         return
     try:
         receipt = CloudflareLauncherUsage.model_validate(raw).model_dump(
-            exclude={"exhausted", "routes", "launcher_storage_cleared"}, exclude_none=True,
+            exclude={"exhausted", "routes", "launcher_storage_cleared", "ledger_receipt_pending"}, exclude_none=True,
         )
     except ValidationError:
         row.meter_uncertain = True
@@ -482,6 +511,26 @@ async def seal_launcher_meter(db: AsyncSession, worker_id: UUID, receipt: Cloudf
     row.meter_final = counts
     if row.deleted_at is not None:
         await db.execute(delete(CloudflareDispatchMeter).where(CloudflareDispatchMeter.worker_id == worker_id))
+
+
+def pending_ledger_receipt(worker_id):
+    usage = CloudflareUsageIncarnation
+    return select(usage.worker_id).where(
+        usage.worker_id == worker_id, usage.meter_final["ledger_receipt_pending"].as_boolean().is_(True),
+    )
+
+
+async def compact_ledger_receipt(
+    worker_id: UUID, acknowledge: Callable[[], Awaitable[None]],
+) -> None:
+    async with get_db_context() as db:
+        if await db.scalar(pending_ledger_receipt(worker_id)) is None:
+            return
+    await acknowledge()
+    async with get_db_context() as db:
+        row = await db.get(CloudflareUsageIncarnation, worker_id, with_for_update=True)
+        if row is not None and row.meter_final and row.meter_final.get("ledger_receipt_pending"):
+            row.meter_final = {**row.meter_final, "ledger_receipt_pending": False, "ledger_receipt_compacted": True}
 
 
 async def _ledger_now(db: AsyncSession) -> datetime:
@@ -735,9 +784,9 @@ async def prune_spend_receipt_keys(db: AsyncSession) -> None:
     revision = func.coalesce(old.deployment_revision, 0)
     residue = CloudflareStorageResidue
     rollup = insert(residue).from_select(
-        ["installation_id", "release_digest", "deployment_revision", "launcher_bytes", "ledger_bytes"],
+        ["installation_id", "release_digest", "deployment_revision", "launcher_bytes", "ledger_bytes", "rate_versions"],
         select(old.installation_id, digest, revision, func.sum(_launcher_residue_bytes(old)),
-               func.count() * _SQLITE_LEDGER_TOMBSTONE_BYTES)
+               func.sum(_ledger_residue_bytes(old)), func.jsonb_object_agg(old.meter_rate_version, literal(True)))
         .where(old.meter_rate_version.in_(_INVENTORY_RATE_VERSIONS)).group_by(old.installation_id, digest, revision),
     )
     await db.execute(rollup.on_conflict_do_update(
@@ -745,6 +794,7 @@ async def prune_spend_receipt_keys(db: AsyncSession) -> None:
         set_={
             "launcher_bytes": residue.launcher_bytes + rollup.excluded.launcher_bytes,
             "ledger_bytes": residue.ledger_bytes + rollup.excluded.ledger_bytes,
+            "rate_versions": residue.rate_versions.op("||")(rollup.excluded.rate_versions),
         },
     ))
 

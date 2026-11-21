@@ -284,6 +284,19 @@ export function createEngine({ profile, store, runtime, clock = { now: () => Dat
                 if (body?.resource_uid !== row.resource_uid) {
                     throw new ProtocolError(409, "resource UID does not match this worker");
                 }
+                if (body.receipt_ack === true) {
+                    if (row.state !== STATE.DELETED) throw new ProtocolError(409, "worker deletion is unconfirmed");
+                    if (row.usage) {
+                        const fence = {
+                            scope: row.scope, worker_id: row.worker_id, resource_uid: row.resource_uid,
+                            reservation: {worker_version: row.reservation.worker_version}, state: STATE.DELETED,
+                            out_of_memory: row.out_of_memory,
+                        };
+                        await store.write(workerId, fence);
+                        return resource(fence);
+                    }
+                    return resource(row);
+                }
                 if (row.state === STATE.DELETED) return resource(row);
 
                 try {
@@ -298,7 +311,10 @@ export function createEngine({ profile, store, runtime, clock = { now: () => Dat
                         await store.write(workerId, row);
                     }
                     await runtime.clearStorage(row);
-                    if (row.usage) row.usage.launcher_storage_cleared = true;
+                    if (row.usage) {
+                        row.usage.launcher_storage_cleared = true;
+                        row.usage.ledger_receipt_pending = true;
+                    }
                 } catch (error) {
                     throw new ProtocolError(502, `delete outcome unknown: ${error.name}`);
                 }

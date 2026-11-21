@@ -36,7 +36,7 @@ function fixture() {
     clearStorage: async () => {},
   };
   const restart = () => createEngine({profile, store, runtime});
-  return {restart, runtime, facts, slots};
+  return {restart, runtime, facts, slots, store};
 }
 
 test('a lost storage-clear reply preserves the final receipt and the retirement fence', async () => {
@@ -55,10 +55,28 @@ test('a lost storage-clear reply preserves the final receipt and the retirement 
   runtime.clearStorage = async () => {};
   const removed = await restart().remove(id, {resource_uid});
   assert.equal(removed.state, STATE.DELETED);
-  assert.deepEqual(removed.usage, {...usage, launcher_storage_cleared: true});
+  assert.deepEqual(removed.usage, {...usage, launcher_storage_cleared: true, ledger_receipt_pending: true});
   assert.deepEqual(await restart().get(id), removed);
   assert.equal(seals, 1);
   assert.equal(slots.size, 0);
+});
+
+test('receipt acknowledgement compacts only the bound deleted worker and replays its fence', async () => {
+  const {restart, runtime, store} = fixture();
+  const {resource_uid} = await restart().prepare(id, reservation);
+  const ack = {resource_uid, receipt_ack: true};
+  await assert.rejects(restart().remove(id, ack), /deletion is unconfirmed/);
+  runtime.destroy = async () => ({state: STATE.DELETED, usage: {routes: {fixture: ['trace']}}});
+  await restart().remove(id, {resource_uid});
+  await assert.rejects(restart().remove(id, {...ack, resource_uid: 'wrong'}), /UID does not match/);
+  assert.ok((await restart().get(id)).usage);
+  const compacted = await restart().remove(id, ack);
+  assert.equal(compacted.usage, undefined);
+  assert.deepEqual(await restart().remove(id, ack), compacted);
+  assert.deepEqual(await restart().get(id), compacted);
+  assert.deepEqual(Object.keys(await store.read(id)).sort(),
+    ['out_of_memory', 'reservation', 'resource_uid', 'scope', 'state', 'worker_id']);
+  await assert.rejects(restart().prepare(id, reservation), /already terminated/);
 });
 
 test('uncertain prepare releases its slot and readback leaves retry to start', async () => {

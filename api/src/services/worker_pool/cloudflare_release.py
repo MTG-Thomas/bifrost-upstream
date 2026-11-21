@@ -158,7 +158,7 @@ class MeterQualification(BaseModel):
                                samples.capacity_prepare.p99_us, samples.capacity_start.p99_us,
                                samples.capacity_delete.p99_us)),
             "gateway": ms(workload),
-            "workflow": WORKFLOW_CPU_CEILING_MS,
+            "workflow": ms(workload),
             "boot": ms(samples.boot.p99_us),
             "warm": ms(samples.warm.p99_us),
             "exercise": ms(samples.exercise.p99_us),

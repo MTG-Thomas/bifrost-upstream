@@ -494,6 +494,7 @@ class CloudflareLauncherUsage(CloudflareLauncherCounts):
 
     sqlite_database_bytes: int | None = Field(default=None, ge=0, le=2**53 - 1, exclude_if=lambda value: value is None)
     launcher_storage_cleared: Literal[True] | None = Field(default=None, exclude_if=lambda value: value is None)
+    ledger_receipt_pending: Literal[True] | None = Field(default=None, exclude_if=lambda value: value is None)
     routes: dict[
         Annotated[str, Field(min_length=1, max_length=128)],
         Annotated[list[CloudflareEngineInvocation], Field(min_length=1, max_length=4)],

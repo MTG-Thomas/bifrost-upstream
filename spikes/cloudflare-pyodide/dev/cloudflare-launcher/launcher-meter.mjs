@@ -79,8 +79,14 @@ export function launcherMeter(sql, binding, {settle = false} = {}) {
         save({...state, routes: {...state.routes, [routeId]: invocations}});
       }
     },
-    seal() {
-      if (!state.final) save({...state, final: true});
+    seal(ledgerCleanupRows) {
+      if (!state.final) {
+        // Reserve the ledger table/index deletes and the meter row deleted by
+        // the subsequent clear. Persist this in the seal exactly once.
+        const cleanup = ledgerCleanupRows === undefined ? 0 : ledgerCleanupRows + 1;
+        const counts = {...state.counts, sqlite_rows_written: state.counts.sqlite_rows_written + cleanup};
+        save({...state, counts, final: true});
+      }
       return {...this.snapshot(), ...(settle ? {routes: state.routes ?? {}} : {})};
     },
   };

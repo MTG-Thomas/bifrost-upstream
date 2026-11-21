@@ -208,8 +208,8 @@ async def test_connect_uses_opaque_credential_from_protected_rest_entry(e2e_clie
         "action": "connect", "account_id": account, "worker_ingress_origin": "https://workers.browser-fixture.test",
         "consent_version": CONSENT_TEXT_VERSION, "consent": True, "credential_ref": reference,
         "policy": {"workers": {
-            "launcher_cap": 1, "slots_per_launcher": 1, "max_lifetime_seconds": 60, "work_kinds": ["workflow"],
-        }, "monthly_limit_usd": "15.00"},
+            "launcher_cap": 10, "slots_per_launcher": 1, "max_lifetime_seconds": 3600, "work_kinds": ["workflow"],
+        }, "monthly_limit_usd": "40.00"},
     }
     installation_id = None
     try:
@@ -217,7 +217,7 @@ async def test_connect_uses_opaque_credential_from_protected_rest_entry(e2e_clie
         assert connected.status_code == 200, connected.text
         installation = connected.json()["installation"]
         installation_id = UUID(installation["installation_id"])
-        assert installation["fleet_envelope_usd"] == "13.06"
+        assert installation["fleet_envelope_usd"] == "31.23"
         assert installation["spend"]["estimated_usd"] == "0.00"
         assert installation["spend"]["workers_paid_subscription_usd"] == "5.00"
         assert token not in connected.text and reference not in connected.text
@@ -1387,7 +1387,7 @@ async def test_admission_prices_the_qualified_ledger_bounds(
     month_seconds = Decimal((usage_period(start)[1] - start).total_seconds())
     lifetime_base += Decimal("0.022") * elapsed / month_seconds
     residue_seconds = Decimal((as_of - start).total_seconds()) - elapsed
-    lifetime_base += Decimal("0.0002256") * residue_seconds / month_seconds
+    lifetime_base += Decimal("0.0002264192") * residue_seconds / month_seconds
     fallback = lifetime_base + Decimal("0.000106")
     await db_session.flush()
     observed = await db_session.scalar(price)
@@ -1739,6 +1739,46 @@ async def test_foreground_pricing_keeps_reserves_until_a_confirmed_seal(
 
 
 @pytest.mark.asyncio
+async def test_foreground_receipt_settles_engine_identity_across_utc_midnight(
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    midnight = datetime(2026, 12, 1, tzinfo=UTC)
+    reserved_at = midnight - timedelta(seconds=1)
+    invoked_at = midnight + timedelta(seconds=1)
+    clock = AsyncMock(return_value=reserved_at)
+    monkeypatch.setattr(cloudflare_spend, "_ledger_now", clock)
+    worker_id, tenant_id = uuid4(), "a" * 32
+    identity = f"tenant-eng-tenant-py-{tenant_id}-fixture"
+    row = CloudflareUsageIncarnation(
+        worker_id=worker_id, installation_id=installation.id, slots=1, started_at=reserved_at,
+        meter_rate_version=WORKERS_RATE_TABLE_VERSION, meter_release_digest="f" * 64,
+        meter_bounds=installation.policy["meter_launcher"],
+    )
+    db_session.add(row)
+    await db_session.flush()
+    assert await reserve_tenant_host_usage(
+        db_session, worker_id, invoked_at + timedelta(seconds=20), workflow_cpu_ms=1000, subrequests=0,
+        tenant_id=tenant_id, route_id="cross-midnight",
+    )
+    assert await cloudflare_spend.reserve_engine_generation(db_session, worker_id, identity)
+    clock.return_value = row.deleted_at = invoked_at + timedelta(seconds=2)
+    receipt = CloudflareLauncherUsage.model_validate({
+        "sqlite_rows_written": 3, "do_requests": 1, "log_events": 0,
+        "routes": {"cross-midnight": [
+            {"identity": identity, "kind": "workflow", "cold": True, "started_at": invoked_at, "wall_ms": 600},
+        ]},
+    })
+    await cloudflare_spend.seal_launcher_meter(db_session, worker_id, receipt)
+    for day in (reserved_at.date(), invoked_at.date()):
+        assert await db_session.get(cloudflare_spend.CloudflareEngineUsageKey,
+                                    (installation.id, f"daily:{identity}:{day}")) is not None
+        activity = await db_session.get(CloudflareUsageActivity, (installation.id, usage_period(
+            reserved_at if day == reserved_at.date() else invoked_at,
+        )[0]))
+        assert activity is not None and activity.qualified_creations == 1
+
+
+@pytest.mark.asyncio
 async def test_full_route_receipt_does_not_flag_busy_launcher(
     db_session: AsyncSession, installation: CloudflareInstallation,
 ) -> None:
@@ -1782,7 +1822,7 @@ async def test_launcher_storage_separates_live_bytes_from_retained_residue(
     old = CloudflareUsageIncarnation(
         worker_id=old_id, installation_id=installation.id,
         started_at=datetime(2026, 8, 1, tzinfo=UTC), deleted_at=datetime(2026, 9, 1, tzinfo=UTC), slots=1,
-        meter_rate_version=WORKERS_RATE_TABLE_VERSION, meter_release_digest=digest, deployment_revision=1,
+        meter_rate_version=WORKERS_INVENTORY_RATE_TABLE_VERSION, meter_release_digest=digest, deployment_revision=1,
         meter_final={"sqlite_database_bytes": 1_001_000},
     )
     namespace = CloudflareOwnedResource(
@@ -1808,6 +1848,7 @@ async def test_launcher_storage_separates_live_bytes_from_retained_residue(
     await cloudflare_spend.seal_launcher_meter(
         db_session, worker_id, CloudflareLauncherUsage(
             sqlite_rows_written=1, do_requests=1, log_events=1, launcher_storage_cleared=True,
+            ledger_receipt_pending=True,
         ),
     )
     await db_session.flush()
@@ -1817,12 +1858,33 @@ async def test_launcher_storage_separates_live_bytes_from_retained_residue(
     assert cleared is not None and uncleared is not None
     assert abs(uncleared - cleared - 2_000_000 * rate * (now - retired).days / month_days) < Decimal("1e-12")
 
+    # A failed acknowledgement keeps the larger receipt estimate and remains
+    # eligible for another controller pass. Success only prices the fence.
+    @asynccontextmanager
+    async def context():
+        yield db_session
+
+    monkeypatch.setattr(cloudflare_spend, "get_db_context", context)
+    ack = AsyncMock(side_effect=[httpx.ReadTimeout("fixture"), None])
+    with pytest.raises(httpx.ReadTimeout):
+        await cloudflare_spend.compact_ledger_receipt(worker_id, ack)
+    assert await db_session.scalar(cloudflare_spend.pending_ledger_receipt(worker_id)) == worker_id
+    await cloudflare_spend.compact_ledger_receipt(worker_id, ack)
+    await cloudflare_spend.compact_ledger_receipt(worker_id, ack)
+    assert ack.await_count == 2
+    compacted = await db_session.scalar(estimate)
+    assert compacted is not None
+    assert abs(cleared - compacted - 112_000 * rate * (now - retired).days / month_days) < Decimal("1e-12")
+
     monkeypatch.setattr(cloudflare_spend, "_ledger_now", AsyncMock(return_value=now))
     await cloudflare_spend.prune_spend_receipt_keys(db_session)
     await cloudflare_spend.prune_spend_receipt_keys(db_session)
     assert await db_session.get(CloudflareUsageIncarnation, old_id, populate_existing=True) is None
     rolled_up = await db_session.scalar(estimate)
-    assert rolled_up is not None and abs(rolled_up - cleared) < Decimal("1e-12")
+    assert rolled_up is not None and abs(rolled_up - compacted) < Decimal("1e-12")
+    assert any(WORKERS_INVENTORY_RATE_TABLE_VERSION in line for line in await cloudflare_spend.spend_coverage(
+        db_session, installation.account_id, start,
+    ))
 
     namespace.state = "absent"
     namespace.observed_at = start + timedelta(days=2)
@@ -1835,8 +1897,9 @@ async def test_launcher_storage_separates_live_bytes_from_retained_residue(
     await db_session.flush()
     after_deletion = await db_session.scalar(estimate)
     assert after_deletion is not None
-    # Only the old, uncleared launcher contributes after the current launcher is purged.
-    assert abs(cleared - after_deletion - 1_001_000 * rate * (now - namespace.observed_at).days / month_days) < Decimal("1e-12")
+    # Both launchers can leave TenantHost markers in that namespace.
+    removed_bytes = 1_001_000 + 2 * 4096
+    assert abs(compacted - after_deletion - removed_bytes * rate * (now - namespace.observed_at).days / month_days) < Decimal("1e-12")
 
 
 @pytest.mark.asyncio

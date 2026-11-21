@@ -319,3 +319,4 @@ class CloudflareStorageResidue(Base):
     deployment_revision: Mapped[int] = mapped_column(primary_key=True)
     launcher_bytes: Mapped[int] = mapped_column(BigInteger)
     ledger_bytes: Mapped[int] = mapped_column(BigInteger)
+    rate_versions: Mapped[dict[str, bool]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))

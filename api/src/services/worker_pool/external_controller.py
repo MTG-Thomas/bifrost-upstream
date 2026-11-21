@@ -26,7 +26,7 @@ from src.services.work_dispatch import (
 )
 from src.services.worker_pool.cloudflare_canary import active_cloudflare_canary
 from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
-from src.services.worker_pool.cloudflare_spend import seal_launcher_meter
+from src.services.worker_pool.cloudflare_spend import compact_ledger_receipt, pending_ledger_receipt, seal_launcher_meter
 from src.services.worker_pool.controller import (
     RECONCILE_SECONDS,
     SWEEP_SECONDS,
@@ -113,9 +113,12 @@ class ExternalWorkerPoolController(WorkerCapacityController):
 
     def _cleanup_scope(self) -> Any:
         # An outage must not turn an unconfirmed physical deletion into an orphan.
+        pending = ExecutionWorker.capacity_resource_deleted_at.is_(None)
+        if self.managed_cloudflare_scope is not None:
+            pending = pending | pending_ledger_receipt(ExecutionWorker.id).exists()
         return and_(
             ExecutionWorker.state.in_(self.cleanup_states),
-            ExecutionWorker.capacity_resource_deleted_at.is_(None),
+            pending,
         )
 
     def _binding_fields(self, worker_id: UUID) -> dict[str, Any]:
@@ -228,6 +231,10 @@ class ExternalWorkerPoolController(WorkerCapacityController):
             await self._record_loss(worker_id, uid, "provider_version_changed", False)
             return
         if state in self.cleanup_states and deleted_at is not None:
+            if self.managed_cloudflare_scope is not None and uid is not None:
+                await compact_ledger_receipt(
+                    worker_id, lambda: self.client.acknowledge_receipt(worker_id, self.profile.scope, uid),
+                )
             return
         resource = await self.client.get(worker_id, self.profile.scope)
         if uid is not None and resource is not None and resource.resource_uid != uid:
@@ -254,6 +261,12 @@ class ExternalWorkerPoolController(WorkerCapacityController):
                 if matched is not None and runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and resource is not None:
                     await seal_launcher_meter(db, worker_id, resource.usage)
                 await db.commit()
+            if self.managed_cloudflare_scope is not None and uid is not None and resource is not None and (
+                resource.usage is not None and resource.usage.ledger_receipt_pending
+            ):
+                await compact_ledger_receipt(
+                    worker_id, lambda: self.client.acknowledge_receipt(worker_id, self.profile.scope, uid),
+                )
             return
         if resource is not None and resource.worker_version != version:
             raise CapacityProtocolError("Provider resource build changed for an existing incarnation")

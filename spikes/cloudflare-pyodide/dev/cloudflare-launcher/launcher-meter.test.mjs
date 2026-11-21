@@ -20,7 +20,10 @@ test('the sealed route receipt stays bounded across meter reloads', (t) => {
   for (let route = 0; route < 128; route++) meter.recordRoute(`route-${route}`, [invocation]);
   const reloaded = launcherMeter(sql, caps, {settle: true});
   reloaded.recordRoute('route-128', [invocation]);
-  const {routes} = reloaded.seal();
+  const sealed = reloaded.seal(6);
+  const {routes} = sealed;
+  assert.equal(sealed.sqlite_rows_written, 136); // 128 records, seal, 6 ledger deletes, meter delete
+  assert.deepEqual(launcherMeter(sql, caps, {settle: true}).seal(6), sealed);
   assert.equal(Object.keys(routes).length, 128);
   assert.deepEqual(routes['route-0'], [invocation]);
   assert.equal(routes['route-128'], undefined);

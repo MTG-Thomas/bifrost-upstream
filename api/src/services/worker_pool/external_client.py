@@ -123,3 +123,11 @@ class ExternalCapacityClient:
         if resource.state != "deleted":
             raise CapacityProtocolError("Provider did not delete the bound capacity resource")
         return resource
+
+    async def acknowledge_receipt(self, worker_id: UUID, scope: str, uid: str) -> None:
+        response = await self._request(
+            "DELETE", f"workers/{worker_id}", scope=scope, body={"resource_uid": uid, "receipt_ack": True},
+        )
+        resource = self._resource(response, worker_id, scope, uid)
+        if resource.state != "deleted" or resource.usage is not None:
+            raise CapacityProtocolError("Capacity provider did not compact its deletion receipt")

@@ -37,10 +37,13 @@ function enrollmentSettings({incarnationId, launcherId, resourceUid, version, se
 
 // SQLite limits a single row to 2 MB. Put the slot's inventory and terminal
 // into byte chunks in one transaction so replay cannot see a partial record.
-function confirmedStorage(ctx, meter) {
+function confirmedStorage(ctx, getMeter) {
   const {storage} = ctx;
   const sql = storage.sql;
-  sql.exec('CREATE TABLE IF NOT EXISTS ledger (key TEXT, part INTEGER, data BLOB, PRIMARY KEY (key, part))');
+  let exists;
+  const hasLedger = () => exists ??= sql.exec(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ledger'",
+  ).toArray().length !== 0;
   const confirm = async (write) => {
     try {
       write();
@@ -53,6 +56,7 @@ function confirmedStorage(ctx, meter) {
   };
   return {
     async get(key) {
+      if (!hasLedger()) return undefined;
       const rows = sql.exec('SELECT data FROM ledger WHERE key = ? ORDER BY part', key).toArray();
       if (rows.length === 0) return undefined;
       const decoder = new TextDecoder();
@@ -61,6 +65,7 @@ function confirmedStorage(ctx, meter) {
     },
     put(key, value, kind = 'control') {
       const bytes = new TextEncoder().encode(JSON.stringify(value));
+      const meter = getMeter();
       if (meter && kind !== 'control') {
         const oldRows = sql.exec('SELECT count(*) AS n FROM ledger WHERE key = ?', key).one().n;
         // The ledger has one secondary index. Reserve table and index writes.
@@ -70,6 +75,10 @@ function confirmedStorage(ctx, meter) {
         }
       }
       return confirm(() => storage.transactionSync(() => {
+        if (!hasLedger()) {
+          sql.exec('CREATE TABLE ledger (key TEXT, part INTEGER, data BLOB, PRIMARY KEY (key, part))');
+          exists = true;
+        }
         sql.exec('DELETE FROM ledger WHERE key = ?', key);
         for (let offset = 0; offset < bytes.length; offset += STORAGE_CHUNK) {
           const chunk = bytes.subarray(offset, offset + STORAGE_CHUNK);
@@ -78,10 +87,15 @@ function confirmedStorage(ctx, meter) {
       }));
     },
     delete(slot, tombstone) {
+      if (!hasLedger()) return;
+      const meter = getMeter();
       const predicate = 'WHERE key IN (?, ?)';
       if (meter) meter.charge({sqlite_rows_written: 2 *
         sql.exec(`SELECT count(*) AS n FROM ledger ${predicate}`, slot, tombstone).one().n}, true);
       return confirm(() => sql.exec(`DELETE FROM ledger ${predicate}`, slot, tombstone));
+    },
+    cleanupRows() {
+      return hasLedger() ? 2 * sql.exec('SELECT count(*) AS n FROM ledger').one().n : 0;
     },
   };
 }
@@ -99,21 +113,26 @@ export class CloudflareLauncher extends DurableObject {
 
   constructor(ctx, env) {
     super(ctx, env);
-    this.#meter = launcherMeter(ctx.storage.sql, env.BIFROST_LAUNCHER_METERS, {
-      settle: env.BIFROST_METER_RECEIPTS === 'true',
-    });
-    this.#storage = confirmedStorage(ctx, this.#meter);
+    this.#storage = confirmedStorage(ctx, () => this.#meter);
     this.#managed = env.BIFROST_CLOUDFLARE_MANAGED === 'true';
     if (this.#managed) {
       if (env.CAPACITY_TOKEN || env.BIFROST_WORKER_CAPACITY_TOKEN || env.BIFROST_SECRET_KEY ||
           env.BIFROST_WORKER_CONTROL_SECRET) throw new Error('Managed launcher received a forbidden Worker secret');
       ctx.blockConcurrencyWhile(async () => {
         this.#fact = await this.#storage.get('enrollment');
+        if (this.#fact) this.#initializeMeter();
         if (this.#fact?.enrollment) this.#initialize(enrollmentSettings(this.#fact.enrollment, this.env));
       });
     } else {
+      this.#initializeMeter();
       this.#initialize(readSettings(env));
     }
+  }
+
+  #initializeMeter() {
+    this.#meter = launcherMeter(this.ctx.storage.sql, this.env.BIFROST_LAUNCHER_METERS, {
+      settle: this.env.BIFROST_METER_RECEIPTS === 'true',
+    });
   }
 
   #initialize(settings) {
@@ -273,6 +292,7 @@ export class CloudflareLauncher extends DurableObject {
         return settings.slots;
       }
       await this.#saveFact({resourceUid: enrollment.resourceUid, enrollment, state: 'prepared'});
+      this.#initializeMeter();
       this.#initialize(settings);
       return settings.slots;
     });
@@ -304,16 +324,17 @@ export class CloudflareLauncher extends DurableObject {
   releaseManaged(resourceUid) {
     return this.#serialize(async () => {
       const fact = this.#binding(resourceUid);
+      if (!fact) return;
       if (this.#meter?.final) return this.#meter.seal();
       if (fact?.state === 'deleted') {
         await this.ctx.storage.deleteAlarm();
-        return this.#meter?.seal();
+        return this.#meter?.seal(this.#storage.cleanupRows());
       }
       // The API already fenced this incarnation. Release cannot deliver a
       // terminal or wait for an ACK from a successor owner.
       await this.#core?.release();
       await this.#finishRelease(resourceUid);
-      return this.#meter?.seal();
+      return this.#meter?.seal(this.#storage.cleanupRows());
     });
   }
 

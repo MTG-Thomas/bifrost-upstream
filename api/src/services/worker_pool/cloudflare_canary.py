@@ -29,7 +29,7 @@ from src.services.worker_pool.cloudflare_admission import ManagedCloudflareScope
 from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
 from src.services.worker_pool.cloudflare_policy import cloudflare_workers_remain
 from src.services.worker_pool.cloudflare_provisioning import ObservationPending
-from src.services.worker_pool.cloudflare_spend import seal_launcher_meter
+from src.services.worker_pool.cloudflare_spend import compact_ledger_receipt, seal_launcher_meter
 from src.services.worker_pool.cloudflare_workers_rest import WorkersDeployment
 from src.services.worker_pool.external_client import (
     CapacityProtocolError,
@@ -165,6 +165,15 @@ async def _retire_canary(client: ExternalCapacityClient, worker_id: UUID, resour
                 ExecutionWorker.capacity_resource_deleted_at.is_not(None),
             )) is not None
         await seal_launcher_meter(db, worker_id, observed.usage)
+    if observed.usage is not None and observed.usage.ledger_receipt_pending:
+        try:
+            await compact_ledger_receipt(
+                worker_id, lambda: client.acknowledge_receipt(worker_id, "workers", resource_uid),
+            )
+        except (httpx.HTTPError, CapacityProtocolError):
+            # The receipt is committed. The supervisor can retry compaction
+            # after the canary job stops owning this worker.
+            pass
     return True
 
 

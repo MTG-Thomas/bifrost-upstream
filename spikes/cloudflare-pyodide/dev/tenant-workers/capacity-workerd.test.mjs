@@ -34,6 +34,12 @@ modules['entry.mjs'] = {type: 'esm', contents: `
   import {launcherMeter, SQLITE_HEADROOM} from './cloudflare-launcher/launcher-meter.mjs';
   import {CloudflareLauncher as Launcher} from './cloudflare-launcher/launcher-do.mjs';
   export class CloudflareLauncher extends Launcher {
+    async witnessIdleStorage() {
+      await this.alarm();
+      return this.ctx.storage.sql.exec(
+        "SELECT name FROM sqlite_master WHERE name IN ('ledger', 'meter')",
+      ).toArray();
+    }
     async clearReleasedStorage(uid) {
       await super.clearReleasedStorage(uid);
       const rows = this.ctx.storage.sql.exec("SELECT name FROM sqlite_master WHERE name = 'ledger'").toArray();
@@ -41,6 +47,15 @@ modules['entry.mjs'] = {type: 'esm', contents: `
     }
   }
   export class MeterProbe extends DurableObject {
+    async witnessFenceSize() {
+      const {storage} = this.ctx;
+      await storage.put('row', 'x'.repeat(100_000));
+      await storage.sync();
+      const before = storage.sql.databaseSize;
+      await storage.put('row', {state: 'deleted', resource_uid: 'fixture'});
+      await storage.sync();
+      return {before, after: storage.sql.databaseSize};
+    }
     witness(name, count) {
       const meter = launcherMeter(this.ctx.storage.sql,
         JSON.stringify({sqlite_rows_written: SQLITE_HEADROOM + 20, do_requests: 10, log_events: 2}));
@@ -274,7 +289,9 @@ async function start() {
             } : {}),
             BIFROST_LAUNCHER_METERS: {type: 'text', value: process.env.BIFROST_QUALIFIED_LAUNCHER_METERS ??
               '{"sqlite_rows_written":10000,"do_requests":1000,"log_events":100}'},
-          } : {MeterProbe: {type: 'durable-object', worker: 'launcher', exportName: 'MeterProbe'}})},
+          } : {MeterProbe: {type: 'durable-object', worker: 'launcher', exportName: 'MeterProbe'},
+            BIFROST_LAUNCHER_METERS: {type: 'text', value: '{"sqlite_rows_written":10000,"do_requests":1000,"log_events":100}'},
+          })},
         manifest: {mainModule: 'entry.mjs', modulesRoot: fileURLToPath(root), modules: measuredLauncher
           ? {'entry.mjs': {type: 'esm', contents: readFileSync(measuredLauncher, 'utf8')}} : modules}},
     },
@@ -362,6 +379,12 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
   await next(() => sockets.get(id).readyState === 3);
   assert.equal((await request(path + '/start', 'POST', {resource_uid})).status, 409);
   assert.equal(hellos.get(id).length, 1);
+  if (deleted.usage?.ledger_receipt_pending) {
+    const compacted = await (await request(path, 'DELETE', {resource_uid, receipt_ack: true})).json();
+    assert.equal(compacted.state, 'deleted');
+    assert.equal(compacted.usage, undefined);
+    assert.deepEqual(await (await request(path)).json(), compacted);
+  }
   if (references) {
     assert.ok(references.every(attempt => attempt.usage));
     assert.ok(deleted.usage);
@@ -378,6 +401,17 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
       lifetime_seconds: (Date.now() - startedAt) / 1000, capacity_requests: capacityCalls - initialCapacityCalls,
       sha256: sha256(readFileSync(measuredLauncher))}));
   }
+});
+
+test('an idle managed launcher with metering configured leaves SQLite tables absent', async () => {
+  const launchers = await mf.getDurableObjectNamespace('CLOUDFLARE_LAUNCHER', 'capacity');
+  assert.deepEqual(await launchers.getByName(randomUUID()).witnessIdleStorage(), []);
+});
+
+test('compacting a WorkerLedger KV receipt releases its SQLite pages', async () => {
+  const probes = await mf.getDurableObjectNamespace('MeterProbe', 'launcher');
+  const {before, after} = await probes.getByName('fence').witnessFenceSize();
+  assert.ok(before >= 100_000 && after <= 16_000, `receipt ${before} bytes, fence ${after} bytes`);
 });
 
 for (const [meter, count, counted] of [
