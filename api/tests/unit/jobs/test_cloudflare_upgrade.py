@@ -9,6 +9,7 @@ from src.jobs.platform import cloudflare_enable
 from src.jobs.platform.base import PlatformJobCancelled, PlatformJobContext
 from src.jobs.platform.cloudflare_capacity import _replacement_revision
 from src.models.orm.cloudflare_capacity import CloudflareInstallation
+from src.services.worker_pool.cloudflare_policy import workers_release_error
 from src.services.worker_pool.cloudflare_release import WorkersReleaseOrder
 
 
@@ -25,6 +26,8 @@ def test_replacement_requires_a_new_artifact_or_cutover_marker() -> None:
     row.drain_required = False
     assert _replacement_revision(row, "hotfix", WorkersReleaseOrder("1.2.5", 101)) is None
     assert _replacement_revision(row, "conflict", WorkersReleaseOrder("1.3.0", 102)) is None
+    assert workers_release_error(row, "hotfix", WorkersReleaseOrder("1.2.5", 101)) == "CF_RELEASE_DOWNGRADE"
+    assert workers_release_error(row, "conflict", WorkersReleaseOrder("1.3.0", 102)) == "CF_RELEASE_CONFLICT"
     assert _replacement_revision(row, "active", WorkersReleaseOrder("1.3.0", 102)) is None
     assert _replacement_revision(row, "new", WorkersReleaseOrder("1.4.0", 1)) == 5
 

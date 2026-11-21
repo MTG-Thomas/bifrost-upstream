@@ -154,13 +154,16 @@ async def capacity(db, monkeypatch):
 
 
 @pytest_asyncio.fixture
-async def managed_pool(db, capacity):
+async def managed_pool(db, capacity, monkeypatch):
     provider = capacity.provider
     provider.profile = provider.profile.model_copy(update={
         "protocol_version": 2,
         "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
         "memory_limit_bytes": CLOUDFLARE_DEV_BUDGET_BYTES,
     })
+    from src.services.worker_pool import cloudflare_admission
+
+    monkeypatch.setattr(cloudflare_admission, "installed_workers_release_digest", lambda: provider.profile.worker_version)
     installation_id, scope_name = provider.installation_id, provider.profile.scope
     account_id, now = "a" * 32, datetime.now(UTC)
     policy = CloudflareCapacityPolicy.model_validate({

@@ -739,11 +739,15 @@ Usage: capacity cloudflare reconcile [OPTIONS]
   Verify or repair the current Cloudflare Workers deployment.
 
 Options:
-  --wait                       Wait for completion through the platform job.
-  --installation-id TEXT       installation_id (UUID).  [required]
-  --expected-revision INTEGER  expected_revision  [required]
-  --json                       Emit JSON instead of human-readable output.
-  --help                       Show this message and exit.
+  --wait                          Wait for completion through the platform
+                                  job.
+  --installation-id TEXT          installation_id (UUID).  [required]
+  --expected-revision INTEGER     expected_revision  [required]
+  --reset-release-fence / --no-reset-release-fence
+                                  reset_release_fence (tri-state; omit to
+                                  leave unchanged).
+  --json                          Emit JSON instead of human-readable output.
+  --help                          Show this message and exit.
 ```
 
 #### `capacity cloudflare rotate`
@@ -840,11 +844,15 @@ Usage: capacity cloudflare upgrade [OPTIONS]
   Apply the Workers release packaged with Bifrost.
 
 Options:
-  --wait                       Wait for completion through the platform job.
-  --installation-id TEXT       installation_id (UUID).  [required]
-  --expected-revision INTEGER  expected_revision  [required]
-  --json                       Emit JSON instead of human-readable output.
-  --help                       Show this message and exit.
+  --wait                          Wait for completion through the platform
+                                  job.
+  --installation-id TEXT          installation_id (UUID).  [required]
+  --expected-revision INTEGER     expected_revision  [required]
+  --reset-release-fence / --no-reset-release-fence
+                                  reset_release_fence (tri-state; omit to
+                                  leave unchanged).
+  --json                          Emit JSON instead of human-readable output.
+  --help                          Show this message and exit.
 ```
 
 ## `claims`

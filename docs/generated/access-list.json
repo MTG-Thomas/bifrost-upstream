@@ -1912,7 +1912,7 @@
     "operation_id": "capacity.cloudflare_reconcile",
     "path": "/api/capacity/cloudflare/reconcile",
     "permission": "platform.readwrite",
-    "reason": "Verify Cloudflare Deployment with platform.readwrite at Global."
+    "reason": "Reconcile Cloudflare with platform.readwrite at Global."
   },
   {
     "access_class": "permission",
@@ -1941,6 +1941,20 @@
     "path": "/api/capacity/cloudflare/scale-in",
     "permission": "platform.readwrite",
     "reason": "Scales in Cloudflare capacity with platform.readwrite at Global."
+  },
+  {
+    "access_class": "permission",
+    "boundary": "platform",
+    "current_gate": "evaluator",
+    "inline_checks": [],
+    "inline_effect": null,
+    "intended_change": null,
+    "mcp_tool": null,
+    "method": "POST",
+    "operation_id": "capacity.cloudflare_upgrade",
+    "path": "/api/capacity/cloudflare/upgrade",
+    "permission": "platform.readwrite",
+    "reason": "Upgrade Cloudflare with platform.readwrite at Global."
   },
   {
     "access_class": "permission",
@@ -10879,6 +10893,20 @@
     "path": null,
     "permission": "platform.readwrite",
     "reason": "Thin MCP wrapper over POST /api/capacity/cloudflare/scale-in; inherits that route's entry."
+  },
+  {
+    "access_class": "permission",
+    "boundary": "platform",
+    "current_gate": "authenticated",
+    "inline_checks": [],
+    "inline_effect": null,
+    "intended_change": null,
+    "mcp_tool": "bifrost_cloudflare_upgrade_execute",
+    "method": null,
+    "operation_id": "capacity.cloudflare_upgrade",
+    "path": null,
+    "permission": "platform.readwrite",
+    "reason": "Thin MCP wrapper over POST /api/capacity/cloudflare/upgrade; inherits that route's entry."
   },
   {
     "access_class": "permission",

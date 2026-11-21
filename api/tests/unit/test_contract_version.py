@@ -464,7 +464,8 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Managed workflow slot caps default when omitted by an existing client.
     # Cloudflare status adds optional deployed revision and upgrade state fields.
     # Cloudflare status optionally reports whether an upgrade is available.
-    "2f338a40b06a15c19f1ddf5702daa8bbb8aa66d1ff5cf024cdfd5297924c3b30"
+    # Cloudflare reconcile and upgrade accept an optional release-fence reset.
+    "cd60ee4485d268ad4d94e83890de29524a4d0a81f99b77d615ad45b751e34fcd"
 )
 
 

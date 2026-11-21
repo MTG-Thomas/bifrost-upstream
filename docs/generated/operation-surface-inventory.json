@@ -520,7 +520,7 @@
         "rest": {
           "method": "POST",
           "path": "/api/capacity/cloudflare/reconcile",
-          "request_model": "CloudflareCapacityAction",
+          "request_model": "CloudflareReconcileAction",
           "response_model": "PlatformJobAccepted"
         },
         "side_effects": [],
@@ -583,7 +583,7 @@
         "rest": {
           "method": "POST",
           "path": "/api/capacity/cloudflare/upgrade",
-          "request_model": "CloudflareCapacityAction",
+          "request_model": "CloudflareReconcileAction",
           "response_model": "PlatformJobAccepted"
         },
         "side_effects": [],

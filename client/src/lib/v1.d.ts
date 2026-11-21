@@ -16689,6 +16689,22 @@ export interface components {
             action: "policy";
             policy: components["schemas"]["CloudflareCapacityPolicy-Input"];
         };
+        /** CloudflareReconcileAction */
+        CloudflareReconcileAction: {
+            /**
+             * Installation Id
+             * Format: uuid
+             */
+            installation_id: string;
+            /** Expected Revision */
+            expected_revision: number;
+            /**
+             * Reset Release Fence
+             * @description Explicitly accept a conflicting or older packaged Workers release.
+             * @default false
+             */
+            reset_release_fence: boolean;
+        };
         /** CloudflareSpendStatus */
         CloudflareSpendStatus: {
             /**
@@ -39224,7 +39240,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CloudflareCapacityAction"];
+                "application/json": components["schemas"]["CloudflareReconcileAction"];
             };
         };
         responses: {
@@ -39257,7 +39273,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CloudflareCapacityAction"];
+                "application/json": components["schemas"]["CloudflareReconcileAction"];
             };
         };
         responses: {
