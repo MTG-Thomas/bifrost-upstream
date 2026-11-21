@@ -22,6 +22,8 @@ from uuid import UUID, uuid4
 
 from shared.solution_git_stage import SOLUTION_GIT_CAPABILITY
 from shared.version import get_version
+
+from src.jobs.platform.policy import PlatformJobExecutor
 from src.services.execution.cpu_sampler import CPUSampler, get_clock_ticks
 from src.services.execution.memory_monitor import (
     effective_memory_sample,
@@ -545,7 +547,8 @@ class Launcher:
                     return
                 process = await asyncio.create_subprocess_exec(
                     sys.executable, "-m", "src.jobs.platform.runner",
-                    payload["job_id"], payload["lease_token"], start_new_session=True,
+                    payload["job_id"], payload["lease_token"], PlatformJobExecutor.REMOTE_LAUNCHER.value,
+                    start_new_session=True,
                 )
                 self.jobs[route_id] = process
                 self.job_claims[route_id] = {

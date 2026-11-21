@@ -3,7 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Literal
+
+
+class PlatformJobExecutor(StrEnum):
+    WORKER_POOL = "worker_pool"
+    KUBERNETES_PLATFORM_JOB = "kubernetes_platform_job"
+    REMOTE_LAUNCHER = "remote_launcher"
 
 
 @dataclass(frozen=True)

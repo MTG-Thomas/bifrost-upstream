@@ -531,8 +531,9 @@ completion, connection reuse, exception class, and last HTTP transport phase.
 The phase distinguishes `tcp_connect`, `tls_handshake`, `request_write`, and
 `response_headers`. Where the exception chain exposes a socket errno, the
 receipt includes its symbolic name. TLS record failures preserve their
-sanitized OpenSSL reason. An overall deadline keeps the interrupted route
-and its last observed phase when available.
+sanitized OpenSSL reason. An overall deadline reports the least-advanced
+in-flight route on the current address. A deadline during the WebSocket
+check reports the `websocket` phase and preserves the earlier HTTP TLS proof.
 The result keeps certificate messages, peer names, and generated path values
 out of diagnostics. Once a refusal or allowed batch fails, the probe returns
 that result before issuing further probes. The certificate, route-witness,
@@ -542,8 +543,11 @@ WebSocket, and signed runtime gates still apply.
 
 Obtain separate owner approval before provisioning or spending. After staging
 Connect with admission closed, identify the platform-job execution backend
-configured to claim Enable. Run the preflight in the worker container for
-the local worker-pool backend. For the Kubernetes backend, use an approved
+configured to claim Enable. Run the preflight inside the worker container
+for a local worker-pool claim. For a physical Linux remote launcher, run
+it in the launcher runner's network namespace or container with the same
+Python environment, resolver, trust store, and egress. The local execution
+backend can be claimed by either of these classes. For Kubernetes, use an approved
 qualification pod with the same platform-job pod spec and replace the job
 entrypoint with the preflight command. Match the worker image, trust store,
 service account, DNS configuration, namespace, network policy, egress and
@@ -568,8 +572,11 @@ raise SystemExit(0 if result.reachable else 1)
 PY
 ```
 
-Record `preflight_execution_class` and the observed `enable_execution_class`
-in the next hosted receipt using `worker_pool` or `kubernetes_platform_job`.
+Record `preflight_execution_class` and copy Enable's result field
+`execution_class` into `enable_execution_class` in the hosted receipt.
+The values are `worker_pool`, `kubernetes_platform_job`, and `remote_launcher`.
+If the qualified topology lets multiple classes claim Enable, qualify each
+eligible class or establish which class will claim the job before submitting.
 If the preflight fails, retain the sanitized result, keep admission closed,
 and tear down the trial. If it passes, submit Enable once and retain the signed
 runtime receipt or the Enable failure details. Proceed to the approved

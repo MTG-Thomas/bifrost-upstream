@@ -7,8 +7,12 @@ from uuid import uuid4
 
 import pytest
 from pydantic import BaseModel
-
-from src.jobs.platform.base import PlatformJobDefinition, PlatformJobPolicy
+from src.jobs.platform.base import (
+    PlatformJobDefinition,
+    PlatformJobPolicy,
+    PlatformJobRequiresAction,
+)
+from src.jobs.platform.policy import PlatformJobExecutor
 from src.jobs.platform.runner import run_claimed_platform_job
 from src.models.orm.platform_jobs import PlatformJob
 from src.services.audit_context import current_actor
@@ -35,6 +39,41 @@ def _running_job(*, payload_version: int, payload: dict[str, object]) -> SimpleN
         impersonation_session_id=None,
         result=None,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("executor", list(PlatformJobExecutor))
+@pytest.mark.parametrize("status", ["succeeded", "requires_action"])
+async def test_enable_receipt_identifies_actual_executor(monkeypatch, executor, status) -> None:
+    from src.jobs.platform import runner
+
+    job = _running_job(payload_version=1, payload={"value": "ok"})
+    job.job_type = "capacity.cloudflare_enable"
+    db = AsyncMock()
+    db.execute.return_value = MagicMock(scalar_one_or_none=lambda: job)
+
+    @asynccontextmanager
+    async def db_context():
+        yield db
+
+    async def handle(_context, _payload):
+        if status == "requires_action":
+            raise PlatformJobRequiresAction("Verify Ingress", {"code": "CF_WORKER_INGRESS_UNVERIFIED"})
+        return {"outcome": "enabled"}
+
+    definition = PlatformJobDefinition(
+        job_type=job.job_type, payload_version=1, payload_model=_Payload, handler=handle,
+        policy=PlatformJobPolicy(timeout_seconds=30),
+    )
+    finish = AsyncMock(return_value=True)
+    monkeypatch.setattr(runner, "get_db_context", db_context)
+    monkeypatch.setattr(runner, "get_platform_job_definition", lambda _: definition)
+    monkeypatch.setattr(runner, "finish_platform_job", finish)
+
+    assert await run_claimed_platform_job(job.id, job.lease_token, executor=executor)
+    assert finish.await_args.kwargs["status"] == status
+    expected = {"outcome": "enabled"} if status == "succeeded" else {"code": "CF_WORKER_INGRESS_UNVERIFIED"}
+    assert finish.await_args.kwargs["result"] == {**expected, "execution_class": executor.value}
 
 
 @pytest.mark.asyncio

@@ -6,6 +6,7 @@ import asyncio
 import logging
 import sys
 from functools import partial
+from typing import TypedDict
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -21,6 +22,7 @@ from src.jobs.platform.base import (
     PlatformJobHandler,
     PlatformJobRequiresAction,
 )
+from src.jobs.platform.policy import PlatformJobExecutor
 from src.jobs.platform.registry import get_platform_job_definition
 from src.models.orm.platform_jobs import PlatformJob
 from src.services.audit_context import ActorContext, clear_actor, set_actor
@@ -33,8 +35,13 @@ from src.services.platform_jobs import (
 logger = logging.getLogger(__name__)
 
 
+class _ReceiptArgs(TypedDict, total=False):
+    result: dict[str, str]
+
+
 async def run_claimed_platform_job(
     job_id: UUID, lease_token: UUID, *, stage_handler: PlatformJobHandler | None = None,
+    executor: PlatformJobExecutor | None = None,
 ) -> bool:
     finish = finish_platform_job
     if stage_handler is not None:
@@ -58,6 +65,12 @@ async def run_claimed_platform_job(
         ).scalar_one_or_none()
         if job is None or job.status == "cancel_requested":
             return False
+        execution_receipt = (
+            {"execution_class": executor.value}
+            if executor is not None and job.job_type == "capacity.cloudflare_enable"
+            else {}
+        )
+        receipt_args: _ReceiptArgs = {"result": execution_receipt} if execution_receipt else {}
         definition = get_platform_job_definition(job.job_type)
         if definition is None:
             if stage_handler is not None:
@@ -68,6 +81,7 @@ async def run_claimed_platform_job(
                 status="failed",
                 error_code="unknown_job_type",
                 error_message=f"No handler is registered for {job.job_type}.",
+                **receipt_args,
             )
             return False
         payload_model = definition.payload_model_for_version(job.payload_version)
@@ -83,6 +97,7 @@ async def run_claimed_platform_job(
                     f"{job.job_type} payload version {job.payload_version} "
                     f"is not supported."
                 ),
+                **receipt_args,
             )
             return False
         payload_data = job.payload
@@ -132,7 +147,7 @@ async def run_claimed_platform_job(
             job_id,
             lease_token,
             status="succeeded",
-            result=result or {},
+            result={**(result or {}), **execution_receipt},
         )
     except PlatformJobCancelled:
         if stage_handler is not None:
@@ -141,6 +156,7 @@ async def run_claimed_platform_job(
             job_id,
             lease_token,
             status="cancelled",
+            **receipt_args,
         )
     except PlatformJobDeferred as exc:
         if stage_handler is not None:
@@ -155,6 +171,8 @@ async def run_claimed_platform_job(
             result=exc.result,
         )
     except PlatformJobFailure as exc:
+        if execution_receipt:
+            exc.result = {**(exc.result or {}), **execution_receipt}
         if stage_handler is not None:
             return await finish(
                 job_id, lease_token, status="failed", error_code=exc.code,
@@ -167,7 +185,7 @@ async def run_claimed_platform_job(
             lease_token,
             status="requires_action",
             phase=exc.phase,
-            result=exc.result,
+            result={**exc.result, **execution_receipt},
         )
     except ValidationError as exc:
         return await finish(
@@ -176,6 +194,7 @@ async def run_claimed_platform_job(
             status="failed",
             error_code="invalid_payload",
             error_message=str(exc),
+            **receipt_args,
         )
     except Exception as exc:
         logger.exception(
@@ -193,17 +212,19 @@ async def run_claimed_platform_job(
                 else "Platform job failed unexpectedly; see server logs."
             ),
             error_retryable=False,
+            **receipt_args,
         )
     finally:
         clear_actor(actor_token)
 
 
-async def _main(job_id: str, lease_token: str) -> int:
+async def _main(job_id: str, lease_token: str, executor: PlatformJobExecutor | None = None) -> int:
     await init_db()
     try:
         completed = await run_claimed_platform_job(
             UUID(job_id),
             UUID(lease_token),
+            executor=executor,
         )
         return 0 if completed else 1
     finally:
@@ -211,9 +232,10 @@ async def _main(job_id: str, lease_token: str) -> int:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        raise SystemExit("usage: platform.runner JOB_ID LEASE_TOKEN")
+    if len(sys.argv) not in (3, 4):
+        raise SystemExit("usage: platform.runner JOB_ID LEASE_TOKEN [EXECUTOR]")
     from src.services.execution.oom_priority import volunteer_for_oom_kill
 
     volunteer_for_oom_kill()
-    raise SystemExit(asyncio.run(_main(sys.argv[1], sys.argv[2])))
+    executor = PlatformJobExecutor(sys.argv[3]) if len(sys.argv) == 4 else None
+    raise SystemExit(asyncio.run(_main(sys.argv[1], sys.argv[2], executor)))
