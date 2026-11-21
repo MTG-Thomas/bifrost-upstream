@@ -213,6 +213,45 @@ async def test_classifies_failures_on_real_tls_sockets(
     assert route.failure.as_result() == expected
 
 
+@pytest.mark.asyncio
+async def test_tls_record_error_after_handshake_keeps_route_diagnostics(tls_contexts) -> None:
+    server_tls, trust = tls_contexts
+
+    def send_invalid_record(listener: socket.socket) -> None:
+        connection, _ = listener.accept()
+        connection.settimeout(4)
+        with connection, server_tls.wrap_socket(connection, server_side=True) as tls:
+            request = tls.makefile("rb")
+            with request:
+                while request.readline() not in (b"\r\n", b""):
+                    pass
+            # Send a plaintext response to a client already expecting TLS records.
+            with socket.socket(fileno=tls.detach()) as raw:
+                raw.sendall(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n")
+
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        listener.settimeout(4)
+        origin = f"https://127.0.0.1:{listener.getsockname()[1]}"
+        async with httpx.AsyncClient(verify=trust, trust_env=False, timeout=4) as client:
+            serving = asyncio.create_task(asyncio.to_thread(send_invalid_record, listener))
+            route = await probes._check_route(
+                client, origin, "workers.example.test", "GET", "/api/sdk/context", allowed=True,
+            )
+            await serving
+
+    assert route.failure is not None
+    assert route.failure.as_result() == {
+        "stage": "ingress_http",
+        "error_class": "route_transport_error",
+        "address_family": "ipv4",
+        "method": "GET",
+        "route_template": "/api/sdk/context",
+        "handshake_completed": True,
+        "connection_reused": False,
+        "exception_class": "SSLError",
+    }
+
+
 @pytest.mark.parametrize(("signed", "stage"), [(False, "hello"), (True, "ack")])
 def test_incomplete_runtime_canary_reports_the_unobserved_stage(signed: bool, stage: str) -> None:
     result = probes.WorkerIngressProbeResult(

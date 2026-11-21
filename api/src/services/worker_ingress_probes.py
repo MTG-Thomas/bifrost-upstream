@@ -248,14 +248,16 @@ async def _check_route(
                 handshake_completed=True, connection_reused=connection_reused,
             )
             return RouteProbe(method, route, status, False, error_class=kind, failure=failure)
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, ssl.SSLError) as exc:
         tls_error = _find_tls_error(exc)
         unavailable = False
-        if isinstance(exc, httpx.ConnectTimeout):
+        if tls_error is not None and not handshake_completed and isinstance(exc, (httpx.ConnectError, ssl.SSLError)):
+            kind = "tls_error"
+        elif isinstance(exc, httpx.ConnectTimeout):
             kind = "connect_timeout"
         elif isinstance(exc, httpx.ConnectError):
-            kind = "tls_error" if tls_error is not None and not handshake_completed else "connect_error"
-            unavailable = kind == "connect_error" and _missing_tcp_route(exc)
+            kind = "connect_error"
+            unavailable = _missing_tcp_route(exc)
         elif isinstance(exc, httpx.TimeoutException):
             kind = "route_timeout"
         elif isinstance(exc, httpx.ProtocolError):
@@ -270,7 +272,7 @@ async def _check_route(
         failure = replace(
             failure, method=method, route_template=route, handshake_completed=handshake_completed,
             connection_reused=connection_reused,
-            exception_class=type(tls_error if kind == "tls_error" else exc).__name__,
+            exception_class=type(tls_error or exc).__name__,
         )
         return RouteProbe(method, route, None, False, unavailable, kind, failure)
 
