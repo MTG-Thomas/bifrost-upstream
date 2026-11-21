@@ -178,6 +178,15 @@ TenantHost-seconds. The four synthetic boot receipts released 2,000,000
 microseconds of excess CPU reserve. This exercises the ledger with controlled
 receipts. Hosted parallel boot performance and billing remain unmeasured.
 
+The post-booking admission check uses the installation ID from the fenced
+slot. This saves an installation lookup while the activity row is locked.
+The estimate still runs before commit so a competing booking sees the
+committed charge before checking the same limit. In the local two-session
+budget fixture, exactly one booking committed. The winning client's
+observed interval from the activity upsert returning through commit was
+323 ms in that run. This interval includes query and commit round trips
+and excludes time within the upsert itself.
+
 The loader authorization books each distinct loader identity, including its
 engine code digest once per UTC day. A slot-day forecast for the dispatch
 pays for the first identity. Preparation books the identity before Loader entry.
