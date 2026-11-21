@@ -1209,10 +1209,15 @@ async def test_idle_cloudflare_worker_yields_a_capped_slot_for_linux_demand(db, 
     )
 
 
-@pytest.mark.parametrize("approved", [True, False], ids=["foreign-tenant", "linux-only"])
-async def test_controller_counts_a_released_prewarm_as_used_capacity(db, approved) -> None:
+@pytest.mark.parametrize("demand", ["held", "foreign-tenant", "linux-only"])
+async def test_controller_counts_a_released_prewarm_as_used_capacity(db, demand) -> None:
     worker_id = await _declared_worker(db)
     now = datetime.now(UTC)
+    tenant = uuid4()
+    async with db.context() as session:
+        session.add(Organization(id=tenant, name=str(tenant), created_by="fixture"))
+    execution = await _accept_pool_run(org_id=str(tenant))
+    await _set_request(db.sessions, execution, 64 * MIB, approved=True)
     async with db.context() as session:
         installation_id = uuid4()
         session.add(CloudflareInstallation(
@@ -1221,17 +1226,21 @@ async def test_controller_counts_a_released_prewarm_as_used_capacity(db, approve
             desired_revision=1, desired_state="disconnected", retired_at=now,
         ))
         await session.flush()
+        dispatch_id = await session.scalar(select(WorkDispatch.id).where(WorkDispatch.subject_id == UUID(execution)))
+        assert dispatch_id is not None
         session.add(CloudflareWorkflowSlot(
-            installation_id=installation_id, tenant=str(uuid4()), ordinal=0, worker_id=worker_id,
-            execution_id=uuid4(), dispatch_id=uuid4(), fence=uuid4(),
+            installation_id=installation_id, tenant=str(tenant), ordinal=0, worker_id=worker_id,
+            execution_id=UUID(execution), dispatch_id=dispatch_id, fence=uuid4(),
             released_at=now, warm_until=now + timedelta(seconds=90), prewarm_fence=uuid4(),
         ))
-    queued = await _accept_pool_run()
-    await _set_request(db.sessions, queued, 64 * MIB, approved=approved)
+    if demand != "held":
+        queued = await _accept_pool_run()
+        await _set_request(db.sessions, queued, 64 * MIB, approved=demand == "foreign-tenant")
     pool = _controller(FakeCluster(), get_version())
-    # The held seat cannot cover another tenant, and it cannot yield to Linux.
-    if approved:
-        assert len(await pool.launch_for_demand(replace(POLICY, max_workers=2))) == 1
+    # The held dispatch is covered, the seat cannot cover a second tenant,
+    # and the launcher cannot yield to Linux while holding the seat.
+    if demand != "linux-only":
+        assert len(await pool.launch_for_demand(replace(POLICY, max_workers=2))) == int(demand == "foreign-tenant")
     else:
         assert await pool.launch_for_demand(replace(POLICY, max_workers=1)) == []
         assert not await claims.begin_idle_drain(worker_id)

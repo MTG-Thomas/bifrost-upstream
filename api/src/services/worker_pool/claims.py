@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import String, case, cast, exists, false, func, select, text, tuple_, update
+from sqlalchemy import String, case, cast, exists, false, func, null, select, text, tuple_, update
 
 from src.config import get_settings
 from src.core.database import get_db_context, get_liveness_db_context
@@ -371,6 +371,7 @@ async def claim_next(
                 eligible_candidate = candidate
                 slot_filter = ()
                 released_prewarms = 0
+                prewarm_ordinal = null()
                 if slot_admission is not None:
                     tenant = func.coalesce(cast(dispatch_tenant, String), "platform")
                     released_prewarms = await count_released_prewarms(db, incarnation_id)
@@ -380,12 +381,17 @@ async def claim_next(
                             budget_bytes // CLOUDFLARE_DEV_BUDGET_BYTES
                         ):
                             room = false()
-                        room = room | adoptable_workflow_slot(slot_admission, incarnation_id, tenant)
+                        prewarm_ordinal = adoptable_workflow_slot(slot_admission, incarnation_id, tenant)
+                        room = room | prewarm_ordinal.is_not(None)
                     elif slot_admission.full:
                         return None
                     slot_filter = (room,)
                     eligible_candidate = candidate.where(*slot_filter)
-                picked = (await db.execute(eligible_candidate)).one_or_none()
+                # Capture adoption while the dispatch is still pending. Claiming
+                # the pinned dispatch consumes its queue row in this transaction.
+                picked = (await db.execute(
+                    eligible_candidate.add_columns(prewarm_ordinal.label("prewarm_ordinal")),
+                )).one_or_none()
                 if picked is None:
                     return None
                 if picked.opaque and picked.trigger_type == "chat" and cloudflare_chat_endpoint is not None:
@@ -478,7 +484,7 @@ async def claim_next(
                     if claimed is not None and slot_admission is not None:
                         workflow_slot = await occupy_workflow_slot(
                             db, slot_admission, incarnation_id, picked.tenant_id,
-                            row.subject, row.dispatch_id, claim_id,
+                            row.subject, row.dispatch_id, claim_id, prewarm_ordinal=picked.prewarm_ordinal,
                         )
                         if queue_prewarm_slots and slot_admission.policy.queue_prewarm_per_tenant:
                             if not workflow_slot.prewarming:
