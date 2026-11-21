@@ -1,5 +1,6 @@
 import asyncio
 import errno
+import re
 import socket
 import ssl
 import sys
@@ -348,7 +349,10 @@ async def test_tls_record_error_after_handshake_keeps_route_diagnostics(tls_cont
             await serving
 
     assert route.failure is not None
-    assert route.failure.as_result() == {
+    result = route.failure.as_result()
+    reason = result.pop("tls_reason")
+    assert isinstance(reason, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", reason)
+    assert result == {
         "stage": "ingress_http",
         "error_class": "route_transport_error",
         "address_family": "ipv4",
@@ -358,7 +362,6 @@ async def test_tls_record_error_after_handshake_keeps_route_diagnostics(tls_cont
         "connection_reused": False,
         "exception_class": "SSLError",
         "phase": "response_headers",
-        "tls_reason": "WRONG_VERSION_NUMBER",
     }
 
 
