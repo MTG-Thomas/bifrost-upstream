@@ -389,6 +389,23 @@ entries, and the meter row removed by `deleteAll()`. Cloudflare documents
 SQLite deletes as billed writes and does not distinguish bulk clearing in
 that pricing rule. [Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/#sqlite-storage-backend)
 
+### Combined Bundle Local Requalification
+
+The three-script candidate at `9bc6d6db0` passed the reviewed meter inventory
+and the Linux workerd CPU and launcher lifecycle fixtures. Per-path CPU limits
+use the higher p99 from the previous and current samples with the existing
+10× margin. The updated capacity, private gateway and diagnostic exercise
+limits are 104 ms, 2,133 ms and 672 ms. Boot remains capped at 30,000 ms,
+warm priming at 440 ms and the uncapped startup reserve at 48,522 ms.
+
+The launcher sealed 68 SQLite row writes, six Durable Object requests and two
+log events across the two reference workflows and 170 scheduled controller
+observations. Both reference workflows followed a cold boot and entered a warm
+child. The resulting launcher caps are 680 writes, 60 requests and 20 log
+events. The 40-request SDK limit still uses the prior hosted SDK reference.
+The [local receipt](../../results/cloudflare-scaleout-meter-local.json)
+records the three module digests, the candidate fingerprint and the samples.
+
 #### Hosted SDK Measurement
 
 The hosted reference used manifest

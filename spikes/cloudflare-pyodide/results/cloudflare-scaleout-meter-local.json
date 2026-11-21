@@ -1,0 +1,79 @@
+{
+  "source": "9bc6d6db0",
+  "environment": "Linux workerd 1.20261023.1, Node.js 26.13.1",
+  "sha256": {
+    "bundle": "37290640e82d96ab534e97c6c4e871d4ccf381f89f42ff87cd43260b62c0e2c8",
+    "capacity": "914baebf27bd2148eb1a86d9bdcae7e8a8f598507b6b02d13c2c042659d03c94",
+    "launcher": "84ba67fdaeb35beda5e9889c73580600e1c0253928734c0e6a882edfd86d45f2",
+    "gateway": "6fb1025b11b308d3a628bed063cb5aa5d11f141819eb3ddd1c0b8153621847d5"
+  },
+  "cpu_samples": {
+    "capacity_prepare": {
+      "samples": 4,
+      "p99_us": 10367
+    },
+    "capacity_profile": {
+      "samples": 100,
+      "p99_us": 1758
+    },
+    "capacity_observe": {
+      "samples": 100,
+      "p99_us": 2159
+    },
+    "capacity_start": {
+      "samples": 4,
+      "p99_us": 3097
+    },
+    "capacity_delete": {
+      "samples": 4,
+      "p99_us": 8707
+    },
+    "boot": {
+      "samples": 4,
+      "p99_us": 5538209
+    },
+    "loose": {
+      "samples": 4,
+      "p99_us": 213253
+    },
+    "solution": {
+      "samples": 4,
+      "p99_us": 106114
+    },
+    "warm": {
+      "samples": 100,
+      "p99_us": 34647
+    },
+    "exercise": {
+      "samples": 100,
+      "p99_us": 67154
+    },
+    "cold_exercise": {
+      "samples": 4,
+      "p99_us": 3490749
+    }
+  },
+  "launcher_reference": {
+    "scheduled_observations": 170,
+    "elapsed_seconds": 353.658,
+    "capacity_requests": 182,
+    "counts": {
+      "sqlite_rows_written": 68,
+      "do_requests": 6,
+      "log_events": 2
+    },
+    "exhausted": false,
+    "attempts": [
+      {
+        "cold_boot": true,
+        "workflow_cold": false,
+        "workflow_wall_ms": 98
+      },
+      {
+        "cold_boot": true,
+        "workflow_cold": false,
+        "workflow_wall_ms": 84
+      }
+    ]
+  }
+}

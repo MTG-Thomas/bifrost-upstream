@@ -27,8 +27,8 @@ test('every input in the packaged Workers import graph has a reviewed billing cl
 
 test('build uses the pinned measured capacity CPU and request inputs with the reviewed margin', () => {
   assert.deepEqual(qualifiedMeterLimits(qualification()), {
-    capacityCpuMs: 87, launcherCpuMs: 1097, sdkRequests: 40, engineCpuMs: 30_000,
-    bootCpuMs: 30_000, warmCpuMs: 440, exerciseCpuMs: 613,
+    capacityCpuMs: 104, launcherCpuMs: 2133, sdkRequests: 40, engineCpuMs: 30_000,
+    bootCpuMs: 30_000, warmCpuMs: 440, exerciseCpuMs: 672,
     launcherMeters: Object.fromEntries(Object.entries(qualification().qualification.launcher_reference.observed)
       .map(([meter, count]) => [meter, count * 10])),
   });

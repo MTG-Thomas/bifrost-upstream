@@ -2,37 +2,37 @@
   "qualification": {
     "source_run": "22529613-b865-4cab-9f7d-49361b3568a0",
     "observed_manifest_sha256": "b4d55400c080dc014b85054f1560e8a0e4da2470d597c71ab5c501790801f112",
-    "bundle_sha256": "d7a02086531eb672e9a6669a9e9ccd06230f53560612630acfd362c50e4aa891",
-    "capacity_module_sha256": "c4fbefd8a63eddfcb6bddd8b08a9d33c035f450320aa4687788dceb1bc869e79",
+    "bundle_sha256": "37290640e82d96ab534e97c6c4e871d4ccf381f89f42ff87cd43260b62c0e2c8",
+    "capacity_module_sha256": "914baebf27bd2148eb1a86d9bdcae7e8a8f598507b6b02d13c2c042659d03c94",
     "cpu_reference": {
       "source_run": "46eb01a8-f3d7-415f-8092-be70e73ed6a0",
-      "requalification_run": "d04fa065-1b6a-4c52-bcf4-704265e50c5c",
+      "requalification_run": "7b547cb2-c208-4920-a7c5-0b445513a4a5",
       "startup_reserve_ms": 48522,
       "samples": {
-        "capacity_profile": {"samples": 100, "p99_us": 1691},
+        "capacity_profile": {"samples": 100, "p99_us": 1758},
         "capacity_observe": {"samples": 100, "p99_us": 2273},
-        "capacity_prepare": {"samples": 4, "p99_us": 8658},
-        "capacity_start": {"samples": 4, "p99_us": 2547},
-        "capacity_delete": {"samples": 4, "p99_us": 5643},
+        "capacity_prepare": {"samples": 4, "p99_us": 10367},
+        "capacity_start": {"samples": 4, "p99_us": 3097},
+        "capacity_delete": {"samples": 4, "p99_us": 8707},
         "boot": {"samples": 4, "p99_us": 7314646},
         "warm": {"samples": 100, "p99_us": 43918},
-        "exercise": {"samples": 100, "p99_us": 61295},
+        "exercise": {"samples": 100, "p99_us": 67154},
         "cold_exercise": {"samples": 4, "p99_us": 4852122},
-        "loose": {"samples": 4, "p99_us": 109638},
-        "solution": {"samples": 4, "p99_us": 85358}
+        "loose": {"samples": 4, "p99_us": 213253},
+        "solution": {"samples": 4, "p99_us": 106114}
       }
     },
     "sdk_requests": 4,
     "safety_margin": 10,
     "launcher_reference": {
-      "source": "local-workerd:170x2s:0b9c414b-d42c-4454-bb88-42abbeb2b578,fe3b6d8f-5515-4c25-8c80-aff9c55b8bbf",
-      "observed": {"sqlite_rows_written": 64, "do_requests": 6, "log_events": 2}
+      "source": "local-workerd:170x2s:release-9bc6d6db0",
+      "observed": {"sqlite_rows_written": 68, "do_requests": 6, "log_events": 2}
     }
   },
   "cleanup_margin_seconds": 300,
   "per_launcher_second": {
     "worker_requests": "2",
-    "worker_cpu_ms": "61184",
+    "worker_cpu_ms": "62237",
     "do_requests": "64",
     "do_gb_seconds": "1",
     "sqlite_rows_read": "128",
