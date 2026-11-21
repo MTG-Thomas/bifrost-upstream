@@ -48,7 +48,6 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareWorkerReservation,
     CloudflareWorkflowSlot,
 )
-from src.models.enums import ExecutionStatus
 from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
 from src.models.orm.executions import Execution
 from src.models.orm.organizations import Organization
