@@ -11,7 +11,11 @@ from types import MappingProxyType
 from uuid import UUID
 
 from pydantic import ValidationError
-from shared.models import CLOUDFLARE_MAX_RECEIPT_ROUTES, CloudflareEngineInvocation, CloudflareLauncherUsage
+from shared.models import (
+    CLOUDFLARE_MAX_RECEIPT_ROUTES,
+    CloudflareEngineInvocation,
+    CloudflareLauncherUsage,
+)
 from sqlalchemy import (
     Boolean,
     DateTime,
@@ -48,6 +52,9 @@ from src.models.orm.cloudflare_capacity import (
 )
 from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
 from src.services.pool_cadence import POOL_RECONCILE_SPACING_SECONDS
+from src.services.worker_pool.cloudflare_containers_policy import (
+    container_account_usage,
+)
 from src.worker.remote.protocol import CLOUDFLARE_MAX_CONTROL_FRAGMENTS
 
 
@@ -1006,8 +1013,6 @@ async def read_workers_usage(db: AsyncSession, installation_id: UUID, as_of: dat
 def cloudflare_estimated_usage(as_of: datetime | None = None) -> ColumnElement[Decimal | None]:
     """Price the account ledger, using the admission statement clock by default."""
     installation = CloudflareInstallation
-    from src.services.worker_pool.cloudflare_containers_policy import container_account_usage
-
     now = func.statement_timestamp() if as_of is None else literal(as_of)
     totals = _totals(installation.id, now)
     policy_version = installation.policy["rate_table_version"].as_string()

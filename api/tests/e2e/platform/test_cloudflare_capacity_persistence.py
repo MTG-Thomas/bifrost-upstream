@@ -1853,6 +1853,7 @@ async def test_container_reservation_serializes_shared_capacity(async_session_fa
     release, _, _ = make_release()
     now = datetime.now(UTC)
     account, primary, warmer = uuid4().hex, uuid4(), uuid4()
+    primary_pool = cloudflare_admission.PrimaryPool("external", scope=f"fixture-{primary}", ceiling=1)
     tenants = [uuid4() for _ in range(3)]
     execution_ids = [uuid4() for _ in range(3)]
     workflow_ids = [uuid4() for _ in range(3)]
@@ -1881,7 +1882,8 @@ async def test_container_reservation_serializes_shared_capacity(async_session_fa
         ))
         db.add_all(Organization(id=tenant, name=str(tenant), created_by="fixture") for tenant in tenants)
         db.add(ExecutionWorker(
-            id=primary, form="static", state="ready", heartbeat_at=now,
+            id=primary, form=primary_pool.form, capacity_scope=primary_pool.scope,
+            state="ready", heartbeat_at=now,
             memory_budget_bytes=128, memory_reserved_bytes=128,
         ))
         await db.flush()
@@ -1890,7 +1892,9 @@ async def test_container_reservation_serializes_shared_capacity(async_session_fa
             deployment_revision=1, bearer_version=1,
         ))
         for workflow_id, path, tenant in zip(workflow_ids, paths, placement_tenants, strict=True):
-            db.add(Workflow(id=workflow_id, name="native", function_name="run", path=path, organization_id=tenant))
+            db.add(Workflow(
+                id=workflow_id, name=f"native-{workflow_id}", function_name="run", path=path, organization_id=tenant,
+            ))
             db.add(FileIndex(path=path, content_hash="a" * 64))
         await db.flush()
         for index, (workflow_id, path, tenant, run) in enumerate(zip(
@@ -1935,12 +1939,19 @@ async def test_container_reservation_serializes_shared_capacity(async_session_fa
             assert pid is not None
             result = await reserve_container(
                 db, installation_id=installation_id, controller_id=uuid4(),
-                primary=cloudflare_admission.PrimaryPool("static"), release=release,
+                primary=primary_pool, release=release,
             )
             await db.commit()
             return pid, result.worker_id if result is not None else None
 
     try:
+        async with async_session_factory() as db:
+            assert await db.scalar(select(cloudflare_admission.workers_release_matches()).where(
+                CloudflareInstallation.id == installation_id,
+            )) is True
+            assert await db.scalar(select(cloudflare_estimated_usage()).where(
+                CloudflareInstallation.id == installation_id,
+            )) is not None
         if race == "installation":
             assert (await claim())[1] is not None
         async with async_session_factory() as blocker:
