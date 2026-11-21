@@ -14,7 +14,7 @@ import httpx
 import pytest
 import pytest_asyncio
 from pydantic import SecretStr
-from shared.models import CloudflareCapacityPolicy, WorkerCapacityProfile, WorkerCapacityReservation
+from shared.models import CloudflareCapacityPolicy, WorkerCapacityProfile, WorkerCapacityReservation, WorkerCapacityResource
 from shared.solution_git_stage import SOLUTION_GIT_CAPABILITY
 from shared.worker_control_auth import managed_cloudflare_control_key
 from sqlalchemy import delete, func, select
@@ -29,7 +29,7 @@ from src.models.orm.cloudflare_capacity import (
 )
 from src.models.orm.execution_workers import ExecutionWorker
 from src.models.orm.executions import Execution
-from src.services.worker_pool import claims, controller, external_controller
+from src.services.worker_pool import claims, cloudflare_spend, controller, external_controller
 from src.services.worker_pool.cloudflare_admission import (
     ManagedCloudflareScope,
     PrimaryPool,
@@ -872,6 +872,73 @@ async def test_provider_redirects_never_forward_the_bearer_to_another_origin():
         with pytest.raises(httpx.HTTPStatusError):
             await client.profile()
     assert requests == ["capacity.invalid"]
+
+
+@pytest.mark.parametrize("reply", ["fence", "receipt", "wrong_uid", "running"])
+async def test_acknowledge_receipt_requires_matching_compacted_fence(reply):
+    worker_id = uuid4()
+    usage = {"sqlite_rows_written": 3, "do_requests": 1, "log_events": 0, "ledger_receipt_pending": True}
+
+    def provider(request):
+        assert request.method == "DELETE" and request.url.path == f"/v1/workers/{worker_id}"
+        assert request.headers["X-Bifrost-Capacity-Scope"] == "workers"
+        assert json.loads(request.content) == {"resource_uid": "owned", "receipt_ack": True}
+        return httpx.Response(200, json={
+            "worker_id": str(worker_id), "scope": "workers", "worker_version": "fixture",
+            "resource_uid": "other" if reply == "wrong_uid" else "owned",
+            "state": "running" if reply == "running" else "deleted",
+            **({"usage": usage} if reply == "receipt" else {}),
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+        client = ExternalCapacityClient("https://capacity.invalid", TOKEN, http=http)
+        if reply == "fence":
+            await client.acknowledge_receipt(worker_id, "workers", "owned")
+        else:
+            with pytest.raises(CapacityProtocolError):
+                await client.acknowledge_receipt(worker_id, "workers", "owned")
+
+
+async def test_controller_retries_receipt_ack_after_committing_settlement(db, capacity, managed_pool, monkeypatch):
+    await _accept_pool_run()
+    [worker_id] = await managed_pool.launch_for_demand(capacity.policy)
+    async with db.context() as session:
+        worker = await session.get(ExecutionWorker, worker_id)
+        assert worker is not None
+        uid = worker.capacity_resource_uid
+        assert uid is not None
+        worker.state, worker.ended_at = "retired", controller._now()
+    scope = capacity.provider.profile.scope
+    receipt = WorkerCapacityResource.model_validate({
+        "scope": scope, "worker_id": worker_id, "worker_version": capacity.provider.profile.worker_version,
+        "resource_uid": uid, "state": "deleted",
+        "usage": {"sqlite_rows_written": 3, "do_requests": 1, "log_events": 0, "ledger_receipt_pending": True},
+    })
+    monkeypatch.setattr(managed_pool.client, "get", AsyncMock(return_value=receipt))
+    monkeypatch.setattr(cloudflare_spend, "get_db_context", db.context)
+    attempts = 0
+
+    async def acknowledge(actual_worker, actual_scope, actual_uid):
+        nonlocal attempts
+        assert (actual_worker, actual_scope, actual_uid) == (worker_id, scope, uid)
+        async with db.context() as session:
+            settled = await session.get(CloudflareUsageIncarnation, worker_id)
+            assert settled is not None and settled.deleted_at is not None
+            assert settled.meter_final and settled.meter_final["ledger_receipt_pending"] is True
+        attempts += 1
+        if attempts == 1:
+            raise httpx.ReadTimeout("lost acknowledgement")
+
+    monkeypatch.setattr(managed_pool.client, "acknowledge_receipt", acknowledge)
+    with pytest.raises(httpx.ReadTimeout):
+        await managed_pool.reconcile_worker(worker_id, capacity.policy)
+    cleanup = select(ExecutionWorker.id).where(ExecutionWorker.id == worker_id, managed_pool._cleanup_scope())
+    async with db.context() as session:
+        assert await session.scalar(cleanup) == worker_id
+    await managed_pool.reconcile_worker(worker_id, capacity.policy)
+    assert attempts == 2
+    async with db.context() as session:
+        assert await session.scalar(cleanup) is None
 
 
 @pytest.mark.parametrize("terminal_state", ["lost", "retired"])

@@ -380,12 +380,11 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
   await next(() => sockets.get(id).readyState === 3);
   assert.equal((await request(path + '/start', 'POST', {resource_uid})).status, 409);
   assert.equal(hellos.get(id).length, 1);
-  if (deleted.usage?.ledger_receipt_pending) {
-    const compacted = await (await request(path, 'DELETE', {resource_uid, receipt_ack: true})).json();
-    assert.equal(compacted.state, 'deleted');
-    assert.equal(compacted.usage, undefined);
-    assert.deepEqual(await (await request(path)).json(), compacted);
-  }
+  assert.equal(deleted.usage?.ledger_receipt_pending, true);
+  const compacted = await (await request(path, 'DELETE', {resource_uid, receipt_ack: true})).json();
+  assert.equal(compacted.state, 'deleted');
+  assert.equal(compacted.usage, undefined);
+  assert.deepEqual(await (await request(path)).json(), compacted);
   if (!measuredLauncher) {
     await mf.dispose();
     await start();

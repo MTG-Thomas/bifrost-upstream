@@ -75,17 +75,19 @@ function confirmedStorage(ctx, getMeter) {
           throw Object.assign(new Error('Cloudflare launcher SQLite budget reached'), {name: METER_ERROR});
         }
       }
-      return confirm(() => storage.transactionSync(() => {
-        if (!hasLedger()) {
-          sql.exec('CREATE TABLE ledger (key TEXT, part INTEGER, data BLOB, PRIMARY KEY (key, part))');
-          exists = true;
-        }
-        sql.exec('DELETE FROM ledger WHERE key = ?', key);
-        for (let offset = 0; offset < bytes.length; offset += STORAGE_CHUNK) {
-          const chunk = bytes.subarray(offset, offset + STORAGE_CHUNK);
-          sql.exec('INSERT INTO ledger VALUES (?, ?, ?)', key, offset, chunk);
-        }
-      }));
+      return confirm(() => {
+        storage.transactionSync(() => {
+          if (!hasLedger()) {
+            sql.exec('CREATE TABLE ledger (key TEXT, part INTEGER, data BLOB, PRIMARY KEY (key, part))');
+          }
+          sql.exec('DELETE FROM ledger WHERE key = ?', key);
+          for (let offset = 0; offset < bytes.length; offset += STORAGE_CHUNK) {
+            const chunk = bytes.subarray(offset, offset + STORAGE_CHUNK);
+            sql.exec('INSERT INTO ledger VALUES (?, ?, ?)', key, offset, chunk);
+          }
+        });
+        exists = true;
+      });
     },
     delete(slot, tombstone) {
       if (!hasLedger()) return;
@@ -97,6 +99,11 @@ function confirmedStorage(ctx, getMeter) {
     },
     cleanupRows() {
       return hasLedger() ? 2 * sql.exec('SELECT count(*) AS n FROM ledger').one().n : 0;
+    },
+    async clear() {
+      await storage.deleteAll();
+      await storage.sync();
+      exists = false;
     },
   };
 }
@@ -349,8 +356,7 @@ export class CloudflareLauncher extends DurableObject {
       if (fact && fact.state !== 'deleted') throw new Error('Launcher must be stopped before storage is cleared');
       // Only the capacity ledger calls this RPC, after storing the seal and
       // fencing prepare/start. An absent fact is safe on a retried purge.
-      await this.ctx.storage.deleteAll();
-      await this.ctx.storage.sync();
+      await this.#storage.clear();
     });
   }
 
