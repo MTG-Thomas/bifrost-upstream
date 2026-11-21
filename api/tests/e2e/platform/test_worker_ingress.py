@@ -251,6 +251,13 @@ async def test_worker_ingress_over_tls(
 
             wrong_tls = await probe_address(origin, "wrong.example.test", "127.0.0.1", port, trust=trust)
             assert not wrong_tls.tls
+            assert wrong_tls.failure.as_result() == {
+                "stage": "ingress_http",
+                "error_class": "tls_error",
+                "address_family": "ipv4",
+                "tls_reason": "CERTIFICATE_VERIFY_FAILED",
+                "tls_verify_code": 62,
+            }
             # Confirm the probe rejects a proxy that accidentally targets the unrestricted API.
             upstream_port = api.port
             misrouted = await probes.probe_worker_ingress(installation, runtime_canary=signed_canary)

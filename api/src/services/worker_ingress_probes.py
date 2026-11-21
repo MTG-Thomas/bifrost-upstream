@@ -52,6 +52,7 @@ class RouteProbe:
     passed: bool
     connect_unavailable: bool = False
     error_class: str | None = None
+    tls_failure: "CanaryFailure | None" = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,11 +60,20 @@ class CanaryFailure:
     stage: str
     error_class: str
     status: int | None = None
+    address_family: str | None = None
+    tls_reason: str | None = None
+    tls_verify_code: int | None = None
 
     def as_result(self) -> dict[str, str | int]:
         result: dict[str, str | int] = {"stage": self.stage, "error_class": self.error_class}
         if self.status is not None:
             result["status"] = self.status
+        if self.address_family is not None:
+            result["address_family"] = self.address_family
+        if self.tls_reason is not None:
+            result["tls_reason"] = self.tls_reason
+        if self.tls_verify_code is not None:
+            result["tls_verify_code"] = self.tls_verify_code
         return result
 
     @classmethod
@@ -127,6 +137,8 @@ class WorkerIngressProbeResult:
             return CanaryFailure("ack" if signed else "hello", "timeout")
         failed = next((route for route in self.routes if not route.passed), None)
         if failed is not None:
+            if failed.tls_failure is not None:
+                return failed.tls_failure
             return CanaryFailure("ingress_http", failed.error_class or "route_refused", failed.status)
         return CanaryFailure("ingress_websocket", "upgrade_unverified")
 
@@ -145,14 +157,28 @@ async def _public_addresses(host: str) -> tuple[str, ...]:
     return addresses
 
 
-def _tls_error(cause: BaseException | None) -> bool:
+def _find_tls_error(cause: BaseException | None) -> ssl.SSLError | None:
     while cause is not None:
         if isinstance(cause, ssl.SSLError):
-            return True
+            return cause
         if isinstance(cause, BaseExceptionGroup):
-            return any(_tls_error(member) for member in cause.exceptions)
+            for member in cause.exceptions:
+                if (error := _find_tls_error(member)) is not None:
+                    return error
         cause = cause.__cause__ or cause.__context__
-    return False
+    return None
+
+
+def _tls_failure(stage: str, error: ssl.SSLError, address: str) -> CanaryFailure:
+    # OpenSSL's symbolic reason and numeric verification code are safe to
+    # publish. Certificate names and exception messages can disclose the origin.
+    reason = getattr(error, "reason", None)
+    code = getattr(error, "verify_code", None) if isinstance(error, ssl.SSLCertVerificationError) else None
+    return CanaryFailure(
+        stage, "tls_error", address_family="ipv6" if ":" in address else "ipv4",
+        tls_reason=reason if isinstance(reason, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", reason) else None,
+        tls_verify_code=code if type(code) is int and 1 <= code <= 255 else None,
+    )
 
 
 def _missing_tcp_route(cause: BaseException | None) -> bool:
@@ -186,10 +212,11 @@ async def _check_route(
                 return RouteProbe(method, path, status, False, error_class="invalid_probe_nonce")
             return RouteProbe(method, path, status, True)
     except httpx.HTTPError as exc:
+        if (tls_error := _find_tls_error(exc)) is not None:
+            failure = _tls_failure("ingress_http", tls_error, httpx.URL(http_origin).host)
+            return RouteProbe(method, path, None, False, error_class=failure.error_class, tls_failure=failure)
         unavailable = False
-        if _tls_error(exc):
-            kind = "tls_error"
-        elif isinstance(exc, httpx.ConnectTimeout):
+        if isinstance(exc, httpx.ConnectTimeout):
             kind = "connect_timeout"
         elif isinstance(exc, httpx.ConnectError):
             kind = "connect_error"
@@ -238,8 +265,8 @@ async def _check_control(
         return upgraded, CanaryFailure("ingress_websocket", "unexpected_status", exc.response.status_code)
     except TimeoutError:
         return upgraded, CanaryFailure("ingress_websocket", "timeout", 101 if upgraded else None)
-    except ssl.SSLError:
-        return upgraded, CanaryFailure("ingress_websocket", "tls_error")
+    except ssl.SSLError as exc:
+        return upgraded, _tls_failure("ingress_websocket", exc, address)
     except OSError:
         return upgraded, CanaryFailure("ingress_websocket", "transport_error", 101 if upgraded else None)
     except WebSocketException:

@@ -430,3 +430,23 @@ and secret files were removed and checked for absence. No Containers or LLM
 calls were made.
 
 See the [sanitized hosted attempt receipt](../../results/cloudflare-scaleout-hosted-attempt.json).
+
+### TLS Follow-up
+
+The trial stack and exported logs were removed during teardown. The job
+receipt identified the HTTP ingress TLS probe, but did not preserve the
+handshake reason. The two pilot revisions used the same API Dockerfile and
+HTTP transport pins. The original project images were unavailable for a
+package-by-package comparison.
+
+A disposable CT128 API development image loaded 148 trusted CA certificates
+with OpenSSL 3.5.7. Both tested Cloudflare IPv4 peers completed TLS with the
+retired trial hostname as SNI. The same peers accepted the literal-IP HTTPX
+probe with hostname SNI against existing first- and second-level names.
+Their IPv6 peers returned `ENETUNREACH` before TLS. This matches the normal
+unrouted-family behavior. These checks did not reproduce the original failure
+or establish the edge certificate state at the time of Enable.
+
+Enable now reports the IP family, symbolic OpenSSL reason when present,
+and numerical certificate verification code when available. The TLS failure
+still closes admission.

@@ -118,13 +118,23 @@ def test_incomplete_runtime_canary_reports_the_unobserved_stage(signed: bool, st
 
 @pytest.mark.asyncio
 async def test_dual_stack_probe_refuses_invalid_certificate_on_reachable_peer(ingress) -> None:
+    error = ssl.SSLCertVerificationError("Certificate rejected for private.example")
+    error.reason = "CERTIFICATE_VERIFY_FAILED"
+    error.verify_code = 62
+    error.verify_message = "Host does not match private.example"
     installation, attempted, _, canary = ingress(
-        (IPV4, IPV6), httpx.ConnectError("TLS handshake failed"), ssl.SSLCertVerificationError("Invalid certificate"),
+        (IPV4, IPV6), httpx.ConnectError("TLS handshake failed"), ExceptionGroup("Connection failed", [error]),
     )
 
     result = await probes.probe_worker_ingress(installation, runtime_canary=canary)
     assert not result.reachable
-    assert result.failure == probes.CanaryFailure("ingress_http", "tls_error")
+    assert result.failure.as_result() == {
+        "stage": "ingress_http",
+        "error_class": "tls_error",
+        "address_family": "ipv6",
+        "tls_reason": "CERTIFICATE_VERIFY_FAILED",
+        "tls_verify_code": 62,
+    }
     assert attempted == [IPV4, IPV6]
     canary.assert_not_awaited()
 
@@ -145,7 +155,10 @@ async def test_reachable_family_requires_all_addresses(ingress, transport, cause
 
     assert not result.reachable
     assert attempted == [IPV4, OTHER_IPV4]
-    assert result.failure.as_result() == {"stage": "ingress_http", "error_class": kind}
+    expected = {"stage": "ingress_http", "error_class": kind}
+    if kind == "tls_error":
+        expected["address_family"] = "ipv4"
+    assert result.failure.as_result() == expected
     canary.assert_not_awaited()
 
 
@@ -186,6 +199,24 @@ async def test_control_refusal_reports_status_without_provider_message(monkeypat
     upgraded, failure = await probes._check_control(ORIGIN, "workers.example.test", IPV4, 443, ssl.create_default_context())
     assert not upgraded
     assert failure == probes.CanaryFailure("ingress_websocket", "unexpected_status", 403)
+
+
+@pytest.mark.asyncio
+async def test_control_tls_failure_omits_non_symbolic_reason(monkeypatch) -> None:
+    monkeypatch.setattr(asyncio.get_running_loop(), "sock_connect", AsyncMock())
+    error = ssl.SSLError("Private diagnostic details")
+    error.reason = "Certificate proxy: private.example"
+    connection = MagicMock()
+    connection.return_value.__aenter__.side_effect = error
+    monkeypatch.setattr(probes, "connect", connection)
+
+    upgraded, failure = await probes._check_control(ORIGIN, "workers.example.test", IPV4, 443, ssl.create_default_context())
+
+    assert not upgraded
+    assert failure is not None
+    assert failure.as_result() == {
+        "stage": "ingress_websocket", "error_class": "tls_error", "address_family": "ipv4",
+    }
 
 
 def test_anyio_connection_wrapper_classifies_first_errno() -> None:
