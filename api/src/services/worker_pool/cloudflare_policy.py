@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from hashlib import sha256
+from typing import Literal
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
