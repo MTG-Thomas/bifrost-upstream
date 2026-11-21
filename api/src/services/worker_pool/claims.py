@@ -8,17 +8,23 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import case, exists, func, select, text, tuple_, update
+from sqlalchemy import String, case, cast, exists, func, select, text, tuple_, update
 
 from src.config import get_settings
 from src.core.database import get_db_context, get_liveness_db_context
 from src.models.orm.agent_runs import AgentRun
+from src.models.orm.cloudflare_capacity import CloudflareWorkerReservation
 from src.models.orm.execution_workers import MANAGED_WORKER_FORMS, ExecutionWorker, ExecutionWorkerClaim
 from src.models.orm.executions import Execution
 from src.models.orm.work_dispatches import WorkDispatch
 from src.services.kubernetes_execution import load_kubernetes_policy
 from src.services.execution.summary_dispatch import LINUX_ONLY_SUMMARY
 from src.services.worker_pool.cloudflare_admission import cloudflare_claim_allowed
+from src.services.worker_pool.cloudflare_slots import (
+    WorkflowSlotTicket,
+    load_workflow_slot_admission,
+    occupy_workflow_slot,
+)
 from src.services.worker_pool.eligibility import cloudflare_active_claims, cloudflare_dispatch_sql, containers_dispatch_sql
 from src.worker.remote.fencing import current_remote_lease_ref, fence_remote_owner
 from src.worker.remote.protocol import (
@@ -60,6 +66,7 @@ class PoolClaim:
     claimed: dict[str, Any] | None = None
     cloudflare_revision: str | None = None
     tenant_id: UUID | None = None
+    workflow_slot: WorkflowSlotTicket | None = None
 
 
 def _now() -> datetime:
@@ -229,6 +236,8 @@ async def claim_next(
     """
     pairs = [pair for pair in handlers if pair in SUPPORTED_HANDLERS]
     active_cloudflare = cloudflare_active_claims().subquery()
+    managed_workers = CloudflareWorkerReservation.__table__.alias()
+    managed = exists().where(managed_workers.c.worker_id == incarnation_id)
     dispatch_tenant = select(Execution.organization_id).where(
         Execution.id == WorkDispatch.subject_id,
     ).correlate(WorkDispatch).scalar_subquery()
@@ -264,10 +273,10 @@ async def claim_next(
         | (
             (ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE)
             & (
-                (cloudflare_dispatch_sql() & ~exists().where(
+                (cloudflare_dispatch_sql() & (managed | ~exists().where(
                     active_cloudflare.c.execution_id.is_not(None),
                     active_cloudflare.c.tenant_id.is_not_distinct_from(dispatch_tenant),
-                ))
+                )))
                 | (
                     (WorkDispatch.handler == CLOUDFLARE_SUMMARY_HANDLER[0])
                     & (WorkDispatch.handler_version == CLOUDFLARE_SUMMARY_HANDLER[1])
@@ -350,7 +359,17 @@ async def claim_next(
                         return None
                 if not await fence_remote_owner(db, for_update=True):
                     return None
-                picked = (await db.execute(candidate)).one_or_none()
+                slot_admission = await load_workflow_slot_admission(db, incarnation_id)
+                eligible_candidate = candidate
+                slot_filter = ()
+                if slot_admission is not None:
+                    if slot_admission.full:
+                        return None
+                    slot_filter = (func.coalesce(cast(dispatch_tenant, String), "platform").not_in(
+                        slot_admission.blocked_tenants,
+                    ),)
+                    eligible_candidate = candidate.where(*slot_filter)
+                picked = (await db.execute(eligible_candidate)).one_or_none()
                 if picked is None:
                     return None
                 if picked.opaque and picked.trigger_type == "chat" and cloudflare_chat_endpoint is not None:
@@ -369,7 +388,7 @@ async def claim_next(
                         ))
                         return None
                 assignment = [WorkDispatch.id == picked.id, ready, profile_eligible]
-                if picked.opaque:
+                if picked.opaque and slot_admission is None:
                     # The dispatch row is locked, but another launcher can pick a
                     # different dispatch for this tenant. Recheck eligibility in
                     # the UPDATE's fresh snapshot after taking the tenant lock.
@@ -377,11 +396,13 @@ async def claim_next(
                         text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
                         {"key": f"bifrost:worker-pool:cloudflare-claim:{picked.tenant_id or 'platform'}"},
                     )
+                if picked.opaque:
                     assignment.append(dispatch_tenant.is_not_distinct_from(picked.tenant_id))
                 blocked = await db.scalar(
                     select(
                         exists().where(
                             *unassigned,
+                            *slot_filter,
                             WorkDispatch.created_at < picked.created_at,
                             WorkDispatch.created_at < _now() - HEAD_OF_LINE_WAIT,
                             WorkDispatch.memory_request_bytes > fits_bytes,
@@ -427,6 +448,7 @@ async def claim_next(
                     )
                 )
                 claimed = None
+                workflow_slot = None
                 if row.handler == "workflow.execute":
                     from src.services.execution.workflow_dispatch import claim_workflow_dispatch
 
@@ -436,6 +458,11 @@ async def claim_next(
                     claimed = await claim_workflow_dispatch(
                         db, dispatch_id=row.dispatch_id, execution_id=row.subject
                     )
+                    if claimed is not None and slot_admission is not None:
+                        workflow_slot = await occupy_workflow_slot(
+                            db, slot_admission, incarnation_id, picked.tenant_id,
+                            row.subject, row.dispatch_id, claim_id,
+                        )
                 await db.execute(
                     update(ExecutionWorker)
                     .where(ExecutionWorker.id == incarnation_id)
@@ -475,6 +502,7 @@ async def claim_next(
                     claimed=dict(claimed) if claimed is not None else None,
                     cloudflare_revision=row.cloudflare_revision,
                     tenant_id=picked.tenant_id if picked.opaque else None,
+                    workflow_slot=workflow_slot,
                 )
                 if reserve_claim is not None:
                     reserve_claim(claim)

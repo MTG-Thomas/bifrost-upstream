@@ -36,6 +36,7 @@ from src.jobs.schedulers.platform_jobs import (
 from src.models.orm.cloudflare_capacity import (
     CloudflareInstallation,
     CloudflareWorkerReservation,
+    CloudflareWorkflowSlot,
 )
 from src.models.orm.execution_workers import ExecutionWorker
 from src.services.execution.template_process import TEMPLATE_START_TIMEOUT_SECONDS
@@ -48,6 +49,7 @@ from src.services.worker_pool.claims import (
     report_worker_handlers,
 )
 from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
+from src.services.worker_pool.cloudflare_slots import WorkflowSlotTicket, fence_workflow_slot_send
 from src.services.worker_pool.cloudflare_spend import (
     record_launcher_terminal_meter,
     reserve_engine_generation,
@@ -119,8 +121,10 @@ CLOUDFLARE_PREPARE_SECONDS = 20
 CLOUDFLARE_PREPARE_IO_SECONDS = 1
 
 
-def _cloudflare_tenant_key(org_id: UUID | str | None) -> str:
+def _cloudflare_tenant_key(org_id: UUID | str | None, worker_id: UUID | None = None, slot: int | None = None) -> str:
     tenant = "launcher:platform" if org_id is None else f"launcher:org:{org_id}"
+    if slot is not None:
+        tenant += f":slot:{slot}:incarnation:{worker_id}"
     return sha256(tenant.encode()).hexdigest()[:32]
 
 
@@ -290,6 +294,7 @@ class Bridge:
     async def _reserve_cloudflare_usage(
         self, route_id: str, tenant_id: str, deadline: datetime | None,
         *, workflow_cpu_ms: int | None = None, subrequests: int | None = None,
+        execution_id: str | None = None, engine_slot: int | None = None,
     ) -> None:
         # Reserve under the current owner before emitting any frames. The
         # caller also fences the socket generation before sending secrets.
@@ -298,6 +303,14 @@ class Bridge:
             async with get_db_context() as db:
                 if not await fence_remote_owner(db):
                     raise CredentialRouteChanged("Cloudflare ownership changed before dispatch")
+                if engine_slot is not None:
+                    assert execution_id is not None
+                    ticket = WorkflowSlotTicket(engine_slot, UUID(route_id.rsplit(":", 1)[1]))
+                    if not await fence_workflow_slot_send(
+                        db, lease.worker_id, UUID(execution_id), ticket,
+                        preparation=route_id.startswith("prepare:"),
+                    ):
+                        raise CredentialRouteChanged("Cloudflare workflow slot is no longer held")
                 if not await reserve_tenant_host_usage(
                     db, lease.worker_id, deadline, workflow_cpu_ms=workflow_cpu_ms,
                     subrequests=subrequests, tenant_id=tenant_id, route_id=route_id,
@@ -318,11 +331,13 @@ class Bridge:
         generation = self.lease.session_generation if expected_generation is None else expected_generation
         socket = self.socket
         self._check_preparation_session(generation)
-        tenant = _cloudflare_tenant_key(payload["org_id"])
+        engine_slot = payload.get("engine_slot")
+        tenant = _cloudflare_tenant_key(payload["org_id"], self.lease.worker_id, engine_slot)
         try:
             async with asyncio.timeout(CLOUDFLARE_PREPARE_IO_SECONDS):
                 await self._reserve_cloudflare_usage(
                     payload["route_id"], tenant, datetime.now(UTC) + timedelta(seconds=CLOUDFLARE_PREPARE_SECONDS),
+                    execution_id=payload.get("execution_id"), engine_slot=engine_slot,
                 )
             if self.lock.locked():
                 return False
@@ -421,10 +436,14 @@ class Bridge:
                         if action == "workflow" and self.managed_cloudflare:
                             deadline = payload.get("workflow_deadline")
                             workspace = payload["context"]["cloudflare_workspace"]
+                            engine_slot = payload["engine_slot"]
+                            tenant = _cloudflare_tenant_key(
+                                payload["active_execution"].get("org_id"), self.lease.worker_id, engine_slot,
+                            )
                             await self._reserve_cloudflare_usage(
-                                payload["route_id"], _cloudflare_tenant_key(payload["active_execution"].get("org_id")),
-                                datetime.fromisoformat(deadline) if deadline else None,
+                                payload["route_id"], tenant, datetime.fromisoformat(deadline) if deadline else None,
                                 workflow_cpu_ms=workspace["cpu_budget_ms"], subrequests=workspace["subrequest_allowance"],
+                                execution_id=payload["execution_id"], engine_slot=engine_slot,
                             )
                         sent = 0
                         send_deadline = loop.time() + _reply_timeout(action)
@@ -707,14 +726,25 @@ class Bridge:
             or not isinstance(request_id, str) or not fullmatch(r"[A-Za-z0-9_-]{43}", request_id)
         ):
             raise ProtocolError("Invalid Cloudflare generation reservation")
-        if preparation is not None and not identity.startswith(f"tenant-eng-tenant-py-{preparation[1]}-"):
-            raise ProtocolError("Cloudflare preparation generation does not match the claim tenant")
         lease = self.lease
 
         async def reserve() -> None:
             with remote_owner_context(LeaseRef(lease)):
                 async with get_db_context() as db:
-                    accepted = await fence_remote_owner(db) and await reserve_engine_generation(db, lease.worker_id, identity)
+                    slot = await db.scalar(select(CloudflareWorkflowSlot).where(
+                        CloudflareWorkflowSlot.worker_id == lease.worker_id,
+                        CloudflareWorkflowSlot.fence == UUID(route_id.rsplit(":", 1)[1]),
+                        CloudflareWorkflowSlot.released_at.is_(None),
+                    ))
+                    accepted = False
+                    if slot is not None:
+                        org_id = None if slot.tenant == "platform" else slot.tenant
+                        key = _cloudflare_tenant_key(org_id, lease.worker_id, slot.ordinal)
+                        accepted = (
+                            identity.startswith(f"tenant-eng-tenant-py-{key}-")
+                            and await fence_remote_owner(db)
+                            and await reserve_engine_generation(db, lease.worker_id, identity)
+                        )
                 await self.request("cloudflare_generation_reply", {
                     "request_id": request_id, "route_id": route_id, "ok": accepted, "result": {},
                 }, expected_generation=lease.session_generation)
@@ -1050,12 +1080,14 @@ class ApiExecutor(PoolWorker):
         if (
             bridge.managed_cloudflare and claim.handler == "workflow.execute"
             and claim.claimed is not None and claim.cloudflare_revision is not None
+            and claim.workflow_slot is not None
             and (bridge.inventory or {}).get("admission_prepare") is True
         ):
             generation = bridge.lease.session_generation
             payload = {
-                "route_id": f"prepare:{uuid4()}", "execution_id": str(claim.subject_id),
+                "route_id": f"prepare:{claim.workflow_slot.fence}", "execution_id": str(claim.subject_id),
                 "org_id": str(claim.tenant_id) if claim.tenant_id is not None else None,
+                "engine_slot": claim.workflow_slot.ordinal,
             }
 
             async def prepare() -> None:
@@ -1133,6 +1165,7 @@ class ApiExecutor(PoolWorker):
         if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and (
             self._lost or self.bridge.meter_exhausted or not self.bridge.connected
             or self.bridge.freshness_age() > ADMISSION_FRESHNESS_SECONDS
+            or self.bridge.managed_cloudflare and (self.bridge.inventory or {}).get("tenant_slot_protocol") != 1
         ):
             return False
         stages = self.bridge.platform_stage_backend

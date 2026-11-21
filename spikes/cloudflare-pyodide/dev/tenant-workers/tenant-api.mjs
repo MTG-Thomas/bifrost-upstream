@@ -1,12 +1,12 @@
 // Engine-mode tenant host and its outbound gateway.
 //
-// TenantHost is one Durable Object per tenant. Being a single instance, it is
-// the only place where "one long-lived engine child per tenant" actually holds:
+// A managed TenantHost is one Durable Object per tenant slot and incarnation.
+// Each host owns one reusable engine:
 // LOADER.get caches isolates per machine, and two supervisor requests are never
 // guaranteed to share one, so a supervisor-side LOADER.get keeps paying the
 // 5-10 s Pyodide boot whenever a request lands elsewhere. The host:
 //   * creates the child with LOADER.get keyed by the engine digest,
-//   * serializes attempts for its tenant (Pyodide is single-threaded),
+//   * serializes attempts for its slot (Pyodide is single-threaded),
 //   * holds each attempt's run token IN MEMORY under an opaque handle, for the
 //     attempt's duration only (never written to storage),
 //   * confirms the child during admission and reuses it for a bounded idle
@@ -278,7 +278,7 @@ export class TenantHost extends DurableObject {
     if (this.#current) this.noteCall(this.#current.handle, call);
   }
 
-  async stopWorkflow(routeId) {
+  async stopWorkflow(routeId, confirm = false) {
     this.#queuedStops.get(routeId)?.();
     const current = this.#current;
     let retirement;
@@ -295,12 +295,14 @@ export class TenantHost extends DurableObject {
     // first run RPC. Marker writes at engine entry are still checked below.
     await Promise.all([this.ctx.storage.put(`stopped:${routeId}`, true), retirement]);
     await this.ctx.storage.sync();
+    if (confirm) return !(await this.ctx.storage.get(`unconfirmed:${routeId}`));
   }
 
   async run({tenantId, executionId, context, publicUrl, egressHosts = [], dispatchedAt, routeId, workflowDeadline,
-    reserveIdentity}) {
+    reserveIdentity, trackStop = false}) {
     const lingerMs = tenantLingerMs(this.env);
     const stopKey = routeId ? `stopped:${routeId}` : null;
+    const unconfirmedKey = trackStop ? `unconfirmed:${routeId}` : null;
     const stoppedInQueue = () => ({terminal: {phase: 'attempt-stopped', attempt_state: 'not_started', api_calls: []}});
     // Booting a child inside a fresh host can reset the host
     // (`code_updated`, retryable) even though the boot itself completes.
@@ -384,6 +386,7 @@ export class TenantHost extends DurableObject {
     if (routeId) delete childContext.cloudflare_workspace;
     this.#calls.set(handle, []);
     let dispatched = false;
+    let childEnded = false;
     try {
       const limits = routeId ? this.#releaseLimits() : null;
       const {worker, generation, identity} = await this.#engine(tenantId, reserveIdentity);
@@ -400,7 +403,9 @@ export class TenantHost extends DurableObject {
       // Survives a host reset: the next instance retires this generation. The
       // only gated write: it is made durable before the final deadline check,
       // so nothing is left to hold the child dispatch at the output gate.
-      await this.ctx.storage.put('inflight', {generation});
+      const markers = {inflight: {generation}};
+      if (unconfirmedKey) markers[unconfirmedKey] = true;
+      await this.ctx.storage.put(markers);
       await this.ctx.storage.sync();
       if (Date.now() >= deadlineAt) {
         // The marker write crossed the deadline; the child has seen nothing.
@@ -440,9 +445,20 @@ export class TenantHost extends DurableObject {
         // effects are unknown. The handle and the child's generation are
         // revoked below, so it can no longer reach the API or egress.
         await (this.#current.retirement ?? this.#retireChild());
+        if (unconfirmedKey) {
+          const clear = () => this.ctx.storage.delete(unconfirmedKey);
+          this.ctx.waitUntil(responseTask.then(async (late) => {
+            await late.body?.cancel();
+            await clear();
+          }, async (error) => {
+            const {error_class} = runtimeErrorClass(error);
+            if (error_class === 'cpu_limit' || error_class === 'memory_limit') await clear();
+          }));
+        }
         return terminal(response === DEADLINE ? 'attempt-deadline' : 'attempt-stopped',
           'uncertain', undefined, this.#calls.get(handle));
       }
+      childEnded = true;
       if (this.#current.meterExceeded) {
         await response.body?.cancel();
         return {terminal: {phase: 'sdk-meter-limit', attempt_state: 'completed', limit: limits.requests}};
@@ -479,6 +495,7 @@ export class TenantHost extends DurableObject {
         if (this.#current?.meterExceeded) return {terminal: {phase: 'sdk-meter-limit', attempt_state: 'uncertain',
           limit: this.#releaseLimits().requests}};
         if (error_class === 'cpu_limit' || error_class === 'memory_limit') {
+          childEnded = true;
           return {terminal: {phase: error_class, attempt_state: 'uncertain'}};
         }
       }
@@ -493,6 +510,7 @@ export class TenantHost extends DurableObject {
       this.#calls.delete(handle);
       try {
         await this.ctx.storage.delete('inflight', UNGATED);
+        if (unconfirmedKey && (!dispatched || childEnded)) await this.ctx.storage.delete(unconfirmedKey);
       } finally {
         release();
       }

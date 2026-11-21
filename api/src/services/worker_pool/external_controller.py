@@ -10,11 +10,11 @@ from uuid import UUID, uuid4
 
 import httpx
 from shared.models import WorkerCapacityProfile, WorkerCapacityReservation
-from sqlalchemy import and_, func, select, update
+from sqlalchemy import and_, delete, func, select, update
 
 from src.config import Settings
 from src.core.database import get_db_context
-from src.models.orm.cloudflare_capacity import CloudflareWorkerReservation
+from src.models.orm.cloudflare_capacity import CloudflareWorkerReservation, CloudflareWorkflowSlot
 from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
 from src.services.kubernetes_execution import KubernetesPolicy
 from src.services.work_dispatch import (
@@ -260,6 +260,8 @@ class ExternalWorkerPoolController(WorkerCapacityController):
                 ).values(capacity_resource_deleted_at=func.clock_timestamp()).returning(ExecutionWorker.id))
                 if matched is not None and runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and resource is not None:
                     await seal_launcher_meter(db, worker_id, resource.usage)
+                if matched is not None and self.managed_cloudflare_scope is not None:
+                    await db.execute(delete(CloudflareWorkflowSlot).where(CloudflareWorkflowSlot.worker_id == worker_id))
                 await db.commit()
             if self.managed_cloudflare_scope is not None and uid is not None and resource is not None and (
                 resource.usage is not None and resource.usage.ledger_receipt_pending

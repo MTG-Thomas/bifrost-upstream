@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from functools import partial
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
+from src.services.worker_pool.cloudflare_slots import WorkflowSlotTicket
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -858,6 +859,7 @@ class WorkflowExecutionConsumer(WorkflowResultHandler):
         *,
         cloudflare_revision: str | None = None,
         cloudflare_tenant_id: UUID | None = None,
+        workflow_slot: WorkflowSlotTicket | None = None,
     ) -> None:
         """Run a claimed workflow dispatch.
 
@@ -1214,6 +1216,7 @@ class WorkflowExecutionConsumer(WorkflowResultHandler):
                 context=context_data,
                 credential_route=credential_route,
                 **({"cloudflare_revision": cloudflare_revision} if cloudflare_revision is not None else {}),
+                **({"workflow_slot": workflow_slot} if workflow_slot is not None else {}),
                 active_execution=ActiveExecution(
                     execution_id=execution_id,
                     workflow_id=str(workflow_id) if workflow_id else None,

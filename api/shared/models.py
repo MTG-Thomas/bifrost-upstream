@@ -31,6 +31,8 @@ class CloudflareWorkersPolicy(BaseModel):
 
     launcher_cap: int = Field(ge=1, le=1000)
     slots_per_launcher: int = Field(ge=1, le=4)
+    slots_per_tenant: int = Field(default=4, ge=1, le=32)
+    installation_slots: int = Field(default=9, ge=2, le=256)
     max_lifetime_seconds: int = Field(ge=60, le=604800)
     linger_seconds: int = Field(default=90, ge=0, le=300, description="Tenant engine reuse window after a workflow.")
     work_kinds: frozenset[Literal["workflow"]]

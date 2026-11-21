@@ -30,6 +30,7 @@ from src.models.orm.executions import Execution
 from src.models.orm.workflows import Workflow
 from src.services.durable_impersonation import pending_durable_impersonation
 from src.services.memory_requests import workflow_request_bytes
+from src.services.worker_pool.cloudflare_slots import WorkflowSlotTicket, release_workflow_slot
 from src.services.work_dispatch import (
     WAKE_WORKFLOW,
     hand_off,
@@ -310,6 +311,7 @@ async def release_workflow_run(
     queued_at: datetime,
     cloudflare_revision: str | None = None,
     release_opaque_reservation: Callable[[], None] | None = None,
+    workflow_slot: WorkflowSlotTicket | None = None,
 ) -> None:
     """Hand a claimed run back before it started: RUNNING -> PENDING.
 
@@ -329,23 +331,25 @@ async def release_workflow_run(
                 release_opaque_reservation()
         if not owns_session:
             return
-
         statement = update(Execution).where(
             Execution.id == execution_id, Execution.status == ExecutionStatus.RUNNING,
         )
         if release_opaque_reservation is not None:
-            statement = statement.where(
-                select(ExecutionWorkerClaim.subject_id).where(
+            matching_claim = select(ExecutionWorkerClaim.subject_id).where(
                     ExecutionWorkerClaim.worker_id == worker_id,
                     ExecutionWorkerClaim.family == FAMILY,
                     ExecutionWorkerClaim.subject_id == execution_id,
-                ).exists()
             )
+            if workflow_slot is not None:
+                matching_claim = matching_claim.where(ExecutionWorkerClaim.id == workflow_slot.fence)
+            statement = statement.where(matching_claim.exists())
         released = await db.scalar(
             statement
             .values(status=ExecutionStatus.PENDING, started_at=None)
             .returning(Execution.id)
         )
+        if workflow_slot is not None:
+            await release_workflow_slot(db, worker_id, execution_id, workflow_slot.fence, confirmed=True)
         if released is None:
             return
         await db.execute(

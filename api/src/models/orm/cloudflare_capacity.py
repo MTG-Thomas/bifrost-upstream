@@ -189,6 +189,30 @@ class CloudflareWorkerReservation(Base):
     canary_ack_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class CloudflareWorkflowSlot(Base):
+    """Installation-wide slot, retained after settlement to prefer warm reuse."""
+
+    __tablename__ = "cloudflare_workflow_slots"
+    __table_args__ = (
+        CheckConstraint("ordinal >= 0 AND ordinal < 32", name="ck_cf_workflow_slot_ordinal"),
+        Index("ix_cf_workflow_slot_worker", "worker_id"),
+        UniqueConstraint("fence", name="uq_cf_workflow_slot_fence"),
+    )
+
+    installation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("cloudflare_installations.id", ondelete="RESTRICT"), primary_key=True,
+    )
+    tenant: Mapped[str] = mapped_column(String(36), primary_key=True)
+    ordinal: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    worker_id: Mapped[UUID] = mapped_column(ForeignKey("execution_workers.id", ondelete="CASCADE"))
+    execution_id: Mapped[UUID]
+    dispatch_id: Mapped[UUID]
+    fence: Mapped[UUID]
+    sent: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    warm_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class CloudflareOwnedResource(Base):
     __tablename__ = "cloudflare_owned_resources"
     __table_args__ = (

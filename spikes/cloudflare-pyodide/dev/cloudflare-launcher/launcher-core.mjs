@@ -22,6 +22,7 @@ const HEX64 = /^[0-9a-f]{64}$/;
 const STATES = new Set(['not_started', 'completed', 'uncertain']);
 const record = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const integer = (value) => Number.isSafeInteger(value) && value >= 0;
+const slotOrdinal = (value) => integer(value) && value < 32;
 const instant = (value) => typeof value === 'string' && INSTANT.test(value) && Number.isFinite(Date.parse(value));
 
 function validWorkspace(workspace, entry) {
@@ -39,7 +40,7 @@ function validWorkspace(workspace, entry) {
     Object.hasOwn(workspace.sources, path) && typeof workspace.sources[path] === 'string');
 }
 
-function workflowRoute(payload, runtimeHandle) {
+function workflowRoute(payload, runtimeHandle, incarnationId) {
   const {route_id, execution_id, active_execution, started_at, timeout_seconds,
     workflow_deadline, memory_request_bytes, context} = payload;
   if (typeof route_id !== 'string' || WORKFLOW_ROUTE.exec(route_id)?.[1] !== execution_id ||
@@ -62,7 +63,8 @@ function workflowRoute(payload, runtimeHandle) {
         workspace.manifest[context.file_path] !== context.content_hash))) return null;
 
   return {kind: 'workflow', route_id, subject_id: execution_id, runtime_handle: runtimeHandle,
-    active_execution, started_at, timeout_seconds, workflow_deadline, memory_request_bytes};
+    active_execution, started_at, timeout_seconds, workflow_deadline, memory_request_bytes,
+    ...(incarnationId ? {engine_slot: payload.engine_slot, incarnation_id: incarnationId} : {})};
 }
 
 function summaryRoute(payload, runtimeHandle, now) {
@@ -111,9 +113,10 @@ export class LauncherCore {
   #released = false;
 
   constructor({identity, secret, clock, storage, send, runHost, prepareHost, stopHost, runSummary, runAgent,
-    runCapacityCanary, background, meter, slots = 1, newId = newNonce}) {
+    runCapacityCanary, background, meter, slots = 1, tenantSlots = false, newId = newNonce}) {
     this.#slots = Array(slots).fill(null);
     this.identity = identity;
+    this.tenantSlots = tenantSlots;
     this.secret = secret;
     this.clock = clock;
     this.storage = storage;
@@ -153,14 +156,23 @@ export class LauncherCore {
 
   release() {
     return this.#serialize(async () => {
-      if (this.#released) return;
       const slots = this.#control ? this.#slots :
         await Promise.all(this.#slots.map((_, index) => this.storage.get(slotKey(index))));
+      if (this.tenantSlots) {
+        // A delete witness must cover the child, even if canonical settlement
+        // was already acknowledged or the launcher reset after dispatch.
+        await Promise.all(slots.filter(slot => slot?.route.kind === 'workflow' &&
+          (slot.state === 'entering' || slot.terminal?.attempt_state === 'uncertain')).map(async ({route}) => {
+          this.#aborts.get(route.route_id)?.abort();
+          if (await this.stopHost(route, true) !== true) throw new Error('Workflow stop is unconfirmed');
+        }));
+      }
+      if (this.#released) return;
       this.#released = true;
       this.#session = null;
       for (const controller of this.#preparations.values()) controller.abort();
       for (const slot of slots) {
-        if (slot?.state === 'entering') this.#stop(slot.route);
+        if (slot?.state === 'entering' && !(this.tenantSlots && slot.route.kind === 'workflow')) this.#stop(slot.route);
       }
       this.#slots.fill(null);
       if (this.#stops.size) {
@@ -275,7 +287,7 @@ export class LauncherCore {
       const index = this.#slots.findIndex((slot) =>
         slot?.state === 'terminal' && slot.terminal._event_id === message.payload.event_id);
       if (index !== -1) {
-        const {route, invocations} = this.#slots[index];
+        const {route, terminal, invocations} = this.#slots[index];
         const routeId = route.route_id;
         if (invocations) this.meter?.recordRoute(routeId, invocations);
         // Persist the compact replay fence before removing the bulky slot
@@ -283,8 +295,10 @@ export class LauncherCore {
         const acknowledged = new Set(this.#acknowledged).add(routeId);
         await this.storage.put(ACKNOWLEDGED, [...acknowledged], 'settlement');
         this.#acknowledged = acknowledged;
-        await this.storage.delete(slotKey(index), `seen:${routeId}`);
-        this.#slots[index] = null;
+        if (!(route.kind === 'workflow' && this.tenantSlots && terminal.attempt_state === 'uncertain')) {
+          await this.storage.delete(slotKey(index), `seen:${routeId}`);
+          this.#slots[index] = null;
+        }
         return 'terminal_ack';
       }
       return;
@@ -312,6 +326,7 @@ export class LauncherCore {
     for (const slot of this.#slots) {
       if (!slot) continue;
       if (slot.state === 'terminal') {
+        if (this.#acknowledged.has(slot.route.route_id)) continue;
         terminalRoutes.push({...slot.route, event_id: slot.terminal._event_id,
           attempt_state: slot.terminal.attempt_state});
       } else {
@@ -321,11 +336,12 @@ export class LauncherCore {
     this.#emit(session, {event: 'inventory', inventory: {
       version: 1, routes, terminal_routes: terminalRoutes,
       ...(this.prepareHost ? {admission_prepare: true} : {}),
+      ...(this.tenantSlots ? {tenant_slot_protocol: 1} : {}),
       ...(this.meter?.exhausted ? {meter_exhausted: true} : {}),
       ...(this.#slots.length > 1 ? {workflow_slots: this.#slots.length} : {}),
     }});
     for (const slot of this.#slots) {
-      if (slot?.state === 'terminal') this.#emit(session, slot.terminal);
+      if (slot?.state === 'terminal' && !this.#acknowledged.has(slot.route.route_id)) this.#emit(session, slot.terminal);
     }
     for (const request of this.#agentRequests.values()) {
       if (!PREPARE_ROUTE.test(request.event.route_id)) this.#emit(session, request.event);
@@ -336,8 +352,9 @@ export class LauncherCore {
   tick(session) {
     return this.#serialize(() => {
       if (this.#session !== session || !session.generation || this.clock() < session.nextHeartbeat) return;
-      const occupancy = this.#slots.length === 1 ? {slot_occupied: Boolean(this.#slots[0])} :
-        {occupied_routes: this.#slots.filter(Boolean).map(({route}) => route.route_id)};
+      const routes = this.#slots.flatMap(slot =>
+        slot && !this.#acknowledged.has(slot.route.route_id) ? [slot.route.route_id] : []);
+      const occupancy = this.#slots.length === 1 ? {slot_occupied: routes.length !== 0} : {occupied_routes: routes};
       this.#emit(session, {event: 'heartbeat', ...occupancy, received_sequence: session.received,
         ...(this.meter?.exhausted ? {meter_exhausted: true} : {})});
       session.nextHeartbeat += 1000;
@@ -392,12 +409,19 @@ export class LauncherCore {
         }
         return;
       }
-      case 'workflow':
-        return this.#dispatch(session, payload, accept, refuse, WORKFLOW_ROUTE, workflowRoute);
+      case 'workflow': {
+        if (this.tenantSlots && !slotOrdinal(payload.engine_slot)) {
+          refuse('ValueError', 'Invalid workflow engine slot');
+          return;
+        }
+        return this.#dispatch(session, payload, accept, refuse, WORKFLOW_ROUTE,
+          (request, handle) => workflowRoute(request, handle, this.tenantSlots ? this.identity.incarnationId : null));
+      }
       case 'prepare_workflow': {
-        const {route_id, execution_id, org_id} = payload;
+        const {route_id, execution_id, org_id, engine_slot} = payload;
         if (!this.prepareHost || typeof route_id !== 'string' || !PREPARE_ROUTE.test(route_id) ||
             typeof execution_id !== 'string' || !UUID_RE.test(execution_id) ||
+            (this.tenantSlots && !slotOrdinal(engine_slot)) ||
             !(org_id === null || (typeof org_id === 'string' && UUID_RE.test(org_id)))) {
           refuse('ValueError', 'Invalid Cloudflare workflow preparation');
           return;
@@ -420,6 +444,8 @@ export class LauncherCore {
           try {
             invocations = await this.prepareHost({
               orgId: org_id, executionId: execution_id, signal,
+              ...(this.tenantSlots ? {engineSlot: engine_slot, incarnationId: this.identity.incarnationId,
+                fence: route_id.slice('prepare:'.length)} : {}),
               reserveIdentity: (identity) => this.#requestControl({route_id}, 'cloudflare_generation_request',
                 {identity}, AbortSignal.any([signal, AbortSignal.timeout(4000)])),
             });
@@ -503,8 +529,9 @@ export class LauncherCore {
     }
     if (route.kind === 'workflow' && this.#slots.some((slot) => slot?.route.kind === 'workflow' &&
         (slot.state !== 'terminal' || slot.terminal.attempt_state === 'uncertain') &&
+        (!this.tenantSlots || slot.route.engine_slot === route.engine_slot) &&
         (slot.route.active_execution.org_id ?? null) === (route.active_execution.org_id ?? null))) {
-      refuse('MemoryError', 'This tenant already holds a Cloudflare workflow slot');
+      refuse('MemoryError', 'This Cloudflare workflow slot is already held');
       return;
     }
     if (this.#session !== session) return;

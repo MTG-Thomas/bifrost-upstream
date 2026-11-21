@@ -157,10 +157,10 @@ export class CloudflareLauncher extends DurableObject {
           charge();
           return host.warm(input);
         },
-        stopWorkflow: (id) => {
+        stopWorkflow: (id, confirm) => {
           // Release may already have sealed the counters after its bounded
           // stop wait. A late continuation must never emit an unpriced RPC.
-          return this.#meter.charge({do_requests: 1}, true) ? host.stopWorkflow(id) : undefined;
+          return this.#meter.charge({do_requests: 1}, true) ? host.stopWorkflow(id, confirm) : undefined;
         },
       } : host;
     };
@@ -222,6 +222,7 @@ export class CloudflareLauncher extends DurableObject {
     this.#core = new LauncherCore({
       ...settings, clock: Date.now, storage: this.#storage,
       meter: this.#meter,
+      tenantSlots: this.#managed,
       runSummary, runAgent,
       runCapacityCanary: this.#managed ? async (generation, proof) => {
         const workerId = settings.identity.incarnationId;
@@ -260,7 +261,7 @@ export class CloudflareLauncher extends DurableObject {
       prepareHost: ({reserveIdentity, ...input}) => runWorkflow.prepare({
           ...input, ...(this.env.BIFROST_METER_GENERATIONS === 'true' ? {reserveIdentity} : {}),
         }),
-      stopHost: async (route) => getHost(await launcherTenantId(route)).stopWorkflow(route.route_id),
+      stopHost: async (route, confirm) => getHost(await launcherTenantId(route)).stopWorkflow(route.route_id, confirm),
       background: (task) => this.#observe(this.#connection, task),
     });
   }

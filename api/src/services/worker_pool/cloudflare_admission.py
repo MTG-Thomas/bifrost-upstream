@@ -97,6 +97,8 @@ async def cloudflare_claim_allowed(db: AsyncSession, worker_id: UUID) -> bool:
         select(installation.id)
         .join(pin, pin.installation_id == installation.id)
         .where(pin.worker_id == worker_id)
+        # FOR NO KEY UPDATE is exclusive against other claimers and scope
+        # writers, and compatible with the FK checks made by usage writers.
         .with_for_update(key_share=True, of=installation)
     )
     if locked_installation is None:

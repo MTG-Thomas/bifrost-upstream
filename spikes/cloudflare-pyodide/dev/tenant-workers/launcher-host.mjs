@@ -24,7 +24,9 @@ async function whileDispatching(task, {deadline, signal, now}) {
 
 export async function launcherTenantId(route) {
   const org = route.active_execution.org_id;
-  return tenantWorkerId(org == null ? 'launcher:platform' : `launcher:org:${org}`);
+  const tenant = org == null ? 'launcher:platform' : `launcher:org:${org}`;
+  return tenantWorkerId(route.engine_slot === undefined ? tenant :
+    `${tenant}:slot:${route.engine_slot}:incarnation:${route.incarnation_id}`);
 }
 
 export function createLauncherWorkflowRunner(getHost, {warmRpcMs = ENGINE_BOOT_TIMEOUT_MS + 5000} = {}) {
@@ -57,8 +59,9 @@ export function createLauncherWorkflowRunner(getHost, {warmRpcMs = ENGINE_BOOT_T
   };
   async function run(input) {
     const {route} = input;
-    const current = preparations.get(route.active_execution.org_id ?? null);
-    const preparation = current?.executionId === route.subject_id ? current.task : null;
+    const current = preparations.get(await launcherTenantId(route));
+    const preparation = current?.executionId === route.subject_id &&
+      (route.engine_slot === undefined || route.route_id.endsWith(`:${current.fence}`)) ? current.task : null;
     if (!input.receipt) return runLauncherWorkflow(getHost, queueWarm, input, preparation);
     const invocations = [];
     let complete = true;
@@ -82,23 +85,24 @@ export function createLauncherWorkflowRunner(getHost, {warmRpcMs = ENGINE_BOOT_T
     const outcome = await runLauncherWorkflow(traced, queueWarm, input, preparation);
     return complete && outcome.attempt_state === 'completed' ? {...outcome, invocations} : outcome;
   }
-  async function prepare({orgId, executionId, signal, reserveIdentity}) {
-    if (preparations.has(orgId)) return [];
+  async function prepare({orgId, executionId, signal, reserveIdentity, engineSlot, incarnationId, fence}) {
+    const tenantId = await launcherTenantId({active_execution: {org_id: orgId},
+      engine_slot: engineSlot, incarnation_id: incarnationId});
+    if (preparations.has(tenantId)) return [];
     const task = queueWarm(async (check) => {
-      const tenantId = await launcherTenantId({active_execution: {org_id: orgId}});
       check();
       if (signal.aborted) return {skipped: true};
       return getHost(tenantId).warm({tenantId, executionId, admission: true,
         ...(reserveIdentity ? {reserveIdentity} : {})});
     });
-    preparations.set(orgId, {executionId, task});
+    preparations.set(tenantId, {executionId, fence, task});
     try {
       const result = await task;
       if (result.invocation) return [result.invocation];
       if (result.reused || result.skipped) return [];
       return undefined;
     } finally {
-      preparations.delete(orgId);
+      preparations.delete(tenantId);
     }
   }
   return Object.assign(run, {prepare});
@@ -116,7 +120,8 @@ async function runLauncherWorkflow(getHost, queueWarm,
   };
   const tenantId = await launcherTenantId(route);
   const attempt = {tenantId, executionId: route.subject_id, context, publicUrl, routeId: route.route_id,
-    workflowDeadline: route.workflow_deadline, ...(reserveIdentity ? {reserveIdentity} : {})};
+    workflowDeadline: route.workflow_deadline, ...(route.engine_slot === undefined ? {} : {trackStop: true}),
+    ...(reserveIdentity ? {reserveIdentity} : {})};
   let hosted;
   try {
     hosted = await hostAttempt(() => getHost(tenantId), attempt, {

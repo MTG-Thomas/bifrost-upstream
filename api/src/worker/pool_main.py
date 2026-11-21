@@ -640,6 +640,7 @@ class PoolWorker:
                         **({
                             "cloudflare_revision": claim.cloudflare_revision,
                             "cloudflare_tenant_id": claim.tenant_id,
+                            "workflow_slot": claim.workflow_slot,
                         } if opaque else {}),
                     )
                 except (MemoryError, OpaqueWorkflowNotStarted) as exc:
@@ -670,6 +671,7 @@ class PoolWorker:
                         release_opaque_reservation=(
                             (lambda: self._release_claim_reservation(claim)) if opaque else None
                         ),
+                        workflow_slot=claim.workflow_slot,
                     )
             elif claim.handler == "agent.run":
                 await self._execute_agent(claim)
