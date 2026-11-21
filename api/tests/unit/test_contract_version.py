@@ -458,7 +458,8 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Cloudflare spend descriptions explain the estimate and its admission target.
     # Tenant engine linger defaults to 90 seconds when an existing CLI omits it.
     # A reused engine can produce an empty preparation receipt.
-    "c4c92b02ba11b7b9b8c549ab004c9eb6a86364efd5999e2365583932c842f199"
+    # Preparation receipts have a separate allowance within the routes map.
+    "676310cd21bbedacda5ff1ee07bc2f6d1cbe16e66a8945366cab8f229963fdf4"
 )
 
 
