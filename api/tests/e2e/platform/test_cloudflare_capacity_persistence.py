@@ -1,6 +1,7 @@
 """Exercise the Cloudflare journal against the migrated platform database."""
 
 import asyncio
+import base64
 import json
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -36,6 +37,7 @@ from src.jobs.platform.base import (
     PlatformJobFailure,
     PlatformJobRequiresAction,
 )
+from src.jobs.platform.kubernetes_client import KubernetesJobClient
 from src.models.orm.audit import AuditLog
 from src.models.orm.cloudflare_capacity import (
     CloudflareCapacityScope,
@@ -62,15 +64,20 @@ from src.services.authorization.context import (
     RoleGrant,
 )
 from src.services.authorization.enforce import Caller
+from src.services.execution.workflow_dispatch import release_workflow_run
 from src.services.kubernetes_execution import KubernetesExecutionService
 from src.services.work_dispatch import WAKE_WORKFLOW, stage_dispatch
+from src.services.worker_pool import claims as claim_service
 from src.services.worker_pool import (
     cloudflare_canary,
+    cloudflare_connector_channel,
     cloudflare_spend,
     cloudflare_supervisor,
+    cloudflare_tunnel,
     controller,
     external_controller,
 )
+from src.services.worker_pool.claims import claim_next
 from src.services.worker_pool.cloudflare_admission import (
     ManagedCloudflareScope,
     cloudflare_claim_allowed,
@@ -94,12 +101,12 @@ from src.services.worker_pool.cloudflare_policy import (
     save_cloudflare_policy,
 )
 from src.services.worker_pool.cloudflare_provisioning import (
+    DeletionSettling,
+    ObservationPending,
     ResourceIntent,
     ResourceObservation,
     ResourceTarget,
 )
-from src.services.worker_pool.claims import claim_next
-from src.services.worker_pool import claims as claim_service
 from src.services.worker_pool.cloudflare_slots import (
     confirm_workflow_slot_release,
     fence_workflow_slot_send,
@@ -118,12 +125,12 @@ from src.services.worker_pool.cloudflare_spend import (
 )
 from src.services.worker_pool.cloudflare_workers_rest import (
     OWNER_BINDING,
+    CloudflareRestUnavailable,
     ConfiguredWorkersScript,
     WorkersRestCleanup,
     worker_owner_value,
 )
 from src.services.worker_pool.recovery import end_runs_of_lost_worker
-from src.services.execution.workflow_dispatch import release_workflow_run
 from src.worker.remote.remote_pool import ThinRemoteProcessPool
 
 OPERATOR_ID = UUID("20cb7fe5-78e2-48d7-8f1e-8edcac69ffab")
@@ -131,6 +138,209 @@ TEST_LAUNCHER_CAPS = {"sqlite_rows_written": 100, "do_requests": 20, "log_events
 TEST_CPU_LIMITS = {
     "capacity": 87, "gateway": 50, "workflow": 30_000, "boot": 2000, "warm": 200, "exercise": 100, "startup": 1000,
 }
+
+
+class _TunnelAPI:
+    """Strict local Cloudflare transport with deterministic uncertain writes."""
+
+    account = "a" * 32
+    zone = "b" * 32
+    dns_id = "c" * 32
+    tunnel_id = "20000000-0000-4000-8000-000000000001"
+
+    def __init__(self):
+        self.tunnel = None
+        self.dns = None
+        self.config = None
+        self.secret = None
+        self.connectors = []
+        self.tunnel_creates = 0
+        self.dns_creates = 0
+        self.rotations = 0
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "api.cloudflare.com"
+        assert request.headers["Authorization"] == "Bearer synthetic-cloudflare-management-token"
+        method = request.method
+        path = request.url.path.removeprefix("/client/v4")
+        tunnels = f"/accounts/{self.account}/cfd_tunnel"
+        tunnel = f"{tunnels}/{self.tunnel_id}"
+        zone = f"/zones/{self.zone}"
+        records = f"{zone}/dns_records"
+
+        def result(value):
+            return httpx.Response(200, json={"success": True, "result": value})
+
+        if path == zone and method == "GET":
+            return result({"account": {"id": self.account}, "id": self.zone, "name": "example.test", "status": "active"})
+        if path == tunnels and method == "GET":
+            return result([self.tunnel] if self.tunnel and self.tunnel["deleted_at"] is None else [])
+        if path == tunnels and method == "POST":
+            self.tunnel_creates += 1
+            body = json.loads(request.content)
+            self.secret = body["tunnel_secret"]
+            self.tunnel = {
+                "id": self.tunnel_id, "name": body["name"], "account_tag": self.account,
+                "config_src": body["config_src"], "created_at": "fixture-create", "deleted_at": None,
+            }
+            raise httpx.ReadError("lost tunnel create response", request=request)
+        if path == tunnel and method == "GET":
+            return result(self.tunnel)
+        if path == tunnel and method == "DELETE":
+            assert self.tunnel and self.dns is None and not self.connectors
+            self.tunnel["deleted_at"] = "fixture-delete"
+            return result(self.tunnel)
+        if path == tunnel and method == "PATCH":
+            self.rotations += 1
+            self.secret = json.loads(request.content)["tunnel_secret"]
+            raise httpx.ReadError("lost tunnel rotation response", request=request)
+        if path == tunnel + "/token" and method == "GET":
+            token = json.dumps({"a": self.account, "t": self.tunnel_id, "s": self.secret})
+            return result(base64.b64encode(token.encode()).decode())
+        if path == tunnel + "/connections" and method == "GET":
+            return result([{"id": connector} for connector in self.connectors])
+        if path == tunnel + "/configurations" and method == "GET":
+            if self.config is None:
+                return httpx.Response(404)
+            return result({"account_id": self.account, "tunnel_id": self.tunnel_id, "config": self.config})
+        if path == tunnel + "/configurations" and method == "PUT":
+            self.config = json.loads(request.content)["config"]
+            return result({})
+        if path == records and method == "GET":
+            assert request.url.params["name.exact"] == "workers.example.test"
+            return result([self.dns] if self.dns else [])
+        if path == records and method == "POST":
+            self.dns_creates += 1
+            if self.dns_creates == 1:
+                return httpx.Response(503)
+            self.dns = {**json.loads(request.content), "id": self.dns_id, "modified_on": "fixture-dns-version"}
+            raise httpx.ReadError("lost DNS create response", request=request)
+        if path == f"{records}/{self.dns_id}" and method == "GET":
+            return result(self.dns) if self.dns else httpx.Response(404)
+        if path == f"{records}/{self.dns_id}" and method == "DELETE":
+            assert self.dns
+            self.dns = None
+            return result({})
+        raise AssertionError(f"Unexpected stub request: {method} {path}")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("layout", "origin"), [("compose", "http://api:8001"), ("kustomize", "http://worker-ingress:8001")])
+async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch, tmp_path, layout, origin,
+) -> None:
+    installation.reachability_mode = "managed_tunnel"
+    installation.zone_id = _TunnelAPI.zone
+    await db_session.flush()
+    connection = await db_session.connection()
+    installation_id = installation.id
+
+    @asynccontextmanager
+    async def context():
+        async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as session:
+            yield session
+            await session.commit()
+
+    async def change(operation, client, **kwargs):
+        async with context() as db:
+            row = await db.get(CloudflareInstallation, installation_id)
+            return await operation(db, row, client, **kwargs)
+
+    settings = SimpleNamespace(cloudflare_tunnel_channel=layout)
+    monkeypatch.setattr(cloudflare_tunnel, "get_settings", lambda: settings)
+    monkeypatch.setattr(cloudflare_connector_channel, "get_settings", lambda: settings)
+    monkeypatch.setattr(cloudflare_connector_channel, "get_db_context", context)
+    token_file = tmp_path / "token"
+    monkeypatch.setattr(cloudflare_connector_channel, "COMPOSE_PATH", token_file)
+    secret_data = {}
+    secret_version = 0
+
+    def kube_api(request):
+        nonlocal secret_version, secret_data
+        assert request.url.path == "/api/v1/namespaces/test/secrets/bifrost-cloudflare-connector"
+        assert request.headers["Authorization"] == "Bearer fixture-projector-identity"
+        if request.method == "PATCH":
+            patch = json.loads(request.content)
+            assert patch["metadata"]["resourceVersion"] == str(secret_version)
+            assert set(patch["data"]) == {"token"}
+            secret_data = patch["data"]
+            secret_version += 1
+        return httpx.Response(200, json={
+            "metadata": {
+                "name": "bifrost-cloudflare-connector", "namespace": "test", "resourceVersion": str(secret_version),
+                "labels": {"app.kubernetes.io/component": "cloudflare-connector"},
+            },
+            "type": "Opaque", "data": secret_data,
+        })
+
+    def delivered() -> str:
+        if layout == "compose":
+            return token_file.read_text() if token_file.exists() else ""
+        return base64.b64decode(secret_data.get("token", "")).decode()
+
+    async with httpx.AsyncClient(base_url="https://kube.example.test", transport=httpx.MockTransport(kube_api)) as kube:
+        monkeypatch.setattr(KubernetesJobClient, "_read_token", lambda _: "fixture-projector-identity")
+        monkeypatch.setattr(cloudflare_connector_channel, "in_cluster_namespace", lambda: "test")
+        monkeypatch.setattr(cloudflare_connector_channel, "KubernetesJobClient",
+                            lambda **kwargs: KubernetesJobClient(http_client=kube, **kwargs))
+        provider = _TunnelAPI()
+        async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+            client = cloudflare_tunnel.adapter(http, installation, SecretStr("synthetic-cloudflare-management-token"))
+            actor = str(OPERATOR_ID)
+            async with context() as db:
+                row = await db.get(CloudflareInstallation, installation_id)
+                await cloudflare_tunnel.prepare(db, row, actor=actor)
+            with pytest.raises(CloudflareRestUnavailable):
+                await change(cloudflare_tunnel.provision_tunnel, client)
+            await change(cloudflare_tunnel.provision_tunnel, client)
+            assert provider.tunnel_creates == 1
+            assert provider.config == {"ingress": [
+                {"hostname": "workers.example.test", "service": origin}, {"service": "http_status:404"},
+            ]}
+            with pytest.raises(CloudflareRestUnavailable):
+                await change(cloudflare_tunnel.provision_dns, client, actor=actor)
+            with pytest.raises(CloudflareRestUnavailable):
+                await change(cloudflare_tunnel.provision_dns, client, actor=actor)
+            await change(cloudflare_tunnel.provision_dns, client, actor=actor)
+            assert provider.dns_creates == 2
+            key = await cloudflare_connector_channel.project_connector(None)
+            first = delivered()
+            assert first == (await client.connector_token(provider.tunnel_id)).get_secret_value()
+            old, new = str(uuid4()), str(uuid4())
+            provider.connectors = [old]
+            await change(cloudflare_tunnel.verify, client)
+            provider.connectors = []
+            with pytest.raises(ObservationPending, match="no connected"):
+                await change(cloudflare_tunnel.verify, client)
+            provider.connectors = [old]
+            await change(cloudflare_tunnel.verify, client)
+            async with context() as db:
+                row = await db.get(CloudflareInstallation, installation_id)
+                await cloudflare_tunnel.stage_rotation(db, row, version=2, actor=actor)
+            await change(cloudflare_tunnel.record_rotation_intent, client, version=2)
+            with pytest.raises(CloudflareRestUnavailable):
+                await change(cloudflare_tunnel.rotate, client, version=2, actor=actor)
+            await change(cloudflare_tunnel.rotate, client, version=2, actor=actor)
+            assert provider.rotations == 1
+            key = await cloudflare_connector_channel.project_connector(key)
+            assert delivered() != first
+            assert delivered() == (await client.connector_token(provider.tunnel_id)).get_secret_value()
+            assert not await change(cloudflare_tunnel.connector_ready, client)
+            provider.connectors = [new]
+            assert await change(cloudflare_tunnel.connector_ready, client)
+            assert not await change(cloudflare_tunnel.cleanup, client)
+            with pytest.raises(DeletionSettling, match="projection"):
+                await change(cloudflare_tunnel.cleanup, client)
+            await cloudflare_connector_channel.project_connector(key)
+            assert delivered() == ""
+            assert not await change(cloudflare_tunnel.cleanup, client)  # DNS delete intent
+            assert not await change(cloudflare_tunnel.cleanup, client)  # Tunnel delete intent
+            with pytest.raises(DeletionSettling, match="remain attached"):
+                await change(cloudflare_tunnel.cleanup, client)
+            provider.connectors = []
+            assert await change(cloudflare_tunnel.cleanup, client)
+            assert provider.dns is None
+            assert provider.tunnel and provider.tunnel["deleted_at"]
 
 
 def _platform_operator() -> Caller:

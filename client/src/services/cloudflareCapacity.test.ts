@@ -73,7 +73,7 @@ describe("Cloudflare capacity service", () => {
 		expect(mocks.post).toHaveBeenCalledWith("/api/capacity/cloudflare/rotate", { body });
 	});
 
-	it.each([["rotate-root", "control_root"], ["rotate-bearer", "scope_bearer"]] as const)(
+	it.each([["rotate-root", "control_root"], ["rotate-bearer", "scope_bearer"], ["rotate-connector", "connector_token"]] as const)(
 		"queues %s using the server-generated credential path",
 		async (action, credential) => {
 			const body = { installation_id: "installation-id", expected_revision: 3 };

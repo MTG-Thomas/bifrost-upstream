@@ -90,7 +90,7 @@ class TunnelRest(WorkersRestCleanup):
         if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
             raise ObservationPending("Cloudflare returned an invalid inventory")
         info = payload.get("result_info") if payload else None
-        if len(items) >= 20 or (isinstance(info, dict) and info.get("total_pages", 1) != 1):
+        if len(items) >= 20 or (isinstance(info, dict) and info.get("total_pages", 1) not in (0, 1)):
             raise OwnershipConflict("Cloudflare exact-target inventory is ambiguous")
         matches = [item for item in items if item.get("name") == name]
         if len(matches) > 1:

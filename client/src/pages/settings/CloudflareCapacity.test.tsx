@@ -94,9 +94,10 @@ it("drains using the displayed installation revision and the shared job observer
 	);
 });
 
-it("submits the current consent version and clears the write-only token", async () => {
+it.each([false, true])("submits the current consent and clears the token with Managed Tunnel set to %s", async (managed) => {
 	mocks.get.mockResolvedValue({
 		installation: null,
+		managed_tunnel_available: true,
 		consent_text_version: "existing-https-v1",
 		consent_text: "Current operator consent",
 	});
@@ -107,7 +108,13 @@ it("submits the current consent version and clears the write-only token", async 
 		</QueryClientProvider>,
 	);
 	fireEvent.change(await screen.findByLabelText("Cloudflare Account ID"), { target: { value: "a".repeat(32) } });
-	fireEvent.change(screen.getByLabelText("Existing HTTPS Endpoint"), { target: { value: "https://workers.example.test" } });
+	if (managed) {
+		fireEvent.change(screen.getByLabelText("Reachability"), { target: { value: "managed_tunnel" } });
+		fireEvent.change(screen.getByLabelText("Cloudflare DNS Zone ID"), { target: { value: "b".repeat(32) } });
+	}
+	fireEvent.change(screen.getByLabelText(managed ? "Dedicated Tunnel HTTPS Origin" : "Existing HTTPS Endpoint"), {
+		target: { value: "https://workers.example.test" },
+	});
 	const linger = screen.getByLabelText("Tenant Engine Linger in Seconds");
 	expect(linger).toHaveValue(90);
 	fireEvent.change(linger, { target: { value: "0" } });
@@ -129,6 +136,7 @@ it("submits the current consent version and clears the write-only token", async 
 		action: "connect",
 		account_id: "a".repeat(32),
 		worker_ingress_origin: "https://workers.example.test",
+		...(managed ? { reachability_mode: "managed_tunnel", zone_id: "b".repeat(32) } : {}),
 		consent: true,
 		consent_version: "existing-https-v1",
 		api_token: "synthetic-management-token",

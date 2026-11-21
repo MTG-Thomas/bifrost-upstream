@@ -178,6 +178,11 @@ async def verify(db: AsyncSession, row: CloudflareInstallation, client: TunnelRe
     if receipt is None or await client.dns(receipt.intent, receipt, tunnel.provider_id) is None:
         raise ObservationPending("The recorded Cloudflare DNS record is absent")
     await client.verify_ingress(tunnel, tunnel_origin())
+    if row.tunnel_token_version is None:
+        raise ObservationPending("Managed Tunnel has not published a connector credential")
+    expected = await _credential(db, _ref(row, "tunnel_secret", row.tunnel_token_version))
+    if not compare_digest(await client.secret(tunnel.provider_id), expected.get_secret_value()):
+        raise OwnershipConflict("The Cloudflare tunnel credential changed outside Bifrost")
     if not await connector_ready(db, row, client):
         raise ObservationPending("Cloudflare has no connected tunnel supervisor")
 

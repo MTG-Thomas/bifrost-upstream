@@ -760,6 +760,8 @@ async def _rotate_account_token(context: PlatformJobContext, parsed: BaseModel) 
         async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
             adapter = WorkersRestCleanup(http)
             await adapter.verify_workers_paid(account_id, bearer)
+            if installation.reachability_mode == "managed_tunnel":
+                await cloudflare_tunnel.adapter(http, installation, bearer).verify_zone()
             writes_verified = False
             for receipt in inventory:
                 if receipt.provider_id is None or receipt.provider_version is None:
@@ -778,7 +780,7 @@ async def _rotate_account_token(context: PlatformJobContext, parsed: BaseModel) 
         denial = (str(exc), "CF_WORKERS_PAID_UNVERIFIED")
     except WorkersWriteUnverified as exc:
         denial = (str(exc), "CF_WORKERS_WRITE_UNVERIFIED")
-    except (ObservationPending, OwnershipConflict):
+    except (ObservationPending, OwnershipConflict, ValueError):
         denial = ("Verify Cloudflare Ownership", "CF_DEPLOYMENT_UNVERIFIED")
     except CloudflareRestUnavailable:
         raise PlatformJobFailure("CF_PROVIDER_UNAVAILABLE", "Cloudflare REST Is Temporarily Unavailable", retryable=True) from None

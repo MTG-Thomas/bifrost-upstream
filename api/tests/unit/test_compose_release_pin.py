@@ -14,6 +14,7 @@ _PINNED = {
     "init": "ghcr.io/gobifrost/bifrost-api:${BIFROST_VERSION:-latest}",
     "api": "ghcr.io/gobifrost/bifrost-api:${BIFROST_VERSION:-latest}",
     "worker": "ghcr.io/gobifrost/bifrost-api:${BIFROST_VERSION:-latest}",
+    "cloudflare-connector": "ghcr.io/gobifrost/bifrost-api:${BIFROST_VERSION:-latest}",
     "client": "ghcr.io/gobifrost/bifrost-client:${BIFROST_VERSION:-latest}",
 }
 

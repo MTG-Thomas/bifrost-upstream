@@ -4,8 +4,8 @@ from typing import Any, Literal
 from uuid import UUID
 
 from shared.models import (
-    CloudflareCapacityAction,
     CloudflareAccountTokenReferenceRotation,
+    CloudflareCapacityAction,
     CloudflareCapacityPolicy,
     CloudflareConnectRequest,
     CloudflarePolicyUpdate,
