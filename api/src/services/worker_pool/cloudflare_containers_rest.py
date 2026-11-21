@@ -166,7 +166,7 @@ class ContainerRegistry:
         self.crane = crane
         self.cf = cf
 
-    async def _tags(self, token: SecretStr, account: str, name: str, cwd: Path) -> bool:
+    async def _tags(self, token: SecretStr, account: str, name: str, cwd: Path) -> frozenset[str]:
         env = {"CLOUDFLARE_ACCOUNT_ID": account, "CLOUDFLARE_API_TOKEN": token.get_secret_value()}
         if (await run_oci_tool(self.cf, "--version", cwd=cwd)).strip() != b"1.0.0-beta.31":
             raise ContainersReleaseUnavailable("Expected the pinned registry CLI")
@@ -180,12 +180,16 @@ class ContainerRegistry:
             ))
         except (ValueError, TypeError, KeyError):
             raise ObservationPending("Registry tag inventory is malformed") from None
-        if not isinstance(rows, list) or any(
+        if not isinstance(rows, list) or len(rows) > 1 or any(
             not isinstance(row, dict) or row.get("name") not in {name, f"{account}/{name}"}
+            or not isinstance(row.get("tags"), list) or not row["tags"]
+            or any(not isinstance(tag, str) or not re.fullmatch(r"[\w][\w.-]{0,127}", tag, re.ASCII)
+                   for tag in row["tags"])
+            or len(set(row["tags"])) != len(row["tags"])
             for row in rows
         ):
             raise ObservationPending("Registry tag inventory is unconfirmed")
-        return bool(rows)
+        return frozenset(rows[0]["tags"]) if rows else frozenset()
 
     async def copy(
         self, token: SecretStr, intent: ResourceIntent, release: VerifiedContainerRelease, *, previously_sent: bool,
@@ -201,8 +205,9 @@ class ContainerRegistry:
             if (await run_oci_tool(self.crane, "version", cwd=cwd)).strip() != b"v0.20.6":
                 raise ContainersReleaseUnavailable("Expected the pinned OCI copy tool")
             await self._verify_image(release.manifest.image, release, cwd)
-            visible = await self._tags(token, account, name, cwd)
-            if visible and not previously_sent:
+            tags = await self._tags(token, account, name, cwd)
+            visible = "release" in tags
+            if tags and not previously_sent:
                 raise OwnershipConflict("Container registry repository is occupied")
             if not visible and previously_sent:
                 raise ObservationPending("Earlier registry push has no confirmed tag")
@@ -223,7 +228,7 @@ class ContainerRegistry:
             if not visible:
                 await run_oci_tool(self.crane, "copy", release.manifest.image, destination, cwd=cwd, timeout=90)
             await self._verify_image(destination, release, cwd)
-            if not await self._tags(token, account, name, cwd):
+            if "release" not in await self._tags(token, account, name, cwd):
                 raise ObservationPending("Exact registry tag is still unconfirmed")
         return ResourceObservation(intent, destination, release.manifest.image_digest)
 

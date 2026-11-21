@@ -146,7 +146,7 @@ async def test_ambiguous_registry_copy_is_observe_only(tmp_path, monkeypatch) ->
         if args[:2] == ("accounts", "get"):
             return json_bytes({"id": ACCOUNT})
         if args[:3] == ("containers", "images", "list"):
-            return json_bytes([{"name": name}] if visible else [])
+            return json_bytes([{"name": name, "tags": ["release" if visible else "other"]}])
         if args[0] == "manifest":
             return image + b"\n"
         if args[0] == "config":
