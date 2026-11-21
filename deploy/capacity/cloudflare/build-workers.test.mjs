@@ -20,8 +20,8 @@ test('every input in the packaged Workers import graph has a reviewed billing cl
     assert.throws(() => assertMeterInventory(role, {...inputs, [first]: 'changed charge site'}, meterInventory),
       /Review the Cloudflare meter inventory/);
   }
-  const docs = readFileSync(new URL('../../../spikes/cloudflare-pyodide/dev/cloudflare-launcher/PHASE1-USAGE.md',
-    import.meta.url), 'utf8');
+  const docs = new TextDecoder('utf-8', {fatal: true}).decode(readFileSync(new URL(
+    '../../../spikes/cloudflare-pyodide/dev/cloudflare-launcher/PHASE1-USAGE.md', import.meta.url)));
   for (const id of meterInventory.paths) assert.ok(docs.includes(`| \`${id}\` |`), id);
 });
 

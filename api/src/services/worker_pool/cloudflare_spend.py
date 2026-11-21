@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from shared.models import CLOUDFLARE_MAX_RECEIPT_ROUTES, CloudflareEngineInvocation, CloudflareLauncherUsage
 from sqlalchemy import (
     Boolean,
+    DateTime,
     Numeric,
     and_,
     case,
@@ -133,6 +134,7 @@ _CONTROL_CADENCE_USD = (
     + 2 * _DURATION_USD_PER_SECOND
 )
 _CONTROL_LIFECYCLE_USD = 24 * _DO_REQUEST_USD + 32 * _SQL_WRITE_USD + 12 * _LOG_EVENT_USD
+_RECEIPT_ACK_USD = _DO_REQUEST_USD + _SQL_WRITE_USD
 # Each child gets at most 50 approved subrequests. Reserve up to two TenantHost
 # RPCs per call, plus 24 storage writes and diagnostics per dispatch.
 _TENANT_DISPATCH_USD = 100 * _DO_REQUEST_USD + 24 * _SQL_WRITE_USD + 4 * _LOG_EVENT_USD
@@ -154,7 +156,7 @@ _SQLITE_OTHER_DO_BYTES_PER_LAUNCHER = 10_000_000
 _SQLITE_SCOPE_BYTES = 1_000_000
 _SQLITE_MISSING_RECEIPT_BYTES = 10_000_000
 _SQLITE_UNCONFIRMED_LAUNCHER_BYTES = 1_000_000
-_SQLITE_LEDGER_TOMBSTONE_BYTES = 128_000
+_SQLITE_LEDGER_TOMBSTONE_BYTES = 224_000
 _SQLITE_LEDGER_FENCE_BYTES = 16_000
 _SQLITE_TENANT_RESIDUE_BYTES = 4_096
 # Three possible warm calls, one execution and up to 50 gateway entries.
@@ -350,7 +352,7 @@ def _incarnation_cost_sql(installation: type[CloudflareInstallation], now):
          seconds * (lifetime_rate + slot_delta) + sum(line_items) + case(
              (version.in_((*_INVENTORY_RATE_VERSIONS, WORKERS_CADENCE_RATE_TABLE_VERSION)), _CONTROL_LIFECYCLE_USD),
              else_=0,
-         )),
+         ) + case((version == WORKERS_RATE_TABLE_VERSION, _RECEIPT_ACK_USD), else_=0)),
     )
     priced = case(
         (version.in_(_RECEIPT_RATE_VERSIONS), receipt_price),
@@ -393,6 +395,10 @@ def _ledger_residue_bytes(usage):
     )
 
 
+def _ledger_compacted_at(usage):
+    return cast(usage.meter_final["ledger_receipt_compacted_at"].as_string(), DateTime(timezone=True))
+
+
 def _namespace_storage_end(source, digest, suffix: str, now):
     resource = CloudflareOwnedResource
     revision = func.coalesce(source.deployment_revision, 0)
@@ -429,6 +435,7 @@ def _retained_storage_cost(installation: type[CloudflareInstallation], now):
     launcher_end = _namespace_storage_end(usage, usage.meter_release_digest, "-launcher", now)
     ledger_end = _namespace_storage_end(usage, usage.meter_release_digest, "-capacity", now)
     stopped = func.coalesce(usage.deleted_at, now)
+    compacted_at = func.greatest(stopped, _ledger_compacted_at(usage))
     working_bytes = func.coalesce(_launcher_high_water(usage), _SQLITE_MISSING_RECEIPT_BYTES) * _STORAGE_MARGIN
     # Launcher cleanup removes the working database. WorkerLedger keeps the
     # receipt until acknowledgement, then a replay fence.
@@ -437,6 +444,8 @@ def _retained_storage_cost(installation: type[CloudflareInstallation], now):
         + _SQLITE_OTHER_DO_BYTES_PER_LAUNCHER * fraction(usage.started_at, func.least(stopped, ledger_end))
         + _launcher_residue_bytes(usage) * fraction(stopped, launcher_end)
         + _ledger_residue_bytes(usage) * fraction(stopped, ledger_end)
+        + (_SQLITE_LEDGER_TOMBSTONE_BYTES - _ledger_residue_bytes(usage))
+        * fraction(stopped, func.least(compacted_at, ledger_end))
     ), 0)).select_from(usage).join(owner, owner.id == usage.installation_id).where(
         owner.account_id == installation.account_id,
         usage.meter_rate_version.in_(_INVENTORY_RATE_VERSIONS),
@@ -536,7 +545,10 @@ async def compact_ledger_receipt(
     async with get_db_context() as db:
         row = await db.get(CloudflareUsageIncarnation, worker_id, with_for_update=True)
         if row is not None and row.meter_final and row.meter_final.get("ledger_receipt_pending"):
-            row.meter_final = {**row.meter_final, "ledger_receipt_pending": False, "ledger_receipt_compacted": True}
+            row.meter_final = {
+                **row.meter_final, "ledger_receipt_pending": False, "ledger_receipt_compacted": True,
+                "ledger_receipt_compacted_at": (await _ledger_now(db)).isoformat(),
+            }
 
 
 async def _ledger_now(db: AsyncSession) -> datetime:
@@ -806,6 +818,7 @@ async def prune_spend_receipt_keys(db: AsyncSession) -> None:
     pin = CloudflareWorkerReservation
     expired = select(usage.worker_id).where(
         usage.deleted_at < cutoff,
+        or_(_ledger_compacted_at(usage).is_(None), _ledger_compacted_at(usage) < cutoff),
         ~select(pin.worker_id).where(pin.worker_id == usage.worker_id).exists(),
         ~select(meter.worker_id).where(meter.worker_id == usage.worker_id).exists(),
     ).order_by(usage.deleted_at).limit(1000)

@@ -1387,7 +1387,7 @@ async def test_admission_prices_the_qualified_ledger_bounds(
     month_seconds = Decimal((usage_period(start)[1] - start).total_seconds())
     lifetime_base += Decimal("0.022") * elapsed / month_seconds
     residue_seconds = Decimal((as_of - start).total_seconds()) - elapsed
-    lifetime_base += Decimal("0.0002264192") * residue_seconds / month_seconds
+    lifetime_base += Decimal("0.0002456192") * residue_seconds / month_seconds
     fallback = lifetime_base + Decimal("0.000106")
     await db_session.flush()
     observed = await db_session.scalar(price)
@@ -1912,6 +1912,8 @@ async def test_launcher_storage_separates_live_bytes_from_retained_residue(
         yield db_session
 
     monkeypatch.setattr(cloudflare_spend, "get_db_context", context)
+    acknowledged_at = retired + timedelta(days=2)
+    monkeypatch.setattr(cloudflare_spend, "_ledger_now", AsyncMock(return_value=acknowledged_at))
     ack = AsyncMock(side_effect=[httpx.ReadTimeout("fixture"), None])
     with pytest.raises(httpx.ReadTimeout):
         await cloudflare_spend.compact_ledger_receipt(worker_id, ack)
@@ -1921,7 +1923,7 @@ async def test_launcher_storage_separates_live_bytes_from_retained_residue(
     assert ack.await_count == 2
     compacted = await db_session.scalar(estimate)
     assert compacted is not None
-    assert abs(cleared - compacted - 112_000 * rate * (now - retired).days / month_days) < Decimal("1e-12")
+    assert abs(cleared - compacted - 208_000 * rate * (now - acknowledged_at).days / month_days) < Decimal("1e-12")
 
     monkeypatch.setattr(cloudflare_spend, "_ledger_now", AsyncMock(return_value=now))
     await cloudflare_spend.prune_spend_receipt_keys(db_session)
@@ -1947,6 +1949,36 @@ async def test_launcher_storage_separates_live_bytes_from_retained_residue(
     # Both launchers can leave TenantHost markers in that namespace.
     removed_bytes = 1_001_000 + 2 * 4096
     assert abs(compacted - after_deletion - removed_bytes * rate * (now - namespace.observed_at).days / month_days) < Decimal("1e-12")
+
+
+@pytest.mark.asyncio
+async def test_canary_acknowledges_only_after_the_receipt_transaction_commits(monkeypatch) -> None:
+    worker_id = uuid4()
+    db = SimpleNamespace(scalar=AsyncMock(return_value=worker_id))
+    receipt = CloudflareLauncherUsage(sqlite_rows_written=3, do_requests=1, log_events=0, ledger_receipt_pending=True)
+    committed = False
+    seal = AsyncMock()
+
+    @asynccontextmanager
+    async def context():
+        nonlocal committed
+        yield db
+        committed = seal.await_count > 0
+
+    async def compact(actual_worker, acknowledge):
+        assert actual_worker == worker_id and committed
+        seal.assert_awaited_once_with(db, worker_id, receipt)
+        await acknowledge()
+
+    monkeypatch.setattr(cloudflare_canary, "get_db_context", context)
+    monkeypatch.setattr(cloudflare_canary, "seal_launcher_meter", seal)
+    monkeypatch.setattr(cloudflare_canary, "compact_ledger_receipt", compact)
+    client = SimpleNamespace(
+        get=AsyncMock(return_value=SimpleNamespace(resource_uid="owned", state="deleted", usage=receipt)),
+        acknowledge_receipt=AsyncMock(),
+    )
+    assert await cloudflare_canary._retire_canary(client, worker_id, "owned")
+    client.acknowledge_receipt.assert_awaited_once_with(worker_id, "workers", "owned")
 
 
 @pytest.mark.asyncio
