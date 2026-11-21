@@ -34,6 +34,9 @@ modules['entry.mjs'] = {type: 'esm', contents: `
   import {launcherMeter, SQLITE_HEADROOM} from './cloudflare-launcher/launcher-meter.mjs';
   import {CloudflareLauncher as Launcher} from './cloudflare-launcher/launcher-do.mjs';
   export class CloudflareLauncher extends Launcher {
+    resetForFixture() {
+      this.ctx.abort('fixture reset');
+    }
     async witnessIdleStorage() {
       await this.alarm();
       return this.ctx.storage.sql.exec(
@@ -385,6 +388,11 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
     assert.equal(compacted.usage, undefined);
     assert.deepEqual(await (await request(path)).json(), compacted);
   }
+  if (!measuredLauncher) {
+    const launchers = await mf.getDurableObjectNamespace('CLOUDFLARE_LAUNCHER', 'capacity');
+    await assert.rejects(launchers.getByName(id).resetForFixture(), /fixture reset/);
+    assert.deepEqual(await launchers.getByName(id).witnessIdleStorage(), []);
+  }
   if (references) {
     assert.ok(references.every(attempt => attempt.usage));
     assert.ok(deleted.usage);
@@ -401,11 +409,6 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
       lifetime_seconds: (Date.now() - startedAt) / 1000, capacity_requests: capacityCalls - initialCapacityCalls,
       sha256: sha256(readFileSync(measuredLauncher))}));
   }
-});
-
-test('an idle managed launcher with metering configured leaves SQLite tables absent', async () => {
-  const launchers = await mf.getDurableObjectNamespace('CLOUDFLARE_LAUNCHER', 'capacity');
-  assert.deepEqual(await launchers.getByName(randomUUID()).witnessIdleStorage(), []);
 });
 
 test('compacting a WorkerLedger KV receipt releases its SQLite pages', async () => {

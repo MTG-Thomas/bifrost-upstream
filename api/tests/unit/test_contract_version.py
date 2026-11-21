@@ -457,7 +457,8 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # The optional SQLite size in capacity receipts leaves existing clients compatible.
     # Cloudflare spend descriptions explain the estimate and its admission target.
     # Workflow wall time and storage-clear evidence are optional capacity receipt fields.
-    "f0301900e052a6a305ca0b67d1c85814ae840e6f4ad75a452de35b1e01be0c9a"
+    # The optional ledger acknowledgement marker extends provider receipts.
+    "2c8adb82e17e9de497e95715f418235181512cb611dc191e9169aa8d8b572efc"
 )
 
 
