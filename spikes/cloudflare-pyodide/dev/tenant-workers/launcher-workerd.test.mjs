@@ -828,6 +828,15 @@ for (const [scenario, phase] of [['cpu-limit', 'cpu_limit'], ['memory-limit', 'm
     const next = await host(scenario, 'run', route(scenario, {routeId: `${scenario}-next`}));
     assert.deepEqual(next, {needsWarm: true, attempt_state: 'not_started'});
   });
+
+  test(`TenantHost confirms a managed ${phase} exit after retiring the generation`, async () => {
+    const tenant = `managed-${scenario}`;
+    await host(tenant, 'warm');
+    const result = await host(tenant, 'run', {...route(tenant, {scenario}), trackStop: true});
+    assert.deepEqual(result, {terminal: {phase, attempt_state: 'stopped'}});
+    const next = await host(tenant, 'run', route(tenant, {routeId: `${tenant}-next`}));
+    assert.deepEqual(next, {needsWarm: true, attempt_state: 'not_started'});
+  });
 }
 
 test('a replacement workerd isolate reports another load under the same WorkerLoader identity', async () => {
