@@ -14,6 +14,7 @@ _PINNED = {
     "init": "ghcr.io/gobifrost/bifrost-api:${BIFROST_VERSION:-latest}",
     "api": "ghcr.io/gobifrost/bifrost-api:${BIFROST_VERSION:-latest}",
     "worker": "ghcr.io/gobifrost/bifrost-api:${BIFROST_VERSION:-latest}",
+    "cloudflare-connector": "ghcr.io/gobifrost/bifrost-api:${BIFROST_VERSION:-latest}",
     "client": "ghcr.io/gobifrost/bifrost-client:${BIFROST_VERSION:-latest}",
 }
 
@@ -34,6 +35,14 @@ def test_every_bifrost_image_follows_the_release_variable() -> None:
     }
 
     assert bifrost_images == _PINNED
+
+
+def test_connector_bridge_excludes_backend_services() -> None:
+    services = yaml.safe_load(_compose_file().read_text())["services"]
+    assert services["cloudflare-connector"]["networks"] == ["cloudflare-connector"]
+    assert set(services["api"]["networks"]) == {"default", "cloudflare-connector"}
+    for name in ("postgres", "pgbouncer", "redis", "seaweedfs"):
+        assert "cloudflare-connector" not in services[name].get("networks", [])
 
 
 def test_compose_forwards_blob_selection_to_every_storage_process() -> None:

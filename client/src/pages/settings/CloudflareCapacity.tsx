@@ -55,6 +55,7 @@ function CloudflareConfigurationForm({ status, onSaved }: {
 	const settings = installation?.policy;
 	const [saving, setSaving] = useState(false);
 	const [failure, setFailure] = useState<string>();
+	const [managedTunnel, setManagedTunnel] = useState(false);
 
 	async function save(event: FormEvent<HTMLFormElement>) {
 		event.preventDefault();
@@ -89,6 +90,8 @@ function CloudflareConfigurationForm({ status, onSaved }: {
 			action: "connect",
 			account_id: String(fields.get("account_id")),
 			worker_ingress_origin: String(fields.get("origin")),
+			reachability_mode: managedTunnel ? "managed_tunnel" : "existing_https_endpoint",
+			...(managedTunnel ? { zone_id: String(fields.get("zone_id")) } : {}),
 			api_token: String(fields.get("api_token")),
 			consent: true,
 			consent_version: status.consent_text_version,
@@ -114,7 +117,26 @@ function CloudflareConfigurationForm({ status, onSaved }: {
 				<div className="space-y-3">
 					<Label htmlFor="cf-account-id">Cloudflare Account ID</Label>
 					<Input id="cf-account-id" name="account_id" pattern="[a-f0-9]{32}" required />
-					<Label htmlFor="cf-ingress-origin">Existing HTTPS Endpoint</Label>
+					{status.managed_tunnel_available && (
+						<div className="grid gap-2">
+							<Label htmlFor="cf-reachability-mode">Reachability</Label>
+							<select id="cf-reachability-mode" className="rounded-md border bg-background p-2"
+								value={managedTunnel ? "managed_tunnel" : "existing_https_endpoint"}
+								onChange={(event) => setManagedTunnel(event.target.value === "managed_tunnel")}
+							>
+								<option value="existing_https_endpoint">Existing HTTPS Endpoint</option>
+								<option value="managed_tunnel">Managed Tunnel</option>
+							</select>
+						</div>
+					)}
+					{managedTunnel && (
+						<>
+							<Label htmlFor="cf-zone-id">Cloudflare DNS Zone ID</Label>
+							<Input id="cf-zone-id" name="zone_id" pattern="[a-f0-9]{32}" required />
+							<p className="text-sm text-muted-foreground">Grant Cloudflare Tunnel Write on the account and Zone Read and DNS Write on this zone.</p>
+						</>
+					)}
+					<Label htmlFor="cf-ingress-origin">{managedTunnel ? "Dedicated Tunnel HTTPS Origin" : "Existing HTTPS Endpoint"}</Label>
 					<Input id="cf-ingress-origin" name="origin" type="url" required />
 					<Label htmlFor="cf-connect-token">Cloudflare API Token</Label>
 					<Input id="cf-connect-token" name="api_token" type="password" autoComplete="new-password" required />
@@ -278,7 +300,7 @@ export function CloudflareCapacity() {
 							</div>
 							<div>
 								<dt className="text-muted-foreground">
-									Existing HTTPS Endpoint
+									{installation.reachability_mode === "managed_tunnel" ? "Managed Tunnel" : "Existing HTTPS Endpoint"}
 								</dt>
 								<dd className="break-all">
 									{installation.worker_ingress_origin}
@@ -364,6 +386,11 @@ export function CloudflareCapacity() {
 								{installation.desired_state === "scaled_in" && (
 									<>
 										<Button variant="outline" disabled={busy} onClick={() => mutation.mutate("rotate-root")}>Rotate Control Root</Button>
+										{installation.connector_token_version != null && (
+											<Button variant="outline" disabled={busy} onClick={() => mutation.mutate("rotate-connector")}>
+												Rotate Connector Token
+											</Button>
+										)}
 										<AlertDialog>
 											<AlertDialogTrigger asChild>
 												<Button variant="outline" disabled={busy}>Rotate Scope Bearer</Button>
