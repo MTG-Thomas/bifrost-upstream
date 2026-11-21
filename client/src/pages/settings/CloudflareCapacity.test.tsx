@@ -115,6 +115,9 @@ it("submits the current consent version and clears the write-only token", async 
 	const installationSlots = screen.getByLabelText("Installation Slot Limit");
 	expect(tenantSlots).toHaveValue(4);
 	expect(installationSlots).toHaveValue(9);
+	const prewarm = screen.getByLabelText("Max Queue Pre-Warms Per Tenant");
+	expect(prewarm).toHaveValue(0);
+	fireEvent.change(prewarm, { target: { value: "2" } });
 	fireEvent.change(tenantSlots, { target: { value: "3" } });
 	fireEvent.change(installationSlots, { target: { value: "8" } });
 	const token = screen.getByLabelText("Cloudflare API Token");
@@ -133,7 +136,7 @@ it("submits the current consent version and clears the write-only token", async 
 		consent_version: "existing-https-v1",
 		api_token: "synthetic-management-token",
 		policy: expect.objectContaining({
-			workers: expect.objectContaining({ linger_seconds: 0, slots_per_tenant: 3, installation_slots: 8 }),
+			workers: expect.objectContaining({ linger_seconds: 0, slots_per_tenant: 3, installation_slots: 8, queue_prewarm_per_tenant: 2 }),
 		}),
 	}));
 	expect(token).toHaveValue("");

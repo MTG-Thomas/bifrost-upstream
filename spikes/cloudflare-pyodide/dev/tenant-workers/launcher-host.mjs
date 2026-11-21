@@ -35,33 +35,34 @@ export function createLauncherWorkflowRunner(getHost, {warmRpcMs = ENGINE_BOOT_T
   // or reaches the RPC limit, independently of the waiting route's deadline.
   let warmTail = Promise.resolve();
   const preparations = new Map();
-  const queueWarm = (task) => {
-    const next = warmTail.then(async () => {
-      let timer;
-      let expired = false;
-      const check = () => {
-        if (expired) throw new Error('TenantHost warm-up RPC timed out');
-      };
-      const timeout = new Promise((_, reject) => {
-        timer = setTimeout(() => {
-          expired = true;
-          reject(new Error('TenantHost warm-up RPC timed out'));
-        }, warmRpcMs);
-      });
-      try {
-        return await Promise.race([task(check), timeout]);
-      } finally {
-        clearTimeout(timer);
-      }
+  const warmRpc = async (task) => {
+    let timer;
+    let expired = false;
+    const check = () => {
+      if (expired) throw new Error('TenantHost warm-up RPC timed out');
+    };
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        expired = true;
+        reject(new Error('TenantHost warm-up RPC timed out'));
+      }, warmRpcMs);
     });
+    try {
+      return await Promise.race([task(check), timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  const queueWarm = (task) => {
+    const next = warmTail.then(() => warmRpc(task));
     warmTail = next.catch(() => {});
     return next;
   };
   async function run(input) {
     const {route} = input;
     const current = preparations.get(await launcherTenantId(route));
-    const preparation = current?.executionId === route.subject_id &&
-      (route.engine_slot === undefined || route.route_id.endsWith(`:${current.fence}`)) ? current.task : null;
+    const preparation = current && (current.queuePrewarm || (current.executionId === route.subject_id &&
+      (route.engine_slot === undefined || route.route_id.endsWith(`:${current.fence}`)))) ? current.task : null;
     if (!input.receipt) return runLauncherWorkflow(getHost, queueWarm, input, preparation);
     const invocations = [];
     let complete = true;
@@ -85,17 +86,20 @@ export function createLauncherWorkflowRunner(getHost, {warmRpcMs = ENGINE_BOOT_T
     const outcome = await runLauncherWorkflow(traced, queueWarm, input, preparation);
     return complete && outcome.attempt_state === 'completed' ? {...outcome, invocations} : outcome;
   }
-  async function prepare({orgId, executionId, signal, reserveIdentity, engineSlot, incarnationId, fence}) {
+  async function prepare({orgId, executionId, signal, reserveIdentity, engineSlot, incarnationId, fence,
+    prepareBy, warmUntil}) {
     const tenantId = await launcherTenantId({active_execution: {org_id: orgId},
       engine_slot: engineSlot, incarnation_id: incarnationId});
     if (preparations.has(tenantId)) return [];
-    const task = queueWarm(async (check) => {
+    const queuePrewarm = prepareBy !== undefined;
+    const task = (queuePrewarm ? warmRpc : queueWarm)(async (check) => {
       check();
       if (signal.aborted) return {skipped: true};
       return getHost(tenantId).warm({tenantId, executionId, admission: true,
+        ...(queuePrewarm ? {prepareBy, warmUntil} : {}),
         ...(reserveIdentity ? {reserveIdentity} : {})});
     });
-    preparations.set(tenantId, {executionId, fence, task});
+    preparations.set(tenantId, {executionId, fence, task, queuePrewarm});
     try {
       const result = await task;
       if (result.invocation) return [result.invocation];

@@ -617,7 +617,7 @@ async def _ledger_now(db: AsyncSession) -> datetime:
 async def reserve_tenant_host_usage(
     db: AsyncSession, worker_id: UUID, deadline: datetime | None, *,
     workflow_cpu_ms: int | None = None, subrequests: int | None = None, tenant_id: str | None = None,
-    route_id: str | None = None,
+    route_id: str | None = None, queue_warm_until: datetime | None = None,
 ) -> bool:
     """Book expected usage and startup headroom before dispatch."""
     usage = await db.get(CloudflareUsageIncarnation, worker_id)
@@ -671,7 +671,7 @@ async def reserve_tenant_host_usage(
         "qualified_dispatches" if qualified else "inventory_dispatches" if inventory_rate else "tenant_dispatches"
     )
     pings_field = "qualified_warm_pings" if qualified else "inventory_warm_pings"
-    end = max(now, deadline) + timedelta(seconds=tail)
+    end = max(max(now, deadline) + timedelta(seconds=tail), queue_warm_until or now)
     cursor = now
     periods = []
     while cursor < end:

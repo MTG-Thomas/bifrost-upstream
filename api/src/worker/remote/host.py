@@ -48,8 +48,14 @@ from src.services.worker_pool.claims import (
     register_static_worker,
     report_worker_handlers,
 )
+from src.services.worker_pool.cloudflare_admission import cloudflare_claim_allowed
 from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
-from src.services.worker_pool.cloudflare_slots import WorkflowSlotTicket, fence_workflow_slot_send
+from src.services.worker_pool.cloudflare_slots import (
+    PREPARE_SECONDS,
+    WorkflowSlotTicket,
+    authorized_queue_preparation,
+    fence_workflow_slot_send,
+)
 from src.services.worker_pool.cloudflare_spend import (
     record_launcher_terminal_meter,
     reserve_engine_generation,
@@ -117,7 +123,6 @@ ADMISSION_FRESHNESS_SECONDS = 3
 router = APIRouter()
 
 COMMAND_REPLY_SECONDS = 15
-CLOUDFLARE_PREPARE_SECONDS = 20
 CLOUDFLARE_PREPARE_IO_SECONDS = 1
 
 
@@ -137,7 +142,7 @@ def _reply_timeout(action: str) -> float:
         # It may wait while the launcher replaces a dead agent template.
         return TEMPLATE_START_TIMEOUT_SECONDS + COMMAND_REPLY_SECONDS
     if action == "prepare_workflow":
-        return CLOUDFLARE_PREPARE_SECONDS
+        return PREPARE_SECONDS
     return COMMAND_REPLY_SECONDS
 
 
@@ -192,7 +197,7 @@ class Bridge:
         self.meter_exhausted = False
         self._reset_freshness()
         self.pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
-        self._preparations: dict[str, int] = {}
+        self._preparations: dict[str, tuple[int, datetime]] = {}
         self.jobs: dict[str, RemoteProcess] = {}
         self.platform_routes: dict[tuple[str, str], str] = {}
         self.pool: Any = None
@@ -295,15 +300,22 @@ class Bridge:
         self, route_id: str, tenant_id: str, deadline: datetime | None,
         *, workflow_cpu_ms: int | None = None, subrequests: int | None = None,
         execution_id: str | None = None, engine_slot: int | None = None, org_id: str | None = None,
+        queue_warm_until: datetime | None = None,
     ) -> None:
         # Reserve under the current owner before emitting any frames. The
         # caller also fences the socket generation before sending secrets.
         lease = self.lease
         with remote_owner_context(LeaseRef(lease)):
             async with get_db_context() as db:
+                if queue_warm_until is not None and not await cloudflare_claim_allowed(db, lease.worker_id):
+                    raise CredentialRouteChanged("Cloudflare queue preparation admission closed")
                 if not await fence_remote_owner(db):
                     raise CredentialRouteChanged("Cloudflare ownership changed before dispatch")
-                if engine_slot is not None:
+                if queue_warm_until is not None:
+                    slot = await authorized_queue_preparation(db, lease.worker_id, UUID(route_id.rsplit(":", 1)[1]))
+                    if slot is None or slot.ordinal != engine_slot or slot.tenant != (org_id or "platform"):
+                        raise CredentialRouteChanged("Cloudflare queue preparation is no longer held")
+                elif engine_slot is not None:
                     assert execution_id is not None
                     ticket = WorkflowSlotTicket(engine_slot, UUID(route_id.rsplit(":", 1)[1]))
                     if not await fence_workflow_slot_send(
@@ -314,7 +326,7 @@ class Bridge:
                         raise CredentialRouteChanged("Cloudflare workflow slot is no longer held")
                 if not await reserve_tenant_host_usage(
                     db, lease.worker_id, deadline, workflow_cpu_ms=workflow_cpu_ms,
-                    subrequests=subrequests, tenant_id=tenant_id, route_id=route_id,
+                    subrequests=subrequests, tenant_id=tenant_id, route_id=route_id, queue_warm_until=queue_warm_until,
                 ):
                     raise CloudflareRevisionRejected("Managed Cloudflare workflow usage could not be reserved")
 
@@ -327,8 +339,13 @@ class Bridge:
     async def _send_preparation(
         self, request_id: str, payload: dict[str, Any], expected_generation: int | None,
     ) -> bool:
-        if not self.managed_cloudflare or self.lock.locked():
+        prepare_by = payload.get("prepare_by")
+        if not self.managed_cloudflare or (prepare_by is None and self.lock.locked()):
             return False
+        deadline = (
+            datetime.fromtimestamp(prepare_by / 1000, UTC) if prepare_by is not None
+            else datetime.now(UTC) + timedelta(seconds=PREPARE_SECONDS)
+        )
         generation = self.lease.session_generation if expected_generation is None else expected_generation
         socket = self.socket
         self._check_preparation_session(generation)
@@ -337,18 +354,20 @@ class Bridge:
         try:
             async with asyncio.timeout(CLOUDFLARE_PREPARE_IO_SECONDS):
                 await self._reserve_cloudflare_usage(
-                    payload["route_id"], tenant, datetime.now(UTC) + timedelta(seconds=CLOUDFLARE_PREPARE_SECONDS),
+                    payload["route_id"], tenant, deadline,
                     execution_id=payload.get("execution_id"), engine_slot=engine_slot,
                     org_id=payload["org_id"],
+                    queue_warm_until=datetime.fromtimestamp(payload["warm_until"] / 1000, UTC)
+                    if prepare_by is not None else None,
                 )
-            if self.lock.locked():
+            if prepare_by is None and self.lock.locked():
                 return False
             async with contextlib.AsyncExitStack() as send_scope:
                 # A released lock can still have a waiter entitled to acquire it first.
                 async with asyncio.timeout(CLOUDFLARE_PREPARE_IO_SECONDS):
                     await send_scope.enter_async_context(self.lock)
                 self._check_preparation_session(generation)
-                if self.socket is not socket:
+                if self.socket is not socket or (prepare_by is not None and datetime.now(UTC) >= deadline):
                     return False
                 message = ControlEnvelope(
                     session_generation=generation, sequence=self._sequence + 1, kind="command",
@@ -357,7 +376,7 @@ class Bridge:
                 frames = list(fragment(message))
                 if len(frames) != 1 or frames[0].kind != "command":
                     raise ProtocolError("Cloudflare preparation must fit one frame")
-                self._preparations[payload["route_id"]] = generation
+                self._preparations[payload["route_id"]] = (generation, deadline)
                 # A lost single-frame send can leave a sequence gap without
                 # leaving a partial fragment. Normal control traffic owns disconnects.
                 self._sequence = message.sequence
@@ -717,7 +736,7 @@ class Bridge:
         route_id, identity, request_id = (event.get(key) for key in ("route_id", "identity", "request_id"))
         preparation = self._preparations.get(route_id) if isinstance(route_id, str) else None
         if isinstance(route_id, str) and route_id.startswith("prepare:") and (
-            preparation != self.lease.session_generation
+            preparation is None or preparation[0] != self.lease.session_generation or datetime.now(UTC) >= preparation[1]
         ):
             # The hint timed out or belonged to a replaced control session.
             # Never authorize a late Loader lookup or disconnect the workflow.
@@ -735,18 +754,25 @@ class Bridge:
         async def reserve() -> None:
             with remote_owner_context(LeaseRef(lease)):
                 async with get_db_context() as db:
-                    slot = await db.scalar(select(CloudflareWorkflowSlot).where(
-                        CloudflareWorkflowSlot.worker_id == lease.worker_id,
-                        CloudflareWorkflowSlot.fence == UUID(route_id.rsplit(":", 1)[1]),
-                        CloudflareWorkflowSlot.released_at.is_(None),
-                    ))
+                    fence = UUID(route_id.rsplit(":", 1)[1])
+                    slot = None
                     accepted = False
+                    if await fence_remote_owner(db):
+                        slot = await db.scalar(select(CloudflareWorkflowSlot).where(
+                            CloudflareWorkflowSlot.worker_id == lease.worker_id,
+                            CloudflareWorkflowSlot.fence == fence,
+                            CloudflareWorkflowSlot.released_at.is_(None),
+                        ))
+                        if slot is None and preparation is not None:
+                            slot = await authorized_queue_preparation(db, lease.worker_id, fence)
                     if slot is not None:
                         org_id = None if slot.tenant == "platform" else slot.tenant
                         key = _cloudflare_tenant_key(org_id, lease.worker_id, slot.ordinal)
                         accepted = (
                             identity.startswith(f"tenant-eng-tenant-py-{key}-")
-                            and await fence_remote_owner(db)
+                            and (preparation is None or (
+                                self._preparations.get(route_id) == preparation and datetime.now(UTC) < preparation[1]
+                            ))
                             and await reserve_engine_generation(db, lease.worker_id, identity)
                         )
                 await self.request("cloudflare_generation_reply", {
@@ -1079,30 +1105,44 @@ class ApiExecutor(PoolWorker):
         # src.main already starts this API replica's canonical controllers.
         return []
 
+    @property
+    def _queue_prewarm_slots(self) -> int:
+        if self.bridge.managed_cloudflare and (self.bridge.inventory or {}).get("queue_prewarm") is True:
+            return self.bridge.lease.declared_slots
+        return 0
+
     def _start(self, claim: PoolClaim) -> None:
         bridge = self.bridge
+        preparations = []
+        org_id = str(claim.tenant_id) if claim.tenant_id is not None else None
         if (
             bridge.managed_cloudflare and claim.handler == "workflow.execute"
             and claim.claimed is not None and claim.cloudflare_revision is not None
-            and claim.workflow_slot is not None
+            and claim.workflow_slot is not None and not claim.workflow_slot.prewarming
             and (bridge.inventory or {}).get("admission_prepare") is True
         ):
-            generation = bridge.lease.session_generation
-            payload = {
+            preparations.append({
                 "route_id": f"prepare:{claim.workflow_slot.fence}", "execution_id": str(claim.subject_id),
-                "org_id": str(claim.tenant_id) if claim.tenant_id is not None else None,
-                "engine_slot": claim.workflow_slot.ordinal,
-            }
+                "org_id": org_id, "engine_slot": claim.workflow_slot.ordinal,
+            })
+        preparations.extend({
+            "route_id": f"prepare:{hint.fence}", "execution_id": str(hint.execution_id),
+            "org_id": org_id, "engine_slot": hint.ordinal,
+            "prepare_by": int(hint.prepare_by.timestamp() * 1000),
+            "warm_until": int(hint.warm_until.timestamp() * 1000),
+        } for hint in claim.queue_preparations)
+        generation = bridge.lease.session_generation
 
-            async def prepare() -> None:
-                try:
-                    await bridge.request("prepare_workflow", payload, expected_generation=generation)
-                except (CredentialRouteChanged, ConnectionError, TimeoutError, RuntimeError):
-                    # Preparation has no authority to run the workflow. The
-                    # canonical dispatch owns normal entry and failure handling.
-                    logging.getLogger(__name__).debug("Cloudflare admission preparation did not complete", exc_info=True)
+        async def prepare(payload: dict[str, Any]) -> None:
+            try:
+                await bridge.request("prepare_workflow", payload, expected_generation=generation)
+            except (CredentialRouteChanged, ConnectionError, TimeoutError, RuntimeError):
+                # Preparation has no authority to run the workflow. The
+                # canonical dispatch owns normal entry and failure handling.
+                logging.getLogger(__name__).debug("Cloudflare preparation did not complete", exc_info=True)
 
-            task = asyncio.create_task(prepare(), name=f"cloudflare-prepare-{claim.dispatch_id}")
+        for payload in preparations:
+            task = asyncio.create_task(prepare(payload), name=f"cloudflare-{payload['route_id']}")
             bridge.results.add(task)
             task.add_done_callback(bridge.results.discard)
             task.add_done_callback(_observe_task)

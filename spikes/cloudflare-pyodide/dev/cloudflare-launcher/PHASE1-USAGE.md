@@ -154,6 +154,28 @@ A ready slot skips the admission ping. Readiness is held in memory for a
 default of 90 seconds after the last attempt (policy range 0–300 seconds).
 There are no idle alarms. Workerd can evict an idle child earlier.
 
+Opt-in queue-depth pre-warming reserves each extra `prepare:` route through
+the same foreground ledger, including the existing one-entry startup CPU
+reserve and TenantHost duration through the slot's absolute linger deadline.
+A confirmed receipt settles the observed boot or prime CPU and
+request counts. The duration reserve remains conservative. The daily identity
+journal books the engine creation before Loader entry. The estimate is
+roughly fractions of a cent per fresh slot, dominated by a new daily engine
+identity, plus CPU, requests and TenantHost duration. Reusing the same identity
+reduces the creation component. A burst with three extra cold slots can add
+roughly a cent before reuse. The installation spend gate checks before each
+new speculative reservation, and the launcher request caps and receipt
+reserves also apply. Missing receipts retain their reserves. The policy
+default is zero, so ordinary admission alone does not add speculative spend.
+
+A local PostgreSQL test queued four workflows for one tenant and held the
+stub launcher replies until all four prepares arrived. With 90 seconds of
+linger, the ledger recorded one admission prepare and three extra prepares,
+four charged loader identities, no idle pings, and 275-290 aggregate reserved
+TenantHost-seconds. The four synthetic boot receipts released 2,000,000
+microseconds of excess CPU reserve. This exercises the ledger with controlled
+receipts. Hosted parallel boot performance and billing remain unmeasured.
+
 The loader authorization books each distinct loader identity, including its
 engine code digest once per UTC day. A slot-day forecast for the dispatch
 pays for the first identity. Preparation books the identity before Loader entry.

@@ -229,6 +229,24 @@ async def test_preparation_refusal_precedes_reservation(refusal: str) -> None:
     reserve.assert_not_awaited()
 
 
+async def test_expired_queue_preparation_cannot_authorize_loader_entry() -> None:
+    lease = replace(LEASE, declared_slots=4)
+    bridge = Bridge(Mock(), {
+        "hostname": "opaque", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE, "managed_cloudflare": True,
+    }, lease)
+    bridge.reconciliation_ready.set()
+    route_id = f"prepare:{lease.launcher_id}"
+    bridge._preparations[route_id] = (lease.session_generation, datetime.now(UTC))
+
+    with patch("src.worker.remote.host.get_db_context") as database:
+        await bridge.receive({
+            "event": "cloudflare_generation_request", "route_id": route_id, "request_id": "a" * 43,
+            "identity": f"tenant-eng-tenant-py-{'a' * 32}-{'b' * 16}-cpu30000-sr40-g0",
+        })
+        database.assert_not_called()
+    assert not bridge.results
+
+
 async def test_preparation_send_timeout_leaves_live_control_session_usable() -> None:
     lease = replace(LEASE, declared_slots=1)
     socket = Mock(close=AsyncMock())

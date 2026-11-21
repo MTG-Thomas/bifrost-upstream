@@ -16782,6 +16782,12 @@ export interface components {
              * @default 90
              */
             linger_seconds: number;
+            /**
+             * Queue Prewarm Per Tenant
+             * @description Maximum extra engines to prepare for queued workflows per tenant. Zero disables queue pre-warming.
+             * @default 0
+             */
+            queue_prewarm_per_tenant: number;
             /** Work Kinds */
             work_kinds: "workflow"[];
         };

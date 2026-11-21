@@ -95,7 +95,7 @@ describe("Cloudflare capacity service", () => {
 				workers: {
 					launcher_cap: 1, slots_per_launcher: 2, slots_per_tenant: 4, installation_slots: 9,
 					max_lifetime_seconds: 3600,
-					linger_seconds: 45, work_kinds: ["workflow" as const],
+					linger_seconds: 45, queue_prewarm_per_tenant: 0, work_kinds: ["workflow" as const],
 				},
 				monthly_limit_usd: "10.00",
 			},
