@@ -4,7 +4,8 @@
 
 ## Usage-only limit
 
-Bifrost's monthly limit now covers attributable usage. The fleet envelope
+The pilot used a previous conservative fleet projection. The current monthly
+target applies to Bifrost's estimate of attributable usage. The fleet envelope
 and admission meter exclude the $5 Workers Paid subscription. Status shows
 the subscription separately as **Workers Paid Subscription (Billed by
 Cloudflare)**. Using the same release bounds, the minimum fleet envelope is
@@ -86,7 +87,7 @@ the local token and tunnel credential files from the guest.
 
 **November 20, 2026 UTC · Product source `393037492`**
 
-The rerun used a $25 monthly usage ceiling. The trial targeted less than
+The rerun used a $25 monthly usage target. The trial targeted less than
 $0.50 in incremental spend and had a $1 abort threshold. The connector
 window was capped at 25 minutes and ran from 15:02:03 to 15:08:37 UTC.
 The account's $25 Workers notification was enabled. The product policy

@@ -45,8 +45,16 @@ def test_policy_window_rolls_at_the_utc_month_boundary() -> None:
     )
 
 
-def test_qualified_cpu_charges_exact_caps_and_the_approved_workflow_budget() -> None:
+def test_historical_cpu_pricing_uses_limits_and_the_approved_workflow_budget() -> None:
     caps = {"workflow": 30_000, "boot": 2_000, "warm": 440, "exercise": 613, "startup": 48_522, "gateway": 1_097}
     assert qualified_cpu_reserve(caps, 250, 12, 1, 30) == 2_980_462
     assert qualified_cpu_reserve(caps, 40_000, 0, 1, 0) == 230_088
     assert qualified_cpu_reserve(caps, 250, 12, 0, 1) == 80_232
+
+
+def test_expected_cpu_prices_measured_usage_and_keeps_startup_headroom() -> None:
+    caps = {"workflow": 30_000, "boot": 30_000, "warm": 440, "exercise": 613, "startup": 48_522, "gateway": 1_097}
+    expected = {"workflow": 110, "boot": 7315, "warm": 44, "exercise": 62, "gateway": 110}
+    assert qualified_cpu_reserve(caps, 100, 2, 1, 1, expected=expected) == (
+        100 + 3 * 7315 + 2 * 110 + 62 + 110 + 5 * 48_522
+    )
