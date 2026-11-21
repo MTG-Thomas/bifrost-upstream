@@ -58,6 +58,10 @@ for an operator action or a new desired revision.
 
 ## Pending Hosted Qualification
 
+Queue pre-warming changes the packaged launcher bytes. The meter inventory
+classifies the updated sources. The release builder still requires a measured
+bundle pin for those bytes before publishing a qualified Workers package.
+
 Use an approved disposable account and disposable Bifrost environment.
 Record the image and manifest digests, job and claim identities, script and
 namespace receipts, and provider-side runtime retirement witnesses.
