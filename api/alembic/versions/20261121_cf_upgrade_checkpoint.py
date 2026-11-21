@@ -18,7 +18,15 @@ def upgrade() -> None:
         "(upgrade_release IS NULL OR (desired_state = 'enabled' AND admitted_revision IS NULL)) "
         "AND (upgrade_drained_at IS NULL OR upgrade_release IS NOT NULL)",
     )
-    op.execute("UPDATE cloudflare_installations SET deployed_revision = admitted_revision")
+    # The previous image does not have the manifest admission check. Close
+    # its DB gate too and fence any queued Enable for the admitted revision.
+    op.execute("""
+        UPDATE cloudflare_installations
+        SET deployed_revision = admitted_revision,
+            admitted_revision = NULL,
+            desired_revision = desired_revision + 1
+        WHERE admitted_revision IS NOT NULL
+    """)
 
 
 def downgrade() -> None:

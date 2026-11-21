@@ -636,11 +636,17 @@ async def test_upgrade_drains_before_replacement_and_resumes_after_lost_lease(
     job.status, job.lease_token = "running", uuid4()
     await db_session.flush()
 
+    routes = (ingress_probes.RouteProbe("GET", "/api/sdk/context", 401, True),)
     probe = ingress_probes.WorkerIngressProbeResult(
-        installation.worker_ingress_origin, True, False, False,
-        (ingress_probes.RouteProbe("GET", "/api/sdk/context", 521, False, error_class="unexpected_status"),),
+        installation.worker_ingress_origin, True, True, True, routes,
+        runtime_canary=ingress_probes.RuntimeCanary(
+            True, False, ingress_probes.CanaryFailure("sdk_response", "http_status", 404),
+        ),
     )
-    good = ingress_probes.WorkerIngressProbeResult(installation.worker_ingress_origin, True, True, True, ())
+    good = ingress_probes.WorkerIngressProbeResult(
+        installation.worker_ingress_origin, True, True, True, routes,
+        runtime_canary=ingress_probes.RuntimeCanary(True, True),
+    )
     monkeypatch.setattr(enable_job, "probe_worker_ingress", AsyncMock(side_effect=[probe, good]))
     recovered = PlatformJobContext(job.id, job.lease_token, None, str(OPERATOR_ID), admin.principal.email, "")
     with pytest.raises(PlatformJobRequiresAction) as readiness:
@@ -1360,6 +1366,44 @@ async def create_installation(
             60, zero, zero, "fixture-release", rated_slots, TEST_LAUNCHER_CAPS, TEST_CPU_LIMITS, 500_000,
         ),
     )
+
+
+@pytest.mark.asyncio
+async def test_upgrade_migration_pauses_prior_pilot_and_scheduler_pins_the_new_release(
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch,
+) -> None:
+    installation.desired_state = "enabled"
+    installation.admitted_revision = 1
+    await db_session.flush()
+
+    scripts = ScriptDirectory(str(Path(__file__).resolve().parents[3] / "alembic"))
+    migration = scripts.get_revision("20261121_cf_upgrade_checkpoint")
+    assert migration is not None
+
+    def migrate(connection: Connection) -> None:
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.module.downgrade()
+            migration.module.upgrade()
+
+    connection = await db_session.connection()
+    await connection.run_sync(migrate)
+    await db_session.refresh(installation)
+    assert installation.deployed_revision == 1
+    assert installation.admitted_revision is None
+    assert installation.desired_revision == 2
+
+    release = "d" * 64
+    monkeypatch.setattr(lifecycle_job, "installed_workers_release_digest", lambda: release)
+    now = datetime.now(UTC)
+    await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=now)
+    await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=now)
+    job = (await db_session.scalars(select(PlatformJob).where(
+        PlatformJob.job_type == lifecycle_job.RECONCILE_JOB,
+        PlatformJob.resource_id == str(installation.id),
+    ))).one()
+    assert job.requested_by_user_id == "system"
+    assert job.payload == {"installation_id": str(installation.id), "revision": 3}
+    assert installation.upgrade_release == release and installation.admitted_revision is None
 
 
 @pytest.mark.asyncio

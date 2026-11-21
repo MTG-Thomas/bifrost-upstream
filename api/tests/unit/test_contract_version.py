@@ -462,7 +462,8 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Workflow wall time and storage-clear evidence are optional capacity receipt fields.
     # The optional ledger acknowledgement marker extends provider receipts.
     # Managed workflow slot caps default when omitted by an existing client.
-    "9cc56a1792ba0222306545da30c7ce38798c6ff20f9ed2f857a568e27d004377"
+    # Cloudflare status adds optional deployed revision and upgrade state fields.
+    "b2d770efc838014529c5bceb03b36d96fc2f7f188bb7c9a3d35db2345794588d"
 )
 
 

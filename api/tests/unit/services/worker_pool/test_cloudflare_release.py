@@ -238,7 +238,9 @@ async def test_rest_upload_scopes_the_bearer_and_finalizes_the_verified_endpoint
                      for part in message.iter_parts()}
             assert parts["capacity.mjs"] == packaged.modules["capacity"]["capacity.mjs"]
             metadata = json.loads(parts["metadata"])
-            assert metadata["limits"] == {"cpu_ms": 87}
+            assert metadata["limits"] == {
+                "cpu_ms": packaged.manifest.meter_bounds.qualification.cpu_limits_ms["capacity"],
+            }
             assert "synthetic-management" not in json.dumps(metadata)
             assert metadata["observability"] == {"enabled": False}
             assert metadata["logpush"] is False

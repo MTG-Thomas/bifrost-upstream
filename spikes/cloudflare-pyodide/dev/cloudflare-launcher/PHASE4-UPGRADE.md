@@ -1,6 +1,8 @@
 # Workers Upgrade and Repair
 
 Bifrost compares the packaged Workers manifest digest to the saved release.
+The Phase 4 migration closes admission for an earlier admitted pilot and
+fences its queued Enable jobs under the old revision.
 An API with a different package closes new claims and sends. The scheduler
 then closes admission under the installation lock, pins the package digest,
 and enqueues Reconcile at the next revision. Reconcile and Upgrade both use
