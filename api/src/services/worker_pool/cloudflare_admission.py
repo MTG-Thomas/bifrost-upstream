@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from sqlalchemy import and_, exists, false, select
+from sqlalchemy import and_, exists, false, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -70,6 +70,11 @@ def workers_release_matches() -> ColumnElement[bool]:
     return and_(
         CloudflareInstallation.upgrade_release.is_(None),
         CloudflareInstallation.policy["bounds_release"].astext == release,
+        or_(
+            ~CloudflareInstallation.containers_policy.has_key("enabled"),
+            CloudflareInstallation.containers_policy["enabled"].as_boolean().is_(False),
+            CloudflareInstallation.containers_ready_revision == CloudflareInstallation.admitted_revision,
+        ),
     )
 
 
@@ -139,6 +144,7 @@ async def scoped_cloudflare_claim_allowed(
         installation.admitted_revision == pin.deployment_revision,
         workers_release_matches(),
         pin.canary_job_id.is_(None),
+        pin.container_reserved_at.is_(None),
         pin.control_root_version.is_not(None),
         cloudflare_usage_within_limit(),
         installation.policy["limits"]["workers"]["work_kinds"].contains(["workflow"]),

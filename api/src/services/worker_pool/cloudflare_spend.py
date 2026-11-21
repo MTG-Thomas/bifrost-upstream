@@ -1006,6 +1006,8 @@ async def read_workers_usage(db: AsyncSession, installation_id: UUID, as_of: dat
 def cloudflare_estimated_usage(as_of: datetime | None = None) -> ColumnElement[Decimal | None]:
     """Price the account ledger, using the admission statement clock by default."""
     installation = CloudflareInstallation
+    from src.services.worker_pool.cloudflare_containers_policy import container_account_usage
+
     now = func.statement_timestamp() if as_of is None else literal(as_of)
     totals = _totals(installation.id, now)
     policy_version = installation.policy["rate_table_version"].as_string()
@@ -1048,7 +1050,7 @@ def cloudflare_estimated_usage(as_of: datetime | None = None) -> ColumnElement[D
         (totals.c.complete & known_policy,
          _incarnation_cost_sql(installation, now) + _DURATION_USD_PER_SECOND * totals.c.slot_seconds
          + _ACTIVITY_USD * (totals.c.dispatched_runs + totals.c.sdk_requests) + hosts
-         + _retained_storage_cost(installation, now)),
+         + _retained_storage_cost(installation, now) + container_account_usage(now)),
     )).select_from(totals).correlate(installation).scalar_subquery()
 
 

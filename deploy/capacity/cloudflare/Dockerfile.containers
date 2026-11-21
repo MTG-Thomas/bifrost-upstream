@@ -1,0 +1,18 @@
+# The release workflow supplies the immutable matched API image.
+ARG BIFROST_API_IMAGE
+FROM ${BIFROST_API_IMAGE}
+
+# Keep the existing API-only launcher and Linux workflow template, with no
+# writable application or package files. The release remains unqualified.
+USER root
+COPY wheels/ /opt/bifrost-wheels/
+RUN --network=none python -m pip install --no-index --no-deps --require-hashes --only-binary=:all: \
+    --force-reinstall --report /opt/bifrost-wheels/installed.json \
+    --find-links=/opt/bifrost-wheels -r /opt/bifrost-wheels/requirements.txt
+RUN chown -R root:root /app /usr/local/lib/python3.15/site-packages \
+    && chmod -R go-w /app /usr/local/lib/python3.15/site-packages \
+    && install -d -o 1000 -g 1000 -m 0700 /tmp/bifrost /workspace
+ENV BIFROST_BAKED_WHEELS_ONLY=1
+USER 1000:1000
+WORKDIR /app
+ENTRYPOINT ["/usr/local/bin/python", "-m", "src.worker.remote.launcher"]

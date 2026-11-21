@@ -945,6 +945,29 @@ jobs:
           subject-digest: ${{ steps.build-api.outputs.digest }}
           push-to-registry: true
 
+      - name: Install cosign for the Linux release descriptor
+        if: steps.workers-release.outputs.required == '1' && vars.CONTAINERS_RELEASE_RATES != ''
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: v2.4.1
+
+      - name: Build and sign the matched Cloudflare Linux release candidate
+        if: steps.workers-release.outputs.required == '1' && vars.CONTAINERS_RELEASE_RATES != ''
+        env:
+          BASE_DIGEST: ${{ steps.build-api.outputs.digest }}
+          CONTAINERS_RELEASE_RATES: ${{ vars.CONTAINERS_RELEASE_RATES }}
+        run: |
+          bash deploy/capacity/cloudflare/build-containers.sh \
+            "ghcr.io/${API_IMAGE}@${BASE_DIGEST}" "ghcr.io/${API_IMAGE}-cloudflare-linux" \
+            "$GITHUB_SHA" "$RUNNER_TEMP/containers-release" "$CONTAINERS_RELEASE_RATES"
+
+      - name: Store the signed Linux release descriptor and provider module
+        if: steps.workers-release.outputs.required == '1' && vars.CONTAINERS_RELEASE_RATES != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cloudflare-containers-release
+          path: ${{ runner.temp }}/containers-release/
+          if-no-files-found: error
 
   # =============================================================================
   # Build Client Image - Only on version tags, after tests pass

@@ -50,6 +50,11 @@ class CloudflareInstallation(Base):
             "num_nonnulls(workers_release_version, workers_release_sequence, workers_release_digest) IN (0, 3)",
             name="ck_cf_workers_release_identity",
         ),
+        CheckConstraint(
+            "num_nonnulls(containers_ready_revision, containers_release_digest) IN (0, 2) "
+            "AND (containers_ready_revision IS NULL OR containers_ready_revision > 0)",
+            name="ck_cf_containers_readiness",
+        ),
         UniqueConstraint("id", "account_id", name="uq_cf_installation_account"),
         Index("uq_cf_active_installation", "singleton", unique=True, postgresql_where=text("retired_at IS NULL")),
         CheckConstraint("api_token_purpose = 'account_token' AND api_token_scope = ''", name="ck_cf_account_token_binding"),
@@ -92,6 +97,12 @@ class CloudflareInstallation(Base):
     consent_actor: Mapped[str] = mapped_column(String(255))
     consent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     policy: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    containers_policy: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text(
+        """'{"enabled":false,"instance_type":"standard-1","installation_instances":2,
+             "tenant_instances":1,"workflow_slots":1,"idle_seconds":120}'::jsonb"""
+    ))
+    containers_ready_revision: Mapped[int | None]
+    containers_release_digest: Mapped[str | None] = mapped_column(String(64))
     desired_revision: Mapped[int]
     desired_state: Mapped[str] = mapped_column(String(16))
     admitted_revision: Mapped[int | None]
@@ -175,6 +186,12 @@ class CloudflareWorkerReservation(Base):
         CheckConstraint("control_root_version IS NOT NULL", name="ck_cf_reservation_has_root", postgresql_not_valid=True),
         Index("ix_cf_reservations_installation", "installation_id"),
         CheckConstraint(
+            "num_nonnulls(container_tenant, container_release, container_envelope, container_reserved_at) IN (0, 4) "
+            "AND (container_stopped_at IS NULL OR "
+            "(container_reserved_at IS NOT NULL AND container_stopped_at >= container_reserved_at))",
+            name="ck_cf_container_reservation",
+        ),
+        CheckConstraint(
             "(canary_job_id IS NULL) = (canary_lease_token IS NULL) AND "
             "(canary_sdk_at IS NULL OR canary_job_id IS NOT NULL) AND "
             "(canary_ack_at IS NULL OR canary_sdk_at IS NOT NULL)",
@@ -215,6 +232,11 @@ class CloudflareWorkerReservation(Base):
     cleanup_attempts: Mapped[int] = mapped_column(SmallInteger, server_default="0")
     cleanup_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cleanup_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    container_tenant: Mapped[str | None] = mapped_column(String(36))
+    container_release: Mapped[str | None] = mapped_column(String(64))
+    container_envelope: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
+    container_reserved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    container_stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class CloudflareWorkflowSlot(Base):

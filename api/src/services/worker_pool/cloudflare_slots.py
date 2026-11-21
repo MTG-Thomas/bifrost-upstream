@@ -92,7 +92,23 @@ async def read_workflow_slot_admission(
         )
         .group_by(slot.tenant)
     )).all()
-    return WorkflowSlotAdmission(installation_id, policy, Counter({tenant: count for tenant, count in counts}))
+    occupied = Counter({tenant: count for tenant, count in counts})
+    reservation = CloudflareWorkerReservation
+    # One physical seat per incarnation, including starting, idle and
+    # uncertain-stop instances. An attached dispatch ticket uses that seat.
+    containers = (await db.execute(
+        select(reservation.container_tenant, func.count())
+        .where(
+            reservation.installation_id == installation_id, reservation.container_reserved_at.is_not(None),
+            reservation.container_stopped_at.is_(None),
+            ~exists().where(
+                slot.worker_id == reservation.worker_id, slot.released_at.is_(None), ~_stale_unsent(),
+            ).correlate(reservation),
+        )
+        .group_by(reservation.container_tenant)
+    )).all()
+    occupied.update({tenant: count for tenant, count in containers if tenant is not None})
+    return WorkflowSlotAdmission(installation_id, policy, occupied)
 
 
 def _pending_prewarm_dispatch() -> ColumnElement[bool]:

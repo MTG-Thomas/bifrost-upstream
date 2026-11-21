@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete
+from sqlalchemy import delete, exists
 
 from src.core.database import get_db_context
+from src.models.orm.cloudflare_capacity import CloudflareWorkerReservation
 from src.models.orm.execution_workers import ExecutionWorker
 from src.scheduler.registry import ScheduledTaskOutcome
 from src.services.worker_pool.cloudflare_spend import pending_ledger_receipt
@@ -28,6 +29,12 @@ async def prune_execution_workers() -> ScheduledTaskOutcome:
                     | ExecutionWorker.capacity_resource_deleted_at.is_not(None),
                     # Keep the reservation's scope until WorkerLedger is settled.
                     ~pending_ledger_receipt(ExecutionWorker.id).exists(),
+                    # The Container reserve carries unsettled exposure and
+                    # UTC-month history beyond the executor retention window.
+                    ~exists().where(
+                        CloudflareWorkerReservation.worker_id == ExecutionWorker.id,
+                        CloudflareWorkerReservation.container_reserved_at.is_not(None),
+                    ),
                 )
             )
         ).rowcount
