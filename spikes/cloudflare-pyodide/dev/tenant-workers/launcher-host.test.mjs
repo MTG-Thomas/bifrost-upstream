@@ -58,6 +58,40 @@ test('an arriving workflow joins its pending preparation and receipts count the 
   assert.equal(warmCalls, 1);
 });
 
+test('a joined preparation can lose readiness before the workflow enters', async () => {
+  const opened = Promise.withResolvers();
+  const prepared = Promise.withResolvers();
+  const firstRefused = Promise.withResolvers();
+  let ready = false;
+  const calls = [];
+  const run = createLauncherWorkflowRunner(() => ({
+    async warm(input) {
+      if (input.admission) {
+        opened.resolve();
+        await prepared.promise;
+        return {reused: true};
+      }
+      calls.push('warm');
+      ready = true;
+      return {};
+    },
+    async run() {
+      calls.push('run');
+      firstRefused.resolve();
+      return ready ? {output: {status: 'Success'}} : {needsWarm: true};
+    },
+  }));
+  const signal = new AbortController().signal;
+  const hint = run.prepare({orgId: 'org', executionId: 'subject', signal});
+  await opened.promise;
+  const execution = run({route, context: {}, signal, now: () => START});
+  await firstRefused.promise;
+  prepared.resolve();
+  assert.deepEqual(await hint, []);
+  assert.equal((await execution).attempt_state, 'completed');
+  assert.deepEqual(calls, ['run', 'run', 'warm', 'run']);
+});
+
 test('a budget refusal before the host RPC is definitively not_started', async () => {
   const budget = Object.assign(new Error('refused before RPC'), {
     name: 'CloudflareLauncherMeterLimitExceeded', attemptState: 'not_started',

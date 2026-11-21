@@ -65,6 +65,7 @@ for (let batch = 0; batch < lifecycleCases; batch++) {
         TenantHost: {type: 'durable-object', storage: 'sqlite'}, TenantApi: {type: 'worker'},
       },
       env: {...bindings, API_ORIGIN: {type: 'text', value: 'https://test-api.invalid'},
+        BIFROST_TENANT_LINGER_SECONDS: {type: 'text', value: '90'},
         // Qualify CPU in the host and child independently of control delivery.
         BIFROST_METER_GENERATIONS: {type: 'text', value: 'false'},
         TENANT_GATEWAY: {type: 'worker', worker: 'gateway'},

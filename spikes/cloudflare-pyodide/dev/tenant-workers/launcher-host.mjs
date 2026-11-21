@@ -87,7 +87,7 @@ export function createLauncherWorkflowRunner(getHost, {warmRpcMs = ENGINE_BOOT_T
     const task = queueWarm(async (check) => {
       const tenantId = await launcherTenantId({active_execution: {org_id: orgId}});
       check();
-      signal.throwIfAborted();
+      if (signal.aborted) return {skipped: true};
       return getHost(tenantId).warm({tenantId, executionId, admission: true,
         ...(reserveIdentity ? {reserveIdentity} : {})});
     });
@@ -95,7 +95,7 @@ export function createLauncherWorkflowRunner(getHost, {warmRpcMs = ENGINE_BOOT_T
     try {
       const result = await task;
       if (result.invocation) return [result.invocation];
-      if (result.reused) return [];
+      if (result.reused || result.skipped) return [];
       return undefined;
     } finally {
       preparations.delete(orgId);
@@ -121,18 +121,17 @@ async function runLauncherWorkflow(getHost, queueWarm,
   try {
     hosted = await hostAttempt(() => getHost(tenantId), attempt, {
       beforeRun,
-      warm: (get, tenant) => whileDispatching(async () => {
-        // The hint owns its receipt. A failure uses the existing safe
-        // warm-up, and a ready workflow never waits for a queued hint.
-        if (preparation && await preparation.catch(() => null)) return {};
-        return queueWarm((rpcCheck) => warmHost(get, tenant, {
+      join: preparation ? () => whileDispatching(async () => {
+        const observed = await preparation.catch(() => null);
+        return Boolean(observed && !observed.skipped);
+      }, {deadline, signal, now}).catch(() => false) : undefined,
+      warm: (get, tenant) => whileDispatching(() => queueWarm((rpcCheck) => warmHost(get, tenant, {
           check: () => {
             if (beforeRun()) throw new Error('Attempt ended before warm-up');
             rpcCheck();
           },
           engineOnly: true, reserveIdentity, executionId: route.subject_id,
-        }));
-      }, {deadline, signal, now}),
+        })), {deadline, signal, now}),
     });
   } catch (error) {
     if (error?.attemptState === 'not_started' && error?.name === 'CloudflareLauncherMeterLimitExceeded') {

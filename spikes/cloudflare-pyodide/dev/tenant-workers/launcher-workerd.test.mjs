@@ -167,7 +167,21 @@ const main = `
         const prepared = await super.run(input);
         return {unrelated, prepared: prepared.attempt_state, subsequent: await super.run(next)};
       } finally {
-        delete this.env.BIFROST_TENANT_LINGER_SECONDS;
+        this.env.BIFROST_TENANT_LINGER_SECONDS = '90';
+      }
+    }
+    async clearLegacyAlarm(tenantId) {
+      await this.ctx.storage.put({tenantId, lastAttempt: Date.now()});
+      await this.ctx.storage.setAlarm(Date.now() + 60_000);
+      await super.alarm();
+      return {alarm: await this.ctx.storage.getAlarm(), keys: [...(await this.ctx.storage.list()).keys()]};
+    }
+    async warmWithoutLingerBinding(tenantId) {
+      delete this.env.BIFROST_TENANT_LINGER_SECONDS;
+      try {
+        return await super.warm({tenantId});
+      } finally {
+        this.env.BIFROST_TENANT_LINGER_SECONDS = '90';
       }
     }
     async runWithoutReleaseBinding({binding, route}) {
@@ -198,6 +212,8 @@ const main = `
         input.action, input.action === 'run' ? input.payload : {tenantId}));
       if (action === 'run-after-linger') return Response.json(await host.runAfterLinger(input.route, input.elapsed));
       if (action === 'run-without-linger') return Response.json(await host.runWithoutLinger(input.route, input.next));
+      if (action === 'legacy-alarm') return Response.json(await host.clearLegacyAlarm(tenantId));
+      if (action === 'missing-linger') return Response.json(await host.warmWithoutLingerBinding(tenantId));
       if (action === 'missing-meter') return Response.json(await host.runWithoutReleaseBinding(input));
       if (action === 'warm') return Response.json(await host.warm({tenantId, ...input}));
       if (action === 'metered-warm') return Response.json(await host.meteredWarm(tenantId));
@@ -249,6 +265,7 @@ async function startWorkerd() {
         BIFROST_WORKER_INCARNATION_ID: incarnation, BIFROST_WORKER_LAUNCHER_ID: launcher,
         BIFROST_WORKER_RESOURCE_UID: 'test:do', BIFROST_WORKER_VERSION: 'test-build',
         API_ORIGIN: 'https://test-api.invalid',
+        BIFROST_TENANT_LINGER_SECONDS: '90',
       }).map(([key, value]) => [key, {type: 'text', value}]).concat([
         ['SUMMARY_PROVIDER', {type: 'worker', worker: 'summary', exportName: 'SummaryProvider'}],
       ])),
@@ -359,6 +376,7 @@ async function startWorkerd() {
       name: 'tenant', compatibilityDate,
       exports: {TenantHost: {type: 'durable-object', storage: 'sqlite'}, TenantApi: {type: 'worker'}},
       env: {LOADER: {type: 'worker-loader'}, API_ORIGIN: {type: 'text', value: 'https://upstream.invalid'},
+        BIFROST_TENANT_LINGER_SECONDS: {type: 'text', value: '90'},
         BIFROST_METER_SDK_REQUESTS: {type: 'text', value: '3'},
         BIFROST_METER_ENGINE_CPU_MS: {type: 'text', value: '125'},
         BIFROST_METER_BOOT_CPU_MS: {type: 'text', value: '120'},
@@ -505,7 +523,7 @@ test('workerd launcher uses named summary RPC and terminate cancels the outbound
   assert.ok(!JSON.stringify(terminal).includes('workerd-stub-key'));
   assert.deepEqual(await signHello(secret, hello.hello), hello.hello);
   assert.deepEqual(inventory, {kind: 'event', sequence: 1, session_generation: 1,
-    payload: {event: 'inventory', inventory: {version: 1, routes: [], terminal_routes: []}}});
+    payload: {event: 'inventory', inventory: {version: 1, routes: [], terminal_routes: [], admission_prepare: true}}});
 });
 
 test('opaque route can carry a credential-free conditional model catalog read', async () => {
@@ -553,7 +571,7 @@ test('launcher warm-up finishes while the origin health request is still held', 
   nextOrigin = origin;
   const abort = new Promise((_, reject) =>
     t.signal.addEventListener('abort', () => reject(t.signal.reason), {once: true}));
-  const warm = host('slow-origin', 'warm', {engineOnly: true}, t.signal);
+  const warm = host('slow-origin', 'warm', {admission: true}, t.signal);
   try {
     await Promise.race([origin.entered.promise, abort]);
     const result = await warm;
@@ -563,6 +581,16 @@ test('launcher warm-up finishes while the origin health request is still held', 
     origin.release.resolve();
     nextOrigin = undefined;
   }
+});
+
+test('an old keep-warm alarm clears its metadata without fetching the origin', async () => {
+  const before = origins.length;
+  assert.deepEqual(await host('legacy-alarm', 'legacy-alarm'), {alarm: null, keys: []});
+  assert.equal(origins.length, before);
+});
+
+test('a missing linger binding refuses warm-up', async () => {
+  await assert.rejects(host('missing-linger', 'missing-linger'), /BIFROST_TENANT_LINGER_SECONDS must be set/);
 });
 
 test('a failed exercise retires the child before the next workflow can enter', async () => {

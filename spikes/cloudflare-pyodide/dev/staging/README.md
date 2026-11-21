@@ -111,13 +111,15 @@ so that boot cannot be made cheap; it can only be kept off the request path.
 
 The `TenantHost` owns the child instead. A DO is a single instance, so its
 `LOADER.get` cache is shared by every attempt for that tenant. The host also
-serializes the tenant's attempts and keeps the child warm with an alarm ping
-every 45 s for 20 minutes after the last attempt (`WARM_WINDOW_MS`, the
-idle-cost knob — the counterpart of the Linux pool's always-warm processes).
+serializes the tenant's attempts and remembers readiness for the configured
+linger window. Set `BIFROST_TENANT_LINGER_SECONDS` explicitly in staging
+(90 seconds by default in the managed policy, range 0–300). The host does
+not send idle pings or keep the isolate resident past provider eviction.
 The loader id carries the engine digest (`ENGINE_PYTHON` + `RUNTIME_SHA256`,
 hashed at deploy time), as the loader requires a new id whenever code changes.
 
-Measured from the production host against production (2026-11-15):
+Measured from the production host against production under the previous
+alarm-based policy (2026-11-15):
 
 | Path | Before | Tenant host |
 |---|---|---|

@@ -402,8 +402,13 @@ export class LauncherCore {
           refuse('ValueError', 'Invalid Cloudflare workflow preparation');
           return;
         }
-        if (this.retired || this.meter?.exhausted || this.#preparations.size >= this.#slots.length ||
-            this.#preparations.has(route_id)) {
+        // The original in-flight call owns this route's observation.
+        if (this.#preparations.has(route_id) || this.meter?.hasRoute(route_id)) {
+          accept({});
+          return;
+        }
+        if (this.retired || this.meter?.exhausted || this.#preparations.size >= this.#slots.length) {
+          this.meter?.recordRoute(route_id, []);
           accept({});
           return;
         }

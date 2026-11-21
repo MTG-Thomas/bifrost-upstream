@@ -24,7 +24,7 @@ import {egressHostAllowed, isHttpsEgressUrl} from '../executor/egress-hosts.mjs'
 import {AttemptCredentials, isRefreshChallenge} from './attempt-credentials.mjs';
 import {routeTenantRequest} from './tenant-gateway-service.mjs';
 import {createTenantGateway} from './tenant-gateway.mjs';
-import {ENGINE_BOOT_TIMEOUT_MS, runtimeErrorClass} from './tenant-dispatch.mjs';
+import {ENGINE_BOOT_TIMEOUT_MS, runtimeErrorClass, tenantLingerMs} from './tenant-dispatch.mjs';
 
 const MAX_NOTED_CALLS = 64;
 // Matches the Linux pool's default per-workflow timeout (src/config.py);
@@ -57,14 +57,6 @@ export class TenantHost extends DurableObject {
   #readyUntil = 0;
   #readyFor;
   #reservedDailyIdentity = null;
-
-  #lingerMs() {
-    const seconds = Number(this.env.BIFROST_TENANT_LINGER_SECONDS ?? 90);
-    if (!Number.isInteger(seconds) || seconds < 0 || seconds > 300) {
-      throw new Error('Invalid tenant engine linger');
-    }
-    return seconds * 1000;
-  }
 
   async #engine(tenantId, reserveIdentity) {
     const engineId = `tenant-eng-${tenantId}-${(await engineDigest(this.env.RUNTIME_SHA256)).slice(0, 16)}`;
@@ -307,7 +299,7 @@ export class TenantHost extends DurableObject {
 
   async run({tenantId, executionId, context, publicUrl, egressHosts = [], dispatchedAt, routeId, workflowDeadline,
     reserveIdentity}) {
-    const lingerMs = this.#lingerMs();
+    const lingerMs = tenantLingerMs(this.env);
     const stopKey = routeId ? `stopped:${routeId}` : null;
     const stoppedInQueue = () => ({terminal: {phase: 'attempt-stopped', attempt_state: 'not_started', api_calls: []}});
     // Booting a child inside a fresh host can reset the host
@@ -532,7 +524,7 @@ export class TenantHost extends DurableObject {
     const limits = this.env.BIFROST_METER_ENGINE_CPU_MS !== undefined ||
       this.env.BIFROST_CLOUDFLARE_MANAGED === 'true' ? this.#releaseLimits() : null;
     const warm = this.#childIsReady(executionId);
-    const lingerMs = this.#lingerMs();
+    const lingerMs = tenantLingerMs(this.env);
     const cpuMs = limits && (exercise ? limits.exerciseMs : warm ? limits.warmMs : limits.bootMs);
     const {worker, generation, identity} = await this.#engine(tenantId, reserveIdentity);
     const modules = await this.#primeList();
@@ -604,6 +596,7 @@ export class TenantHost extends DurableObject {
   }
 
   async warm({tenantId, engineOnly = false, reserveIdentity, executionId, admission = false}) {
+    if (admission) this.ctx.waitUntil(this.#warmOrigin());
     const boot = await this.#exclusive(() => admission && this.#childIsReady(executionId) ?
       {reused: true} : this.#ping(tenantId, {reserveIdentity, executionId}));
     if (admission) return boot;
@@ -612,6 +605,13 @@ export class TenantHost extends DurableObject {
       return boot;
     }
     return {...boot, ...await this.#warmOrigin()};
+  }
+
+  async alarm() {
+    // Upgraded objects can still have one scheduled alarm from the old
+    // keep-warm policy. Consume it without any Loader or origin work.
+    await this.ctx.storage.delete(['tenantId', 'lastAttempt']);
+    await this.ctx.storage.deleteAlarm();
   }
 }
 

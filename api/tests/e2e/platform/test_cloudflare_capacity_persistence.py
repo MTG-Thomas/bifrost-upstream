@@ -1709,11 +1709,12 @@ async def test_abandoned_prepare_settles_observed_load_without_idle_pings(
         )
     activity = await db_session.get(CloudflareUsageActivity, (installation.id, period))
     assert activity is not None
-    assert activity.qualified_dispatches == 1
+    assert activity.qualified_dispatches == 0
+    assert activity.qualified_preparations == 1
     assert activity.qualified_warm_pings == 0
-    assert activity.inventory_tenant_seconds <= 110
+    assert 0 < activity.inventory_tenant_seconds <= 20
     assert activity.qualified_cpu_ms == TEST_CPU_LIMITS["startup"] + 10
-    assert activity.released_engine_requests == 3
+    assert activity.released_engine_requests == 0
     identity = f"tenant-eng-tenant-py-{tenant_id}-fixture"
     if booted:
         assert await cloudflare_spend.reserve_engine_generation(db_session, worker_id, identity)
@@ -1725,7 +1726,7 @@ async def test_abandoned_prepare_settles_observed_load_without_idle_pings(
     }))
     await db_session.refresh(activity)
     assert activity.released_cpu_us == (TEST_CPU_LIMITS["startup"] + 10) * 1000 - (510_000 if booted else 0)
-    assert activity.released_engine_requests == (3 if booted else 4)
+    assert activity.released_engine_requests == int(not booted)
     assert activity.qualified_creations == int(booted)
 
 

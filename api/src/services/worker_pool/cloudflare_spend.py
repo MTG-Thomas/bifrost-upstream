@@ -246,7 +246,7 @@ async def spend_coverage(db: AsyncSession, account_id: str, period_start: dateti
         func.coalesce(func.sum(activity.tenant_dispatches + activity.tenant_host_seconds), 0),
         func.coalesce(func.sum(activity.inventory_dispatches + activity.inventory_warm_pings), 0),
         func.coalesce(func.sum(activity.capacity_requests), 0),
-        func.coalesce(func.sum(activity.qualified_dispatches + activity.qualified_warm_pings), 0),
+        func.coalesce(func.sum(activity.qualified_dispatches + activity.qualified_preparations + activity.qualified_warm_pings), 0),
     ).join(owner, owner.id == activity.installation_id).where(
         owner.account_id == account_id, activity.period_start == period_start,
     ))).one()
@@ -447,8 +447,10 @@ async def seal_launcher_meter(db: AsyncSession, worker_id: UUID, receipt: Cloudf
         reported = len(receipt.routes)
         assert booked is not None
         drift = max(booked, reported) > 4 * max(2, min(booked, reported))
-        # Each recorded route required at least a run RPC and a meter write.
-        counter_drift = reported > 4 * min(receipt.do_requests, receipt.sqlite_rows_written)
+        # A skipped preparation records an empty receipt without using a
+        # TenantHost RPC. Only workflows witness both counters.
+        workflows = sum(not route.startswith("prepare:") for route in receipt.routes)
+        counter_drift = workflows > 4 * min(receipt.do_requests, receipt.sqlite_rows_written)
         counts.update(settled=True, reconciliation_drift=drift or counter_drift)
         row.meter_uncertain |= counter_drift
         if not row.meter_uncertain and receipt.routes:
@@ -506,11 +508,12 @@ async def reserve_tenant_host_usage(
     # Prior releases retain their deployed alarm pricing. The bounded linger
     # adds duration only, with no scheduled requests or detached engine starts.
     inventory_rate = usage.meter_rate_version in _INVENTORY_RATE_VERSIONS
-    tail = linger if bounded_linger else (
+    tail = 0 if preparation else linger if bounded_linger else (
         _INVENTORY_TAIL_SECONDS if inventory_rate else _TENANT_WARM_SECONDS + _TENANT_WATCHDOG_SECONDS
     )
     seconds_field = "inventory_tenant_seconds" if inventory_rate else "tenant_host_seconds"
     dispatch_field = (
+        "qualified_preparations" if preparation else
         "qualified_dispatches" if qualified else "inventory_dispatches" if inventory_rate else "tenant_dispatches"
     )
     pings_field = "qualified_warm_pings" if qualified else "inventory_warm_pings"
@@ -552,7 +555,6 @@ async def reserve_tenant_host_usage(
             if preparation:
                 assert expected is not None
                 segment["qualified_cpu_ms"] = dispatch * _prepare_cpu_reserve(cpu, expected)
-                segment["released_engine_requests"] = 3 * dispatch  # One possible engine request, not four.
             else:
                 assert workflow_cpu_ms is not None and subrequests is not None
                 segment["qualified_cpu_ms"] = qualified_cpu_reserve(
@@ -569,8 +571,6 @@ async def reserve_tenant_host_usage(
     if qualified:
         fields.append("qualified_cpu_ms")
         fields.append("generation_control_requests" if lifecycle_meter else "qualified_creations")
-    if preparation:
-        fields.append("released_engine_requests")
     await db.execute(reservation.on_conflict_do_update(
         index_elements=[activity.installation_id, activity.period_start],
         set_={field: activity.__table__.c[field] + reservation.excluded[field] for field in fields},
@@ -790,6 +790,7 @@ def cloudflare_estimated_usage() -> ColumnElement[Decimal | None]:
         + activity.capacity_cpu_ms * literal(_WORKER_CPU_MS_USD, type_=Numeric(24, 12))
         + activity.qualified_cpu_ms * literal(_WORKER_CPU_MS_USD, type_=Numeric(24, 12))
         + activity.qualified_dispatches * literal(_QUALIFIED_DISPATCH_USD, type_=Numeric(24, 12))
+        + activity.qualified_preparations * literal(_WORKER_REQUEST_USD, type_=Numeric(24, 12))
         + activity.qualified_warm_pings * literal(_QUALIFIED_PING_USD, type_=Numeric(24, 12))
         + activity.qualified_creations * literal(_DYNAMIC_CREATION_USD, type_=Numeric(24, 12))
         + activity.generation_control_requests * literal(_DO_REQUEST_USD, type_=Numeric(24, 12))

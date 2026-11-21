@@ -76,6 +76,14 @@ export function runtimeErrorClass(error) {
 // retried with a fresh stub, as broken DO stubs must not be reused.
 export const WARM_ATTEMPTS = 3;
 export const ENGINE_BOOT_TIMEOUT_MS = 15_000;
+
+export function tenantLingerMs(env) {
+  const value = env.BIFROST_TENANT_LINGER_SECONDS;
+  if (typeof value !== 'string' || !/^\d+$/.test(value) || Number(value) > 300) {
+    throw new Error('BIFROST_TENANT_LINGER_SECONDS must be set to an integer from 0 to 300');
+  }
+  return Number(value) * 1000;
+}
 export async function warmHost(getHost, tenantId, {
   check = () => {}, engineOnly = false, reserveIdentity, executionId,
 } = {}) {
@@ -99,9 +107,14 @@ export async function warmHost(getHost, tenantId, {
 // An engine attempt is dispatched at most once. A host that has not confirmed
 // its child refuses with needsWarm before doing any attempt work; only the
 // warm-up is retried.
-export async function hostAttempt(getHost, attempt, {beforeRun = () => null, warm = warmHost} = {}) {
-  const first = beforeRun() ?? await getHost().run(attempt);
+export async function hostAttempt(getHost, attempt, {beforeRun = () => null, warm = warmHost, join} = {}) {
+  const run = async () => beforeRun() ?? await getHost().run(attempt);
+  let first = await run();
   if (!first.needsWarm) return first;
+  if (join && await join()) {
+    first = await run();
+    if (!first.needsWarm) return first;
+  }
   let warmed;
   try {
     warmed = await warm(getHost, attempt.tenantId);
@@ -111,7 +124,7 @@ export async function hostAttempt(getHost, attempt, {beforeRun = () => null, war
     error.attemptState = 'not_started';
     throw error;
   }
-  const result = beforeRun() ?? await getHost().run(attempt);
+  const result = await run();
   if (result.needsWarm) return {notReady: true, warm: warmed};
   return {...result, warm: warmed};
 }

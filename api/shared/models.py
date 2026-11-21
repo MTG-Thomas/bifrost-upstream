@@ -494,7 +494,7 @@ class CloudflareLauncherUsage(CloudflareLauncherCounts):
         Annotated[str, Field(min_length=1, max_length=128)],
         Annotated[list[CloudflareEngineInvocation], Field(max_length=4)],
     ] | None = Field(
-        default=None, max_length=128, exclude_if=lambda value: value is None,
+        default=None, max_length=256, exclude_if=lambda value: value is None,
     )
     exhausted: bool = Field(default=False, strict=True)
 

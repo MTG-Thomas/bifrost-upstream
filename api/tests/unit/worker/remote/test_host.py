@@ -110,7 +110,7 @@ async def test_cloudflare_claim_starts_preparation_without_waiting_for_reply() -
             await asyncio.gather(*preparations)
 
 
-async def test_preparation_reservation_does_not_hold_the_control_send_lock() -> None:
+async def test_preparation_skips_a_busy_control_send_lock() -> None:
     socket = Mock()
     lease = replace(LEASE, declared_slots=1)
     bridge = Bridge(socket, {
@@ -138,12 +138,65 @@ async def test_preparation_reservation_does_not_hold_the_control_send_lock() -> 
         ))
         try:
             await asyncio.wait_for(reserving.wait(), 2)
-            await asyncio.wait_for(bridge.request("ready", {}), 2)
-            assert sent == ["ready"]
+            await asyncio.wait_for(bridge.request(
+                "prepare_workflow", {"route_id": f"prepare:{lease.worker_id}", "org_id": None},
+                expected_generation=lease.session_generation,
+            ), 2)
+            assert sent == []
         finally:
             finish.set()
             await task
-    assert sent == ["ready", "prepare_workflow"]
+    assert sent == ["prepare_workflow"]
+
+
+@pytest.mark.parametrize("refusal", ["generation", "inventory", "heartbeat", "meter"])
+async def test_preparation_refusal_precedes_reservation(refusal: str) -> None:
+    lease = replace(LEASE, declared_slots=1)
+    bridge = Bridge(Mock(), {
+        "hostname": "opaque", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE, "managed_cloudflare": True,
+    }, lease)
+    if refusal != "inventory":
+        bridge.reconciliation_ready.set()
+    if refusal == "heartbeat":
+        bridge.heartbeat_at = time.monotonic() - 100
+    bridge.meter_exhausted = refusal == "meter"
+    generation = lease.session_generation + int(refusal == "generation")
+    reserve = AsyncMock()
+    with patch.object(bridge, "_reserve_cloudflare_usage", reserve), pytest.raises(CredentialRouteChanged):
+        await bridge.request(
+            "prepare_workflow", {"route_id": f"prepare:{lease.worker_id}", "org_id": None},
+            expected_generation=generation,
+        )
+    reserve.assert_not_awaited()
+
+
+async def test_preparation_send_timeout_leaves_live_control_session_usable() -> None:
+    lease = replace(LEASE, declared_slots=1)
+    socket = Mock(close=AsyncMock())
+    bridge = Bridge(socket, {
+        "hostname": "opaque", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE, "managed_cloudflare": True,
+    }, lease)
+    bridge.reconciliation_ready.set()
+    sequences = []
+
+    async def send(frame):
+        message = json.loads(frame)
+        sequences.append(message["sequence"])
+        command = message["payload"]
+        if command["action"] == "prepare_workflow":
+            await asyncio.Event().wait()
+        await bridge.receive({"reply": command["id"], "result": {}})
+
+    socket.send_text = send
+    with (
+        patch.object(bridge, "_reserve_cloudflare_usage", AsyncMock()),
+        patch("src.worker.remote.host.CLOUDFLARE_PREPARE_IO_SECONDS", 0.01),
+    ):
+        await bridge.request("prepare_workflow", {"route_id": f"prepare:{lease.worker_id}", "org_id": None},
+                             expected_generation=lease.session_generation)
+        await bridge.request("ready", {})
+    assert bridge.connected and sequences == [1, 2]
+    socket.close.assert_not_awaited()
 
 
 @pytest.mark.parametrize("kind", ["result", "summary_result", "cloudflare_agent_result"])

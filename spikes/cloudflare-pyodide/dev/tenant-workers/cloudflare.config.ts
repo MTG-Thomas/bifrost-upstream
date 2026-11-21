@@ -75,6 +75,7 @@ export default defineConfig({
       // Staging only: when set, the supervisor fetches modules from this real
       // Bifrost API instead of an attempt-supplied store.
       API_ORIGIN: {type: 'text', value: process.env.STAGING_API_ORIGIN ?? ''},
+      BIFROST_TENANT_LINGER_SECONDS: {type: 'text', value: '90'},
       ...((managedLauncher || launcherEnabled) ? {
         BIFROST_METER_ENGINE_CPU_MS: {type: 'text' as const, value: '30000'},
         BIFROST_METER_BOOT_CPU_MS: {type: 'text' as const, value: '30000'},
