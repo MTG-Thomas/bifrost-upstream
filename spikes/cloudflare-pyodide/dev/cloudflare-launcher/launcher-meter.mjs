@@ -49,13 +49,14 @@ export function launcherMeter(sql, binding, {settle = false} = {}) {
     snapshot() {
       return {...state.counts, sqlite_database_bytes: sql.databaseSize, exhausted: Boolean(admissionLimit())};
     },
-    charge(units, essential = false) {
+    charge(units, essential = false, hardLimit = false) {
       if (state.final || (state.exhausted && !essential)) return false;
       const counts = {...state.counts};
       for (const name of METER_NAMES) counts[name] += units[name] ?? 0;
       const limit = counts.sqlite_rows_written + 1 > caps.sqlite_rows_written - (essential ? 0 : sqliteHeadroom(slots))
         ? 'sqlite_rows_written'
         : counts.do_requests > caps.do_requests - (essential ? 0 : slots) ? 'do_requests' : null;
+      if (limit && hardLimit) return false;
       if (limit && !essential) {
         // The denied operation consumed nothing. The exhaustion marker did.
         save({...state, exhausted: limit});

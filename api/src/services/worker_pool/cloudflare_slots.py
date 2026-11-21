@@ -5,8 +5,9 @@ from dataclasses import dataclass
 from datetime import timedelta
 from uuid import UUID
 
-from sqlalchemy import delete, exists, func, select, text, update
+from sqlalchemy import delete, exists, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from shared.models import CloudflareWorkersPolicy
 from src.models.enums import ExecutionStatus
@@ -59,10 +60,36 @@ async def read_workflow_slot_admission(
 ) -> WorkflowSlotAdmission:
     slot = CloudflareWorkflowSlot
     counts = (await db.execute(
-        select(slot.tenant, func.count()).where(slot.installation_id == installation_id, slot.released_at.is_(None))
+        select(slot.tenant, func.count()).where(
+            slot.installation_id == installation_id, slot.released_at.is_(None), ~_stale_unsent(),
+        )
         .group_by(slot.tenant)
     )).all()
     return WorkflowSlotAdmission(installation_id, policy, Counter({tenant: count for tenant, count in counts}))
+
+
+def _stale_unsent() -> ColumnElement[bool]:
+    slot = CloudflareWorkflowSlot
+    # An unsent claim cannot have entered. A concurrent send has to acquire
+    # this same row and prove it still owns the ticket before writing frames.
+    live_execution = exists().where(
+        Execution.id == slot.execution_id,
+        Execution.status.in_((ExecutionStatus.RUNNING, ExecutionStatus.CANCELLING)),
+    )
+    live_owner = exists().where(
+        ExecutionWorker.id == slot.worker_id,
+        ExecutionWorker.state.in_(("ready", "draining")),
+        ExecutionWorker.remote_owner_lease_expires_at > func.clock_timestamp(),
+    )
+    return ~slot.sent & ~(live_execution & live_owner)
+
+
+async def delete_workflow_slots(db: AsyncSession, *conditions: ColumnElement[bool]) -> None:
+    slot = CloudflareWorkflowSlot
+    ordered = select(slot.fence).where(*conditions).order_by(
+        slot.installation_id, slot.tenant, slot.ordinal,
+    ).with_for_update()
+    await db.execute(delete(slot).where(slot.fence.in_(ordered)))
 
 
 async def load_workflow_slot_admission(db: AsyncSession, worker_id: UUID) -> WorkflowSlotAdmission | None:
@@ -76,21 +103,7 @@ async def load_workflow_slot_admission(db: AsyncSession, worker_id: UUID) -> Wor
         return None
     installation_id, policy = row
     slot = CloudflareWorkflowSlot
-    # An unsent claim cannot have entered. A concurrent send has to acquire
-    # this same row and prove it still owns the ticket before writing frames.
-    live_execution = exists().where(
-        Execution.id == slot.execution_id,
-        Execution.status.in_((ExecutionStatus.RUNNING, ExecutionStatus.CANCELLING)),
-    )
-    live_owner = exists().where(
-        ExecutionWorker.id == slot.worker_id,
-        ExecutionWorker.state.in_(("ready", "draining")),
-        ExecutionWorker.remote_owner_lease_expires_at > func.clock_timestamp(),
-    )
-    await db.execute(delete(slot).where(
-        slot.installation_id == installation_id, slot.released_at.is_(None),
-        ~slot.sent, ~(live_execution & live_owner),
-    ))
+    await delete_workflow_slots(db, slot.installation_id == installation_id, slot.released_at.is_(None), _stale_unsent())
     return await read_workflow_slot_admission(
         db,
         installation_id, CloudflareWorkersPolicy.model_validate(policy["limits"]["workers"]),
@@ -102,11 +115,7 @@ async def occupy_workflow_slot(
     execution_id: UUID, dispatch_id: UUID, fence: UUID,
 ) -> WorkflowSlotTicket:
     tenant = tenant_key(tenant_id)
-    # Installation before tenant. The installation lock also covers the
-    # absent-row case and prevents two replicas from taking the last slot.
-    await db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), {
-        "key": f"bifrost:cloudflare-slot:{admission.installation_id}:{tenant}",
-    })
+    # The caller holds the installation lock, including when the slot row is absent.
     slot = CloudflareWorkflowSlot
     rows = {row.ordinal: row for row in await db.scalars(select(slot).where(
         slot.installation_id == admission.installation_id, slot.tenant == tenant,
@@ -160,17 +169,20 @@ async def confirm_workflow_slot_release(
     )
     warm_until = None
     if completed:
-        linger = await db.scalar(select(
-            CloudflareInstallation.policy["limits"]["workers"]["linger_seconds"].as_integer(),
+        policy = await db.scalar(select(
+            CloudflareInstallation.policy,
         ).join(slot).where(*where))
-        warm_until = func.clock_timestamp() + timedelta(seconds=90 if linger is None else linger)
+        if policy is None:
+            return  # The exact holder was already released or replaced.
+        linger = CloudflareWorkersPolicy.model_validate(policy["limits"]["workers"]).linger_seconds
+        warm_until = func.clock_timestamp() + timedelta(seconds=linger)
     await db.execute(update(slot).where(*where).values(released_at=func.clock_timestamp(), warm_until=warm_until))
 
 
 async def settle_workflow_slot(
     db: AsyncSession, worker_id: UUID, execution_id: UUID, fence: UUID, state: str,
 ) -> None:
-    if state in ("completed", "not_started"):
+    if state in ("completed", "not_started", "stopped"):
         await confirm_workflow_slot_release(db, worker_id, execution_id, fence, completed=state == "completed")
         return
     # The provider's normal retirement path must fence this incarnation before

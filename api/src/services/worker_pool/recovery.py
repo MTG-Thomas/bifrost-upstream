@@ -15,6 +15,7 @@ from src.core.database import get_db_context
 from src.models.enums import ExecutionStatus
 from src.models.orm.agent_runs import AgentRun
 from src.models.orm.cloudflare_capacity import CloudflareWorkflowSlot
+from src.services.worker_pool.cloudflare_slots import delete_workflow_slots
 from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
 from src.models.orm.executions import Execution
 from src.services.execution.agent_run_service import announce_ended_agent_run
@@ -86,9 +87,9 @@ async def end_runs_of_lost_worker(
     """
     # The caller holds the worker fence. Only unsent tickets can be returned
     # here. The external provider owns confirmation for a possibly live child.
-    await db.execute(delete(CloudflareWorkflowSlot).where(
+    await delete_workflow_slots(db,
         CloudflareWorkflowSlot.worker_id == worker_id, ~CloudflareWorkflowSlot.sent,
-    ))
+    )
     claims = (
         await db.execute(
             select(ExecutionWorkerClaim.family, ExecutionWorkerClaim.subject_id).where(

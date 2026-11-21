@@ -160,11 +160,18 @@ pays for the first identity. Preparation books the identity before Loader entry.
 Additional identities pay separately, even on the same day. A seal can
 also witness a new UTC day after the loader authorization. Count a dispatch
 once in its starting UTC month and place linger duration in each month touched.
-Four daily slots per tenant for two tenants use 240 slot-days over 30 days.
-At $0.002 per creation the gross reserve is about $0.48, before the shared
-account allowance. At ten runs per slot-day the identity contribution is
-about $0.0002 per run, plus engine CPU, startup, SDK, gateway and DO usage.
-An incarnation change or retired generation can add another identity.
+An incarnation change changes the loader ID because its outbound binding
+points to a different TenantHost. Cloudflare prices unique ID and code pairs
+daily. Workerd can share a cache between Workers bound to the same loader ID.
+Reusing a loader ID across incarnations would change the outbound configuration
+under that ID. [Pricing](https://developers.cloudflare.com/dynamic-workers/pricing/) · [Loader API](https://developers.cloudflare.com/dynamic-workers/api-reference/) · [workerd cache configuration](https://github.com/cloudflare/workerd/blob/main/src/workerd/server/workerd.capnp)
+
+Eight continuously used slots with hourly incarnations produce a modeled
+6,200 IDs over a 31-day month, including one extra incarnation per day for
+UTC boundary overlap. At $0.002 per creation the policy envelope reserves
+$12.40 gross for rotation in addition to the existing fleet scenario. Idle
+turnover, tenant changes, and forced generation retirement can increase the
+actual count. Admission uses the actual booked identities and reserves.
 Each preparation and workflow keeps its own reserve and receipt. Holding a
 slot on an uncertain exit retains the adverse accounting for that incarnation.
 [Cloudflare Dynamic Worker pricing](https://developers.cloudflare.com/dynamic-workers/pricing/)

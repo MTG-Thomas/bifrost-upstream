@@ -369,6 +369,22 @@ test('an uncertain terminal blocks the same tenant until its ACK', async () => {
   assert.equal(api.calls.length, 2);
 });
 
+test('managed cancellation releases only its slot when the child stop is confirmed', async () => {
+  const finish = deferred();
+  const api = peer({tenantSlots: true, runHost: () => finish.promise, stopHost: (_, confirm) => confirm});
+  await connect(api);
+  const attempt = {...workflow(), engine_slot: 0};
+  await api.command('workflow', attempt);
+  await api.entered;
+  await api.command('terminate', {route_id: attempt.route_id, error_type: 'CancelledError', error: 'cancelled'});
+  const terminal = api.frames().at(-1);
+  assert.equal(terminal.attempt_state, 'stopped');
+  await api.ack(terminal._event_id);
+  assert.equal(api.data.has('slot'), false);
+  finish.resolve(COMPLETED);
+  await api.finish();
+});
+
 test('managed cancellation keeps the acknowledged slot until child termination is confirmed', async () => {
   let ended = false;
   const finish = deferred();

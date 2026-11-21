@@ -12,7 +12,7 @@ depends_on = None
 def upgrade() -> None:
     op.create_table(
         "cloudflare_workflow_slots",
-        sa.Column("installation_id", sa.Uuid(), sa.ForeignKey("cloudflare_installations.id"), primary_key=True),
+        sa.Column("installation_id", sa.Uuid(), sa.ForeignKey("cloudflare_installations.id", ondelete="RESTRICT"), primary_key=True),
         sa.Column("tenant", sa.String(36), primary_key=True),
         sa.Column("ordinal", sa.SmallInteger(), primary_key=True),
         sa.Column("worker_id", sa.Uuid(), sa.ForeignKey("execution_workers.id", ondelete="CASCADE"), nullable=False),

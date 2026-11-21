@@ -492,12 +492,13 @@ export class TenantHost extends DurableObject {
         await this.#retireChild();
         // RPC exceptions can lose their classification. Return only the
         // allowlisted platform class, with no exception text.
-        if (this.#current?.meterExceeded) return {terminal: {phase: 'sdk-meter-limit', attempt_state: 'uncertain',
-          limit: this.#releaseLimits().requests}};
         if (error_class === 'cpu_limit' || error_class === 'memory_limit') {
           childEnded = true;
-          return {terminal: {phase: error_class, attempt_state: 'uncertain'}};
         }
+        const attempt_state = trackStop && childEnded ? 'stopped' : 'uncertain';
+        if (this.#current?.meterExceeded) return {terminal: {phase: 'sdk-meter-limit', attempt_state,
+          limit: this.#releaseLimits().requests}};
+        if (childEnded) return {terminal: {phase: error_class, attempt_state}};
       }
       throw error;
     } finally {

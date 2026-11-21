@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 
 import httpx
 from shared.models import WorkerCapacityProfile, WorkerCapacityReservation
-from sqlalchemy import and_, delete, func, select, update
+from sqlalchemy import and_, func, select, update
 
 from src.config import Settings
 from src.core.database import get_db_context
@@ -26,6 +26,7 @@ from src.services.work_dispatch import (
 )
 from src.services.worker_pool.cloudflare_canary import active_cloudflare_canary
 from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
+from src.services.worker_pool.cloudflare_slots import delete_workflow_slots
 from src.services.worker_pool.cloudflare_spend import compact_ledger_receipt, pending_ledger_receipt, seal_launcher_meter
 from src.services.worker_pool.controller import (
     RECONCILE_SECONDS,
@@ -269,7 +270,7 @@ class ExternalWorkerPoolController(WorkerCapacityController):
                 if matched is not None and runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and resource is not None:
                     await seal_launcher_meter(db, worker_id, resource.usage)
                 if matched is not None and self.managed_cloudflare_scope is not None:
-                    await db.execute(delete(CloudflareWorkflowSlot).where(CloudflareWorkflowSlot.worker_id == worker_id))
+                    await delete_workflow_slots(db, CloudflareWorkflowSlot.worker_id == worker_id)
                 await db.commit()
             if self.managed_cloudflare_scope is not None and uid is not None and resource is not None and (
                 resource.usage is not None and resource.usage.ledger_receipt_pending

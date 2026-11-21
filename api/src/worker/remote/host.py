@@ -879,7 +879,7 @@ class Bridge:
                                 raise ConnectionError("Remote API ownership was replaced before metering")
                             await record_launcher_terminal_meter(
                                 db, terminal_ref.lease.worker_id, event.get("usage"),
-                                uncertain=event.get("attempt_state") == "uncertain",
+                                uncertain=event.get("attempt_state") in ("stopped", "uncertain"),
                             )
                     if isinstance(event_id, str):
                         await self.acknowledge(event_id)

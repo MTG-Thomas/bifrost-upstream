@@ -167,7 +167,7 @@ export class CloudflareLauncher extends DurableObject {
         stopWorkflow: (id, confirm) => {
           // Release may already have sealed the counters after its bounded
           // stop wait. A late continuation must never emit an unpriced RPC.
-          return this.#meter.charge({do_requests: 1}, true) ? host.stopWorkflow(id, confirm) : undefined;
+          return this.#meter.charge({do_requests: 1}, true, confirm) ? host.stopWorkflow(id, confirm) : undefined;
         },
       } : host;
     };

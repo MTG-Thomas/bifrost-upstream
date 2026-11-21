@@ -198,6 +198,7 @@ def workers_fleet_envelope_usd(
     cleanup_margin_seconds: int,
     per_launcher_second: Mapping[str, Decimal],
     per_fleet_fixed: Mapping[str, Decimal],
+    rotation_slots: int = 0,
 ) -> Decimal:
     """Price the release's fleet usage scenario and cleanup allowances."""
     if launcher_cap < 1 or max_lifetime_seconds < 1 or cleanup_margin_seconds < 1:
@@ -212,6 +213,10 @@ def workers_fleet_envelope_usd(
         rate.cost(per_launcher_second[meter] * launcher_seconds + per_fleet_fixed[meter])
         for meter, rate in WORKERS_RATES.items()
     )
+    # A continuously used seat starts a fresh identity on each incarnation.
+    # One extra incarnation per day covers a cadence that straddles UTC midnight.
+    incarnations_per_day = (86_400 + max_lifetime_seconds - 1) // max_lifetime_seconds + 1
+    gross += rotation_slots * 31 * incarnations_per_day * _DYNAMIC_CREATION_USD
     return gross.quantize(Decimal("0.01"), rounding=ROUND_CEILING)
 
 

@@ -14,8 +14,8 @@ capacity settings permission applies at Global.
   goes to a tenant with zero occupied slots. Below that threshold, the oldest
   eligible dispatch wins, subject to per-tenant, launcher, memory, and spend
   limits. The rule reserves room for another tenant without naming hot tenants.
-- PostgreSQL takes the installation row's exclusive claim lock before the
-  tenant advisory lock. The claim transaction assigns the workflow and
+- PostgreSQL takes the installation row's exclusive claim lock before
+  reading occupancy. The claim transaction assigns the workflow and
   occupies its ordinal together. The primary key is installation, tenant,
   and ordinal. The worker, dispatch, execution, and claim UUID bind each
   occupancy. The UUID is the fence and the suffix of the launcher route ID.
@@ -29,14 +29,19 @@ capacity settings permission applies at Global.
   Cancellation before entry can release it immediately. Canonical workflow
   settlement, owner lease loss, and worker loss cannot release a possibly
   dispatched child. Unsent claims can be dropped as soon as ownership or the
-  execution ends. An uncertain terminal drains its launcher. Acknowledging
+  execution ends. A confirmed stop releases the exact slot. An unconfirmed
+  terminal drains its launcher. Acknowledging
   that terminal leaves the stop witness in the launcher's journal.
 - The provider returns a deletion receipt only after all potentially live
   children have a durable stop witness. A stop command revokes credentials
   and retires the generation immediately. Capacity is restored after child
   completion is observed or exact managed deletion is confirmed. A lost
-  child response or missing provider ledger can leave capacity held. Such a
-  case needs independent destruction evidence before operator recovery.
+  child response or missing provider ledger can leave capacity held. Reset
+  is insufficient evidence because the child can outlive its host. Stop
+  confirmation requests use the launcher meter ceiling. Scale In or
+  Disconnect can recover a held slot by independently verifying absence of
+  the journaled launcher script and namespaces. If verification cannot
+  finish, the existing job surfaces Verify Cloudflare Worker Retirement.
 
 ## Engine identity and readiness
 

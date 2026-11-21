@@ -26,6 +26,7 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareInstallation,
     CloudflareOwnedResource,
     CloudflareWorkerReservation,
+    CloudflareWorkflowSlot,
 )
 from src.models.orm.execution_workers import ExecutionWorker
 from src.models.orm.platform_jobs import PlatformJob
@@ -68,6 +69,7 @@ from src.services.worker_pool.cloudflare_provisioning import (
     resume_deletion,
 )
 from src.services.worker_pool.cloudflare_spend import cloudflare_estimated_usage, read_workers_usage, usage_period
+from src.services.worker_pool.cloudflare_slots import delete_workflow_slots
 from src.services.worker_pool.cloudflare_workers_rest import (
     CloudflareManagementDenied,
     CloudflareRestUnavailable,
@@ -205,6 +207,38 @@ async def _cleanup_one(
     return "progressed"
 
 
+async def _verify_stuck_workflow_slots(
+    db: AsyncSession, row: CloudflareInstallation, adapter: OwnedResourceCleanup,
+) -> bool:
+    """Recover terminal send fences using independent script and namespace absence."""
+    worker, pin, resource, slot = ExecutionWorker, CloudflareWorkerReservation, CloudflareOwnedResource, CloudflareWorkflowSlot
+    held = await db.execute(select(worker.id, resource).select_from(worker).join(pin, pin.worker_id == worker.id).outerjoin(
+        resource, (resource.installation_id == pin.installation_id) & (resource.scope == pin.scope)
+        & (resource.desired_revision == pin.deployment_revision) & (resource.kind == "worker_script")
+        & resource.target_name.endswith("-launcher"),
+    ).where(
+        pin.installation_id == row.id, worker.capacity_resource_deleted_at.is_(None),
+        worker.state.in_(("lost", "retired")),
+        select(slot.fence).where(slot.worker_id == worker.id, slot.sent, slot.released_at.is_(None)).exists(),
+    ).order_by(worker.id).with_for_update(of=worker))
+    checked: set[UUID] = set()
+    for worker_id, launcher in held.all():
+        if launcher is None or not launcher.namespace_ids or launcher.provider_id is None:
+            continue
+        if launcher.id not in checked:
+            try:
+                await adapter.verify_absent(
+                    api_token=await _management_token(db, row), target=_resource_intent(launcher).target,
+                    namespace_ids=frozenset(launcher.namespace_ids.values()),
+                )
+            except (DeletionSettling, ObservationPending):
+                continue
+            checked.add(launcher.id)
+        await db.execute(update(worker).where(worker.id == worker_id).values(capacity_resource_deleted_at=func.now()))
+        await delete_workflow_slots(db, slot.worker_id == worker_id)
+    return bool(checked)
+
+
 async def _settle_disable(
     context: PlatformJobContext, payload: CloudflareDisablePayload, adapter: OwnedResourceCleanup,
 ) -> dict[str, str]:
@@ -242,6 +276,8 @@ async def _settle_disable(
                     return {"outcome": payload.desired_state}
             started_at = await db.scalar(select(PlatformJob.started_at).where(PlatformJob.id == context.job_id))
             if started_at is not None and datetime.now(UTC) >= started_at + DRAIN_DEADLINE:
+                if workers_remain and await _verify_stuck_workflow_slots(db, row, adapter):
+                    continue
                 if waiting_for_deletion:
                     raise PlatformJobRequiresAction("Cloudflare Cleanup Pending", {"code": "CF_CLEANUP_PENDING"})
                 phase = "Wait for Cloudflare Creation to Settle" if not workers_remain else "Verify Cloudflare Worker Retirement"

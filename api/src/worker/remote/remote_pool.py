@@ -56,7 +56,7 @@ logger = logging.getLogger(__name__)
 DRAIN_DEADLINE_ERROR_TYPE = "WorkerShutdown"
 DRAIN_DEADLINE_ERROR = "Remote pool drain deadline exceeded"
 OPAQUE_STOP_TIMEOUT_SECONDS = 5
-OPAQUE_ATTEMPT_STATES = frozenset({"not_started", "completed", "uncertain"})
+OPAQUE_ATTEMPT_STATES = frozenset({"not_started", "completed", "stopped", "uncertain"})
 
 
 class ThinRemoteTransport(Protocol):
@@ -505,7 +505,9 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                     try:
                         if route_id in matched:
                             await self._attach_opaque_inventory_route(route_id, entry, execution, reservation, receipt)
-                        await self._handle_opaque_terminal(event)
+                            await self._handle_opaque_terminal(event)
+                        else:
+                            await self._settle_workflow_slot(route_id, receipt[1])
                         await self.transport.acknowledge(receipt[0], reconciliation_lease=lease)
                     except Exception as exc:  # noqa: BLE001 - report all failed receipts after the batch
                         exc.add_note(f"Opaque terminal replay for {route_id}")
@@ -1394,13 +1396,14 @@ class ThinRemoteProcessPool(ProcessPoolManager):
             raise ValueError("Opaque terminal does not match its retained receipt")
         self._bind_workflow_handle(handle, event)
         handle.process.terminal_receipt = receipt
-        if state == "uncertain":
+        if state in ("stopped", "uncertain"):
             error_type = result.get("error_type")
             # Preserve known stop and resource-limit reasons on replay, even
             # when a new API owner has no in-memory stop.
             if error_type not in (
                 "CancelledError", "TimeoutError", "CpuLimitExceeded", "MemoryLimitExceeded",
                 "CloudflareLauncherMeterLimitExceeded",
+                "CloudflareSDKRequestLimitExceeded",
             ):
                 error_type = "WorkflowAttemptUncertain"
             result = {

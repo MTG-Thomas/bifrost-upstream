@@ -19,7 +19,7 @@ const SUMMARY_ROUTE = new RegExp(`^summary:(${UUID}):(${UUID})$`);
 const AGENT_ROUTE = new RegExp(`^agent:(${UUID}):(${UUID})$`);
 const INSTANT = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?(?:Z|[+-]\d\d:\d\d)$/;
 const HEX64 = /^[0-9a-f]{64}$/;
-const STATES = new Set(['not_started', 'completed', 'uncertain']);
+const STATES = new Set(['not_started', 'completed', 'stopped', 'uncertain']);
 const record = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const integer = (value) => Number.isSafeInteger(value) && value >= 0;
 const slotOrdinal = (value) => integer(value) && value < 32;
@@ -168,7 +168,7 @@ export class LauncherCore {
         await Promise.all(slots.filter(slot => slot?.route.kind === 'workflow' &&
           (slot.state === 'entering' || slot.terminal?.attempt_state === 'uncertain')).map(async ({route}) => {
           this.#aborts.get(route.route_id)?.abort();
-          if (await this.stopHost(route, true) !== true) throw new Error('Workflow stop is unconfirmed');
+          if (!await this.#confirmStop(route)) throw new Error('Workflow stop is unconfirmed');
         }));
       }
       for (const slot of slots) {
@@ -209,7 +209,7 @@ export class LauncherCore {
       const slot = this.#slots[index] = await this.storage.get(slotKey(index));
       if (!slot || slot.state === 'terminal') continue;
       const entering = slot.state === 'entering';
-      if (entering) this.#stop(slot.route);
+      if (entering && !(this.tenantSlots && slot.route.kind === 'workflow')) this.#stop(slot.route);
       const outcome = this.#expired(slot.route) && !entering ? timeout(slot.route) :
         failure(entering ? 'uncertain' : 'not_started', 'LauncherReset', 'Launcher reset before a terminal was recorded');
       await this.#settle(index, slot.route, outcome);
@@ -254,7 +254,7 @@ export class LauncherCore {
         await this.#saveControl({...this.#control, state: 'retired'});
         for (const [index, slot] of this.#slots.entries()) {
           if (slot?.state !== 'entering') continue;
-          this.#stop(slot.route);
+          if (!(this.tenantSlots && slot.route.kind === 'workflow')) this.#stop(slot.route);
           await this.#settle(index, slot.route, failure('uncertain', 'LauncherRetired', 'The incarnation ended'));
         }
       }
@@ -400,7 +400,7 @@ export class LauncherCore {
           return;
         }
         const entering = slot.state === 'entering';
-        if (entering) this.#stop(slot.route);
+        if (entering && !(this.tenantSlots && slot.route.kind === 'workflow')) this.#stop(slot.route);
         try {
           accept({received: true});
         } finally {
@@ -637,8 +637,24 @@ export class LauncherCore {
     this.background(stop);
   }
 
+  async #confirmStop(route) {
+    this.#aborts.get(route.route_id)?.abort();
+    let timer;
+    try {
+      return await Promise.race([
+        this.stopHost(route, true).then(value => value === true, () => false),
+        new Promise(resolve => { timer = setTimeout(() => resolve(false), STOP_SETTLEMENT_MS); }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async #settle(index, route, {attempt_state, result, invocations}) {
     const event = route.kind === 'workflow' ? 'result' : route.kind === 'agent_run' ? 'cloudflare_agent_result' : 'summary_result';
+    if (this.tenantSlots && route.kind === 'workflow' && attempt_state === 'uncertain' && await this.#confirmStop(route)) {
+      attempt_state = 'stopped';
+    }
     if (this.meter?.log()) console.info('launcher_workload_terminal', route.kind, attempt_state);
     const terminal = {event, route_id: route.route_id, runtime_handle: route.runtime_handle,
       _event_id: this.newId(), attempt_state, result};

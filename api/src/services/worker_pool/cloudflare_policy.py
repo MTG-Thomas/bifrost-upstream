@@ -219,6 +219,7 @@ def _price_policy(
         cleanup_margin_seconds=bounds.cleanup_margin_seconds,
         per_launcher_second=bounds.per_launcher_second,
         per_fleet_fixed=bounds.per_fleet_fixed,
+        rotation_slots=min(policy.workers.installation_slots, policy.workers.launcher_cap * policy.workers.slots_per_launcher),
     )
     if envelope > policy.monthly_limit_usd:
         raise CloudflareBudgetTooLow(f"The estimated fleet usage is USD {envelope}")
