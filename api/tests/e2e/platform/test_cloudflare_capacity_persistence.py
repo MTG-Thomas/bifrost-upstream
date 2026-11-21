@@ -511,6 +511,7 @@ async def test_upgrade_drains_before_replacement_and_resumes_after_lost_lease(
     assert await cloudflare_claim_allowed(db_session, worker.id)
     for module in (cloudflare_admission, cloudflare_policy, lifecycle_job):
         monkeypatch.setattr(module, "installed_workers_release_digest", lambda: release)
+    monkeypatch.setattr(lifecycle_job, "installed_workers_release_sequence", lambda: 20)
     assert not await cloudflare_claim_allowed(db_session, worker.id)
     assert installation.admitted_revision == 1  # Local release fencing precedes the scheduler.
 
@@ -527,6 +528,7 @@ async def test_upgrade_drains_before_replacement_and_resumes_after_lost_lease(
         "installation_id": str(installation.id), "revision": 2, "operation": "upgrade",
     }
     assert installation.admitted_revision is None and installation.upgrade_release == release
+    assert installation.workers_release_sequence == 20
     lease, successor = uuid4(), uuid4()
     job.status, job.lease_token, job.started_at = "running", lease, now - timedelta(hours=1)
     await db_session.flush()
@@ -589,7 +591,7 @@ async def test_upgrade_drains_before_replacement_and_resumes_after_lost_lease(
     monkeypatch.setattr(enable_job, "WorkersRestProvisioner", lambda *_: provider)
     monkeypatch.setattr(enable_job, "load_workers_release", lambda: SimpleNamespace(
         digest=release, manifest=SimpleNamespace(
-            release_sequence=0,
+            release_sequence=20,
             meter_bounds=SimpleNamespace(qualification=SimpleNamespace(expected_cpu_ms={"capacity": 9})),
         ),
     ))
@@ -1443,7 +1445,18 @@ async def test_upgrade_scheduler_only_requeues_self_healing_actions(
     assert await db_session.scalar(count) == 1
     await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=now + timedelta(minutes=5))
     assert await db_session.scalar(count) == (2 if recoverable else 1)
-    if not recoverable:
+    if recoverable:
+        requeued = await db_session.scalar(select(PlatformJob).where(
+            PlatformJob.resource_id == str(installation.id), PlatformJob.id != job.id,
+        ))
+        assert requeued is not None
+        requeued.created_at = now + timedelta(minutes=5)
+        requeued.status, requeued.result, requeued.completed_at = "requires_action", {"code": code}, requeued.created_at
+        await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=now + timedelta(minutes=14))
+        assert await db_session.scalar(count) == 2
+        await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=now + timedelta(minutes=15))
+        assert await db_session.scalar(count) == 3
+    else:
         await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=now + timedelta(days=1))
         assert await db_session.scalar(count) == 1
 

@@ -463,7 +463,8 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # The optional ledger acknowledgement marker extends provider receipts.
     # Managed workflow slot caps default when omitted by an existing client.
     # Cloudflare status adds optional deployed revision and upgrade state fields.
-    "b2d770efc838014529c5bceb03b36d96fc2f7f188bb7c9a3d35db2345794588d"
+    # Cloudflare status optionally reports whether an upgrade is available.
+    "2f338a40b06a15c19f1ddf5702daa8bbb8aa66d1ff5cf024cdfd5297924c3b30"
 )
 
 

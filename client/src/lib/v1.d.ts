@@ -16652,6 +16652,11 @@ export interface components {
              */
             upgrade_pending: boolean;
             /**
+             * Upgrade Available
+             * @default false
+             */
+            upgrade_available: boolean;
+            /**
              * Desired State
              * @enum {string}
              */

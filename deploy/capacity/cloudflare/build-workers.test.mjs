@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
-import {assertMeterInventory, bundleWorker, qualifiedMeterLimits} from './build-workers.mjs';
+import {assertMeterInventory, buildWorkers, bundleWorker, qualifiedMeterLimits} from './build-workers.mjs';
+
+test('a Workers release requires a positive sequence before reading artifacts', async () => {
+  await assert.rejects(buildWorkers('unused-runtime', 'unused-output', 'a'.repeat(40), {}, 0),
+    /positive Workers release sequence/);
+});
 
 const source = new URL('../../../api/src/services/worker_pool/cloudflare_meter_bounds.json', import.meta.url);
 const qualification = () => JSON.parse(readFileSync(source, 'utf8'));
