@@ -369,6 +369,11 @@
               "capacity",
               "cloudflare",
               "rotate-bearer"
+            ],
+            [
+              "capacity",
+              "cloudflare",
+              "rotate-connector"
             ]
           ],
           "path": [
@@ -11592,7 +11597,7 @@
     }
   ],
   "counts": {
-    "cli": 198,
+    "cli": 199,
     "manifest": 16,
     "mcp": 115,
     "rest": 738,

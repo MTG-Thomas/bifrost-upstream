@@ -462,13 +462,11 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Workflow wall time and storage-clear evidence are optional capacity receipt fields.
     # The optional ledger acknowledgement marker extends provider receipts.
     # Managed workflow slot caps default when omitted by an existing client.
-    # Cloudflare status adds optional deployed revision and upgrade state fields.
-    # Cloudflare status optionally reports whether an upgrade is available.
-    # Cloudflare reconcile and upgrade accept an optional release-fence reset.
+    # Workers upgrades add optional revision and availability status and a release-fence reset.
     # Managed Tunnel fields and the connector rotation option are additive.
     # Omitted reachability still selects Existing HTTPS Endpoint.
     # Queue pre-warming is opt-in. Existing clients can omit the cap.
-    "1923bb6f6be1f73ed282bf8d92355e45d70205410b4e313391538c631323ee0e"
+    "01f4f0d2d8759e73b172ae151e3a91e2cb45a547989f567b3c3d7dde9c79184d"
 )
 
 

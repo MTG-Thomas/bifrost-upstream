@@ -246,6 +246,7 @@ OPERATION_CATALOG: tuple[OperationDefinition, ...] = (
         ),
         cli=CliOperationBinding(path=("capacity", "cloudflare", "rotate"), aliases=(
             ("capacity", "cloudflare", "rotate-root"), ("capacity", "cloudflare", "rotate-bearer"),
+            ("capacity", "cloudflare", "rotate-connector"),
         )),
         mcp=McpOperationBinding(name="bifrost_cloudflare_worker_credential_replace",
                                 aliases=("bifrost_cloudflare_account_token_replace",)),
