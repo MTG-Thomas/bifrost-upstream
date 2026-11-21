@@ -769,7 +769,10 @@ async def enqueue_cloudflare_reconcile(
     db: AsyncSession, caller: Caller, *, installation_id: UUID, expected_revision: int,
     upgrade: bool = False, reset_release_fence: bool = False,
 ) -> tuple[PlatformJob, bool]:
-    operation = "capacity.cloudflare_upgrade" if upgrade else "capacity.cloudflare_reconcile"
+    if upgrade:
+        operation = "capacity.cloudflare_upgrade"
+    else:
+        operation = "capacity.cloudflare_reconcile"
     require_operation(caller, operation, GLOBAL)
     actor = caller.principal
     installation = await db.get(CloudflareInstallation, installation_id, with_for_update=True)
