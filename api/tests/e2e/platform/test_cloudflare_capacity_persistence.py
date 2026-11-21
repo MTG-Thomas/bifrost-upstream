@@ -62,8 +62,10 @@ from src.services.authorization.context import (
     RoleGrant,
 )
 from src.services.authorization.enforce import Caller
+from src.services.execution.workflow_dispatch import release_workflow_run
 from src.services.kubernetes_execution import KubernetesExecutionService
 from src.services.work_dispatch import WAKE_WORKFLOW, stage_dispatch
+from src.services.worker_pool import claims as claim_service
 from src.services.worker_pool import (
     cloudflare_canary,
     cloudflare_spend,
@@ -71,6 +73,7 @@ from src.services.worker_pool import (
     controller,
     external_controller,
 )
+from src.services.worker_pool.claims import claim_next
 from src.services.worker_pool.cloudflare_admission import (
     ManagedCloudflareScope,
     cloudflare_claim_allowed,
@@ -98,8 +101,6 @@ from src.services.worker_pool.cloudflare_provisioning import (
     ResourceObservation,
     ResourceTarget,
 )
-from src.services.worker_pool.claims import claim_next
-from src.services.worker_pool import claims as claim_service
 from src.services.worker_pool.cloudflare_slots import (
     confirm_workflow_slot_release,
     fence_workflow_slot_send,
@@ -123,7 +124,6 @@ from src.services.worker_pool.cloudflare_workers_rest import (
     worker_owner_value,
 )
 from src.services.worker_pool.recovery import end_runs_of_lost_worker
-from src.services.execution.workflow_dispatch import release_workflow_run
 from src.worker.remote.remote_pool import ThinRemoteProcessPool
 
 OPERATOR_ID = UUID("20cb7fe5-78e2-48d7-8f1e-8edcac69ffab")
@@ -376,7 +376,7 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
     route = "/api/forms/{form_id}"
     failure = ingress_probes.CanaryFailure(
         "ingress_http", "route_timeout", address_family="ipv4", method="GET", route_template=route,
-        handshake_completed=True, connection_reused=False, exception_class="ReadTimeout",
+        handshake_completed=True, connection_reused=False, exception_class="ReadTimeout", phase="response_headers",
     )
     refused = ingress_probes.WorkerIngressProbeResult(
         installation.worker_ingress_origin, True, False, False,
@@ -439,6 +439,7 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
                 "stage": "ingress_http", "error_class": "route_timeout", "address_family": "ipv4",
                 "method": "GET", "route_template": "/api/forms/{form_id}",
                 "handshake_completed": True, "connection_reused": False, "exception_class": "ReadTimeout",
+                "phase": "response_headers",
             },
         }
         assert ingress_denied.value.phase == "Worker Ingress Probe Failed (Ingress HTTP, Route Timeout)"
@@ -1584,7 +1585,6 @@ async def test_disconnect_recovery_allows_other_revision_owner_updates_during_pr
                 ExecutionWorker.id == live_worker,
             ).with_for_update(nowait=True))
             assert locked == live_worker
-        return None
 
     try:
         async with async_session_factory() as db:

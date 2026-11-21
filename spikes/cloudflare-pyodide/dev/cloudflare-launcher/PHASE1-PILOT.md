@@ -504,6 +504,17 @@ classified those particular errors as HTTP protocol failures. The hosted
 receipts lack the underlying class and route, so either timeout phase remains
 a candidate and the original trigger is unresolved.
 
+Concurrent requests exposed an origin-cache defect. When its TTL expired,
+every request waiting behind a failed DB lookup started a new lookup under
+the same lock. Each lookup had a three-second bound, so an eight-request
+batch could produce a series of three-second waits while using the API's
+shared database pool. The listener watcher queries the same pool. A healthy
+single-request check followed by a batch during a database stall fits this
+sequence. The hosted receipts lack the timing needed to establish that this
+was the trigger. Concurrent ingress requests now await one bounded lookup
+and receive its shared result. A failed lookup returns HTTP 503 to its
+waiters and leaves the cache expired for the next independent request.
+
 The probe reads response headers and closes without consuming the body. In
 the loopback test even a keep-alive response with `Content-Length: 0` led to
 a fresh TLS handshake on the next probe. A separate test that consumed the
@@ -516,7 +527,12 @@ The local TLS-to-API qualification exercises the same batch and route shapes.
 The hosted receipts do not establish an edge or tunnel concurrency limit.
 
 Enable now reports the method, route template, address family, handshake
-completion, connection reuse, and exception class on HTTP transport failures.
+completion, connection reuse, exception class, and last HTTP transport phase.
+The phase distinguishes `tcp_connect`, `tls_handshake`, `request_write`, and
+`response_headers`. Where the exception chain exposes a socket errno, the
+receipt includes its symbolic name. TLS record failures preserve their
+sanitized OpenSSL reason. An overall deadline keeps the interrupted route
+and its last observed phase when available.
 The result keeps certificate messages, peer names, and generated path values
 out of diagnostics. Once a refusal or allowed batch fails, the probe returns
 that result before issuing further probes. The certificate, route-witness,
@@ -525,9 +541,15 @@ WebSocket, and signed runtime gates still apply.
 ### Next hosted qualification
 
 Obtain separate owner approval before provisioning or spending. After staging
-Connect with admission closed, run the following from the candidate API
-container using the origin supplied through `WORKER_INGRESS_ORIGIN`. This is
-the same public probe Enable calls. It uses the same trust store, DNS and
+Connect with admission closed, identify the platform-job execution backend
+configured to claim Enable. Run the preflight in the worker container for
+the local worker-pool backend. For the Kubernetes backend, use an approved
+qualification pod with the same platform-job pod spec and replace the job
+entrypoint with the preflight command. Match the worker image, trust store,
+service account, DNS configuration, namespace, network policy, egress and
+scheduling constraints. Run the Python below there with the origin supplied
+through `WORKER_INGRESS_ORIGIN`. It calls the same public probe as Enable,
+using that execution class's trust store, DNS and
 address-family policy, literal-IP SNI and Host headers, refusal sequence,
 eight-request batches, HTTP pool lifecycle, and unsigned WebSocket check.
 
@@ -546,6 +568,8 @@ raise SystemExit(0 if result.reachable else 1)
 PY
 ```
 
+Record `preflight_execution_class` and the observed `enable_execution_class`
+in the next hosted receipt using `worker_pool` or `kubernetes_platform_job`.
 If the preflight fails, retain the sanitized result, keep admission closed,
 and tear down the trial. If it passes, submit Enable once and retain the signed
 runtime receipt or the Enable failure details. Proceed to the approved

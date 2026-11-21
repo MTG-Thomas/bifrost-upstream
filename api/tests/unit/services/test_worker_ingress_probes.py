@@ -2,6 +2,7 @@ import asyncio
 import errno
 import socket
 import ssl
+import sys
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -125,7 +126,7 @@ async def test_allowed_route_failure_stops_after_its_batch(monkeypatch, ingress)
     routes = {("GET", template), *(("GET", f"/probe/{index}") for index in range(8))}
     monkeypatch.setattr(probes, "ROUTES", routes)
 
-    async def check(_client, _origin, _host, method, path, *, allowed, route_template):
+    async def check(_client, _origin, _host, method, path, *, allowed, route_template, progress):
         return probes.RouteProbe(method, route_template or path, 404, route_template != template)
 
     monkeypatch.setattr(probes, "_check_route", check)
@@ -205,12 +206,119 @@ async def test_classifies_failures_on_real_tls_sockets(
         "handshake_completed": handshake,
         "connection_reused": reused,
         "exception_class": exception_class,
+        "phase": "response_headers" if handshake else "tls_handshake",
     }
     if mode == "wrong_certificate":
         expected.update(tls_reason="CERTIFICATE_VERIFY_FAILED", tls_verify_code=62)
     elif mode == "handshake_close":
         expected.update(tls_reason="UNEXPECTED_EOF_WHILE_READING")
     assert route.failure.as_result() == expected
+
+
+@pytest.mark.asyncio
+async def test_tcp_refusal_reports_socket_errno(tls_contexts) -> None:
+    _, trust = tls_contexts
+    # Reserve the port without listening, so the kernel refuses the TCP connect.
+    with socket.socket() as reserved:
+        reserved.bind(("127.0.0.1", 0))
+        origin = f"https://127.0.0.1:{reserved.getsockname()[1]}"
+        async with httpx.AsyncClient(verify=trust, trust_env=False) as client:
+            route = await probes._check_route(
+                client, origin, "workers.example.test", "GET", "/api/sdk/context", allowed=True,
+            )
+
+    assert route.failure is not None
+    assert route.failure.phase == "tcp_connect"
+    assert route.failure.error_class == "connect_error"
+    expected = {"ECONNREFUSED"}
+    if sys.platform == "win32":
+        # Proactor can expose WinError 1225 as POSIX EINVAL.
+        expected.update({"EINVAL", "WSAECONNREFUSED"})
+    assert route.failure.socket_errno in expected
+    assert route.failure.handshake_completed is False
+
+
+@pytest.mark.asyncio
+async def test_request_write_deadline_reports_phase_after_tls(tls_contexts) -> None:
+    server_tls, trust = tls_contexts
+    progress = probes._ProbeProgress()
+    deadline = asyncio.timeout(None)
+
+    async def hold(reader, writer):
+        try:
+            await reader.read()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    async def expire_on_write(request: httpx.Request) -> None:
+        trace = request.extensions["trace"]
+
+        async def expire(event, info):
+            await trace(event, info)
+            if event == "http11.send_request_headers.started":
+                deadline.reschedule(asyncio.get_running_loop().time())
+                await asyncio.sleep(0)
+
+        request.extensions["trace"] = expire
+
+    server = await asyncio.start_server(hold, "127.0.0.1", 0, ssl=server_tls)
+    async with server:
+        origin = f"https://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+        async with httpx.AsyncClient(
+            verify=trust, trust_env=False, event_hooks={"request": [expire_on_write]},
+        ) as client:
+            with pytest.raises(TimeoutError):
+                async with deadline:
+                    await probes._check_route(
+                        client, origin, "workers.example.test", "POST", "/api/sdk/context",
+                        allowed=True, progress=progress,
+                    )
+
+    assert progress.latest_failure is not None
+    assert progress.latest_failure.phase == "request_write"
+    assert progress.latest_failure.handshake_completed is True
+
+
+@pytest.mark.asyncio
+async def test_public_probe_deadline_retains_inflight_route(tls_contexts, monkeypatch) -> None:
+    server_tls, trust = tls_contexts
+    served = asyncio.Event()
+
+    async def hold(reader, writer):
+        try:
+            await reader.readuntil(b"\r\n\r\n")
+            await reader.read()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            served.set()
+
+    server = await asyncio.start_server(hold, "127.0.0.1", 0, ssl=server_tls)
+    async with server:
+        port = server.sockets[0].getsockname()[1]
+        probe_address = probes._probe_address
+
+        async def loopback(origin, host, address, *, progress):
+            return await probe_address(origin, host, address, port, trust=trust, progress=progress)
+
+        monkeypatch.setattr(probes, "_probe_address", loopback)
+        monkeypatch.setattr(probes, "_public_addresses", AsyncMock(return_value=("127.0.0.1",)))
+        monkeypatch.setattr(probes, "_PROBE_DEADLINE_SECONDS", 1)
+        result = await probes.probe_public_worker_ingress(ORIGIN)
+        await served.wait()
+
+    assert result.tls and not result.reachable
+    assert result.failure.as_result() == {
+        "stage": "ingress_http",
+        "error_class": "probe_deadline",
+        "address_family": "ipv4",
+        "method": "GET",
+        "route_template": "/api/sdk/context",
+        "handshake_completed": True,
+        "connection_reused": False,
+        "phase": "response_headers",
+    }
 
 
 @pytest.mark.asyncio
@@ -249,6 +357,8 @@ async def test_tls_record_error_after_handshake_keeps_route_diagnostics(tls_cont
         "handshake_completed": True,
         "connection_reused": False,
         "exception_class": "SSLError",
+        "phase": "response_headers",
+        "tls_reason": "WRONG_VERSION_NUMBER",
     }
 
 
@@ -315,6 +425,7 @@ async def test_reachable_family_requires_all_addresses(ingress, transport, cause
         "handshake_completed": False,
         "connection_reused": False,
         "exception_class": "SSLEOFError" if kind == "tls_error" else transport.__name__,
+        **({"socket_errno": errno.errorcode[cause.errno]} if isinstance(cause, OSError) and cause.errno else {}),
     }
     canary.assert_not_awaited()
 
@@ -352,6 +463,7 @@ async def test_http_probe_reports_failed_response_witness(status, marker, reason
         "route_template": "/api/sdk/context",
         "handshake_completed": True,
         "connection_reused": False,
+        "phase": "response_headers",
     }
 
 

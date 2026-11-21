@@ -120,8 +120,8 @@ async def test_worker_ingress_over_tls(
                 assert host == _HOST
                 return ("127.0.0.1",)
 
-            async def use_test_proxy(probed_origin, host, address):
-                return await probe_address(probed_origin, host, address, port, trust=trust)
+            async def use_test_proxy(probed_origin, host, address, *, progress):
+                return await probe_address(probed_origin, host, address, port, trust=trust, progress=progress)
 
             monkeypatch.setattr(probes, "_public_addresses", resolve_test_host)
             monkeypatch.setattr(probes, "_probe_address", use_test_proxy)
@@ -237,6 +237,7 @@ async def test_worker_ingress_over_tls(
                 "handshake_completed": False,
                 "connection_reused": False,
                 "exception_class": "SSLCertVerificationError",
+                "phase": "tls_handshake",
             }
             # Confirm the probe rejects a proxy that accidentally targets the unrestricted API.
             upstream_port = api.port
