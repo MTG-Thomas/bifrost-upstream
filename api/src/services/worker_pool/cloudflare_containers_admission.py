@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from shared.models import CloudflareCapacityPolicy
-from sqlalchemy import func, select, text
+from sqlalchemy import String, cast, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.contracts.cloudflare_approval import SolutionApprovalScope
@@ -255,16 +255,19 @@ async def reserve_container(
     if len(demand) < containers.queue_depth:
         return None
     dispatch, execution, approval = demand[0]
-    if seats.occupied.total() == policy.workers.installation_slots - 1 and await db.scalar(select(
-        select(WorkDispatch.id).join(Execution, Execution.id == WorkDispatch.subject_id).where(
+    if seats.occupied.total() == policy.workers.installation_slots - 1:
+        older_workers = await db.scalars(select(WorkDispatch.memory_request_bytes).join(
+            Execution, Execution.id == WorkDispatch.subject_id,
+        ).where(
             cloudflare_dispatch_sql(), WorkDispatch.assigned_worker_id.is_(None),
             Execution.status == ExecutionStatus.PENDING,
             Execution.organization_id.is_distinct_from(execution.organization_id),
+            func.coalesce(cast(Execution.organization_id, String), tenant_key(None)).not_in(seats.blocked_tenants),
             (WorkDispatch.created_at < dispatch.created_at)
             | ((WorkDispatch.created_at == dispatch.created_at) & (WorkDispatch.id < dispatch.id)),
-        ).exists()
-    )):
-        return None
+        ))
+        if any(primary_has_no_fit(primary, linux_workers, now, size) for size in older_workers):
+            return None
     # The primary can claim during planning. Lock the selected dispatch before
     # creating the reservation and decline if a claimant already consumed it.
     if await db.scalar(select(WorkDispatch.id).where(
