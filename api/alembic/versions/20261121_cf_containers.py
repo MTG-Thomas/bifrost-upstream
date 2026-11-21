@@ -12,7 +12,7 @@ depends_on = None
 
 def upgrade() -> None:
     op.add_column("cloudflare_installations", sa.Column(
-        "containers_policy", JSONB(), nullable=False, server_default=sa.text(
+        "containers_policy", JSONB(), nullable=False, server_default=sa.literal_column(
             """'{"enabled":false,"instance_type":"standard-1","installation_instances":2,
                  "tenant_instances":1,"workflow_slots":1,"idle_seconds":120}'::jsonb"""
         ),

@@ -17,6 +17,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    literal_column,
     text,
     true,
 )
@@ -97,7 +98,7 @@ class CloudflareInstallation(Base):
     consent_actor: Mapped[str] = mapped_column(String(255))
     consent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     policy: Mapped[dict[str, Any]] = mapped_column(JSONB)
-    containers_policy: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text(
+    containers_policy: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=literal_column(
         """'{"enabled":false,"instance_type":"standard-1","installation_instances":2,
              "tenant_instances":1,"workflow_slots":1,"idle_seconds":120}'::jsonb"""
     ))
