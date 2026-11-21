@@ -505,6 +505,8 @@ class Launcher:
                 work.put_nowait((child.execution_id, context))
                 response["pid"] = pid
             elif action in ("agent_run", "agent_summary"):
+                agent_template = self.agent_template
+                assert agent_template is not None  # Container launchers reject agent work above.
                 handler = "agent.run" if action == "agent_run" else payload["handler"]
                 if handler not in ("agent.run", "agent.summarize", "agent.summarize_backfill"):
                     raise ValueError("Unknown agent handler")
@@ -523,7 +525,7 @@ class Launcher:
                     if generation != self.session_generation:
                         return
                     pid, work, result = await asyncio.to_thread(
-                        self.agent_template.fork, worker_id=route_id
+                        agent_template.fork, worker_id=route_id
                     )
                 child = Child(route_id, str(payload["run_id"]), pid, work, result,
                               time.monotonic(), 0,
