@@ -122,6 +122,7 @@ from src.services.worker_pool.cloudflare_workers_rest import (
     WorkersRestCleanup,
     worker_owner_value,
 )
+from src.services.worker_pool.recovery import end_runs_of_lost_worker
 
 OPERATOR_ID = UUID("20cb7fe5-78e2-48d7-8f1e-8edcac69ffab")
 TEST_LAUNCHER_CAPS = {"sqlite_rows_written": 100, "do_requests": 20, "log_events": 5}
@@ -1058,6 +1059,11 @@ async def test_supervisor_reserves_and_retires_without_restarting(
         await sweep()
         assert writes == ["PUT", "POST"]
         owned = tuple(controllers.values())
+        worker_id = UUID(next(iter(resources)))
+        db_session.add(CloudflareWorkflowSlot(
+            installation_id=installation.id, tenant="platform", ordinal=0, worker_id=worker_id,
+            execution_id=uuid4(), dispatch_id=uuid4(), fence=uuid4(), sent=True,
+        ))
         installation.desired_state = "scaled_in"
         installation.admitted_revision = None
         installation.desired_revision = 2
@@ -1072,11 +1078,13 @@ async def test_supervisor_reserves_and_retires_without_restarting(
         await sweep()
         assert tuple(controllers.values()) == owned
         assert writes == ["PUT", "POST", "DELETE"]
-        worker_id = UUID(next(iter(resources)))
         worker = await db_session.get(ExecutionWorker, worker_id)
         assert worker is not None
         await db_session.refresh(worker)
         assert worker.capacity_resource_deleted_at is not None
+        assert await db_session.scalar(select(CloudflareWorkflowSlot.fence).where(
+            CloudflareWorkflowSlot.worker_id == worker_id,
+        )) is None
 
 
 @pytest.fixture
@@ -1143,7 +1151,7 @@ async def test_usage_envelope_migration_preserves_saved_policy(
 
 @pytest.mark.asyncio
 async def test_workflow_slots_hold_headroom_and_serialize_different_tenants(async_session_factory) -> None:
-    workers = [uuid4(), uuid4()]
+    workers = [uuid4(), uuid4(), uuid4()]
     tenants = [uuid4(), uuid4()]
     runs = [uuid4() for _ in range(7)]
     budget = 512 * 2**20
@@ -1199,7 +1207,10 @@ async def test_workflow_slots_hold_headroom_and_serialize_different_tenants(asyn
             await barrier.wait()
             return await claim_next(worker, fits_bytes=budget, budget_bytes=budget)
 
-        winners = [claim for claim in await asyncio.gather(*(compete(worker) for worker in workers)) if claim is not None]
+        winners = [
+            claim for claim in await asyncio.gather(*(compete(worker) for worker in workers[:2]))
+            if claim is not None
+        ]
         assert len(winners) == 1
         assert winners[0].tenant_id in tenants
         async with async_session_factory() as db:
@@ -1221,7 +1232,7 @@ async def test_workflow_slots_hold_headroom_and_serialize_different_tenants(asyn
                 remote_owner_lease_expires_at=now - timedelta(seconds=1),
             ))
             await db.commit()
-        reused = await claim_next(workers[1], fits_bytes=budget, budget_bytes=budget)
+        reused = await claim_next(workers[2], fits_bytes=budget, budget_bytes=budget)
         assert reused is not None and reused.subject_id == runs[4]
         assert reused.workflow_slot is not None and reused.workflow_slot.ordinal == 0
         async with async_session_factory() as db:
@@ -1231,6 +1242,16 @@ async def test_workflow_slots_hold_headroom_and_serialize_different_tenants(asyn
             assert await db.scalar(select(CloudflareWorkflowSlot.fence).where(
                 CloudflareWorkflowSlot.fence == fourth.fence,
             )) is None
+            await db.execute(update(ExecutionWorker).where(ExecutionWorker.id.in_([workers[0], workers[2]])).values(
+                state="lost",
+            ))
+            await end_runs_of_lost_worker(db, workers[0])
+            await end_runs_of_lost_worker(db, workers[2])
+            remaining = set(await db.scalars(select(CloudflareWorkflowSlot.fence).where(
+                CloudflareWorkflowSlot.worker_id.in_([workers[0], workers[2]]),
+                CloudflareWorkflowSlot.released_at.is_(None),
+            )))
+            assert remaining == {third.fence}
     finally:
         async with async_session_factory() as db:
             await db.execute(delete(WorkDispatch).where(WorkDispatch.subject_id.in_(runs)))

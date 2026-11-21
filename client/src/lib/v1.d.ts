@@ -16764,6 +16764,16 @@ export interface components {
             launcher_cap: number;
             /** Slots Per Launcher */
             slots_per_launcher: number;
+            /**
+             * Slots Per Tenant
+             * @default 4
+             */
+            slots_per_tenant: number;
+            /**
+             * Installation Slots
+             * @default 9
+             */
+            installation_slots: number;
             /** Max Lifetime Seconds */
             max_lifetime_seconds: number;
             /**
