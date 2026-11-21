@@ -1,5 +1,6 @@
 import {DurableObject} from 'cloudflare:workers';
 import {createLauncherWorkflowRunner, launcherTenantId} from '../tenant-workers/launcher-host.mjs';
+import {tenantLingerMs} from '../tenant-workers/tenant-dispatch.mjs';
 import {LauncherCore} from './launcher-core.mjs';
 import {runAgentLoop} from './agent-loop.mjs';
 import {agentStreamEvents} from './agent-provider.mjs';
@@ -122,6 +123,7 @@ export class CloudflareLauncher extends DurableObject {
   }
 
   #initialize(settings) {
+    tenantLingerMs(this.env);
     this.#settings = settings;
     this.#meter?.setSlots(settings.slots);
     const getHost = (id) => {
@@ -241,6 +243,9 @@ export class CloudflareLauncher extends DurableObject {
         receipt: this.env.BIFROST_METER_RECEIPTS === 'true',
         ...(this.env.BIFROST_METER_GENERATIONS === 'true' ? {reserveIdentity} : {}),
       }),
+      prepareHost: ({reserveIdentity, ...input}) => runWorkflow.prepare({
+          ...input, ...(this.env.BIFROST_METER_GENERATIONS === 'true' ? {reserveIdentity} : {}),
+        }),
       stopHost: async (route) => getHost(await launcherTenantId(route)).stopWorkflow(route.route_id),
       background: (task) => this.#observe(this.#connection, task),
     });

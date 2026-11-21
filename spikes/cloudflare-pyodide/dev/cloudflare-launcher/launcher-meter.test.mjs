@@ -14,14 +14,20 @@ test('the sealed route receipt stays bounded across meter reloads', (t) => {
       statement.run(...args);
     },
   };
-  const caps = JSON.stringify({sqlite_rows_written: SQLITE_HEADROOM + 200, do_requests: 1000, log_events: 10});
+  const caps = JSON.stringify({sqlite_rows_written: SQLITE_HEADROOM + 300, do_requests: 1000, log_events: 10});
   const meter = launcherMeter(sql, caps, {settle: true});
   const invocation = {identity: 'fixture', kind: 'workflow', cold: true, started_at: '2026-11-20T23:59:00Z'};
-  for (let route = 0; route < 128; route++) meter.recordRoute(`route-${route}`, [invocation]);
+  for (let route = 0; route < 128; route++) {
+    meter.recordRoute(`prepare:${route}`, []);
+    meter.recordRoute(`route-${route}`, [invocation]);
+  }
   const reloaded = launcherMeter(sql, caps, {settle: true});
   reloaded.recordRoute('route-128', [invocation]);
+  reloaded.recordRoute('prepare:128', []);
   const {routes} = reloaded.seal();
-  assert.equal(Object.keys(routes).length, 128);
+  assert.equal(Object.keys(routes).length, 256);
+  assert.deepEqual(routes['prepare:0'], []);
+  assert.equal(routes['prepare:128'], undefined);
   assert.deepEqual(routes['route-0'], [invocation]);
   assert.equal(routes['route-128'], undefined);
 });

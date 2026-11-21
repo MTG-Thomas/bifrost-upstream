@@ -24,6 +24,74 @@ test('warm-up retries use the same API deadline and approved snapshot', async ()
   assert.deepEqual(result, {attempt_state: 'completed', result: {success: true, status: 'Success', result: 42}});
 });
 
+test('an arriving workflow joins its pending preparation and receipts count the boot once', async () => {
+  const ping = Promise.withResolvers();
+  const started = Promise.withResolvers();
+  const refused = Promise.withResolvers();
+  const boot = {kind: 'boot', cold: true};
+  const workflow = {kind: 'workflow', cold: false};
+  let warmCalls = 0;
+  let ready = false;
+  const run = createLauncherWorkflowRunner(() => ({
+    async warm(input) {
+      warmCalls++;
+      assert.equal(input.admission, true);
+      started.resolve();
+      await ping.promise;
+      ready = true;
+      return {invocation: boot};
+    },
+    async run() {
+      if (ready) return {invocation: workflow, output: {status: 'Success'}};
+      refused.resolve();
+      return {needsWarm: true};
+    },
+  }));
+  const signal = new AbortController().signal;
+  const preparation = run.prepare({orgId: 'org', executionId: 'subject', signal});
+  await started.promise;
+  const execution = run({route, context: {}, signal, now: () => START, receipt: true});
+  await refused.promise;
+  ping.resolve();
+  assert.deepEqual(await preparation, [boot]);
+  assert.deepEqual((await execution).invocations, [workflow]);
+  assert.equal(warmCalls, 1);
+});
+
+test('a joined preparation can lose readiness before the workflow enters', async () => {
+  const opened = Promise.withResolvers();
+  const prepared = Promise.withResolvers();
+  const firstRefused = Promise.withResolvers();
+  let ready = false;
+  const calls = [];
+  const run = createLauncherWorkflowRunner(() => ({
+    async warm(input) {
+      if (input.admission) {
+        opened.resolve();
+        await prepared.promise;
+        return {reused: true};
+      }
+      calls.push('warm');
+      ready = true;
+      return {};
+    },
+    async run() {
+      calls.push('run');
+      firstRefused.resolve();
+      return ready ? {output: {status: 'Success'}} : {needsWarm: true};
+    },
+  }));
+  const signal = new AbortController().signal;
+  const hint = run.prepare({orgId: 'org', executionId: 'subject', signal});
+  await opened.promise;
+  const execution = run({route, context: {}, signal, now: () => START});
+  await firstRefused.promise;
+  prepared.resolve();
+  assert.deepEqual(await hint, []);
+  assert.equal((await execution).attempt_state, 'completed');
+  assert.deepEqual(calls, ['run', 'run', 'warm', 'run']);
+});
+
 test('a budget refusal before the host RPC is definitively not_started', async () => {
   const budget = Object.assign(new Error('refused before RPC'), {
     name: 'CloudflareLauncherMeterLimitExceeded', attemptState: 'not_started',

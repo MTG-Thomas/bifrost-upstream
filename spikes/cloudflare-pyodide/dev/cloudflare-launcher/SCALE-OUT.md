@@ -54,13 +54,15 @@ Set `QUALIFIED_WORKERS_METER_BOUNDS` to the exact JSON in `api/src/services/work
 
 The Phase 1 calibration applies a 10× margin to measured CPU and gateway
 requests. The package sets separate CPU limits for the capacity Worker,
-private gateway, warm priming, and idle exercise. Cold boot and the
+private gateway and warm priming. Cold boot and the
 launcher/DO script retain the 30,000 ms ceiling. Execution honors each
 approval up to that ceiling. Admission reserves 48,522 ms per possible
 Dynamic Worker startup. Verified launcher receipts settle observed
-foreground starts at the expected 4,852.122 ms per load (measured p99 × 1), including reloads
-under an existing identity. Startup CPU is unenforced. Missing evidence
-and detached keep-warm alarms keep their full reservations. [Measured release calibration](PHASE1-USAGE.md#measured-release-calibration)
+starts at the expected 4,852.122 ms per load (measured p99 × 1), including reloads
+under an existing identity and admission boots whose dispatch was abandoned.
+Startup CPU is unenforced. Missing evidence keeps its full reservation.
+The Workers policy sets a 0–300 second engine linger, default 90 seconds, with
+no idle pings. [Measured release calibration](PHASE1-USAGE.md#measured-release-calibration)
 
 **Deploy path decision.** Choose REST/OCI if the packaged runner proves the complete lifecycle through documented interfaces or standard registry operations, including retry after lost responses, least-privilege permissions and exact cleanup. If a necessary lifecycle operation fails that gate or has no supported direct operation (image tag deletion is a specific candidate), qualify a pinned `cf` client inside the trusted runner as the deliberate deployment path. Include any required pinned build adapter in the runner image and use the same immutable artifacts and resource inventory. Require structured outputs/readback, protected token injection, tool provenance, exact resource fences, explicit app creation and cleanup. Keep one deployment adapter per qualified release/scope. A failed or ambiguous mutation never triggers an automatic switch of adapters. Keep a scope gated if neither path passes. `cf` implements managed registry tag listing/deletion independently of Wrangler. [cf registry implementation](https://github.com/cloudflare/cf/blob/main/CLAUDE.md) · [Wrangler image commands](https://developers.cloudflare.com/workers/wrangler/commands/containers/)
 

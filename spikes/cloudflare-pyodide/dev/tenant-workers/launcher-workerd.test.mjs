@@ -118,17 +118,6 @@ const main = `
         delete this.env.BIFROST_METER_RECEIPTS;
       }
     }
-    async warmWithCommitFailure(input) {
-      const storage = this.ctx.storage;
-      Object.defineProperty(storage, 'sync', {configurable: true, value() {
-        throw new Error('injected warm-state commit failure');
-      }});
-      try {
-        return await super.warm(input);
-      } finally {
-        delete storage.sync;
-      }
-    }
     #started = new Map();
     #signal(id) {
       if (!this.#started.has(id)) this.#started.set(id, Promise.withResolvers());
@@ -159,22 +148,41 @@ const main = `
         this.env.LOADER = loader;
       }
     }
-    async runManagedAlarm(success) {
-      this.env.BIFROST_CLOUDFLARE_MANAGED = 'true';
-      const loader = this.env.LOADER;
-      let loads = 0;
-      this.env.LOADER = {get(...args) { loads++; return loader.get(...args); }};
-      await this.ctx.storage.deleteAlarm();
-      if (success) await this.ctx.storage.put('prime', {engine: 'test-engine', modules: ['exercise_success']});
+    async runAfterLinger(input, elapsed) {
+      const now = Date.now;
+      const start = now();
+      Date.now = () => now() + elapsed;
       try {
-        await super.alarm();
-      } catch (error) {
-        return {error: error.message, alarm: await this.ctx.storage.getAlarm(), loads};
+        return {result: await super.run({...input, workflowDeadline: new Date(start + elapsed + 20_000).toISOString()}),
+          alarm: await this.ctx.storage.getAlarm()};
       } finally {
-        this.env.LOADER = loader;
-        delete this.env.BIFROST_CLOUDFLARE_MANAGED;
+        Date.now = now;
       }
-      return {alarm: await this.ctx.storage.getAlarm(), loads};
+    }
+    async runWithoutLinger(input, next) {
+      this.env.BIFROST_TENANT_LINGER_SECONDS = '0';
+      try {
+        await super.warm({tenantId: input.tenantId, admission: true, executionId: input.executionId});
+        const unrelated = await super.run(next);
+        const prepared = await super.run(input);
+        return {unrelated, prepared: prepared.attempt_state, subsequent: await super.run(next)};
+      } finally {
+        this.env.BIFROST_TENANT_LINGER_SECONDS = '90';
+      }
+    }
+    async clearLegacyAlarm(tenantId) {
+      await this.ctx.storage.put({tenantId, lastAttempt: Date.now()});
+      await this.ctx.storage.setAlarm(Date.now() + 60_000);
+      await super.alarm();
+      return {alarm: await this.ctx.storage.getAlarm(), keys: [...(await this.ctx.storage.list()).keys()]};
+    }
+    async warmWithoutLingerBinding(tenantId) {
+      delete this.env.BIFROST_TENANT_LINGER_SECONDS;
+      try {
+        return await super.warm({tenantId});
+      } finally {
+        this.env.BIFROST_TENANT_LINGER_SECONDS = '90';
+      }
     }
     async runWithoutReleaseBinding({binding, route}) {
       const value = this.env[binding];
@@ -202,11 +210,13 @@ const main = `
       if (action === 'run') return Response.json(await host.run(input));
       if (action === 'cpu-witness') return Response.json(await host.withCpuWitness(
         input.action, input.action === 'run' ? input.payload : {tenantId}));
-      if (action === 'managed-alarm') return Response.json(await host.runManagedAlarm(input?.success));
+      if (action === 'run-after-linger') return Response.json(await host.runAfterLinger(input.route, input.elapsed));
+      if (action === 'run-without-linger') return Response.json(await host.runWithoutLinger(input.route, input.next));
+      if (action === 'legacy-alarm') return Response.json(await host.clearLegacyAlarm(tenantId));
+      if (action === 'missing-linger') return Response.json(await host.warmWithoutLingerBinding(tenantId));
       if (action === 'missing-meter') return Response.json(await host.runWithoutReleaseBinding(input));
       if (action === 'warm') return Response.json(await host.warm({tenantId, ...input}));
       if (action === 'metered-warm') return Response.json(await host.meteredWarm(tenantId));
-      if (action === 'warm-commit-failure') return Response.json(await host.warmWithCommitFailure({tenantId, ...input}));
       if (action === 'exercise') return Response.json(await host.exercise({tenantId}));
       if (action === 'prime-held-ping') await host.primeHeldPing();
       if (action === 'wait') await host.waitForRun(input);
@@ -255,6 +265,7 @@ async function startWorkerd() {
         BIFROST_WORKER_INCARNATION_ID: incarnation, BIFROST_WORKER_LAUNCHER_ID: launcher,
         BIFROST_WORKER_RESOURCE_UID: 'test:do', BIFROST_WORKER_VERSION: 'test-build',
         API_ORIGIN: 'https://test-api.invalid',
+        BIFROST_TENANT_LINGER_SECONDS: '90',
       }).map(([key, value]) => [key, {type: 'text', value}]).concat([
         ['SUMMARY_PROVIDER', {type: 'worker', worker: 'summary', exportName: 'SummaryProvider'}],
       ])),
@@ -365,6 +376,7 @@ async function startWorkerd() {
       name: 'tenant', compatibilityDate,
       exports: {TenantHost: {type: 'durable-object', storage: 'sqlite'}, TenantApi: {type: 'worker'}},
       env: {LOADER: {type: 'worker-loader'}, API_ORIGIN: {type: 'text', value: 'https://upstream.invalid'},
+        BIFROST_TENANT_LINGER_SECONDS: {type: 'text', value: '90'},
         BIFROST_METER_SDK_REQUESTS: {type: 'text', value: '3'},
         BIFROST_METER_ENGINE_CPU_MS: {type: 'text', value: '125'},
         BIFROST_METER_BOOT_CPU_MS: {type: 'text', value: '120'},
@@ -511,7 +523,7 @@ test('workerd launcher uses named summary RPC and terminate cancels the outbound
   assert.ok(!JSON.stringify(terminal).includes('workerd-stub-key'));
   assert.deepEqual(await signHello(secret, hello.hello), hello.hello);
   assert.deepEqual(inventory, {kind: 'event', sequence: 1, session_generation: 1,
-    payload: {event: 'inventory', inventory: {version: 1, routes: [], terminal_routes: []}}});
+    payload: {event: 'inventory', inventory: {version: 1, routes: [], terminal_routes: [], admission_prepare: true}}});
 });
 
 test('opaque route can carry a credential-free conditional model catalog read', async () => {
@@ -554,27 +566,33 @@ test('workerd runs distinct tenants on their own children at the same time', {ti
   assert.deepEqual((await Promise.all(runs)).map(({attempt_state}) => attempt_state), ['completed', 'completed']);
 });
 
-test('launcher warm-up finishes while the origin health request is still held', {timeout: 10_000}, async (t) => {
-  const origin = {entered: Promise.withResolvers(), release: Promise.withResolvers()};
-  nextOrigin = origin;
-  const abort = new Promise((_, reject) =>
-    t.signal.addEventListener('abort', () => reject(t.signal.reason), {once: true}));
-  const warm = host('slow-origin', 'warm', {engineOnly: true}, t.signal);
-  try {
-    await Promise.race([origin.entered.promise, abort]);
-    const result = await warm;
-    assert.ok(Number.isFinite(result.child_ms));
-    assert.equal(result.origin_status, undefined);
-  } finally {
-    origin.release.resolve();
-    nextOrigin = undefined;
-  }
+for (const mode of ['admission', 'engineOnly']) {
+  test(`${mode} warm-up finishes while the origin health request is still held`, {timeout: 10_000}, async (t) => {
+    const origin = {entered: Promise.withResolvers(), release: Promise.withResolvers()};
+    nextOrigin = origin;
+    const abort = new Promise((_, reject) =>
+      t.signal.addEventListener('abort', () => reject(t.signal.reason), {once: true}));
+    const warm = host(`slow-origin-${mode}`, 'warm', {[mode]: true}, t.signal);
+    try {
+      await Promise.race([origin.entered.promise, abort]);
+      const result = await warm;
+      assert.ok(Number.isFinite(result.child_ms));
+      assert.equal(result.origin_status, undefined);
+    } finally {
+      origin.release.resolve();
+      nextOrigin = undefined;
+    }
+  });
+}
+
+test('an old keep-warm alarm clears its metadata without fetching the origin', async () => {
+  const before = origins.length;
+  assert.deepEqual(await host('legacy-alarm', 'legacy-alarm'), {alarm: null, keys: []});
+  assert.equal(origins.length, before);
 });
 
-test('launcher warm-up rejects when warm state cannot commit after a successful ping', async () => {
-  const tenant = 'warm-commit-failure';
-  await assert.rejects(host(tenant, 'warm-commit-failure', {engineOnly: true}), /injected warm-state commit failure/);
-  assert.equal((await host(tenant, 'warm', {engineOnly: true})).first_request, false);
+test('a missing linger binding refuses warm-up', async () => {
+  await assert.rejects(host('missing-linger', 'missing-linger'), /BIFROST_TENANT_LINGER_SECONDS must be set/);
 });
 
 test('a failed exercise retires the child before the next workflow can enter', async () => {
@@ -748,21 +766,25 @@ test('boot, warm priming and exercise pass separate CPU limits to WorkerLoader',
   assert.deepEqual(exercise, {limit: 30, error: 'Tenant engine ping failed'});
 });
 
-test('a failed managed keep-warm alarm does not attempt a new engine generation', async () => {
-  const tenant = 'idle-generation-measurement';
-  assert.equal((await host(tenant, 'warm')).first_request, true);
-  assert.deepEqual(await host(tenant, 'managed-alarm'), {error: 'Tenant engine ping failed', alarm: null, loads: 1});
-  assert.deepEqual(await host(tenant, 'managed-alarm'), {alarm: null, loads: 0});
-  assert.deepEqual(await host(tenant, 'run', route(tenant)), {needsWarm: true, attempt_state: 'not_started'});
+test('admission reuses a ready child without a ping and linger expiry schedules no work', async () => {
+  const tenant = 'admission-linger';
+  assert.equal((await host(tenant, 'warm', {admission: true})).first_request, true);
+  const input = route(tenant);
+  assert.equal((await host(tenant, 'run', input)).attempt_state, 'completed');
+  assert.deepEqual(await host(tenant, 'warm', {admission: true}), {reused: true});
+  assert.deepEqual(await host(tenant, 'run-after-linger', {route: input, elapsed: 91_000}), {
+    result: {needsWarm: true, attempt_state: 'not_started'}, alarm: null,
+  });
 });
 
-test('a successful managed keep-warm exercise rearms without changing the engine', async () => {
-  const tenant = 'managed-alarm-success';
-  assert.equal((await host(tenant, 'warm')).first_request, true);
-  const witness = await host(tenant, 'managed-alarm', {success: true});
-  assert.equal(witness.loads, 1);
-  assert.ok(witness.alarm > Date.now());
-  assert.equal((await host(tenant, 'warm')).first_request, false);
+test('zero linger hands off a preparation only to its own execution', async () => {
+  const tenant = 'zero-linger';
+  const cold = {needsWarm: true, attempt_state: 'not_started'};
+  const input = route(tenant, {routeId: 'prepared'});
+  const next = route(tenant, {routeId: 'unrelated'});
+  assert.deepEqual(await host(tenant, 'run-without-linger', {route: input, next}), {
+    unrelated: cold, prepared: 'completed', subsequent: cold,
+  });
 });
 
 test('TenantHost keeps a large valid child result intact over workerd RPC', async () => {

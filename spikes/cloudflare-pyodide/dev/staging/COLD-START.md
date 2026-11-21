@@ -182,6 +182,55 @@ node backend/verify-sdk-close.mjs
 node backend/verify-staged-runtime-execution.mjs
 ```
 
+## Admission boot and short linger
+
+CT128, Node 26.13.1, Wrangler 4.156.0, local Miniflare/workerd. The test
+compared baseline `8d08546f9` with `108f373d6`. Both used the same packaged
+Python runtime (SHA-256
+`7582fa1c11e36129adf78db7a06160eb2e55b58df17c5ec1ab8d28eb0cafb6ad`).
+The launcher completed its signed hello before timing began, as it does
+before a production claim. A loopback control peer applied the real launcher
+protocol and acknowledged each terminal. Both variants simulated one second
+of API-side preparation before the workflow command. The candidate sent the
+admission hint at the start of that interval. The workflow made a real SDK
+tables request to the loopback fixture and returned the count.
+
+Timing starts at simulated claim admission and ends at the first launcher
+result. Each cold trial used a new tenant, with execution order alternating
+per pair. The candidate repeated the workflow immediately on each of its
+tenants, inside the default 90-second linger. The measured interval includes
+the one-second preparation fixture in every sample.
+
+| Trial | Samples | Median | Min–max |
+| --- | ---: | ---: | ---: |
+| Baseline cold | 8 | 4,170 ms | 3,962–5,439 ms |
+| Admission boot cold | 8 | 3,166.5 ms | 3,057–3,915 ms |
+| Admission boot, burst reuse | 8 | 1,013 ms | 1,012–1,025 ms |
+
+The median cold time fell 24.1%, with a median paired reduction of 1,012 ms.
+All eight burst runs reused the child and required no new loader identity
+authorization. A separate workerd test advanced the clock past the linger
+deadline and observed the host require a fresh confirmation with no alarm
+scheduled. Linger is a readiness window. Workerd controls physical cache
+eviction and can evict an idle isolate sooner.
+
+Run the same comparison as
+`node spikes/cloudflare-pyodide/dev/e2e/admission-latency.mjs <baseline-spike-dir> <generated-runtime.mjs>`
+from a disposable candidate checkout with its Wrangler dependencies installed.
+The loopback peer emulates the API generation grant. It does not measure
+PostgreSQL claim latency, API-side token minting, hosted network latency,
+provider eviction or the invoice. The actual gain depends on how much real
+preparation overlaps startup.
+
+For a hosted follow-up, use one disposable launcher per version and eight
+interleaved fresh-tenant pairs. Include one candidate burst per pair, one
+cancelled preparation and one probe after linger expiry. Keep the run to 15
+minutes and require a pre-approved USD 1 incremental spend target. Capture
+claim, prep completion, command send and first-result timestamps, then verify
+the terminal/deletion receipts, identity deduplication and zero idle alarms.
+Stop on the first ownership or spend anomaly and verify both deployments
+were deleted. This hosted follow-up was not run.
+
 ## Hosted validation proposal
 
 With separate deployment approval, create two disposable supervisors on an

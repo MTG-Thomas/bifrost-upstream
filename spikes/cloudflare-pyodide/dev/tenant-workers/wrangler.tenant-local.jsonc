@@ -8,6 +8,6 @@
   "main": "tenant-entry.mjs",
   "compatibility_date": "2026-10-30",
   "worker_loaders": [{"binding": "LOADER"}],
-  "vars": {"LOCAL_PROBE": "true"},
+  "vars": {"LOCAL_PROBE": "true", "BIFROST_TENANT_LINGER_SECONDS": "90"},
   "observability": {"enabled": false}
 }

@@ -16766,6 +16766,12 @@ export interface components {
             slots_per_launcher: number;
             /** Max Lifetime Seconds */
             max_lifetime_seconds: number;
+            /**
+             * Linger Seconds
+             * @description Tenant engine reuse window after a workflow.
+             * @default 90
+             */
+            linger_seconds: number;
             /** Work Kinds */
             work_kinds: "workflow"[];
         };

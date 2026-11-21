@@ -18,6 +18,7 @@
   ],
   "vars": {
     "LOCAL_PROBE": "true",
+    "BIFROST_TENANT_LINGER_SECONDS": "90",
     "API_ORIGIN": "https://bifrost-stage.midtowntg.com"
   },
   "observability": {"enabled": false}

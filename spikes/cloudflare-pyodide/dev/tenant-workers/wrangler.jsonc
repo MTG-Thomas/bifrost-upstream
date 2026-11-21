@@ -7,7 +7,7 @@
   "main": "tenant-entry.mjs",
   "compatibility_date": "2026-10-30",
   "worker_loaders": [{"binding": "LOADER"}],
-  "vars": {"SPIKE_EXPIRES_AT": "1794563405678"},
+  "vars": {"SPIKE_EXPIRES_AT": "1794563405678", "BIFROST_TENANT_LINGER_SECONDS": "90"},
   "workers_dev": true,
   "preview_urls": false,
   "observability": {"enabled": false}

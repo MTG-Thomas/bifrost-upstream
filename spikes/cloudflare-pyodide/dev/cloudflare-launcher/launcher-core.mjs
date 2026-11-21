@@ -14,6 +14,7 @@ const slotKey = (index) => index === 0 ? 'slot' : `slot:${index}`;
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const UUID_RE = new RegExp(`^${UUID}$`);
 const WORKFLOW_ROUTE = new RegExp(`^workflow:(${UUID}):${UUID}$`);
+const PREPARE_ROUTE = new RegExp(`^prepare:${UUID}$`);
 const SUMMARY_ROUTE = new RegExp(`^summary:(${UUID}):(${UUID})$`);
 const AGENT_ROUTE = new RegExp(`^agent:(${UUID}):(${UUID})$`);
 const INSTANT = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?(?:Z|[+-]\d\d:\d\d)$/;
@@ -105,10 +106,11 @@ export class LauncherCore {
   #session = null;
   #tail = Promise.resolve();
   #aborts = new Map();
+  #preparations = new Map();
   #agentRequests = new Map();
   #released = false;
 
-  constructor({identity, secret, clock, storage, send, runHost, stopHost, runSummary, runAgent,
+  constructor({identity, secret, clock, storage, send, runHost, prepareHost, stopHost, runSummary, runAgent,
     runCapacityCanary, background, meter, slots = 1, newId = newNonce}) {
     this.#slots = Array(slots).fill(null);
     this.identity = identity;
@@ -117,6 +119,7 @@ export class LauncherCore {
     this.storage = storage;
     this.send = send;
     this.runHost = runHost;
+    this.prepareHost = prepareHost;
     this.runSummary = runSummary;
     this.runAgent = runAgent;
     this.runCapacityCanary = runCapacityCanary;
@@ -155,6 +158,7 @@ export class LauncherCore {
         await Promise.all(this.#slots.map((_, index) => this.storage.get(slotKey(index))));
       this.#released = true;
       this.#session = null;
+      for (const controller of this.#preparations.values()) controller.abort();
       for (const slot of slots) {
         if (slot?.state === 'entering') this.#stop(slot.route);
       }
@@ -231,6 +235,7 @@ export class LauncherCore {
   closed(session, code) {
     if (this.#session !== session) return Promise.resolve();
     this.#session = null;
+    for (const controller of this.#preparations.values()) controller.abort();
     return this.#serialize(async () => {
       if (this.#released) return;
       if (code === CLOUDFLARE_INCARNATION_ENDED) {
@@ -315,13 +320,16 @@ export class LauncherCore {
     }
     this.#emit(session, {event: 'inventory', inventory: {
       version: 1, routes, terminal_routes: terminalRoutes,
+      ...(this.prepareHost ? {admission_prepare: true} : {}),
       ...(this.meter?.exhausted ? {meter_exhausted: true} : {}),
       ...(this.#slots.length > 1 ? {workflow_slots: this.#slots.length} : {}),
     }});
     for (const slot of this.#slots) {
       if (slot?.state === 'terminal') this.#emit(session, slot.terminal);
     }
-    for (const request of this.#agentRequests.values()) this.#emit(session, request.event);
+    for (const request of this.#agentRequests.values()) {
+      if (!PREPARE_ROUTE.test(request.event.route_id)) this.#emit(session, request.event);
+    }
     session.nextHeartbeat = this.clock() + 1000;
   }
 
@@ -386,6 +394,47 @@ export class LauncherCore {
       }
       case 'workflow':
         return this.#dispatch(session, payload, accept, refuse, WORKFLOW_ROUTE, workflowRoute);
+      case 'prepare_workflow': {
+        const {route_id, execution_id, org_id} = payload;
+        if (!this.prepareHost || typeof route_id !== 'string' || !PREPARE_ROUTE.test(route_id) ||
+            typeof execution_id !== 'string' || !UUID_RE.test(execution_id) ||
+            !(org_id === null || (typeof org_id === 'string' && UUID_RE.test(org_id)))) {
+          refuse('ValueError', 'Invalid Cloudflare workflow preparation');
+          return;
+        }
+        // The original in-flight call owns this route's observation.
+        if (this.#preparations.has(route_id) || this.meter?.hasRoute(route_id)) {
+          accept({});
+          return;
+        }
+        if (this.retired || this.meter?.exhausted || this.#preparations.size >= this.#slots.length) {
+          this.meter?.recordRoute(route_id, []);
+          accept({});
+          return;
+        }
+        const controller = new AbortController();
+        this.#preparations.set(route_id, controller);
+        const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(19_000)]);
+        this.background((async () => {
+          let invocations;
+          try {
+            invocations = await this.prepareHost({
+              orgId: org_id, executionId: execution_id, signal,
+              reserveIdentity: (identity) => this.#requestControl({route_id}, 'cloudflare_generation_request',
+                {identity}, AbortSignal.any([signal, AbortSignal.timeout(4000)])),
+            });
+          } catch {
+            // Missing observations keep their full reservation. The pending
+            // workflow can still take its normal confirmed-warm path.
+          }
+          await this.#serialize(() => {
+            this.#preparations.delete(route_id);
+            if (invocations) this.meter?.recordRoute(route_id, invocations);
+            accept({});
+          });
+        })());
+        return;
+      }
       case 'capacity_canary':
         if (!this.runCapacityCanary) {
           accept({failure: {stage: 'launcher', error_class: 'unavailable'}});
