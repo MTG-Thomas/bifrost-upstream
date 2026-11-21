@@ -115,6 +115,7 @@ async function referenceAttempt(record, solution, slotCase) {
   const solution_id = solution ? randomUUID() : null;
   const fence = randomUUID();
   const route_id = `workflow:${id}:${fence}`;
+  slotCase?.routeReady?.resolve(route_id);
   const command = randomUUID();
   const result = Promise.withResolvers();
   record.terminals.set(route_id, result);
@@ -138,6 +139,7 @@ async function referenceAttempt(record, solution, slotCase) {
         cpu_budget_ms: 1_000, subrequest_allowance: 12, solution_id}},
   }});
   const terminal = await result.promise;
+  if (slotCase?.cancel) return terminal;
   assert.equal(terminal.attempt_state, 'completed', JSON.stringify(terminal));
   assert.equal(terminal.result.success, true, JSON.stringify(terminal));
   assert.deepEqual(terminal.result.result, {case: caseName, table_count: 0,
@@ -262,6 +264,7 @@ server.on('upgrade', (req, socket, head) => {
           if (terminal?.reply && terminal?.error_type) {
             record.replies.get(terminal.reply)?.reject(new Error(JSON.stringify(terminal)));
           }
+          if (terminal?.reply && terminal?.result) record.commandAcks.get(terminal.reply)?.resolve(terminal.result);
         }
         return;
       }
@@ -271,6 +274,7 @@ server.on('upgrade', (req, socket, head) => {
       records.push(record);
       record.terminals = new Map();
       record.replies = new Map();
+      record.commandAcks = new Map();
       record.generations = new Set();
       record.send = (type, payload) => {
         for (const frame of fragment(envelope(records.length, sequence + 1, type, payload))) {
@@ -390,11 +394,12 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
   if (slotQualification) {
     assert.equal(seen.inventory.payload.inventory.tenant_slot_protocol, 1);
     const org = randomUUID();
-    const startSlot = ordinal => {
+    const startSlot = (ordinal, cancel = false) => {
       const name = randomUUID();
       const held = {entered: Promise.withResolvers(), release: Promise.withResolvers(), sdk: false};
+      const routeReady = Promise.withResolvers();
       heldSlots.set(name, held);
-      return {...held, terminal: referenceAttempt(seen, false, {ordinal, name, org})};
+      return {...held, routeReady, terminal: referenceAttempt(seen, false, {ordinal, name, org, cancel, routeReady})};
     };
     const concurrent = Array.from({length: 4}, (_, slot) => startSlot(slot));
     const allTerminals = Promise.all(concurrent.map(slot => slot.terminal));
@@ -414,6 +419,33 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
     references = [...results, await repeated.terminal];
     assert.equal(seen.generations.size, 4);
     console.info('tenant-slot-overlap', JSON.stringify({overlapping: 4, credentialBound: 5, distinctGenerations: 4}));
+    await next(() => seen.heartbeat?.occupied_routes?.length === 0 &&
+      seen.heartbeat.received_sequence >= seen.terminalAckSequence);
+    const cancelled = startSlot(0, true);
+    try {
+      await cancelled.entered.promise;
+      const route_id = await cancelled.routeReady.promise;
+      seen.send('command', {id: randomUUID(), action: 'terminate', payload: {
+        route_id, error_type: 'CancelledError', error: 'Local fixture cancelled',
+      }});
+      const ready = Promise.withResolvers();
+      seen.commandAcks.set('ready-during-stop', ready);
+      seen.send('command', {id: 'ready-during-stop', action: 'ready', payload: {}});
+      await Promise.race([
+        ready.promise,
+        cancelled.terminal.then(() => assert.fail('Stop settled before the child was released')),
+      ]);
+    } finally {
+      cancelled.release.resolve();
+    }
+    assert.equal((await cancelled.terminal).attempt_state, 'stopped');
+    await next(() => seen.heartbeat?.occupied_routes?.length === 0 &&
+      seen.heartbeat.received_sequence >= seen.terminalAckSequence);
+    const replacement = startSlot(0);
+    replacement.release.resolve();
+    await replacement.terminal;
+    assert.equal(seen.generations.size, 5);
+    console.info('tenant-slot-cancel', JSON.stringify({confirmed: true, replacement: true}));
   } else if (controllerPolls) {
     assert.ok(measuredLauncher);
     const loose = await referenceAttempt(seen, false);

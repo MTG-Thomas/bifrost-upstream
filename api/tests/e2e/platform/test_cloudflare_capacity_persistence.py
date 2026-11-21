@@ -823,7 +823,8 @@ async def test_cleanup_deadline_excludes_queue_time(
     await db_session.flush()
     with pytest.raises(PlatformJobRequiresAction) as expired:
         await lifecycle_job._settle_disable(running, payload, SimpleNamespace())
-    assert expired.value.result == {"code": "CF_DRAIN_TIMEOUT"}
+    assert expired.value.result["code"] == "CF_SLOT_STOP_UNVERIFIED"
+    assert any("Disconnect" in instruction for instruction in expired.value.result["instructions"])
 
 
 @pytest.mark.asyncio
@@ -1317,31 +1318,6 @@ async def test_workflow_slots_hold_headroom_and_serialize_different_tenants(asyn
                 CloudflareWorkflowSlot.released_at.is_(None),
             )))
             assert remaining == {third.fence}
-            install = await db.get(CloudflareInstallation, installation_id)
-            assert install is not None
-            launcher = CloudflareOwnedResource(
-                id=uuid4(), installation_id=installation_id, account_id=account, scope="workers",
-                target_name="fixture-launcher", kind="worker_script", desired_revision=1,
-                artifact_digest="a" * 64, effect_id=uuid4(), state="present",
-                provider_id="fixture-launcher", provider_version="fixture",
-                namespace_ids={"TenantHost": "fixture-tenant-host"},
-            )
-            db.add(launcher)
-            await db.flush()
-            adapter = SimpleNamespace(verify_absent=AsyncMock(side_effect=lifecycle_job.DeletionSettling("pending")))
-            assert not await lifecycle_job._verify_stuck_workflow_slots(db, install, adapter)
-            adapter.verify_absent.assert_not_awaited()
-            launcher.namespace_ids = {**launcher.namespace_ids, "CloudflareLauncher": "fixture-launcher-host"}
-            await db.flush()
-            assert not await lifecycle_job._verify_stuck_workflow_slots(db, install, adapter)
-            adapter.verify_absent.side_effect = None
-            assert await lifecycle_job._verify_stuck_workflow_slots(db, install, adapter)
-            assert adapter.verify_absent.await_args.kwargs["namespace_ids"] == frozenset({
-                "fixture-tenant-host", "fixture-launcher-host",
-            })
-            assert await db.scalar(select(CloudflareWorkflowSlot.fence).where(
-                CloudflareWorkflowSlot.fence == third.fence,
-            )) is None
             await db.rollback()
     finally:
         async with async_session_factory() as db:
@@ -1355,6 +1331,106 @@ async def test_workflow_slots_hold_headroom_and_serialize_different_tenants(asyn
             ))
             await retire_cloudflare_installation(db, installation_id=installation_id, expected_revision=1)
             await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_stranded_revision_deletes_owned_scripts_before_releasing_slots(
+    db_session: AsyncSession, installation: CloudflareInstallation,
+) -> None:
+    stranded, live = uuid4(), uuid4()
+    now = datetime.now(UTC)
+    db_session.add_all([
+        ExecutionWorker(id=stranded, form="external", state="lost", runtime_profile="cloudflare-python-v1"),
+        ExecutionWorker(id=live, form="external", state="ready", runtime_profile="cloudflare-python-v1"),
+    ])
+    await db_session.flush()
+    db_session.add_all(CloudflareWorkerReservation(
+        worker_id=worker, installation_id=installation.id, scope="workers",
+        deployment_revision=1, control_root_version=1,
+    ) for worker in (stranded, live))
+    ticket = CloudflareWorkflowSlot(
+        installation_id=installation.id, tenant="platform", ordinal=0, worker_id=stranded,
+        dispatch_id=uuid4(), execution_id=uuid4(), fence=uuid4(), sent=True,
+    )
+    db_session.add(ticket)
+    scripts = {}
+    for role, namespaces in (
+        ("capacity", {"WorkerLedger": "ledger", "ScopeRegistry": "registry"}),
+        ("launcher", {"CloudflareLauncher": "launcher", "TenantHost": "tenant"}),
+    ):
+        name = f"fixture-{role}"
+        resource = CloudflareOwnedResource(
+            id=uuid4(), installation_id=installation.id, account_id=installation.account_id,
+            scope="workers", kind="worker_script", target_name=name, desired_revision=1,
+            artifact_digest="c" * 64, effect_id=uuid4(), state="present",
+            provider_id=str(uuid4()), provider_version=str(uuid4()), namespace_ids=namespaces,
+        )
+        scripts[name] = resource
+        db_session.add(resource)
+    await db_session.flush()
+    meter = await db_session.get(CloudflareUsageIncarnation, stranded)
+    assert meter is not None
+    meter.meter_final = {"ledger_receipt_pending": True}
+    await db_session.flush()
+    present = set(scripts)
+    deleted = []
+
+    def remote(request: httpx.Request) -> httpx.Response:
+        parts = request.url.path.split("/")
+        if parts[-1] == "namespaces":
+            return httpx.Response(200, json={
+                "success": True,
+                "result": [{"id": ns, "script": name}
+                           for name in present for ns in scripts[name].namespace_ids.values()],
+                "result_info": {"page": 1, "total_pages": 1, "total_count": 2 * len(present)},
+            })
+        name = parts[parts.index("scripts") + 1]
+        resource = scripts[name]
+        if name not in present:
+            return httpx.Response(404)
+        if request.method == "DELETE":
+            assert request.url.params["force"] == "true"
+            assert resource.state == "deleting"
+            present.remove(name)
+            deleted.append(name)
+            return httpx.Response(204)
+        if parts[-1] == "settings":
+            result = {"bindings": [{
+                "name": OWNER_BINDING, "type": "plain_text",
+                "text": worker_owner_value(lifecycle_job._resource_intent(resource)),
+            }]}
+        else:
+            assert parts[-1] == "deployments"
+            result = {"deployments": [{
+                "id": resource.provider_id,
+                "versions": [{"percentage": 100, "version_id": resource.provider_version}],
+            }]}
+        return httpx.Response(200, json={"success": True, "result": result})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as http:
+        adapter = WorkersRestCleanup(http)
+        recover = lifecycle_job._cleanup_stranded_workflow_slots
+        assert await recover(db_session, installation, adapter, before_revision=2) == "blocked"
+        assert not deleted
+        await db_session.execute(update(ExecutionWorker).where(ExecutionWorker.id == live).values(
+            state="retired", capacity_resource_deleted_at=now,
+        ))
+        for _ in range(4):
+            assert await recover(db_session, installation, adapter, before_revision=2) == "progressed"
+            await db_session.flush()
+            assert await db_session.scalar(select(CloudflareWorkflowSlot.fence).where(
+                CloudflareWorkflowSlot.worker_id == stranded,
+            )) == ticket.fence
+        assert deleted == ["fixture-capacity", "fixture-launcher"]
+        assert await recover(db_session, installation, adapter, before_revision=2) == "progressed"
+    assert not present
+    assert await db_session.scalar(select(CloudflareWorkflowSlot.fence).where(
+        CloudflareWorkflowSlot.worker_id == stranded,
+    )) is None
+    assert await db_session.scalar(select(ExecutionWorker.capacity_resource_deleted_at).where(
+        ExecutionWorker.id == stranded,
+    )) is not None
+    assert meter.meter_final == {"ledger_receipt_pending": False, "ledger_namespace_destroyed": True}
 
 
 @pytest.mark.asyncio

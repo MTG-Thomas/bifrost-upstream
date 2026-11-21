@@ -169,7 +169,7 @@ export class LauncherCore {
         // was already acknowledged or the launcher reset after dispatch.
         if (this.clock() < this.#cleanupRetryAt) throw new Error('Workflow stop confirmation is backing off');
         const proof = await Promise.all(slots.filter(slot => slot?.route.kind === 'workflow' &&
-          (slot.state === 'entering' || slot.terminal?.attempt_state === 'uncertain')).map(({route}) =>
+          (slot.state === 'entering' || slot.state === 'stopping' || slot.terminal?.attempt_state === 'uncertain')).map(({route}) =>
           this.#confirmStop(route)));
         if (proof.includes(false)) {
           this.#cleanupRetryAt = this.clock() + this.#cleanupDelayMs;
@@ -203,7 +203,7 @@ export class LauncherCore {
   }
 
   async #saveSlot(index, slot) {
-    await this.storage.put(slotKey(index), slot, slot.state === 'terminal' ? 'settlement' : 'workload');
+    await this.storage.put(slotKey(index), slot, slot.state === 'terminal' || slot.state === 'stopping' ? 'settlement' : 'workload');
     this.#slots[index] = slot;
   }
 
@@ -214,6 +214,10 @@ export class LauncherCore {
     for (let index = 0; index < this.#slots.length; index++) {
       const slot = this.#slots[index] = await this.storage.get(slotKey(index));
       if (!slot || slot.state === 'terminal') continue;
+      if (slot.state === 'stopping') {
+        this.#observeStop(index, slot);
+        continue;
+      }
       const entering = slot.state === 'entering';
       if (entering && !(this.tenantSlots && slot.route.kind === 'workflow')) this.#stop(slot.route);
       const outcome = this.#expired(slot.route) && !entering ? timeout(slot.route) :
@@ -401,7 +405,7 @@ export class LauncherCore {
         }
         const index = this.#slots.findIndex((slot) => slot?.route.route_id === payload.route_id);
         const slot = this.#slots[index];
-        if (!slot || slot.state === 'terminal') {
+        if (!slot || slot.state === 'terminal' || slot.state === 'stopping') {
           accept({received: true});
           return;
         }
@@ -656,11 +660,28 @@ export class LauncherCore {
     }
   }
 
-  async #settle(index, route, {attempt_state, result, invocations}) {
-    const event = route.kind === 'workflow' ? 'result' : route.kind === 'agent_run' ? 'cloudflare_agent_result' : 'summary_result';
-    if (this.tenantSlots && route.kind === 'workflow' && attempt_state === 'uncertain' && await this.#confirmStop(route)) {
-      attempt_state = 'stopped';
+  #observeStop(index, stopping) {
+    this.background(this.#confirmStop(stopping.route).then(confirmed => this.#serialize(async () => {
+      if (this.#released || this.#slots[index] !== stopping) return;
+      const outcome = stopping.outcome;
+      await this.#journalTerminal(index, stopping.route, {
+        ...outcome, attempt_state: confirmed ? 'stopped' : 'uncertain',
+      });
+    })));
+  }
+
+  async #settle(index, route, outcome) {
+    if (this.tenantSlots && route.kind === 'workflow' && outcome.attempt_state === 'uncertain') {
+      const stopping = {route, state: 'stopping', outcome};
+      await this.#saveSlot(index, stopping);
+      this.#observeStop(index, stopping);
+      return;
     }
+    await this.#journalTerminal(index, route, outcome);
+  }
+
+  async #journalTerminal(index, route, {attempt_state, result, invocations}) {
+    const event = route.kind === 'workflow' ? 'result' : route.kind === 'agent_run' ? 'cloudflare_agent_result' : 'summary_result';
     if (this.meter?.log()) console.info('launcher_workload_terminal', route.kind, attempt_state);
     const terminal = {event, route_id: route.route_id, runtime_handle: route.runtime_handle,
       _event_id: this.newId(), attempt_state, result};

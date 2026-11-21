@@ -29,7 +29,8 @@ capacity settings permission applies at Global.
   Cancellation before entry can release it immediately. Canonical workflow
   settlement, owner lease loss, and worker loss cannot release a possibly
   dispatched child. Unsent claims can be dropped as soon as ownership or the
-  execution ends. A confirmed stop releases the exact slot. An unconfirmed
+  execution ends. A running child has a bounded observation window outside
+  the launcher control queue. A confirmed stop releases the exact slot. An unconfirmed
   terminal drains its launcher. Acknowledging
   that terminal leaves the stop witness in the launcher's journal.
 - The provider returns a deletion receipt only after all potentially live
@@ -38,10 +39,16 @@ capacity settings permission applies at Global.
   completion is observed or exact managed deletion is confirmed. A lost
   child response or missing provider ledger can leave capacity held. Reset
   is insufficient evidence because the child can outlive its host. Stop
-  confirmation requests use the launcher meter ceiling. Scale In or
-  Disconnect can recover a held slot by independently verifying absence of
-  the journaled launcher script and namespaces. If verification cannot
-  finish, the existing job surfaces Verify Cloudflare Worker Retirement.
+  confirmation RPCs use the launcher meter ceiling. The Bifrost controller
+  persists backoff and permits up to eight outer provider deletion attempts
+  per managed incarnation. Each attempt reserves the provider request and
+  two Durable Object calls. Disconnect and revision replacement can retire
+  an owned revision after its remaining incarnations are all terminal and
+  stranded. They release the slots after script and namespace absence is
+  verified. Missing meter receipts retain their usage reserves, and confirmed
+  ledger namespace destruction closes outstanding receipt acknowledgement.
+  Scale In retains the deployment and reports the Disconnect recovery option
+  if it cannot verify retirement.
 
 ## Engine identity and readiness
 

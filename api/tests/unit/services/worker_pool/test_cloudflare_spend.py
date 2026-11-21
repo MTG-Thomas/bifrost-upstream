@@ -22,6 +22,7 @@ def test_workers_fleet_envelope_includes_cleanup_and_shared_usage() -> None:
         cleanup_margin_seconds=600,
         per_launcher_second=per_second,
         per_fleet_fixed=fixed,
+        rotation_slots=0,
     ) == Decimal("14.97")
 
 
@@ -33,7 +34,16 @@ def test_unbounded_meter_rejects_cost_estimate() -> None:
             cleanup_margin_seconds=600,
             per_launcher_second={},
             per_fleet_fixed=dict.fromkeys(WORKERS_RATES, Decimal(0)),
+            rotation_slots=0,
         )
+
+
+def test_hourly_launcher_rotation_books_creation_headroom() -> None:
+    zero = dict.fromkeys(WORKERS_RATES, Decimal(0))
+    assert workers_fleet_envelope_usd(
+        launcher_cap=2, max_lifetime_seconds=3600, cleanup_margin_seconds=60,
+        per_launcher_second=zero, per_fleet_fixed=zero, rotation_slots=8,
+    ) == Decimal("12.40")
 
 
 def test_policy_window_rolls_at_the_utc_month_boundary() -> None:

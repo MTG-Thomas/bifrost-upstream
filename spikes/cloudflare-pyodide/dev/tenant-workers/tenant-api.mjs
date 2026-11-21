@@ -32,6 +32,8 @@ const MAX_NOTED_CALLS = 64;
 const DEFAULT_ATTEMPT_DEADLINE_MS = 1800 * 1000;
 const DEADLINE = Symbol('attempt-deadline');
 const STOPPED = Symbol('attempt-stopped');
+// Leave network and launcher scheduling headroom within the 2 s proof RPC.
+const STOP_OBSERVATION_MS = 1500;
 // Bookkeeping writes (warm-up list, retirement, marker
 // cleanup) never hold outgoing messages at the output gate. A held send would
 // leave after its liveness check had passed, possibly after the deadline.
@@ -49,6 +51,7 @@ export class TenantHost extends DurableObject {
   #generation;
   #tail = Promise.resolve();
   #queuedStops = new Map();
+  #childEnd = new Map();
   // The generation whose child last answered a ping. In memory on purpose: a
   // fresh or reset host instance must re-confirm its child before it accepts
   // an attempt (see run()), and a late answer from a retired generation can
@@ -295,7 +298,18 @@ export class TenantHost extends DurableObject {
     // first run RPC. Marker writes at engine entry are still checked below.
     await Promise.all([this.ctx.storage.put(`stopped:${routeId}`, true), retirement]);
     await this.ctx.storage.sync();
-    if (confirm) return !(await this.ctx.storage.get(`unconfirmed:${routeId}`));
+    if (confirm) {
+      const observed = this.#childEnd.get(routeId)?.promise;
+      if (observed) {
+        let timer;
+        try {
+          await Promise.race([observed, new Promise(resolve => { timer = setTimeout(resolve, STOP_OBSERVATION_MS); })]);
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+      return !(await this.ctx.storage.get(`unconfirmed:${routeId}`));
+    }
   }
 
   async run({tenantId, executionId, context, publicUrl, egressHosts = [], dispatchedAt, routeId, workflowDeadline,
@@ -387,6 +401,7 @@ export class TenantHost extends DurableObject {
     this.#calls.set(handle, []);
     let dispatched = false;
     let childEnded = false;
+    let observingLateEnd = false;
     try {
       const limits = routeId ? this.#releaseLimits() : null;
       const {worker, generation, identity} = await this.#engine(tenantId, reserveIdentity);
@@ -404,7 +419,10 @@ export class TenantHost extends DurableObject {
       // only gated write: it is made durable before the final deadline check,
       // so nothing is left to hold the child dispatch at the output gate.
       const markers = {inflight: {generation}};
-      if (unconfirmedKey) markers[unconfirmedKey] = true;
+      if (unconfirmedKey) {
+        markers[unconfirmedKey] = true;
+        this.#childEnd.set(routeId, Promise.withResolvers());
+      }
       await this.ctx.storage.put(markers);
       await this.ctx.storage.sync();
       if (Date.now() >= deadlineAt) {
@@ -446,14 +464,19 @@ export class TenantHost extends DurableObject {
         // revoked below, so it can no longer reach the API or egress.
         await (this.#current.retirement ?? this.#retireChild());
         if (unconfirmedKey) {
-          const clear = () => this.ctx.storage.delete(unconfirmedKey);
+          observingLateEnd = true;
           this.ctx.waitUntil(responseTask.then(async (late) => {
-            await late.body?.cancel();
-            await clear();
+            try {
+              await late.body?.cancel();
+            } finally {
+              await this.#confirmChildEnd(routeId, unconfirmedKey);
+            }
           }, async (error) => {
             const {error_class} = runtimeErrorClass(error);
-            if (error_class === 'cpu_limit' || error_class === 'memory_limit') await clear();
-          }));
+            if (error_class === 'cpu_limit' || error_class === 'memory_limit') {
+              await this.#confirmChildEnd(routeId, unconfirmedKey);
+            }
+          }).finally(() => this.#childEnd.delete(routeId)));
         }
         return terminal(response === DEADLINE ? 'attempt-deadline' : 'attempt-stopped',
           'uncertain', undefined, this.#calls.get(handle));
@@ -511,10 +534,21 @@ export class TenantHost extends DurableObject {
       this.#calls.delete(handle);
       try {
         await this.ctx.storage.delete('inflight', UNGATED);
-        if (unconfirmedKey && (!dispatched || childEnded)) await this.ctx.storage.delete(unconfirmedKey);
+        if (unconfirmedKey && (!dispatched || childEnded)) await this.#confirmChildEnd(routeId, unconfirmedKey);
+        if (unconfirmedKey && !observingLateEnd) this.#childEnd.delete(routeId);
       } finally {
         release();
       }
+    }
+  }
+
+  async #confirmChildEnd(routeId, key) {
+    try {
+      await this.ctx.storage.delete(key);
+      await this.ctx.storage.sync();
+      this.#childEnd.get(routeId)?.resolve();
+    } finally {
+      this.#childEnd.delete(routeId);
     }
   }
 

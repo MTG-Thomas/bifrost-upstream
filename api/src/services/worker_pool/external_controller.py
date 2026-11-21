@@ -27,7 +27,12 @@ from src.services.work_dispatch import (
 from src.services.worker_pool.cloudflare_canary import active_cloudflare_canary
 from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
 from src.services.worker_pool.cloudflare_slots import delete_workflow_slots
-from src.services.worker_pool.cloudflare_spend import compact_ledger_receipt, pending_ledger_receipt, seal_launcher_meter
+from src.services.worker_pool.cloudflare_spend import (
+    compact_ledger_receipt,
+    pending_ledger_receipt,
+    record_capacity_cleanup_do_requests,
+    seal_launcher_meter,
+)
 from src.services.worker_pool.controller import (
     RECONCILE_SECONDS,
     SWEEP_SECONDS,
@@ -60,6 +65,7 @@ logger = logging.getLogger(__name__)
 # Allow bounded in-flight PUTs and provider work to finish before accepting
 # absence for a terminal incarnation whose UID was never bound.
 UNBOUND_PREPARE_GRACE = timedelta(minutes=1)
+MAX_MANAGED_CLEANUP_ATTEMPTS = 8
 
 class ExternalWorkerPoolController(WorkerCapacityController):
     def __init__(self, client: ExternalCapacityClient, settings: Settings, profile: WorkerCapacityProfile) -> None:
@@ -72,6 +78,20 @@ class ExternalWorkerPoolController(WorkerCapacityController):
         self.runtime_profile = profile.runtime_profile
         self.burst_launch_allowed = True
         self.managed_max_lifetime_seconds: int | None = None
+
+    async def _reserve_managed_cleanup(self, worker_id: UUID) -> bool:
+        async with get_db_context() as db:
+            pin = await db.get(CloudflareWorkerReservation, worker_id, with_for_update=True)
+            if pin is None or pin.cleanup_attempts >= MAX_MANAGED_CLEANUP_ATTEMPTS:
+                return False
+            now = await db.scalar(select(func.clock_timestamp()))
+            assert now is not None
+            if pin.cleanup_retry_at is not None and now < pin.cleanup_retry_at:
+                return False
+            pin.cleanup_retry_at = now + timedelta(seconds=min(2 ** (pin.cleanup_attempts + 1), 60))
+            pin.cleanup_attempts += 1
+            await record_capacity_cleanup_do_requests(db, pin.installation_id)
+        return True
 
     async def launch_for_demand(self, policy: KubernetesPolicy) -> list[UUID]:
         if not self.burst_launch_allowed:
@@ -257,6 +277,8 @@ class ExternalWorkerPoolController(WorkerCapacityController):
                 # Absence does not fence that delayed mutation; retain cleanup.
                 return
             if resource is not None and resource.state != "deleted":
+                if self.managed_cloudflare_scope is not None and not await self._reserve_managed_cleanup(worker_id):
+                    return
                 resource = await self.client.remove(worker_id, self.profile.scope, resource.resource_uid)
             # GET absence/a deleted tombstone or a validated DELETE response confirms
             # cleanup. Persist only for this still-terminal, unchanged incarnation.

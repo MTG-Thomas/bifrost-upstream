@@ -20,6 +20,7 @@ from src.jobs.platform.base import (
 )
 from src.jobs.platform.cloudflare_capacity import (
     _cleanup_one,
+    _cleanup_stranded_workflow_slots,
     _hold_installation_lease,
     _management_token,
     _remove_verified_scopes,
@@ -180,8 +181,8 @@ async def _settle_enable(
         row = await _locked_current(db, context, payload)
         if row is None or row.api_token_version != installation.api_token_version:
             return {"outcome": "superseded"}
-        await _require_budget(db, row)
         if row.admitted_revision == payload.revision:
+            await _require_budget(db, row)
             return {"outcome": "enabled"}
         await _require_legacy_cleanup(db)
     while True:
@@ -190,12 +191,18 @@ async def _settle_enable(
             if row is None:
                 return {"outcome": "superseded"}
             if await cloudflare_workers_remain(db, row.id, before_revision=payload.revision):
+                recovery = await _cleanup_stranded_workflow_slots(db, row, cleanup_adapter, before_revision=payload.revision)
+                if recovery == "progressed":
+                    continue
+                if recovery == "settling":
+                    raise PlatformJobFailure("CF_CLEANUP_SETTLING", "Verifying Prior Cloudflare Deletion", retryable=True)
                 raise PlatformJobRequiresAction("Wait for Cloudflare Workers to Retire", {"code": "CF_PRIOR_WORKERS_LIVE"})
             cleanup = await _cleanup_one(db, row, cleanup_adapter, before_revision=payload.revision)
             if cleanup == "progressed":
                 continue
             if cleanup == "settling":
                 raise PlatformJobRequiresAction("Wait for Cloudflare Creation to Settle", {"code": "CF_CLEANUP_PENDING"})
+            await _require_budget(db, row)
             await _remove_verified_scopes(db, row, before_revision=payload.revision)
             await db.execute(update(CloudflareCredential).where(
                 CloudflareCredential.installation_id == row.id,

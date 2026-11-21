@@ -187,6 +187,8 @@ class CloudflareWorkerReservation(Base):
     canary_sdk_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     canary_sdk_generation: Mapped[int | None] = mapped_column(Integer)
     canary_ack_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cleanup_attempts: Mapped[int] = mapped_column(SmallInteger, server_default="0")
+    cleanup_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class CloudflareWorkflowSlot(Base):
@@ -300,6 +302,7 @@ class CloudflareUsageActivity(Base):
     inventory_warm_pings: Mapped[int] = mapped_column(BigInteger, server_default="0")
     capacity_requests: Mapped[int] = mapped_column(BigInteger, server_default="0")
     capacity_cpu_ms: Mapped[int] = mapped_column(BigInteger, server_default="0")
+    capacity_cleanup_do_requests: Mapped[int] = mapped_column(BigInteger, server_default="0")
     qualified_cpu_ms: Mapped[int] = mapped_column(BigInteger, server_default="0")
     qualified_dispatches: Mapped[int] = mapped_column(BigInteger, server_default="0")
     qualified_preparations: Mapped[int] = mapped_column(BigInteger, server_default="0")

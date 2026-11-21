@@ -198,7 +198,7 @@ def workers_fleet_envelope_usd(
     cleanup_margin_seconds: int,
     per_launcher_second: Mapping[str, Decimal],
     per_fleet_fixed: Mapping[str, Decimal],
-    rotation_slots: int = 0,
+    rotation_slots: int,
 ) -> Decimal:
     """Price the release's fleet usage scenario and cleanup allowances."""
     if launcher_cap < 1 or max_lifetime_seconds < 1 or cleanup_margin_seconds < 1:
@@ -531,6 +531,18 @@ async def seal_launcher_meter(db: AsyncSession, worker_id: UUID, receipt: Cloudf
     row.meter_final = counts
     if row.deleted_at is not None:
         await db.execute(delete(CloudflareDispatchMeter).where(CloudflareDispatchMeter.worker_id == worker_id))
+
+
+async def finalize_destroyed_launcher_meter(db: AsyncSession, worker_id: UUID, *, ledger_destroyed: bool) -> None:
+    """Close metering after launcher destruction, preserving unobserved usage reserves."""
+    row = await db.get(CloudflareUsageIncarnation, worker_id, with_for_update=True)
+    if row is None:
+        return
+    if row.meter_final is None:
+        row.meter_uncertain = True
+    elif ledger_destroyed and row.meter_final.get("ledger_receipt_pending"):
+        row.meter_final = {**row.meter_final, "ledger_receipt_pending": False, "ledger_namespace_destroyed": True}
+    await db.execute(delete(CloudflareDispatchMeter).where(CloudflareDispatchMeter.worker_id == worker_id))
 
 
 def pending_ledger_receipt(worker_id):
@@ -867,6 +879,17 @@ async def record_capacity_request(db: AsyncSession, installation_id: UUID, cpu_m
     ))
 
 
+async def record_capacity_cleanup_do_requests(db: AsyncSession, installation_id: UUID) -> None:
+    activity = CloudflareUsageActivity
+    await db.execute(insert(activity).values(
+        installation_id=installation_id, period_start=func.date_trunc("month", func.clock_timestamp(), "UTC"),
+        capacity_cleanup_do_requests=2,
+    ).on_conflict_do_update(
+        index_elements=[activity.installation_id, activity.period_start],
+        set_={"capacity_cleanup_do_requests": activity.capacity_cleanup_do_requests + 2},
+    ))
+
+
 def capacity_request_reservation(installation_id: UUID, cpu_ms: int) -> Callable[[], Awaitable[None]]:
     async def reserve() -> None:
         async with get_db_context() as db:
@@ -922,6 +945,7 @@ def cloudflare_estimated_usage(as_of: datetime | None = None) -> ColumnElement[D
         + activity.inventory_dispatches * literal(_INVENTORY_DISPATCH_USD, type_=Numeric(24, 12))
         + activity.inventory_warm_pings * literal(_INVENTORY_TENANT_PING_USD, type_=Numeric(24, 12))
         + activity.capacity_requests * literal(_WORKER_REQUEST_USD, type_=Numeric(24, 12))
+        + activity.capacity_cleanup_do_requests * literal(_DO_REQUEST_USD, type_=Numeric(24, 12))
         + activity.capacity_cpu_ms * literal(_WORKER_CPU_MS_USD, type_=Numeric(24, 12))
         + activity.qualified_cpu_ms * literal(_WORKER_CPU_MS_USD, type_=Numeric(24, 12))
         + activity.qualified_dispatches * literal(_QUALIFIED_DISPATCH_USD, type_=Numeric(24, 12))

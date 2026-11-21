@@ -68,7 +68,12 @@ from src.services.worker_pool.cloudflare_provisioning import (
     observe_owned,
     resume_deletion,
 )
-from src.services.worker_pool.cloudflare_spend import cloudflare_estimated_usage, read_workers_usage, usage_period
+from src.services.worker_pool.cloudflare_spend import (
+    cloudflare_estimated_usage,
+    finalize_destroyed_launcher_meter,
+    read_workers_usage,
+    usage_period,
+)
 from src.services.worker_pool.cloudflare_slots import delete_workflow_slots
 from src.services.worker_pool.cloudflare_workers_rest import (
     CloudflareManagementDenied,
@@ -154,6 +159,7 @@ async def _management_token(db: AsyncSession, installation: CloudflareInstallati
 
 async def _cleanup_one(
     db: AsyncSession, row: CloudflareInstallation, adapter: OwnedResourceCleanup, *, before_revision: int | None = None,
+    stranded_scope: tuple[str, int] | None = None,
 ) -> Literal["complete", "progressed", "settling"]:
     # Newer generations first, then withdraw the capacity entry point before
     # retiring launcher and runtime dependencies. Workers scripts implicitly
@@ -164,6 +170,9 @@ async def _cleanup_one(
     )
     if before_revision is not None:
         query = query.where(CloudflareOwnedResource.desired_revision < before_revision)
+    if stranded_scope is not None:
+        scope, revision = stranded_scope
+        query = query.where(CloudflareOwnedResource.scope == scope, CloudflareOwnedResource.desired_revision == revision)
     resource = await db.scalar(query.order_by(
         CloudflareOwnedResource.desired_revision.desc(),
         case(
@@ -207,6 +216,71 @@ async def _cleanup_one(
     return "progressed"
 
 
+def _stranded_cleanup_action(*, scale_in: bool = False) -> PlatformJobRequiresAction:
+    instructions = [
+        "Keep Cloudflare admission closed while you verify the retired revision.",
+        "Check the exact owned script and namespace identities in the deployment inventory. Restore management access if Cloudflare refused verification.",
+        "Retry the capacity action once the exact ownership or absence evidence is available.",
+    ]
+    if scale_in:
+        instructions.insert(1, "Use Disconnect to remove the owned deployment if the worker cannot supply a stop receipt.")
+    return PlatformJobRequiresAction(
+        "Verify Cloudflare Worker Retirement", {"code": "CF_SLOT_STOP_UNVERIFIED", "instructions": instructions},
+    )
+
+
+async def _cleanup_stranded_workflow_slots(
+    db: AsyncSession, row: CloudflareInstallation, adapter: OwnedResourceCleanup,
+    *, before_revision: int | None = None,
+) -> Literal["blocked", "progressed", "settling"]:
+    """Retire one closed revision only after every remaining incarnation is stranded."""
+    worker, pin, slot = ExecutionWorker, CloudflareWorkerReservation, CloudflareWorkflowSlot
+    revision_filter = () if before_revision is None else (pin.deployment_revision < before_revision,)
+    remaining = (await db.execute(select(
+        worker.id, worker.state, pin.scope, pin.deployment_revision,
+        select(slot.fence).where(slot.worker_id == worker.id, slot.sent, slot.released_at.is_(None)).exists(),
+    ).join(pin, pin.worker_id == worker.id).where(
+        pin.installation_id == row.id, *revision_filter,
+        worker.capacity_resource_deleted_at.is_(None) | worker.state.not_in(("lost", "retired")),
+    ).order_by(worker.id).with_for_update(of=worker))).all()
+    for _, _, scope, revision, _ in remaining:
+        if row.admitted_revision == revision:
+            continue
+        cohort = [(worker_id, state, held) for worker_id, state, name, rev, held in remaining
+                  if (name, rev) == (scope, revision)]
+        if any(state not in ("lost", "retired") or not held for _, state, held in cohort):
+            continue
+        resources = (await db.scalars(select(CloudflareOwnedResource).where(
+            CloudflareOwnedResource.installation_id == row.id,
+            CloudflareOwnedResource.scope == scope, CloudflareOwnedResource.desired_revision == revision,
+            CloudflareOwnedResource.kind == "worker_script",
+        ))).all()
+        for suffix, namespaces in (
+            ("-launcher", {"CloudflareLauncher", "TenantHost"}),
+            ("-capacity", {"WorkerLedger", "ScopeRegistry"}),
+        ):
+            matches = [resource for resource in resources if resource.target_name.endswith(suffix)]
+            if (
+                len(matches) != 1 or matches[0].provider_id is None or not namespaces <= matches[0].namespace_ids.keys()
+                or (matches[0].state == "absent" and matches[0].observed_at is None)
+            ):
+                raise _stranded_cleanup_action()
+        try:
+            cleanup = await _cleanup_one(db, row, adapter, stranded_scope=(scope, revision))
+        except DeletionSettling:
+            return "settling"
+        except (ObservationPending, OwnershipConflict, CloudflareManagementDenied):
+            raise _stranded_cleanup_action() from None
+        if cleanup != "complete":
+            return cleanup
+        for worker_id, _, _ in cohort:
+            await db.execute(update(worker).where(worker.id == worker_id).values(capacity_resource_deleted_at=func.now()))
+            await finalize_destroyed_launcher_meter(db, worker_id, ledger_destroyed=True)
+            await delete_workflow_slots(db, slot.worker_id == worker_id)
+        return "progressed"
+    return "blocked"
+
+
 async def _verify_stuck_workflow_slots(
     db: AsyncSession, row: CloudflareInstallation, adapter: OwnedResourceCleanup,
 ) -> bool:
@@ -236,8 +310,11 @@ async def _verify_stuck_workflow_slots(
                 )
             except (DeletionSettling, ObservationPending):
                 continue
+            except OwnershipConflict:
+                raise _stranded_cleanup_action(scale_in=True) from None
             checked.add(launcher.id)
         await db.execute(update(worker).where(worker.id == worker_id).values(capacity_resource_deleted_at=func.now()))
+        await finalize_destroyed_launcher_meter(db, worker_id, ledger_destroyed=False)
         await delete_workflow_slots(db, slot.worker_id == worker_id)
     return bool(checked)
 
@@ -256,6 +333,12 @@ async def _settle_disable(
             workers_remain = await cloudflare_workers_remain(db, row.id)
             if workers_remain:
                 await _require_legacy_cleanup(db)
+                if payload.action == "disconnect":
+                    recovery = await _cleanup_stranded_workflow_slots(db, row, adapter)
+                    if recovery == "progressed":
+                        delay = 2
+                        continue
+                    waiting_for_deletion = recovery == "settling"
             if not workers_remain:
                 try:
                     cleanup = await _cleanup_one(db, row, adapter) if payload.action == "disconnect" else "complete"
@@ -279,11 +362,15 @@ async def _settle_disable(
                     return {"outcome": payload.desired_state}
             started_at = await db.scalar(select(PlatformJob.started_at).where(PlatformJob.id == context.job_id))
             if started_at is not None and datetime.now(UTC) >= started_at + DRAIN_DEADLINE:
-                if workers_remain and await _verify_stuck_workflow_slots(db, row, adapter):
+                if workers_remain and payload.action == "scale_in" and await _verify_stuck_workflow_slots(db, row, adapter):
                     continue
                 if waiting_for_deletion:
+                    if workers_remain:
+                        raise _stranded_cleanup_action()
                     raise PlatformJobRequiresAction("Cloudflare Cleanup Pending", {"code": "CF_CLEANUP_PENDING"})
                 phase = "Wait for Cloudflare Creation to Settle" if not workers_remain else "Verify Cloudflare Worker Retirement"
+                if workers_remain and payload.action == "scale_in":
+                    raise _stranded_cleanup_action(scale_in=True)
                 raise PlatformJobRequiresAction(phase, {"code": "CF_DRAIN_TIMEOUT"})
         if waiting_for_deletion:
             await context.report("Verifying Cloudflare Deletion")
