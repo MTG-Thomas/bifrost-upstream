@@ -9,6 +9,7 @@ from shared.models import (
     CloudflareCapacityPolicy,
     CloudflareConnectRequest,
     CloudflarePolicyUpdate,
+    CloudflareReconcileAction,
     CloudflareWorkerCredentialRotation,
 )
 
@@ -25,9 +26,19 @@ async def bifrost_cloudflare_capacity_get(context: Any) -> ToolResult:
     return success_result("Cloudflare Capacity", body)
 
 
-async def _submit(context: Any, operation: str, installation_id: UUID, expected_revision: int) -> ToolResult:
-    request = CloudflareCapacityAction(installation_id=installation_id, expected_revision=expected_revision)
-    status, body = await call_rest(context, "POST", f"{_PATH}/{operation}", json_body=request.model_dump(mode="json"))
+async def _submit(
+    context: Any, operation: str, installation_id: UUID, expected_revision: int, *,
+    reset_release_fence: bool | None = None,
+) -> ToolResult:
+    request = (
+        CloudflareCapacityAction(installation_id=installation_id, expected_revision=expected_revision)
+        if reset_release_fence is None else CloudflareReconcileAction(
+            installation_id=installation_id, expected_revision=expected_revision, reset_release_fence=reset_release_fence,
+        )
+    )
+    status, body = await call_rest(
+        context, "POST", f"{_PATH}/{operation}", json_body=request.model_dump(mode="json", exclude_defaults=True),
+    )
     if status != 202:
         return error_result(f"Cloudflare action failed (HTTP {status})", {"body": body})
     return success_result("Cloudflare Job Queued", body)
@@ -45,12 +56,16 @@ async def bifrost_cloudflare_enable_execute(context: Any, installation_id: UUID,
     return await _submit(context, "enable", installation_id, expected_revision)
 
 
-async def bifrost_cloudflare_reconcile_execute(context: Any, installation_id: UUID, expected_revision: int) -> ToolResult:
-    return await _submit(context, "reconcile", installation_id, expected_revision)
+async def bifrost_cloudflare_reconcile_execute(
+    context: Any, installation_id: UUID, expected_revision: int, reset_release_fence: bool = False,
+) -> ToolResult:
+    return await _submit(context, "reconcile", installation_id, expected_revision, reset_release_fence=reset_release_fence)
 
 
-async def bifrost_cloudflare_upgrade_execute(context: Any, installation_id: UUID, expected_revision: int) -> ToolResult:
-    return await _submit(context, "upgrade", installation_id, expected_revision)
+async def bifrost_cloudflare_upgrade_execute(
+    context: Any, installation_id: UUID, expected_revision: int, reset_release_fence: bool = False,
+) -> ToolResult:
+    return await _submit(context, "upgrade", installation_id, expected_revision, reset_release_fence=reset_release_fence)
 
 
 async def bifrost_cloudflare_worker_credential_replace(

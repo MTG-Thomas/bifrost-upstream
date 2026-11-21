@@ -101,6 +101,10 @@ class CloudflareCapacityAction(BaseModel):
     expected_revision: int = Field(gt=0)
 
 
+class CloudflareReconcileAction(CloudflareCapacityAction):
+    reset_release_fence: bool = Field(default=False, description="Explicitly accept a conflicting or older packaged Workers release.")
+
+
 class CloudflareAccountTokenRotation(CloudflareCapacityAction):
     model_config = ConfigDict(hide_input_in_errors=True)
 

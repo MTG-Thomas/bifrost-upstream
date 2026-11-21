@@ -68,6 +68,7 @@ _METADATA = MappingProxyType(
                 "src.jobs.platform.cloudflare_capacity",
                 "CLOUDFLARE_RECONCILE_DEFINITION",
                 PlatformJobPolicy(15 * 60, max_attempts=3, min_memory_headroom_mb=128, retry_on_failure=True),
+                payload_version=2,
             ),
             _metadata(
                 "capacity.cloudflare_rotate_account_token",

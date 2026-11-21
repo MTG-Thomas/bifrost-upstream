@@ -1,6 +1,11 @@
 # Workers Upgrade and Repair
 
-Bifrost compares the packaged Workers manifest digest to the saved release.
+Bifrost compares the packaged Workers deployment digest to the saved release.
+The digest covers source provenance, modules, bindings, compatibility settings,
+and meter bounds. It excludes the release tag and CI run number. Promoting the
+same commit and identical package from RC to final advances release precedence
+without replacing Workers. A change to the source commit or deployment inputs
+can produce a different digest even when the embedded Python runtime is identical.
 The Phase 4 migration closes admission for an earlier admitted pilot and
 fences its queued Enable jobs under the old revision.
 An API with a different package closes new claims and sends. The scheduler
@@ -21,18 +26,30 @@ Keep the previous worker-control, ingress, and credential protocols available
 through retirement. If a release cannot serve the previous wire contract,
 verify Scale In on the previous version before rolling the API. Run the
 capacity scheduler and job runners from the same target Bifrost release.
-The image build workflow records its run number as the Workers release
-sequence. Legacy packages have sequence zero. A higher sequence can take
-over a pending replacement and must verify retirement of any partial
-deployment. Older sequences cannot select a target after a newer one is pinned.
+The image build workflow records the Bifrost version and its run number.
+SemVer precedence orders versions, with the run number breaking ties for
+identical deployments at the same version. A newer version can take over
+a pending replacement after verified retirement of any partial deployment.
+A different digest at the same SemVer precedence returns
+`CF_RELEASE_CONFLICT`. An older package returns `CF_RELEASE_DOWNGRADE`.
+An operator can explicitly accept either through
+`bifrost capacity cloudflare reconcile --reset-release-fence` with the current
+installation ID and revision. Bifrost audits the previous and selected release
+identities. A scaled-in installation stays paused after a reset.
+
+Deploy the new PlatformJob runner before enabling the version 2 reconcile
+producer. New runners read version 1 jobs already in the queue. A runner
+from the previous build rejects version 2 jobs.
 Existing saved limits and consent apply to the replacement. If the new
 release's measured envelope exceeds the saved budget, review the policy and
 then reconcile. If Cloudflare rejects the management credential, replace it
 for the same account and reconcile the pinned revision. Independent scope
 credentials continue to serve bounded retirement while available.
 The scheduler backs off from five minutes to one hour for drain timeouts,
-pending cleanup and release mismatches. Other failures wait for an operator
-action or a new desired revision.
+pending cleanup, release mismatches, provider outages, and unavailable spend
+evidence. A successful verification resets the backoff. Admitted scopes
+keep their periodic verification. Paused upgrades with other failures wait
+for an operator action or a new desired revision.
 
 ## Pending Hosted Qualification
 

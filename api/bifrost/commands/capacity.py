@@ -10,6 +10,7 @@ from bifrost.client import BifrostClient
 from bifrost.contracts.cloudflare_capacity import (
     CloudflareAccountTokenRotation,
     CloudflareCapacityAction,
+    CloudflareReconcileAction,
 )
 from bifrost.dto_flags import build_cli_flags
 from bifrost.platform_jobs import poll_platform_job
@@ -37,17 +38,19 @@ async def cloudflare_status(ctx: click.Context, *, client: BifrostClient, resolv
 
 
 def _register_action(name: str, help_text: str, *, credential: str | None = None) -> None:
+    model = CloudflareReconcileAction if name in ("reconcile", "upgrade") else CloudflareCapacityAction
+    flags = build_cli_flags(model, exclude=set(), verb_ref_lookups={})
     @cloudflare_group.command(name, help=help_text)
     @click.option("--wait", is_flag=True, help="Wait for completion through the platform job.")
-    @_apply_flags(_ACTION_FLAGS)
+    @_apply_flags(flags)
     @click.pass_context
     @pass_resolver
     @run_async
     async def action(
         ctx: click.Context, wait: bool, *, client: BifrostClient, resolver: RefResolver, **fields: Any,
     ) -> None:
-        body = CloudflareCapacityAction.model_validate(fields)
-        data = body.model_dump(mode="json")
+        body = model.model_validate(fields)
+        data = body.model_dump(mode="json", exclude_defaults=True)
         if credential is not None:
             data["credential"] = credential
         response = await client.post(f"{_PATH}/{'rotate' if credential else name}", json=data)

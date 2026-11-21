@@ -10,6 +10,7 @@ from shared.models import (
     CloudflareCapacityStatus,
     CloudflareConnectRequest,
     CloudflarePolicyUpdate,
+    CloudflareReconcileAction,
     CloudflareStageCredentialRequest,
     CloudflareStagedCredential,
     CloudflareWorkerCredentialRotation,
@@ -117,7 +118,7 @@ async def enable_cloudflare_capacity(
     **operation_route("capacity.cloudflare_reconcile"),
 )
 async def reconcile_cloudflare_capacity(
-    body: CloudflareCapacityAction, response: Response, db: DbSession, user: CurrentActiveUser,
+    body: CloudflareReconcileAction, response: Response, db: DbSession, user: CurrentActiveUser,
 ) -> PlatformJobAccepted:
     return await _reconcile(body, response, db, user, upgrade=False)
 
@@ -127,19 +128,20 @@ async def reconcile_cloudflare_capacity(
     **operation_route("capacity.cloudflare_upgrade"),
 )
 async def upgrade_cloudflare_capacity(
-    body: CloudflareCapacityAction, response: Response, db: DbSession, user: CurrentActiveUser,
+    body: CloudflareReconcileAction, response: Response, db: DbSession, user: CurrentActiveUser,
 ) -> PlatformJobAccepted:
     return await _reconcile(body, response, db, user, upgrade=True)
 
 
 async def _reconcile(
-    body: CloudflareCapacityAction, response: Response, db: DbSession, user: CurrentActiveUser,
+    body: CloudflareReconcileAction, response: Response, db: DbSession, user: CurrentActiveUser,
     *, upgrade: bool,
 ) -> PlatformJobAccepted:
     caller = await load_caller(db, user)
     try:
         job, reused = await enqueue_cloudflare_reconcile(
             db, caller, installation_id=body.installation_id, expected_revision=body.expected_revision, upgrade=upgrade,
+            reset_release_fence=body.reset_release_fence,
         )
     except CloudflarePolicyConflict as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc

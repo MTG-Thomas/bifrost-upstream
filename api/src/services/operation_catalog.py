@@ -285,7 +285,7 @@ OPERATION_CATALOG: tuple[OperationDefinition, ...] = (
         target_kind=OperationTargetKind.PLATFORM,
         rest=RestOperationBinding(
             method="POST", path="/api/capacity/cloudflare/reconcile",
-            request_model="CloudflareCapacityAction", response_model="PlatformJobAccepted",
+            request_model="CloudflareReconcileAction", response_model="PlatformJobAccepted",
         ),
         cli=CliOperationBinding(path=("capacity", "cloudflare", "reconcile")),
         mcp=McpOperationBinding(name="bifrost_cloudflare_reconcile_execute"),
@@ -305,7 +305,7 @@ OPERATION_CATALOG: tuple[OperationDefinition, ...] = (
         target_kind=OperationTargetKind.PLATFORM,
         rest=RestOperationBinding(
             method="POST", path="/api/capacity/cloudflare/upgrade",
-            request_model="CloudflareCapacityAction", response_model="PlatformJobAccepted",
+            request_model="CloudflareReconcileAction", response_model="PlatformJobAccepted",
         ),
         cli=CliOperationBinding(path=("capacity", "cloudflare", "upgrade")),
         mcp=McpOperationBinding(name="bifrost_cloudflare_upgrade_execute"),

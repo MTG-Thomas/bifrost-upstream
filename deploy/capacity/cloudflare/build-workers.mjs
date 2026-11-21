@@ -175,9 +175,14 @@ export function assertMeterInventory(role, inputs, inventory) {
   }
 }
 
-export async function buildWorkers(runtimePath, outputPath, sourceRevision, meterBounds, releaseSequence) {
+export async function buildWorkers(runtimePath, outputPath, sourceRevision, meterBounds, releaseVersion, releaseSequence) {
   if (!Number.isSafeInteger(releaseSequence) || releaseSequence < 1) {
     throw new Error("A positive Workers release sequence is required");
+  }
+  const version = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+  const match = version.exec(releaseVersion);
+  if (!match || releaseVersion.length > 128 || match[4]?.split(".").some(part => /^0\d+$/.test(part))) {
+    throw new Error("A SemVer Bifrost release version is required");
   }
   if (!/^[0-9a-f]{40}$/.test(sourceRevision)) throw new Error("An exact source commit is required");
   const runtime = await readFile(runtimePath);
@@ -193,6 +198,7 @@ export async function buildWorkers(runtimePath, outputPath, sourceRevision, mete
   const release = {
     manifest_version: 1,
     source_revision: sourceRevision,
+    release_version: releaseVersion,
     release_sequence: releaseSequence,
     runtime_sha256: runtimePin,
     pyodide_version: "314.0.6",
@@ -248,10 +254,10 @@ export async function buildWorkers(runtimePath, outputPath, sourceRevision, mete
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const [runtime, output, revision, sequence, ...extra] = process.argv.slice(2);
-  if (!runtime || !output || !revision || !sequence || extra.length) {
-    throw new Error("Usage: node build-workers.mjs <qualified-runtime.mjs> <new-output-directory> <source-sha> <release-sequence>");
+  const [runtime, output, revision, version, sequence, ...extra] = process.argv.slice(2);
+  if (!runtime || !output || !revision || !version || !sequence || extra.length) {
+    throw new Error("Usage: node build-workers.mjs <qualified-runtime.mjs> <new-output-directory> <source-sha> <release-version> <release-sequence>");
   }
   const bounds = process.env.BIFROST_RELEASE_WORKERS_METER_BOUNDS;
-  await buildWorkers(runtime, output, revision, bounds ? JSON.parse(bounds) : undefined, Number(sequence));
+  await buildWorkers(runtime, output, revision, bounds ? JSON.parse(bounds) : undefined, version, Number(sequence));
 }

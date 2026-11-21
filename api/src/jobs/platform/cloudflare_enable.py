@@ -22,6 +22,7 @@ from src.jobs.platform.base import (
 )
 from src.jobs.platform.cloudflare_capacity import (
     DRAIN_DEADLINE,
+    RELEASE_FENCE_REMEDY,
     _cleanup_one,
     _cleanup_stranded_workflow_slots,
     _drain_timeout_action,
@@ -60,6 +61,8 @@ from src.services.worker_pool.cloudflare_policy import (
     _price_policy,
     cloudflare_workers_remain,
     release_meter_bounds,
+    set_workers_release_floor,
+    workers_release_error,
 )
 from src.services.worker_pool.cloudflare_provisioning import (
     DeletionSettling,
@@ -72,6 +75,7 @@ from src.services.worker_pool.cloudflare_provisioning import (
 )
 from src.services.worker_pool.cloudflare_release import (
     WorkersRelease,
+    WorkersReleaseOrder,
     WorkersReleaseUnavailable,
     load_workers_release,
 )
@@ -181,8 +185,11 @@ async def _settle_enable(
         if row is None:
             return {"outcome": "superseded"}
         upgrading = row.upgrade_release is not None
-        if release.manifest.release_sequence < row.workers_release_sequence:
-            raise PlatformJobRequiresAction("Install the Matched Workers Release", {"code": "CF_RELEASE_MISMATCH"})
+        order = WorkersReleaseOrder(release.manifest.release_version, release.manifest.release_sequence)
+        if code := workers_release_error(row, release.digest, order):
+            raise PlatformJobRequiresAction("Review the Workers Release Fence", {
+                "code": code, "instructions": [RELEASE_FENCE_REMEDY],
+            })
         if (row.upgrade_release if upgrading else row.policy.get("bounds_release")) != release.digest:
             raise PlatformJobRequiresAction("Review Policy for the Packaged Workers Release", {"code": "CF_POLICY_RELEASE_CHANGED"})
         replacement_policy = None
@@ -315,7 +322,8 @@ async def _settle_enable(
         await _require_budget(db, row)
         row.admitted_revision = payload.revision
         row.deployed_revision = payload.revision
-        row.workers_release_sequence = release.manifest.release_sequence
+        set_workers_release_floor(row, release.digest, order)
+        row.drain_required = False
         row.upgrade_release = None
         row.upgrade_drained_at = None
         wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)

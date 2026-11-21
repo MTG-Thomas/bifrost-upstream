@@ -4,8 +4,10 @@ import test from 'node:test';
 import {assertMeterInventory, buildWorkers, bundleWorker, qualifiedMeterLimits} from './build-workers.mjs';
 
 test('a Workers release requires a positive sequence before reading artifacts', async () => {
-  await assert.rejects(buildWorkers('unused-runtime', 'unused-output', 'a'.repeat(40), {}, 0),
+  await assert.rejects(buildWorkers('unused-runtime', 'unused-output', 'a'.repeat(40), {}, '1.0.0', 0),
     /positive Workers release sequence/);
+  await assert.rejects(buildWorkers('unused-runtime', 'unused-output', 'a'.repeat(40), {}, '1.0.0-rc.01', 1),
+    /SemVer Bifrost release version/);
 });
 
 const source = new URL('../../../api/src/services/worker_pool/cloudflare_meter_bounds.json', import.meta.url);

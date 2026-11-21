@@ -33,6 +33,8 @@ def release(tmp_path: Path, monkeypatch) -> Path:
     manifest = {
         "manifest_version": 1,
         "source_revision": "a" * 40,
+        "release_version": "1.0.0-rc.1",
+        "release_sequence": 1,
         "runtime_sha256": "fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5",
         "pyodide_version": "314.0.6",
         "compatibility_date": "2026-10-30",
@@ -90,7 +92,7 @@ def release(tmp_path: Path, monkeypatch) -> Path:
 
 def test_release_loads_the_verified_bytes(release: Path) -> None:
     loaded = load_workers_release(release)
-    assert loaded.digest == sha256((release / "manifest.json").read_bytes()).hexdigest()
+    assert len(loaded.digest) == 64
     assert loaded.modules["launcher"]["launcher.mjs"] == (release / "launcher.mjs").read_bytes()
     assert loaded.modules["capacity"]["capacity.mjs"] == (release / "capacity.mjs").read_bytes()
 
@@ -104,9 +106,21 @@ def test_missing_manifest_read_is_not_cached(release: Path, monkeypatch) -> None
         missing.mkdir()
         manifest = (release / "manifest.json").read_bytes()
         (missing / "manifest.json").write_bytes(manifest)
-        assert cloudflare_release.installed_workers_release_digest() == sha256(manifest).hexdigest()
+        assert cloudflare_release.installed_workers_release_digest() == load_workers_release(release).digest
     finally:
         cloudflare_release._installed_workers_identity.cache_clear()
+
+
+def test_promoting_identical_workers_keeps_the_deployment_digest(release: Path) -> None:
+    candidate = load_workers_release(release)
+    manifest = release / "manifest.json"
+    data = json.loads(manifest.read_bytes())
+    data.update(release_version="1.0.0", release_sequence=2)
+    manifest.write_text(json.dumps(data), encoding="utf8")
+    assert load_workers_release(release).digest == candidate.digest
+    data["compatibility_date"] = "2026-10-31"
+    manifest.write_text(json.dumps(data), encoding="utf8")
+    assert load_workers_release(release).digest != candidate.digest
 
 
 def test_release_rejects_an_incompatible_drain_protocol(release: Path) -> None:

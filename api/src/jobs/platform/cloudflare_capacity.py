@@ -9,7 +9,7 @@ from uuid import UUID
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
-from sqlalchemy import case, delete, func, select, text, true, update
+from sqlalchemy import case, delete, func, select, text, true, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import get_db_context
@@ -56,6 +56,9 @@ from src.services.worker_pool.cloudflare_policy import (
     CloudflarePolicyConflict,
     cloudflare_workers_remain,
     retire_cloudflare_installation,
+    set_workers_release_floor,
+    workers_release_error,
+    workers_release_floor,
     workers_upgrade_available,
 )
 from src.services.worker_pool.cloudflare_provisioning import (
@@ -78,7 +81,11 @@ from src.services.worker_pool.cloudflare_spend import (
     usage_period,
 )
 from src.services.worker_pool.cloudflare_slots import delete_workflow_slots
-from src.services.worker_pool.cloudflare_release import installed_workers_release_digest, installed_workers_release_sequence
+from src.services.worker_pool.cloudflare_release import (
+    WorkersReleaseOrder,
+    installed_workers_release_digest,
+    installed_workers_release_order,
+)
 from src.services.worker_pool.cloudflare_workers_rest import (
     CloudflareManagementDenied,
     CloudflareRestUnavailable,
@@ -93,7 +100,11 @@ ROTATE_JOB = "capacity.cloudflare_rotate_account_token"
 ROTATE_WORKER_JOB = "capacity.cloudflare_rotate_worker_credential"
 RECONCILE_INTERVAL_SECONDS = 5 * 60
 RECONCILE_MAX_BACKOFF_SECONDS = 60 * 60
-SELF_HEALING_RECONCILE_CODES = frozenset({"CF_DRAIN_TIMEOUT", "CF_CLEANUP_PENDING", "CF_RELEASE_MISMATCH"})
+SELF_HEALING_RECONCILE_CODES = frozenset({
+    "CF_DRAIN_TIMEOUT", "CF_CLEANUP_PENDING", "CF_RELEASE_MISMATCH",
+    "CF_PROVIDER_UNAVAILABLE", "CF_SPEND_UNVERIFIED",
+})
+RELEASE_FENCE_REMEDY = "Use Reconcile with Reset Release Fence to accept this package."
 DRAIN_DEADLINE = timedelta(minutes=10)
 CREATE_SETTLEMENT_WINDOW = timedelta(minutes=1)
 
@@ -120,6 +131,10 @@ class CloudflareReconcilePayload(BaseModel):
     installation_id: UUID
     revision: int = Field(gt=0)
     operation: Literal["reconcile", "upgrade"] = "reconcile"
+
+
+class CloudflareReconcilePayloadV2(CloudflareReconcilePayload):
+    reset_release_fence: bool = False
 
 
 class CloudflareRotateAccountPayload(BaseModel):
@@ -600,34 +615,33 @@ def _current_reconcile(installation: CloudflareInstallation | None, revision: in
 
 
 def _replacement_revision(
-    row: CloudflareInstallation, release: str | None, *, repair: bool, sequence: int = 0,
+    row: CloudflareInstallation, release: str, order: WorkersReleaseOrder,
 ) -> int | None:
-    """Pin a new generation only for a release change or a paused, deployed revision."""
-    if release is None or sequence < row.workers_release_sequence:
+    if workers_release_error(row, release, order):
         return None
-    if row.upgrade_release is not None:
-        if release != row.upgrade_release and sequence > row.workers_release_sequence:
-            return row.desired_revision + 1
-        return None
-    if row.policy.get("bounds_release") != release or (
-        repair and row.admitted_revision is None and row.deployed_revision is not None
-    ):
+    target = row.upgrade_release or row.policy.get("bounds_release")
+    if release != target or (row.upgrade_release is None and row.drain_required):
         return row.desired_revision + 1
     return None
 
 
 async def _stage_reconcile(
-    db: AsyncSession, row: CloudflareInstallation, *, repair: bool, release: str | None, sequence: int,
+    db: AsyncSession, row: CloudflareInstallation, *, release: str | None, order: WorkersReleaseOrder | None,
+    force: bool = False,
 ) -> None:
     """Close claims and pin the target in the same transaction as enqueue."""
-    revision = _replacement_revision(row, release, repair=repair, sequence=sequence)
+    if release is None or order is None or workers_release_error(row, release, order):
+        return
+    revision = row.desired_revision + 1 if force else _replacement_revision(row, release, order)
     if revision is not None:
         row.desired_revision = revision
         row.upgrade_release = release
         row.upgrade_drained_at = None
-        row.workers_release_sequence = sequence
         row.admitted_revision = None
         wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
+    floor = workers_release_floor(row)
+    if floor is None or order.key > floor.key:
+        set_workers_release_floor(row, release, order)
 
 
 async def _settle_reconcile(
@@ -710,17 +724,23 @@ async def _settle_reconcile(
 
 
 async def _reconcile(context: PlatformJobContext, parsed: BaseModel) -> dict[str, str]:
-    payload = CloudflareReconcilePayload.model_validate(parsed)
+    payload = CloudflareReconcilePayloadV2.model_validate(parsed.model_dump())
     async with get_db_context() as db:
         await _hold_installation_lease(db, context, payload.installation_id)
         row = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
-        if row is None or not _current_reconcile(row, payload.revision):
+        if row is None or row.retired_at is not None or row.desired_revision != payload.revision:
+            return {"outcome": "superseded"}
+        if payload.reset_release_fence and row.desired_state == "scaled_in":
+            return {"outcome": "fence_reset"}
+        if not _current_reconcile(row, payload.revision):
             return {"outcome": "superseded"}
         target = row.upgrade_release or row.policy.get("bounds_release")
-        if (
-            target is None or installed_workers_release_digest() != target
-            or installed_workers_release_sequence() < row.workers_release_sequence
-        ):
+        release, order = installed_workers_release_digest(), installed_workers_release_order()
+        if release is not None and order is not None and (code := workers_release_error(row, release, order)):
+            raise PlatformJobRequiresAction("Review the Workers Release Fence", {
+                "code": code, "instructions": [RELEASE_FENCE_REMEDY],
+            })
+        if release is None or order is None or release != target:
             raise PlatformJobRequiresAction("Install the Matched Workers Release", {"code": "CF_RELEASE_MISMATCH"})
         provision = row.admitted_revision is None
     if provision:
@@ -739,35 +759,62 @@ async def _reconcile(context: PlatformJobContext, parsed: BaseModel) -> dict[str
         raise PlatformJobFailure("CF_PROVIDER_UNAVAILABLE", "Cloudflare REST Is Temporarily Unavailable", retryable=True) from None
 
 
-CLOUDFLARE_RECONCILE_DEFINITION = define_platform_job(RECONCILE_JOB, CloudflareReconcilePayload, _reconcile)
+CLOUDFLARE_RECONCILE_DEFINITION = define_platform_job(
+    RECONCILE_JOB, CloudflareReconcilePayloadV2, _reconcile,
+    historical_payload_models={1: CloudflareReconcilePayload},
+)
 
 
 async def enqueue_cloudflare_reconcile(
     db: AsyncSession, caller: Caller, *, installation_id: UUID, expected_revision: int,
-    upgrade: bool = False,
+    upgrade: bool = False, reset_release_fence: bool = False,
 ) -> tuple[PlatformJob, bool]:
     operation = "capacity.cloudflare_upgrade" if upgrade else "capacity.cloudflare_reconcile"
     require_operation(caller, operation, GLOBAL)
     actor = caller.principal
     installation = await db.get(CloudflareInstallation, installation_id, with_for_update=True)
-    if installation is None or not _current_reconcile(installation, expected_revision):
-        raise CloudflarePolicyConflict("Cloudflare reconciliation requires the current enabled deployment")
-    release = installed_workers_release_digest()
-    sequence = installed_workers_release_sequence()
-    if upgrade and release is not None and not workers_upgrade_available(installation, release, sequence):
-        raise CloudflarePolicyConflict("There is no matching Cloudflare upgrade available.")
-    await _stage_reconcile(db, installation, repair=True, release=release, sequence=sequence)
-    payload = CloudflareReconcilePayload(
+    if (
+        installation is None or installation.retired_at is not None
+        or installation.desired_revision != expected_revision
+        or installation.desired_state not in (("enabled", "scaled_in") if reset_release_fence else ("enabled",))
+    ):
+        raise CloudflarePolicyConflict("Cloudflare reconciliation requires the current installation revision.")
+    release, order = installed_workers_release_digest(), installed_workers_release_order()
+    if reset_release_fence:
+        if release is None or order is None or not workers_release_error(installation, release, order):
+            raise CloudflarePolicyConflict("A conflicting or older packaged Workers release is required to reset the fence.")
+        await emit_audit(
+            db, operation, resource_type="cloudflare_installation", resource_id=installation_id,
+            details={
+                "reset_release_fence": True,
+                "previous_version": installation.workers_release_version,
+                "previous_sequence": installation.workers_release_sequence,
+                "previous_digest": installation.workers_release_digest,
+                "release_version": order.version,
+                "release_sequence": order.sequence,
+                "release_digest": release,
+            },
+        )
+        set_workers_release_floor(installation, release, order)
+    if upgrade and not reset_release_fence and not workers_upgrade_available(installation, release, order):
+        code = workers_release_error(installation, release, order) if release is not None and order is not None else None
+        raise CloudflarePolicyConflict(
+            f"{code}. {RELEASE_FENCE_REMEDY}" if code else "There is no matching Cloudflare upgrade available."
+        )
+    if installation.desired_state == "enabled":
+        await _stage_reconcile(db, installation, release=release, order=order, force=reset_release_fence)
+    payload = CloudflareReconcilePayloadV2(
         installation_id=installation_id, revision=installation.desired_revision,
-        operation="upgrade" if upgrade else "reconcile",
+        operation="upgrade" if upgrade or installation.upgrade_release else "reconcile",
+        reset_release_fence=reset_release_fence,
     )
     job, reused = await enqueue_platform_job(
         db, CLOUDFLARE_RECONCILE_DEFINITION, payload,
-        dedupe_key=f"manual:{payload.operation}:{installation_id}:{payload.revision}:{actor.user_id}",
+        dedupe_key=f"manual:{operation}:{reset_release_fence}:{installation_id}:{payload.revision}:{actor.user_id}",
         resource_lock_key=f"cloudflare-installation:{installation_id}",
         organization_id=None, requested_by_user_id=actor.user_id, requested_by_email=actor.email,
         requested_by_name=actor.name, resource_type="cloudflare_installation", resource_id=str(installation_id),
-        title="Upgrade Cloudflare" if upgrade else "Reconcile Cloudflare", action_url=None,
+        title="Upgrade Cloudflare" if payload.operation == "upgrade" else "Reconcile Cloudflare", action_url=None,
     )
     if not reused:
         await emit_audit(
@@ -1031,17 +1078,18 @@ async def schedule_cloudflare_reconcile(db: AsyncSession, *, now: datetime) -> N
     ).with_for_update(skip_locked=True))
     if installation is None:
         return
-    release = installed_workers_release_digest()
-    sequence = installed_workers_release_sequence()
-    if release is not None and sequence < installation.workers_release_sequence:
-        return  # An older scheduler cannot supersede or delay a newer target.
     was_admitted = installation.admitted_revision is not None
-    # The cutover migration advances the desired revision while preserving
-    # the previous deployed revision, even when the artifact itself is unchanged.
-    needs_drain = installation.deployed_revision != installation.desired_revision
-    await _stage_reconcile(db, installation, repair=needs_drain, release=release, sequence=sequence)
-    if not was_admitted and installation.upgrade_release is None:
+    if not was_admitted and installation.upgrade_release is None and not installation.drain_required:
         return
+    active_enable = await db.scalar(select(PlatformJob.id).where(
+        PlatformJob.job_type == "capacity.cloudflare_enable",
+        PlatformJob.resource_id == str(installation.id),
+        PlatformJob.status.in_(ACTIVE_PLATFORM_JOB_STATUSES),
+    ).limit(1))
+    if active_enable is not None:
+        return
+    release, order = installed_workers_release_digest(), installed_workers_release_order()
+    await _stage_reconcile(db, installation, release=release, order=order)
     active = await db.scalar(select(PlatformJob.id).where(
         PlatformJob.job_type == RECONCILE_JOB,
         PlatformJob.resource_id == str(installation.id),
@@ -1057,17 +1105,22 @@ async def schedule_cloudflare_reconcile(db: AsyncSession, *, now: datetime) -> N
     latest = await db.scalar(history.order_by(PlatformJob.created_at.desc(), PlatformJob.id.desc()).limit(1))
     if latest is not None and latest.status != "succeeded":
         code = (latest.result or {}).get("code") if latest.status == "requires_action" else latest.error_code
-        if code not in SELF_HEALING_RECONCILE_CODES or latest.completed_at is None:
+        if installation.admitted_revision is None and code not in SELF_HEALING_RECONCILE_CODES:
             return
-        failures = await db.scalar(select(func.count()).select_from(history.where(
-            PlatformJob.status.in_(("requires_action", "failed")),
-        ).subquery()))
+        last_success = await db.scalar(history.where(PlatformJob.status == "succeeded")
+                                       .order_by(PlatformJob.created_at.desc(), PlatformJob.id.desc()).limit(1))
+        failures_query = history.where(PlatformJob.status.in_(("requires_action", "failed", "cancelled")))
+        if last_success is not None:
+            failures_query = failures_query.where(
+                tuple_(PlatformJob.created_at, PlatformJob.id) > (last_success.created_at, last_success.id),
+            )
+        failures = await db.scalar(select(func.count()).select_from(failures_query.subquery()))
         delay = min(RECONCILE_INTERVAL_SECONDS * 2 ** min(max((failures or 1) - 1, 0), 4),
                     RECONCILE_MAX_BACKOFF_SECONDS)
-        if now < latest.completed_at + timedelta(seconds=delay):
+        if now < (latest.completed_at or latest.created_at) + timedelta(seconds=delay):
             return
     interval = int(now.timestamp()) // RECONCILE_INTERVAL_SECONDS
-    payload = CloudflareReconcilePayload(
+    payload = CloudflareReconcilePayloadV2(
         installation_id=installation.id, revision=installation.desired_revision,
         operation="upgrade" if installation.upgrade_release else "reconcile",
     )

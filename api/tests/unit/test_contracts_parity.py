@@ -27,7 +27,8 @@ import pytest
 from bifrost import contracts as cli_contracts  # noqa: E402
 from bifrost.contracts import enums as cli_enums  # noqa: E402
 from bifrost.contracts.cloudflare_capacity import CloudflareCapacityAction as CliCloudflareCapacityAction  # noqa: E402
-from shared.models import CloudflareCapacityAction  # noqa: E402
+from bifrost.contracts.cloudflare_capacity import CloudflareReconcileAction as CliCloudflareReconcileAction  # noqa: E402
+from shared.models import CloudflareCapacityAction, CloudflareReconcileAction  # noqa: E402
 from src.models import enums as server_enums  # noqa: E402
 from src.models.contracts import agents as server_agents  # noqa: E402
 from src.models.contracts import applications as server_applications  # noqa: E402
@@ -47,6 +48,7 @@ from src.models.contracts import workflows as server_workflows  # noqa: E402
 # Mirror class → server class. Each pair must have identical ``model_fields``.
 DTO_PAIRS: list[tuple[type, type]] = [
     (CliCloudflareCapacityAction, CloudflareCapacityAction),
+    (CliCloudflareReconcileAction, CloudflareReconcileAction),
     (cli_contracts.OrganizationCreate, server_organizations.OrganizationCreate),
     (cli_contracts.OrganizationUpdate, server_organizations.OrganizationUpdate),
     (cli_contracts.RoleCreate, server_users.RoleCreate),

@@ -9,34 +9,30 @@ from src.jobs.platform import cloudflare_enable
 from src.jobs.platform.base import PlatformJobCancelled, PlatformJobContext
 from src.jobs.platform.cloudflare_capacity import _replacement_revision
 from src.models.orm.cloudflare_capacity import CloudflareInstallation
+from src.services.worker_pool.cloudflare_release import WorkersReleaseOrder
 
 
-@pytest.mark.parametrize(("package", "pending", "admitted", "repair", "expected"), [
-    ("new", None, 4, False, 5),
-    ("old", None, 4, True, None),
-    (None, None, 4, True, None),
-    ("new", "new", None, True, None),
-    ("newer", "new", None, False, None),
-    ("old", None, None, True, 5),
-    ("old", None, None, False, None),
-])
-def test_replacement_revision(package, pending, admitted, repair, expected) -> None:
+def test_replacement_requires_a_new_artifact_or_cutover_marker() -> None:
+    order = WorkersReleaseOrder("1.3.0", 100)
     row = CloudflareInstallation(
-        desired_revision=4, deployed_revision=3, admitted_revision=admitted,
-        upgrade_release=pending, policy={"bounds_release": "old"},
-        workers_release_sequence=0,
+        desired_revision=4, deployed_revision=3, admitted_revision=None, drain_required=False,
+        policy={"bounds_release": "active"}, workers_release_version=order.version,
+        workers_release_sequence=order.sequence, workers_release_digest="active",
     )
-    assert _replacement_revision(row, package, repair=repair) == expected
+    assert _replacement_revision(row, "active", order) is None
+    row.drain_required = True
+    assert _replacement_revision(row, "active", order) == 5
+    row.drain_required = False
+    assert _replacement_revision(row, "hotfix", WorkersReleaseOrder("1.2.5", 101)) is None
+    assert _replacement_revision(row, "conflict", WorkersReleaseOrder("1.3.0", 102)) is None
+    assert _replacement_revision(row, "active", WorkersReleaseOrder("1.3.0", 102)) is None
+    assert _replacement_revision(row, "new", WorkersReleaseOrder("1.4.0", 1)) == 5
 
 
-def test_release_sequence_blocks_only_older_packages_and_allows_forward_repair() -> None:
-    row = CloudflareInstallation(
-        desired_revision=4, deployed_revision=3, upgrade_release="pending",
-        policy={"bounds_release": "old"}, workers_release_sequence=20,
-    )
-    assert _replacement_revision(row, "older", repair=True, sequence=19) is None
-    assert _replacement_revision(row, "pending", repair=True, sequence=20) is None
-    assert _replacement_revision(row, "new", repair=False, sequence=21) == 5
+def test_semver_precedes_build_sequence() -> None:
+    assert WorkersReleaseOrder("1.3.0-rc.2", 100).key < WorkersReleaseOrder("1.3.0-rc.10", 1).key
+    assert WorkersReleaseOrder("1.3.0-rc.10", 100).key < WorkersReleaseOrder("1.3.0", 1).key
+    assert WorkersReleaseOrder("1.3.0+metadata", 2).precedence == WorkersReleaseOrder("1.3.0", 1).precedence
 
 
 @pytest.mark.asyncio

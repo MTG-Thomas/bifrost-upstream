@@ -170,9 +170,11 @@ async def managed_pool(db, capacity):
         "monthly_limit_usd": "50.00",
     })
     units = dict.fromkeys(WORKERS_RATES, Decimal(0))
+    from src.services.worker_pool.cloudflare_release import WorkersReleaseOrder
+
     bounds = WorkersReleaseMeterBounds(
         60, units, units, provider.profile.worker_version, 1,
-        dict.fromkeys(LAUNCHER_RECEIPT_METERS, 100), dict.fromkeys(CPU_LIMIT_PATHS, 1), 100,
+        dict.fromkeys(LAUNCHER_RECEIPT_METERS, 100), dict.fromkeys(CPU_LIMIT_PATHS, 1), 100, WorkersReleaseOrder("1.0.0", 1),
     )
     async with db.context() as session:
         session.add(CloudflareInstallation(

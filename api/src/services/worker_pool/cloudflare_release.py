@@ -11,7 +11,7 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from shared.models import CloudflareLauncherCounts
+from shared.models import CloudflareLauncherCounts, SEMVER_PATTERN
 
 WORKERS_RELEASE_PATH = Path("/app/artifacts/cloudflare/workers")
 MAX_WORKER_BYTES = 64 * 1024 * 1024
@@ -192,7 +192,8 @@ class WorkersManifest(BaseModel):
 
     manifest_version: Literal[1]
     source_revision: str = Field(pattern=r"^[a-f0-9]{40}$")
-    release_sequence: int = Field(default=0, strict=True, ge=0, le=2**53 - 1)
+    release_version: str = Field(max_length=128, pattern=SEMVER_PATTERN.replace(r"\d", "[0-9]"))
+    release_sequence: int = Field(strict=True, ge=1, le=2**53 - 1)
     runtime_sha256: Digest
     pyodide_version: Literal["314.0.6"]
     compatibility_date: date
@@ -213,10 +214,34 @@ class WorkersRelease:
     modules: dict[WorkerRole, dict[str, bytes]]
 
 
+@dataclass(frozen=True, slots=True)
+class WorkersReleaseOrder:
+    version: str
+    sequence: int
+
+    @property
+    def precedence(self) -> tuple[tuple[int, ...], bool, tuple[tuple[bool, int | str], ...]]:
+        core, separator, prerelease = self.version.split("+", 1)[0].partition("-")
+        identifiers = tuple(
+            (False, int(part)) if part.isascii() and part.isdigit() else (True, part)
+            for part in prerelease.split(".")
+        ) if separator else ()
+        return tuple(map(int, core.split("."))), not separator, identifiers
+
+    @property
+    def key(self):
+        return self.precedence, self.sequence
+
+
+def _deployment_digest(manifest: WorkersManifest) -> str:
+    data = manifest.model_dump(mode="json", exclude={"release_version", "release_sequence"})
+    return sha256(json.dumps(data, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
 @cache
-def _installed_workers_identity() -> tuple[str, int]:
-    raw = (WORKERS_RELEASE_PATH / "manifest.json").read_bytes()
-    return sha256(raw).hexdigest(), WorkersManifest.model_validate_json(raw).release_sequence
+def _installed_workers_identity() -> tuple[str, WorkersReleaseOrder]:
+    manifest = WorkersManifest.model_validate_json((WORKERS_RELEASE_PATH / "manifest.json").read_bytes())
+    return _deployment_digest(manifest), WorkersReleaseOrder(manifest.release_version, manifest.release_sequence)
 
 
 def installed_workers_release_digest() -> str | None:
@@ -227,11 +252,11 @@ def installed_workers_release_digest() -> str | None:
         return None
 
 
-def installed_workers_release_sequence() -> int:
+def installed_workers_release_order() -> WorkersReleaseOrder | None:
     try:
         return _installed_workers_identity()[1]
     except (OSError, ValidationError):
-        return 0
+        return None
 
 
 def load_workers_release(path: Path = WORKERS_RELEASE_PATH) -> WorkersRelease:
@@ -298,4 +323,4 @@ def load_workers_release(path: Path = WORKERS_RELEASE_PATH) -> WorkersRelease:
             raise WorkersReleaseUnavailable("Workers capacity module differs from the measured bytes")
     except (OSError, ValidationError):
         raise WorkersReleaseUnavailable("Workers release is missing or invalid") from None
-    return WorkersRelease(manifest=manifest, digest=sha256(raw).hexdigest(), modules=modules)
+    return WorkersRelease(manifest=manifest, digest=_deployment_digest(manifest), modules=modules)

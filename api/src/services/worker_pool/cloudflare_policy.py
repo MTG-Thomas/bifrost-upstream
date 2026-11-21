@@ -44,8 +44,9 @@ from src.services.worker_pool.cloudflare_credentials import (
 )
 from src.services.worker_pool.cloudflare_release import (
     WorkersRelease,
+    WorkersReleaseOrder,
     installed_workers_release_digest,
-    installed_workers_release_sequence,
+    installed_workers_release_order,
 )
 from src.services.worker_pool.cloudflare_spend import (
     exhausted_managed_workers,
@@ -82,9 +83,9 @@ class WorkersReleaseMeterBounds:
     launcher_caps: Mapping[str, int]
     cpu_limits_ms: Mapping[str, int]
     startup_expected_us: int
+    release_order: WorkersReleaseOrder
     expected_cpu_ms: Mapping[str, int] | None = None
     bounded_linger: bool = False
-    release_sequence: int = 0
 
 
 def release_meter_bounds(release: WorkersRelease) -> WorkersReleaseMeterBounds:
@@ -100,21 +101,46 @@ def release_meter_bounds(release: WorkersRelease) -> WorkersReleaseMeterBounds:
         {**bounds.per_launcher_second, "worker_cpu_ms": cpu_per_second},
         {**bounds.per_fleet_fixed, "worker_cpu_ms": bounds.per_fleet_fixed["worker_requests"] * expected["capacity"]},
         release.digest, release.manifest.max_slots_per_launcher,
-        bounds.qualification.launcher_caps, bounds.qualification.cpu_limits_ms, startup_us, expected,
+        bounds.qualification.launcher_caps, bounds.qualification.cpu_limits_ms, startup_us,
+        release_order=WorkersReleaseOrder(release.manifest.release_version, release.manifest.release_sequence),
+        expected_cpu_ms=expected,
         bounded_linger=any(
             binding.name == "BIFROST_TENANT_LINGER_SECONDS" and binding.source == "linger_seconds"
             for binding in release.manifest.workers["launcher"].bindings
         ),
-        release_sequence=release.manifest.release_sequence,
     )
 
 
-def workers_upgrade_available(row: CloudflareInstallation, release: str | None, sequence: int) -> bool:
-    if row.desired_state != "enabled" or release is None or sequence < row.workers_release_sequence:
+def workers_release_floor(row: CloudflareInstallation) -> WorkersReleaseOrder | None:
+    if row.workers_release_version is None:
+        return None
+    return WorkersReleaseOrder(row.workers_release_version, row.workers_release_sequence)
+
+
+def set_workers_release_floor(row: CloudflareInstallation, release: str, order: WorkersReleaseOrder) -> None:
+    row.workers_release_version = order.version
+    row.workers_release_sequence = order.sequence
+    row.workers_release_digest = release
+
+
+def workers_release_error(
+    row: CloudflareInstallation, release: str, order: WorkersReleaseOrder,
+) -> Literal["CF_RELEASE_DOWNGRADE", "CF_RELEASE_CONFLICT"] | None:
+    floor = workers_release_floor(row)
+    if floor is not None:
+        if order.precedence == floor.precedence and release != row.workers_release_digest:
+            return "CF_RELEASE_CONFLICT"
+        if order.key < floor.key:
+            return "CF_RELEASE_DOWNGRADE"
+    return None
+
+
+def workers_upgrade_available(
+    row: CloudflareInstallation, release: str | None, order: WorkersReleaseOrder | None,
+) -> bool:
+    if row.desired_state != "enabled" or release is None or order is None or workers_release_error(row, release, order):
         return False
-    if row.upgrade_release is not None:
-        return release == row.upgrade_release or sequence > row.workers_release_sequence
-    return release != row.policy.get("bounds_release")
+    return row.upgrade_release is not None or row.drain_required or release != row.policy.get("bounds_release")
 
 
 class CloudflarePolicyConflict(ValueError):
@@ -198,7 +224,7 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
             "deployed_revision": installation.deployed_revision,
             "upgrade_pending": installation.upgrade_release is not None,
             "upgrade_available": workers_upgrade_available(
-                installation, installed_release, installed_workers_release_sequence(),
+                installation, installed_release, installed_workers_release_order(),
             ),
             "desired_state": installation.desired_state,
             "admission_open": (
@@ -311,7 +337,9 @@ async def create_cloudflare_installation(
             consent_actor=actor,
             consent_at=now,
             policy=desired,
-            workers_release_sequence=bounds.release_sequence,
+            workers_release_sequence=bounds.release_order.sequence,
+            workers_release_version=bounds.release_order.version,
+            workers_release_digest=bounds.release,
             desired_revision=1,
             desired_state="scaled_in",
             api_token_version=1,
@@ -409,11 +437,14 @@ async def save_cloudflare_policy(
     row = result.scalar_one_or_none()
     if row is None or row.desired_revision != expected_revision or row.desired_state == "disconnected":
         raise CloudflarePolicyConflict("Cloudflare installation changed. Reload its current policy.")
-    if bounds.release_sequence < row.workers_release_sequence:
-        raise CloudflarePolicyConflict("Update policy from the current or a newer Workers release.")
+    if code := workers_release_error(row, bounds.release, bounds.release_order):
+        raise CloudflarePolicyConflict(f"{code}. Use Reconcile with Reset Release Fence to accept this package.")
     if row.upgrade_release is not None and row.upgrade_release != bounds.release:
         raise CloudflarePolicyConflict("Edit policy from the matched Cloudflare release.")
     if row.policy != desired:
+        floor = workers_release_floor(row)
+        if floor is None or bounds.release_order.key > floor.key:
+            set_workers_release_floor(row, bounds.release, bounds.release_order)
         row.policy = desired
         row.admitted_revision = None
         row.desired_revision += 1

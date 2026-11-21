@@ -45,6 +45,7 @@ EXPORTS = cloudflare_release.WORKER_EXPORTS
 def _release():
     manifest = {
         "manifest_version": 1, "source_revision": "a" * 40, "runtime_sha256": QUALIFIED_RUNTIME_SHA256,
+        "release_version": "1.0.0", "release_sequence": 1,
         "pyodide_version": "314.0.6", "compatibility_date": "2026-10-30", "compatibility_flags": [],
         "capacity_protocol": 2, "credential_protocol": 2, "runtime_profile": "cloudflare-python-v1",
         "capabilities": [["workflow.execute", 1]], "max_slots_per_launcher": 4,
@@ -191,12 +192,18 @@ def install_api():
     cloudflare_connection.load_workers_release = _release
     cloudflare_connection.WorkersRestCleanup = _Cloudflare
     cloudflare_capacity.installed_workers_release_digest = _fixture_digest
+    cloudflare_capacity.installed_workers_release_order = _fixture_order
     cloudflare_admission.installed_workers_release_digest = _fixture_digest
     cloudflare_policy.installed_workers_release_digest = _fixture_digest
+    cloudflare_policy.installed_workers_release_order = _fixture_order
 
 
 def _fixture_digest():
     return _release().digest
+
+
+def _fixture_order():
+    return cloudflare_release.WorkersReleaseOrder("1.0.0", 1)
 
 
 def install_enable(job_module):
@@ -304,3 +311,4 @@ def install_enable(job_module):
 def install_lifecycle(job_module):
     job_module.WorkersRestCleanup = _Cloudflare
     job_module.installed_workers_release_digest = _fixture_digest
+    job_module.installed_workers_release_order = _fixture_order
