@@ -77,6 +77,7 @@ from src.services.worker_pool.cloudflare_spend import (
     usage_period,
 )
 from src.services.worker_pool.cloudflare_slots import delete_workflow_slots
+from src.services.worker_pool.cloudflare_release import installed_workers_release_digest
 from src.services.worker_pool.cloudflare_workers_rest import (
     CloudflareManagementDenied,
     CloudflareRestUnavailable,
@@ -593,6 +594,42 @@ def _current_reconcile(installation: CloudflareInstallation | None, revision: in
     )
 
 
+def _replacement_revision(
+    row: CloudflareInstallation, release: str | None, *, repair: bool,
+) -> int | None:
+    """Pin a new generation only for a release change or a paused, deployed revision."""
+    if release is None or row.upgrade_release is not None:
+        return None
+    if row.policy.get("bounds_release") != release or (
+        repair and row.admitted_revision is None and row.deployed_revision == row.desired_revision
+    ):
+        return row.desired_revision + 1
+    return None
+
+
+async def _stage_reconcile(
+    db: AsyncSession, row: CloudflareInstallation, *, repair: bool,
+) -> None:
+    """Close claims and pin the target in the same transaction as enqueue."""
+    release = installed_workers_release_digest()
+    revision = _replacement_revision(row, release, repair=repair)
+    if revision is not None:
+        # A replica running an earlier package cannot select a rollback target.
+        if row.policy.get("bounds_release") != release and await db.scalar(select(
+            CloudflareOwnedResource.id,
+        ).where(
+            CloudflareOwnedResource.installation_id == row.id,
+            CloudflareOwnedResource.artifact_digest == release,
+            CloudflareOwnedResource.desired_revision < row.desired_revision,
+        ).limit(1)):
+            return
+        row.desired_revision = revision
+        row.upgrade_release = release
+    if revision is not None or release is None:
+        row.admitted_revision = None
+        wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
+
+
 async def _settle_reconcile(
     context: PlatformJobContext, payload: CloudflareReconcilePayload, adapter: WorkersRestCleanup,
 ) -> dict[str, str]:
@@ -674,6 +711,21 @@ async def _settle_reconcile(
 
 async def _reconcile(context: PlatformJobContext, parsed: BaseModel) -> dict[str, str]:
     payload = CloudflareReconcilePayload.model_validate(parsed)
+    async with get_db_context() as db:
+        await _hold_installation_lease(db, context, payload.installation_id)
+        row = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
+        if row is None or not _current_reconcile(row, payload.revision):
+            return {"outcome": "superseded"}
+        target = row.upgrade_release or row.policy.get("bounds_release")
+        if installed_workers_release_digest() != target or target is None:
+            raise PlatformJobRequiresAction("Install the Matched Workers Release", {"code": "CF_RELEASE_MISMATCH"})
+        provision = row.admitted_revision is None
+    if provision:
+        # Reuse the admission canary and write fences used by Enable.
+        from src.jobs.platform.cloudflare_enable import CloudflareEnablePayload, _enable
+
+        return await _enable(context, CloudflareEnablePayload(**payload.model_dump()))
+
     await context.report("Verifying Cloudflare Deployment")
     try:
         async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
@@ -687,25 +739,28 @@ CLOUDFLARE_RECONCILE_DEFINITION = define_platform_job(RECONCILE_JOB, CloudflareR
 
 async def enqueue_cloudflare_reconcile(
     db: AsyncSession, caller: Caller, *, installation_id: UUID, expected_revision: int,
+    upgrade: bool = False,
 ) -> tuple[PlatformJob, bool]:
-    require_operation(caller, "capacity.cloudflare_reconcile", GLOBAL)
+    operation = "capacity.cloudflare_upgrade" if upgrade else "capacity.cloudflare_reconcile"
+    require_operation(caller, operation, GLOBAL)
     actor = caller.principal
     installation = await db.get(CloudflareInstallation, installation_id, with_for_update=True)
-    if not _current_reconcile(installation, expected_revision):
+    if installation is None or not _current_reconcile(installation, expected_revision):
         raise CloudflarePolicyConflict("Cloudflare reconciliation requires the current enabled deployment")
-    payload = CloudflareReconcilePayload(installation_id=installation_id, revision=expected_revision)
+    await _stage_reconcile(db, installation, repair=True)
+    payload = CloudflareReconcilePayload(installation_id=installation_id, revision=installation.desired_revision)
     job, reused = await enqueue_platform_job(
         db, CLOUDFLARE_RECONCILE_DEFINITION, payload,
-        dedupe_key=f"manual:{installation_id}:{expected_revision}:{actor.user_id}",
+        dedupe_key=f"manual:{installation_id}:{payload.revision}:{actor.user_id}",
         resource_lock_key=f"cloudflare-installation:{installation_id}",
         organization_id=None, requested_by_user_id=actor.user_id, requested_by_email=actor.email,
         requested_by_name=actor.name, resource_type="cloudflare_installation", resource_id=str(installation_id),
-        title="Verify Cloudflare Deployment", action_url=None,
+        title="Upgrade Cloudflare" if upgrade else "Reconcile Cloudflare", action_url=None,
     )
     if not reused:
         await emit_audit(
-            db, "capacity.cloudflare_reconcile", resource_type="cloudflare_installation", resource_id=installation_id,
-            details={"revision": expected_revision, "job_id": str(job.id)},
+            db, operation, resource_type="cloudflare_installation", resource_id=installation_id,
+            details={"revision": payload.revision, "job_id": str(job.id)},
         )
     return job, reused
 
@@ -730,6 +785,7 @@ async def _rotate_account_token(context: PlatformJobContext, parsed: BaseModel) 
             return {"outcome": "superseded"}
         account_id = installation.account_id
         desired_revision = installation.desired_revision
+        upgrading = installation.upgrade_release is not None and installation.upgrade_drained_at is not None
         ciphertext = candidate.ciphertext
         inventory = await _inventory_snapshot(db, installation.id)
         ref = CredentialRef(installation.id, account_id, "account_token", "", payload.replacement_version)
@@ -742,11 +798,16 @@ async def _rotate_account_token(context: PlatformJobContext, parsed: BaseModel) 
             writes_verified = False
             for receipt in inventory:
                 if receipt.provider_id is None or receipt.provider_version is None:
-                    raise OwnershipConflict("Cloudflare Worker has no exact deployment receipt")
-                expected = ResourceObservation(receipt.intent, receipt.provider_id, receipt.provider_version)
-                if await adapter.verify_workers_write(bearer, expected):
+                    if not upgrading or receipt.state != "creating":
+                        raise OwnershipConflict("Cloudflare Worker has no exact deployment receipt")
+                    expected = await observe_owned(adapter, api_token=bearer, intent=receipt.intent, recorded=None)
+                else:
+                    expected = ResourceObservation(receipt.intent, receipt.provider_id, receipt.provider_version)
+                if expected is not None and await adapter.verify_workers_write(bearer, expected):
                     writes_verified = True
-            if not writes_verified:
+            # Retirement can leave no script for the write probe. Admission is
+            # closed and the next journaled upload must prove write authority.
+            if not writes_verified and not upgrading:
                 raise WorkersWriteUnverified(
                     "There is no live owned Worker for a write check. Enable with the current token, "
                     "or finish Disconnect and connect again with the replacement token.",
@@ -947,13 +1008,17 @@ async def enqueue_cloudflare_account_token_rotation(
 
 
 async def schedule_cloudflare_reconcile(db: AsyncSession, *, now: datetime) -> None:
-    """Schedule one durable inventory observation per admitted revision and interval."""
+    """Fence an outdated release and schedule inventory verification or repair."""
     await purge_expired_staged_tokens(db)
     installation = await db.scalar(select(CloudflareInstallation).where(
         CloudflareInstallation.retired_at.is_(None),
-        CloudflareInstallation.admitted_revision.is_not(None),
+        CloudflareInstallation.desired_state == "enabled",
     ).with_for_update(skip_locked=True))
     if installation is None:
+        return
+    was_admitted = installation.admitted_revision is not None
+    await _stage_reconcile(db, installation, repair=False)
+    if not was_admitted and installation.upgrade_release is None:
         return
     active = await db.scalar(select(PlatformJob.id).where(
         PlatformJob.job_type == RECONCILE_JOB,
@@ -970,7 +1035,8 @@ async def schedule_cloudflare_reconcile(db: AsyncSession, *, now: datetime) -> N
         resource_lock_key=f"cloudflare-installation:{installation.id}",
         organization_id=None, requested_by_user_id="system", requested_by_email="",
         requested_by_name="Bifrost", resource_type="cloudflare_installation", resource_id=str(installation.id),
-        title="Verify Cloudflare Deployment", action_url=None,
+        title="Upgrade Cloudflare" if installation.upgrade_release else "Reconcile Cloudflare",
+        action_url=None,
     )
 
 
@@ -998,6 +1064,8 @@ async def enqueue_cloudflare_disable(
     if row.desired_state == "disconnected" and action == "scale_in":
         raise CloudflarePolicyConflict("Cloudflare disconnect is already pending")
     row.admitted_revision = None
+    row.upgrade_release = None
+    row.upgrade_drained_at = None
     row.desired_state = payload.desired_state
     row.desired_revision = payload.revision
     wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)

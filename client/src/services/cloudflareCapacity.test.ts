@@ -29,7 +29,7 @@ describe("Cloudflare capacity service", () => {
 		expect(mocks.get).toHaveBeenCalledWith("/api/capacity/cloudflare");
 	});
 
-	it.each(["enable", "reconcile", "scale-in", "disconnect"] as const)(
+	it.each(["enable", "reconcile", "upgrade", "scale-in", "disconnect"] as const)(
 		"queues %s with the observed revision",
 		async (action) => {
 			const body = {

@@ -199,7 +199,7 @@ class ExternalWorkerPoolController(WorkerCapacityController):
         if scope is None:
             return
         async with get_db_context() as db:
-            if await scope.lock_admission(db):
+            if await scope.lock_admission(db, for_retirement=True):
                 return
             worker = await db.scalar(select(ExecutionWorker).where(
                 ExecutionWorker.id == worker_id, self._managed_scope(),

@@ -34,6 +34,7 @@ from src.services.work_dispatch import (
 from src.services.worker_pool.cloudflare_admission import (
     ManagedCloudflareScope,
     PrimaryPool,
+    workers_release_matches,
 )
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
@@ -126,7 +127,7 @@ async def _reconcile_scope(
         )
         endpoint = scope.endpoint
         admitting = installation.admitted_revision == scope.deployment_revision and bool(await db.scalar(
-            select(cloudflare_usage_within_limit()).where(CloudflareInstallation.id == installation_id),
+            select(cloudflare_usage_within_limit() & workers_release_matches()).where(CloudflareInstallation.id == installation_id),
         ))
 
     client = ExternalCapacityClient(

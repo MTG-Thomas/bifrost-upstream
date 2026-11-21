@@ -231,6 +231,8 @@ export function CloudflareCapacity() {
 			? "Disconnecting"
 			: installation?.desired_state === "scaled_in"
 				? "Scaled In"
+			: installation?.upgrade_pending
+				? "Upgrade Pending"
 				: installation?.admission_open
 					? "Enabled"
 					: "Admission Closed";
@@ -276,6 +278,12 @@ export function CloudflareCapacity() {
 								</dt>
 								<dd>{connectionStatus}</dd>
 							</div>
+							{installation.deployed_revision != null && (
+								<div>
+									<dt className="text-muted-foreground">Deployed Revision</dt>
+									<dd>{installation.deployed_revision}</dd>
+								</div>
+							)}
 							<div>
 								<dt className="text-muted-foreground">
 									Existing HTTPS Endpoint
@@ -351,7 +359,7 @@ export function CloudflareCapacity() {
 									{editing ? "Cancel Policy Edit" : "Edit Policy"}
 								</Button>
 								<Button
-									disabled={busy || installation.admission_open || installation.desired_state === "disconnected"}
+									disabled={busy || installation.admission_open || installation.upgrade_pending || installation.desired_state === "disconnected"}
 									onClick={() => mutation.mutate("enable")}
 								>
 									Enable
@@ -359,7 +367,12 @@ export function CloudflareCapacity() {
 								<Button variant="outline" disabled={busy || installation.desired_state !== "enabled"}
 									onClick={() => mutation.mutate("reconcile")}
 								>
-									Reconcile
+									Reconcile Cloudflare
+								</Button>
+								<Button variant="outline" disabled={busy || installation.desired_state !== "enabled"}
+									onClick={() => mutation.mutate("upgrade")}
+								>
+									Upgrade Cloudflare
 								</Button>
 								{installation.desired_state === "scaled_in" && (
 									<>

@@ -60,7 +60,8 @@ def _register_action(name: str, help_text: str, *, credential: str | None = None
 _register_action("scale-in", "Drain Cloudflare workers and retain the connection.")
 _register_action("disconnect", "Drain Cloudflare workers and remove verified owned capacity.")
 _register_action("enable", "Provision and verify Cloudflare Workers capacity.")
-_register_action("reconcile", "Verify the current Cloudflare Workers deployment.")
+_register_action("reconcile", "Verify or repair the current Cloudflare Workers deployment.")
+_register_action("upgrade", "Apply the Workers release packaged with Bifrost.")
 _register_action("rotate-root", "Rotate the derivation root after Scale In.", credential="control_root")
 _register_action("rotate-bearer", "Retire the previous Workers deployment and stage a new bearer.", credential="scope_bearer")
 

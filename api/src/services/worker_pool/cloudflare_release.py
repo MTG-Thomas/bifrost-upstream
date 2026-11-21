@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+from functools import cache
 from hashlib import sha256
 from pathlib import Path
 from typing import Annotated, Literal
@@ -209,6 +210,15 @@ class WorkersRelease:
     manifest: WorkersManifest
     digest: str
     modules: dict[WorkerRole, dict[str, bytes]]
+
+
+@cache
+def installed_workers_release_digest() -> str | None:
+    """Identify the immutable package without reading every module on the claim path."""
+    try:
+        return sha256((WORKERS_RELEASE_PATH / "manifest.json").read_bytes()).hexdigest()
+    except OSError:
+        return None
 
 
 def load_workers_release(path: Path = WORKERS_RELEASE_PATH) -> WorkersRelease:

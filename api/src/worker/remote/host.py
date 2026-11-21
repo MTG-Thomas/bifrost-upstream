@@ -48,6 +48,7 @@ from src.services.worker_pool.claims import (
     register_static_worker,
     report_worker_handlers,
 )
+from src.services.worker_pool.cloudflare_admission import cloudflare_claim_allowed
 from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
 from src.services.worker_pool.cloudflare_slots import WorkflowSlotTicket, fence_workflow_slot_send
 from src.services.worker_pool.cloudflare_spend import (
@@ -301,6 +302,8 @@ class Bridge:
         lease = self.lease
         with remote_owner_context(LeaseRef(lease)):
             async with get_db_context() as db:
+                if engine_slot is not None and not await cloudflare_claim_allowed(db, lease.worker_id):
+                    raise CredentialRouteChanged("Cloudflare admission closed before dispatch")
                 if not await fence_remote_owner(db):
                     raise CredentialRouteChanged("Cloudflare ownership changed before dispatch")
                 if engine_slot is not None:

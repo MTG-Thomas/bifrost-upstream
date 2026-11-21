@@ -15,6 +15,7 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareWorkerReservation,
 )
 from src.models.orm.execution_workers import ExecutionWorker
+from src.services.worker_pool.cloudflare_release import installed_workers_release_digest
 from src.services.worker_pool.cloudflare_spend import cloudflare_usage_within_limit
 from src.services.worker_pool.liveness import HEARTBEAT_LOST_AFTER
 from src.worker.remote.protocol import CLOUDFLARE_PYTHON_RUNTIME_PROFILE
@@ -34,7 +35,7 @@ class ManagedCloudflareScope:
             CloudflareWorkerReservation.deployment_revision == self.revision,
         )
 
-    async def lock_admission(self, db: AsyncSession) -> int | None:
+    async def lock_admission(self, db: AsyncSession, *, for_retirement: bool = False) -> int | None:
         """Fence admission and return the version of the root for a new reservation."""
         locked = await db.scalar(select(CloudflareInstallation.id).where(
             CloudflareInstallation.id == self.installation_id,
@@ -49,6 +50,7 @@ class ManagedCloudflareScope:
                 CloudflareInstallation.desired_state == "enabled",
                 cloudflare_usage_within_limit(),
                 CloudflareInstallation.admitted_revision == self.revision,
+                *(() if for_retirement else (workers_release_matches(),)),
                 CloudflareInstallation.policy["limits"]["workers"]["work_kinds"].contains(["workflow"]),
                 CloudflareCapacityScope.scope == self.name,
                 CloudflareCapacityScope.deployment_revision == self.revision,
@@ -59,6 +61,15 @@ class ManagedCloudflareScope:
             worker_id=worker_id, installation_id=self.installation_id, scope=self.name,
             deployment_revision=self.revision, control_root_version=control_root_version,
         )
+
+
+def workers_release_matches() -> ColumnElement[bool]:
+    release = installed_workers_release_digest()
+    return and_(
+        CloudflareInstallation.upgrade_release.is_(None),
+        CloudflareInstallation.policy["bounds_release"].astext == release,
+        CloudflareInstallation.policy["bounds_release"].astext.is_not(None),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +132,7 @@ async def cloudflare_claim_allowed(db: AsyncSession, worker_id: UUID) -> bool:
         installation.desired_state == "enabled",
         installation.admitted_revision.is_not(None),
         installation.admitted_revision == pin.deployment_revision,
+        workers_release_matches(),
         pin.canary_job_id.is_(None),
         pin.control_root_version.is_not(None),
         cloudflare_usage_within_limit(),

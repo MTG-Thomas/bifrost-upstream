@@ -42,7 +42,7 @@ from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
     seal_credential,
 )
-from src.services.worker_pool.cloudflare_release import WorkersRelease
+from src.services.worker_pool.cloudflare_release import WorkersRelease, installed_workers_release_digest
 from src.services.worker_pool.cloudflare_spend import (
     exhausted_managed_workers,
     LAUNCHER_RECEIPT_METERS,
@@ -165,6 +165,8 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
         or_(
             PlatformJob.requested_by_user_id != "system",
             PlatformJob.status.in_(("failed", "requires_action")),
+            (PlatformJob.job_type == "capacity.cloudflare_reconcile")
+            & (PlatformJob.title == "Upgrade Cloudflare"),
         ),
     ).order_by(PlatformJob.created_at.desc(), PlatformJob.id.desc()).limit(1))
     return CloudflareCapacityStatus(
@@ -178,8 +180,14 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
             "consent_version": installation.consent_version,
             "consent_at": installation.consent_at,
             "desired_revision": installation.desired_revision,
+            "deployed_revision": installation.deployed_revision,
+            "upgrade_pending": installation.upgrade_release is not None,
             "desired_state": installation.desired_state,
-            "admission_open": installation.admitted_revision is not None and spend.state == "ready",
+            "admission_open": (
+                installation.admitted_revision is not None and installation.upgrade_release is None
+                and installed_workers_release_digest() == installation.policy.get("bounds_release")
+                and spend.state == "ready"
+            ),
             "policy": policy,
             "fleet_envelope_usd": installation.policy["fleet_envelope_usd"],
             "owned_resources_pending": owned_resources_pending,
@@ -333,6 +341,7 @@ async def retire_cloudflare_installation(
         raise CloudflarePolicyConflict("Cloudflare cleanup is pending")
     row.api_token_version = None
     row.control_root_version = None
+    row.deployed_revision = None
     row.retired_at = datetime.now(UTC)
     await db.execute(update(CloudflareCredential).where(
         CloudflareCredential.installation_id == installation_id,
@@ -381,10 +390,13 @@ async def save_cloudflare_policy(
     row = result.scalar_one_or_none()
     if row is None or row.desired_revision != expected_revision or row.desired_state == "disconnected":
         raise CloudflarePolicyConflict("Cloudflare installation changed. Reload its current policy.")
+    if row.upgrade_release is not None and row.upgrade_release != bounds.release:
+        raise CloudflarePolicyConflict("Edit policy from the matched Cloudflare release.")
     if row.policy != desired:
         row.policy = desired
         row.admitted_revision = None
         row.desired_revision += 1
+        row.upgrade_drained_at = None
         await db.flush()
         wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
     return row.desired_revision

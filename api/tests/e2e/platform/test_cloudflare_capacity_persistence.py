@@ -16,9 +16,10 @@ import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from alembic.script import ScriptDirectory
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 from pydantic import SecretStr
 from shared.models import (
+    CloudflareCapacityAction,
     CloudflareCapacityPolicy,
     CloudflareLauncherUsage,
     CloudflareWorkersPolicy,
@@ -32,6 +33,7 @@ from src.core.principal import UserPrincipal
 from src.jobs.platform import cloudflare_capacity as lifecycle_job
 from src.jobs.platform import cloudflare_enable as enable_job
 from src.jobs.platform.base import (
+    PlatformJobCancelled,
     PlatformJobContext,
     PlatformJobFailure,
     PlatformJobRequiresAction,
@@ -53,6 +55,7 @@ from src.models.orm.executions import Execution
 from src.models.orm.organizations import Organization
 from src.models.orm.platform_jobs import PlatformJob
 from src.models.orm.work_dispatches import WorkDispatch
+from src.routers import cloudflare_capacity as capacity_routes
 from src.services import worker_ingress_probes as ingress_probes
 from src.services.audit_context import ActorContext, clear_actor, set_actor
 from src.services.authorization.context import (
@@ -65,7 +68,9 @@ from src.services.authorization.enforce import Caller
 from src.services.kubernetes_execution import KubernetesExecutionService
 from src.services.work_dispatch import WAKE_WORKFLOW, stage_dispatch
 from src.services.worker_pool import (
+    cloudflare_admission,
     cloudflare_canary,
+    cloudflare_policy,
     cloudflare_spend,
     cloudflare_supervisor,
     controller,
@@ -119,6 +124,7 @@ from src.services.worker_pool.cloudflare_spend import (
 from src.services.worker_pool.cloudflare_workers_rest import (
     OWNER_BINDING,
     ConfiguredWorkersScript,
+    CloudflareManagementDenied,
     WorkersRestCleanup,
     worker_owner_value,
 )
@@ -131,6 +137,12 @@ TEST_LAUNCHER_CAPS = {"sqlite_rows_written": 100, "do_requests": 20, "log_events
 TEST_CPU_LIMITS = {
     "capacity": 87, "gateway": 50, "workflow": 30_000, "boot": 2000, "warm": 200, "exercise": 100, "startup": 1000,
 }
+
+
+@pytest.fixture(autouse=True)
+def packaged_release(monkeypatch) -> None:
+    for module in (cloudflare_admission, cloudflare_policy, lifecycle_job):
+        monkeypatch.setattr(module, "installed_workers_release_digest", lambda: "fixture-release")
 
 
 def _platform_operator() -> Caller:
@@ -164,7 +176,7 @@ def test_cloudflare_routes_refuse_provider_org_membership(e2e_client, provider_o
             "monthly_limit_usd": "10.00",
         },
     }).status_code == 403
-    for action in ("scale-in", "disconnect", "enable", "reconcile"):
+    for action in ("scale-in", "disconnect", "enable", "reconcile", "upgrade"):
         assert e2e_client.post(f"{path}/{action}", headers=provider_org_user.headers, json=body).status_code == 403
     assert e2e_client.post(
         f"{path}/rotate", headers=provider_org_user.headers,
@@ -451,6 +463,199 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
     assert sum(path.endswith("/entitlements") for path in paid_reads) == 3
     await db_session.refresh(installation)
     assert installation.admitted_revision == 1
+
+
+@pytest.mark.asyncio
+async def test_upgrade_drains_before_replacement_and_resumes_after_lost_lease(
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch, lifecycle_audit_actor,
+) -> None:
+    release = "d" * 64
+    now = datetime.now(UTC)
+    installation.desired_state = "enabled"
+    installation.admitted_revision = installation.deployed_revision = 1
+    worker = ExecutionWorker(
+        id=uuid4(), form="external", state="ready", capacity_scope="workers",
+        runtime_profile="cloudflare-python-v1", memory_limit_bytes=256 * 2**20,
+    )
+    db_session.add(worker)
+    db_session.add(seal_credential(
+        CredentialRef(installation.id, installation.account_id, "scope_bearer", "workers", 1),
+        SecretStr("synthetic-scope-bearer"), actor=str(OPERATOR_ID), now=now,
+    ))
+    await db_session.flush()
+    db_session.add(ManagedCloudflareScope(installation.id, "workers", 1).pin(worker.id, 1))
+    old_scope = CloudflareCapacityScope(
+        installation_id=installation.id, scope="workers", deployment_revision=1,
+        endpoint="https://old-capacity.example.test", bearer_version=1,
+    )
+    db_session.add(old_scope)
+    execution, fence = uuid4(), uuid4()
+    claim = ExecutionWorkerClaim(worker_id=worker.id, family=WAKE_WORKFLOW, subject_id=execution)
+    slot = CloudflareWorkflowSlot(
+        installation_id=installation.id, tenant="platform", ordinal=0, worker_id=worker.id,
+        execution_id=execution, dispatch_id=uuid4(), fence=fence, sent=True,
+    )
+    db_session.add_all([claim, slot])
+    old_scripts = []
+    for role in ("capacity", "launcher"):
+        script = CloudflareOwnedResource(
+            id=uuid4(), installation_id=installation.id, account_id=installation.account_id,
+            scope="workers", kind="worker_script", target_name=f"prior-{role}", desired_revision=1,
+            artifact_digest="c" * 64, effect_id=uuid4(), state="present",
+            provider_id=str(uuid4()), provider_version=str(uuid4()), namespace_ids={"OwnedNamespace": str(uuid4())},
+        )
+        db_session.add(script)
+        old_scripts.append(script)
+    await db_session.flush()
+    assert await cloudflare_claim_allowed(db_session, worker.id)
+    for module in (cloudflare_admission, cloudflare_policy, lifecycle_job):
+        monkeypatch.setattr(module, "installed_workers_release_digest", lambda: release)
+    assert not await cloudflare_claim_allowed(db_session, worker.id)
+    assert installation.admitted_revision == 1  # Local release fencing precedes the scheduler.
+
+    admin = _platform_operator()
+    monkeypatch.setattr(capacity_routes, "load_caller", AsyncMock(return_value=admin))
+    response = Response()
+    accepted = await capacity_routes.upgrade_cloudflare_capacity(
+        CloudflareCapacityAction(installation_id=installation.id, expected_revision=1),
+        response, db_session, object(),
+    )
+    assert response.headers["Location"] == f"/api/platform-jobs/{accepted.job_id}"
+    job = await db_session.get(PlatformJob, accepted.job_id)
+    assert job is not None and job.payload == {"installation_id": str(installation.id), "revision": 2}
+    assert installation.admitted_revision is None and installation.upgrade_release == release
+    lease, successor = uuid4(), uuid4()
+    job.status, job.lease_token, job.started_at = "running", lease, now
+    await db_session.flush()
+    connection = await db_session.connection()
+
+    @asynccontextmanager
+    async def context():
+        async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as session:
+            yield session
+            await session.commit()
+
+    monkeypatch.setattr(lifecycle_job, "get_db_context", context)
+    monkeypatch.setattr(enable_job, "get_db_context", context)
+    monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
+    scopes = {script.target_name: ResourceObservation(
+        lifecycle_job._resource_intent(script), script.provider_id, script.provider_version,
+    ) for script in old_scripts}
+    effects = []
+    replacement = SecretStr("synthetic-replacement-token")
+    revoked = False
+
+    class Provider:
+        async def verify_workers_paid(self, account, token):
+            assert account == installation.account_id
+            if revoked and token != replacement:
+                raise CloudflareManagementDenied
+
+        async def observe(self, *, api_token, intent):
+            return scopes.get(intent.target.name)
+
+        async def verify_absent(self, *, api_token, target, namespace_ids=frozenset()):
+            assert target.name not in scopes
+            assert namespace_ids
+
+        async def delete(self, *, api_token, expected):
+            assert api_token == replacement
+            effects.append(("delete", expected.intent.target.name))
+            del scopes[expected.intent.target.name]
+
+        async def create(self, *, api_token, intent, scope_bearer):
+            assert api_token == replacement
+            assert all(not name.startswith("prior-") for name in scopes)
+            effects.append(("create", intent.target.name.rsplit("-", 1)[-1]))
+            scopes[intent.target.name] = ResourceObservation(intent, str(uuid4()), str(uuid4()))
+
+        async def configure_endpoint(self, *, api_token, expected):
+            is_capacity = expected.intent.target.name.endswith("-capacity")
+            return ConfiguredWorkersScript(
+                "https://capacity.example.test" if is_capacity else None,
+                {} if expected.intent.target.name.endswith("-gateway") else {"OwnedNamespace": "a" * 32},
+            )
+
+        async def verify_workers_write(self, api_token, expected):
+            assert api_token == replacement
+            return scopes[expected.intent.target.name] == expected
+
+    provider = Provider()
+    monkeypatch.setattr(enable_job, "WorkersRestCleanup", lambda *_: provider)
+    monkeypatch.setattr(lifecycle_job, "WorkersRestCleanup", lambda *_: provider)
+    monkeypatch.setattr(enable_job, "WorkersRestProvisioner", lambda *_: provider)
+    monkeypatch.setattr(enable_job, "load_workers_release", lambda: SimpleNamespace(
+        digest=release, manifest=SimpleNamespace(
+            meter_bounds=SimpleNamespace(qualification=SimpleNamespace(expected_cpu_ms={"capacity": 9})),
+        ),
+    ))
+    zero = dict.fromkeys(WORKERS_RATES, Decimal(0))
+    monkeypatch.setattr(enable_job, "release_meter_bounds", lambda _: WorkersReleaseMeterBounds(
+        60, zero, zero, release, 2, TEST_LAUNCHER_CAPS, TEST_CPU_LIMITS, 500_000,
+    ))
+
+    async def lose_runner(_seconds):
+        nonlocal revoked
+        assert effects == []
+        await db_session.refresh(installation)
+        assert installation.upgrade_drained_at is None
+        assert await db_session.get(CloudflareCapacityScope, (installation.id, "workers", 1)) is not None
+        job.lease_token = successor
+        revoked = True
+        await db_session.flush()
+
+    monkeypatch.setattr(enable_job.asyncio, "sleep", lose_runner)
+    payload = lifecycle_job.CloudflareReconcilePayload.model_validate(job.payload)
+    handler = lifecycle_job.CLOUDFLARE_RECONCILE_DEFINITION.handler
+    running = PlatformJobContext(job.id, lease, None, str(OPERATOR_ID), admin.principal.email, "")
+    with pytest.raises(PlatformJobCancelled):
+        await handler(running, payload)
+    await db_session.refresh(slot)
+    assert slot.sent and slot.fence == fence and slot.released_at is None
+    assert await db_session.get(ExecutionWorkerClaim, claim.id) is not None
+    assert effects == []
+
+    recovered = PlatformJobContext(job.id, successor, None, str(OPERATOR_ID), admin.principal.email, "")
+    with pytest.raises(PlatformJobRequiresAction) as denied:
+        await handler(recovered, payload)
+    assert denied.value.result == {"code": "CF_MANAGEMENT_CREDENTIAL"}
+    job.status = "requires_action"
+    rotation, _ = await lifecycle_job.enqueue_cloudflare_account_token_rotation(
+        db_session, admin, installation_id=installation.id, expected_revision=2, replacement=replacement,
+    )
+    rotation.status, rotation.lease_token = "running", uuid4()
+    await db_session.flush()
+    rotating = PlatformJobContext(rotation.id, rotation.lease_token, None, str(OPERATOR_ID), admin.principal.email, "")
+    await lifecycle_job.CLOUDFLARE_ROTATE_ACCOUNT_DEFINITION.handler(
+        rotating, lifecycle_job.CloudflareRotateAccountPayload.model_validate(rotation.payload),
+    )
+    rotation.status = "succeeded"
+    await confirm_workflow_slot_release(db_session, worker.id, execution, fence, completed=True)
+    worker.state, worker.capacity_resource_deleted_at = "retired", datetime.now(UTC)
+    await db_session.delete(claim)
+    job.status, job.lease_token = "running", uuid4()
+    await db_session.flush()
+
+    probe = ingress_probes.WorkerIngressProbeResult(
+        installation.worker_ingress_origin, True, False, False,
+        (ingress_probes.RouteProbe("GET", "/api/sdk/context", 521, False, error_class="unexpected_status"),),
+    )
+    good = ingress_probes.WorkerIngressProbeResult(installation.worker_ingress_origin, True, True, True, ())
+    monkeypatch.setattr(enable_job, "probe_worker_ingress", AsyncMock(side_effect=[probe, good]))
+    recovered = PlatformJobContext(job.id, job.lease_token, None, str(OPERATOR_ID), admin.principal.email, "")
+    with pytest.raises(PlatformJobRequiresAction) as readiness:
+        await handler(recovered, payload)
+    assert readiness.value.result["code"] == "CF_WORKER_INGRESS_UNVERIFIED"
+    await db_session.refresh(installation)
+    assert installation.upgrade_drained_at is not None and installation.admitted_revision is None
+    assert await handler(recovered, payload) == {"outcome": "enabled"}
+    await db_session.refresh(installation)
+    assert installation.deployed_revision == installation.admitted_revision == 2
+    assert installation.upgrade_release is installation.upgrade_drained_at is None
+    assert effects == [
+        ("delete", "prior-capacity"), ("delete", "prior-launcher"),
+        ("create", "gateway"), ("create", "launcher"), ("create", "capacity"),
+    ]
 
 
 @pytest.mark.asyncio

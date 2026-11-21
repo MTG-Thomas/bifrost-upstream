@@ -36,6 +36,11 @@ class CloudflareInstallation(Base):
             "admitted_revision IS NULL OR (desired_state = 'enabled' AND admitted_revision = desired_revision)",
             name="ck_cf_admitted_revision",
         ),
+        CheckConstraint(
+            "(upgrade_release IS NULL OR (desired_state = 'enabled' AND admitted_revision IS NULL)) "
+            "AND (upgrade_drained_at IS NULL OR upgrade_release IS NOT NULL)",
+            name="ck_cf_upgrade_checkpoint",
+        ),
         UniqueConstraint("id", "account_id", name="uq_cf_installation_account"),
         Index("uq_cf_active_installation", "singleton", unique=True, postgresql_where=text("retired_at IS NULL")),
         CheckConstraint("api_token_purpose = 'account_token' AND api_token_scope = ''", name="ck_cf_account_token_binding"),
@@ -77,6 +82,9 @@ class CloudflareInstallation(Base):
     desired_revision: Mapped[int]
     desired_state: Mapped[str] = mapped_column(String(16))
     admitted_revision: Mapped[int | None]
+    deployed_revision: Mapped[int | None]
+    upgrade_release: Mapped[str | None] = mapped_column(String(64))
+    upgrade_drained_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     usage_incomplete_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     usage_advisory: Mapped[dict[str, Any] | None] = mapped_column(JSONB)

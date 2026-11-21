@@ -49,6 +49,10 @@ async def bifrost_cloudflare_reconcile_execute(context: Any, installation_id: UU
     return await _submit(context, "reconcile", installation_id, expected_revision)
 
 
+async def bifrost_cloudflare_upgrade_execute(context: Any, installation_id: UUID, expected_revision: int) -> ToolResult:
+    return await _submit(context, "upgrade", installation_id, expected_revision)
+
+
 async def bifrost_cloudflare_worker_credential_replace(
     context: Any, installation_id: UUID, expected_revision: int, credential: Literal["control_root", "scope_bearer"],
 ) -> ToolResult:
@@ -106,7 +110,8 @@ _TOOLS = (
     (bifrost_cloudflare_scale_in_execute, "Scale In Cloudflare", "Drain Cloudflare workers and retain the connection."),
     (bifrost_cloudflare_disconnect_execute, "Disconnect Cloudflare", "Drain capacity and remove owned resources."),
     (bifrost_cloudflare_enable_execute, "Enable Cloudflare", "Provision and verify Cloudflare Workers capacity."),
-    (bifrost_cloudflare_reconcile_execute, "Reconcile Cloudflare", "Verify the current Cloudflare Workers deployment."),
+    (bifrost_cloudflare_reconcile_execute, "Reconcile Cloudflare", "Verify or repair the current Cloudflare Workers deployment."),
+    (bifrost_cloudflare_upgrade_execute, "Upgrade Cloudflare", "Apply the Workers release packaged with Bifrost."),
     (bifrost_cloudflare_worker_credential_replace, "Rotate Cloudflare Worker Credential", "After Scale In, rotate the internal control root or Workers scope bearer."),
     (bifrost_cloudflare_connect_execute, "Connect Cloudflare", "Use a one-time reference from the operator's capacity cloudflare stage-credential command with purpose connect."),
     (bifrost_cloudflare_account_token_replace, "Rotate Cloudflare API Token", "Use a one-time reference from the operator's capacity cloudflare stage-credential command with purpose rotate."),

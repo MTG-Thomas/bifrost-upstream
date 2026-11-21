@@ -95,6 +95,15 @@ def test_release_loads_the_verified_bytes(release: Path) -> None:
     assert loaded.modules["capacity"]["capacity.mjs"] == (release / "capacity.mjs").read_bytes()
 
 
+def test_release_rejects_an_incompatible_drain_protocol(release: Path) -> None:
+    manifest = release / "manifest.json"
+    data = json.loads(manifest.read_bytes())
+    data["capacity_protocol"] = 3
+    manifest.write_text(json.dumps(data), encoding="utf8")
+    with pytest.raises(WorkersReleaseUnavailable):
+        load_workers_release(release)
+
+
 def test_repository_meter_bounds_match_the_api_pin() -> None:
     path = Path(cloudflare_release.__file__).with_name("cloudflare_meter_bounds.json")
     bounds = cloudflare_release.MeterBounds.model_validate_json(path.read_bytes())

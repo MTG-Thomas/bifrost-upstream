@@ -281,7 +281,7 @@ OPERATION_CATALOG: tuple[OperationDefinition, ...] = (
     ),
     OperationDefinition(
         operation_id="capacity.cloudflare_reconcile",
-        summary="Verify Cloudflare Deployment",
+        summary="Reconcile Cloudflare",
         target_kind=OperationTargetKind.PLATFORM,
         rest=RestOperationBinding(
             method="POST", path="/api/capacity/cloudflare/reconcile",
@@ -290,6 +290,26 @@ OPERATION_CATALOG: tuple[OperationDefinition, ...] = (
         cli=CliOperationBinding(path=("capacity", "cloudflare", "reconcile")),
         mcp=McpOperationBinding(name="bifrost_cloudflare_reconcile_execute"),
         audit_event="capacity.cloudflare_reconcile",
+        action_scopes=("platform.readwrite",),
+        authorization_resolver="platform.readwrite at Global",
+        async_policy=OperationAsyncPolicy.PLATFORM_JOB,
+        exclusions={
+            "native_builder": "Cloudflare capacity is platform administration.",
+            "manifest": "Capacity installations are bound to the deployment.",
+            "sdk": "Runtime SDKs do not administer capacity.",
+        },
+    ),
+    OperationDefinition(
+        operation_id="capacity.cloudflare_upgrade",
+        summary="Upgrade Cloudflare",
+        target_kind=OperationTargetKind.PLATFORM,
+        rest=RestOperationBinding(
+            method="POST", path="/api/capacity/cloudflare/upgrade",
+            request_model="CloudflareCapacityAction", response_model="PlatformJobAccepted",
+        ),
+        cli=CliOperationBinding(path=("capacity", "cloudflare", "upgrade")),
+        mcp=McpOperationBinding(name="bifrost_cloudflare_upgrade_execute"),
+        audit_event="capacity.cloudflare_upgrade",
         action_scopes=("platform.readwrite",),
         authorization_resolver="platform.readwrite at Global",
         async_policy=OperationAsyncPolicy.PLATFORM_JOB,

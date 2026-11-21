@@ -1,5 +1,6 @@
 """Provision and admit one exact, verified Workers deployment."""
 
+import asyncio
 import secrets
 from datetime import UTC, datetime
 from typing import Protocol
@@ -19,10 +20,14 @@ from src.jobs.platform.base import (
     define_platform_job,
 )
 from src.jobs.platform.cloudflare_capacity import (
+    DRAIN_DEADLINE,
     _cleanup_one,
     _cleanup_stranded_workflow_slots,
+    _drain_timeout_action,
     _hold_installation_lease,
+    _inventory_snapshot,
     _management_token,
+    _observe_inventory,
     _remove_verified_scopes,
     _require_legacy_cleanup,
     _resource_intent,
@@ -51,9 +56,12 @@ from src.services.worker_pool.cloudflare_credentials import (
 )
 from src.services.worker_pool.cloudflare_policy import (
     CloudflarePolicyConflict,
+    _price_policy,
     cloudflare_workers_remain,
+    release_meter_bounds,
 )
 from src.services.worker_pool.cloudflare_provisioning import (
+    DeletionSettling,
     ObservationPending,
     OwnershipConflict,
     ProvisioningAdapter,
@@ -171,8 +179,20 @@ async def _settle_enable(
         row = await _locked_current(db, context, payload)
         if row is None:
             return {"outcome": "superseded"}
-        if row.policy.get("bounds_release") != release.digest:
+        upgrading = row.upgrade_release is not None
+        if (row.upgrade_release if upgrading else row.policy.get("bounds_release")) != release.digest:
             raise PlatformJobRequiresAction("Review Policy for the Packaged Workers Release", {"code": "CF_POLICY_RELEASE_CHANGED"})
+        replacement_policy = None
+        if upgrading:
+            try:
+                replacement_policy = _price_policy(
+                    CloudflareCapacityPolicy.model_validate(row.policy["limits"]), release_meter_bounds(release),
+                )
+            except ValueError as exc:
+                raise PlatformJobRequiresAction(
+                    "Review Policy for the Packaged Workers Release",
+                    {"code": "CF_POLICY_RELEASE_CHANGED", "reason": str(exc)},
+                ) from None
         installation = row
         management_token = await _management_token(db, row)
     cleanup_adapter = WorkersRestCleanup(http)
@@ -185,40 +205,33 @@ async def _settle_enable(
         if row.admitted_revision == payload.revision:
             return {"outcome": "enabled"}
         await _require_legacy_cleanup(db)
-    while True:
-        async with get_db_context() as db:
-            row = await _locked_current(db, context, payload)
-            if row is None:
-                return {"outcome": "superseded"}
-            if await cloudflare_workers_remain(db, row.id, before_revision=payload.revision):
-                recovery = await _cleanup_stranded_workflow_slots(db, row, cleanup_adapter, before_revision=payload.revision)
-                if recovery == "progressed":
-                    continue
-                if recovery == "settling":
-                    raise PlatformJobFailure("CF_CLEANUP_SETTLING", "Verifying Prior Cloudflare Deletion", retryable=True)
-                raise PlatformJobRequiresAction("Wait for Cloudflare Workers to Retire", {"code": "CF_PRIOR_WORKERS_LIVE"})
-            cleanup = await _cleanup_one(db, row, cleanup_adapter, before_revision=payload.revision)
-            if cleanup == "progressed":
-                continue
-            if cleanup == "settling":
-                raise PlatformJobRequiresAction("Wait for Cloudflare Creation to Settle", {"code": "CF_CLEANUP_PENDING"})
-            await _require_budget(db, row)
-            await _remove_verified_scopes(db, row, before_revision=payload.revision)
-            await db.execute(update(CloudflareCredential).where(
-                CloudflareCredential.installation_id == row.id,
-                CloudflareCredential.purpose == "scope_bearer",
-                CloudflareCredential.scope == "workers",
-                CloudflareCredential.version < payload.revision,
-                CloudflareCredential.ciphertext.is_not(None),
-            ).values(ciphertext=None))
-            prefix = f"bifrost-{row.id.hex}-{payload.revision:x}"
-            deployment = WorkersDeployment(
-                release, row.worker_ingress_origin, f"{prefix}-launcher", f"{prefix}-capacity",
-                CloudflareCapacityPolicy.model_validate(row.policy["limits"]).workers,
-                gateway_name=f"{prefix}-gateway",
-            )
-            bearer, identifiers = await _journal(db, row, deployment, actor=context.requested_by_user_id)
-            break
+    if upgrading:
+        await context.report("Draining Cloudflare Capacity")
+    if not await _drain_previous_revision(context, payload, cleanup_adapter, upgrading=upgrading):
+        return {"outcome": "superseded"}
+
+    async with get_db_context() as db:
+        row = await _locked_current(db, context, payload)
+        if row is None:
+            return {"outcome": "superseded"}
+        await db.execute(update(CloudflareCredential).where(
+            CloudflareCredential.installation_id == row.id,
+            CloudflareCredential.purpose == "scope_bearer",
+            CloudflareCredential.scope == "workers",
+            CloudflareCredential.version < payload.revision,
+            CloudflareCredential.ciphertext.is_not(None),
+        ).values(ciphertext=None))
+        if replacement_policy is not None:
+            row.policy = replacement_policy
+            await db.flush()
+        await _require_budget(db, row)
+        prefix = f"bifrost-{row.id.hex}-{payload.revision:x}"
+        deployment = WorkersDeployment(
+            release, row.worker_ingress_origin, f"{prefix}-launcher", f"{prefix}-capacity",
+            CloudflareCapacityPolicy.model_validate(row.policy["limits"]).workers,
+            gateway_name=f"{prefix}-gateway",
+        )
+        bearer, identifiers = await _journal(db, row, deployment, actor=context.requested_by_user_id)
 
     await context.report("Deploying Cloudflare Workers")
     adapter = WorkersRestProvisioner(http, deployment)
@@ -290,10 +303,62 @@ async def _settle_enable(
         row = await _locked_current(db, context, payload)
         if row is None:
             return {"outcome": "superseded"}
+        if upgrading:
+            await _observe_inventory(
+                cleanup_adapter, await _management_token(db, row),
+                await _inventory_snapshot(db, row.id, revision=payload.revision),
+            )
         await _require_budget(db, row)
         row.admitted_revision = payload.revision
+        row.deployed_revision = payload.revision
+        row.upgrade_release = None
+        row.upgrade_drained_at = None
         wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
     return {"outcome": "enabled"}
+
+
+async def _drain_previous_revision(
+    context: PlatformJobContext, payload: CloudflareEnablePayload, adapter: WorkersRestCleanup,
+    *, upgrading: bool,
+) -> bool:
+    while True:
+        async with get_db_context() as db:
+            row = await _locked_current(db, context, payload)
+            if row is None:
+                return False
+            if upgrading and (row.upgrade_release is None or row.admitted_revision is not None):
+                raise OwnershipConflict("Cloudflare upgrade no longer owns the paused revision")
+            if row.upgrade_drained_at is not None:
+                return True
+            workers_remain = await cloudflare_workers_remain(db, row.id, before_revision=payload.revision)
+            if workers_remain:
+                result = await _cleanup_stranded_workflow_slots(db, row, adapter, before_revision=payload.revision)
+            else:
+                try:
+                    result = await _cleanup_one(db, row, adapter, before_revision=payload.revision)
+                except DeletionSettling:
+                    result = "settling"
+                if result == "complete":
+                    await _remove_verified_scopes(db, row, before_revision=payload.revision)
+                    if upgrading:
+                        row.upgrade_drained_at = datetime.now(UTC)
+                    if row.deployed_revision != payload.revision:
+                        row.deployed_revision = None
+                    return True
+            if result == "progressed":
+                continue
+            if not upgrading:
+                if workers_remain and result == "settling":
+                    raise PlatformJobFailure("CF_CLEANUP_SETTLING", "Verifying Prior Cloudflare Deletion", retryable=True)
+                if workers_remain:
+                    raise PlatformJobRequiresAction("Wait for Cloudflare Workers to Retire", {"code": "CF_PRIOR_WORKERS_LIVE"})
+                raise PlatformJobRequiresAction("Wait for Cloudflare Creation to Settle", {"code": "CF_CLEANUP_PENDING"})
+            started_at = await db.scalar(select(PlatformJob.started_at).where(PlatformJob.id == context.job_id))
+            if started_at is not None and datetime.now(UTC) >= started_at + DRAIN_DEADLINE:
+                if result == "settling":
+                    raise PlatformJobRequiresAction("Cloudflare Cleanup Pending", {"code": "CF_CLEANUP_PENDING"})
+                raise await _drain_timeout_action(db, row.id, workers_remain=workers_remain)
+        await asyncio.sleep(2)
 
 
 async def _require_budget(db: AsyncSession, row: CloudflareInstallation) -> None:
@@ -341,6 +406,8 @@ async def enqueue_cloudflare_enable(
     row = await db.get(CloudflareInstallation, installation_id, with_for_update=True, populate_existing=True)
     if row is None or row.retired_at is not None or row.desired_revision != expected_revision or row.desired_state == "disconnected":
         raise CloudflarePolicyConflict("Cloudflare installation changed. Reload its current policy.")
+    if row.upgrade_release is not None:
+        raise CloudflarePolicyConflict("Reconcile the pending Cloudflare upgrade.")
     row.desired_state = "enabled"
     payload = CloudflareEnablePayload(installation_id=row.id, revision=row.desired_revision)
     job, reused = await enqueue_platform_job(

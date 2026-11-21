@@ -119,10 +119,27 @@ async def enable_cloudflare_capacity(
 async def reconcile_cloudflare_capacity(
     body: CloudflareCapacityAction, response: Response, db: DbSession, user: CurrentActiveUser,
 ) -> PlatformJobAccepted:
+    return await _reconcile(body, response, db, user, upgrade=False)
+
+
+@router.post(
+    "/upgrade", response_model=PlatformJobAccepted, status_code=status.HTTP_202_ACCEPTED,
+    **operation_route("capacity.cloudflare_upgrade"),
+)
+async def upgrade_cloudflare_capacity(
+    body: CloudflareCapacityAction, response: Response, db: DbSession, user: CurrentActiveUser,
+) -> PlatformJobAccepted:
+    return await _reconcile(body, response, db, user, upgrade=True)
+
+
+async def _reconcile(
+    body: CloudflareCapacityAction, response: Response, db: DbSession, user: CurrentActiveUser,
+    *, upgrade: bool,
+) -> PlatformJobAccepted:
     caller = await load_caller(db, user)
     try:
         job, reused = await enqueue_cloudflare_reconcile(
-            db, caller, installation_id=body.installation_id, expected_revision=body.expected_revision,
+            db, caller, installation_id=body.installation_id, expected_revision=body.expected_revision, upgrade=upgrade,
         )
     except CloudflarePolicyConflict as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc

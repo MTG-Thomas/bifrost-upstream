@@ -11,11 +11,12 @@ export type CloudflareAccountTokenRotation =
 export type CloudflareConfiguration =
 	| components["schemas"]["CloudflareConnectRequest"]
 	| components["schemas"]["CloudflarePolicyUpdate"];
-export type CloudflareAction = "enable" | "reconcile" | "scale-in" | "disconnect" | "rotate-root" | "rotate-bearer";
+export type CloudflareAction = "enable" | "reconcile" | "upgrade" | "scale-in" | "disconnect" | "rotate-root" | "rotate-bearer";
 
 const actionPaths = {
 	enable: "/api/capacity/cloudflare/enable",
 	reconcile: "/api/capacity/cloudflare/reconcile",
+	upgrade: "/api/capacity/cloudflare/upgrade",
 	"scale-in": "/api/capacity/cloudflare/scale-in",
 	disconnect: "/api/capacity/cloudflare/disconnect",
 } as const;

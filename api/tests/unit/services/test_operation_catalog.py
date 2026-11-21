@@ -1181,6 +1181,10 @@ CANONICAL_OPERATIONS = {
         "POST", "/api/capacity/cloudflare/reconcile", ("capacity", "cloudflare", "reconcile"),
         "bifrost_cloudflare_reconcile_execute", False,
     ),
+    "capacity.cloudflare_upgrade": (
+        "POST", "/api/capacity/cloudflare/upgrade", ("capacity", "cloudflare", "upgrade"),
+        "bifrost_cloudflare_upgrade_execute", False,
+    ),
     "users.defaults.get": (
         "GET", "/api/base-role-defaults", ("users", "defaults", "get"),
         "bifrost_base_role_default_get", False,
