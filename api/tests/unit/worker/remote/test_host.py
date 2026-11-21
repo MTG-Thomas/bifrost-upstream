@@ -89,6 +89,7 @@ async def test_cloudflare_claim_starts_preparation_without_waiting_for_reply() -
         assert expected_generation == lease.session_generation
         sent.set()
         await finish.wait()
+        raise ConnectionError("fixture preparation disconnected")
 
     async def run(_claim):
         assert sent.is_set()

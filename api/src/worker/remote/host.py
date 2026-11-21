@@ -12,7 +12,7 @@ import json
 import logging
 import time
 from contextlib import AbstractAsyncContextManager, nullcontext
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from re import fullmatch
 from typing import Any
@@ -1021,7 +1021,7 @@ class ApiExecutor(PoolWorker):
                 except (CredentialRouteChanged, ConnectionError, TimeoutError, RuntimeError):
                     # Preparation has no authority to run the workflow. The
                     # canonical dispatch owns normal entry and failure handling.
-                    logger.debug("Cloudflare admission preparation did not complete", exc_info=True)
+                    logging.getLogger(__name__).debug("Cloudflare admission preparation did not complete", exc_info=True)
 
             task = asyncio.create_task(prepare(), name=f"cloudflare-prepare-{claim.dispatch_id}")
             bridge.results.add(task)
