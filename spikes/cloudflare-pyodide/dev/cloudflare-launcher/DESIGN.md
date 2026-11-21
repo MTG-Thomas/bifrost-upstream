@@ -911,6 +911,10 @@ tags. Private handoffs and raw logs were removed.
 
 ### Multi-slot managed launchers
 
+The [tenant engine slot design](PER-TENANT-SCRIPTS.md) supersedes the original
+tenant-wide admission and engine identity described below. The original
+launcher sizing and transport design remains the baseline for local comparison.
+
 - The authenticated provider profile declares `memory_limit_bytes` as one to
   four times 128 MiB (`WORKFLOW_SLOTS`, default one). The API persists that
   value in the prepared incarnation and uses it to derive both slot count and
