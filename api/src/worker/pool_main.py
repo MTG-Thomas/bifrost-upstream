@@ -540,6 +540,10 @@ class PoolWorker:
             # sees the executor retire or fall silent.
             logger.exception("Pool worker could not record its drain")
 
+    @property
+    def _queue_prewarm_slots(self) -> int:
+        return 0
+
     async def _claim_and_start(self) -> PoolClaim | None:
         """Atomically admit, canonically claim, reserve, and start one run.
 
@@ -563,6 +567,7 @@ class PoolWorker:
                 budget_bytes=self.admission.budget_bytes,
                 reserve_claim=self._reserve_claim,
                 release_reservation=self._release_claim_reservation,
+                queue_prewarm_slots=self._queue_prewarm_slots,
                 **({
                     "cloudflare_autonomous_agents": self.settings.cloudflare_agent_fixture_ids,
                     "cloudflare_chat_endpoint": (

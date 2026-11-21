@@ -70,11 +70,46 @@ TenantHost serializes access to just its child and gates SDK requests on the
 active handle and generation.
 
 Allocation prefers an available ordinal recently completed on that launcher.
-The warm hint targets the same ticket and physical slot as dispatch. Each
-host independently checks readiness and expires its linger window. Cold boots
-are serialized per launcher because local workerd can fail when Python
-children boot simultaneously. Execution can overlap after entry. Queue-depth
-prewarming may be evaluated separately with demand and spend evidence.
+The admission hint targets the same ticket and physical slot as dispatch. Each
+host independently checks readiness and expires its linger window. Ordinary
+cold boots are serialized per launcher because local workerd can fail when
+Python children boot simultaneously. Execution can overlap after entry.
+
+## Queue Pre-Warming
+
+**Max Queue Pre-Warms Per Tenant** (`workers.queue_prewarm_per_tenant`)
+defaults to zero. Operators can opt in when burst latency justifies
+potentially unused boots and their estimated cost. Start with one additional
+engine per tenant. A positive engine linger and a launcher that advertises
+queue pre-warming are required.
+
+When a managed launcher claims a workflow, the API checks unassigned,
+Workers-eligible workflows for that tenant. It accounts for reusable engines
+on that launcher, then caps new prepares by the configured maximum, open
+tenant and launcher seats, and installation headroom minus the fair-admission
+seat. If an older admissible dispatch for another tenant precedes any
+proposed hint, staging skips the batch. This conservative check only
+suppresses speculative pre-warming. Ordinary claims follow their existing
+ordering.
+The installation lock serializes the slot reservations with normal claims.
+The launcher serializes cold boots, including queue prepares. Those boots
+can overlap the queue wait and execution on other slots. Parallel Python
+boots remain a hosted qualification item. Measure admitted boot latency
+behind speculative work in the shared warm queue. The worst-case wait
+before an admitted boot completes is about 20 seconds plus one boot.
+The owning launcher can adopt a reserved slot without consuming another seat.
+It gets a new workflow fence even when it takes a different queued workflow.
+The independent preparation fence authorizes only a metered boot on that
+same physical slot.
+
+An unsent hint is invalid once the pinned queue entry is gone, unless the
+slot has been adopted by a live workflow. Owner changes, drain and the
+absolute prepare deadline close Loader authorization. Draining launchers
+release their unadopted holds. A hint already in
+flight can finish. An unused slot expires within the configured linger,
+measured from reservation. Loader entry has at most 20 seconds within that
+window. The launcher sends no idle pings or alarms. A completed workflow
+uses the normal linger window.
 
 ## Evidence and limits
 

@@ -462,7 +462,10 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Workflow wall time and storage-clear evidence are optional capacity receipt fields.
     # The optional ledger acknowledgement marker extends provider receipts.
     # Managed workflow slot caps default when omitted by an existing client.
-    "9cc56a1792ba0222306545da30c7ce38798c6ff20f9ed2f857a568e27d004377"
+    # Managed Tunnel fields and the connector rotation option are additive.
+    # Omitted reachability still selects Existing HTTPS Endpoint.
+    # Queue pre-warming is opt-in. Existing clients can omit the cap.
+    "1923bb6f6be1f73ed282bf8d92355e45d70205410b4e313391538c631323ee0e"
 )
 
 

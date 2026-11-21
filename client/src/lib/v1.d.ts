@@ -16582,6 +16582,11 @@ export interface components {
             installation: components["schemas"]["CloudflareInstallationStatus"] | null;
             /** Latest Job Id */
             latest_job_id?: string | null;
+            /**
+             * Managed Tunnel Available
+             * @default false
+             */
+            managed_tunnel_available: boolean;
         };
         /** CloudflareConnectRequest */
         CloudflareConnectRequest: {
@@ -16594,6 +16599,14 @@ export interface components {
             account_id: string;
             /** Worker Ingress Origin */
             worker_ingress_origin: string;
+            /**
+             * Reachability Mode
+             * @default existing_https_endpoint
+             * @enum {string}
+             */
+            reachability_mode: "existing_https_endpoint" | "managed_tunnel";
+            /** Zone Id */
+            zone_id?: string | null;
             /** Consent Version */
             consent_version: string;
             /**
@@ -16618,6 +16631,16 @@ export interface components {
             account_id: string;
             /** Worker Ingress Origin */
             worker_ingress_origin: string;
+            /**
+             * Reachability Mode
+             * @default existing_https_endpoint
+             * @enum {string}
+             */
+            reachability_mode: "existing_https_endpoint" | "managed_tunnel";
+            /** Zone Id */
+            zone_id?: string | null;
+            /** Connector Token Version */
+            connector_token_version?: number | null;
             /** Consent Version */
             consent_version: string;
             /**
@@ -16753,7 +16776,7 @@ export interface components {
              * Credential
              * @enum {string}
              */
-            credential: "control_root" | "scope_bearer";
+            credential: "control_root" | "scope_bearer" | "connector_token";
         };
         /**
          * CloudflareWorkersPolicy
@@ -16782,6 +16805,12 @@ export interface components {
              * @default 90
              */
             linger_seconds: number;
+            /**
+             * Queue Prewarm Per Tenant
+             * @description Maximum extra engines to prepare for queued workflows per tenant. Zero disables queue pre-warming.
+             * @default 0
+             */
+            queue_prewarm_per_tenant: number;
             /** Work Kinds */
             work_kinds: "workflow"[];
         };

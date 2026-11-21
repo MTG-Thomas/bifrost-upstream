@@ -800,6 +800,23 @@ test('admission reuses a ready child without a ping and linger expiry schedules 
   });
 });
 
+test('queue preparation expires at its absolute deadline without scheduling idle work', async () => {
+  const tenant = 'queue-linger';
+  const now = Date.now();
+  const input = route(tenant);
+  const cold = {needsWarm: true, attempt_state: 'not_started'};
+  assert.deepEqual(await host(tenant, 'warm', {
+    admission: true, prepareBy: now - 1000, warmUntil: now + 30_000,
+  }), {skipped: true});
+  assert.deepEqual(await host(tenant, 'run', input), cold);
+  assert.equal((await host(tenant, 'warm', {
+    admission: true, prepareBy: now + 20_000, warmUntil: now + 30_000,
+  })).first_request, true);
+  assert.deepEqual(await host(tenant, 'run-after-linger', {route: input, elapsed: 31_000}), {
+    result: cold, alarm: null,
+  });
+});
+
 test('zero linger hands off a preparation only to its own execution', async () => {
   const tenant = 'zero-linger';
   const cold = {needsWarm: true, attempt_state: 'not_started'};

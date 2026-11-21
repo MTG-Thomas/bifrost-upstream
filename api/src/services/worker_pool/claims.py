@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import String, case, cast, exists, func, select, text, tuple_, update
+from sqlalchemy import String, case, cast, exists, false, func, null, select, text, tuple_, update
 
 from src.config import get_settings
 from src.core.database import get_db_context, get_liveness_db_context
@@ -21,9 +21,14 @@ from src.services.kubernetes_execution import load_kubernetes_policy
 from src.services.execution.summary_dispatch import LINUX_ONLY_SUMMARY
 from src.services.worker_pool.cloudflare_admission import cloudflare_claim_allowed
 from src.services.worker_pool.cloudflare_slots import (
+    QueuePreparation,
     WorkflowSlotTicket,
+    adoptable_workflow_slot,
+    count_released_prewarms,
     load_workflow_slot_admission,
     occupy_workflow_slot,
+    stage_queue_preparations,
+    tenant_key,
 )
 from src.services.worker_pool.eligibility import cloudflare_active_claims, cloudflare_dispatch_sql, containers_dispatch_sql
 from src.worker.remote.fencing import current_remote_lease_ref, fence_remote_owner
@@ -67,6 +72,7 @@ class PoolClaim:
     cloudflare_revision: str | None = None
     tenant_id: UUID | None = None
     workflow_slot: WorkflowSlotTicket | None = None
+    queue_preparations: tuple[QueuePreparation, ...] = ()
 
 
 def _now() -> datetime:
@@ -218,6 +224,7 @@ async def claim_next(
     release_reservation: Callable[[PoolClaim], None] | None = None,
     cloudflare_autonomous_agents: frozenset[UUID] = frozenset(),
     cloudflare_chat_endpoint: str | None = None,
+    queue_prewarm_slots: int = 0,
 ) -> PoolClaim | None:
     """Assign the oldest unassigned dispatch this worker can take now.
 
@@ -337,6 +344,7 @@ async def claim_next(
         .order_by(
             (WorkDispatch.id == reserved_for).is_(True).desc(),
             WorkDispatch.created_at.asc(),
+            WorkDispatch.id.asc(),
         )
         .limit(1)
         .with_for_update(skip_locked=True)
@@ -362,14 +370,28 @@ async def claim_next(
                 slot_admission = await load_workflow_slot_admission(db, incarnation_id)
                 eligible_candidate = candidate
                 slot_filter = ()
+                released_prewarms = 0
+                prewarm_ordinal = null()
                 if slot_admission is not None:
-                    if slot_admission.full:
+                    tenant = func.coalesce(cast(dispatch_tenant, String), "platform")
+                    released_prewarms = await count_released_prewarms(db, incarnation_id)
+                    room = tenant.not_in(slot_admission.blocked_tenants) if not slot_admission.full else false()
+                    if released_prewarms:
+                        if (await db.scalar(select(occupied)) or 0) + released_prewarms >= (
+                            budget_bytes // CLOUDFLARE_DEV_BUDGET_BYTES
+                        ):
+                            room = false()
+                        prewarm_ordinal = adoptable_workflow_slot(slot_admission, incarnation_id, tenant)
+                        room = room | prewarm_ordinal.is_not(None)
+                    elif slot_admission.full:
                         return None
-                    slot_filter = (func.coalesce(cast(dispatch_tenant, String), "platform").not_in(
-                        slot_admission.blocked_tenants,
-                    ),)
+                    slot_filter = (room,)
                     eligible_candidate = candidate.where(*slot_filter)
-                picked = (await db.execute(eligible_candidate)).one_or_none()
+                # Capture adoption while the dispatch is still pending. Claiming
+                # the pinned dispatch consumes its queue row in this transaction.
+                picked = (await db.execute(
+                    eligible_candidate.add_columns(prewarm_ordinal.label("prewarm_ordinal")),
+                )).one_or_none()
                 if picked is None:
                     return None
                 if picked.opaque and picked.trigger_type == "chat" and cloudflare_chat_endpoint is not None:
@@ -449,6 +471,7 @@ async def claim_next(
                 )
                 claimed = None
                 workflow_slot = None
+                queue_preparations = ()
                 if row.handler == "workflow.execute":
                     from src.services.execution.workflow_dispatch import claim_workflow_dispatch
 
@@ -461,8 +484,20 @@ async def claim_next(
                     if claimed is not None and slot_admission is not None:
                         workflow_slot = await occupy_workflow_slot(
                             db, slot_admission, incarnation_id, picked.tenant_id,
-                            row.subject, row.dispatch_id, claim_id,
+                            row.subject, row.dispatch_id, claim_id, prewarm_ordinal=picked.prewarm_ordinal,
                         )
+                        if queue_prewarm_slots and slot_admission.policy.queue_prewarm_per_tenant:
+                            if not workflow_slot.prewarming:
+                                slot_admission.occupied[tenant_key(picked.tenant_id)] += 1
+                            # Flush the workflow claim before reading the live
+                            # launcher seats. An adopted preparation reuses a seat.
+                            await db.flush()
+                            queue_preparations = await stage_queue_preparations(
+                                db, slot_admission, incarnation_id, picked.tenant_id,
+                                launcher_slots=queue_prewarm_slots,
+                                occupied_launcher_slots=(await db.scalar(select(occupied)) or 0)
+                                + released_prewarms - int(workflow_slot.prewarming),
+                            )
                 await db.execute(
                     update(ExecutionWorker)
                     .where(ExecutionWorker.id == incarnation_id)
@@ -503,6 +538,7 @@ async def claim_next(
                     cloudflare_revision=row.cloudflare_revision,
                     tenant_id=picked.tenant_id if picked.opaque else None,
                     workflow_slot=workflow_slot,
+                    queue_preparations=queue_preparations,
                 )
                 if reserve_claim is not None:
                     reserve_claim(claim)
@@ -606,7 +642,8 @@ async def begin_idle_drain(incarnation_id: UUID) -> bool:
         if worker_row is None:
             return False
         if worker_row.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and (
-            worker_row.active_runs or worker_row.memory_reserved_bytes or await db.scalar(
+            worker_row.active_runs or worker_row.memory_reserved_bytes
+            or await count_released_prewarms(db, incarnation_id) or await db.scalar(
                 cloudflare_active_claims().where(ExecutionWorkerClaim.worker_id == incarnation_id).exists().select()
             )
         ):

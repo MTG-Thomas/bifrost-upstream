@@ -4,11 +4,12 @@ from typing import Any, Literal
 from uuid import UUID
 
 from shared.models import (
-    CloudflareCapacityAction,
     CloudflareAccountTokenReferenceRotation,
+    CloudflareCapacityAction,
     CloudflareCapacityPolicy,
     CloudflareConnectRequest,
     CloudflarePolicyUpdate,
+    CloudflareReachabilityMode,
     CloudflareWorkerCredentialRotation,
 )
 
@@ -50,7 +51,7 @@ async def bifrost_cloudflare_reconcile_execute(context: Any, installation_id: UU
 
 
 async def bifrost_cloudflare_worker_credential_replace(
-    context: Any, installation_id: UUID, expected_revision: int, credential: Literal["control_root", "scope_bearer"],
+    context: Any, installation_id: UUID, expected_revision: int, credential: Literal["control_root", "scope_bearer", "connector_token"],
 ) -> ToolResult:
     request = CloudflareWorkerCredentialRotation(
         installation_id=installation_id, expected_revision=expected_revision, credential=credential,
@@ -64,10 +65,12 @@ async def bifrost_cloudflare_worker_credential_replace(
 async def bifrost_cloudflare_connect_execute(
     context: Any, account_id: str, worker_ingress_origin: str, consent_version: str,
     consent: Literal[True], credential_ref: UUID, policy: CloudflareCapacityPolicy,
+    reachability_mode: CloudflareReachabilityMode = "existing_https_endpoint", zone_id: str | None = None,
 ) -> ToolResult:
     request = CloudflareConnectRequest(
         action="connect", account_id=account_id, worker_ingress_origin=worker_ingress_origin,
         consent_version=consent_version, consent=consent, credential_ref=credential_ref, policy=policy,
+        reachability_mode=reachability_mode, zone_id=zone_id,
     )
     status, body = await call_rest(
         context, "PATCH", _PATH, json_body=request.model_dump(mode="json", exclude_none=True),
@@ -107,7 +110,7 @@ _TOOLS = (
     (bifrost_cloudflare_disconnect_execute, "Disconnect Cloudflare", "Drain capacity and remove owned resources."),
     (bifrost_cloudflare_enable_execute, "Enable Cloudflare", "Provision and verify Cloudflare Workers capacity."),
     (bifrost_cloudflare_reconcile_execute, "Reconcile Cloudflare", "Verify the current Cloudflare Workers deployment."),
-    (bifrost_cloudflare_worker_credential_replace, "Rotate Cloudflare Worker Credential", "After Scale In, rotate the internal control root or Workers scope bearer."),
+    (bifrost_cloudflare_worker_credential_replace, "Rotate Cloudflare Worker Credential", "After Scale In, rotate the internal control root, Workers scope bearer, or Managed Tunnel connector token."),
     (bifrost_cloudflare_connect_execute, "Connect Cloudflare", "Use a one-time reference from the operator's capacity cloudflare stage-credential command with purpose connect."),
     (bifrost_cloudflare_account_token_replace, "Rotate Cloudflare API Token", "Use a one-time reference from the operator's capacity cloudflare stage-credential command with purpose rotate."),
     (bifrost_cloudflare_policy_update, "Update Cloudflare Policy", "Update the current Cloudflare capacity policy."),

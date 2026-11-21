@@ -174,6 +174,22 @@ RUN useradd -m -u 1000 bifrost && \
 RUN mkdir -p /workspace /tmp/bifrost && \
     chown -R bifrost:bifrost /workspace /tmp/bifrost
 
+# The connector runs this same release image under a separate non-root UID
+# context with only a read-only token projection. Pin both released binaries.
+ARG TARGETARCH
+RUN case "${TARGETARCH:-amd64}" in \
+      amd64) digest=97bb3b02d23a5980fc9c15a1a270e692da1923f103f920d5b16d4931d5ab55e7 ;; \
+      arm64) digest=b155cec3e48e489cfb8e5c602769fb8c771083018d8881d68b4d18a791567c5a ;; \
+      *) exit 1 ;; \
+    esac && \
+    curl --fail --silent --show-error --location \
+      "https://github.com/cloudflare/cloudflared/releases/download/2026.11.1/cloudflared-linux-${TARGETARCH:-amd64}" \
+      --output /usr/local/bin/cloudflared && \
+    echo "$digest  /usr/local/bin/cloudflared" | sha256sum -c - && \
+    chmod 755 /usr/local/bin/cloudflared && \
+    install -d -m 0700 -o bifrost -g bifrost /run/bifrost-tunnel && \
+    touch /run/bifrost-tunnel/.keep
+
 # Copy shared API startup scripts. The Uvicorn shim keeps Kubernetes command
 # overrides on the API allocator path without invoking the root entrypoint.
 COPY api/entrypoint.sh /entrypoint.sh

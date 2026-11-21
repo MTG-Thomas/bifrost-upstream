@@ -35,6 +35,10 @@ class CloudflareWorkersPolicy(BaseModel):
     installation_slots: int = Field(default=9, ge=2, le=256)
     max_lifetime_seconds: int = Field(ge=60, le=604800)
     linger_seconds: int = Field(default=90, ge=0, le=300, description="Tenant engine reuse window after a workflow.")
+    queue_prewarm_per_tenant: int = Field(
+        default=0, ge=0, le=32,
+        description="Maximum extra engines to prepare for queued workflows per tenant. Zero disables queue pre-warming.",
+    )
     work_kinds: frozenset[Literal["workflow"]]
 
 
@@ -69,10 +73,17 @@ class CloudflareSpendStatus(BaseModel):
     analytics: CloudflareUsageAdvisory | None = None
 
 
+CloudflareReachabilityMode = Literal["existing_https_endpoint", "managed_tunnel"]
+CLOUDFLARE_ID_PATTERN = r"^[a-f0-9]{32}$"
+
+
 class CloudflareInstallationStatus(BaseModel):
     installation_id: UUID
     account_id: str
     worker_ingress_origin: str
+    reachability_mode: CloudflareReachabilityMode = "existing_https_endpoint"
+    zone_id: str | None = None
+    connector_token_version: int | None = None
     consent_version: str
     consent_at: datetime
     desired_revision: int
@@ -89,6 +100,7 @@ class CloudflareCapacityStatus(BaseModel):
     consent_text: str
     installation: CloudflareInstallationStatus | None
     latest_job_id: UUID | None = None
+    managed_tunnel_available: bool = False
 
 
 class CloudflareCapacityAction(BaseModel):
@@ -105,7 +117,7 @@ class CloudflareAccountTokenRotation(CloudflareCapacityAction):
 
 
 class CloudflareWorkerCredentialRotation(CloudflareCapacityAction):
-    credential: Literal["control_root", "scope_bearer"]
+    credential: Literal["control_root", "scope_bearer", "connector_token"]
 
 
 class CloudflareAccountTokenReferenceRotation(CloudflareCapacityAction):
@@ -131,6 +143,8 @@ class CloudflareConnectRequest(BaseModel):
     action: Literal["connect"]
     account_id: str = Field(pattern=r"^[a-f0-9]{32}$")
     worker_ingress_origin: str = Field(max_length=255)
+    reachability_mode: CloudflareReachabilityMode = "existing_https_endpoint"
+    zone_id: str | None = Field(default=None, pattern=CLOUDFLARE_ID_PATTERN)
     consent_version: str = Field(max_length=64)
     consent: Literal[True]
     api_token: SecretStr | None = Field(default=None, min_length=16, max_length=512, json_schema_extra={"writeOnly": True})
@@ -138,9 +152,11 @@ class CloudflareConnectRequest(BaseModel):
     policy: CloudflareCapacityPolicy
 
     @model_validator(mode="after")
-    def require_one_credential(self) -> CloudflareConnectRequest:
+    def validate_connection(self) -> CloudflareConnectRequest:
         if (self.api_token is None) == (self.credential_ref is None):
             raise ValueError("Provide one Cloudflare credential")
+        if (self.reachability_mode == "managed_tunnel") != (self.zone_id is not None):
+            raise ValueError("Provide a DNS zone ID only for Managed Tunnel")
         return self
 
 
