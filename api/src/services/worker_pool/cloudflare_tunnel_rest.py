@@ -189,6 +189,11 @@ class TunnelRest(WorkersRestCleanup):
         config = current.get("config")
         if not isinstance(config, dict) or config.get("originRequest") not in (None, {}):
             return False
+        warp = config.get("warp-routing")
+        if warp is not None and warp != {} and (
+            not isinstance(warp, dict) or set(warp) != {"enabled"} or warp["enabled"] is not False
+        ):
+            return False
         rules = config.get("ingress")
         if not isinstance(rules, list) or len(rules) != len(desired):
             return False
@@ -208,7 +213,21 @@ class TunnelRest(WorkersRestCleanup):
         if not self._matches_ingress(current, tunnel.provider_id, self.ingress(origin)):
             raise IngressMismatch("Cloudflare tunnel ingress differs from the approved route")
 
-    async def write_ingress(self, tunnel: ResourceObservation, origin: str, *, repair: bool = False) -> None:
+    async def verify_private_routes(self, tunnel_id: str) -> None:
+        rows = await self._result(
+            "GET", f"accounts/{self.account_id}/teamnet/routes",
+            params={"tunnel_id": tunnel_id, "is_deleted": "false"},
+        )
+        if not isinstance(rows, list) or any(
+            not isinstance(row, dict) or row.get("tunnel_id") != tunnel_id for row in rows
+        ):
+            raise ObservationPending("Cloudflare private-network route inventory could not be confirmed")
+        if rows:
+            raise OwnershipConflict("Cloudflare private-network routes target the managed tunnel")
+
+    async def write_ingress(
+        self, tunnel: ResourceObservation, origin: str, *, repair: bool = False, prove_write: bool = False,
+    ) -> None:
         exact = await self._result("GET", f"{self.tunnels}/{tunnel.provider_id}", allow_missing=True)
         if exact is None:
             raise ObservationPending("The recorded Cloudflare tunnel is absent")
@@ -226,14 +245,12 @@ class TunnelRest(WorkersRestCleanup):
         if repair:
             if current is not None and not self._config_identity(current, tunnel.provider_id):
                 raise OwnershipConflict("Cloudflare tunnel configuration identity changed")
-            if matches:
+            if matches and not prove_write:
                 return
-            body = {"ingress": desired}
         else:
             if not matches:
                 raise IngressMismatch("Cloudflare tunnel ingress differs from the approved route")
-            body = current["config"]
-        await self._result("PUT", path, json_body={"config": body})
+        await self._result("PUT", path, json_body={"config": {"ingress": desired}})
         await self.verify_ingress(tunnel, origin)
 
     def record_body(self, intent: ResourceIntent, tunnel_id: str) -> dict[str, Any]:
@@ -245,7 +262,7 @@ class TunnelRest(WorkersRestCleanup):
 
     async def dns(
         self, intent: ResourceIntent, recorded: ResourceObservation | None, tunnel_id: str,
-        *, ignore_unrecorded_foreign: bool = False,
+        *, ignore_foreign: bool = False,
     ) -> ResourceObservation | None:
         desired = self.record_body(intent, tunnel_id)
 
@@ -254,9 +271,9 @@ class TunnelRest(WorkersRestCleanup):
 
         item = await self._find(
             self.records, {"name.exact": intent.target.name}, intent.target.name,
-            matches_body=matches_body if recorded is None and ignore_unrecorded_foreign else None,
+            matches_body=matches_body if ignore_foreign else None,
         )
-        if item is None:
+        if item is None or (ignore_foreign and recorded is not None and item.get("id") != recorded.provider_id):
             if recorded is not None and await self._result(
                 "GET", f"{self.records}/{recorded.provider_id}", allow_missing=True,
             ) is not None:
@@ -304,9 +321,9 @@ class TunnelRest(WorkersRestCleanup):
 
     async def remove_dns(self, record: ResourceObservation, tunnel_id: str) -> None:
         await self.verify_zone()
-        if await self.dns(record.intent, record, tunnel_id) is not None:
+        if await self.dns(record.intent, record, tunnel_id, ignore_foreign=True) is not None:
             await self._result("DELETE", f"{self.records}/{record.provider_id}", allow_missing=True)
-        if await self.dns(record.intent, record, tunnel_id) is not None:
+        if await self.dns(record.intent, record, tunnel_id, ignore_foreign=True) is not None:
             raise ObservationPending("Cloudflare DNS removal has not settled")
 
     async def remove_tunnel(self, tunnel: ResourceObservation) -> None:

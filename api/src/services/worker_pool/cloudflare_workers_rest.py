@@ -186,11 +186,9 @@ class WorkersRestCleanup:
                     "Bifrost requires both active Workers and Containers entitlements to verify Workers Paid.",
                 )
 
-    async def verify_workers_write(self, api_token: SecretStr, expected: ResourceObservation) -> bool:
+    async def verify_workers_write(self, api_token: SecretStr, expected: ResourceObservation) -> None:
         """Reassert unchanged endpoint settings on an exactly owned Worker."""
         intent = expected.intent
-        if await observe_owned(self, api_token=api_token, intent=intent, recorded=expected) is None:
-            return False
         account = intent.target.account_id
         path = f"{_script_path(intent.target)}/subdomain"
         response = await self._request(api_token, account, "GET", path)
@@ -201,7 +199,7 @@ class WorkersRestCleanup:
         # Cloudflare has no conditional mutation. Recheck the deployment just
         # before reasserting the observed values, then verify settings and owner.
         if await observe_owned(self, api_token=api_token, intent=intent, recorded=expected) is None:
-            return False
+            raise WorkersWriteUnverified("The owned Worker vanished before the write proof.")
         try:
             await self._request(api_token, account, "POST", path, json_body=settings)
         except CloudflareManagementDenied:
@@ -213,7 +211,8 @@ class WorkersRestCleanup:
         after = response["result"] if response is not None else None
         if not isinstance(after, dict) or any(after.get(key) is not value for key, value in settings.items()):
             raise WorkersWriteUnverified("Cloudflare did not confirm unchanged endpoint settings after the write.")
-        return await observe_owned(self, api_token=api_token, intent=intent, recorded=expected) is not None
+        if await observe_owned(self, api_token=api_token, intent=intent, recorded=expected) is None:
+            raise WorkersWriteUnverified("The owned Worker vanished after the write proof.")
 
     async def observe(
         self, *, api_token: SecretStr, intent: ResourceIntent,

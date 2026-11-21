@@ -161,6 +161,7 @@ class _TunnelAPI:
         self.denied_write = None
         self.lose_dns_probe = False
         self.read_outage = False
+        self.private_routes = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         assert request.url.host == "api.cloudflare.com"
@@ -182,6 +183,10 @@ class _TunnelAPI:
                 {"id": feature, "deleted_date": "", "allocation": {"type": "bool", "value": True}}
                 for feature in ("workers.enabled", "containers.enabled")
             ])
+        if path == f"/accounts/{self.account}/teamnet/routes" and method == "GET":
+            assert request.url.params["tunnel_id"] == self.tunnel_id
+            assert request.url.params["is_deleted"] == "false"
+            return result(self.private_routes)
         if path == zone and method == "GET":
             return result({"account": {"id": self.account}, "id": self.zone, "name": "example.test", "status": "active"})
         if path == tunnels and method == "GET":
@@ -226,6 +231,8 @@ class _TunnelAPI:
             if self.denied_write == "tunnel":
                 return httpx.Response(403)
             self.config = json.loads(request.content)["config"]
+            assert set(self.config) == {"ingress"}
+            assert all(set(rule) <= {"hostname", "service"} for rule in self.config["ingress"])
             return result({})
         if path == records and method == "GET":
             assert request.url.params["name.exact"] == "workers.example.test"
@@ -237,7 +244,7 @@ class _TunnelAPI:
             self.dns = {**json.loads(request.content), "id": self.dns_id, "modified_on": "fixture-dns-version"}
             raise httpx.ReadError("lost DNS create response", request=request)
         if path == f"{records}/{self.dns_id}" and method == "GET":
-            return result(self.dns) if self.dns else httpx.Response(404)
+            return result(self.dns) if self.dns and self.dns.get("id") == self.dns_id else httpx.Response(404)
         if path == f"{records}/{self.dns_id}" and method == "PATCH":
             if self.denied_write == "dns":
                 return httpx.Response(403)
@@ -353,6 +360,12 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
                 patch.setattr(cloudflare_tunnel, "adapter", lambda *_: client)
                 for version, permission in enumerate(("tunnel", "dns", None), start=2):
                     provider.denied_write = permission
+                    if permission is None:
+                        async with context() as db:
+                            row = await db.get(CloudflareInstallation, installation_id)
+                            row.desired_state = "enabled"
+                            row.admitted_revision = 1
+                        provider.config["warp-routing"] = {"enabled": True}
                     job, _ = await lifecycle_job.enqueue_cloudflare_account_token_rotation(
                         db_session, _platform_operator(), installation_id=installation_id, expected_revision=1,
                         replacement=SecretStr("synthetic-cloudflare-management-token"),
@@ -373,6 +386,8 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
                         }
                         await db_session.refresh(installation)
                         assert installation.api_token_version == version
+                        assert installation.admitted_revision is None
+                        assert "warp-routing" not in provider.config
                         job.status = "succeeded"
                     await db_session.flush()
             provider.denied_write = None
@@ -402,6 +417,15 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
             assert provider.config == {"ingress": [
                 {"hostname": "workers.example.test", "service": origin}, {"service": "http_status:404"},
             ]}
+            installation.admitted_revision = 1
+            await db_session.flush()
+            provider.private_routes = [{"tunnel_id": provider.tunnel_id, "network": "192.0.2.0/24"}]
+            with pytest.raises(PlatformJobRequiresAction) as private_route:
+                await lifecycle_job._settle_reconcile(running, reconcile, WorkersRestCleanup(http), tunnel_http=http)
+            assert private_route.value.result == {"code": "CF_OWNERSHIP_CONFLICT"}
+            await db_session.refresh(installation)
+            assert installation.admitted_revision is None
+            provider.private_routes = []
             installation.desired_state = "scaled_in"
             await db_session.flush()
             provider.connectors = []
@@ -415,6 +439,8 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
             await change(cloudflare_tunnel.record_rotation_intent, client, version=2)
             assert await change(cloudflare_tunnel.connector_ready, client)
             assert not provider.evicted
+            late = str(uuid4())
+            provider.connectors.append(late)
             with pytest.raises(CloudflareRestUnavailable):
                 await change(cloudflare_tunnel.rotate, client, version=2, actor=actor)
             await change(cloudflare_tunnel.rotate, client, version=2, actor=actor)
@@ -422,14 +448,16 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
             key = await cloudflare_connector_channel.project_connector(key)
             assert delivered() != first
             assert delivered() == (await client.connector_token(provider.tunnel_id)).get_secret_value()
-            assert not await change(cloudflare_tunnel.connector_ready, client)
-            assert provider.evicted == [old]
             async with context() as db:
                 job, _ = await lifecycle_job.enqueue_cloudflare_worker_credential_rotation(
                     db, _platform_operator(), installation_id=installation_id, expected_revision=1,
                     credential="connector_token",
                 )
                 assert job.payload["replacement_version"] == 3
+            await change(cloudflare_tunnel.record_rotation_intent, client, version=3)
+            # Enable's readiness check must still evict both v1 sessions after v3 aborts.
+            assert not await change(cloudflare_tunnel.connector_ready, client)
+            assert provider.evicted == sorted([old, late])
             provider.connectors = [new]
             assert await change(cloudflare_tunnel.connector_ready, client)
             assert not await change(cloudflare_tunnel.cleanup, client)
@@ -448,7 +476,8 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
 
 
 @pytest.mark.asyncio
-async def test_managed_tunnel_disconnect_preserves_foreign_dns(db_session, installation, monkeypatch):
+@pytest.mark.parametrize("recorded", [False, True])
+async def test_managed_tunnel_disconnect_preserves_foreign_dns(db_session, installation, monkeypatch, recorded):
     installation.reachability_mode = "managed_tunnel"
     installation.zone_id = _TunnelAPI.zone
     monkeypatch.setattr(cloudflare_tunnel, "get_settings", lambda: SimpleNamespace(cloudflare_tunnel_channel="compose"))
@@ -461,17 +490,22 @@ async def test_managed_tunnel_disconnect_preserves_foreign_dns(db_session, insta
         with pytest.raises(CloudflareRestUnavailable):
             await cloudflare_tunnel.provision_tunnel(db_session, installation, client)
         await cloudflare_tunnel.provision_tunnel(db_session, installation, client)
+        record = await cloudflare_tunnel.resource(db_session, installation, cloudflare_tunnel.DNS)
+        assert record is not None
+        if recorded:
+            record.provider_id = provider.dns_id
+            record.provider_version = "fixture-dns-version"
+            record.state = "present"
         provider.dns = foreign
         with pytest.raises(lifecycle_job.OwnershipConflict):
             await cloudflare_tunnel.provision_dns(db_session, installation, client, actor=str(OPERATOR_ID))
         await db_session.flush()
         assert not await cloudflare_tunnel.cleanup(db_session, installation, client)
-        with pytest.raises(DeletionSettling, match="late Managed Tunnel write"):
-            await cloudflare_tunnel.cleanup(db_session, installation, client)
-        record = await cloudflare_tunnel.resource(db_session, installation, cloudflare_tunnel.DNS)
-        assert record is not None
-        record.observed_at = datetime.now(UTC) - timedelta(minutes=2)
-        assert not await cloudflare_tunnel.cleanup(db_session, installation, client)
+        if not recorded:
+            with pytest.raises(DeletionSettling, match="late Managed Tunnel write"):
+                await cloudflare_tunnel.cleanup(db_session, installation, client)
+            record.observed_at = datetime.now(UTC) - timedelta(minutes=2)
+            assert not await cloudflare_tunnel.cleanup(db_session, installation, client)
         assert await cloudflare_tunnel.cleanup(db_session, installation, client)
     assert provider.dns == foreign and provider.tunnel and provider.tunnel["deleted_at"]
 
@@ -667,7 +701,7 @@ async def test_canary_proof_requires_current_lease_worker_generation_and_revisio
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("aborted_rotation", [False, True])
+@pytest.mark.parametrize("aborted_rotation", [0, 2, 3])
 async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
     db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch, aborted_rotation,
 ) -> None:
@@ -675,7 +709,8 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
     if aborted_rotation:
         installation.reachability_mode = "managed_tunnel"
         installation.zone_id = _TunnelAPI.zone
-        installation.tunnel_token_version = installation.tunnel_token_projected_version = 1
+        active_version = aborted_rotation - 1
+        installation.tunnel_token_version = installation.tunnel_token_projected_version = active_version
         receipt = CloudflareOwnedResource(
             id=uuid4(), installation_id=installation.id, account_id=installation.account_id,
             scope="reachability", kind=cloudflare_tunnel.TUNNEL, target_name="fixture-tunnel", desired_revision=1,
@@ -685,12 +720,18 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
         db_session.add(receipt)
         await db_session.flush()
         connector = str(uuid4())
+        connectors = {connector}
+        previous = str(uuid4())
+        if active_version == 2:
+            receipt.provider_details = {"rotation_version": 2, "rotation_previous_connectors": [previous]}
+            connectors.add(previous)
         tunnel = SimpleNamespace(
             tunnel=AsyncMock(side_effect=lambda _, expected: expected),
-            connectors=AsyncMock(return_value=frozenset({connector})),
+            connectors=AsyncMock(side_effect=lambda _: frozenset(connectors)),
+            evict_connectors=AsyncMock(side_effect=lambda _, excluded: connectors.difference_update(excluded)),
         )
-        await cloudflare_tunnel.record_rotation_intent(db_session, installation, tunnel, version=2)
-        assert receipt.provider_details["rotation_previous_connectors"] == [connector]
+        await cloudflare_tunnel.record_rotation_intent(db_session, installation, tunnel, version=aborted_rotation)
+        assert set(receipt.provider_details["rotation_candidates"]) == connectors
         # The replacement failed before activation, so the incumbent connector must remain eligible.
         monkeypatch.setattr(cloudflare_tunnel, "adapter", lambda *_: tunnel)
         for step in ("prepare", "provision_tunnel", "provision_dns"):
@@ -815,6 +856,9 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
         ) == {"outcome": "enabled"}
     assert [name.rsplit("-", 1)[-1] for name in writes] == ["gateway", "launcher", "capacity"]
     assert canary.await_count == 2
+    if aborted_rotation == 3:
+        tunnel.evict_connectors.assert_awaited_once()
+        assert tunnel.evict_connectors.await_args.args[1] == {previous}
     assert sum(path.endswith("/entitlements") for path in paid_reads) == 3
     await db_session.refresh(installation)
     assert installation.admitted_revision == 1

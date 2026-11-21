@@ -138,6 +138,7 @@ async def provision_tunnel(db: AsyncSession, row: CloudflareInstallation, client
     elif await client.tunnel(receipt.intent, receipt) is None:
         raise ObservationPending("The recorded Cloudflare tunnel is absent")
     await client.configure_ingress(receipt, tunnel_origin())
+    await client.verify_private_routes(receipt.provider_id)
     _present(item, receipt)
 
 
@@ -182,6 +183,7 @@ async def verify(db: AsyncSession, row: CloudflareInstallation, client: TunnelRe
     if receipt is None or await client.dns(receipt.intent, receipt, tunnel.provider_id) is None:
         raise TunnelUnavailable("The recorded Cloudflare DNS record is absent")
     await client.verify_ingress(tunnel, tunnel_origin())
+    await client.verify_private_routes(tunnel.provider_id)
     if row.tunnel_token_version is None:
         raise ObservationPending("Managed Tunnel has not published a connector credential")
     expected = await _credential(db, _ref(row, "tunnel_secret", row.tunnel_token_version))
@@ -195,7 +197,9 @@ async def repair_ingress(db: AsyncSession, row: CloudflareInstallation, client: 
     await client.write_ingress(await _owned_tunnel(db, row, client), tunnel_origin(), repair=True)
 
 
-async def verify_management_writes(db: AsyncSession, row: CloudflareInstallation, client: TunnelRest) -> None:
+async def verify_management_writes(
+    db: AsyncSession, row: CloudflareInstallation, client: TunnelRest, *, repair: bool = False,
+) -> None:
     await client.verify_zone()
     tunnel = await resource(db, row, TUNNEL)
     receipt = _recorded(tunnel) if tunnel is not None else None
@@ -204,7 +208,7 @@ async def verify_management_writes(db: AsyncSession, row: CloudflareInstallation
         secret = await _credential(db, _ref(row, "tunnel_secret", 1)) if receipt is None else None
         observed = await client.tunnel(_intent(tunnel), receipt, secret=secret)
         if observed is not None:
-            await client.write_ingress(observed, tunnel_origin())
+            await client.write_ingress(observed, tunnel_origin(), repair=repair, prove_write=True)
     record = await resource(db, row, DNS)
     if record is None or record.state == "absent":
         return
@@ -215,7 +219,7 @@ async def verify_management_writes(db: AsyncSession, row: CloudflareInstallation
         return
     dns = await client.dns(
         _intent(record), _recorded(record), owner.provider_id,
-        ignore_unrecorded_foreign=row.desired_state == "disconnected",
+        ignore_foreign=row.desired_state == "disconnected",
     )
     if dns is not None:
         await client.verify_dns_write(dns, owner.provider_id)
@@ -242,7 +246,10 @@ async def connector_ready(db: AsyncSession, row: CloudflareInstallation, client:
     )
     item.provider_details = {**item.provider_details, "connectors": sorted(connectors)}
     if ready and rotating:
-        item.provider_details = {"connectors": sorted(connectors)}
+        item.provider_details = {
+            key: value for key, value in item.provider_details.items()
+            if key not in ("rotation_version", "rotation_previous_connectors")
+        }
     return ready
 
 
@@ -277,7 +284,7 @@ async def cleanup(db: AsyncSession, row: CloudflareInstallation, client: TunnelR
                 raise OwnershipConflict("Managed Tunnel DNS has no owning tunnel receipt")
         else:
             dns = await client.dns(
-                _intent(record), _recorded(record), receipt.provider_id, ignore_unrecorded_foreign=True,
+                _intent(record), _recorded(record), receipt.provider_id, ignore_foreign=True,
             )
             if dns is not None:
                 if record.state != "deleting":
@@ -328,6 +335,17 @@ async def rotate(
         tunnel, await _credential(db, _ref(row, "tunnel_secret", current)),
         await _credential(db, _ref(row, "tunnel_secret", version)),
     )
+    item = await resource(db, row, TUNNEL)
+    if item is None:
+        raise OwnershipConflict("Managed Tunnel rotation has no exact receipt")
+    excluded = (
+        set(item.provider_details.get("rotation_previous_connectors", []))
+        | set(item.provider_details.get("rotation_candidates", []))
+        | await client.connectors(tunnel.provider_id)
+    )
+    item.provider_details = {
+        "rotation_version": version, "rotation_previous_connectors": sorted(excluded),
+    }
     db.add(seal_credential(_ref(row, "connector_token", version), token, actor=actor, now=datetime.now(UTC)))
     row.tunnel_token_version = version
     await db.execute(update(CloudflareCredential).where(
@@ -343,16 +361,13 @@ async def record_rotation_intent(
     item = await resource(db, row, TUNNEL)
     if item is None or item.provider_id is None:
         raise ObservationPending("The recorded Cloudflare tunnel is absent")
-    if item.provider_details.get("rotation_version") == version:
+    if item.provider_details.get("rotation_intent_version") == version:
         return
     receipt = await _owned_tunnel(db, row, client)
     item.provider_details = {
         **item.provider_details,
-        "rotation_version": version,
-        "rotation_previous_connectors": sorted(
-            set(item.provider_details.get("rotation_previous_connectors", []))
-            | await client.connectors(receipt.provider_id)
-        ),
+        "rotation_intent_version": version,
+        "rotation_candidates": sorted(await client.connectors(receipt.provider_id)),
     }
 
 

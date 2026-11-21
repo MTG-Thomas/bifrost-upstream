@@ -564,13 +564,20 @@ async def serve_worker_ingress(app: FastAPI) -> AsyncIterator[None]:
 async def watch_worker_ingress(app: FastAPI) -> AsyncIterator[None]:
     """Open the dedicated socket when an installation is connected."""
     projection: Projection | None = None
+    projection_failed = False
 
     async def refresh_connector() -> None:
-        nonlocal projection
+        nonlocal projection, projection_failed
         try:
             projection = await project_connector(projection)
         except Exception:  # noqa: BLE001 - Projection is optional and may handle secret material.
-            logger.warning("Could not project the Managed Tunnel connector credential")
+            if not projection_failed:
+                logger.warning("Could not project the Managed Tunnel connector credential")
+            projection_failed = True
+        else:
+            if projection_failed:
+                logger.info("Managed Tunnel connector credential projection recovered")
+            projection_failed = False
 
     async def watch() -> None:
         while True:

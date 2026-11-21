@@ -40,6 +40,35 @@ async def test_projection_failure_does_not_stop_worker_ingress(monkeypatch, capl
     assert "private fixture value" not in caplog.text
 
 
+@pytest.mark.asyncio
+async def test_projection_logs_only_failure_transitions(monkeypatch, caplog):
+    observed = asyncio.Event()
+    sleep = asyncio.sleep
+    attempts = iter((True, True, False, True))
+
+    async def project(_previous):
+        failed = next(attempts, True)
+        if failed:
+            raise OwnershipConflict("private fixture value")
+
+    calls = AsyncMock(side_effect=project)
+
+    async def tick(_seconds):
+        if calls.await_count >= 4:
+            observed.set()
+        await sleep(0)
+
+    monkeypatch.setattr(worker_ingress, "project_connector", calls)
+    monkeypatch.setattr(worker_ingress, "_installation_origin", AsyncMock(return_value=None))
+    monkeypatch.setattr(worker_ingress.asyncio, "sleep", tick)
+    with caplog.at_level("INFO"):
+        async with worker_ingress.watch_worker_ingress(None):
+            await asyncio.wait_for(observed.wait(), 3)
+    assert caplog.text.count("Could not project the Managed Tunnel connector credential") == 2
+    assert caplog.text.count("Managed Tunnel connector credential projection recovered") == 1
+    assert "private fixture value" not in caplog.text
+
+
 def connection(**fields):
     return CloudflareConnectRequest.model_validate({
         "action": "connect", "account_id": "a" * 32,

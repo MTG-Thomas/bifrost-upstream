@@ -779,15 +779,14 @@ async def _rotate_account_token(context: PlatformJobContext, parsed: BaseModel) 
             await adapter.verify_workers_paid(account_id, bearer)
             workers = [receipt for receipt in inventory if receipt.intent.target.scope == "workers"]
             for receipt in workers:
-                if receipt.provider_id is None or receipt.provider_version is None:
-                    if receipt.state != "creating":
-                        raise OwnershipConflict("Cloudflare Worker has no exact deployment receipt")
-                    expected = await observe_owned(adapter, api_token=bearer, intent=receipt.intent, recorded=None)
-                    if expected is None:
-                        continue
-                else:
-                    expected = ResourceObservation(receipt.intent, receipt.provider_id, receipt.provider_version)
-                await adapter.verify_workers_write(bearer, expected)
+                recorded = None
+                if receipt.provider_id is not None and receipt.provider_version is not None:
+                    recorded = ResourceObservation(receipt.intent, receipt.provider_id, receipt.provider_version)
+                elif receipt.state != "creating":
+                    raise OwnershipConflict("Cloudflare Worker has no exact deployment receipt")
+                observed = await observe_owned(adapter, api_token=bearer, intent=receipt.intent, recorded=recorded)
+                if observed is not None:
+                    await adapter.verify_workers_write(bearer, observed)
     except CloudflareManagementDenied:
         denial = ("Submit a Replacement Cloudflare API Token", "CF_MANAGEMENT_CREDENTIAL")
     except WorkersPaidUnverified as exc:
@@ -799,49 +798,62 @@ async def _rotate_account_token(context: PlatformJobContext, parsed: BaseModel) 
     except CloudflareRestUnavailable:
         raise PlatformJobFailure("CF_PROVIDER_UNAVAILABLE", "Cloudflare REST Is Temporarily Unavailable", retryable=True) from None
 
-    async with get_db_context() as db:
-        await _hold_installation_lease(db, context, payload.installation_id)
-        installation = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
-        candidate = await db.get(CloudflareCredential, credential_key, with_for_update=True)
-        if (
-            installation is None or installation.retired_at is not None
-            or candidate is None or candidate.ciphertext != ciphertext
-        ):
-            return {"outcome": "superseded"}
-        if (
-            installation.api_token_version != payload.previous_version or installation.desired_revision != desired_revision
-            or installation.account_id != account_id or await _inventory_snapshot(db, installation.id) != inventory
-        ):
-            candidate.ciphertext = None
-            return {"outcome": "superseded"}
-        if denial is None and installation.reachability_mode == "managed_tunnel":
-            try:
-                async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
-                    tunnel = cloudflare_tunnel.adapter(http, installation, bearer)
-                    await cloudflare_tunnel.verify_management_writes(db, installation, tunnel)
-            except CloudflareManagementDenied:
-                denial = ("Check Cloudflare Tunnel and DNS Write Permissions", "CF_MANAGEMENT_CREDENTIAL")
-            except (ObservationPending, OwnershipConflict, ValueError):
-                denial = ("Verify Cloudflare Tunnel and DNS Ownership", "CF_DEPLOYMENT_UNVERIFIED")
-            except CloudflareRestUnavailable:
-                raise PlatformJobFailure("CF_PROVIDER_UNAVAILABLE", "Cloudflare REST Is Temporarily Unavailable", retryable=True) from None
-        if denial is not None:
-            candidate.ciphertext = None
-        else:
-            installation.api_token_version = payload.replacement_version
-            # Replacing a token revokes Bifrost's access to earlier versions.
-            # Repair a narrower or revoked replacement with another explicit rotation.
-            await db.execute(update(CloudflareCredential).where(
-                CloudflareCredential.installation_id == installation.id,
-                CloudflareCredential.purpose == "account_token",
-                CloudflareCredential.version < payload.replacement_version,
-            ).values(ciphertext=None))
-            await emit_audit(
-                db, "capacity.cloudflare_account_token_rotated", resource_type="cloudflare_installation",
-                resource_id=installation.id, details={
-                    "credential_version": payload.replacement_version, "job_id": str(context.job_id),
-                }, actor_override=ActorContext(None, None, source="scheduler"),
-            )
+    for _ in range(2):
+        async with get_db_context() as db:
+            await _hold_installation_lease(db, context, payload.installation_id)
+            installation = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
+            candidate = await db.get(CloudflareCredential, credential_key, with_for_update=True)
+            if (
+                installation is None or installation.retired_at is not None
+                or candidate is None or candidate.ciphertext != ciphertext
+            ):
+                return {"outcome": "superseded"}
+            if (
+                installation.api_token_version != payload.previous_version or installation.desired_revision != desired_revision
+                or installation.account_id != account_id or await _inventory_snapshot(db, installation.id) != inventory
+            ):
+                candidate.ciphertext = None
+                return {"outcome": "superseded"}
+            if denial is None and installation.reachability_mode == "managed_tunnel":
+                try:
+                    async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
+                        tunnel = cloudflare_tunnel.adapter(http, installation, bearer)
+                        await cloudflare_tunnel.verify_management_writes(
+                            db, installation, tunnel, repair=installation.admitted_revision is None,
+                        )
+                except IngressMismatch:
+                    if installation.admitted_revision is not None:
+                        installation.admitted_revision = None
+                        wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
+                        # Commit closure, then reacquire the lease and compare the same receipts.
+                        continue
+                    denial = ("Verify Cloudflare Tunnel and DNS Ownership", "CF_DEPLOYMENT_UNVERIFIED")
+                except CloudflareManagementDenied:
+                    denial = ("Check Cloudflare Tunnel and DNS Write Permissions", "CF_MANAGEMENT_CREDENTIAL")
+                except (ObservationPending, OwnershipConflict, ValueError):
+                    denial = ("Verify Cloudflare Tunnel and DNS Ownership", "CF_DEPLOYMENT_UNVERIFIED")
+                except CloudflareRestUnavailable:
+                    raise PlatformJobFailure("CF_PROVIDER_UNAVAILABLE", "Cloudflare REST Is Temporarily Unavailable", retryable=True) from None
+            if denial is not None:
+                candidate.ciphertext = None
+            else:
+                installation.api_token_version = payload.replacement_version
+                # Replacing a token revokes Bifrost's access to earlier versions.
+                # Repair a narrower or revoked replacement with another explicit rotation.
+                await db.execute(update(CloudflareCredential).where(
+                    CloudflareCredential.installation_id == installation.id,
+                    CloudflareCredential.purpose == "account_token",
+                    CloudflareCredential.version < payload.replacement_version,
+                ).values(ciphertext=None))
+                await emit_audit(
+                    db, "capacity.cloudflare_account_token_rotated", resource_type="cloudflare_installation",
+                    resource_id=installation.id, details={
+                        "credential_version": payload.replacement_version, "job_id": str(context.job_id),
+                    }, actor_override=ActorContext(None, None, source="scheduler"),
+                )
+        break
+    else:
+        return {"outcome": "superseded"}
     if denial is not None:
         raise PlatformJobRequiresAction(denial[0], {"code": denial[1]})
     return {"outcome": "rotated", "credential_version": payload.replacement_version}
@@ -980,13 +992,7 @@ async def enqueue_cloudflare_worker_credential_rotation(
     if credential == "connector_token":
         if row.reachability_mode != "managed_tunnel" or row.tunnel_token_version is None:
             raise CloudflarePolicyConflict("Provision Managed Tunnel before rotating its connector token.")
-        receipt = await cloudflare_tunnel.resource(db, row, cloudflare_tunnel.TUNNEL)
-        pending = receipt.provider_details.get("rotation_version") if receipt is not None else None
         version = row.tunnel_token_version + 1
-        if receipt is not None and pending != version:
-            receipt.provider_details = {
-                key: value for key, value in receipt.provider_details.items() if not key.startswith("rotation_")
-            }
         await cloudflare_tunnel.stage_rotation(db, row, version=version, actor=str(actor.user_id))
     elif credential == "scope_bearer":
         row.desired_revision += 1
