@@ -264,3 +264,51 @@ for (const [phase, error_type, error] of [
     assert.deepEqual(result, {attempt_state: 'uncertain', result: {success: false, error_type, error}});
   });
 }
+
+
+test('queue prepares serialize boots and a different workflow joins its slot', async () => {
+  const pending = [Promise.withResolvers(), Promise.withResolvers()];
+  const entered = [Promise.withResolvers(), Promise.withResolvers()];
+  const routes = pending.map((_, slot) => ({...route, workflow_deadline: null,
+    route_id: 'different-fence', engine_slot: slot, incarnation_id: 'fixture'}));
+  const refusal = Promise.withResolvers();
+  const hosts = new Map();
+  const ready = [false, false];
+  const booting = [];
+  const now = Date.now();
+  for (const [slot, workflow] of routes.entries()) {
+    hosts.set(await launcherTenantId(workflow), {
+      async warm({prepareBy, warmUntil}) {
+        assert.equal(prepareBy, now + 20_000);
+        assert.equal(warmUntil, now + 90_000);
+        booting.push(slot);
+        entered[slot].resolve();
+        await pending[slot].promise;
+        ready[slot] = true;
+        return {invocation: {kind: 'boot'}};
+      },
+      async run() {
+        if (ready[slot]) return {output: {status: 'Success'}};
+        refusal.resolve();
+        return {needsWarm: true};
+      },
+    });
+  }
+  const run = createLauncherWorkflowRunner(id => hosts.get(id));
+  const signal = new AbortController().signal;
+  const preparations = routes.map((workflow) => run.prepare({
+    orgId: workflow.active_execution.org_id, executionId: 'original', signal,
+    engineSlot: workflow.engine_slot, incarnationId: workflow.incarnation_id,
+    fence: 'original-fence', prepareBy: now + 20_000, warmUntil: now + 90_000,
+  }));
+  await entered[0].promise;
+  const adopted = run({route: routes[0], context: {}, signal});
+  await refusal.promise;
+  assert.deepEqual(booting, [0]);
+  pending[0].resolve();
+  await entered[1].promise;
+  assert.deepEqual(booting, [0, 1]);
+  pending[1].resolve();
+  assert.deepEqual(await Promise.all(preparations), [[{kind: 'boot'}], [{kind: 'boot'}]]);
+  assert.equal((await adopted).attempt_state, 'completed');
+});

@@ -76,6 +76,7 @@ function CloudflareConfigurationForm({ status, onSaved }: {
 				installation_slots: Number(fields.get("installation_slots")),
 				max_lifetime_seconds: Number(fields.get("lifetime")),
 				linger_seconds: Number(fields.get("linger")),
+				queue_prewarm_per_tenant: Number(fields.get("queue_prewarm")),
 				work_kinds: fields.get("workflows") === "on" ? ["workflow" as const] : [],
 			},
 			monthly_limit_usd: String(fields.get("monthly_limit")),
@@ -154,6 +155,7 @@ function CloudflareConfigurationForm({ status, onSaved }: {
 				<div><Label htmlFor="cf-installation-slots">Installation Slot Limit</Label><Input id="cf-installation-slots" name="installation_slots" type="number" min={2} max={256} defaultValue={settings?.workers.installation_slots ?? 9} required /></div>
 				<div><Label htmlFor="cf-lifetime">Maximum Lifetime in Seconds</Label><Input id="cf-lifetime" name="lifetime" type="number" min={60} max={604800} defaultValue={settings?.workers.max_lifetime_seconds ?? 3600} required /></div>
 				<div><Label htmlFor="cf-linger">Tenant Engine Linger in Seconds</Label><Input id="cf-linger" name="linger" type="number" min={0} max={300} defaultValue={settings?.workers.linger_seconds ?? 90} required /></div>
+				<div><Label htmlFor="cf-queue-prewarm">Max Queue Pre-Warms Per Tenant</Label><Input id="cf-queue-prewarm" name="queue_prewarm" type="number" min={0} max={32} defaultValue={settings?.workers.queue_prewarm_per_tenant ?? 0} required /><p className="text-sm text-muted-foreground">Set to 0 to disable. Requires a positive engine linger.</p></div>
 				<div><Label htmlFor="cf-monthly">Monthly Usage Target in USD</Label><Input id="cf-monthly" name="monthly_limit" type="number" min="0.01" step="0.01" defaultValue={settings?.monthly_limit_usd ?? "30.00"} required /></div>
 				<div><Label htmlFor="cf-shared-cap">Shared Managed Worker Limit</Label><Input id="cf-shared-cap" name="shared_cap" type="number" min={1} max={1000} defaultValue={settings?.shared_managed_worker_cap ?? undefined} /></div>
 			</div>

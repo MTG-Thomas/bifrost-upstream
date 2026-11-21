@@ -464,7 +464,8 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Managed workflow slot caps default when omitted by an existing client.
     # Managed Tunnel fields and the connector rotation option are additive.
     # Omitted reachability still selects Existing HTTPS Endpoint.
-    "3ddec1ba99962588983beec61ec84f393d54d1f63dd67a530bf9520462c5e874"
+    # Queue pre-warming is opt-in. Existing clients can omit the cap.
+    "1923bb6f6be1f73ed282bf8d92355e45d70205410b4e313391538c631323ee0e"
 )
 
 

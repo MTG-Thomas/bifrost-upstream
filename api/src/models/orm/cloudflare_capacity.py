@@ -209,6 +209,7 @@ class CloudflareWorkflowSlot(Base):
         CheckConstraint("ordinal >= 0 AND ordinal < 32", name="ck_cf_workflow_slot_ordinal"),
         Index("ix_cf_workflow_slot_worker", "worker_id"),
         UniqueConstraint("fence", name="uq_cf_workflow_slot_fence"),
+        UniqueConstraint("prewarm_fence", name="uq_cf_workflow_slot_prewarm"),
     )
 
     installation_id: Mapped[UUID] = mapped_column(
@@ -223,6 +224,9 @@ class CloudflareWorkflowSlot(Base):
     sent: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     warm_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Independent of the workflow fence: a claim can adopt this physical
+    # slot while the preparation's usage authorization is still in flight.
+    prewarm_fence: Mapped[UUID | None]
 
 
 class CloudflareOwnedResource(Base):

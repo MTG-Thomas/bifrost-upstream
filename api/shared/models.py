@@ -35,6 +35,10 @@ class CloudflareWorkersPolicy(BaseModel):
     installation_slots: int = Field(default=9, ge=2, le=256)
     max_lifetime_seconds: int = Field(ge=60, le=604800)
     linger_seconds: int = Field(default=90, ge=0, le=300, description="Tenant engine reuse window after a workflow.")
+    queue_prewarm_per_tenant: int = Field(
+        default=0, ge=0, le=32,
+        description="Maximum extra engines to prepare for queued workflows per tenant. Zero disables queue pre-warming.",
+    )
     work_kinds: frozenset[Literal["workflow"]]
 
 

@@ -574,7 +574,7 @@ export class TenantHost extends DurableObject {
   // "unknown handle") before anything reaches the API. That keeps the engine's
   // pre-first-call path for diagnostic measurements. Both ping variants
   // hold #exclusive through priming and any required retirement.
-  async #ping(tenantId, {exercise = false, reserveIdentity, executionId} = {}) {
+  async #ping(tenantId, {exercise = false, reserveIdentity, executionId, warmUntil = Infinity} = {}) {
     const limits = this.env.BIFROST_METER_ENGINE_CPU_MS !== undefined ||
       this.env.BIFROST_CLOUDFLARE_MANAGED === 'true' ? this.#releaseLimits() : null;
     const warm = this.#childIsReady(executionId);
@@ -604,7 +604,7 @@ export class TenantHost extends DurableObject {
         this.#readyGeneration = generation;
         // At zero linger the ping still has a bounded handoff to the exact
         // incoming execution. A completed attempt clears that window.
-        this.#readyUntil = Date.now() + (lingerMs || ENGINE_BOOT_TIMEOUT_MS);
+        this.#readyUntil = Math.min(warmUntil, Date.now() + (lingerMs || ENGINE_BOOT_TIMEOUT_MS));
         this.#readyFor = lingerMs === 0 ? executionId : undefined;
       }
       return {child_ms: Date.now() - mark, first_request: firstRequest,
@@ -649,10 +649,14 @@ export class TenantHost extends DurableObject {
     return response.json();
   }
 
-  async warm({tenantId, engineOnly = false, reserveIdentity, executionId, admission = false}) {
-    if (admission) this.ctx.waitUntil(this.#warmOrigin());
-    const boot = await this.#exclusive(() => admission && this.#childIsReady(executionId) ?
-      {reused: true} : this.#ping(tenantId, {reserveIdentity, executionId}));
+  async warm({tenantId, engineOnly = false, reserveIdentity, executionId, admission = false,
+    prepareBy = Infinity, warmUntil}) {
+    if (admission && prepareBy === Infinity) this.ctx.waitUntil(this.#warmOrigin());
+    const boot = await this.#exclusive(() => {
+      if (Date.now() >= prepareBy) return {skipped: true};
+      if (admission && this.#childIsReady(executionId)) return {reused: true};
+      return this.#ping(tenantId, {reserveIdentity, executionId, warmUntil});
+    });
     if (admission) return boot;
     if (engineOnly) {
       this.ctx.waitUntil(this.#warmOrigin());
