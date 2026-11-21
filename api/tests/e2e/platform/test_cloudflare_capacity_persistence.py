@@ -231,7 +231,8 @@ class _TunnelAPI:
             if self.denied_write == "tunnel":
                 return httpx.Response(403)
             self.config = json.loads(request.content)["config"]
-            assert set(self.config) == {"ingress"}
+            assert set(self.config) == {"ingress", "warp-routing"}
+            assert self.config["warp-routing"] == {"enabled": False}
             assert all(set(rule) <= {"hostname", "service"} for rule in self.config["ingress"])
             return result({})
         if path == records and method == "GET":
@@ -334,7 +335,7 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
             assert provider.tunnel_creates == 1
             assert provider.config == {"ingress": [
                 {"hostname": "workers.example.test", "service": origin}, {"service": "http_status:404"},
-            ]}
+            ], "warp-routing": {"enabled": False}}
             with pytest.raises(CloudflareRestUnavailable):
                 await change(cloudflare_tunnel.provision_dns, client, actor=actor)
             with pytest.raises(CloudflareRestUnavailable):
@@ -387,7 +388,7 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
                         await db_session.refresh(installation)
                         assert installation.api_token_version == version
                         assert installation.admitted_revision is None
-                        assert "warp-routing" not in provider.config
+                        assert provider.config["warp-routing"] == {"enabled": False}
                         job.status = "succeeded"
                     await db_session.flush()
             provider.denied_write = None
@@ -416,7 +417,7 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
             assert installation.admitted_revision is None
             assert provider.config == {"ingress": [
                 {"hostname": "workers.example.test", "service": origin}, {"service": "http_status:404"},
-            ]}
+            ], "warp-routing": {"enabled": False}}
             installation.admitted_revision = 1
             await db_session.flush()
             provider.private_routes = [{"tunnel_id": provider.tunnel_id, "network": "192.0.2.0/24"}]
@@ -443,7 +444,9 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
             provider.connectors.append(late)
             with pytest.raises(CloudflareRestUnavailable):
                 await change(cloudflare_tunnel.rotate, client, version=2, actor=actor)
+            provider.connectors.remove(old)  # Temporarily absent from the provider's connection list.
             await change(cloudflare_tunnel.rotate, client, version=2, actor=actor)
+            provider.connectors.append(old)
             assert provider.rotations == 1
             key = await cloudflare_connector_channel.project_connector(key)
             assert delivered() != first
@@ -917,6 +920,8 @@ async def test_account_rotation_switches_only_a_valid_same_account_version(
                 for feature in ("workers.enabled", "containers.enabled", "containers.enabled")
             ]
         elif path.endswith("/settings"):
+            if replacement_version == 4:
+                return httpx.Response(404)
             result = {"bindings": [{
                 "name": OWNER_BINDING, "type": "plain_text",
                 "text": worker_owner_value(lifecycle_job._resource_intent(receipt)),
@@ -936,7 +941,7 @@ async def test_account_rotation_switches_only_a_valid_same_account_version(
     async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as http:
         adapter = WorkersRestCleanup(http)
         monkeypatch.setattr(lifecycle_job, "WorkersRestCleanup", lambda _http: adapter)
-        for replacement_version in (2, 3, 4):
+        for replacement_version in (2, 3, 4, 5):
             ref, _ = await stage_account_token(
                 db_session, actor_id=OPERATOR_ID, account_id=installation.account_id, purpose="rotate", token=candidate,
             )
@@ -956,12 +961,13 @@ async def test_account_rotation_switches_only_a_valid_same_account_version(
             payload = lifecycle_job.CloudflareRotateAccountPayload.model_validate(job.payload)
             running = PlatformJobContext(job.id, token, None, str(OPERATOR_ID), admin.principal.email, "")
             handler = lifecycle_job.CLOUDFLARE_ROTATE_ACCOUNT_DEFINITION.handler
-            if replacement_version in (2, 3):
+            if replacement_version in (2, 3, 4):
                 with pytest.raises(PlatformJobRequiresAction) as denied:
                     await handler(running, payload)
                 assert denied.value.result == {"code": {
                     2: "CF_MANAGEMENT_CREDENTIAL",
                     3: "CF_WORKERS_WRITE_UNVERIFIED",
+                    4: "CF_DEPLOYMENT_UNVERIFIED",
                 }[replacement_version]}
                 job.status = "requires_action"
                 rejected = await db_session.get(
@@ -971,10 +977,10 @@ async def test_account_rotation_switches_only_a_valid_same_account_version(
                 previous = await db_session.get(CloudflareCredential, (installation.id, "account_token", "", 1))
                 assert previous is not None and previous.ciphertext is not None
             else:
-                assert await handler(running, payload) == {"outcome": "rotated", "credential_version": 4}
+                assert await handler(running, payload) == {"outcome": "rotated", "credential_version": 5}
             await db_session.refresh(installation)
     assert subdomain_writes == 2
-    assert installation.api_token_version == 4 and installation.control_root_version == 1
+    assert installation.api_token_version == 5 and installation.control_root_version == 1
     previous = await db_session.get(
         CloudflareCredential, (installation.id, "account_token", "", 1), populate_existing=True,
     )

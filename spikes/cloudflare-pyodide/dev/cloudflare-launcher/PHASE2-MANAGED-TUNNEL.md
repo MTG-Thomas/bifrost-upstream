@@ -5,6 +5,10 @@ selected Cloudflare account. Supply the HTTPS origin and zone ID at Connect.
 The account token needs Account Settings Read, Workers Scripts Write and
 Cloudflare Tunnel Write on that account. Grant Zone Read and DNS Write only
 for the selected zone. Leave the dedicated hostname unoccupied.
+Cloudflare Tunnel Write also authorizes the account-scoped `teamnet/routes`
+list used to check for private-network IP routes. Phase 2 drift detection
+covers those IP routes. Zero Trust hostname routes are outside its scope.
+[Cloudflare list tunnel routes](https://developers.cloudflare.com/api/resources/zero_trust/subresources/networks/subresources/routes/methods/list/)
 
 Every Compose installation includes a dormant connector with the API release
 image. The connector can reach the API's main port on their dedicated bridge.
@@ -87,7 +91,9 @@ layouts. Record only sanitized resource receipts and job outcomes.
    exact DNS absence, the tunnel tombstone or exact-ID absence, and an empty
    local credential projection. Preserve the cleanup receipt and revoke the
    temporary management token within the approved window.
-6. Record the normalised ingress GET shape, including default warp routing
-   and empty origin-request fields. Confirm extra rules trigger admission
+6. Confirm the live `warp-routing` echo is disabled after Bifrost explicitly
+   sends `enabled: false`. Record the normalised ingress GET shape and empty
+   origin-request fields. Verify the Tunnel Write grant can list
+   `teamnet/routes` for the owned tunnel. Confirm extra rules trigger admission
    closure and fenced repair. Qualify each account-token write probe and
    verify missing Tunnel Write or DNS Write preserves the incumbent token.

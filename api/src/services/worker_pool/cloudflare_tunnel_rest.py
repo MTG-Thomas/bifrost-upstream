@@ -166,6 +166,11 @@ class TunnelRest(WorkersRestCleanup):
     def ingress(self, origin: str) -> list[dict[str, str]]:
         return [{"hostname": self.hostname, "service": origin}, {"service": "http_status:404"}]
 
+    async def _put_ingress(self, path: str, desired: list[dict[str, str]]) -> None:
+        await self._result("PUT", path, json_body={
+            "config": {"ingress": desired, "warp-routing": {"enabled": False}},
+        })
+
     async def configure_ingress(self, tunnel: ResourceObservation, origin: str) -> None:
         path = f"{self.tunnels}/{tunnel.provider_id}/configurations"
         desired = self.ingress(origin)
@@ -180,7 +185,7 @@ class TunnelRest(WorkersRestCleanup):
             raise OwnershipConflict("Cloudflare tunnel already has a different ingress configuration")
         if await self.tunnel(tunnel.intent, tunnel) is None:
             raise ObservationPending("The recorded Cloudflare tunnel is absent")
-        await self._result("PUT", path, json_body={"config": {"ingress": desired}})
+        await self._put_ingress(path, desired)
         await self.verify_ingress(tunnel, origin)
 
     def _matches_ingress(self, current: Any, tunnel_id: str, desired: list[dict[str, str]]) -> bool:
@@ -250,7 +255,7 @@ class TunnelRest(WorkersRestCleanup):
         else:
             if not matches:
                 raise IngressMismatch("Cloudflare tunnel ingress differs from the approved route")
-        await self._result("PUT", path, json_body={"config": {"ingress": desired}})
+        await self._put_ingress(path, desired)
         await self.verify_ingress(tunnel, origin)
 
     def record_body(self, intent: ResourceIntent, tunnel_id: str) -> dict[str, Any]:

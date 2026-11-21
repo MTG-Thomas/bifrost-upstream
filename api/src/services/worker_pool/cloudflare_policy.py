@@ -59,12 +59,13 @@ from src.services.worker_pool.cloudflare_spend import (
 )
 from src.services.worker_pool.cloudflare_tunnel_rest import dedicated_hostname
 
-CONSENT_TEXT_VERSION = "cloudflare-reachability-v4"
+CONSENT_TEXT_VERSION = "cloudflare-reachability-v5"
 CONSENT_TEXT = (
     "Cloudflare will process approved workflow code, workload data, and run-scoped credentials. "
     "With Managed Tunnel, Cloudflare terminates TLS and Bifrost manages the dedicated hostname, "
-    "tunnel, and DNS record. In Compose, the connector can reach the API's main port and host-published ports "
-    "through the host gateway, including the Bifrost client port. Depending on host routing and firewall rules, "
+    "tunnel, and DNS record. In Compose, the connector can reach the API's main port over their dedicated bridge. "
+    "It can reach host-published ports through the host gateway, including the Bifrost client port. "
+    "Depending on host routing and firewall rules, "
     "it can also reach the LAN, the instance metadata IP, and the internet. "
     "With Existing HTTPS Endpoint, your proxy controls ingress. The Workers Scripts Write "
     "grant can change other Workers in the selected account. You authorize Bifrost to provision "

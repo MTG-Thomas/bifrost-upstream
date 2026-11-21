@@ -338,6 +338,7 @@ async def rotate(
     item = await resource(db, row, TUNNEL)
     if item is None:
         raise OwnershipConflict("Managed Tunnel rotation has no exact receipt")
+    # Retain the pre-PATCH snapshot because a reconnecting session can be missing from post-PATCH readback.
     excluded = (
         set(item.provider_details.get("rotation_previous_connectors", []))
         | set(item.provider_details.get("rotation_candidates", []))

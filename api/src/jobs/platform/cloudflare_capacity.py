@@ -785,8 +785,11 @@ async def _rotate_account_token(context: PlatformJobContext, parsed: BaseModel) 
                 elif receipt.state != "creating":
                     raise OwnershipConflict("Cloudflare Worker has no exact deployment receipt")
                 observed = await observe_owned(adapter, api_token=bearer, intent=receipt.intent, recorded=recorded)
-                if observed is not None:
-                    await adapter.verify_workers_write(bearer, observed)
+                if observed is None:
+                    if receipt.state == "present":
+                        raise OwnershipConflict("The recorded Cloudflare Worker is absent")
+                    continue
+                await adapter.verify_workers_write(bearer, observed)
     except CloudflareManagementDenied:
         denial = ("Submit a Replacement Cloudflare API Token", "CF_MANAGEMENT_CREDENTIAL")
     except WorkersPaidUnverified as exc:
