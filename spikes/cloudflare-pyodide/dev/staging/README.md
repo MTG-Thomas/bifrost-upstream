@@ -139,14 +139,12 @@ qualify). The host keeps the union in storage per engine digest (at most 400
 names), and the next ping imports it. A runtime change starts a new list. A
 name that no longer imports is reported as `prime_skipped`, not fatal.
 
-Keep-warm (alarm) pings also run one **dry engine attempt** under a handle the
-host never registered. The outbound gateway answers its first SDK call 401
+`action: "exercise"` runs a **dry engine attempt** on demand under a handle
+the host never registered. The outbound gateway returns 401
 (`unknown handle`) before anything reaches the API, and the engine reports
-`WorkflowLoadError`. This moves the first engine run in a child (measured
-256 ms, against 16 ms afterwards) off the request path. The dry run holds the
-host's attempt chain, because the child is single-threaded and the SDK
-credential is process-wide. Request-path warm-ups do not exercise, so an
-attempt never waits on one. `action: "exercise"` runs one on demand.
+`WorkflowLoadError`. The dry run holds the host's attempt chain because the
+child is single-threaded and the SDK credential is process-wide. Ordinary
+warm-ups only confirm readiness and prime imports.
 
 Every attempt has a deadline (`ATTEMPT_DEADLINE_MS`, default 1800 s like the
 Linux pool). A child that misses it is retired under a new loader generation
@@ -170,10 +168,9 @@ the attempt exactly once (`hostAttempt`, unit-tested). A warm host costs one
 round trip. Supervisor failures carry a fixed `error_class` slug
 (`runtimeErrorClass`), never exception text.
 
-Residual risk: if the platform evicts the child while the host stays alive, the
-next attempt boots it inline and could hit the same reset. The 45 s keep-warm
-ping is what keeps that rare; the canary would record it as
-`cloud_execution_failed`.
+If the platform evicts the child while the host still remembers readiness,
+the next attempt can boot it inline and hit the same reset. The canary
+would record this as `cloud_execution_failed`.
 
 Remaining difference from the data-only mode: engine mode does not re-verify
 module pins (the engine fetches modules through the stub); the stub constrains

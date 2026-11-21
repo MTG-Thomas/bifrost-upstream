@@ -304,6 +304,55 @@ class Bridge:
                 ):
                     raise CloudflareRevisionRejected("Managed Cloudflare workflow usage could not be reserved")
 
+    def _check_preparation_session(self, generation: int) -> None:
+        if self.lease.session_generation != generation or not self.connected or not self.reconciliation_ready.is_set():
+            raise CredentialRouteChanged("Cloudflare preparation session is no longer reconciled")
+        if self.freshness_age() > ADMISSION_FRESHNESS_SECONDS or self.meter_exhausted:
+            raise CredentialRouteChanged("Cloudflare preparation admission is no longer open")
+
+    async def _send_preparation(
+        self, request_id: str, payload: dict[str, Any], expected_generation: int | None,
+    ) -> bool:
+        if not self.managed_cloudflare or self.lock.locked():
+            return False
+        generation = self.lease.session_generation if expected_generation is None else expected_generation
+        socket = self.socket
+        self._check_preparation_session(generation)
+        tenant = _cloudflare_tenant_key(payload["org_id"])
+        try:
+            async with asyncio.timeout(CLOUDFLARE_PREPARE_IO_SECONDS):
+                await self._reserve_cloudflare_usage(
+                    payload["route_id"], tenant, datetime.now(UTC) + timedelta(seconds=CLOUDFLARE_PREPARE_SECONDS),
+                )
+            if self.lock.locked():
+                return False
+            async with contextlib.AsyncExitStack() as send_scope:
+                # A released lock can still have a waiter entitled to acquire it first.
+                async with asyncio.timeout(CLOUDFLARE_PREPARE_IO_SECONDS):
+                    await send_scope.enter_async_context(self.lock)
+                self._check_preparation_session(generation)
+                if self.socket is not socket:
+                    return False
+                message = ControlEnvelope(
+                    session_generation=generation, sequence=self._sequence + 1, kind="command",
+                    payload={"id": request_id, "action": "prepare_workflow", "payload": payload},
+                )
+                frames = list(fragment(message))
+                if len(frames) != 1 or frames[0].kind != "command":
+                    raise ProtocolError("Cloudflare preparation must fit one frame")
+                self._preparations[payload["route_id"]] = (generation, tenant)
+                # A lost single-frame send can leave a sequence gap without
+                # leaving a partial fragment. Normal control traffic owns disconnects.
+                self._sequence = message.sequence
+                try:
+                    async with asyncio.timeout(CLOUDFLARE_PREPARE_IO_SECONDS):
+                        await socket.send_text(frames[0].to_json())
+                except (WebSocketDisconnect, OSError, RuntimeError):
+                    return False
+        except TimeoutError:
+            return False
+        return True
+
     async def request(
         self, action: str, payload: dict[str, Any], *, expected_generation: int | None = None,
         authorization: AbstractAsyncContextManager[None] | None = None,
@@ -328,18 +377,19 @@ class Bridge:
         preparation = action == "prepare_workflow"
         socket = None
         try:
-            if preparation and (not self.managed_cloudflare or self.lock.locked()):
-                return {}
+            if preparation:
+                if not await self._send_preparation(request_id, payload, expected_generation):
+                    return {}
+                async with asyncio.timeout(_reply_timeout(action)):
+                    return await asyncio.shield(future)
             try:
-                async with contextlib.AsyncExitStack() as send_scope:
-                    async with asyncio.timeout(CLOUDFLARE_PREPARE_IO_SECONDS if preparation else None):
-                        await send_scope.enter_async_context(self.lock)
+                async with self.lock:
                     if expected_generation is not None and self.lease.session_generation != expected_generation:
                         raise CredentialRouteChanged(
                             f"launcher session {expected_generation} was replaced by "
                             f"{self.lease.session_generation} before {action} dispatch"
                         )
-                    if opaque or preparation:
+                    if opaque:
                         summary_stop = (
                             action == "terminate" and self.summaries is not None
                             and self.inventory_ready.is_set()
@@ -347,9 +397,9 @@ class Bridge:
                         )
                         if not self.connected or (not self.reconciliation_ready.is_set() and not summary_stop):
                             raise CredentialRouteChanged("Opaque launcher inventory is not reconciled")
-                        if (dispatch or preparation) and self.freshness_age() > ADMISSION_FRESHNESS_SECONDS:
+                        if dispatch and self.freshness_age() > ADMISSION_FRESHNESS_SECONDS:
                             raise CredentialRouteChanged("Opaque launcher heartbeat is stale")
-                        if (dispatch or preparation) and self.meter_exhausted:
+                        if dispatch and self.meter_exhausted:
                             raise CredentialRouteChanged("Cloudflare launcher workload allowance ended")
                         socket = self.socket
                     elif authorization is not None:
@@ -376,30 +426,9 @@ class Bridge:
                                 datetime.fromisoformat(deadline) if deadline else None,
                                 workflow_cpu_ms=workspace["cpu_budget_ms"], subrequests=workspace["subrequest_allowance"],
                             )
-                        if preparation:
-                            frames = list(fragment(message))
-                            if len(frames) != 1 or frames[0].kind != "command":
-                                raise ProtocolError("Cloudflare preparation must fit one frame")
-                            tenant = _cloudflare_tenant_key(payload["org_id"])
-                            async with asyncio.timeout(CLOUDFLARE_PREPARE_IO_SECONDS):
-                                await self._reserve_cloudflare_usage(
-                                    payload["route_id"], tenant,
-                                    datetime.now(UTC) + timedelta(seconds=CLOUDFLARE_PREPARE_SECONDS),
-                                )
-                            if self.socket is not socket or not self.connected:
-                                return {}
-                            self._preparations[payload["route_id"]] = (message.session_generation, tenant)
-                            # Single atomic WebSocket message. A lost send can
-                            # leave a sequence gap, never a partial fragment.
-                            self._sequence = message.sequence
-                            try:
-                                async with asyncio.timeout(CLOUDFLARE_PREPARE_IO_SECONDS):
-                                    await self.socket.send_text(frames[0].to_json())
-                            except (TimeoutError, WebSocketDisconnect, OSError, RuntimeError):
-                                return {}
                         sent = 0
                         send_deadline = loop.time() + _reply_timeout(action)
-                        for frame in (() if preparation else fragment(message)):
+                        for frame in fragment(message):
                             if opaque and dispatch:
                                 self._opaque_routes[payload["route_id"]] = message.sequence + (
                                     frame.payload["total"] - 1 if frame.kind == "fragment" else 0

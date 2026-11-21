@@ -110,7 +110,7 @@ async def test_cloudflare_claim_starts_preparation_without_waiting_for_reply() -
             await asyncio.gather(*preparations)
 
 
-async def test_preparation_skips_a_busy_control_send_lock() -> None:
+async def test_preparation_reservation_leaves_the_control_send_lock_free() -> None:
     socket = Mock()
     lease = replace(LEASE, declared_slots=1)
     bridge = Bridge(socket, {
@@ -138,15 +138,70 @@ async def test_preparation_skips_a_busy_control_send_lock() -> None:
         ))
         try:
             await asyncio.wait_for(reserving.wait(), 2)
-            await asyncio.wait_for(bridge.request(
-                "prepare_workflow", {"route_id": f"prepare:{lease.worker_id}", "org_id": None},
-                expected_generation=lease.session_generation,
-            ), 2)
-            assert sent == []
+            await asyncio.wait_for(bridge.request("ready", {}), 2)
+            assert sent == ["ready"]
         finally:
             finish.set()
             await task
-    assert sent == ["prepare_workflow"]
+    assert sent == ["ready", "prepare_workflow"]
+
+
+async def test_preparation_lock_timeout_preserves_session_with_a_queued_waiter() -> None:
+    lease = replace(LEASE, declared_slots=1)
+    socket = Mock(send_text=AsyncMock(), close=AsyncMock())
+    bridge = Bridge(socket, {
+        "hostname": "opaque", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE, "managed_cloudflare": True,
+    }, lease)
+    bridge.reconciliation_ready.set()
+    queued = asyncio.Event()
+    finish = asyncio.Event()
+
+    async def other_command():
+        queued.set()
+        async with bridge.lock:
+            await finish.wait()
+
+    async with bridge.lock:
+        waiter = asyncio.create_task(other_command())
+        await queued.wait()
+    # Release wakes the earlier command but it has yet to resume and claim the lock.
+    assert not bridge.lock.locked()
+    try:
+        with (
+            patch.object(bridge, "_reserve_cloudflare_usage", AsyncMock()),
+            patch("src.worker.remote.host.CLOUDFLARE_PREPARE_IO_SECONDS", 0.01),
+        ):
+            assert await bridge.request(
+                "prepare_workflow", {"route_id": f"prepare:{lease.worker_id}", "org_id": None},
+                expected_generation=lease.session_generation,
+            ) == {}
+        assert bridge.connected and bridge.reconciliation_ready.is_set()
+        assert bridge.socket is socket
+        socket.send_text.assert_not_awaited()
+        socket.close.assert_not_awaited()
+    finally:
+        finish.set()
+        await waiter
+
+
+async def test_preparation_rechecks_generation_after_usage_reservation() -> None:
+    lease = replace(LEASE, declared_slots=1)
+    socket = Mock(send_text=AsyncMock())
+    bridge = Bridge(socket, {
+        "hostname": "opaque", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE, "managed_cloudflare": True,
+    }, lease)
+    bridge.reconciliation_ready.set()
+
+    async def reserve(*_args):
+        bridge.lease = replace(lease, session_generation=lease.session_generation + 1)
+
+    with patch.object(bridge, "_reserve_cloudflare_usage", reserve), pytest.raises(CredentialRouteChanged):
+        await bridge.request(
+            "prepare_workflow", {"route_id": f"prepare:{lease.worker_id}", "org_id": None},
+            expected_generation=lease.session_generation,
+        )
+    socket.send_text.assert_not_awaited()
+    assert bridge.connected
 
 
 @pytest.mark.parametrize("refusal", ["generation", "inventory", "heartbeat", "meter"])

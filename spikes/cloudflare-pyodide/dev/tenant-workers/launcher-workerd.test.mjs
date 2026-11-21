@@ -566,22 +566,24 @@ test('workerd runs distinct tenants on their own children at the same time', {ti
   assert.deepEqual((await Promise.all(runs)).map(({attempt_state}) => attempt_state), ['completed', 'completed']);
 });
 
-test('launcher warm-up finishes while the origin health request is still held', {timeout: 10_000}, async (t) => {
-  const origin = {entered: Promise.withResolvers(), release: Promise.withResolvers()};
-  nextOrigin = origin;
-  const abort = new Promise((_, reject) =>
-    t.signal.addEventListener('abort', () => reject(t.signal.reason), {once: true}));
-  const warm = host('slow-origin', 'warm', {admission: true}, t.signal);
-  try {
-    await Promise.race([origin.entered.promise, abort]);
-    const result = await warm;
-    assert.ok(Number.isFinite(result.child_ms));
-    assert.equal(result.origin_status, undefined);
-  } finally {
-    origin.release.resolve();
-    nextOrigin = undefined;
-  }
-});
+for (const mode of ['admission', 'engineOnly']) {
+  test(`${mode} warm-up finishes while the origin health request is still held`, {timeout: 10_000}, async (t) => {
+    const origin = {entered: Promise.withResolvers(), release: Promise.withResolvers()};
+    nextOrigin = origin;
+    const abort = new Promise((_, reject) =>
+      t.signal.addEventListener('abort', () => reject(t.signal.reason), {once: true}));
+    const warm = host(`slow-origin-${mode}`, 'warm', {[mode]: true}, t.signal);
+    try {
+      await Promise.race([origin.entered.promise, abort]);
+      const result = await warm;
+      assert.ok(Number.isFinite(result.child_ms));
+      assert.equal(result.origin_status, undefined);
+    } finally {
+      origin.release.resolve();
+      nextOrigin = undefined;
+    }
+  });
+}
 
 test('an old keep-warm alarm clears its metadata without fetching the origin', async () => {
   const before = origins.length;
