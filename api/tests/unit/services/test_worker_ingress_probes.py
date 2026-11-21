@@ -4,6 +4,8 @@ import re
 import socket
 import ssl
 import sys
+from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -276,9 +278,9 @@ async def test_request_write_deadline_reports_phase_after_tls(tls_contexts) -> N
                         allowed=True, progress=progress,
                     )
 
-    assert progress.latest_failure is not None
-    assert progress.latest_failure.phase == "request_write"
-    assert progress.latest_failure.handshake_completed is True
+    assert progress.deadline_failure is not None
+    assert progress.deadline_failure.phase == "request_write"
+    assert progress.deadline_failure.handshake_completed is True
 
 
 @pytest.mark.asyncio
@@ -319,6 +321,123 @@ async def test_public_probe_deadline_retains_inflight_route(tls_contexts, monkey
         "handshake_completed": True,
         "connection_reused": False,
         "phase": "response_headers",
+    }
+
+
+@pytest.fixture
+def controlled_deadline(monkeypatch):
+    deadline = asyncio.timeout(None)
+    monkeypatch.setattr(probes, "asyncio", SimpleNamespace(
+        timeout=lambda _: deadline, CancelledError=asyncio.CancelledError, gather=asyncio.gather,
+        get_running_loop=asyncio.get_running_loop,
+    ))
+    return lambda: deadline.reschedule(asyncio.get_running_loop().time())
+
+
+@pytest.mark.asyncio
+async def test_deadline_chooses_least_advanced_inflight_route(tls_contexts, monkeypatch, controlled_deadline) -> None:
+    server_tls, trust = tls_contexts
+    hello_seen = asyncio.Event()
+    headers_seen = asyncio.Event()
+
+    async def hold(reader, writer, *, tls):
+        try:
+            if tls:
+                await reader.readuntil(b"\r\n\r\n")
+                headers_seen.set()
+            else:
+                await reader.readexactly(1)
+                hello_seen.set()
+            await reader.read()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    async def hold_handshake(reader, writer):
+        await hold(reader, writer, tls=False)
+
+    async def hold_headers(reader, writer):
+        await hold(reader, writer, tls=True)
+
+    async def expire():
+        await hello_seen.wait()
+        await headers_seen.wait()
+        controlled_deadline()
+
+    async with await asyncio.start_server(hold_handshake, "127.0.0.1", 0) as handshake_server, (
+        await asyncio.start_server(hold_headers, "127.0.0.1", 0, ssl=server_tls)
+    ) as headers_server:
+        async def loopback(_origin, host, _address, *, progress):
+            async with httpx.AsyncClient(verify=trust, trust_env=False) as client:
+                await asyncio.gather(*(
+                    probes._check_route(
+                        client, f"https://127.0.0.1:{server.sockets[0].getsockname()[1]}", host, "GET",
+                        path, allowed=True, progress=progress,
+                    )
+                    for server, path in (
+                        (handshake_server, "/api/forms"), (headers_server, "/api/sdk/context"),
+                    )
+                ))
+                pytest.fail("Both loopback requests should have been interrupted")
+
+        monkeypatch.setattr(probes, "_probe_address", loopback)
+        monkeypatch.setattr(probes, "_public_addresses", AsyncMock(return_value=("127.0.0.1",)))
+        async with asyncio.TaskGroup() as tasks:
+            tasks.create_task(expire())
+            result = await probes.probe_public_worker_ingress(ORIGIN)
+
+    assert result.failure.error_class == "probe_deadline"
+    assert result.failure.route_template == "/api/forms"
+    assert result.failure.phase == "tls_handshake"
+    assert not result.tls
+
+
+@pytest.mark.asyncio
+async def test_deadline_between_addresses_does_not_report_prior_failure(
+    tls_contexts, monkeypatch, controlled_deadline,
+) -> None:
+    _, trust = tls_contexts
+    with socket.socket() as reserved:
+        reserved.bind(("127.0.0.1", 0))
+        port = reserved.getsockname()[1]
+        probe_address = probes._probe_address
+
+        async def loopback(origin, host, address, *, progress):
+            if address == "127.0.0.1":
+                failed = await probe_address(origin, host, address, port, trust=trust, progress=progress)
+                assert failed.failure.phase == "tcp_connect"
+                return replace(failed, routes=(replace(failed.routes[0], connect_unavailable=True),))
+            controlled_deadline()
+            await asyncio.Event().wait()
+            pytest.fail("The second address should be interrupted before a route starts")
+
+        monkeypatch.setattr(probes, "_probe_address", loopback)
+        monkeypatch.setattr(probes, "_public_addresses", AsyncMock(return_value=("127.0.0.1", "::1")))
+        result = await probes.probe_public_worker_ingress(ORIGIN)
+
+    assert result.failure.as_result() == {"stage": "ingress_http", "error_class": "probe_deadline"}
+
+
+@pytest.mark.asyncio
+async def test_websocket_deadline_reports_phase_and_verified_http_tls(ingress, controlled_deadline) -> None:
+    _, _, control, _ = ingress([IPV4], None)
+
+    async def hold(*_args):
+        controlled_deadline()
+        await asyncio.Event().wait()
+
+    control.side_effect = hold
+    result = await probes.probe_public_worker_ingress(ORIGIN)
+    assert result.tls and not result.reachable
+    assert result.failure.as_result() == {
+        "stage": "ingress_websocket",
+        "error_class": "probe_deadline",
+        "address_family": "ipv4",
+        "method": "GET",
+        "route_template": probes.CONTROL_PATH,
+        "handshake_completed": True,
+        "connection_reused": False,
+        "phase": "websocket",
     }
 
 

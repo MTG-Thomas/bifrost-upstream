@@ -333,7 +333,7 @@ class WorkerIngress:
     async def _serve(self, scope: Scope, receive: Receive, send: Send, host: bytes) -> None:
         try:
             origin = await self._origin()
-        except (TimeoutError, SQLAlchemyError):
+        except (OSError, SQLAlchemyError):
             await _respond(scope, send, 503)
             return
         if origin is None or b"https://" + host.lower() != origin.rstrip("/").encode():

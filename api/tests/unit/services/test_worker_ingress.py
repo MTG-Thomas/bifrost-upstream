@@ -1,6 +1,7 @@
 """Ingress policy and pre-dispatch boundaries."""
 
 import asyncio
+import gc
 import inspect
 import re
 from contextlib import asynccontextmanager
@@ -406,8 +407,8 @@ async def test_origin_cache_expires_and_checks_new_host(endpoint, monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", [401, 503])
-async def test_concurrent_requests_share_one_origin_lookup(endpoint, monkeypatch, status):
+@pytest.mark.parametrize(("status", "error"), [(401, None), (503, SQLAlchemyError), (503, OSError)])
+async def test_concurrent_requests_share_one_origin_lookup(endpoint, monkeypatch, status, error):
     app, sdk, origin = endpoint
     all_joined = asyncio.Event()
     entrants = 0
@@ -415,8 +416,8 @@ async def test_concurrent_requests_share_one_origin_lookup(endpoint, monkeypatch
 
     async def read_origin():
         await all_joined.wait()
-        if status == 503:
-            raise SQLAlchemyError("Origin lookup failed")
+        if error is not None:
+            raise error("Origin lookup failed")
         return "https://workers.example.test"
 
     async def enter_lookup():
@@ -439,6 +440,61 @@ async def test_concurrent_requests_share_one_origin_lookup(endpoint, monkeypatch
             origin.side_effect = None
             assert (await client.get("/api/sdk/context")).status_code == 401
             assert origin.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_all", [False, True])
+async def test_origin_refresh_survives_cancelled_waiters(endpoint, cancel_all):
+    app, _, origin = endpoint
+    started = asyncio.Event()
+    release = asyncio.Event()
+    joined = asyncio.Event()
+    finished = asyncio.Event()
+    unobserved = []
+    loop = asyncio.get_running_loop()
+    old_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: unobserved.append(context))
+
+    async def read_origin():
+        started.set()
+        await release.wait()
+        if cancel_all:
+            raise OSError("Origin lookup failed after clients disconnected")
+        return origin.return_value
+
+    async def second_waiter():
+        joined.set()
+        return await app._origin()
+
+    origin.side_effect = read_origin
+    try:
+        first = asyncio.create_task(app._origin())
+        await started.wait()
+        assert app.origin_refresh is not None
+        app.origin_refresh.add_done_callback(lambda _task: finished.set())
+        second = asyncio.create_task(second_waiter())
+        await joined.wait()
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        if cancel_all:
+            second.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await second
+        release.set()
+        await finished.wait()
+        assert app.origin_refresh is None
+        origin.assert_awaited_once()
+        if cancel_all:
+            gc.collect()
+            assert not unobserved
+            origin.side_effect = None
+            assert await app._origin() == origin.return_value
+            assert origin.await_count == 2
+        else:
+            assert await second == origin.return_value
+    finally:
+        loop.set_exception_handler(old_handler)
 
 
 @pytest.mark.asyncio
