@@ -103,3 +103,13 @@ were created. The hosted four-plus-four overlap, ninth-slot admission,
 tenth-workflow wait and single-slot cancel remain unverified.
 
 See the [hosted attempt receipt](../../results/cloudflare-scaleout-hosted-attempt.json).
+
+## Hosted Retry Result
+
+The retry approved fixtures for Provider, Global and two additional tenant
+scopes. Enable stopped on the IPv4 HTTP ingress TLS probe before any
+launcher incarnation or occupied slot was recorded. The requested four
+Provider plus four Global overlap, ninth admission, tenth wait, and
+single-slot cancellation are still unverified on Cloudflare.
+
+See the [sanitized hosted retry receipt](../../results/cloudflare-scaleout-hosted-retry.json).

@@ -1,0 +1,95 @@
+{
+  "date_utc": "2026-11-21",
+  "source_revision": "7739c8e922c3931651c9adef3684e936a0dc32a2",
+  "release_manifest_sha256": "4624c882047be4010054926cc4e09d96019c32f3835b7e0ceace182e7b0f6554",
+  "release_bundle_sha256": "37290640e82d96ab534e97c6c4e871d4ccf381f89f42ff87cd43260b62c0e2c8",
+  "local": {
+    "packaging_tests_passed": 11,
+    "services_accepted_release": 3,
+    "approved_tenant_fixture_scopes": 4
+  },
+  "host_preflight": {
+    "available_memory_kib": 10025901,
+    "available_disk_kib": 14746796,
+    "other_bifrost_stacks": 0
+  },
+  "connect": {
+    "http_status": 200,
+    "initial_bifrost_estimate_usd": 0,
+    "monthly_fleet_envelope_usd": 415.59
+  },
+  "tls_preflight": {
+    "passed": true,
+    "elapsed_seconds": 0.51,
+    "backoff_seconds": 0,
+    "ipv4_verified": 2,
+    "ipv6_network_unreachable": 2,
+    "ipv6_errno": 101,
+    "literal_address_http_passed": 2
+  },
+  "enable": {
+    "status": "requires_action",
+    "code": "CF_WORKER_INGRESS_UNVERIFIED",
+    "started_at_utc": "2026-11-21T19:30:46.683563Z",
+    "completed_at_utc": "2026-11-21T19:31:10.131778Z",
+    "stage": "ingress_http",
+    "error_class": "tls_error",
+    "address_family": "ipv4",
+    "tls_reason": null,
+    "tls_verify_code": null,
+    "canary_run": false
+  },
+  "workload": {
+    "cold_latency_ms": null,
+    "warm_latency_ms": null,
+    "launcher_incarnations": 0,
+    "workflow_slot_rows": 0,
+    "slot_burst": "not_run",
+    "mid_run_cancel": "not_run",
+    "reconcile": "not_run",
+    "active_scale_in": "not_run"
+  },
+  "spend": {
+    "prior_observed_usd": 0,
+    "retry_max_observed_bifrost_estimate_usd": 0,
+    "cumulative_observed_bifrost_estimate_usd": 0,
+    "cumulative_target_usd": 0.5,
+    "cumulative_abort_usd": 1,
+    "worker_analytics_rows": 0,
+    "durable_object_analytics_rows": 0,
+    "bifrost_to_cloudflare_ratio": null
+  },
+  "teardown": {
+    "disconnect": "succeeded",
+    "disconnect_submissions": 1,
+    "completed_at_utc": "2026-11-21T19:31:36.202787Z",
+    "installation_absent": true,
+    "script_journal_absent": 3,
+    "script_settings_http_status": [
+      404,
+      404,
+      404
+    ],
+    "namespace_objects_http_status": [
+      404,
+      404,
+      404,
+      404
+    ],
+    "independent_script_matches": 0,
+    "independent_namespace_matches": 0,
+    "staged_credentials": 0,
+    "token_exact_absence": true,
+    "dns_exact_absence": true,
+    "authoritative_dns_absence_checks": 2,
+    "tunnel_deleted": true,
+    "tunnel_connections": 0,
+    "connector_process_absent": true,
+    "trial_containers": 0,
+    "trial_networks": 0,
+    "trial_volumes": 0,
+    "trial_project_images": 0,
+    "trial_scratch_absent": true,
+    "sanitized_logs_retained_locally": true
+  }
+}

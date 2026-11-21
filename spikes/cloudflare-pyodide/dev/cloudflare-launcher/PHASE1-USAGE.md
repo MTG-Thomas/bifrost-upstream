@@ -494,3 +494,15 @@ qualified package. Hosted calibration of the combined release and the
 Bifrost-to-Cloudflare spend ratio remain open.
 
 See the [hosted attempt receipt](../../results/cloudflare-scaleout-hosted-attempt.json).
+
+### Combined Bundle Hosted Retry
+
+The retry used the same locally qualified Worker modules. The API image
+passed the initial TLS and SDK context checks on both routable peers.
+Enable reported `tls_error` on its IPv4 ingress HTTP path before the
+signed canary. The Bifrost meter displayed $0.00, and the three Worker
+scripts and four Durable Object namespaces returned zero Cloudflare
+analytics samples for the measured window. There is no settled workload
+sample or spend ratio. Hosted meter qualification remains open.
+
+See the [sanitized hosted retry receipt](../../results/cloudflare-scaleout-hosted-retry.json).
