@@ -623,7 +623,9 @@ async def test_upgrade_drains_before_replacement_and_resumes_after_lost_lease(
         older_runner.setattr(lifecycle_job, "installed_workers_release_order", lambda: WorkersReleaseOrder("1.0.0", 21))
         with pytest.raises(PlatformJobRequiresAction) as mismatch:
             await handler(running, payload)
-        assert mismatch.value.result == {"code": "CF_RELEASE_MISMATCH"}
+        assert mismatch.value.result == {
+            "code": "CF_RELEASE_MISMATCH", "instructions": [lifecycle_job.RELEASE_FENCE_REMEDY],
+        }
         assert effects == []
     with pytest.raises(PlatformJobCancelled):
         await handler(running, payload)
@@ -1395,7 +1397,7 @@ async def test_upgrade_migration_pauses_prior_pilot_and_scheduler_pins_the_new_r
     await db_session.flush()
 
     scripts = ScriptDirectory(str(Path(__file__).resolve().parents[3] / "alembic"))
-    migration = scripts.get_revision("20261121_cf_release_order")
+    migration = scripts.get_revision("20261121_cf_workers_upgrade")
     assert migration is not None
 
     def migrate(connection: Connection) -> None:
@@ -1412,6 +1414,8 @@ async def test_upgrade_migration_pauses_prior_pilot_and_scheduler_pins_the_new_r
     assert installation.deployed_revision == 1
     assert installation.admitted_revision is None
     assert installation.desired_revision == 2
+    assert installation.drain_required
+    assert installation.workers_release_sequence is None
 
     monkeypatch.setattr(lifecycle_job, "installed_workers_release_digest", lambda: release)
     now = datetime.now(UTC)
@@ -1427,21 +1431,26 @@ async def test_upgrade_migration_pauses_prior_pilot_and_scheduler_pins_the_new_r
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("code", "recoverable"), [
-    ("CF_DRAIN_TIMEOUT", True),
-    ("CF_CLEANUP_PENDING", True),
-    ("CF_RELEASE_MISMATCH", True),
-    ("CF_PROVIDER_UNAVAILABLE", True),
-    ("CF_SPEND_UNVERIFIED", True),
-    ("CF_WORKER_INGRESS_UNVERIFIED", False),
-    ("CF_BUDGET_REACHED", False),
-    ("CF_POLICY_RELEASE_CHANGED", False),
-    ("CF_MANAGEMENT_CREDENTIAL", False),
-    ("CF_OWNERSHIP_CONFLICT", False),
-    ("CF_SLOT_STOP_UNVERIFIED", False),
+@pytest.mark.parametrize(("status", "code", "recoverable"), [
+    ("requires_action", "CF_DRAIN_TIMEOUT", True),
+    ("requires_action", "CF_CLEANUP_PENDING", True),
+    ("requires_action", "CF_RELEASE_MISMATCH", True),
+    ("failed", "CF_PROVIDER_UNAVAILABLE", True),
+    ("requires_action", "CF_SPEND_UNVERIFIED", True),
+    ("failed", "unsupported_payload_version", True),
+    ("failed", "runner_shutdown", True),
+    ("failed", "runner_lost", True),
+    ("failed", "runner_exited", True),
+    ("failed", "timeout", True),
+    ("requires_action", "CF_WORKER_INGRESS_UNVERIFIED", False),
+    ("requires_action", "CF_BUDGET_REACHED", False),
+    ("requires_action", "CF_POLICY_RELEASE_CHANGED", False),
+    ("requires_action", "CF_MANAGEMENT_CREDENTIAL", False),
+    ("requires_action", "CF_OWNERSHIP_CONFLICT", False),
+    ("requires_action", "CF_SLOT_STOP_UNVERIFIED", False),
 ])
 async def test_upgrade_scheduler_only_requeues_self_healing_actions(
-    db_session: AsyncSession, installation: CloudflareInstallation, code, recoverable,
+    db_session: AsyncSession, installation: CloudflareInstallation, status, code, recoverable,
 ) -> None:
     installation.desired_state = "enabled"
     installation.upgrade_release = "fixture-release"
@@ -1453,7 +1462,14 @@ async def test_upgrade_scheduler_only_requeues_self_healing_actions(
     await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=now)
     job = await db_session.scalar(select(PlatformJob).where(PlatformJob.resource_id == str(installation.id)))
     assert job is not None
-    job.status, job.result, job.completed_at = "requires_action", {"code": code}, now
+    def complete(job: PlatformJob, at: datetime) -> None:
+        job.status, job.completed_at = status, at
+        if status == "requires_action":
+            job.result = {"code": code}
+        else:
+            job.error_code = code
+
+    complete(job, now)
     await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=now + timedelta(minutes=4))
     assert await db_session.scalar(count) == 1
     await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=now + timedelta(minutes=5))
@@ -1464,7 +1480,7 @@ async def test_upgrade_scheduler_only_requeues_self_healing_actions(
         ))
         assert requeued is not None
         requeued.created_at = now + timedelta(minutes=5)
-        requeued.status, requeued.result, requeued.completed_at = "requires_action", {"code": code}, requeued.created_at
+        complete(requeued, requeued.created_at)
         await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=now + timedelta(minutes=14))
         assert await db_session.scalar(count) == 2
         await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=now + timedelta(minutes=15))
@@ -1495,15 +1511,41 @@ async def test_upgrade_scheduler_does_not_supersede_operator_enable(
     db_session: AsyncSession, installation: CloudflareInstallation,
 ) -> None:
     installation.deployed_revision, installation.desired_revision = 1, 2
+    installation.drain_required = True
     job, _ = await enable_job.enqueue_cloudflare_enable(
         db_session, _platform_operator(), installation_id=installation.id, expected_revision=2,
     )
     await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=datetime.now(UTC))
     assert installation.desired_revision == job.payload["revision"] == 2
-    assert installation.upgrade_release is None and not installation.drain_required
+    assert installation.upgrade_release is None and installation.drain_required
     assert await db_session.scalar(select(func.count()).select_from(PlatformJob).where(
         PlatformJob.resource_id == str(installation.id),
     )) == 1
+
+
+@pytest.mark.asyncio
+async def test_scale_in_ends_cutover_repair_even_if_enable_fails(
+    db_session: AsyncSession, installation: CloudflareInstallation, lifecycle_audit_actor,
+) -> None:
+    installation.desired_state = "enabled"
+    installation.deployed_revision, installation.desired_revision = 1, 2
+    installation.drain_required = True
+    operator = _platform_operator()
+    scale_in, _ = await lifecycle_job.enqueue_cloudflare_disable(
+        db_session, operator, installation_id=installation.id, expected_revision=2, action="scale_in",
+    )
+    assert not installation.drain_required
+    scale_in.status = "succeeded"
+    job, _ = await enable_job.enqueue_cloudflare_enable(
+        db_session, operator, installation_id=installation.id, expected_revision=3,
+    )
+    job.status = "failed"
+    await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=datetime.now(UTC))
+    assert installation.desired_revision == job.payload["revision"] == 3
+    assert installation.upgrade_release is None
+    assert await db_session.scalar(select(PlatformJob.id).where(
+        PlatformJob.resource_id == str(installation.id), PlatformJob.job_type == lifecycle_job.RECONCILE_JOB,
+    )) is None
 
 
 @pytest.mark.asyncio

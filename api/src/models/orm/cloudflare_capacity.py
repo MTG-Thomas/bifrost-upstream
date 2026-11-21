@@ -41,6 +41,10 @@ class CloudflareInstallation(Base):
             "AND (upgrade_drained_at IS NULL OR upgrade_release IS NOT NULL)",
             name="ck_cf_upgrade_checkpoint",
         ),
+        CheckConstraint(
+            "num_nonnulls(workers_release_version, workers_release_sequence, workers_release_digest) IN (0, 3)",
+            name="ck_cf_workers_release_identity",
+        ),
         UniqueConstraint("id", "account_id", name="uq_cf_installation_account"),
         Index("uq_cf_active_installation", "singleton", unique=True, postgresql_where=text("retired_at IS NULL")),
         CheckConstraint("api_token_purpose = 'account_token' AND api_token_scope = ''", name="ck_cf_account_token_binding"),
@@ -85,7 +89,7 @@ class CloudflareInstallation(Base):
     deployed_revision: Mapped[int | None]
     upgrade_release: Mapped[str | None] = mapped_column(String(64))
     upgrade_drained_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    workers_release_sequence: Mapped[int] = mapped_column(BigInteger, server_default="0", default=0)
+    workers_release_sequence: Mapped[int | None] = mapped_column(BigInteger)
     workers_release_version: Mapped[str | None] = mapped_column(String(128))
     workers_release_digest: Mapped[str | None] = mapped_column(String(64))
     drain_required: Mapped[bool] = mapped_column(Boolean, server_default=text("false"), default=False)

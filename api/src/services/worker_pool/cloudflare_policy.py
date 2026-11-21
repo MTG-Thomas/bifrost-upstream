@@ -113,7 +113,7 @@ def release_meter_bounds(release: WorkersRelease) -> WorkersReleaseMeterBounds:
 
 
 def workers_release_floor(row: CloudflareInstallation) -> WorkersReleaseOrder | None:
-    if row.workers_release_version is None:
+    if row.workers_release_version is None or row.workers_release_sequence is None:
         return None
     return WorkersReleaseOrder(row.workers_release_version, row.workers_release_sequence)
 

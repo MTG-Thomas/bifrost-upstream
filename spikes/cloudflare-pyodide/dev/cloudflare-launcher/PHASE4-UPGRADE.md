@@ -8,6 +8,8 @@ without replacing Workers. A change to the source commit or deployment inputs
 can produce a different digest even when the embedded Python runtime is identical.
 The Phase 4 migration closes admission for an earlier admitted pilot and
 fences its queued Enable jobs under the old revision.
+Rebuild developer and qualification databases that applied an earlier Phase 4
+migration before testing the folded migration.
 An API with a different package closes new claims and sends. The scheduler
 then closes admission under the installation lock, pins the package digest,
 and enqueues Reconcile at the next revision. Reconcile and Upgrade both use
@@ -37,9 +39,9 @@ An operator can explicitly accept either through
 installation ID and revision. Bifrost audits the previous and selected release
 identities. A scaled-in installation stays paused after a reset.
 
-Deploy the new PlatformJob runner before enabling the version 2 reconcile
-producer. New runners read version 1 jobs already in the queue. A runner
-from the previous build rejects version 2 jobs.
+New runners read version 1 jobs already in the queue. If a previous runner
+rejects a version 2 job during rollout, the scheduler re-enqueues a pinned
+upgrade with backoff. Remove the version 1 reader one release after version 2 ships.
 Existing saved limits and consent apply to the replacement. If the new
 release's measured envelope exceeds the saved budget, review the policy and
 then reconcile. If Cloudflare rejects the management credential, replace it

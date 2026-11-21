@@ -104,6 +104,9 @@ SELF_HEALING_RECONCILE_CODES = frozenset({
     "CF_DRAIN_TIMEOUT", "CF_CLEANUP_PENDING", "CF_RELEASE_MISMATCH",
     "CF_PROVIDER_UNAVAILABLE", "CF_SPEND_UNVERIFIED",
 })
+PINNED_UPGRADE_RUNNER_CODES = frozenset({
+    "unsupported_payload_version", "runner_shutdown", "runner_lost", "runner_exited", "timeout",
+})
 RELEASE_FENCE_REMEDY = "Use Reconcile with Reset Release Fence to accept this package."
 DRAIN_DEADLINE = timedelta(minutes=10)
 CREATE_SETTLEMENT_WINDOW = timedelta(minutes=1)
@@ -126,6 +129,7 @@ class CloudflareDisablePayload(BaseModel):
 
 
 class CloudflareReconcilePayload(BaseModel):
+    # Remove the v1 payload bridge one release after v2 ships.
     model_config = ConfigDict(extra="forbid")
 
     installation_id: UUID
@@ -739,7 +743,9 @@ async def _reconcile(context: PlatformJobContext, parsed: BaseModel) -> dict[str
         if release is not None and order is not None and (code := workers_release_error(row, release, order)):
             if code == "CF_RELEASE_DOWNGRADE" and row.upgrade_release is not None:
                 # A newer target is already pinned. A matched runner can resume it.
-                raise PlatformJobRequiresAction("Install the Matched Workers Release", {"code": "CF_RELEASE_MISMATCH"})
+                raise PlatformJobRequiresAction("Install the Matched Workers Release", {
+                    "code": "CF_RELEASE_MISMATCH", "instructions": [RELEASE_FENCE_REMEDY],
+                })
             raise PlatformJobRequiresAction("Review the Workers Release Fence", {
                 "code": code, "instructions": [RELEASE_FENCE_REMEDY],
             })
@@ -1111,7 +1117,10 @@ async def schedule_cloudflare_reconcile(db: AsyncSession, *, now: datetime) -> N
     latest = await db.scalar(history.order_by(PlatformJob.created_at.desc(), PlatformJob.id.desc()).limit(1))
     if latest is not None and latest.status != "succeeded":
         code = (latest.result or {}).get("code") if latest.status == "requires_action" else latest.error_code
-        if installation.admitted_revision is None and code not in SELF_HEALING_RECONCILE_CODES:
+        if (
+            installation.admitted_revision is None and code not in SELF_HEALING_RECONCILE_CODES
+            and not (installation.upgrade_release is not None and code in PINNED_UPGRADE_RUNNER_CODES)
+        ):
             return
         last_success = await db.scalar(history.where(PlatformJob.status == "succeeded")
                                        .order_by(PlatformJob.created_at.desc(), PlatformJob.id.desc()).limit(1))
@@ -1167,6 +1176,7 @@ async def enqueue_cloudflare_disable(
     row.admitted_revision = None
     row.upgrade_release = None
     row.upgrade_drained_at = None
+    row.drain_required = False
     row.desired_state = payload.desired_state
     row.desired_revision = payload.revision
     wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)

@@ -62,6 +62,7 @@ from src.services.worker_pool.cloudflare_policy import (
     cloudflare_workers_remain,
     release_meter_bounds,
     set_workers_release_floor,
+    workers_release_floor,
     workers_release_error,
 )
 from src.services.worker_pool.cloudflare_provisioning import (
@@ -322,7 +323,9 @@ async def _settle_enable(
         await _require_budget(db, row)
         row.admitted_revision = payload.revision
         row.deployed_revision = payload.revision
-        set_workers_release_floor(row, release.digest, order)
+        floor = workers_release_floor(row)
+        if floor is None or order.key > floor.key:
+            set_workers_release_floor(row, release.digest, order)
         row.drain_required = False
         row.upgrade_release = None
         row.upgrade_drained_at = None

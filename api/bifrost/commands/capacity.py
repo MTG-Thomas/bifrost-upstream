@@ -49,7 +49,7 @@ def _register_action(name: str, help_text: str, *, credential: str | None = None
     async def action(
         ctx: click.Context, wait: bool, *, client: BifrostClient, resolver: RefResolver, **fields: Any,
     ) -> None:
-        body = model.model_validate(fields)
+        body = model.model_validate({key: value for key, value in fields.items() if value is not None})
         data = body.model_dump(mode="json", exclude_defaults=True)
         if credential is not None:
             data["credential"] = credential
