@@ -192,7 +192,7 @@ class Bridge:
         self.meter_exhausted = False
         self._reset_freshness()
         self.pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
-        self._preparations: dict[str, tuple[int, str]] = {}
+        self._preparations: dict[str, int] = {}
         self.jobs: dict[str, RemoteProcess] = {}
         self.platform_routes: dict[tuple[str, str], str] = {}
         self.pool: Any = None
@@ -294,7 +294,7 @@ class Bridge:
     async def _reserve_cloudflare_usage(
         self, route_id: str, tenant_id: str, deadline: datetime | None,
         *, workflow_cpu_ms: int | None = None, subrequests: int | None = None,
-        execution_id: str | None = None, engine_slot: int | None = None,
+        execution_id: str | None = None, engine_slot: int | None = None, org_id: str | None = None,
     ) -> None:
         # Reserve under the current owner before emitting any frames. The
         # caller also fences the socket generation before sending secrets.
@@ -308,6 +308,7 @@ class Bridge:
                     ticket = WorkflowSlotTicket(engine_slot, UUID(route_id.rsplit(":", 1)[1]))
                     if not await fence_workflow_slot_send(
                         db, lease.worker_id, UUID(execution_id), ticket,
+                        tenant_id=org_id,
                         preparation=route_id.startswith("prepare:"),
                     ):
                         raise CredentialRouteChanged("Cloudflare workflow slot is no longer held")
@@ -338,6 +339,7 @@ class Bridge:
                 await self._reserve_cloudflare_usage(
                     payload["route_id"], tenant, datetime.now(UTC) + timedelta(seconds=CLOUDFLARE_PREPARE_SECONDS),
                     execution_id=payload.get("execution_id"), engine_slot=engine_slot,
+                    org_id=payload["org_id"],
                 )
             if self.lock.locked():
                 return False
@@ -355,7 +357,7 @@ class Bridge:
                 frames = list(fragment(message))
                 if len(frames) != 1 or frames[0].kind != "command":
                     raise ProtocolError("Cloudflare preparation must fit one frame")
-                self._preparations[payload["route_id"]] = (generation, tenant)
+                self._preparations[payload["route_id"]] = generation
                 # A lost single-frame send can leave a sequence gap without
                 # leaving a partial fragment. Normal control traffic owns disconnects.
                 self._sequence = message.sequence
@@ -437,13 +439,15 @@ class Bridge:
                             deadline = payload.get("workflow_deadline")
                             workspace = payload["context"]["cloudflare_workspace"]
                             engine_slot = payload["engine_slot"]
+                            org_id = payload["active_execution"].get("org_id")
                             tenant = _cloudflare_tenant_key(
-                                payload["active_execution"].get("org_id"), self.lease.worker_id, engine_slot,
+                                org_id, self.lease.worker_id, engine_slot,
                             )
                             await self._reserve_cloudflare_usage(
                                 payload["route_id"], tenant, datetime.fromisoformat(deadline) if deadline else None,
                                 workflow_cpu_ms=workspace["cpu_budget_ms"], subrequests=workspace["subrequest_allowance"],
                                 execution_id=payload["execution_id"], engine_slot=engine_slot,
+                                org_id=org_id,
                             )
                         sent = 0
                         send_deadline = loop.time() + _reply_timeout(action)
@@ -713,7 +717,7 @@ class Bridge:
         route_id, identity, request_id = (event.get(key) for key in ("route_id", "identity", "request_id"))
         preparation = self._preparations.get(route_id) if isinstance(route_id, str) else None
         if isinstance(route_id, str) and route_id.startswith("prepare:") and (
-            preparation is None or preparation[0] != self.lease.session_generation
+            preparation != self.lease.session_generation
         ):
             # The hint timed out or belonged to a replaced control session.
             # Never authorize a late Loader lookup or disconnect the workflow.

@@ -30,7 +30,6 @@ from datetime import datetime, timezone
 from functools import partial
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
-from src.services.worker_pool.cloudflare_slots import WorkflowSlotTicket
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,6 +41,7 @@ from src.core.redis_client import ActiveExecution, PendingExecution, get_redis_c
 from src.models.enums import ExecutionStatus
 from src.models.orm import Execution, User
 from src.repositories.executions import create_execution, update_execution
+from src.services.worker_pool.cloudflare_slots import WorkflowSlotTicket
 from src.worker.remote.protocol import CloudflareRevisionRejected, OpaqueWorkflowNotStarted
 
 if TYPE_CHECKING:

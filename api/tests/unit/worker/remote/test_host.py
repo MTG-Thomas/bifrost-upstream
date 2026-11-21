@@ -121,7 +121,7 @@ async def test_preparation_reservation_leaves_the_control_send_lock_free() -> No
     finish = asyncio.Event()
     sent = []
 
-    async def reserve(*_args):
+    async def reserve(*_args, **_kwargs):
         reserving.set()
         await finish.wait()
 
@@ -192,7 +192,7 @@ async def test_preparation_rechecks_generation_after_usage_reservation() -> None
     }, lease)
     bridge.reconciliation_ready.set()
 
-    async def reserve(*_args):
+    async def reserve(*_args, **_kwargs):
         bridge.lease = replace(lease, session_generation=lease.session_generation + 1)
 
     with patch.object(bridge, "_reserve_cloudflare_usage", reserve), pytest.raises(CredentialRouteChanged):

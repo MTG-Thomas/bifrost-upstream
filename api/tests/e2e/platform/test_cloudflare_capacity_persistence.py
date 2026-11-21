@@ -101,8 +101,8 @@ from src.services.worker_pool.cloudflare_provisioning import (
 )
 from src.services.worker_pool.claims import claim_next
 from src.services.worker_pool.cloudflare_slots import (
+    confirm_workflow_slot_release,
     fence_workflow_slot_send,
-    release_workflow_slot,
     settle_workflow_slot,
 )
 from src.services.worker_pool.cloudflare_spend import (
@@ -1223,8 +1223,8 @@ async def test_workflow_slots_hold_headroom_and_serialize_different_tenants(asyn
             assert first is not None and second is not None and third is not None and fourth is not None
             for index, ticket in enumerate((first, second, third)):
                 worker = workers[index % 2]
-                assert await fence_workflow_slot_send(db, worker, runs[index], ticket, preparation=False)
-            await release_workflow_slot(db, workers[0], runs[0], uuid4(), confirmed=True)
+                assert await fence_workflow_slot_send(db, worker, runs[index], ticket, tenant_id=None, preparation=False)
+            await confirm_workflow_slot_release(db, workers[0], runs[0], uuid4())
             await settle_workflow_slot(db, workers[0], runs[0], first.fence, "completed")
             await settle_workflow_slot(db, workers[1], runs[1], second.fence, "not_started")
             await settle_workflow_slot(db, workers[0], runs[2], third.fence, "uncertain")

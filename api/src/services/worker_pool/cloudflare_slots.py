@@ -50,7 +50,7 @@ class WorkflowSlotAdmission:
         return not self.full and tenant_key(tenant_id) not in self.blocked_tenants
 
 
-def tenant_key(tenant_id: UUID | None) -> str:
+def tenant_key(tenant_id: UUID | str | None) -> str:
     return str(tenant_id) if tenant_id is not None else "platform"
 
 
@@ -135,11 +135,12 @@ async def occupy_workflow_slot(
 
 async def fence_workflow_slot_send(
     db: AsyncSession, worker_id: UUID, execution_id: UUID, ticket: WorkflowSlotTicket,
-    *, preparation: bool,
+    *, tenant_id: UUID | str | None, preparation: bool,
 ) -> bool:
     slot = CloudflareWorkflowSlot
     target = (
         slot.worker_id == worker_id, slot.execution_id == execution_id,
+        slot.tenant == tenant_key(tenant_id),
         slot.ordinal == ticket.ordinal, slot.fence == ticket.fence, slot.released_at.is_(None),
     )
     if preparation:
@@ -147,18 +148,16 @@ async def fence_workflow_slot_send(
     return await db.scalar(update(slot).where(*target, ~slot.sent).values(sent=True).returning(slot.fence)) is not None
 
 
-async def release_workflow_slot(
+async def confirm_workflow_slot_release(
     db: AsyncSession, worker_id: UUID, execution_id: UUID, fence: UUID,
-    *, completed: bool = False, confirmed: bool = False,
+    *, completed: bool = False,
 ) -> None:
-    """Only the holder can release; a sent attempt requires terminal proof."""
+    """Apply definitive stop or completion evidence to the exact holder."""
     slot = CloudflareWorkflowSlot
     where = (
         slot.worker_id == worker_id, slot.execution_id == execution_id,
         slot.fence == fence, slot.released_at.is_(None),
     )
-    if not confirmed:
-        where = (*where, ~slot.sent)
     warm_until = None
     if completed:
         linger = await db.scalar(select(
@@ -172,7 +171,7 @@ async def settle_workflow_slot(
     db: AsyncSession, worker_id: UUID, execution_id: UUID, fence: UUID, state: str,
 ) -> None:
     if state in ("completed", "not_started"):
-        await release_workflow_slot(db, worker_id, execution_id, fence, confirmed=True, completed=state == "completed")
+        await confirm_workflow_slot_release(db, worker_id, execution_id, fence, completed=state == "completed")
         return
     # The provider's normal retirement path must fence this incarnation before
     # a lost result can return its capacity to the installation.

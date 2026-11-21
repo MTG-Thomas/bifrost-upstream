@@ -30,7 +30,7 @@ from src.models.orm.executions import Execution
 from src.models.orm.workflows import Workflow
 from src.services.durable_impersonation import pending_durable_impersonation
 from src.services.memory_requests import workflow_request_bytes
-from src.services.worker_pool.cloudflare_slots import WorkflowSlotTicket, release_workflow_slot
+from src.services.worker_pool.cloudflare_slots import WorkflowSlotTicket, confirm_workflow_slot_release
 from src.services.work_dispatch import (
     WAKE_WORKFLOW,
     hand_off,
@@ -349,7 +349,7 @@ async def release_workflow_run(
             .returning(Execution.id)
         )
         if workflow_slot is not None:
-            await release_workflow_slot(db, worker_id, execution_id, workflow_slot.fence, confirmed=True)
+            await confirm_workflow_slot_release(db, worker_id, execution_id, workflow_slot.fence)
         if released is None:
             return
         await db.execute(

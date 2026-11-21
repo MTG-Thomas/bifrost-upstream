@@ -208,10 +208,9 @@ const main = `
       await this.ctx.storage.put('prime', {engine: 'test-engine', modules: ['hold_ping']});
     }
     async stopAndTryEgress(id) {
-      const stopped = super.stopWorkflow(id);
+      const stopped = super.stopWorkflow(id, true);
       const result = await super.egress(new Request('https://approved.invalid/after-stop'), 0);
-      await stopped;
-      return result.status;
+      return {status: result.status, confirmed: await stopped};
     }
   }
   export default {
@@ -699,10 +698,12 @@ test('stopping an active route revokes its egress before retirement finishes', {
   const tenant = 'active-stop';
   const {entered, release} = cases.get('/active-block');
   await host(tenant, 'warm');
-  const running = host(tenant, 'run', route(tenant, {scenario: 'active-block', workflowDeadline: null}));
+  const running = host(tenant, 'run', {
+    ...route(tenant, {scenario: 'active-block', workflowDeadline: null}), trackStop: true,
+  });
   try {
     await entered.promise;
-    assert.equal(await host(tenant, 'stop-egress', tenant), 403);
+    assert.deepEqual(await host(tenant, 'stop-egress', tenant), {status: 403, confirmed: false});
     assert.equal((await running).terminal.attempt_state, 'uncertain');
     assert.ok(!origins.includes('https://approved.invalid/after-stop'));
   } finally {
