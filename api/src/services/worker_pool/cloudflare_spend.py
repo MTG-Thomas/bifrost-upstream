@@ -591,7 +591,8 @@ async def _book_daily_engine(
     db: AsyncSession, usage: CloudflareUsageIncarnation, identity: str, started_at: datetime,
 ) -> None:
     day = started_at.astimezone(UTC).date()
-    daily_key = f"daily:{usage.meter_release_digest}:{identity}:{day}"
+    # The Loader identity already embeds the engine entry and runtime digest.
+    daily_key = f"daily:{identity}:{day}"
     # A tenant-day forecast pays for one identity, including detached alarms
     # after midnight. Every additional identity pays its own creation fee.
     tenant = identity.removeprefix("tenant-eng-tenant-py-").split("-", 1)[0]

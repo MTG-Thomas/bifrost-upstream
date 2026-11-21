@@ -1582,6 +1582,11 @@ async def test_qualified_dispatch_prices_pinned_cpu_and_keeps_sdk_events_attribu
     assert await cloudflare_spend.reserve_engine_generation(db_session, worker_id, f"{identity}-g1")
     await db_session.refresh(row)
     assert row.qualified_creations == 2
+    # A different launcher package can carry the same loader code and identity.
+    incarnation.meter_release_digest = "a" * 64
+    assert await cloudflare_spend.reserve_engine_generation(db_session, worker_id, f"{identity}-g1")
+    await db_session.refresh(row)
+    assert row.qualified_creations == 2
 
     tomorrow = now + timedelta(days=1)
     await cloudflare_spend._book_daily_engine(db_session, incarnation, f"{identity}-g1", tomorrow)
