@@ -46,6 +46,8 @@ def _prctl(option: int, value: int) -> None:
 
 
 def _drop_supervisor_privileges() -> None:
+    if len(list(Path("/proc/self/task").iterdir())) != 1:
+        raise RuntimeError("Container supervisor must be single-threaded before dropping privileges")
     _prctl(PR_SET_KEEPCAPS, 1)
     os.setgroups([])
     os.setresgid(SUPERVISOR_UID, SUPERVISOR_UID, SUPERVISOR_UID)
@@ -106,8 +108,12 @@ class ContainerGuest:
             if not self.ready.poll(TEMPLATE_START_TIMEOUT_SECONDS) or self.ready.recv_bytes(maxlength=1) != READY:
                 raise RuntimeError("Container guest did not verify its startup")
 
+    @property
+    def exited(self) -> bool:
+        return self.process.poll() is not None
+
     def take(self) -> tuple[int, _SendQueue, ContainerResultReader]:
-        if self.used or self.process.poll() is not None:
+        if self.used or self.exited:
             raise MemoryError("Container workflow guest is unavailable")
         self.used = True
         return self.process.pid, self.work, self.result

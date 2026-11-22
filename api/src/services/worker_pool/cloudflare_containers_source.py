@@ -1,6 +1,7 @@
 """Bind module source reads to an execution's managed Linux reservation."""
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from uuid import UUID
 
 from pydantic import ValidationError
 from shared.sdk_modules import (
@@ -8,12 +9,13 @@ from shared.sdk_modules import (
     ModuleSourceScope,
     validate_module_path,
 )
-from sqlalchemy import Text, func, literal_column, or_, select
+from sqlalchemy import Text, func, literal_column, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.orm.cloudflare_approvals import CloudflareApproval
 from src.models.orm.cloudflare_capacity import CloudflareWorkerReservation
-from src.models.orm.execution_workers import ExecutionWorkerClaim
+from src.config import get_settings
+from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
 from src.models.orm.solutions import Solution
 from src.models.orm.workflows import Workflow
 from src.services.authorization.runtime import RuntimeAuthority
@@ -31,39 +33,53 @@ from src.services.worker_pool.cloudflare_containers_policy import (
 from src.services.worker_pool.cloudflare_slots import tenant_key
 
 
-def container_execution_reservations(execution_id):
-    """Use the latest assignment and fail closed when it has disappeared."""
+@dataclass(frozen=True, slots=True)
+class ContainerAssignment:
+    reservation: CloudflareWorkerReservation | None
+    before_deadline: bool = False
+
+
+async def container_workflow_assignment(db: AsyncSession, execution_id: UUID) -> ContainerAssignment | None:
+    """Classify the latest claim even if the Container has no matching pin."""
     pin = CloudflareWorkerReservation
     claim = ExecutionWorkerClaim
-    assigned_worker = select(claim.worker_id).where(
+    worker = ExecutionWorker
+    assigned = (await db.execute(select(
+        worker.capacity_scope, pin, container_deadline_sql() > func.clock_timestamp(),
+    ).select_from(claim).join(worker, worker.id == claim.worker_id).outerjoin(pin, pin.worker_id == worker.id).where(
         claim.family == WAKE_WORKFLOW, claim.subject_id == execution_id,
-    ).order_by(claim.claimed_at.desc(), claim.id.desc()).limit(1).scalar_subquery()
-    return select(pin).where(
+    ).order_by(claim.claimed_at.desc(), claim.id.desc()).limit(1))).one_or_none()
+    if assigned is not None:
+        scope, reservation, live = assigned
+        if scope is not None and scope in (CONTAINERS_SCOPE, getattr(get_settings(), "cloudflare_containers_scope", None)):
+            return ContainerAssignment(reservation, live is True)
+        if reservation is not None and (reservation.scope == CONTAINERS_SCOPE or reservation.container_reserved_at):
+            return ContainerAssignment(reservation, live is True)
+        return None
+
+    # If the assignment disappeared, retain the closed boundary until a
+    # subsequent claim shows which worker owns runtime authority.
+    stranded = await db.scalar(select(pin.worker_id).where(
         pin.scope == CONTAINERS_SCOPE, pin.container_reserved_at.is_not(None),
         pin.container_envelope.op("->>", return_type=Text)(literal_column("'execution_id'")) == str(execution_id),
-        or_(assigned_worker.is_(None), assigned_worker == pin.worker_id),
         pin.container_envelope["voided_unstarted"].as_boolean().is_not(True),
-    )
+    ).limit(1))
+    return ContainerAssignment(None) if stranded is not None else None
 
 
 async def scoped_container_source(
     db: AsyncSession, runtime: RuntimeAuthority, workflow: Workflow | None, scope: ModuleSourceScope,
 ) -> ModuleSourceScope:
-    pin = CloudflareWorkerReservation
-    claim = ExecutionWorkerClaim
-    owns_claim = select(claim.id).where(
-        claim.worker_id == pin.worker_id, claim.family == WAKE_WORKFLOW, claim.subject_id == runtime.credential_id,
-    ).correlate(pin).exists()
-    matches = (await db.execute(container_execution_reservations(runtime.credential_id).add_columns(
-        container_deadline_sql() > func.clock_timestamp(), owns_claim,
-    ).limit(2))).all()
-    if not matches:
+    assignment = await container_workflow_assignment(db, runtime.credential_id)
+    if assignment is None:
         return scope
-    reservation, before_deadline, has_claim = matches[0]
+    reservation = assignment.reservation
     if (
-        len(matches) != 1 or not before_deadline or not has_claim or reservation.container_stopped_at is not None
+        reservation is None or reservation.scope != CONTAINERS_SCOPE or not assignment.before_deadline
+        or reservation.container_stopped_at is not None
         or reservation.container_tenant != tenant_key(runtime.organization_id)
         or reservation.container_envelope is None or workflow is None
+        or reservation.container_envelope.get("execution_id") != str(runtime.credential_id)
         or runtime.workflow_id != workflow.id or not workflow.is_active
     ):
         raise ModuleSourceError(403, "Container source authority has expired or changed")

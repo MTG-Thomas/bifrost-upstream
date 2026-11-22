@@ -2308,6 +2308,18 @@ async def test_container_source_authority_follows_the_durable_workflow_claim(db_
         assert denied.value.status_code == 403
     with pytest.raises(ModuleSourceError, match="authority has expired or changed"):
         await scoped_container_source(db_session, runtime, None, scope)
+    wrong_subject = uuid4()
+    db_session.add(ExecutionWorkerClaim(worker_id=worker, subject_id=wrong_subject, family=WAKE_WORKFLOW))
+    await db_session.flush()
+    wrong_runtime = SimpleNamespace(
+        kind="workflow_execution", credential_id=wrong_subject, workflow_id=workflow_id, organization_id=None,
+    )
+    with pytest.raises(ModuleSourceError, match="authority has expired or changed"):
+        await scoped_container_source(db_session, wrong_runtime, workflow, scope)
+    principal.runtime_authority = wrong_runtime
+    with pytest.raises(FileServiceError, match="Workspace files are unavailable"):
+        await reject_container_workspace_access(db_session, principal)
+    principal.runtime_authority = runtime
     approval.is_current = False
     await db_session.flush()
     with pytest.raises(ModuleSourceError, match="approval is unavailable"):
@@ -2538,6 +2550,33 @@ async def isolated_capacity_session_factory(async_engine, monkeypatch):
                 await connection.execute(text(f"DROP DATABASE {name} WITH (FORCE)"))
     finally:
         await admin.dispose()
+
+
+@pytest.mark.asyncio
+async def test_container_worker_claims_only_its_reserved_dispatch(isolated_capacity_session_factory, monkeypatch) -> None:
+    worker, older, bound = uuid4(), uuid4(), uuid4()
+    scope = "fixture-containers"
+    monkeypatch.setattr(claim_service, "get_settings", lambda: SimpleNamespace(cloudflare_containers_scope=scope))
+    now = datetime.now(UTC)
+    async with isolated_capacity_session_factory() as db:
+        runner = ExecutionWorker(
+            id=worker, form="external", state="ready", capacity_scope=scope,
+            supported_handlers=["workflow.execute"], memory_limit_bytes=1 << 20,
+        )
+        db.add(runner)
+        for offset, subject in [(2, older), (1, bound)]:
+            db.add(Execution(id=subject, status=ExecutionStatus.PENDING, workflow_name="fixture", executed_by_name="fixture"))
+            dispatch = stage_dispatch(
+                db, family=WAKE_WORKFLOW, subject_id=subject, handler="workflow.execute", handler_version=1,
+                payload={"execution_id": str(subject)}, message={}, memory_request_bytes=1,
+                queued_at=now - timedelta(seconds=offset),
+            )
+        await db.flush()
+        runner.reserved_for_dispatch_id = dispatch.id
+        await db.commit()
+    claimed = await claim_next(worker, fits_bytes=1 << 20, budget_bytes=1 << 20)
+    assert claimed is not None and claimed.subject_id == bound
+    assert await claim_next(worker, fits_bytes=1 << 20, budget_bytes=1 << 20) is None
 
 
 @pytest.mark.asyncio

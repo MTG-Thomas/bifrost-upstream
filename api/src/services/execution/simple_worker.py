@@ -29,7 +29,7 @@ import re
 import shlex
 import subprocess
 import sys
-from datetime import datetime, timezone
+from time import monotonic
 from typing import Any
 
 from src.services.execution.requirements_setup_result import FailedPackage, RequirementsInstallResult
@@ -251,7 +251,7 @@ async def _execute_async(
     Returns:
         Result dict with execution outcome
     """
-    start_time = datetime.now(timezone.utc)
+    started = monotonic()
 
     # The fork reset this process's peak RSS to its RSS at the fork, so peak
     # minus this reading is the most memory the run itself added.
@@ -265,7 +265,7 @@ async def _execute_async(
         result = await run_execution(execution_id, context)
 
         # Calculate duration
-        duration_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
+        duration_ms = int((monotonic() - started) * 1000)
 
         # Capture resource metrics (use worker's metrics if available, else local)
         metrics = result.get("metrics") or _capture_resource_metrics()
@@ -277,7 +277,7 @@ async def _execute_async(
         )
 
     except Exception as e:
-        duration_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
+        duration_ms = int((monotonic() - started) * 1000)
         logger.exception(f"Execution {execution_id} failed in engine: {e}")
         return {
             "execution_id": execution_id,

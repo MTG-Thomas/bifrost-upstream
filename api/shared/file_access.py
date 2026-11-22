@@ -246,10 +246,10 @@ async def reject_container_workspace_access(db: AsyncSession, user: UserPrincipa
     if runtime is None or runtime.kind != "workflow_execution":
         return
     from src.services.worker_pool.cloudflare_containers_source import (
-        container_execution_reservations,
+        container_workflow_assignment,
     )
 
-    if await db.scalar(container_execution_reservations(runtime.credential_id).exists().select()):
+    if await container_workflow_assignment(db, runtime.credential_id) is not None:
         raise FileServiceError(403, "Workspace files are unavailable to Container executions")
 
 

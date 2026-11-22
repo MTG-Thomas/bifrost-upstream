@@ -210,6 +210,11 @@ async def bridge_connection(reader: asyncio.StreamReader, writer: asyncio.Stream
 @asynccontextmanager
 async def worker_network():
     """Keep private connections available through the launcher's full drain."""
+    if (
+        (os.environ.get("BIFROST_BAKED_WHEELS_ONLY") == "1" or "BIFROST_WORKER_CONTROL_SECRET" in os.environ)
+        and any(name.startswith("BIFROST_WORKER_NETWORK") for name in os.environ)
+    ):
+        raise ValueError("Containers do not support private worker networking")
     tunnels = configured_tunnels(os.environ.get("BIFROST_WORKER_NETWORK"))
     if not tunnels:
         yield

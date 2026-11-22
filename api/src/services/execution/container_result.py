@@ -52,6 +52,13 @@ class ContainerResultReader:
         self._conn.close()
 
     def get_nowait(self) -> dict[str, Any]:
+        while self._length is None or len(self._buffer) < self._length:
+            self._read_chunk()
+        if len(self._buffer) != self._length:
+            raise InvalidContainerResult("Container sent more than one result")
+        return self._decode_result()
+
+    def _read_chunk(self) -> None:
         # A guest can leave a partial header or body. Never block the
         # supervisor, allocate from an unchecked length, or unpickle bytes.
         try:
@@ -61,17 +68,13 @@ class ContainerResultReader:
         if not chunk:
             raise EOFError
         self._buffer.extend(chunk)
-        if self._length is None:
-            if len(self._buffer) < _HEADER.size:
-                raise Empty
+        if self._length is None and len(self._buffer) >= _HEADER.size:
             self._length, = _HEADER.unpack_from(self._buffer)
             if not 0 < self._length <= MAX_RESULT_BYTES:
                 raise InvalidContainerResult("Container result has an invalid frame length")
             del self._buffer[:_HEADER.size]
-        if len(self._buffer) < self._length:
-            raise Empty
-        if len(self._buffer) != self._length:
-            raise InvalidContainerResult("Container sent more than one result")
+
+    def _decode_result(self) -> dict[str, Any]:
         try:
             result = json.loads(self._buffer.decode(), parse_constant=_finite, parse_float=_finite)
         except (ValueError, RecursionError):

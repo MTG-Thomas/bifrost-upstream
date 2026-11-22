@@ -20,7 +20,7 @@ from src.models.orm.work_dispatches import WorkDispatch
 from src.services.kubernetes_execution import load_kubernetes_policy
 from src.services.execution.summary_dispatch import LINUX_ONLY_SUMMARY
 from src.services.worker_pool.cloudflare_admission import cloudflare_claim_allowed
-from src.services.worker_pool.cloudflare_containers_policy import container_identity_matches
+from src.services.worker_pool.cloudflare_containers_policy import CONTAINERS_SCOPE, container_identity_matches
 from src.services.worker_pool.cloudflare_slots import (
     QueuePreparation,
     WorkflowSlotTicket,
@@ -273,9 +273,10 @@ async def claim_next(
     )
     # Managed Linux reservations are provisionable only after their dedicated
     # readiness and send path exists. A generic Linux hello grants no claim.
-    linux_eligible = (ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE) & ~exists().where(
+    managed_container = exists().where(
         managed_workers.c.worker_id == incarnation_id, managed_workers.c.container_reserved_at.is_not(None),
     )
+    linux_eligible = (ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE) & ~managed_container
     containers_scope = getattr(get_settings(), "cloudflare_containers_scope", None)
     if containers_scope is not None:
         linux_eligible = linux_eligible & (
@@ -312,17 +313,24 @@ async def claim_next(
             ))
         ),
     )
+    reserved_for = (
+        select(ExecutionWorker.reserved_for_dispatch_id)
+        .where(ExecutionWorker.id == incarnation_id)
+        .scalar_subquery()
+    )
+    container_worker = managed_container | exists().where(
+        ExecutionWorker.id == incarnation_id,
+        ExecutionWorker.capacity_scope.in_(
+            [CONTAINERS_SCOPE, containers_scope] if containers_scope is not None else [CONTAINERS_SCOPE],
+        ),
+    )
     unassigned = (
         WorkDispatch.assigned_worker_id.is_(None),
         WorkDispatch.execution_lane == select(ExecutionWorker.execution_lane)
         .where(ExecutionWorker.id == incarnation_id).scalar_subquery(),
         tuple_(WorkDispatch.handler, WorkDispatch.handler_version).in_(pairs),
         profile_eligible,
-    )
-    reserved_for = (
-        select(ExecutionWorker.reserved_for_dispatch_id)
-        .where(ExecutionWorker.id == incarnation_id)
-        .scalar_subquery()
+        ~container_worker | (WorkDispatch.id == reserved_for),
     )
     worker_supports_handler = exists().where(
         ExecutionWorker.id == incarnation_id,

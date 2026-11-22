@@ -19,6 +19,7 @@ import sys
 from abc import abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from time import monotonic
 from typing import Any, Protocol
 
 # Install virtual import hook IMMEDIATELY at module load time.
@@ -175,7 +176,7 @@ async def run_execution(
     if not _set_process_engine_credentials(context_data):
         raise RuntimeError("Missing pre-minted runtime credential for execution")
 
-    start_time = datetime.now(timezone.utc)
+    started = monotonic()
 
     # Capture starting resource usage
     observer = resource_observer if resource_observer is not None else ProcessResourceObserver()
@@ -280,7 +281,7 @@ async def run_execution(
                     "status": ExecutionStatus.FAILED.value,
                     "error_message": error_msg,
                     "error_type": error_type,
-                    "duration_ms": int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000),
+                    "duration_ms": int((monotonic() - started) * 1000),
                     "result": None,
                     "logs": [],
                     "variables": None,
@@ -385,7 +386,7 @@ async def run_execution(
             "status": ExecutionStatus.FAILED.value,
             "error_message": str(e),
             "error_type": type(e).__name__,
-            "duration_ms": int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000),
+            "duration_ms": int((monotonic() - started) * 1000),
             "result": None,
             "logs": [],
             "variables": None,

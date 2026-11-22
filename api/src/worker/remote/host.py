@@ -124,7 +124,9 @@ from src.worker.remote.protocol import (
 )
 
 RENEW_RETRY_SECONDS = 2.0
-CONTAINER_LEASE_TRANSIT_MARGIN_MS = 1000
+# Allow the same three-second delay that pauses admission on stale telemetry.
+# A 20-second DB lease still has seven seconds after its halfway renewal.
+CONTAINER_LEASE_TRANSIT_MARGIN_MS = 3000
 # API-owned capacity for the dev build. Provider enrollment will own this
 # policy when multiple Cloudflare capacity profiles are supported.
 ADMISSION_FRESHNESS_SECONDS = 3
@@ -1726,10 +1728,12 @@ class RemoteSession:
                     except (TimeoutError, WebSocketDisconnect, OSError, RuntimeError):
                         if self.lease == lease and self.bridge.socket is socket:
                             self.bridge.disconnect(socket)
-                            # Abort the local executor through session cleanup
-                            # without retiring the physical launcher or its runs.
-                            self.bridge.handoff = True
-                            self.task.cancel()
+                            try:
+                                await self.detach()
+                            except Exception:
+                                logging.getLogger(__name__).exception("Could not detach failed Container transport")
+                            with contextlib.suppress(WebSocketDisconnect, OSError, RuntimeError):
+                                await socket.close()
                             return
         except asyncio.CancelledError:
             raise
@@ -1800,15 +1804,18 @@ class RemoteSession:
         self.begin_handoff()
         if self.bridge.agents is not None:
             self.bridge.agents.detach()
-        await self.release_lease()
-        self.renewal.cancel()
-        await asyncio.gather(self.renewal, return_exceptions=True)
-        for task in tuple(self.reconciliation_tasks):
-            task.cancel()
-        await asyncio.gather(*self.reconciliation_tasks, return_exceptions=True)
-        self.worker.request_stop()
-        self.task.cancel()
-        await asyncio.gather(self.task, return_exceptions=True)
+        try:
+            await self.release_lease()
+        finally:
+            if self.renewal is not asyncio.current_task():
+                self.renewal.cancel()
+                await asyncio.gather(self.renewal, return_exceptions=True)
+            for task in tuple(self.reconciliation_tasks):
+                task.cancel()
+            await asyncio.gather(*self.reconciliation_tasks, return_exceptions=True)
+            self.worker.request_stop()
+            self.task.cancel()
+            await asyncio.gather(self.task, return_exceptions=True)
 
 
 class RemoteControlHost:
@@ -2228,6 +2235,8 @@ class RemoteControlHost:
         self, worker_id: UUID, session: RemoteSession, task: asyncio.Task[Any]
     ) -> None:
         if session.handoff:
+            if self.sessions.get(worker_id) is session:
+                self.sessions.pop(worker_id)
             return
 
         async def cleanup() -> None:

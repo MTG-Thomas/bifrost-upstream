@@ -70,7 +70,7 @@ def _load_containers_control_secret() -> str:
             "DATABASE_URL" in normalized
             or normalized in {"SECRET_KEY", "REDIS_URL", "CAPACITY_TOKEN", "WORKER_CAPACITY_TOKEN",
                               "CLOUDFLARE_CAPACITY_TOKEN", "CLOUDFLARE_CONTAINERS_TOKEN", "WORKER_LAUNCHER_ID"}
-            or normalized.startswith(("S3_", "AZURE_BLOB_"))
+            or normalized.startswith(("S3_", "AZURE_BLOB_", "WORKER_NETWORK"))
         ):
             raise RuntimeError("Containers launcher received a forbidden environment variable")
     libc = ctypes.CDLL(None, use_errno=True)
@@ -161,7 +161,11 @@ async def _receive_control_commands(
 
 
 async def _await_container_startup(launcher: Launcher, setup: asyncio.Task[None]) -> None:
-    """Keep the leased supervisor authorized while the isolated guest initializes."""
+    """Require continuous authorization until the guest can advertise readiness.
+
+    Losing the startup transport fails the physical boot before any dispatch
+    can reach it. An enrolled guest uses the normal fenced reconnect path.
+    """
     while not setup.done():
         receive = asyncio.create_task(launcher.socket.recv())
         try:
@@ -281,6 +285,7 @@ class Launcher:
         self.container_idle_seconds = container_idle_seconds
         self.container_deadline = container_deadline
         self.container_guest = container_guest
+        self._guest_finished = False
         self._container_lease_until: float | None = None
         self._idle_since = time.monotonic()
         self._idle_draining = False
@@ -575,7 +580,6 @@ class Launcher:
             elif action in ("workflow", "service"):
                 if self._idle_draining:
                     raise MemoryError("Container is draining after its idle deadline")
-                self._idle_since = time.monotonic()
                 self.check_fork_pressure()
                 route_id = payload["route_id"]
                 if route_id in self.children or route_id in self.jobs:
@@ -593,6 +597,7 @@ class Launcher:
                         pid, work, result = await asyncio.to_thread(
                             self.template.fork, worker_id=route_id, sdk_socket_path=None,
                         )
+                self._idle_since = time.monotonic()
                 context = payload["context"]
                 timeout = context.get("timeout_seconds", 300) if action == "workflow" else 0
                 child = Child(route_id, payload["execution_id"], pid, work, result,
@@ -794,22 +799,24 @@ class Launcher:
                 os.killpg(process.pid, signal.SIGKILL)
             await process.wait()
 
-    def result_ready(self, route_id: str) -> None:
+    def result_ready(self, route_id: str, *, guest_exited: bool = False) -> None:
         child = self.children.get(route_id)
-        if child is None:
+        if child is None or (self.container_guest is not None and child.stopping):
             return
         try:
             result = child.result.get_nowait()
             if self.container_release is not None and result.get("execution_id") != child.execution_id:
                 raise InvalidContainerResult("Container result does not match the active execution")
         except Empty:
-            return
+            if not guest_exited:
+                return
+            result = self.failure(child, "ProcessCrashError", "Child exited without a result")
         except InvalidContainerResult:
             result = self.failure(child, "ProcessCrashError", "Child sent an invalid Container result")
         except (EOFError, OSError):
             result = self.failure(child, "ProcessCrashError", "Child exited without a result")
-        asyncio.get_running_loop().remove_reader(child.result.fileno())
-        self.task(self.finish(child, result))
+        if asyncio.get_running_loop().remove_reader(child.result.fileno()):
+            self.task(self.finish(child, result))
 
     @staticmethod
     def failure(child: Child, error_type: str, error: str) -> dict[str, Any]:
@@ -817,22 +824,24 @@ class Launcher:
                 "error": error, "error_message": error, "error_type": error_type,
                 "duration_ms": int((time.monotonic() - child.started) * 1000)}
 
-    async def finish(self, child: Child, result: dict[str, Any]) -> None:
+    async def finish(self, child: Child, result: dict[str, Any], *, guest_grace: float = 0) -> None:
         if self.children.pop(child.route_id, None) is None:
             return
-        if self.container_guest is not None and not await self.container_guest.stop():
-            # PID 1 exits the whole namespace. The API must resolve the
-            # terminal outcome from independently witnessed provider stop.
-            self.failed = True
-            self.retired.set()
-            return
+        asyncio.get_running_loop().remove_reader(child.result.fileno())
+        if self.container_guest is not None:
+            self._idle_draining = True
+            if not await self.container_guest.stop(grace=guest_grace):
+                # The supervisor exits the namespace. Only independently
+                # witnessed provider stop can resolve this terminal outcome.
+                self.failed = True
+                self.retired.set()
+                return
         if child.terminal_reason is not None:
             result = self.failure(child, *child.terminal_reason)
         if child.sampler is not None:
             child.sampler.sample(time.monotonic())
             child.rss_peak = max(child.rss_peak, child.sampler.peak_process_rss_bytes or 0)
             child.growth_peak = max(child.growth_peak, child.rss_peak - child.rss_start)
-        asyncio.get_running_loop().remove_reader(child.result.fileno())
         child.work.close()
         child.result.close()
         if child.agent_run:
@@ -878,6 +887,8 @@ class Launcher:
                  "result": self.failure(child, "SerializationError", "Execution result could not be serialized")},
                 inventory=inventory,
             )
+        finally:
+            self._guest_finished = self.container_guest is not None
 
     async def terminate(self, route_id: str, error_type: str, error: str,
                         grace: float | None = None) -> None:
@@ -888,11 +899,9 @@ class Launcher:
         if child.service is None or error_type == "MemoryLimitExceeded":
             child.terminal_reason = (error_type, error)
         if self.container_guest is not None:
-            if not await self.container_guest.stop(grace=child.grace if grace is None else grace):
-                self.failed = True
-                self.retired.set()
-                return
-            await self.finish(child, self.failure(child, error_type, error))
+            await self.finish(
+                child, self.failure(child, error_type, error), guest_grace=child.grace if grace is None else grace,
+            )
             return
         with contextlib.suppress(ProcessLookupError):
             os.kill(child.pid, signal.SIGTERM)
@@ -910,6 +919,9 @@ class Launcher:
             await self.finish(child, self.failure(child, error_type, error))
 
     def _container_idle_is_due(self, now: float) -> bool:
+        guest = self.container_guest
+        if guest is not None and (self._guest_finished or (not guest.used and guest.exited)):
+            return True
         if self.container_idle_seconds is None:
             return False
         if self.children or self.pending_terminal or any(
@@ -944,6 +956,9 @@ class Launcher:
             current, limit = effective_memory_sample()
             samples = {}
             for child in list(self.children.values()):
+                if self.container_guest is not None and self.container_guest.exited:
+                    self.result_ready(child.route_id, guest_exited=True)
+                    continue
                 assert child.sampler is not None
                 child.sampler.sample(time.monotonic())
                 rss = child.sampler.last_process_rss_bytes or 0
@@ -1005,6 +1020,8 @@ class Launcher:
         for task in list(self._tasks):
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
+        for child in self.children.values():
+            asyncio.get_running_loop().remove_reader(child.result.fileno())
         if self.container_guest is not None:
             if not await self.container_guest.stop():
                 self.failed = True

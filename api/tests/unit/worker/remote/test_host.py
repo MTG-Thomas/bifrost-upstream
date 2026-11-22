@@ -572,7 +572,7 @@ async def test_managed_container_renewal_sends_a_bounded_ttl(fails) -> None:
     )
     session = object.__new__(RemoteSession)
     session.bridge, session.lease, session.owned_until = bridge, lease, time.monotonic() + 20
-    session.task = Mock()
+    session.detach = AsyncMock()
     session.lose_ownership = AsyncMock()
     with (
         patch("src.worker.remote.host.asyncio.sleep", new=AsyncMock(side_effect=[None, asyncio.CancelledError()])),
@@ -588,10 +588,10 @@ async def test_managed_container_renewal_sends_a_bounded_ttl(fails) -> None:
     socket.send_text.assert_awaited_once()
     frame = ControlEnvelope.from_json(socket.send_text.await_args.args[0])
     assert (frame.session_generation, frame.sequence, frame.kind) == (lease.session_generation, 1, "runtime_lease")
-    assert 0 < frame.payload["ttl_ms"] <= 19_000
+    assert 0 < frame.payload["ttl_ms"] <= 17_000
     assert bridge.connected is (not fails)
-    assert bridge.handoff is fails
-    assert session.task.cancel.call_count == int(fails)
+    assert session.detach.await_count == int(fails)
+    assert socket.close.await_count == int(fails)
     session.lose_ownership.assert_not_awaited()
 
 

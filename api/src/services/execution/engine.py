@@ -15,6 +15,7 @@ import sys
 from contextlib import ExitStack, contextmanager, redirect_stdout, redirect_stderr
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from time import monotonic
 from io import StringIO
 from pathlib import Path
 from types import CodeType
@@ -507,12 +508,12 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
     Raises:
         ValueError: If neither func nor code provided
     """
-    start_time = datetime.now(timezone.utc)
+    started = monotonic()
 
     # Supervised service mode: cooperative stop, no timeout kill, no
     # variable tracing, attempt-scoped log streaming.
     if request.service is not None:
-        return await execute_service(request, start_time=start_time)
+        return await execute_service(request)
 
     # Resolve what we're executing
     func = None
@@ -613,7 +614,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
                     return _build_cached_result(
                         request.execution_id,
                         cached_result,
-                        start_time
+                        started
                     )
 
             # Convert scripts to callables for unified execution
@@ -673,8 +674,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
             })
 
         # Calculate duration
-        end_time = datetime.now(timezone.utc)
-        duration_ms = int((end_time - start_time).total_seconds() * 1000)
+        duration_ms = int((monotonic() - started) * 1000)
 
         # Determine execution status based on result
         # If result is a dict with success=false (explicitly false), mark as COMPLETED_WITH_ERRORS
@@ -708,8 +708,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
 
     except WorkflowExecutionException as e:
         # Workflow exception with captured variables
-        end_time = datetime.now(timezone.utc)
-        duration_ms = int((end_time - start_time).total_seconds() * 1000)
+        duration_ms = int((monotonic() - started) * 1000)
 
         # Extract variables and logs from the wrapper exception
         captured_variables = e.captured_vars
@@ -801,8 +800,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
 
     except WorkflowError as e:
         # Expected workflow error (without variable capture)
-        end_time = datetime.now(timezone.utc)
-        duration_ms = int((end_time - start_time).total_seconds() * 1000)
+        duration_ms = int((monotonic() - started) * 1000)
 
         # Add traceback to logs
         import traceback
@@ -847,8 +845,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
 
     except Exception as e:
         # Unexpected error
-        end_time = datetime.now(timezone.utc)
-        duration_ms = int((end_time - start_time).total_seconds() * 1000)
+        duration_ms = int((monotonic() - started) * 1000)
         execution_context = "executing script" if request.code else "executing workflow"
         error_message = format_exception_message(
             e,
@@ -1805,7 +1802,7 @@ async def _write_runtime_data_provider_cache(
 def _build_cached_result(
     execution_id: str,
     cached_entry: dict[str, Any],
-    start_time: datetime
+    started: float
 ) -> ExecutionResult:
     """
     Build ExecutionResult from cached data provider result.
@@ -1813,13 +1810,12 @@ def _build_cached_result(
     Args:
         execution_id: Execution ID
         cached_entry: Cached entry with 'data' and 'expires_at' (string) keys
-        start_time: Execution start time
+        started: Monotonic start time
 
     Returns:
         ExecutionResult with cached data
     """
-    end_time = datetime.now(timezone.utc)
-    duration_ms = int((end_time - start_time).total_seconds() * 1000)
+    duration_ms = int((monotonic() - started) * 1000)
 
     # expires_at comes as ISO string from Redis cache
     expires_at = cached_entry.get('expires_at', '')
