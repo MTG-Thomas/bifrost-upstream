@@ -5626,13 +5626,12 @@ async def test_status_uses_scoped_runs_and_deployed_controller_observation(db_se
     now = await db_session.scalar(select(func.statement_timestamp()))
     assert now is not None
     installation.desired_revision = 2
-    installation.control_root_version = 1
-    db_session.add_all([
-        seal_credential(CredentialRef(installation.id, installation.account_id, "control_root", "", 1),
-                        SecretStr("synthetic-control-root"), actor=str(owner.id), now=now),
-        seal_credential(CredentialRef(installation.id, installation.account_id, "scope_bearer", "workers", 1),
-                        SecretStr("synthetic-scope-bearer"), actor=str(owner.id), now=now),
-    ])
+    root_version = installation.control_root_version
+    assert root_version is not None
+    db_session.add(seal_credential(
+        CredentialRef(installation.id, installation.account_id, "scope_bearer", "workers", 1),
+        SecretStr("synthetic-scope-bearer"), actor=str(owner.id), now=now,
+    ))
     await db_session.flush()
     db_session.add(CloudflareCapacityScope(
         installation_id=installation.id, scope="workers", deployment_revision=1,
@@ -5644,7 +5643,7 @@ async def test_status_uses_scoped_runs_and_deployed_controller_observation(db_se
     db_session.add_all([primary, worker])
     await db_session.flush()
     db_session.add(ManagedCloudflareScope(installation.id, "workers", 1).pin(
-        worker.id, 1, reserved_at=now, lifetime=3600, deadline_wire=False,
+        worker.id, root_version, reserved_at=now, lifetime=3600, deadline_wire=False,
     ))
     for executed_by in (owner.id, None):
         for state in ("queued", "claimed", "running"):
