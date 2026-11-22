@@ -46,7 +46,7 @@ def overdue_container_reservations(account_id, now):
 def container_identity_matches(worker_id, release: str | None):
     """Keep the legacy Linux control credential away from managed incarnations."""
     pin = CloudflareWorkerReservation
-    managed = exists().where(pin.worker_id == worker_id, pin.container_reserved_at.is_not(None))
+    managed = exists().where(pin.worker_id == worker_id, pin.container_reserved_at.is_not(None)).correlate_except(pin)
     if release is None:
         return ~managed
     return managed.where(
