@@ -248,7 +248,7 @@ tunnel ID as a route on the selected tunnel and blocks admission.
 DNS retains its exact CNAME, record ID, modification time, and
 ownership comment checks. The connector token endpoint returns a
 string. The decoded token still proves the account, tunnel, and
-creation or rotation secret. Connect checks the account entitlement
+creation or rotation secret. Preflight checks the account entitlement
 with the supplied management token. [DNS record GET](https://developers.cloudflare.com/api/resources/dns/subresources/records/methods/get/) ·
 [Connector token GET](https://developers.cloudflare.com/api/resources/zero_trust/subresources/tunnels/subresources/cloudflared/subresources/token/methods/get/) ·
 [cloudflared token fields](https://github.com/cloudflare/cloudflared/blob/2026.11.1/connection/connection.go)

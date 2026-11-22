@@ -1,0 +1,295 @@
+{
+  "spike_source": "75ce33cb6120e5833cd8908d72d3bcad0c29735b",
+  "rehearsed_commit": "97650ad8e19417589b852ec83e4e62793d2dfd62",
+  "status": "passed",
+  "scope": "local_provider_fixture",
+  "offline_tests_passed": 14,
+  "events": [
+    {
+      "stage": "isolation",
+      "internal_networks": true,
+      "api_worker_hooks_verified": true
+    },
+    {
+      "stage": "approvals",
+      "accepted_loose": 4,
+      "accepted_solution": 1
+    },
+    {
+      "stage": "isolation",
+      "internal_networks": true,
+      "api_worker_hooks_verified": true
+    },
+    {
+      "stage": "policy",
+      "mode": "existing",
+      "lifetime_seconds": 3600,
+      "fleet_envelope_usd": "32.13"
+    },
+    {
+      "stage": "enable",
+      "class": "remote_launcher",
+      "connections": [
+        {
+          "address_family": "ipv4",
+          "tcp_connects_started": 8,
+          "tls_handshakes_started": 8,
+          "tls_handshakes_completed": 8,
+          "reused_requests": 92
+        }
+      ]
+    },
+    {
+      "stage": "preflight",
+      "checks": 100,
+      "connections": [
+        {
+          "address_family": "ipv4",
+          "tcp_connects_started": 8,
+          "tls_handshakes_started": 8,
+          "tls_handshakes_completed": 8,
+          "reused_requests": 92
+        }
+      ],
+      "failure": null
+    },
+    {
+      "stage": "capacity-status",
+      "checkpoint": "cold-dispatch",
+      "placement": [],
+      "workers": [
+        "waiting_for_launch_gate"
+      ],
+      "eligible_queued": 1,
+      "running": 0
+    },
+    {
+      "stage": "latency",
+      "cold_queue_to_stage_ms": {
+        "gate": 2000,
+        "decision": 2121,
+        "launcher_start": 2289,
+        "launcher_accepted": 2296,
+        "hello": 2334,
+        "claim": 2450,
+        "prepare": 2590,
+        "engine_ready": 6346,
+        "dispatch": 2734,
+        "entry": 6402
+      },
+      "cold": {
+        "queue_to_entry_ms": 6443,
+        "queue_to_completion_ms": 6461,
+        "ordinal": 0,
+        "terminal_ack": true
+      },
+      "warm": {
+        "queue_to_entry_ms": 552,
+        "queue_to_completion_ms": 570,
+        "ordinal": 0,
+        "terminal_ack": true
+      }
+    },
+    {
+      "stage": "capacity-status",
+      "checkpoint": "burst-first-dispatch",
+      "placement": [],
+      "workers": [
+        "waiting_for_demand"
+      ],
+      "eligible_queued": 0,
+      "running": 0
+    },
+    {
+      "stage": "capacity-status",
+      "checkpoint": "tenth-dispatch-after-launch-gate",
+      "placement": [],
+      "workers": [
+        "installation_slots_full"
+      ],
+      "eligible_queued": 1,
+      "running": 9
+    },
+    {
+      "stage": "burst",
+      "provider": 4,
+      "global": 4,
+      "reserved": 1,
+      "queued_observations": 2,
+      "cancel_unchanged_fences": 8,
+      "scoped_solution": true,
+      "last_dispatch_read_to_full_entry_ms": 5606
+    },
+    {
+      "stage": "reconcile-and-scale-in",
+      "active_drain": true,
+      "scripts_retained": 3
+    },
+    {
+      "stage": "capacity-status",
+      "checkpoint": "disconnect-requested",
+      "placement": [
+        "cleanup_pending",
+        "setup_required"
+      ],
+      "workers": [
+        "cleanup_pending",
+        "setup_required",
+        "waiting_for_demand"
+      ],
+      "eligible_queued": 0,
+      "running": 0
+    },
+    {
+      "stage": "disconnect",
+      "workers_404": 3,
+      "namespaces_404": 4,
+      "live_ledger_rows": 0
+    },
+    {
+      "stage": "isolation",
+      "internal_networks": true,
+      "api_worker_hooks_verified": true
+    },
+    {
+      "stage": "policy",
+      "mode": "managed",
+      "lifetime_seconds": 3600,
+      "fleet_envelope_usd": "32.13"
+    },
+    {
+      "stage": "enable",
+      "class": "remote_launcher",
+      "connections": [
+        {
+          "address_family": "ipv4",
+          "tcp_connects_started": 8,
+          "tls_handshakes_started": 8,
+          "tls_handshakes_completed": 8,
+          "reused_requests": 92
+        }
+      ]
+    },
+    {
+      "stage": "preflight",
+      "checks": 100,
+      "connections": [
+        {
+          "address_family": "ipv4",
+          "tcp_connects_started": 8,
+          "tls_handshakes_started": 8,
+          "tls_handshakes_completed": 8,
+          "reused_requests": 92
+        }
+      ],
+      "failure": null
+    },
+    {
+      "stage": "enable",
+      "class": "remote_launcher",
+      "connections": [
+        {
+          "address_family": "ipv4",
+          "tcp_connects_started": 8,
+          "tls_handshakes_started": 8,
+          "tls_handshakes_completed": 8,
+          "reused_requests": 92
+        }
+      ]
+    },
+    {
+      "stage": "managed",
+      "initial_config": "version_zero",
+      "warp_routing_enabled": false,
+      "route_list_http": 200,
+      "previous_sessions_evicted": 1,
+      "replacement_sessions": 1
+    },
+    {
+      "stage": "capacity-status",
+      "checkpoint": "upgrade-original-dispatch",
+      "placement": [],
+      "workers": [
+        "waiting_for_launch_gate"
+      ],
+      "eligible_queued": 1,
+      "running": 0
+    },
+    {
+      "stage": "isolation",
+      "internal_networks": true,
+      "api_worker_hooks_verified": true
+    },
+    {
+      "stage": "isolation",
+      "internal_networks": true,
+      "api_worker_hooks_verified": true
+    },
+    {
+      "stage": "upgrade",
+      "original_claim": true,
+      "dispatch_count": 1,
+      "terminal_ack": true,
+      "old_workers_404": 3,
+      "old_namespaces_404": 4,
+      "admission_fenced": true,
+      "same_control_connection": true,
+      "successor_scheduler_lease": true,
+      "worker_rebound_to_successor": true,
+      "old_absence_checkpoint_before_replacement": true,
+      "first_replacement_observation_after_checkpoint_ms": 145,
+      "replacement_signed_canary": true,
+      "replacement_execution": true
+    },
+    {
+      "stage": "meter_guard",
+      "estimated_usd": "0.08",
+      "limit_usd": "0.50",
+      "within_limit": true,
+      "ledger": {
+        "retired": 9,
+        "uncertain": 0,
+        "uncertain_with_final_receipt": 0
+      }
+    },
+    {
+      "stage": "meter",
+      "state": "ready",
+      "synthetic_provider_samples": 1,
+      "workers_only_test_ratio": "2.5E+5"
+    },
+    {
+      "stage": "capacity-status",
+      "checkpoint": "disconnect-requested",
+      "placement": [
+        "cleanup_pending",
+        "setup_required"
+      ],
+      "workers": [
+        "cleanup_pending",
+        "setup_required",
+        "waiting_for_demand"
+      ],
+      "eligible_queued": 0,
+      "running": 0
+    },
+    {
+      "stage": "disconnect",
+      "workers_404": 12,
+      "namespaces_404": 16,
+      "live_ledger_rows": 0
+    },
+    {
+      "stage": "managed-teardown",
+      "tunnel_deleted": true,
+      "sessions": 0
+    },
+    {
+      "stage": "ct128-teardown",
+      "containers": 0,
+      "networks": 0,
+      "volumes": 0,
+      "scratch_removed": true
+    }
+  ]
+}

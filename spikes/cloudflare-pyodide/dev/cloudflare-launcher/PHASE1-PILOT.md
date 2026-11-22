@@ -622,7 +622,7 @@ Check the host start condition before launching the stack.
 
 Use the verified release's preset B suggestion for both connections. The
 driver checks the $75 policy, three four-slot launchers, nine installation
-slots and 3,600-second deadline before Connect. It records the fleet envelope
+slots and 3,600-second deadline before activation. It records the fleet envelope
 and cold-path stage offsets from the persisted launcher and execution timings.
 
 ```sh
@@ -765,10 +765,10 @@ and the Enable result. Use each result's own counts to report reuse.
 | | **Cumulative estimate with $0.00 carried from the two failed combined attempts** | **$0.45** |
 
 During the local rehearsal, record the Workers lane reason codes and
-queue counts just after the first burst dispatch and after the tenth
-dispatch clears its launch gate. Record the placement reason codes
-while Disconnect is in progress. These observations accompany the
-existing workflow, slot, and teardown evidence.
+queue counts after the cold dispatch, the first burst dispatch, the
+tenth dispatch's launch gate, and the original Upgrade dispatch.
+Record the placement reason codes while Disconnect is in progress.
+These observations accompany the workflow, slot, and teardown evidence.
 | | Optional queue pre-warm with one extra parallel boot per tenant | **+$0.04** |
 
 The next candidate uses the verified preset B suggestion with three
@@ -1487,3 +1487,36 @@ remained. The CT128 stack, trial processes and private scratch were
 removed. The run and verified teardown took 305 seconds.
 
 See the [sanitized run receipt](../../results/cloudflare-scaleout-hosted-upgrade-run3.json).
+
+### Combined Local Rehearsal With Single Activation
+
+CT128 passed all nine items at `97650ad8e` on spike `75ce33cb6`.
+The API and worker outbound guards passed. The stub served provider
+reads and writes, tunnel sessions, and the advisory analytics sample.
+
+| Item | Local result |
+| --- | --- |
+| 1 | Both pinned releases verified and 14 offline packaging and relay tests passed. |
+| 2 | Existing HTTPS credential staging and read-only preflight left the installation absent. One activation queued signed Enable, followed by the 100-route worker probe. |
+| 3 | Cold and warm queue-to-entry took 6.443 s and 0.552 s with both terminal ACKs and reuse of the same slot. |
+| 4 | Four Provider and four Global workflows overlapped. The ninth used the reserved slot, and the tenth remained queued through two controller observations. Cancel released one slot and preserved eight sibling fences. The tenth entered only after release. |
+| 5 | Reconcile retained the three owned scripts. Active Scale In drained the original claim. First Disconnect verified three script and four namespace 404s. |
+| 6 | Managed Tunnel preflight and activation passed. The fixture returned version zero, disabled WARP routing, and an empty private-route inventory. |
+| 7 | Rotation evicted one old session and refused its token. The replacement session, worker probe and signed re-Enable passed. |
+| 8 | Uninterrupted Upgrade retained one original dispatch and terminal ACK. Old absences were verified before replacement upload. Replacement readback followed the checkpoint by 145 ms. The signed canary and the replacement workflow passed. |
+| 9 | The local meter read $0.08 from the synthetic fixture with nine retired and zero uncertain incarnations. Final Disconnect verified 12 script and 16 namespace 404s cumulatively, a tunnel tombstone, no live sessions and no live ledger rows. CT128 teardown left no trial containers, volumes, networks or scratch. |
+
+The Workers lane reported `waiting_for_launch_gate` at cold dispatch
+and at the original Upgrade dispatch, each with one eligible queued
+workflow and none running. The first burst snapshot reported
+`waiting_for_demand` with no eligible work left queued at that instant.
+The tenth showed `installation_slots_full` with nine running and one
+queued. Both Disconnects showed `cleanup_pending` and `setup_required`
+at placement level, plus `waiting_for_demand` in the Workers lane.
+
+The first rehearsal found the standalone ingress probe still ran before
+activation opened the dedicated listener. The second found that the
+Upgrade ordering assertion counted deletes from the first installation.
+The probe now runs after Enable, and the ordering assertion uses only
+events observed after the Upgrade window opens.
+[Sanitized local rehearsal receipt](../../results/cloudflare-scaleout-combined-local-activation.json)
