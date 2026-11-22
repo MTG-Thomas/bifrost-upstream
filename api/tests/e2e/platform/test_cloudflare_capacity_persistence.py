@@ -118,6 +118,7 @@ from src.services.worker_pool.cloudflare_provisioning import (
     ObservationSettling,
     OwnershipCheck,
     OwnershipConflict,
+    OwnershipResource,
     ResourceIntent,
     ResourceObservation,
     ResourceTarget,
