@@ -120,11 +120,13 @@ it.each([
 		expect(screen.getByRole("button", { name: "Upgrade Cloudflare" })).toBeDisabled();
 	}
 	expect(screen.getByText("Estimated Bifrost Usage This UTC Month")).toBeVisible();
-	expect(screen.getByText("0.12 USD/month")).toBeVisible();
+	expect(screen.getByText("0.12 USD")).toBeVisible();
+	expect(screen.getByText("10.50 USD/month")).toBeVisible();
 	expect(screen.getByText("Workers Paid Subscription (Billed by Cloudflare)")).toBeVisible();
 	expect(screen.getByText("5.00 USD/month")).toBeVisible();
 	expect(screen.getByText("Usage Estimate Coverage")).toBeVisible();
 	expect(screen.getByText("Current reservations")).toBeVisible();
+	expect(screen.getByText("Current reservations").closest("ul")).not.toHaveAttribute("tabindex");
 	expect(screen.getByText("Earlier rate coverage")).toBeVisible();
 	expect(screen.getByText("External traffic is outside the estimate.")).toBeVisible();
 	fireEvent.click(button);
@@ -270,7 +272,7 @@ it("focuses the error summary and links a rejected field to its inline message",
 	mocks.get.mockResolvedValue({ installation });
 	mocks.configure.mockRejectedValue(new ApiError({
 		error: "validation_error",
-		message: "policy.policy.workers.slots_per_tenant: Choose a lower slot limit.",
+		message: "policy.policy.workers.slots_per_tenant: Choose a lower slot limit.; policy.policy: Review the worker policy as a whole.",
 		details: {
 			code: "CAPACITY_POLICY",
 			reason: "The submitted slot limit is too high.",
@@ -281,15 +283,16 @@ it("focuses the error summary and links a rejected field to its inline message",
 
 	await user.click(await screen.findByRole("button", { name: "Edit Policy" }));
 	await user.click(screen.getByRole("button", { name: "Save Policy" }));
-	const summary = await screen.findByRole("alert");
+	const summary = await screen.findByRole("region", { name: "Cloudflare Settings Error" });
 	expect(summary).toHaveFocus();
 	expect(summary).toHaveTextContent("CAPACITY_POLICY");
+	expect(within(summary).getByText("Review the worker policy as a whole.").tagName).toBe("LI");
 	expect(summary).toHaveTextContent("The submitted slot limit is too high.");
 	expect(summary).toHaveTextContent("Enter a lower slot limit.");
 	const slots = screen.getByRole("spinbutton", { name: "Slots per Tenant" });
 	expect(slots).toHaveAttribute("aria-invalid", "true");
 	expect(slots).toHaveAccessibleDescription("Choose a lower slot limit.");
-	await user.click(within(summary).getByRole("button", { name: "Choose a lower slot limit." }));
+	await user.click(within(summary).getByRole("button", { name: "Slots per Tenant: Choose a lower slot limit." }));
 	expect(slots).toHaveFocus();
 });
 
@@ -301,7 +304,7 @@ it("explains a rejected spending envelope beside the editable limit", async () =
 
 	await user.click(await screen.findByRole("button", { name: "Edit Policy" }));
 	await user.click(screen.getByRole("button", { name: "Save Policy" }));
-	expect(await screen.findByRole("alert")).toHaveFocus();
+	expect(await screen.findByRole("region", { name: "Cloudflare Settings Error" })).toHaveFocus();
 	const limit = screen.getByRole("spinbutton", { name: "Monthly Estimated Usage Limit" });
 	expect(limit).toHaveValue(40);
 	expect(limit).toHaveAccessibleDescription(/estimated fleet usage is USD 41.*submitted limit was 40.*Raise the limit/);
@@ -340,7 +343,7 @@ it("observes a newer job when the locally accepted job finishes", async () => {
 	mocks.get.mockResolvedValue({ installation });
 	mocks.start.mockResolvedValue({ job_id: "enable-job" });
 	mocks.observe.mockImplementation((id, update) => ({
-		promise: Promise.resolve().then(() => update(snapshot(id, "running", "Provisioning capacity."))),
+		promise: Promise.resolve().then(() => update(snapshot(id, "running", id === "next-job" ? "Reconciling the new revision." : "Provisioning capacity."))),
 		cancel: vi.fn(),
 	}));
 	renderCapacity();
@@ -350,7 +353,9 @@ it("observes a newer job when the locally accepted job finishes", async () => {
 	const [, update] = mocks.subscribe.mock.lastCall!;
 	mocks.get.mockResolvedValue({ installation, latest_job_id: "next-job" });
 	act(() => update(snapshot("enable-job", "succeeded", "Complete.")));
-	await waitFor(() => expect(mocks.observe).toHaveBeenCalledWith("next-job", expect.any(Function)));
+	expect(await screen.findByText("Reconciling the new revision.")).toBeVisible();
+	expect(screen.queryByText("Provisioning capacity.")).toBeNull();
+	expect(mocks.observe).toHaveBeenCalledWith("next-job", expect.any(Function));
 	expect(screen.getByRole("button", { name: "Enable" })).toBeDisabled();
 });
 
@@ -380,4 +385,68 @@ it("recovers a missed notification on demand and announces verified disconnect",
 	await user.click(screen.getByRole("button", { name: "Check Job Status" }));
 	await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Cloudflare was disconnected."));
 	expect(screen.getByRole("button", { name: "Set Up Cloudflare" })).toHaveFocus();
+});
+
+it("focuses the job status after token rotation is accepted and again on refusal", async () => {
+	const user = userEvent.setup();
+	mocks.get.mockResolvedValue({ installation });
+	mocks.rotate.mockResolvedValue({ job_id: "rotation-job", status: "queued" });
+	mocks.observe.mockImplementation((id, update) => ({
+		promise: Promise.resolve().then(() => update(snapshot(id, "queued", "Preparing rotation."))),
+		cancel: vi.fn(),
+	}));
+	renderCapacity();
+
+	await user.click(await screen.findByRole("button", { name: "Rotate API Token" }));
+	const dialog = within(screen.getByRole("dialog", { name: "Rotate Cloudflare API Token" }));
+	await user.type(dialog.getByLabelText("Replacement API Token"), "synthetic-token");
+	await user.click(dialog.getByRole("button", { name: "Rotate API Token" }));
+	const status = await screen.findByRole("region", { name: "Cloudflare Job Status" });
+	await waitFor(() => expect(status).toHaveFocus());
+	expect(within(status).getByRole("status")).toHaveTextContent("The Cloudflare job is queued.");
+	expect(within(status).getByText("Preparing rotation.")).toBeVisible();
+
+	screen.getByRole("link", { name: "Review Workflows" }).focus();
+	const [, update] = mocks.subscribe.mock.lastCall!;
+	act(() => update({ ...snapshot("rotation-job", "requires_action", "Replace the token."), revision: 3 }));
+	expect(await screen.findByText("Replace the token.")).toBeVisible();
+	expect(status).toHaveFocus();
+	expect(within(status).getByRole("status")).toHaveTextContent("The Cloudflare job needs your attention.");
+});
+
+it("shows visual progress without putting phases into the job live region", async () => {
+	mocks.get.mockResolvedValue({ installation, latest_job_id: "job-id" });
+	mocks.observe.mockImplementation((id, update) => ({
+		promise: Promise.resolve().then(() => update(snapshot(id, "running", "Provisioning capacity."))),
+		cancel: vi.fn(),
+	}));
+	renderCapacity();
+
+	expect(await screen.findByText("Provisioning capacity.")).toBeVisible();
+	expect(screen.getByRole("status")).toBeEmptyDOMElement();
+	const [, update] = mocks.subscribe.mock.lastCall!;
+	act(() => update({ ...snapshot("job-id", "running", "Verifying capacity."), revision: 2 }));
+	expect(await screen.findByText("Verifying capacity.")).toBeVisible();
+	expect(screen.getByRole("status")).toBeEmptyDOMElement();
+});
+
+it("shows Scaled In while an upgrade prevents enabling", async () => {
+	mocks.get.mockResolvedValue({ installation: { ...installation, upgrade_pending: true } });
+	renderCapacity();
+	expect(await screen.findByText("Scaled In")).toBeVisible();
+	expect(screen.queryByText("Ready to Enable")).toBeNull();
+	expect(screen.getByRole("button", { name: "Enable" })).toBeDisabled();
+});
+
+it("dismisses the focused action error when refreshing settings", async () => {
+	const user = userEvent.setup();
+	mocks.get.mockResolvedValue({ installation });
+	mocks.start.mockRejectedValue(new ApiError("Cloudflare installation changed.", 409));
+	renderCapacity();
+	await user.click(await screen.findByRole("button", { name: "Enable" }));
+	const error = await screen.findByRole("region", { name: "Cloudflare Action Error" });
+	expect(error).toHaveFocus();
+	await user.click(within(error).getByRole("button", { name: "Refresh and Review Settings" }));
+	expect(screen.queryByRole("region", { name: "Cloudflare Action Error" })).toBeNull();
+	expect(mocks.get).toHaveBeenCalledTimes(2);
 });

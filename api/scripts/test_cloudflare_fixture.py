@@ -27,6 +27,7 @@ from src.services.worker_pool.cloudflare_release import (
     load_workers_release,
 )
 from src.services.worker_pool.cloudflare_workers_rest import (
+    CloudflareManagementDenied,
     ConfiguredWorkersScript,
     WorkersRestCleanup,
 )
@@ -35,6 +36,7 @@ from websockets.asyncio.client import connect
 
 ACCOUNT = "f" * 32
 TOKEN = SecretStr("browser-fixture-cloudflare-token")
+REFUSED_TOKEN = SecretStr("browser-fixture-cloudflare-refused-token")
 HOST = "workers.browser-fixture.test"
 ROOT = Path("/tmp/bifrost/solution-repo-fixtures/cloudflare")
 CAPACITY = "https://capacity.browser-fixture.test"
@@ -99,6 +101,8 @@ class _Cloudflare(WorkersRestCleanup):
         self.deployment = deployment
 
     async def _request(self, token, account_id, method, path, **kwargs):
+        if token == REFUSED_TOKEN:
+            raise CloudflareManagementDenied("The browser fixture refused the replacement token")
         assert (account_id, token) == (ACCOUNT, TOKEN)
         assert method == "GET"
         if path == "":

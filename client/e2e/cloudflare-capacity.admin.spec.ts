@@ -16,8 +16,11 @@ test("a platform operator enables and reconciles Cloudflare capacity", async ({ 
 	await expect(page.getByRole("group", { name: "Advanced Policy" })).toBeVisible();
 	await expect(page.getByRole("spinbutton", { name: "Monthly Estimated Usage Limit" })).toHaveAccessibleDescription("USD/month");
 	await page.getByRole("button", { name: "Connect Cloudflare" }).click();
-	const summary = page.getByRole("alert").filter({ has: page.getByRole("heading", { name: "Cloudflare Settings Error" }) });
+	const summary = page.getByRole("region", { name: "Cloudflare Settings Error" });
 	await expect(summary).toBeFocused();
+	await expect(summary.getByRole("button", { name: /^Cloudflare Account ID:/ })).toBeVisible();
+	await expect(summary.getByRole("button", { name: /^Existing HTTPS Endpoint:/ })).toBeVisible();
+	await expect(summary.getByRole("button", { name: /^Cloudflare API Token:/ })).toBeVisible();
 	await expect(account).toHaveAttribute("aria-invalid", "true");
 	await account.fill("f".repeat(32));
 	await page.getByLabel("Existing HTTPS Endpoint").fill(origin);
@@ -39,6 +42,17 @@ test("a platform operator enables and reconciles Cloudflare capacity", async ({ 
 	await expect(page.getByText("Estimated Fleet Usage")).toBeVisible();
 	await expect(page.getByText("Estimated Bifrost Usage This UTC Month")).toBeVisible();
 	await expect(page.getByText("Workers Paid Subscription (Billed by Cloudflare)")).toBeVisible();
+
+	await page.getByRole("button", { name: "Rotate API Token", exact: true }).click();
+	const rotation = page.getByRole("dialog", { name: "Rotate Cloudflare API Token" });
+	await rotation.getByLabel("Replacement API Token").fill("browser-fixture-cloudflare-refused-token");
+	const rotated = page.waitForResponse((response) => response.url().endsWith("/api/capacity/cloudflare/rotate"));
+	await rotation.getByRole("button", { name: "Rotate API Token", exact: true }).click();
+	expect((await rotated).status()).toBe(202);
+	const jobStatus = page.getByRole("region", { name: "Cloudflare Job Status" });
+	await expect(jobStatus).toBeFocused();
+	await expect(jobStatus.getByText("CF_MANAGEMENT_CREDENTIAL")).toBeVisible();
+	await expect(jobStatus).toBeFocused();
 
 	const enable = page.waitForResponse((response) => response.url().endsWith("/api/capacity/cloudflare/enable"));
 	const admitted = page.waitForResponse(async (response) =>

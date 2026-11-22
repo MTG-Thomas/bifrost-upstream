@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 
@@ -63,15 +63,16 @@ const fieldNames: Record<string, string> = {
 
 type FieldErrors = Record<string, string>;
 
-function validationFields(error: unknown, form: HTMLFormElement): FieldErrors {
+function validationMessages(error: unknown, form: HTMLFormElement) {
 	const fields: FieldErrors = {};
-	if (!(error instanceof ApiError)) return fields;
+	const messages: string[] = [];
+	if (!(error instanceof ApiError)) return { fields, messages };
 
 	function addField(path: string, message: string) {
 		const field = path.split(".").filter((part) => !/^\d+$/.test(part)).at(-1);
-		if (!field) return;
-		const name = fieldNames[field] ?? field;
-		if (form.elements.namedItem(name)) fields[name] = message;
+		const name = field && (fieldNames[field] ?? field);
+		if (name && form.elements.namedItem(name)) fields[name] = message;
+		else messages.push(message);
 	}
 
 	const reported = error.details?.fields;
@@ -88,14 +89,15 @@ function validationFields(error: unknown, form: HTMLFormElement): FieldErrors {
 			}
 		}
 	}
-	if (error.errorCode === "validation_error" && !reported) {
+	if (error.errorCode === "validation_error" && !reported && !Array.isArray(issues)) {
 		// The request-validation handler returns "field.path: message" entries.
 		for (const entry of error.message.split(/; (?=[\w.]+: )/)) {
 			const [prefix, path] = entry.match(/^([\w.]+): /) ?? [];
 			if (prefix) addField(path, entry.slice(prefix.length));
+			else messages.push(entry);
 		}
 	}
-	return fields;
+	return { fields, messages };
 }
 
 function ErrorDetails({ error }: { error: unknown }) {
@@ -104,10 +106,39 @@ function ErrorDetails({ error }: { error: unknown }) {
 	const displayCode = typeof code === "string" ? code : error.errorCode;
 	return (
 		<>
-			{!["RequestError", "UnknownError"].includes(displayCode) && <p>Error Code <code>{displayCode}</code></p>}
+			{!["RequestError", "UnknownError", "ValidationError", "validation_error"].includes(displayCode) && <p>Error Code <code>{displayCode}</code></p>}
 			{typeof reason === "string" && <p>{reason}</p>}
 			{typeof remedy === "string" && <p>{remedy}</p>}
 		</>
+	);
+}
+
+function BoundedList({ as: List = "ul", children, label, className }: {
+	as?: "ul" | "ol";
+	children: ReactNode;
+	label?: string;
+	className?: string;
+}) {
+	const ref = useRef<HTMLUListElement & HTMLOListElement>(null);
+	const [overflows, setOverflows] = useState(false);
+
+	useEffect(() => {
+		const list = ref.current;
+		if (!list) return;
+		const measure = () => setOverflows(list.scrollHeight > list.clientHeight);
+		measure();
+		if (typeof ResizeObserver === "undefined") return;
+		const observer = new ResizeObserver(measure);
+		observer.observe(list);
+		for (const item of list.children) observer.observe(item);
+		return () => observer.disconnect();
+	}, [children]);
+
+	return (
+		<List ref={ref} aria-label={label} tabIndex={overflows ? 0 : undefined}
+			className={`max-h-[min(16rem,40vh)] space-y-1 overflow-auto ${className ?? ""}`}>
+			{children}
+		</List>
 	);
 }
 
@@ -121,7 +152,13 @@ function CloudflareConfigurationForm({ status, onSaved, onCancel, onRefresh, bus
 	const installation = status.installation;
 	const settings = installation?.policy;
 	const [saving, setSaving] = useState(false);
-	const [failure, setFailure] = useState<{ message: string; fields: FieldErrors; cause?: unknown }>();
+	const [failure, setFailure] = useState<{
+		message: string;
+		fields: FieldErrors;
+		labels: Record<string, string>;
+		messages?: string[];
+		cause?: unknown;
+	}>();
 	const formRef = useRef<HTMLFormElement>(null);
 	const summaryRef = useRef<HTMLDivElement>(null);
 
@@ -152,9 +189,12 @@ function CloudflareConfigurationForm({ status, onSaved, onCancel, onRefresh, bus
 		if (saving || busy) return;
 		const form = event.currentTarget;
 		const fields = new FormData(form);
+		const labels: Record<string, string> = {};
 		const invalid: FieldErrors = {};
 		for (const field of form.elements) {
-			if (field instanceof HTMLInputElement && !field.validity.valid) {
+			if (!(field instanceof HTMLInputElement || field instanceof HTMLSelectElement)) continue;
+			labels[field.name] = field.labels?.[0]?.textContent?.trim() || field.name;
+			if (!field.validity.valid) {
 				invalid[field.name] = field.name === "consent"
 					? "Accept the Cloudflare terms to connect."
 					: field.validity.patternMismatch
@@ -163,7 +203,7 @@ function CloudflareConfigurationForm({ status, onSaved, onCancel, onRefresh, bus
 			}
 		}
 		if (Object.keys(invalid).length) {
-			setFailure({ message: "Review the highlighted fields.", fields: invalid });
+			setFailure({ message: "Review the highlighted fields.", fields: invalid, labels });
 			return;
 		}
 		const sharedCap = String(fields.get("shared_cap") ?? "");
@@ -206,11 +246,13 @@ function CloudflareConfigurationForm({ status, onSaved, onCancel, onRefresh, bus
 			onSaved(await configureCloudflareCapacity(request));
 		} catch (cause) {
 			const message = getErrorMessage(cause, "Could not save Cloudflare capacity.");
-			const rejected = validationFields(cause, form);
+			const { fields: rejected, messages } = validationMessages(cause, form);
 			if (message.startsWith("The estimated fleet usage is USD ")) {
 				rejected.monthly_limit = `${message}. The submitted limit was ${policy.monthly_limit_usd} USD/month. Raise the limit or reduce the fleet size or lifetime.`;
 			}
-			setFailure({ message: Object.keys(rejected).length ? "Review the highlighted fields." : message, fields: rejected, cause });
+			const summary = Object.keys(rejected).length ? "Review the highlighted fields."
+				: messages.length ? "Review the settings below." : message;
+			setFailure({ message: summary, fields: rejected, labels, messages, cause });
 		} finally {
 			setSaving(false);
 		}
@@ -219,18 +261,19 @@ function CloudflareConfigurationForm({ status, onSaved, onCancel, onRefresh, bus
 	return (
 		<form ref={formRef} className="space-y-4" noValidate onSubmit={save}>
 			{failure && (
-				<div ref={summaryRef} tabIndex={-1} role="alert" className="space-y-2 rounded-md border border-destructive p-3">
-					<h3 className="font-semibold">Cloudflare Settings Error</h3>
+				<div ref={summaryRef} tabIndex={-1} role="region" aria-labelledby="cf-settings-error" className="space-y-2 rounded-md border border-destructive p-3">
+					<h3 id="cf-settings-error" className="font-semibold">Cloudflare Settings Error</h3>
 					<p>{failure.message}</p>
 					<ErrorDetails error={failure.cause} />
-					{Object.keys(failure.fields).length > 0 && (
+					{(Object.keys(failure.fields).length > 0 || Boolean(failure.messages?.length)) && (
 						<ul className="list-disc pl-5">
+							{[...new Set(failure.messages)].map((message) => <li key={message}>{message}</li>)}
 							{Object.entries(failure.fields).map(([name, message]) => (
 								<li key={name}>
 									<button className="text-left underline" type="button" onClick={() => {
 										const field = formRef.current?.elements.namedItem(name);
 										if (field instanceof HTMLElement) field.focus();
-									}}>{message}</button>
+									}}>{failure.labels[name]}: {message}</button>
 								</li>
 							))}
 						</ul>
@@ -324,7 +367,7 @@ export function CloudflareCapacity() {
 	});
 	const [acceptedJobId, setAcceptedJobId] = useState<string>();
 	const [observedJob, setObservedJob] = useState<PlatformJob>();
-	const [localAction, setLocalAction] = useState<{ id: string; action: CloudflareAction }>();
+	const [localAction, setLocalAction] = useState<{ id: string; action: CloudflareAction | "rotate-api-token" }>();
 	const [readingJob, setReadingJob] = useState(false);
 	const [readbackFailure, setReadbackFailure] = useState<string>();
 	const readbackRef = useRef<(replace?: boolean) => void>(null);
@@ -335,6 +378,7 @@ export function CloudflareCapacity() {
 	const policyRef = useRef<HTMLButtonElement>(null);
 	const jobStatusRef = useRef<HTMLDivElement>(null);
 	const actionErrorRef = useRef<HTMLDivElement>(null);
+	const rotationAccepted = useRef(false);
 	const [rotateOpen, setRotateOpen] = useState(false);
 	const [rotating, setRotating] = useState(false);
 	const [rotateError, setRotateError] = useState<unknown>();
@@ -446,6 +490,17 @@ export function CloudflareCapacity() {
 		else if (ownJob) jobStatusRef.current?.focus();
 	}, [disconnected, ownJob, jobRefused]);
 
+	const jobAnnouncements: Partial<Record<PlatformJob["status"], string>> = {
+		queued: "The Cloudflare job is queued.",
+		succeeded: "The Cloudflare job completed.",
+		failed: "The Cloudflare job failed.",
+		cancelled: "The Cloudflare job was cancelled.",
+		requires_action: "The Cloudflare job needs your attention.",
+	};
+	const jobAnnouncement = disconnected ? "Cloudflare was disconnected."
+		: readbackFailure === jobId ? "Could not read the Cloudflare job status."
+			: job && ((terminal.has(job.status) ? job.error?.message : undefined) ?? jobAnnouncements[job.status]);
+
 	function finishConfiguration(next: CloudflareCapacityStatus) {
 		if (!installation) {
 			setAcceptedJobId(undefined);
@@ -478,6 +533,8 @@ export function CloudflareCapacity() {
 				expected_revision: installation.desired_revision,
 				api_token: candidate,
 			});
+			rotationAccepted.current = true;
+			setLocalAction({ id: accepted.job_id, action: "rotate-api-token" });
 			setAcceptedJobId(accepted.job_id);
 			setRotateOpen(false);
 			void refetch();
@@ -490,7 +547,9 @@ export function CloudflareCapacity() {
 
 	const jobPending = Boolean(canRead && jobId && (!job || !terminal.has(job.status)));
 	const busy = mutation.isPending || rotating || jobPending;
-	const readyToEnable = installation?.deployed_revision == null && !jobId;
+	const enableDisabled = busy || installation?.admission_open || installation?.upgrade_pending || installation?.desired_state === "disconnected";
+	const readyToEnable = !enableDisabled && installation?.deployed_revision == null && !jobId
+		&& installation?.spend?.state !== "budget_reached";
 	const connectionStatus =
 		installation?.desired_state === "disconnected"
 			? "Disconnecting"
@@ -558,7 +617,8 @@ export function CloudflareCapacity() {
 					/>
 				)}
 				{canRead && installation && (
-					<>
+					<section className="space-y-4" aria-labelledby="cf-installation-heading">
+						<h3 id="cf-installation-heading" className="font-semibold">Cloudflare Installation</h3>
 						<dl className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
 							<div>
 								<dt className="text-muted-foreground">
@@ -611,13 +671,13 @@ export function CloudflareCapacity() {
 								<dt className="text-muted-foreground">
 									Estimated Fleet Usage
 								</dt>
-								<dd>{installation.fleet_envelope_usd} USD</dd>
+								<dd>{installation.fleet_envelope_usd} USD/month</dd>
 							</div>
 							{installation.spend && (
 								<>
 									<div>
 										<dt className="text-muted-foreground">Estimated Bifrost Usage This UTC Month</dt>
-										<dd>{installation.spend.estimated_usd === null ? "Spend Ledger Unavailable" : `${installation.spend.estimated_usd} USD/month`}</dd>
+										<dd>{installation.spend.estimated_usd === null ? "Spend Ledger Unavailable" : `${installation.spend.estimated_usd} USD`}</dd>
 										{installation.spend.state === "budget_reached" && <dd>Estimated usage reached the monthly limit.</dd>}
 									</div>
 									<div>
@@ -633,16 +693,16 @@ export function CloudflareCapacity() {
 												<dd className="text-muted-foreground">Cloudflare Analytics samples are advisory. Bifrost tracks estimated usage in a separate ledger.</dd>
 											)}
 									</div>
-									<div>
-										<dt className="text-muted-foreground">Usage Estimate Coverage</dt>
-										<dd>
-											{Boolean(installation.spend.coverage?.length) && (
-												<ul aria-label="Usage Estimate Coverage" tabIndex={0} className="max-h-[min(16rem,40vh)] space-y-1 overflow-auto">
-													{installation.spend.coverage?.map((line) => <li key={line}>{line}</li>)}
-												</ul>
-											)}
-										</dd>
-									</div>
+									{installation.spend.coverage?.length ? (
+										<div>
+											<dt className="text-muted-foreground">Usage Estimate Coverage</dt>
+											<dd>
+												<BoundedList>
+													{installation.spend.coverage.map((line) => <li key={line}>{line}</li>)}
+												</BoundedList>
+											</dd>
+										</div>
+									) : null}
 								</>
 							)}
 						</dl>
@@ -655,7 +715,7 @@ export function CloudflareCapacity() {
 								</Button>
 								<Button
 									ref={enableRef}
-									disabled={busy || installation.admission_open || installation.upgrade_pending || installation.desired_state === "disconnected"}
+									disabled={enableDisabled}
 									onClick={() => mutation.mutate("enable")}
 								>
 									Enable
@@ -697,11 +757,19 @@ export function CloudflareCapacity() {
 										</AlertDialog>
 									</>
 								)}
-								<Dialog open={rotateOpen} onOpenChange={setRotateOpen}>
+								<Dialog open={rotateOpen} onOpenChange={(open) => {
+									if (open) rotationAccepted.current = false;
+									setRotateOpen(open);
+								}}>
 									<DialogTrigger asChild>
 										<Button variant="outline" disabled={busy}>Rotate API Token</Button>
 									</DialogTrigger>
-									<DialogContent>
+									<DialogContent onCloseAutoFocus={(event) => {
+										if (!rotationAccepted.current) return;
+										rotationAccepted.current = false;
+										event.preventDefault();
+										jobStatusRef.current?.focus();
+									}}>
 										<DialogHeader>
 											<DialogTitle>Rotate Cloudflare API Token</DialogTitle>
 											<DialogDescription>
@@ -718,7 +786,7 @@ export function CloudflareCapacity() {
 												<p>{getErrorMessage(rotateError, "Could not queue Cloudflare API token rotation.")}</p>
 												<ErrorDetails error={rotateError} />
 												{rotateError instanceof ApiError && rotateError.statusCode === 409 && (
-													<Button type="button" variant="outline" onClick={() => void refetch()}>Refresh Settings</Button>
+													<Button type="button" variant="outline" onClick={() => void refetch()}>Refresh and Review Settings</Button>
 												)}
 											</div>
 										)}
@@ -777,27 +845,27 @@ export function CloudflareCapacity() {
 								</AlertDialog>
 							</div>
 						)}
-					</>
+					</section>
 				)}
 				{mutation.error && (
-					<div ref={actionErrorRef} tabIndex={-1} role="alert" className="space-y-2">
-						<h3 className="font-semibold">Cloudflare Action Error</h3>
+					<div ref={actionErrorRef} tabIndex={-1} role="region" aria-labelledby="cf-action-error" className="space-y-2">
+						<h3 id="cf-action-error" className="font-semibold">Cloudflare Action Error</h3>
 						<p>{getErrorMessage(mutation.error, "Could not start the Cloudflare job.")}</p>
 						<ErrorDetails error={mutation.error} />
 						{mutation.error instanceof ApiError && mutation.error.statusCode === 409 && (
-							<Button variant="outline" disabled={isFetching} onClick={() => void refetch()}>Refresh and Review Settings</Button>
+							<Button variant="outline" disabled={isFetching} onClick={() => {
+								mutation.reset();
+								void refetch();
+							}}>Refresh and Review Settings</Button>
 						)}
 					</div>
 				)}
 				{canRead && jobId && (
 					<section ref={jobStatusRef} tabIndex={-1} className="space-y-2" aria-labelledby="cf-job-status-heading">
 						<h3 id="cf-job-status-heading" className="font-semibold">Cloudflare Job Status</h3>
-						<p role="status">
-							{disconnected ? "Cloudflare was disconnected."
-								: readbackFailure === jobId ? "Could not read the Cloudflare job status."
-									: job?.error?.message ?? job?.progress.phase
-										?? (job?.status === "queued" ? "The Cloudflare job is queued." : "Waiting for Cloudflare job status.")}
-						</p>
+						<p role="status" className={jobAnnouncement ? undefined : "sr-only"}>{jobAnnouncement}</p>
+						{!jobAnnouncement && !job?.progress.phase && <p>Waiting for Cloudflare job status.</p>}
+						{job?.progress.phase && job.progress.phase !== jobAnnouncement && <p>{job.progress.phase}</p>}
 						{jobPending && (
 							<Button variant="outline" disabled={readingJob} onClick={() => {
 								void refetch();
@@ -810,19 +878,19 @@ export function CloudflareCapacity() {
 						{typeof job?.result?.reason === "string" && <p>{job.result.reason}</p>}
 						{typeof job?.result?.remedy === "string" && <p>{job.result.remedy}</p>}
 						{Array.isArray(instructions) && (
-							<ol aria-label="Recovery Instructions" tabIndex={0} className="max-h-[min(16rem,40vh)] list-decimal space-y-1 overflow-auto pl-5 text-sm">
+							<BoundedList as="ol" label="Recovery Instructions" className="list-decimal pl-5 text-sm">
 								{instructions.filter((instruction): instruction is string => typeof instruction === "string")
 									.map((instruction) => <li key={instruction}>{instruction}</li>)}
-							</ol>
+							</BoundedList>
 						)}
 						{Array.isArray(legacyWorkers) && (
-							<ul aria-label="Workers Requiring Review" tabIndex={0} className="max-h-[min(16rem,40vh)] space-y-1 overflow-auto text-sm">
+							<BoundedList label="Workers Requiring Review" className="text-sm">
 								{legacyWorkers.map((worker) => (
 									<li className="break-all" key={String(worker.worker_id)}>
 										Worker {worker.worker_id} · Scope {worker.scope} · Resource UID {worker.resource_uid ?? "Unavailable"}
 									</li>
 								))}
-							</ul>
+							</BoundedList>
 						)}
 					</section>
 				)}
