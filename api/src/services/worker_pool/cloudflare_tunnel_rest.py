@@ -29,6 +29,30 @@ class IngressMismatch(OwnershipConflict):
     """The owned tunnel no longer has its approved ingress."""
 
 
+def _is_default_ingress(current: dict[str, Any]) -> bool:
+    version, config = current.get("version"), current.get("config")
+    if type(version) is not int or version not in (0, 1) or not isinstance(config, dict):
+        return False
+    if set(config) - {"ingress", "originRequest", "warp-routing"} or config.get("originRequest") not in (None, {}):
+        return False
+    warp = config.get("warp-routing")
+    if warp not in (None, {}) and (
+        not isinstance(warp, dict) or set(warp) != {"enabled"} or warp["enabled"] is not False
+    ):
+        return False
+    rules = config.get("ingress")
+    if not isinstance(rules, list) or len(rules) != 1 or not isinstance(rules[0], dict):
+        return False
+    rule = rules[0]
+    return (
+        set(rule) <= {"service", "hostname", "path", "originRequest"}
+        and rule.get("service") == "http_status:404"
+        and rule.get("hostname") in (None, "")
+        and rule.get("path") in (None, "")
+        and rule.get("originRequest") in (None, {})
+    )
+
+
 def connector_secret(token: str, account_id: str, tunnel_id: str) -> str:
     try:
         payload = json.loads(base64.b64decode(token, validate=True))
@@ -165,17 +189,18 @@ class TunnelRest(WorkersRestCleanup):
             )
         return observed
 
-    async def create_tunnel(self, intent: ResourceIntent, secret: SecretStr) -> ResourceObservation:
+    async def create_tunnel(self, intent: ResourceIntent, secret: SecretStr) -> tuple[ResourceObservation, bool]:
         observed = await self.tunnel(intent, None, secret=secret)
+        created = None
         if observed is None:
-            await self._result("POST", self.tunnels, json_body={
+            created = await self._result("POST", self.tunnels, json_body={
                 "name": intent.target.name, "config_src": "cloudflare",
                 "tunnel_secret": secret.get_secret_value(),
             })
             observed = await self.tunnel(intent, None, secret=secret)
         if observed is None:
             raise ObservationPending("Cloudflare tunnel creation has not settled")
-        return observed
+        return observed, isinstance(created, dict) and created.get("id") == observed.provider_id
 
     async def connector_token(self, tunnel_id: str) -> SecretStr:
         token = await self._result("GET", f"{self.tunnels}/{tunnel_id}/token")
@@ -196,16 +221,18 @@ class TunnelRest(WorkersRestCleanup):
             "config": {"ingress": desired, "warp-routing": {"enabled": False}},
         })
 
-    async def configure_ingress(self, tunnel: ResourceObservation, origin: str) -> None:
+    async def configure_ingress(self, tunnel: ResourceObservation, origin: str, *, freshly_created: bool = False) -> None:
         path = f"{self.tunnels}/{tunnel.provider_id}/configurations"
         desired = self.ingress(origin)
         current = await self._result("GET", path, allow_missing=True)
         if current is not None and self._matches_ingress(current, tunnel.provider_id, desired):
             return
         if current is not None and (
-            not isinstance(current, dict) or current.get("tunnel_id") != tunnel.provider_id
-            or current.get("account_id") != self.account_id or current.get("version") != 0
-            or current.get("config") not in ({}, None)
+            not self._config_identity(current, tunnel.provider_id)
+            or not (
+                (current.get("version") == 0 and current.get("config") in ({}, None))
+                or (freshly_created and _is_default_ingress(current))
+            )
         ):
             raise OwnershipConflict(
                 "Cloudflare tunnel already has a different ingress configuration",

@@ -311,7 +311,8 @@ async function provider(req, res) {
       const body = await json();
       assert.ok(!tunnel || tunnel.record.deleted_at);
       tunnel = {record: {id: randomUUID(), name: body.name, account_tag: account, config_src: body.config_src,
-        created_at: new Date().toISOString(), deleted_at: null}, secret: body.tunnel_secret, sessions: new Set()};
+        created_at: new Date().toISOString(), deleted_at: null}, secret: body.tunnel_secret, sessions: new Set(),
+        version: 1, config: {ingress: [{service: 'http_status:404'}], 'warp-routing': {enabled: false}}};
       return ok(tunnel.record);
     }
     return ok(tunnel && !tunnel.record.deleted_at ? [tunnel.record] : []);
@@ -328,8 +329,11 @@ async function provider(req, res) {
       return ok(tunnel.record);
     }
     if (suffix === '/configurations') {
-      if (method === 'PUT') tunnel.config = (await json()).config;
-      return tunnel.config ? ok({account_id: account, tunnel_id: tunnel.record.id, config: tunnel.config}) : missing();
+      if (method === 'PUT') {
+        tunnel.config = (await json()).config;
+        tunnel.version += 1;
+      }
+      return ok({account_id: account, tunnel_id: tunnel.record.id, version: tunnel.version, config: tunnel.config});
     }
     if (suffix === '/connections') {
       if (method === 'DELETE') {
