@@ -21,7 +21,7 @@ def ports(count):
             listener.close()
 
 
-def prepare(root, project, image, *, missing_tunnel_config):
+def prepare(root, project, image, *, initial_tunnel_config):
     fixture = root / ".rehearsal"
     fixture.mkdir(mode=0o755)
     site = root / "spikes/cloudflare-pyodide/dev/e2e/combined-site"
@@ -44,7 +44,7 @@ def prepare(root, project, image, *, missing_tunnel_config):
         "address": address, "subnet": inspection["IPAM"]["Config"][0]["Subnet"],
         "edgePort": edge, "providerPort": provider, "cert": str(fixture / "edge.pem"), "key": str(fixture / "edge.key"),
         "ready": str(fixture / "ready"), "project": project, "image": image, "network": network,
-        "missingTunnelConfig": missing_tunnel_config,
+        "initialTunnelConfig": initial_tunnel_config,
     }
     (fixture / "config.json").write_text(json.dumps(cfg))
     (fixture / "connector.json").write_text(json.dumps({"base": f"http://{address}:{provider}/local/tunnel-"}))
@@ -131,9 +131,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("project")
     parser.add_argument("image")
-    parser.add_argument("--missing-tunnel-config", action="store_true", help="Return 404 until tunnel ingress is written")
+    variants = parser.add_mutually_exclusive_group()
+    variants.add_argument("--missing-tunnel-config", dest="initial_tunnel_config", action="store_const", const="http_404",
+                          help="Return HTTP 404 until tunnel ingress is written")
+    variants.add_argument("--default-tunnel-config", dest="initial_tunnel_config", action="store_const", const="default_404",
+                          help="Return a single 404 catch-all before tunnel ingress is written")
+    parser.set_defaults(initial_tunnel_config="version_zero")
     args = parser.parse_args()
     root = Path.cwd()
     if not root.name.startswith("combined-local-") or root.stat().st_mode & 0o077:
         parser.error("Use a fresh private combined-local-* archive")
-    prepare(root, args.project, args.image, missing_tunnel_config=args.missing_tunnel_config)
+    prepare(root, args.project, args.image, initial_tunnel_config=args.initial_tunnel_config)

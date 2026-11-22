@@ -13,7 +13,7 @@ const require = createRequire(new URL('../tenant-workers/package.json', import.m
 const {Miniflare} = createRequire(require.resolve('wrangler'))('miniflare');
 const {WebSocket, WebSocketServer} = require('ws');
 const config = JSON.parse(readFileSync(process.argv[2], 'utf8'));
-const initialTunnelVersion = config.missingTunnelConfig ? 0 : 1;
+const initialTunnelVersion = config.initialTunnelConfig === 'default_404' ? 1 : 0;
 const account = 'a'.repeat(32);
 const zone = 'b'.repeat(32);
 const management = 'local-rehearsal-management-token';
@@ -314,7 +314,7 @@ async function provider(req, res) {
       tunnel = {record: {id: randomUUID(), name: body.name, account_tag: account, config_src: body.config_src,
         created_at: new Date().toISOString(), deleted_at: null}, secret: body.tunnel_secret, sessions: new Set(),
         version: initialTunnelVersion, config: null};
-      if (!config.missingTunnelConfig) {
+      if (initialTunnelVersion === 1) {
         tunnel.config = {ingress: [{service: 'http_status:404'}], 'warp-routing': {enabled: false}};
       }
       return ok(tunnel.record);
@@ -338,10 +338,11 @@ async function provider(req, res) {
         tunnel.version += 1;
       }
       if (method === 'GET' && tunnel.version === initialTunnelVersion) {
-        event('initial-tunnel-config', {shape: tunnel.config === null ? 'missing' : 'default_404'});
+        event('initial-tunnel-config', {shape: config.initialTunnelConfig});
       }
-      if (tunnel.config === null) return missing();
-      return ok({account_id: account, tunnel_id: tunnel.record.id, version: tunnel.version, config: tunnel.config});
+      if (tunnel.config === null && config.initialTunnelConfig === 'http_404') return missing();
+      return ok({tunnel_id: tunnel.record.id, created_at: tunnel.record.created_at, source: 'cloudflare',
+        version: tunnel.version, config: tunnel.config});
     }
     if (suffix === '/connections') {
       if (method === 'DELETE') {

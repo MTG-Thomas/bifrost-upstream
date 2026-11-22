@@ -195,11 +195,11 @@ class _TunnelAPI:
     dns_id = "c" * 32
     tunnel_id = "20000000-0000-4000-8000-000000000001"
 
-    def __init__(self, *, missing_configuration=False):
+    def __init__(self, *, initial_configuration="version_zero"):
         self.tunnel = None
         self.dns = None
         self.config = None
-        self.missing_configuration = missing_configuration
+        self.initial_configuration = initial_configuration
         self.config_version = 0
         self.secret = None
         self.connectors = []
@@ -248,7 +248,7 @@ class _TunnelAPI:
                 "id": self.tunnel_id, "name": body["name"], "account_tag": self.account,
                 "config_src": body["config_src"], "created_at": "fixture-create", "deleted_at": None,
             }
-            if not self.missing_configuration:
+            if self.initial_configuration == "default_404":
                 self.config = {"ingress": [{"service": "http_status:404"}], "warp-routing": {"enabled": False}}
                 self.config_version = 1
             raise httpx.ReadError("lost tunnel create response", request=request)
@@ -276,10 +276,10 @@ class _TunnelAPI:
             self.connectors.remove(connector)
             return result({})
         if path == tunnel + "/configurations" and method == "GET":
-            if self.config is None:
+            if self.config_version == 0 and self.initial_configuration == "http_404":
                 return httpx.Response(404)
             return result({
-                "account_id": self.account, "tunnel_id": self.tunnel_id,
+                "source": "cloudflare", "created_at": "fixture-create", "tunnel_id": self.tunnel_id,
                 "version": self.config_version, "config": self.config,
             })
         if path == tunnel + "/configurations" and method == "PUT":
@@ -378,7 +378,7 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
         monkeypatch.setattr(cloudflare_connector_channel, "in_cluster_namespace", lambda: "test")
         monkeypatch.setattr(cloudflare_connector_channel, "KubernetesJobClient",
                             lambda **kwargs: KubernetesJobClient(http_client=kube, **kwargs))
-        provider = _TunnelAPI(missing_configuration=layout == "kustomize")
+        provider = _TunnelAPI(initial_configuration="http_404" if layout == "kustomize" else "version_zero")
         async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
             client = cloudflare_tunnel.adapter(http, installation, SecretStr("synthetic-cloudflare-management-token"))
             actor = str(OPERATOR_ID)
@@ -394,14 +394,15 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
                 {"hostname": "workers.example.test", "service": origin}, {"service": "http_status:404"},
             ], "warp-routing": {"enabled": False}}
             if layout == "compose":
-                assert default == {"ingress": [{"service": "http_status:404"}], "warp-routing": {"enabled": False}}
-                approved = provider.config
+                assert default is None and provider.config_version == 1
+                approved, version = provider.config, provider.config_version
                 provider.config = default
+                provider.config_version = 0
                 with pytest.raises(OwnershipConflict) as conflict:
                     await change(cloudflare_tunnel.provision_tunnel, client)
                 assert conflict.value.check == OwnershipCheck.INGRESS_OCCUPIED
                 assert provider.config == default
-                provider.config = approved
+                provider.config, provider.config_version = approved, version
             with pytest.raises(CloudflareRestUnavailable):
                 await change(cloudflare_tunnel.provision_dns, client, actor=actor)
             with pytest.raises(CloudflareRestUnavailable):
@@ -617,7 +618,7 @@ async def test_managed_tunnel_disconnect_preserves_foreign_dns(db_session, insta
     installation.reachability_mode = "managed_tunnel"
     installation.zone_id = _TunnelAPI.zone
     monkeypatch.setattr(cloudflare_tunnel, "get_settings", lambda: SimpleNamespace(cloudflare_tunnel_channel="compose"))
-    provider = _TunnelAPI()
+    provider = _TunnelAPI(initial_configuration="default_404")
     foreign = {"name": "workers.example.test", "type": "CNAME", "comment": "foreign", "content": "foreign.example.test"}
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
         client = cloudflare_tunnel.adapter(http, installation, SecretStr("synthetic-cloudflare-management-token"))

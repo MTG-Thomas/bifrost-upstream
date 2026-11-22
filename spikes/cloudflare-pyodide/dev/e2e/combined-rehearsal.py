@@ -459,7 +459,7 @@ async def {name}():
     def managed(self):
         self.connect("managed")
         self.enable()
-        initial_shape = "missing" if self.cfg.get("missingTunnelConfig") else "default_404"
+        initial_shape = self.cfg["initialTunnelConfig"]
         assert {"kind": "initial-tunnel-config", "shape": initial_shape} in self.provider("/local/evidence")
         root = "/client/v4/accounts/" + "a"*32
         tunnel, = self.provider(root + "/cfd_tunnel")

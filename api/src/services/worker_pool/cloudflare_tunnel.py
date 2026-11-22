@@ -148,7 +148,7 @@ async def provision_tunnel(
         receipt = await client.create_tunnel(
             _intent(item), await _credential(db, _ref(row, "tunnel_secret", 1)),
         )
-        await client.configure_ingress(receipt, tunnel_origin(), allow_default=True)
+        await client.configure_ingress(receipt, tunnel_origin(), allow_unconfigured=True)
     else:
         if await client.tunnel(receipt.intent, receipt) is None:
             raise ObservationPending("The recorded Cloudflare tunnel is absent")

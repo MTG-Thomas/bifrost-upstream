@@ -188,10 +188,11 @@ is ingress drift and requires repair. A conflict reports the version,
 recognized keys, rule count, and service categories. Unknown keys are
 reported as `other`; provider IDs, hostnames and rule values are omitted.
 
-The local provider also supports a configuration-read 404 through
-`combined-stack.py --missing-tunnel-config`. Use `combined-rehearsal.py
---managed-only` to exercise items 6–8 and final teardown on a fresh
-stack with either initial response.
+The local provider starts with version 0 and a null configuration.
+`combined-stack.py --default-tunnel-config` starts with the catch-all.
+`combined-stack.py --missing-tunnel-config` returns HTTP 404 before
+ingress is written. Use `combined-rehearsal.py --managed-only` to
+exercise items 6–8 and final teardown with each response.
 
 CT128 exercised combined items 6–8 at `a580a0b70` with both pinned
 release packages and internal-only fixtures. The Managed Tunnel stub
@@ -220,3 +221,27 @@ rotation remain unqualified on this run. Disconnect verified the tunnel
 tombstone, zero sessions, and DNS and token absence.
 
 See the [sanitized Managed-only receipt](../../results/cloudflare-scaleout-managed-hosted-a922.json).
+
+The configuration GET schema marks `account_id`, `tunnel_id`, `config`,
+and `version` optional. The request path selects the exact account and
+tunnel. Bifrost checks both identifiers when echoed, and initializes
+version 0 with a null or absent config only during initial provisioning.
+A recorded receipt must match the approved ingress or use the fenced
+repair path. [Cloudflare configuration GET](https://developers.cloudflare.com/api/resources/zero_trust/subresources/tunnels/subresources/cloudflared/subresources/configurations/methods/get/)
+
+The tunnel read accepts an omitted account tag on the scoped path and
+uses `remote_config: true` only when `config_src` is absent. The
+connector read can use one consistent nested `client_id` if the parent
+ID is omitted. The filtered route read treats a row with no echoed
+tunnel ID as a route on the selected tunnel and blocks admission.
+[Tunnel GET](https://developers.cloudflare.com/api/resources/zero_trust/subresources/tunnels/subresources/cloudflared/methods/get/) ·
+[Connections GET](https://developers.cloudflare.com/api/resources/zero_trust/subresources/tunnels/subresources/cloudflared/subresources/connections/methods/get/) ·
+[Routes GET](https://developers.cloudflare.com/api/resources/zero_trust/subresources/networks/subresources/routes/methods/list/)
+
+DNS retains its exact CNAME, record ID, modification time, and
+ownership comment checks. The connector token endpoint returns a
+string. The decoded token still proves the account, tunnel, and
+creation or rotation secret. Connect checks the account entitlement
+with the supplied management token. [DNS record GET](https://developers.cloudflare.com/api/resources/dns/subresources/records/methods/get/) ·
+[Connector token GET](https://developers.cloudflare.com/api/resources/zero_trust/subresources/tunnels/subresources/cloudflared/subresources/token/methods/get/) ·
+[cloudflared token fields](https://github.com/cloudflare/cloudflared/blob/2026.11.1/connection/connection.go)
