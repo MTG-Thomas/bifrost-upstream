@@ -24,9 +24,20 @@ describe("Cloudflare capacity service", () => {
 			consent_text_version: "existing-https-v1",
 			installation: null,
 		};
-		mocks.get.mockResolvedValue({ data: status });
+		mocks.get.mockResolvedValue({ data: status, response: { ok: true, status: 200 } });
 		await expect(getCloudflareCapacity()).resolves.toBe(status);
 		expect(mocks.get).toHaveBeenCalledWith("/api/capacity/cloudflare");
+	});
+
+	it("preserves the response status on a failed capacity read", async () => {
+		mocks.get.mockResolvedValue({
+			error: { detail: "Platform access is required." },
+			response: { ok: false, status: 403 },
+		});
+		await expect(getCloudflareCapacity()).rejects.toMatchObject({
+			message: "Platform access is required.",
+			statusCode: 403,
+		});
 	});
 
 	it.each(["enable", "reconcile", "upgrade", "scale-in", "disconnect"] as const)(
@@ -51,13 +62,14 @@ describe("Cloudflare capacity service", () => {
 	it("reports a changed installation rather than retrying an action", async () => {
 		mocks.post.mockResolvedValue({
 			error: { detail: "Cloudflare installation changed." },
+			response: { status: 409 },
 		});
 		await expect(
 			startCloudflareAction("scale-in", {
 				installation_id: "installation-id",
 				expected_revision: 1,
 			}),
-		).rejects.toThrow("Cloudflare installation changed.");
+		).rejects.toMatchObject({ message: "Cloudflare installation changed.", statusCode: 409 });
 		expect(mocks.post).toHaveBeenCalledTimes(1);
 	});
 
@@ -84,6 +96,17 @@ describe("Cloudflare capacity service", () => {
 			});
 		},
 	);
+
+	it("preserves structured validation details without using the submitted input as the message", async () => {
+		const issue = { loc: ["body", "connect", "api_token"], msg: "Invalid token format.", input: "synthetic-secret", type: "value_error" };
+		mocks.patch.mockResolvedValue({ error: { detail: [issue] }, response: { status: 422 } });
+		await expect(configureCloudflareCapacity({ action: "connect" } as never)).rejects.toMatchObject({
+			errorCode: "ValidationError",
+			statusCode: 422,
+			message: "connect.api_token: Invalid token format.",
+			details: { validation_errors: [issue] },
+		});
+	});
 
 	it("patches the observed revision and policy", async () => {
 		const body = {
