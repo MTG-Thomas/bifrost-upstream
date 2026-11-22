@@ -28,6 +28,7 @@ from src.models.contracts.cloudflare_approval import (
     CloudflareApprovalOptions,
     CloudflareApprovalReview,
     CloudflareApprovalState,
+    CloudflareApprovalStatus,
     StoredCloudflareReview,
 )
 from src.models.orm import CloudflareApproval, Workflow
@@ -113,9 +114,8 @@ async def _state(
         ):
             state.status = "approved"
     if include_review:
-        snapshot = CloudflareApproval.declaration
-        if not include_sources:
-            snapshot = snapshot.op("-")("sources")
+        review_data = CloudflareApproval.declaration
+        snapshot = review_data if include_sources and can_manage else review_data.op("-")("sources")
         stored = await db.scalar(select(snapshot).where(
             CloudflareApproval.workflow_id == workflow.id, CloudflareApproval.is_review,
             CloudflareApproval.policy_version == POLICY_VERSION,
@@ -197,11 +197,12 @@ async def list_approvals(db: AsyncSession, user: UserPrincipal) -> CloudflareApp
             scope="provider" if owner == PROVIDER_ORG_ID else "global" if owner is None else "organization",
             status=state.status, has_proposal=state.proposal is not None,
         ))
+    statuses: tuple[CloudflareApprovalStatus, ...] = (
+        "approved", "pending_review", "revision_changed", "ineligible", "temporarily_unavailable",
+    )
     counts = Counter(item.status for item in items)
     return CloudflareApprovalList(
-        counts={key: counts[key] for key in (
-            "approved", "pending_review", "revision_changed", "ineligible", "temporarily_unavailable",
-        )},
+        counts={key: counts[key] for key in statuses},
         workflows=items,
         can_propose=can_propose,
     )

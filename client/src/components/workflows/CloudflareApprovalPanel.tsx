@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import {
 	ApprovalReviewError,
 	acceptCloudflareApproval,
+	defaultApprovalOptions,
 	getCloudflareApproval,
 	proposeCloudflareApproval,
 	revokeCloudflareApproval,
@@ -99,12 +100,12 @@ export function CloudflareApprovalPanel({ workflowId, onChange }: {
 						<div className="space-y-1.5">
 							<Label htmlFor={`${id}-subrequests`}>Subrequest Allowance</Label>
 							<Input id={`${id}-subrequests`} name="subrequests" type="number" min={0} max={50} required
-								defaultValue={(state.proposal ?? state.current_declaration)?.subrequest_allowance ?? 10} />
+								defaultValue={(state.proposal ?? state.current_declaration)?.subrequest_allowance ?? defaultApprovalOptions.subrequest_allowance} />
 						</div>
 						<div className="space-y-1.5">
 							<Label htmlFor={`${id}-cpu`}>CPU Budget (ms)</Label>
 							<Input id={`${id}-cpu`} name="cpu" type="number" min={1} required
-								defaultValue={(state.proposal ?? state.current_declaration)?.cpu_budget_ms ?? 1000} />
+								defaultValue={(state.proposal ?? state.current_declaration)?.cpu_budget_ms ?? defaultApprovalOptions.cpu_budget_ms} />
 						</div>
 						{state.can_manage && (
 							<div className="space-y-1.5 sm:col-span-2">

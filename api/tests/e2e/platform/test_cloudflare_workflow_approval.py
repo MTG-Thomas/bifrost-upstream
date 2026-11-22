@@ -88,13 +88,21 @@ async def test_workflow_approval_rest_enforces_global_operator_and_audits_revisi
         role = await world.role("workflows.read")
         await world.assign(reader, role.id, ("organization", org.id))
         outsider = await world.person(await world.organization())
-        provider = await world.person(await world.organization(provider=True))
+        provider_org = await world.organization(provider=True)
+        provider = await world.person(provider_org)
+        provider_workflow = await world.workflow(provider_org)
+        await world.assign(admin, role.id, ("organization", provider_org.id))
         workflow = await world.workflow(org)
         foreign = await world.workflow(await world.organization())
         global_workflow = await world.workflow(org)
         global_workflow.organization_id = None
         fast_path = await world.workflow(org, execution_lane="fast_path")
-        foreign_id, global_id, fast_path_id = map(str, (foreign.id, global_workflow.id, fast_path.id))
+        foreign_id, global_id, fast_path_id, provider_id = map(
+            str, (foreign.id, global_workflow.id, fast_path.id, provider_workflow.id),
+        )
+        global_uuid = global_workflow.id
+        global_path = global_workflow.path
+        global_source = f"def {global_workflow.function_name}(): return 42\n"
         workflow.path = f"workflows/wildcard_{workflow.id.hex}.py"
         workflow.function_name = "run"
         path = workflow.path
@@ -116,6 +124,7 @@ async def test_workflow_approval_rest_enforces_global_operator_and_audits_revisi
             await world.session.commit()
 
         try:
+            await index.write(global_path, global_source.encode())
             await write_source("original")
             async with httpx.AsyncClient(base_url=e2e_api_url, timeout=30) as client:
                 admin_headers, reader_headers = await headers(admin), await headers(reader)
@@ -125,7 +134,7 @@ async def test_workflow_approval_rest_enforces_global_operator_and_audits_revisi
                 listing.raise_for_status()
                 listed = listing.json()
                 ids = [item["workflow_id"] for item in listed["workflows"]]
-                assert ids.index(global_id) < ids.index(str(workflow_id))
+                assert ids.index(provider_id) < ids.index(global_id) < ids.index(str(workflow_id))
                 assert foreign_id not in ids
                 assert next(item for item in listed["workflows"] if item["workflow_id"] == fast_path_id)["status"] == "ineligible"
                 assert sum(listed["counts"].values()) == len(ids)
@@ -142,11 +151,20 @@ async def test_workflow_approval_rest_enforces_global_operator_and_audits_revisi
                 for actor in (reader_headers, provider_headers):
                     assert (await client.post(f"{endpoint}/propose", json=options, headers=actor)).status_code == 403
                 assert (await client.post(f"{endpoint}/propose", json=wildcard, headers=provider_headers)).status_code == 403
+                global_endpoint = f"/api/workflows/{global_id}/cloudflare-approval"
+                global_review = await client.post(f"{global_endpoint}/propose", json=options, headers=admin_headers)
+                global_review.raise_for_status()
+                global_sha = global_review.json()["proposal"]["review_sha256"]
+                assert global_review.json()["proposal_sources"][global_path] == global_source
+                global_accept = {**options, "review_sha256": global_sha}
                 assert (await client.post(
-                    f"/api/workflows/{global_id}/cloudflare-approval/accept",
-                    json={**options, "review_sha256": "a" * 64},
-                    headers=reader_headers,
+                    f"{global_endpoint}/accept", json=global_accept, headers=provider_headers,
                 )).status_code == 403
+                accepted_global = await client.post(
+                    f"{global_endpoint}/accept", json=global_accept, headers=admin_headers,
+                )
+                accepted_global.raise_for_status()
+                assert accepted_global.json()["status"] == "approved"
                 review = await client.post(f"{endpoint}/propose", json={}, headers=admin_headers)
                 review.raise_for_status()
                 persisted = (await client.get(endpoint, headers=admin_headers)).json()
@@ -210,7 +228,8 @@ async def test_workflow_approval_rest_enforces_global_operator_and_audits_revisi
         finally:
             await world.session.rollback()
             await index.delete(path)
-            await world.session.execute(delete(AuditLog).where(AuditLog.resource_id == workflow_id))
+            await index.delete(global_path)
+            await world.session.execute(delete(AuditLog).where(AuditLog.resource_id.in_((workflow_id, global_uuid))))
             await world.session.commit()
 
 

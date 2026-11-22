@@ -7,6 +7,15 @@ caller's own items.
 
 | Intent | CLI | MCP | Scope |
 |---|---|---|---|
+| `capacity.cloudflare_configure` | `bifrost capacity cloudflare connect` | `bifrost_cloudflare_policy_update` | `platform.readwrite` |
+| `capacity.cloudflare_credential_stage` | `bifrost capacity cloudflare stage-credential` | — | `platform.readwrite` |
+| `capacity.cloudflare_status` | `bifrost capacity cloudflare status` | `bifrost_cloudflare_capacity_get` | `platform.read` |
+| `capacity.cloudflare_scale_in` | `bifrost capacity cloudflare scale-in` | `bifrost_cloudflare_scale_in_execute` | `platform.readwrite` |
+| `capacity.cloudflare_disconnect` | `bifrost capacity cloudflare disconnect` | `bifrost_cloudflare_disconnect_execute` | `platform.readwrite` |
+| `capacity.cloudflare_rotate_account_token` | `bifrost capacity cloudflare rotate` | `bifrost_cloudflare_worker_credential_replace` | `platform.readwrite` |
+| `capacity.cloudflare_enable` | `bifrost capacity cloudflare enable` | `bifrost_cloudflare_enable_execute` | `platform.readwrite` |
+| `capacity.cloudflare_reconcile` | `bifrost capacity cloudflare reconcile` | `bifrost_cloudflare_reconcile_execute` | `platform.readwrite` |
+| `capacity.cloudflare_upgrade` | `bifrost capacity cloudflare upgrade` | `bifrost_cloudflare_upgrade_execute` | `platform.readwrite` |
 | `users.defaults.get` | `bifrost users defaults get` | `bifrost_base_role_default_get` | `roleassignments.read`, `settings.read`, `organizations.read` |
 | `users.defaults.update` | `bifrost users defaults set` | `bifrost_base_role_default_update` | `settings.readwrite`, `organizations.readwrite`, `userlifecycle.readwrite` |
 | `productupdates.get` | — | — | `settings.read` |
@@ -36,6 +45,11 @@ caller's own items.
 | `apps.validate` | `bifrost apps validate` | `bifrost_app_validate` | `apps.readbasic` |
 | `apps.publish` | `bifrost apps publish` | `bifrost_app_publish` | `apps.publish` |
 | `platform.jobs.get` | `bifrost platform-jobs get` | `bifrost_platform_job_get` | `platformjobs.read.all` (only for other people's items) |
+| `workflows.cloudflare_approval.list` | `bifrost workflows cloudflare-approval list` | `bifrost_workflow_cloudflare_approval_list` | `workflows.read`, `platform.readwrite` |
+| `workflows.cloudflare_approval.status` | `bifrost workflows cloudflare-approval status` | `bifrost_workflow_cloudflare_approval_status` | `workflows.read`, `platform.readwrite` |
+| `workflows.cloudflare_approval.propose` | `bifrost workflows cloudflare-approval propose` | `bifrost_workflow_cloudflare_approval_propose` | `platform.readwrite` |
+| `workflows.cloudflare_approval.accept` | `bifrost workflows cloudflare-approval accept` | `bifrost_workflow_cloudflare_approval_accept` | `platform.readwrite` |
+| `workflows.cloudflare_approval.revoke` | `bifrost workflows cloudflare-approval revoke` | `bifrost_workflow_cloudflare_approval_revoke` | `platform.readwrite` |
 | `workflows.conversions.create` | `bifrost workflows convert analyze` | `bifrost_workflow_conversion_create` | `settings.read` |
 | `workflows.conversions.get` | `bifrost workflows convert report` | `bifrost_workflow_conversion_get` | `settings.read` |
 | `workflows.conversions.update` | `bifrost workflows convert apply` | `bifrost_workflow_conversion_update` | `settings.readwrite` |

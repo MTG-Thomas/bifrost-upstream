@@ -12,7 +12,7 @@ vi.mock("@/services/cloudflare-approval", async (importOriginal) => ({
 	proposeCloudflareApproval: vi.fn(),
 }));
 
-it("lists scoped counts and generates a proposal with server defaults", async () => {
+it("lists scoped counts and generates a proposal with the default budgets", async () => {
 	const state = { status: "pending_review", can_manage: true } as const;
 	vi.mocked(listCloudflareApprovals).mockResolvedValue({
 		counts: { pending_review: 1, approved: 0, ineligible: 0, revision_changed: 0, temporarily_unavailable: 0 },
@@ -30,6 +30,6 @@ it("lists scoped counts and generates a proposal with server defaults", async ()
 	expect(await screen.findByText("Temporarily Unavailable")).toBeVisible();
 	await user.click(screen.getByRole("button", { name: "Review Eligible Workflows" }));
 	await user.click(screen.getByRole("button", { name: "Generate Proposal for Global Workflow" }));
-	expect(proposeCloudflareApproval).toHaveBeenCalledWith("workflow", {});
+	expect(proposeCloudflareApproval).toHaveBeenCalledWith("workflow", { subrequest_allowance: 10, cpu_budget_ms: 1000 });
 	expect(await screen.findByRole("dialog", { name: "Global Workflow" })).toBeVisible();
 });

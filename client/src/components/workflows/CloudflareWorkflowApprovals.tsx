@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { listCloudflareApprovals, proposeCloudflareApproval, type ApprovalList } from "@/services/cloudflare-approval";
+import { defaultApprovalOptions, listCloudflareApprovals, proposeCloudflareApproval, type ApprovalList } from "@/services/cloudflare-approval";
 import { approvalStatuses, CloudflareApprovalPanel } from "./CloudflareApprovalPanel";
 
 const queryKey = ["cloudflare-approval-list"];
@@ -21,7 +21,7 @@ export function CloudflareWorkflowApprovals() {
 	const [selected, setSelected] = useState<Workflow>();
 	const refresh = () => void queryClient.invalidateQueries({ queryKey });
 	const generate = useMutation({
-		mutationFn: (workflow: Workflow) => proposeCloudflareApproval(workflow.workflow_id, {}),
+		mutationFn: (workflow: Workflow) => proposeCloudflareApproval(workflow.workflow_id, defaultApprovalOptions),
 		onSuccess: (state, workflow) => {
 			queryClient.setQueryData(["cloudflare-approval", workflow.workflow_id], state);
 			refresh();

@@ -2418,6 +2418,70 @@
           "path": [
             "workflows",
             "cloudflare-approval",
+            "list"
+          ],
+          "status": "exact_parity"
+        },
+        "manifest": {
+          "entity": null,
+          "status": "intentionally_unsupported"
+        },
+        "mcp": {
+          "name": "bifrost_workflow_cloudflare_approval_list",
+          "status": "exact_parity"
+        },
+        "rest": {
+          "operation_id": "workflows.cloudflare_approval.list",
+          "status": "exact_parity"
+        },
+        "sdk": {
+          "binding": null,
+          "status": "intentionally_unsupported"
+        }
+      },
+      "operation": {
+        "action_scopes": [
+          "workflows.read",
+          "platform.readwrite"
+        ],
+        "async_policy": "synchronous",
+        "audit_event": null,
+        "authorization_resolver": "Workflow read or human Global platform.readwrite, constrained to workflow reach",
+        "cli": {
+          "path": [
+            "workflows",
+            "cloudflare-approval",
+            "list"
+          ]
+        },
+        "exclusions": {
+          "manifest": "Cloudflare approval binds source and operator authority in the current environment.",
+          "native_builder": "Cloudflare approval review is an interactive workflow operation.",
+          "sdk": "Cloudflare approval review is an interactive workflow operation."
+        },
+        "manifest": null,
+        "mcp": {
+          "name": "bifrost_workflow_cloudflare_approval_list"
+        },
+        "native_builder": false,
+        "operation_id": "workflows.cloudflare_approval.list",
+        "rest": {
+          "method": "GET",
+          "path": "/api/workflows/cloudflare-approvals",
+          "request_model": null,
+          "response_model": "CloudflareApprovalList"
+        },
+        "side_effects": [],
+        "summary": "List workflow Cloudflare approval states and counts",
+        "target_kind": "collection"
+      }
+    },
+    {
+      "observed": {
+        "cli": {
+          "path": [
+            "workflows",
+            "cloudflare-approval",
             "status"
           ],
           "status": "exact_parity"
@@ -2446,7 +2510,7 @@
         ],
         "async_policy": "synchronous",
         "audit_event": null,
-        "authorization_resolver": "Workflow read permission at the owning scope or human Global platform.readwrite",
+        "authorization_resolver": "Workflow read or human Global platform.readwrite, constrained to workflow reach",
         "cli": {
           "path": [
             "workflows",
@@ -2509,7 +2573,7 @@
         ],
         "async_policy": "synchronous",
         "audit_event": null,
-        "authorization_resolver": "Human Global platform.readwrite",
+        "authorization_resolver": "Human Global platform.readwrite and workflow reach",
         "cli": {
           "path": [
             "workflows",
@@ -2534,7 +2598,9 @@
           "request_model": "CloudflareApprovalOptions",
           "response_model": "CloudflareApprovalState"
         },
-        "side_effects": [],
+        "side_effects": [
+          "store a non-executable workflow proposal"
+        ],
         "summary": "Analyze workflow source and generate a Cloudflare approval proposal",
         "target_kind": "resource"
       }
@@ -2572,7 +2638,7 @@
         ],
         "async_policy": "synchronous",
         "audit_event": "workflow.cloudflare_approval.accept",
-        "authorization_resolver": "Human Global platform.readwrite and a current reviewed digest",
+        "authorization_resolver": "Human Global platform.readwrite, workflow reach, and a current reviewed digest",
         "cli": {
           "path": [
             "workflows",
@@ -2637,7 +2703,7 @@
         ],
         "async_policy": "synchronous",
         "audit_event": "workflow.cloudflare_approval.revoke",
-        "authorization_resolver": "Human Global platform.readwrite",
+        "authorization_resolver": "Human Global platform.readwrite and workflow reach",
         "cli": {
           "path": [
             "workflows",
@@ -11597,10 +11663,10 @@
     }
   ],
   "counts": {
-    "cli": 199,
+    "cli": 200,
     "manifest": 16,
-    "mcp": 115,
-    "rest": 738,
+    "mcp": 116,
+    "rest": 739,
     "sdk": 21
   },
   "schema_version": 1,

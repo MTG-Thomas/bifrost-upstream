@@ -2271,6 +2271,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workflows/cloudflare-approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Workflow Cloudflare Approvals */
+        get: operations["workflows.cloudflare_approval.list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workflows/usage-stats": {
         parameters: {
             query?: never;
@@ -16469,11 +16486,52 @@ export interface components {
             /** Column */
             column?: number | null;
         };
+        /** CloudflareApprovalList */
+        CloudflareApprovalList: {
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Workflows */
+            workflows: components["schemas"]["CloudflareApprovalListItem"][];
+            /** Can Propose */
+            can_propose: boolean;
+        };
+        /** CloudflareApprovalListItem */
+        CloudflareApprovalListItem: {
+            /**
+             * Workflow Id
+             * Format: uuid
+             */
+            workflow_id: string;
+            /** Name */
+            name: string;
+            /** Organization Id */
+            organization_id: string | null;
+            /**
+             * Scope
+             * @enum {string}
+             */
+            scope: "provider" | "global" | "organization";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "approved" | "pending_review" | "revision_changed" | "ineligible" | "temporarily_unavailable";
+            /** Has Proposal */
+            has_proposal: boolean;
+        };
         /** CloudflareApprovalOptions */
         CloudflareApprovalOptions: {
-            /** Subrequest Allowance */
+            /**
+             * Subrequest Allowance
+             * @default 10
+             */
             subrequest_allowance: number;
-            /** Cpu Budget Ms */
+            /**
+             * Cpu Budget Ms
+             * @default 1000
+             */
             cpu_budget_ms: number;
             /** Https Hosts */
             https_hosts?: string[];
@@ -16543,6 +16601,10 @@ export interface components {
             current_revision?: string | null;
             current_declaration?: components["schemas"]["ApprovalDeclaration"] | null;
             proposal?: components["schemas"]["CloudflareApprovalReview"] | null;
+            /** Proposal Sources */
+            proposal_sources?: {
+                [key: string]: string;
+            } | null;
             /** Diagnostics */
             diagnostics?: components["schemas"]["CloudflareApprovalDiagnostic"][];
         };
@@ -37408,6 +37470,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "workflows.cloudflare_approval.list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CloudflareApprovalList"];
                 };
             };
         };
