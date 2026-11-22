@@ -566,6 +566,28 @@ and 20. The deadline-aware launcher uses the verified per-second binding
 multiplied by its admitted lifetime. The SDK limit continues to use the
 existing hosted SDK reference.
 
+The 128 SQLite writes, 64 DO requests and 64 log events per second are
+the priced fleet-envelope allowances used to set lifetime caps. The
+hour-long soak's highest observed interval rates were 4.27, 0.40 and
+0.13 per second, respectively. A tighter allowance based on those samples
+would require a separate meter requalification.
+
+The runtime rebuild started with the verified Phase 5b generated artifact
+at SHA-256 fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5.
+For each of src/services/execution/engine.py and
+src/services/execution/worker.py, the embedded source was compared with the
+file from df89f461c. CPython 3.14.4 then recompiled the baseline with
+py_compile using UNCHECKED_HASH, magic 2b0e0d0a and dfile set to
+/session/metadata/ plus the module path. Both baseline bytecode entries
+matched byte for byte. With the same settings, the sources from 9b4067d99
+and their recompiled __pycache__ entries replaced those four entries in
+the module map. All other values and the original key order were retained.
+The Node serializer emitted one LF-delimited JSON-encoded key and tagged
+value per line into the existing ES-module envelope, with the header
+"// Precompiled (sourceless-vendor), with recompiled execution timing modules."
+This produced the 22,020,012-byte artifact at SHA-256
+11ade0a1ea1b117d577803cff87d1c3c4074d793df5bcb17a9f473923e55f254.
+
 #### Hosted SDK Measurement
 
 The hosted reference used manifest

@@ -471,9 +471,21 @@
       "notes": "The local workerd process used the verified Pyodide disk cache with Docker network none. The draft modules matched both final packages byte for byte."
     },
     "meter_cadence": {
-      "command": "BIFROST_QUALIFIED_CONTROLLER_POLLS=170 node --test spikes/cloudflare-pyodide/dev/tenant-workers/capacity-workerd.test.mjs",
-      "fixture": "Draft launcher, gateway and capacity modules matching both release packages.",
-      "disposition": "The targeted launcher lifecycle passed and sealed usage. Sibling cases expecting the source-mode probe and canary fixtures failed under the packaged fixture. The normal Node suite passed every sibling case."
+      "source": "47e9ecf3e",
+      "command": "BIFROST_QUALIFIED_CONTROLLER_POLLS=170 node --test --test-name-pattern='prepare, start, signed hello' spikes/cloudflare-pyodide/dev/tenant-workers/capacity-workerd.test.mjs",
+      "fixture": "Pinned launcher, gateway and capacity package modules, workerd cache verified, Docker network none.",
+      "passed": 1,
+      "failed": 0,
+      "polls": 170,
+      "elapsed_seconds": 350.48,
+      "capacity_requests": 182,
+      "seal": {
+        "sqlite_rows_written": 68,
+        "do_requests": 6,
+        "log_events": 2,
+        "exhausted": false
+      },
+      "launcher_sha256": "976cd2cf24c59978bbea2bcf8241522da1ff3ea4f3d079adf0425fb47903df66"
     },
     "client": {
       "image": "node:26.13.1-bookworm-slim",

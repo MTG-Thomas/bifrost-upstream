@@ -662,14 +662,16 @@ Item 9 stopped at a $0.73 Bifrost estimate against the existing $0.50 guard.
 The ledger showed eight retired incarnations, including one uncertain
 incarnation with a final receipt.
 
-A stopped workflow retains its launcher's full counter reserve under the
-current accounting. At 3,600 seconds the qualified SQLite write, DO request
+At 9e3998067, a stopped workflow retained its launcher's full counter
+reserve. At 3,600 seconds the qualified SQLite write, DO request
 and log event caps reserve $0.6336 for one uncertain incarnation. The
 monthly fleet envelope is $32.13. The rehearsal verified Disconnect and
 found zero live ledger rows, three script and four namespace 404s, DNS
 absence, tunnel deletion and zero connector sessions after the spend stop.
-The earlier $0.50 trial budget does not cover this preset and cancellation
-scenario. [CT128 measurement and rehearsal receipt](../../results/cloudflare-scaleout-meter-lifetime-timing.json)
+The earlier $0.50 trial budget was exceeded in this rehearsal. See the
+[settlement follow-up](../../results/cloudflare-scaleout-preset-b-followup.md)
+for the confirmed-stop fix, remaining reserves, and the cold-path timing trace.
+[CT128 measurement and rehearsal receipt](../../results/cloudflare-scaleout-meter-lifetime-timing.json)
 
 ### Hosted Run
 
