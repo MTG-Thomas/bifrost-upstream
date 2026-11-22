@@ -40,6 +40,7 @@ from src.services.work_dispatch import (
     WAKE_CLOUDFLARE_CAPACITY,
     wake_pool_workers_after_commit,
 )
+from src.services.worker_pool.cloudflare_containers_policy import container_deadline_sql
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
     seal_credential,
@@ -173,6 +174,12 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
                 CloudflareOwnedResource.installation_id == CloudflareInstallation.id,
                 or_(CloudflareOwnedResource.state != "absent", CloudflareOwnedResource.observed_at.is_(None)),
             ).correlate(CloudflareInstallation).scalar_subquery().label("owned_resources_pending"),
+            select(func.count()).select_from(CloudflareWorkerReservation).where(
+                CloudflareWorkerReservation.installation_id == CloudflareInstallation.id,
+                CloudflareWorkerReservation.container_reserved_at.is_not(None),
+                CloudflareWorkerReservation.container_stopped_at.is_(None),
+                container_deadline_sql() <= func.statement_timestamp(),
+            ).correlate(CloudflareInstallation).scalar_subquery().label("overdue_containers"),
         ).where(CloudflareInstallation.retired_at.is_(None)).execution_options(populate_existing=True)
     )).tuples().one_or_none()
     if row is None:
@@ -180,7 +187,7 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
             consent_text_version=CONSENT_TEXT_VERSION, consent_text=CONSENT_TEXT, installation=None,
             managed_tunnel_available=get_settings().cloudflare_tunnel_channel is not None,
         )
-    installation, estimate, as_of, owned_resources_pending = row
+    installation, estimate, as_of, owned_resources_pending, overdue_containers = row
     policy = CloudflareCapacityPolicy.model_validate(installation.policy["limits"])
     period_start, period_end = usage_period(as_of)
     rate = installation.policy.get("rate_table_version")
@@ -197,6 +204,11 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
         coverage.append(
             f"Managed cleanup expired for {exhausted} Cloudflare worker(s). Unverified capacity remains reserved. "
             "Run Scale In to verify retirement. Use Disconnect to remove the owned deployment if retirement cannot be verified."
+        )
+    if overdue_containers:
+        coverage.append(
+            f"Unresolved cleanup for {overdue_containers} Cloudflare Container reservation(s) past their deadline. "
+            "Their capacity remains reserved until the provider confirms stop."
         )
     spend = CloudflareSpendStatus(
         state="ledger_unavailable" if estimate is None else (
@@ -249,7 +261,7 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
             ),
             "policy": policy,
             "fleet_envelope_usd": installation.policy["fleet_envelope_usd"],
-            "owned_resources_pending": owned_resources_pending,
+            "owned_resources_pending": owned_resources_pending + overdue_containers,
             "spend": spend,
         }),
     )

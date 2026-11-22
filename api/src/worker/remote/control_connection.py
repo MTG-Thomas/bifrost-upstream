@@ -48,12 +48,12 @@ def load_control_headers(control_url: str) -> dict[str, str]:
     return headers
 
 
-def connect_control(control_url: str, headers: dict[str, str]) -> Any:
+def connect_control(control_url: str, headers: dict[str, str], *, container_intercept: bool = False) -> Any:
     """Preserve ordinary connections; authenticated requests never follow redirects."""
     from websockets.asyncio.client import connect
     from websockets.exceptions import InvalidStatus, SecurityError
 
-    if not headers:
+    if not headers and not container_intercept:
         return connect(control_url, max_size=2**20, open_timeout=10)
 
     class ServiceAuthConnect(connect):
@@ -66,7 +66,17 @@ def connect_control(control_url: str, headers: dict[str, str]) -> Any:
     # connection's wire logger private; the launcher still logs lifecycle/error types.
     wire_logger = logging.Logger("bifrost.worker.control.authenticated")
     wire_logger.disabled = True
+    tls = {}
+    if container_intercept:
+        from ssl import create_default_context
+
+        if urlsplit(control_url).scheme != "wss":
+            raise ValueError("Managed Container control requires TLS")
+        tls = {
+            "ssl": create_default_context(cafile="/etc/cloudflare/certs/cloudflare-containers-ca.crt"),
+            "proxy": None,
+        }
     return ServiceAuthConnect(
         control_url, additional_headers=headers, max_size=2**20,
-        open_timeout=10, logger=wire_logger,
+        open_timeout=10, logger=wire_logger, **tls,
     )

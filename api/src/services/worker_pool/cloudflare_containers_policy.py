@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import Interval, Numeric, extract, func, literal, select
+from sqlalchemy import Interval, Numeric, exists, extract, func, literal, select
 from sqlalchemy.orm import aliased
 
 from src.models.orm.cloudflare_capacity import (
@@ -15,6 +15,17 @@ from src.models.orm.cloudflare_capacity import (
 from src.services.worker_pool.cloudflare_containers_release import ContainerRates
 
 CONTAINERS_SCOPE = "containers"
+
+
+def container_identity_matches(worker_id, release: str | None):
+    """Keep the legacy Linux control credential away from managed incarnations."""
+    pin = CloudflareWorkerReservation
+    managed = exists().where(pin.worker_id == worker_id, pin.container_reserved_at.is_not(None))
+    if release is None:
+        return ~managed
+    return managed.where(
+        pin.scope == CONTAINERS_SCOPE, pin.container_release == release, pin.container_stopped_at.is_(None),
+    )
 
 
 class ContainersPolicy(BaseModel):
@@ -63,7 +74,7 @@ def container_account_usage(now):
     period = func.date_trunc("month", now, "UTC")
     end = func.timezone("UTC", func.timezone("UTC", period) + literal("1 month").cast(Interval))
     envelope = reservation.container_envelope
-    reserve_end = reservation.container_reserved_at + func.make_interval(0, 0, 0, 0, 0, 0, envelope["seconds"].as_integer())
+    reserve_end = container_deadline_sql()
     charged_end = func.least(reserve_end, func.coalesce(reservation.container_stopped_at, reserve_end))
     seconds = func.greatest(0, extract(
         "epoch", func.least(end, charged_end) - func.greatest(period, reservation.container_reserved_at),
@@ -79,6 +90,13 @@ def container_account_usage(now):
         reservation.container_reserved_at < end,
         charged_end > period,
     ).correlate(CloudflareInstallation).scalar_subquery()
+
+
+def container_deadline_sql():
+    reservation = CloudflareWorkerReservation
+    return reservation.container_reserved_at + func.make_interval(
+        0, 0, 0, 0, 0, 0, reservation.container_envelope["seconds"].as_integer(),
+    )
 
 
 def container_reserve_cost(

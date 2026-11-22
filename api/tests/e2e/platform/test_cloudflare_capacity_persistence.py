@@ -20,17 +20,16 @@ from alembic.operations import Operations
 from alembic.script import ScriptDirectory
 from fastapi import HTTPException, Response
 from pydantic import SecretStr
-from sqlalchemy import delete, func, insert, literal, select, text, update
-from sqlalchemy.engine import Connection
-from sqlalchemy.exc import DBAPIError, IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from shared.models import (
     CloudflareCapacityPolicy,
     CloudflareLauncherUsage,
     CloudflareReconcileAction,
     CloudflareWorkersPolicy,
 )
+from sqlalchemy import delete, func, insert, literal, select, text, update
+from sqlalchemy.engine import Connection
+from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import Settings
 from src.core.principal import UserPrincipal
 from src.jobs.platform import cloudflare_capacity as lifecycle_job
@@ -156,7 +155,7 @@ from src.worker.remote.protocol import (
 )
 from src.worker.remote.remote_pool import ThinRemoteProcessPool
 
-from tests.helpers.cloudflare_containers import make_release
+from tests.helpers.cloudflare_containers import make_release, verified_egress
 from tests.helpers.cloudflare_containers import policy as container_policy
 
 OPERATOR_ID = UUID("20cb7fe5-78e2-48d7-8f1e-8edcac69ffab")
@@ -1983,7 +1982,7 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
     await db.flush()
     admission = dict(
         installation_id=installation.id, controller_id=uuid4(), primary=primary,
-        release=release, verified_egress_origin=origin,
+        release=release, verified_egress=await verified_egress(installation.id, 1, release.digest, origin),
     )
     # Prove the baseline is admissible before changing only the evidence under test.
     async with db.begin_nested() as nested:
@@ -2011,6 +2010,29 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
 
 
 @pytest.mark.asyncio
+async def test_capacity_reports_overdue_unsettled_containers(db_session, installation) -> None:
+    now = datetime.now(UTC)
+    workers = [uuid4() for _ in range(3)]
+    db_session.add_all(ExecutionWorker(id=worker, form="external", state="lost") for worker in workers)
+    await db_session.flush()
+    for index, worker in enumerate(workers):
+        reserved_at = now - timedelta(hours=1) if index < 2 else now
+        db_session.add(CloudflareWorkerReservation(
+            worker_id=worker, installation_id=installation.id, scope="containers",
+            deployment_revision=1, control_root_version=1, container_tenant="platform",
+            container_release="a" * 64, container_reserved_at=reserved_at,
+            container_envelope={"seconds": 600, "fixed_usd": "0.01", "second_usd": "0.001"},
+            container_stopped_at=reserved_at + timedelta(seconds=1) if index == 1 else None,
+        ))
+    await db_session.flush()
+    status = await get_cloudflare_capacity_status(db_session, _platform_operator())
+    assert status.installation is not None
+    assert status.installation.owned_resources_pending == 1
+    assert status.installation.spend is not None
+    assert any("Unresolved cleanup for 1 Cloudflare Container" in note for note in status.installation.spend.coverage)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("race", [
     "installation", "tenant", "prewarm",
     "claim-installation", "claim-tenant", "prepare-installation", "prepare-tenant",
@@ -2025,7 +2047,9 @@ async def test_container_reservation_serializes_shared_capacity(async_session_fa
         linux_review_digest,
         reserve_container,
     )
-    from src.services.worker_pool.cloudflare_containers_policy import container_account_usage
+    from src.services.worker_pool.cloudflare_containers_policy import (
+        container_account_usage,
+    )
 
     release, _, _ = make_release()
     now = datetime.now(UTC)
@@ -2144,6 +2168,7 @@ async def test_container_reservation_serializes_shared_capacity(async_session_fa
 
     contender_pids: list[int] = []
     both_connected = asyncio.Event()
+    egress = await verified_egress(installation_id, 1, release.digest, "https://workers.example.test")
 
     async def record_connection(db):
         pid = await db.scalar(select(func.pg_backend_pid()))
@@ -2183,7 +2208,7 @@ async def test_container_reservation_serializes_shared_capacity(async_session_fa
                 await record_connection(db)
             result = await reserve_container(
                 db, installation_id=installation_id, controller_id=uuid4(),
-                primary=primary_pool, release=release, verified_egress_origin="https://workers.example.test",
+                primary=primary_pool, release=release, verified_egress=egress,
             )
             if result is not None and (race != "installation" or not contender):
                 assert result.container_tenant == str(placement_tenants[0])
@@ -2203,7 +2228,7 @@ async def test_container_reservation_serializes_shared_capacity(async_session_fa
             )) is not None
             assert await reserve_container(
                 db, installation_id=installation_id, controller_id=uuid4(),
-                primary=primary_pool, release=release, verified_egress_origin=None,
+                primary=primary_pool, release=release, verified_egress=None,
             ) is None
         if race == "installation":
             assert await reserve()

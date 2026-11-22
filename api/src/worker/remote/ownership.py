@@ -10,6 +10,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from src.core.database import get_liveness_db_context
 from src.models.orm.execution_workers import ExecutionWorker
+from src.services.worker_pool.cloudflare_containers_policy import container_identity_matches
 from src.worker.remote.protocol import (
     CLOUDFLARE_CREDENTIAL_PROTOCOL,
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
@@ -58,6 +59,7 @@ async def acquire_remote_owner(
     credential_protocol: int = 1,
     runtime_profile: str = LINUX_RUNTIME_PROFILE,
     cloudflare_enrollment: CloudflareEnrollment | None = None,
+    container_release: str | None = None,
     lease_seconds: int = DEFAULT_OWNER_LEASE_SECONDS,
 ) -> RemoteOwnerLease | None:
     """Acquire one fenced API owner session for an admitted launcher.
@@ -103,6 +105,7 @@ async def acquire_remote_owner(
     else:
         # A legacy hello cannot take over even a never-connected Cloudflare row.
         worker_scope.append(ExecutionWorker.runtime_profile != CLOUDFLARE_PYTHON_RUNTIME_PROFILE)
+        worker_scope.append(container_identity_matches(worker_id, container_release))
     async with get_liveness_db_context() as db:
         declared_slots = 0
         if runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:

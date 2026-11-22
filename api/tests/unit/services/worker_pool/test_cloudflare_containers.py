@@ -1,6 +1,7 @@
 """Release, provider readback and placement checks without Cloudflare calls."""
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
@@ -17,6 +18,12 @@ from src.services.worker_pool.cloudflare_containers_admission import (
     LinuxReview,
     linux_review_digest,
     primary_has_no_fit,
+)
+from src.services.worker_pool.cloudflare_containers_egress import (
+    REQUIRED_DENIALS,
+    ContainerEgressObservation,
+    VerifiedEgress,
+    verify_container_egress,
 )
 from src.services.worker_pool.cloudflare_containers_policy import (
     container_envelope,
@@ -164,6 +171,28 @@ def test_linux_review_digest_distinguishes_replacement_and_reacceptance() -> Non
     replaced = linux_review_digest(workflow, None, {**declaration, "previous_revision": first})
     reaccepted = linux_review_digest(workflow, None, {**declaration, "inactive_history_count": 1})
     assert len({first, replaced, reaccepted}) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", [
+    {"revision": 2}, {"internet_enabled": True}, {"signed_control_round_trip": False},
+    {"bounded_relay": False}, {"denied": frozenset()}, {"intercepted_origins": frozenset()},
+])
+async def test_egress_proof_requires_exact_release_and_observed_network_controls(change) -> None:
+    origin = "https://worker.example.test"
+    installation_id = uuid4()
+    observation = ContainerEgressObservation(
+        installation_id, 1, "a" * 64, origin, False, frozenset({origin}), True, True, REQUIRED_DENIALS,
+    )
+
+    async def probe():
+        return replace(observation, **change)
+
+    assert await verify_container_egress(
+        probe, installation_id=installation_id, revision=1, release_digest="a" * 64, origin=origin,
+    ) is None
+    with pytest.raises(TypeError, match="must be verified"):
+        VerifiedEgress(observation, _mint=object())
 
 
 def test_baked_wheel_closure_is_required_for_package_finding() -> None:

@@ -53,6 +53,7 @@ from src.services.worker_pool.cloudflare_admission import (
     scoped_cloudflare_claim_allowed,
 )
 from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
+from src.services.worker_pool.cloudflare_containers_policy import CONTAINERS_SCOPE, container_identity_matches
 from src.services.worker_pool.cloudflare_slots import (
     PREPARE_SECONDS,
     WorkflowSlotTicket,
@@ -1903,6 +1904,31 @@ class RemoteControlHost:
                             control_key = await load_managed_control_key(db, pin, signed.resource_uid)
                         except ValueError:
                             raise AuthenticationError("Invalid managed Cloudflare resource binding") from None
+            elif signed.container_release is not None:
+                assert signed.resource_uid is not None
+                async with get_liveness_db_context() as db:
+                    pin = await db.scalar(select(CloudflareWorkerReservation).join(
+                        ExecutionWorker, ExecutionWorker.id == CloudflareWorkerReservation.worker_id,
+                    ).join(
+                        CloudflareInstallation, CloudflareInstallation.id == CloudflareWorkerReservation.installation_id,
+                    ).where(
+                        ExecutionWorker.id == signed.incarnation_id,
+                        ExecutionWorker.form == "external",
+                        ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE,
+                        ExecutionWorker.execution_lane == "normal",
+                        ExecutionWorker.capacity_scope == CONTAINERS_SCOPE,
+                        ExecutionWorker.capacity_resource_uid == signed.resource_uid,
+                        ExecutionWorker.state.in_(("starting", "ready", "draining")),
+                        CloudflareWorkerReservation.scope == CONTAINERS_SCOPE,
+                        CloudflareWorkerReservation.container_release == signed.container_release,
+                        CloudflareWorkerReservation.container_reserved_at.is_not(None),
+                        CloudflareWorkerReservation.container_stopped_at.is_(None),
+                        CloudflareInstallation.retired_at.is_(None),
+                    ))
+                    if pin is None:
+                        raise AuthenticationError("Managed Container lacks its live incarnation and release binding")
+                    control_key = await load_managed_control_key(db, pin, signed.resource_uid)
+                containers = True
             else:
                 control_key = settings.secret_key
                 containers_scope = getattr(settings, "cloudflare_containers_scope", None)
@@ -1963,6 +1989,11 @@ class RemoteControlHost:
             if hello.execution_lane == "fast_path" and ("workflow.execute", 2) not in bootstrap["handlers"]:
                 raise AuthenticationError("Fast Path workers must support workflow.execute version 2")
             credential_protocol = hello_credential_protocol(initial)
+            if hello.container_release is not None and (
+                credential_protocol != CLOUDFLARE_CREDENTIAL_PROTOCOL
+                or initial.get("handlers") != [list(CLOUDFLARE_WORKFLOW_HANDLER)]
+            ):
+                raise ProtocolError("Managed Containers require protocol 2 and the Normal workflow handler")
             if containers:
                 base = [list(CLOUDFLARE_WORKFLOW_HANDLER)]
                 staged = [*base, [SOLUTION_GIT_CAPABILITY, 1]]
@@ -2005,7 +2036,7 @@ class RemoteControlHost:
             raise
 
         requirements_content = None
-        if containers:
+        if containers and hello.container_release is None:
             from src.core.requirements_cache import get_requirements
 
             try:
@@ -2048,6 +2079,7 @@ class RemoteControlHost:
                 hello.incarnation_id, resource_uid=hello.resource_uid,
                 launcher_id=hello.launcher_id, version=version if isinstance(version, str) else None,
                 hostname=hello.hostname,
+                **({"container_release": hello.container_release} if hello.container_release is not None else {}),
             )
             if admitted is None:
                 async with get_liveness_db_context() as db:
@@ -2058,6 +2090,7 @@ class RemoteControlHost:
                             ExecutionWorker.runtime_profile != CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
                             ExecutionWorker.state.in_(("ready", "draining")),
                             ExecutionWorker.capacity_resource_uid == hello.resource_uid,
+                            container_identity_matches(hello.incarnation_id, hello.container_release),
                             ExecutionWorker.remote_launcher_id == hello.launcher_id,
                             ExecutionWorker.version.is_not(None),
                             ExecutionWorker.version == version,
@@ -2095,6 +2128,7 @@ class RemoteControlHost:
             credential_protocol=credential_protocol,
             runtime_profile=bootstrap["runtime_profile"],
             cloudflare_enrollment=enrollment,
+            **({"container_release": hello.container_release} if hello.container_release is not None else {}),
         )
         if lease is None:
             if enrollment is not None:

@@ -479,6 +479,49 @@ async def test_containers_hello_uses_only_the_reserved_scope_key(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["bound", "legacy-key", "changed-release", "unknown-reservation"])
+async def test_managed_linux_hello_is_bound_to_its_incarnation_key_and_release(mode) -> None:
+    release, derived, platform = "a" * 64, "derived-incarnation-key", "platform-key"
+    hello = Hello(
+        launcher_id=LEASE.launcher_id, incarnation_id=LEASE.worker_id,
+        job_uid=None, pod_uid=None, hostname="container", form="external",
+        issued_at=int(time.time()), nonce="n" * 32, hello_sequence=1,
+        resource_uid="resource-1", runtime_profile=LINUX_RUNTIME_PROFILE, container_release=release,
+    )
+    signed = sign_hello(platform if mode == "legacy-key" else derived, hello).to_dict()
+    if mode == "changed-release":
+        signed["container_release"] = "b" * 64
+    socket = AsyncMock(scope={})
+    socket.receive_text.return_value = json.dumps({
+        "event": "hello", "hello": signed, "sample": {"current": 1, "limit": 100},
+        "version": "test-build", "credential_protocol": 2, "handlers": [["workflow.execute", 1]],
+    })
+    pin = object()
+    db = AsyncMock()
+    db.scalar.return_value = None if mode == "unknown-reservation" else pin
+
+    @asynccontextmanager
+    async def database():
+        yield db
+
+    with (
+        patch("src.worker.remote.host.get_settings", return_value=SimpleNamespace(secret_key=platform)),
+        patch("src.worker.remote.host.get_liveness_db_context", database),
+        patch("src.worker.remote.host.load_managed_control_key", new=AsyncMock(return_value=derived)) as load_key,
+        patch("src.worker.remote.host.admit_external_worker", new=AsyncMock(return_value=LEASE.worker_id)) as admit,
+        patch("src.worker.remote.host.acquire_remote_owner", new=AsyncMock(return_value=None)),
+        patch("src.core.requirements_cache.get_requirements", new=AsyncMock()) as requirements,
+        pytest.raises(AuthenticationError),
+    ):
+        await RemoteControlHost().connect(socket)
+    requirements.assert_not_awaited()
+    assert admit.await_count == int(mode == "bound")
+    if mode == "bound":
+        assert admit.await_args.kwargs["container_release"] == release
+        load_key.assert_awaited_once_with(db, pin, "resource-1")
+
+
+@pytest.mark.asyncio
 async def test_containers_bootstrap_round_trips_fragmented_requirements() -> None:
     api_socket = AsyncMock()
     bridge = Bridge(
