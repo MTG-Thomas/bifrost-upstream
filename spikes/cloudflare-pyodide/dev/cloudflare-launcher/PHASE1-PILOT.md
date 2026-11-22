@@ -1098,3 +1098,32 @@ The owned Compose resources, processes, image tags, scratch and secret
 files were removed and checked for absence.
 
 See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-latency-reuse.json).
+
+## Local Rehearsal With the 2-Second Overflow Gate
+
+On 2026-11-22 UTC, CT128 ran all nine items from
+`00a8d6d99f709fb2f031dfcf1fc885c4855d73b7`, the harness commit directly
+on `c932f55b3`. The archived source ran with real Bifrost API, worker,
+scheduler, PostgreSQL and Miniflare/workerd. Both service images passed
+the outbound guard, including the replacement at Upgrade. A control
+with missing fixture hooks blocked Connect before its first API request.
+
+| Item | Result | Observation |
+| --- | --- | --- |
+| 1. Releases | Rehearsed-pass | The loader accepted both pinned deployment digests, and all 12 offline Workers packaging tests passed. |
+| 2. Connect, preflight, Enable | Rehearsed-pass | The Compose worker passed 100 route checks. The signed Enable used `remote_launcher`. Both receipts showed 8 completed TLS handshakes and 92 reused requests on local IPv4. Cloudflare edge behavior remains hosted-only. |
+| 3. Primary hold and latency | Fixed and rehearsed-pass | PostgreSQL showed 24 MiB free and a 2.000 s cold overflow eligibility offset. Queue-to-entry and queue-to-completion were 9.799 s and 9.840 s cold, and 0.707 s and 0.730 s warm. Both executions had their own terminal ACK and reused the same launcher and slot 0. |
+| 4. Burst and cancel | Fixed and rehearsed-pass | Four Provider and four Global executions entered on eight unchanged fences, with full entry 9.306 s after the last dispatch read. The third tenant took the reserved ninth slot. The tenth remained unassigned through two completed eligible passes. Confirmed cancel released one fence and preserved the other eight before the tenth entered. The Solution run returned its scoped value. |
+| 5. Reconcile, active Scale In, first Disconnect | Rehearsed-pass | Reconcile retained the deployment. Active Scale In held the original fence through admission closure and kept all three scripts. Disconnect returned three script and four namespace 404s. |
+| 6. Managed Tunnel | Rehearsed-pass at provider boundary | The stub echoed `warp-routing.enabled = false`, returned HTTP 200 with an empty private-route list, and reported the expected proxied CNAME. Signed Enable passed. Live tunnel and Cloudflare grant behavior remain hosted-only. |
+| 7. Connector rotation | Rehearsed-pass at provider boundary | One old session was evicted, one replacement session appeared, and the old token was refused. The worker preflight and signed re-Enable passed. Cloudflare session eviction remains hosted-only. |
+| 8. Upgrade | Rehearsed-pass | The replacement fenced the original claim. The old launcher reconnected after the transport cut, replayed the terminal result under that claim, and received the ACK after one dispatch. Three old scripts and four old namespaces returned 404, with the old script deletions preceding replacement upload. |
+| 9. Spend, Disconnect, teardown | Rehearsed-pass | Spend readback was ready and ratio parsing used a synthetic Analytics sample. The real provider denominator remains hosted-only. Final Disconnect retired the installation with zero live ledger rows, three script and four namespace 404s, DNS 404, and zero tunnel sessions. The owned Compose resources, image tags, fixture processes and scratch were verified absent. |
+
+The earlier single 28-second burst wait mixed launcher allocation with
+engine entry. The timed trace showed one Global execution entering
+18.8 seconds after dispatch, after the submission-based deadline. The
+separate dispatch and entry windows in the runbook exercised the same
+fences successfully. Four loose workflow proposals and one Solution
+proposal were reviewed and accepted in the full rehearsal. There were
+no Cloudflare calls or resource changes.
