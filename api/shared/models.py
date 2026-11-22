@@ -104,6 +104,7 @@ class CloudflareCapacityStatus(BaseModel):
     installation: CloudflareInstallationStatus | None
     latest_job_id: UUID | None = None
     managed_tunnel_available: bool = False
+    suggested_policy: CloudflareCapacityPolicy | None = None
 
 
 class CloudflareCapacityAction(BaseModel):

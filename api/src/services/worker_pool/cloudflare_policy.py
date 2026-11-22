@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from functools import cache
 from hashlib import sha256
 from typing import Literal
 from uuid import UUID, uuid4
@@ -19,6 +20,7 @@ from shared.models import (
     CloudflareReachabilityMode,
     CloudflareSpendStatus,
     CloudflareUsageAdvisory,
+    CloudflareWorkersPolicy,
 )
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -52,8 +54,11 @@ from src.services.worker_pool.cloudflare_credentials import (
 from src.services.worker_pool.cloudflare_release import (
     WorkersRelease,
     WorkersReleaseOrder,
+    WorkersReleaseUnavailable,
     installed_workers_release_digest,
     installed_workers_release_order,
+    load_workers_release,
+    validate_workers_cleanup_margin,
 )
 from src.services.worker_pool.cloudflare_spend import (
     LAUNCHER_RECEIPT_METERS,
@@ -173,6 +178,28 @@ class CloudflareInstallationExists(ValueError):
     """A current installation must finish disconnecting before another is created."""
 
 
+@cache
+def suggested_cloudflare_policy() -> CloudflareCapacityPolicy | None:
+    try:
+        bounds = release_meter_bounds(load_workers_release())
+    except WorkersReleaseUnavailable:
+        return None
+    if not bounds.lifetime_meters:
+        return None
+    proposal = CloudflareCapacityPolicy(
+        workers=CloudflareWorkersPolicy(
+            launcher_cap=3, slots_per_launcher=4, installation_slots=9, max_lifetime_seconds=3600,
+            work_kinds=frozenset({"workflow"}),
+        ),
+        monthly_limit_usd=Decimal("75.00"),
+    )
+    try:
+        _price_policy(proposal, bounds)
+    except CloudflareBudgetTooLow:
+        return None
+    return proposal
+
+
 async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> CloudflareCapacityStatus:
     row = (await db.execute(
         select(
@@ -192,6 +219,7 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
         return CloudflareCapacityStatus(
             consent_text_version=CONSENT_TEXT_VERSION, consent_text=CONSENT_TEXT, installation=None,
             managed_tunnel_available=get_settings().cloudflare_tunnel_channel is not None,
+            suggested_policy=suggested_cloudflare_policy(),
         )
     installation, estimate, as_of, owned_resources_pending, overdue_containers = row
     policy = CloudflareCapacityPolicy.model_validate(installation.policy["limits"])
@@ -305,6 +333,7 @@ def _price_policy(
         "root_second_usd": str(root_rate),
     }
     if bounds.lifetime_meters:
+        validate_workers_cleanup_margin(bounds.cleanup_margin_seconds)
         rates = {name: int(bounds.per_launcher_second[name]) for name in LAUNCHER_RECEIPT_METERS}
         meter_launcher["per_second_caps"] = rates
         meter_launcher["caps"] = {name: rate * policy.workers.max_lifetime_seconds for name, rate in rates.items()}

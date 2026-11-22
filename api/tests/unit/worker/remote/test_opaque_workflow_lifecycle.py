@@ -471,7 +471,7 @@ async def test_opaque_handback_releases_starting_reservation_on_db_failure(monke
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("refusal", [
-    "reconnect-before-send", "explicit-memory-refusal", "stale-revision", "oversize", "tenant-changed",
+    "reconnect-before-send", "explicit-memory-refusal", "launcher-retired", "stale-revision", "oversize", "tenant-changed",
 ])
 async def test_definitively_unsent_workflow_is_handed_back(
     opaque_executor, async_session_factory, monkeypatch, reviewed_workspace, refusal,
@@ -522,9 +522,11 @@ async def test_definitively_unsent_workflow_is_handed_back(
         command = ControlEnvelope.from_json(frame)
         assert command.payload["action"] == "workflow"
         await bridge.receive({
-            "reply": command.payload["id"], "error": "Refused before engine entry", "error_type": "MemoryError",
+            "reply": command.payload["id"], "error": "Refused before engine entry",
+            "error_type": "LauncherRetired" if refusal == "launcher-retired" else "MemoryError",
         })
-        bridge.disconnect(socket)
+        if refusal == "explicit-memory-refusal":
+            bridge.disconnect(socket)
 
     if refusal == "explicit-memory-refusal":
         db_context = workflow_dispatch.get_db_context
@@ -549,7 +551,7 @@ async def test_definitively_unsent_workflow_is_handed_back(
     with remote_owner_context(lease_ref):
         await worker._run_claim(claim)
 
-    assert socket.send_text.await_count == (1 if refusal == "explicit-memory-refusal" else 0)
+    assert socket.send_text.await_count == int(refusal in {"explicit-memory-refusal", "launcher-retired"})
     assert worker._claims_open()
     assert list(pool.processes) == [sibling["route_id"]]
     assert worker.admission.request_bytes(str(subject)) is None

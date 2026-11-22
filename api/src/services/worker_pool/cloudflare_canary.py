@@ -37,7 +37,7 @@ from src.services.worker_pool.external_client import (
 )
 from src.worker.remote.protocol import (
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
-    WORKER_DRAIN_GRACE_SECONDS,
+    WORKERS_DEADLINE_DRAIN_SECONDS,
     cloudflare_slots,
 )
 
@@ -236,7 +236,7 @@ async def run_workers_canary(
         await client.prepare(WorkerCapacityReservation(
             worker_id=worker_id, worker_version=profile.worker_version, memory_limit_bytes=profile.memory_limit_bytes,
             max_lifetime_seconds=lifetime,
-            drain_grace_seconds=WORKER_DRAIN_GRACE_SECONDS,
+            drain_grace_seconds=WORKERS_DEADLINE_DRAIN_SECONDS,
         ), "workers", managed_identity=(resource_uid, key),
             **({"managed_deadline": pin.workers_deadline_at} if pin.workers_deadline_wire else {}),
         )

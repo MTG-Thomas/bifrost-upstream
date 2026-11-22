@@ -181,6 +181,7 @@ class Bridge:
         self.connected = True
         self.runtime_profile = hello.get("runtime_profile", LINUX_RUNTIME_PROFILE)
         self.managed_cloudflare = hello.get("managed_cloudflare", False)
+        self.workers_deadline_pinned = hello.get("workers_deadline_pinned", False)
         self.containers = hello.get("containers", False)
         if self.runtime_profile == LINUX_RUNTIME_PROFILE:
             self.current = int(hello["current"])
@@ -314,6 +315,7 @@ class Bridge:
         execution_id: str | None = None, engine_slot: int | None = None, org_id: str | None = None,
         queue_warm_until: datetime | None = None,
         preparation_bookings: list[PreparationBooking] | None = None,
+        timeout_seconds: int | None = None,
     ) -> None:
         # Reserve under the current owner before emitting any frames. The
         # caller also fences the socket generation before sending secrets.
@@ -323,7 +325,7 @@ class Bridge:
             async with get_db_context() as db:
                 if (
                     engine_slot is not None and not preparation
-                    and not await cloudflare_claim_allowed(db, lease.worker_id)
+                    and not await cloudflare_claim_allowed(db, lease.worker_id, timeout_seconds=timeout_seconds)
                 ):
                     raise CredentialRouteChanged("Cloudflare admission closed before dispatch")
                 if not await fence_remote_owner(db):
@@ -525,7 +527,7 @@ class Bridge:
                                 payload["route_id"], tenant, datetime.fromisoformat(deadline) if deadline else None,
                                 workflow_cpu_ms=workspace["cpu_budget_ms"], subrequests=workspace["subrequest_allowance"],
                                 execution_id=payload["execution_id"], engine_slot=engine_slot,
-                                org_id=org_id,
+                                org_id=org_id, timeout_seconds=payload["timeout_seconds"],
                             )
                         sent = 0
                         send_deadline = loop.time() + _reply_timeout(action)
@@ -698,9 +700,11 @@ class Bridge:
             if future is not None and not future.done():
                 if "error" in event:
                     error_type = event.get("error_type")
-                    if (self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
-                            and error_type == "CloudflareLauncherMeterLimitExceeded"):
-                        self.meter_exhausted = True
+                    if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and error_type in (
+                        "CloudflareLauncherMeterLimitExceeded", "LauncherRetired",
+                    ):
+                        if error_type == "CloudflareLauncherMeterLimitExceeded":
+                            self.meter_exhausted = True
                         error = CredentialRouteChanged
                     else:
                         error = MemoryError if error_type == "MemoryError" else RuntimeError
@@ -1272,7 +1276,7 @@ class ApiExecutor(PoolWorker):
         )
 
     def _uses_process_lifetime(self) -> bool:
-        return not self.bridge.managed_cloudflare and super()._uses_process_lifetime()
+        return not self.bridge.workers_deadline_pinned and super()._uses_process_lifetime()
 
     def _claims_open(self) -> bool:
         """Closed from a reconnect until that socket's inventory is
@@ -1927,6 +1931,7 @@ class RemoteControlHost:
             containers = False
             capacity_canary = False
             managed_cloudflare = False
+            workers_deadline_pinned = False
             enrollment = None
             if cloudflare:
                 if signed.form != "external" or signed.resource_uid is None:
@@ -1965,6 +1970,7 @@ class RemoteControlHost:
                         if pin is None:
                             raise AuthenticationError("Cloudflare worker lacks its current installation pin")
                         managed_cloudflare = True
+                        workers_deadline_pinned = pin.workers_deadline_at is not None
                         capacity_canary = pin.canary_job_id is not None
                         try:
                             control_key = await load_managed_control_key(db, pin, signed.resource_uid)
@@ -2050,6 +2056,7 @@ class RemoteControlHost:
                 runtime_profile=hello.runtime_profile or LINUX_RUNTIME_PROFILE,
                 containers=containers,
                 managed_cloudflare=managed_cloudflare,
+                workers_deadline_pinned=workers_deadline_pinned,
             )
             if hello.execution_lane == "fast_path" and ("workflow.execute", 2) not in bootstrap["handlers"]:
                 raise AuthenticationError("Fast Path workers must support workflow.execute version 2")

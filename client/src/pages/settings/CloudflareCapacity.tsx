@@ -151,7 +151,7 @@ function CloudflareConfigurationForm({ status, onSaved, onCancel, onRefresh, bus
 	busy: boolean;
 }) {
 	const installation = status.installation;
-	const settings = installation?.policy;
+	const settings = installation ? installation.policy : status.suggested_policy;
 	const [saving, setSaving] = useState(false);
 	const [failure, setFailure] = useState<{
 		message: string;
@@ -325,18 +325,18 @@ function CloudflareConfigurationForm({ status, onSaved, onCancel, onRefresh, bus
 				<legend className="pb-2 font-semibold">Spending</legend>
 				<div className="space-y-1">
 					<Label htmlFor="cf-monthly">Monthly Estimated Usage Limit</Label>
-					<Input id="cf-monthly" name="monthly_limit" type="number" min="0.01" step="0.01" defaultValue={settings?.monthly_limit_usd ?? "75.00"} required {...fieldProps("monthly_limit", "cf-monthly-unit")} />{fieldError("monthly_limit")}
+					<Input id="cf-monthly" name="monthly_limit" type="number" min="0.01" step="0.01" defaultValue={settings?.monthly_limit_usd ?? "30.00"} required {...fieldProps("monthly_limit", "cf-monthly-unit")} />{fieldError("monthly_limit")}
 					<p id="cf-monthly-unit" className="text-sm text-muted-foreground">USD/month</p>
 				</div>
 			</fieldset>
 			<fieldset className="min-w-0 space-y-3">
 				<legend className="pb-2 font-semibold">Advanced Policy</legend>
 				<div className="grid gap-3 sm:grid-cols-2">
-					<div><Label htmlFor="cf-launcher-cap">Workers Launcher Limit</Label><Input id="cf-launcher-cap" name="launcher_cap" type="number" min={1} max={1000} defaultValue={settings?.workers.launcher_cap ?? 3} required {...fieldProps("launcher_cap")} />{fieldError("launcher_cap")}</div>
-					<div><Label htmlFor="cf-slots">Slots per Launcher</Label><Input id="cf-slots" name="slots" type="number" min={1} max={4} defaultValue={settings?.workers.slots_per_launcher ?? 4} required {...fieldProps("slots")} />{fieldError("slots")}</div>
+					<div><Label htmlFor="cf-launcher-cap">Workers Launcher Limit</Label><Input id="cf-launcher-cap" name="launcher_cap" type="number" min={1} max={1000} defaultValue={settings?.workers.launcher_cap ?? 1} required {...fieldProps("launcher_cap")} />{fieldError("launcher_cap")}</div>
+					<div><Label htmlFor="cf-slots">Slots per Launcher</Label><Input id="cf-slots" name="slots" type="number" min={1} max={4} defaultValue={settings?.workers.slots_per_launcher ?? 2} required {...fieldProps("slots")} />{fieldError("slots")}</div>
 					<div><Label htmlFor="cf-tenant-slots">Slots per Tenant</Label><Input id="cf-tenant-slots" name="tenant_slots" type="number" min={1} max={32} defaultValue={settings?.workers.slots_per_tenant ?? 4} required {...fieldProps("tenant_slots")} />{fieldError("tenant_slots")}</div>
 					<div><Label htmlFor="cf-installation-slots">Installation Slot Limit</Label><Input id="cf-installation-slots" name="installation_slots" type="number" min={2} max={256} defaultValue={settings?.workers.installation_slots ?? 9} required {...fieldProps("installation_slots")} />{fieldError("installation_slots")}</div>
-					<div><Label htmlFor="cf-lifetime">Maximum Lifetime in Seconds</Label><Input id="cf-lifetime" name="lifetime" type="number" min={60} max={604800} defaultValue={settings?.workers.max_lifetime_seconds ?? 900} required {...fieldProps("lifetime")} />{fieldError("lifetime")}</div>
+					<div><Label htmlFor="cf-lifetime">Maximum Lifetime in Seconds</Label><Input id="cf-lifetime" name="lifetime" type="number" min={60} max={604800} defaultValue={settings?.workers.max_lifetime_seconds ?? 3600} required {...fieldProps("lifetime")} />{fieldError("lifetime")}</div>
 					<div><Label htmlFor="cf-linger">Tenant Engine Linger in Seconds</Label><Input id="cf-linger" name="linger" type="number" min={0} max={300} defaultValue={settings?.workers.linger_seconds ?? 90} required {...fieldProps("linger")} />{fieldError("linger")}</div>
 					<div><Label htmlFor="cf-queue-prewarm">Max Queue Pre-Warms per Tenant</Label><Input id="cf-queue-prewarm" name="queue_prewarm" type="number" min={0} max={32} defaultValue={settings?.workers.queue_prewarm_per_tenant ?? 0} required {...fieldProps("queue_prewarm", "cf-prewarm-help")} />{fieldError("queue_prewarm")}<p id="cf-prewarm-help" className="text-sm text-muted-foreground">Set to 0 to disable. Requires a positive engine linger.</p></div>
 					<div><Label htmlFor="cf-shared-cap">Shared Managed Worker Limit</Label><Input id="cf-shared-cap" name="shared_cap" type="number" min={1} max={1000} defaultValue={settings?.shared_managed_worker_cap ?? undefined} {...fieldProps("shared_cap")} />{fieldError("shared_cap")}</div>

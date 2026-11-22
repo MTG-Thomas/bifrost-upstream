@@ -20,10 +20,11 @@ from alembic.operations import Operations
 from alembic.script import ScriptDirectory
 from fastapi import HTTPException, Response
 from pydantic import SecretStr
-from scripts.test_cloudflare_fixture import block_cloudflare_network
+from scripts.test_cloudflare_fixture import _release, block_cloudflare_network
 from shared.models import (
     CloudflareCapacityPolicy,
     CloudflareLauncherUsage,
+    CloudflarePolicyUpdate,
     CloudflareReconcileAction,
     CloudflareWorkersPolicy,
 )
@@ -77,6 +78,7 @@ from src.services.worker_pool import claims as claim_service
 from src.services.worker_pool import (
     cloudflare_admission,
     cloudflare_canary,
+    cloudflare_connection,
     cloudflare_connector_channel,
     cloudflare_policy,
     cloudflare_spend,
@@ -2004,8 +2006,9 @@ async def test_supervisor_reserves_and_retires_without_restarting(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_pin", [False, True])
 async def test_supervisor_retires_at_pinned_workers_lifetime(
-    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch,
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch, legacy_pin: bool,
 ) -> None:
     connection = await db_session.connection()
 
@@ -2038,6 +2041,8 @@ async def test_supervisor_retires_at_pinned_workers_lifetime(
     # 3600-second policy. Database time has passed only the pinned deadline.
     pinned = scope.pin(worker.id, 1, reserved_at=datetime.now(UTC) - timedelta(seconds=61),
                        lifetime=60, deadline_wire=False)
+    if legacy_pin:
+        pinned.workers_deadline_at = pinned.workers_lifetime_seconds = None
     db_session.add(pinned)
     await db_session.flush()
     assert await scope.lock_admission(db_session) == 1
@@ -2053,6 +2058,13 @@ async def test_supervisor_retires_at_pinned_workers_lifetime(
             client, Settings(_env_file=None, secret_key="synthetic-lifetime-test-key-" + "x" * 32), profile,
         )
         supervisor.managed_cloudflare_scope = scope
+        start = AsyncMock()
+        record_timing = AsyncMock()
+        monkeypatch.setattr(client, "start", start)
+        monkeypatch.setattr(external_controller, "record_transport_timing", record_timing)
+        await supervisor._start_prepared(worker.id, "never-started")
+        start.assert_not_awaited()
+        record_timing.assert_not_awaited()
         await supervisor._retire_closed_worker(worker.id)
         await db_session.refresh(worker)
         assert (worker.state, worker.end_reason) == ("draining", "max_lifetime")
@@ -3255,12 +3267,14 @@ async def test_workflow_slots_hold_headroom_and_serialize_different_tenants(isol
         db.add_all(CloudflareWorkerReservation(
             worker_id=worker, installation_id=installation_id, scope="workers",
             deployment_revision=1, control_root_version=1,
+            workers_lifetime_seconds=3600, workers_deadline_at=datetime.now(UTC) + timedelta(hours=1),
         ) for worker in workers)
         for index, (execution, tenant) in enumerate(zip(runs, [None] * 5 + tenants, strict=True)):
             db.add(Execution(id=execution, organization_id=tenant, workflow_name="slot", executed_by_name="fixture"))
             stage_dispatch(
                 db, family=WAKE_WORKFLOW, subject_id=execution, handler="workflow.execute", handler_version=1,
-                payload={"execution_id": str(execution)}, message={}, memory_request_bytes=1,
+                payload={"execution_id": str(execution)},
+                message={"dispatch_metadata": {"timeout_seconds": 1800}}, memory_request_bytes=1,
                 cloudflare_revision="a" * 64, queued_at=now + timedelta(microseconds=index),
             )
         await db.commit()
@@ -3414,6 +3428,8 @@ async def test_queue_prewarm_respects_older_tenants_and_releases_on_drain(db_ses
     db_session.add_all(Organization(id=tenant, name=str(tenant), created_by="fixture") for tenant in tenants)
     db_session.add_all(ExecutionWorker(id=worker, form="external", state="ready") for worker in workers)
     await db_session.flush()
+    scope = ManagedCloudflareScope(installation.id, "workers", 1)
+    db_session.add(scope.pin(workers[0], 1, reserved_at=now, lifetime=3600, deadline_wire=False))
     for tenant, worker, count in zip(tenants, workers, (1, 2, 2), strict=True):
         db_session.add_all(CloudflareWorkflowSlot(
             installation_id=installation.id, tenant=str(tenant), ordinal=i, worker_id=worker,
@@ -3429,7 +3445,8 @@ async def test_queue_prewarm_respects_older_tenants_and_releases_on_drain(db_ses
         db_session.add(Execution(id=execution, organization_id=tenant, workflow_name="fixture", executed_by_name="fixture"))
         stage_dispatch(
             db_session, family=WAKE_WORKFLOW, subject_id=execution, handler="workflow.execute", handler_version=1,
-            payload={"execution_id": str(execution)}, message={}, memory_request_bytes=1,
+            payload={"execution_id": str(execution)},
+            message={"dispatch_metadata": {"timeout_seconds": 1800}}, memory_request_bytes=1,
             cloudflare_revision="a" * 64, queued_at=now + timedelta(microseconds=index),
         )
     await db_session.flush()
@@ -3521,6 +3538,7 @@ async def test_queue_depth_prepares_four_workflows_and_settles_their_usage(
         db.add(CloudflareWorkerReservation(
             worker_id=worker, installation_id=installation_id, scope="workers",
             deployment_revision=1, control_root_version=1,
+            workers_lifetime_seconds=3600, workers_deadline_at=datetime.now(UTC) + timedelta(hours=1),
         ))
         await db.flush()
         usage = await db.get(CloudflareUsageIncarnation, worker)
@@ -3535,7 +3553,8 @@ async def test_queue_depth_prepares_four_workflows_and_settles_their_usage(
             db.add(Execution(id=execution, organization_id=tenant, workflow_name="fixture", executed_by_name="fixture"))
             stage_dispatch(
                 db, family=WAKE_WORKFLOW, subject_id=execution, handler="workflow.execute", handler_version=1,
-                payload={"execution_id": str(execution)}, message={}, memory_request_bytes=1,
+                payload={"execution_id": str(execution)},
+                message={"dispatch_metadata": {"timeout_seconds": 1800}}, memory_request_bytes=1,
                 cloudflare_revision="a" * 64, queued_at=now + timedelta(microseconds=index),
             )
         await db.commit()
@@ -4919,6 +4938,59 @@ async def test_canary_cannot_seal_without_a_matching_delete_receipt_and_row(
 
 
 @pytest.mark.asyncio
+async def test_workers_claim_uses_remaining_lifetime_and_leaves_unbounded_work_on_primary(
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch,
+) -> None:
+    now = await db_session.scalar(select(func.clock_timestamp()))
+    assert now is not None
+    scope = ManagedCloudflareScope(installation.id, "workers", 1)
+    installation.desired_state = "enabled"
+    installation.admitted_revision = 1
+    fresh, old, primary = (uuid4() for _ in range(3))
+    budget = 128 * 2**20
+    db_session.add_all(ExecutionWorker(
+        id=worker, form="external", state="ready", capacity_scope=scope.name,
+        runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE, memory_limit_bytes=budget,
+    ) for worker in (fresh, old))
+    db_session.add(ExecutionWorker(id=primary, form="static", state="ready"))
+    db_session.add(seal_credential(
+        CredentialRef(installation.id, installation.account_id, "scope_bearer", scope.name, 1),
+        SecretStr("synthetic-scope-bearer"), actor=str(OPERATOR_ID), now=now,
+    ))
+    await db_session.flush()
+    db_session.add(CloudflareCapacityScope(
+        installation_id=installation.id, scope=scope.name, endpoint="https://capacity.example.test",
+        deployment_revision=1, bearer_version=1,
+    ))
+    db_session.add(scope.pin(fresh, 1, reserved_at=now, lifetime=3600, deadline_wire=True))
+    db_session.add(scope.pin(old, 1, reserved_at=now - timedelta(seconds=2200), lifetime=3600, deadline_wire=True))
+    unbounded, default = uuid4(), uuid4()
+    for subject, timeout in ((unbounded, 0), (default, 1800)):
+        db_session.add(Execution(id=subject, workflow_name="bounded fixture", executed_by_name="fixture"))
+        stage_dispatch(
+            db_session, family=WAKE_WORKFLOW, subject_id=subject, handler="workflow.execute", handler_version=1,
+            payload={"execution_id": str(subject)}, message={"dispatch_metadata": {"timeout_seconds": timeout}},
+            memory_request_bytes=1, cloudflare_revision="a" * 64,
+            queued_at=now - timedelta(seconds=1 if timeout == 0 else 0),
+        )
+    await db_session.flush()
+    connection = await db_session.connection()
+
+    @asynccontextmanager
+    async def context():
+        async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as session:
+            yield session
+
+    monkeypatch.setattr(claim_service, "get_db_context", context)
+    assert await claim_next(old, fits_bytes=budget, budget_bytes=budget) is None
+    fit = await claim_next(fresh, fits_bytes=budget, budget_bytes=budget)
+    assert fit is not None and fit.subject_id == default and fit.workflow_slot is not None
+    assert await claim_next(fresh, fits_bytes=budget, budget_bytes=budget) is None
+    linux = await claim_next(primary, fits_bytes=budget, budget_bytes=budget)
+    assert linux is not None and linux.subject_id == unbounded and linux.workflow_slot is None
+
+
+@pytest.mark.asyncio
 async def test_claim_gate_tracks_scale_in_and_deployment_changes_without_restart(
     db_session: AsyncSession, installation: CloudflareInstallation,
 ) -> None:
@@ -4932,10 +5004,11 @@ async def test_claim_gate_tracks_scale_in_and_deployment_changes_without_restart
         SecretStr("synthetic-backend-test-bearer"), actor=str(OPERATOR_ID), now=datetime.now(UTC),
     ))
     await db_session.flush()
-    db_session.add(CloudflareWorkerReservation(
+    pin = CloudflareWorkerReservation(
         worker_id=worker_id, installation_id=installation.id, scope="workers", deployment_revision=1,
         control_root_version=1,
-    ))
+    )
+    db_session.add(pin)
     scope = CloudflareCapacityScope(
         installation_id=installation.id, scope="workers", endpoint="https://capacity.example.test",
         deployment_revision=1, bearer_version=1,
@@ -4947,7 +5020,23 @@ async def test_claim_gate_tracks_scale_in_and_deployment_changes_without_restart
     installation.desired_state = "enabled"
     installation.admitted_revision = 1
     await db_session.flush()
+    assert not await cloudflare_claim_allowed(db_session, worker_id)
+    pin.workers_lifetime_seconds = 3600
+    database_now = await db_session.scalar(select(func.clock_timestamp()))
+    assert database_now is not None
+    pin.workers_deadline_at = database_now + timedelta(seconds=2)
+    await db_session.flush()
+    assert not await cloudflare_claim_allowed(db_session, worker_id)
+    pin.workers_deadline_at = database_now + timedelta(hours=1)
+    await db_session.flush()
     assert await cloudflare_claim_allowed(db_session, worker_id)
+    assert await cloudflare_claim_allowed(db_session, worker_id, timeout_seconds=1800)
+    assert not await cloudflare_claim_allowed(db_session, worker_id, timeout_seconds=0)
+    pin.workers_deadline_at = database_now + timedelta(seconds=1500)
+    await db_session.flush()
+    assert await cloudflare_claim_allowed(db_session, worker_id, timeout_seconds=1700)
+    assert not await cloudflare_claim_allowed(db_session, worker_id, timeout_seconds=1800)
+    pin.workers_deadline_at = database_now + timedelta(hours=1)
     db_session.add(ExecutionWorkerClaim(worker_id=worker_id, family=WAKE_WORKFLOW, subject_id=uuid4()))
     await db_session.flush()
     start, _ = usage_period(datetime.now(UTC))
@@ -5118,3 +5207,32 @@ async def test_policy_save_fences_old_admission_and_rejects_an_unsafe_budget(
         await save_cloudflare_policy(
             db_session, installation_id=installation.id, expected_revision=1, policy=policy, bounds=bounds,
         )
+
+
+@pytest.mark.asyncio
+async def test_preset_b_policy_api_uses_the_qualified_fleet_price(
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch, lifecycle_audit_actor,
+) -> None:
+    release = _release(lifetime_meters=True)
+    monkeypatch.setattr(cloudflare_connection, "load_workers_release", lambda: release)
+    monkeypatch.setattr(capacity_routes, "load_caller", AsyncMock(return_value=_platform_operator()))
+    workers = CloudflareWorkersPolicy(
+        launcher_cap=3, slots_per_launcher=4, installation_slots=9, max_lifetime_seconds=3600,
+        work_kinds=frozenset({"workflow"}),
+    )
+
+    async def save(limit: str, revision: int):
+        request = CloudflarePolicyUpdate(
+            action="policy", installation_id=installation.id, expected_revision=revision,
+            policy=CloudflareCapacityPolicy(workers=workers, monthly_limit_usd=Decimal(limit)),
+        )
+        return await capacity_routes.configure_cloudflare_capacity(request, db_session, object())
+
+    with pytest.raises(HTTPException, match=r"estimated fleet usage is USD 32\.13") as refusal:
+        await save("32.12", 1)
+    assert refusal.value.status_code == 422
+    for limit, revision in (("32.13", 1), ("75.00", 2)):
+        status = await save(limit, revision)
+        assert status.installation is not None
+        assert status.installation.policy.monthly_limit_usd == Decimal(limit)
+        assert status.installation.fleet_envelope_usd == Decimal("32.13")

@@ -136,7 +136,7 @@ class CredentialRouteChanged(Exception):
 
 
 class OpaqueWorkflowNotStarted(CredentialRouteChanged):
-    """The opaque workflow command was refused locally before sending any frame."""
+    """The opaque workflow was definitively refused before engine entry."""
 
 
 class CloudflareRevisionRejected(OpaqueWorkflowNotStarted):

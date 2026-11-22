@@ -466,6 +466,25 @@ the reserved lifetime. The fleet envelope already prices those units over
 the lifetime and cleanup allowance. The new launcher and capacity bytes
 require meter requalification before preset B can take effect.
 
+The 300-second cleanup allowance includes 285 seconds for drain, 10 seconds
+for the provider delete request, and five seconds for clock skew. The release
+loader checks that those allowances fit the qualified margin.
+
+Preset B uses a 3,600-second lifetime and keeps the 90-second idle linger.
+Managed Workers compare the workflow timeout against the pinned deadline plus
+280 seconds on the database clock. This leaves room for an early launcher
+clock within the five-second allowance. A fresh launcher can accept a workflow
+with the default 1,800-second timeout for about 2,080 seconds. Longer work that
+no longer fits and unbounded work stay available to the primary.
+
+During a rolling API deployment, a Workers pin missing its deadline is
+ineligible for new claims, prepares, and starts. The existing executor clock
+can still retire a legacy in-flight session. After every writer supplies
+deadlines and owners have drained or backfilled legacy Workers pins, add a
+validated conditional NOT NULL constraint for Workers deadline and lifetime
+columns. Containers share the reservation table and use their own timestamps.
+Remove the legacy executor clock for managed Workers in that follow-up.
+
 The [CT128 receipt](../../results/launcher-lifetime-ct128-requalification.json)
 records the local deadline runs and the change in the meter inventory.
 

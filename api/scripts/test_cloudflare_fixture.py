@@ -73,7 +73,7 @@ def block_cloudflare_network(set_attribute: Callable[..., None] = setattr) -> No
 
 
 @cache
-def _release():
+def _release(*, lifetime_meters: bool = False):
     manifest = {
         "manifest_version": 1, "source_revision": "a" * 40, "runtime_sha256": QUALIFIED_RUNTIME_SHA256,
         "release_version": "1.0.0", "release_sequence": 1,
@@ -112,6 +112,13 @@ def _release():
                 "cpu_ms": cpu["workflow" if role == "launcher" else role],
                 "public_endpoint": role == "capacity", "preview_urls": False,
             }
+        if lifetime_meters:
+            manifest["workers"]["launcher"]["bindings"].append({
+                "name": "BIFROST_LAUNCHER_METERS_PER_SECOND", "type": "plain_text", "text": json.dumps(
+                    {name: int(bounds["per_launcher_second"][name]) for name in qualification.launcher_caps},
+                    sort_keys=True, separators=(",", ":"),
+                ),
+            })
         modules = [manifest["workers"][role]["modules"][0] for role in EXPORTS]
         bounds["qualification"]["capacity_module_sha256"] = modules[-1]["sha256"]
         bounds["qualification"]["bundle_sha256"] = sha256("\n".join(

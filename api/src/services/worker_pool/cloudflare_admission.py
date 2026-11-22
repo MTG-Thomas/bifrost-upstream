@@ -17,8 +17,12 @@ from src.models.orm.cloudflare_capacity import (
 from src.models.orm.execution_workers import ExecutionWorker
 from src.services.worker_pool.cloudflare_release import installed_workers_release_digest
 from src.services.worker_pool.cloudflare_spend import cloudflare_usage_within_limit
+from src.services.worker_pool.eligibility import timeout_fits_workers_deadline
 from src.services.worker_pool.liveness import HEARTBEAT_LOST_AFTER
-from src.worker.remote.protocol import CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+from src.worker.remote.protocol import (
+    CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+    WORKERS_DEADLINE_DISPATCH_SECONDS,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,7 +114,9 @@ class PrimaryPool:
         return self.ceiling is not None and len(cohort) >= self.ceiling
 
 
-async def cloudflare_claim_allowed(db: AsyncSession, worker_id: UUID) -> bool:
+async def cloudflare_claim_allowed(
+    db: AsyncSession, worker_id: UUID, *, timeout_seconds: int | None = None,
+) -> bool:
     """Serialize scoped assignments through the installation before locking the worker.
 
     A reservation pin survives scope removal. A missing or replaced deployment
@@ -132,11 +138,11 @@ async def cloudflare_claim_allowed(db: AsyncSession, worker_id: UUID) -> bool:
     # Read the scope in a fresh statement after taking the lock. The scope can
     # change while this transaction waits behind a writer, even if that writer
     # leaves the installation row unchanged.
-    return await scoped_cloudflare_claim_allowed(db, worker_id, installation_id)
+    return await scoped_cloudflare_claim_allowed(db, worker_id, installation_id, timeout_seconds=timeout_seconds)
 
 
 async def scoped_cloudflare_claim_allowed(
-    db: AsyncSession, worker_id: UUID, installation_id: UUID | None = None,
+    db: AsyncSession, worker_id: UUID, installation_id: UUID | None = None, *, timeout_seconds: int | None = None,
 ) -> bool:
     """Read a managed worker's scoped admission and spend without taking the installation lock."""
     pin = CloudflareWorkerReservation
@@ -155,7 +161,9 @@ async def scoped_cloudflare_claim_allowed(
         workers_release_matches(),
         pin.canary_job_id.is_(None),
         pin.container_reserved_at.is_(None),
-        or_(pin.workers_deadline_at.is_(None), pin.workers_deadline_at > func.clock_timestamp()),
+        pin.workers_deadline_at > func.clock_timestamp() + timedelta(seconds=WORKERS_DEADLINE_DISPATCH_SECONDS),
+        pin.workers_lifetime_seconds.is_not(None),
+        *(() if timeout_seconds is None else (timeout_fits_workers_deadline(timeout_seconds),)),
         pin.control_root_version.is_not(None),
         cloudflare_usage_within_limit(),
         installation.policy["limits"]["workers"]["work_kinds"].contains(["workflow"]),

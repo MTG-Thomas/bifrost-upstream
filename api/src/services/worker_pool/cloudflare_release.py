@@ -11,7 +11,14 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from shared.models import CloudflareLauncherCounts, SEMVER_PATTERN
+from shared.models import SEMVER_PATTERN, CloudflareLauncherCounts
+
+from src.services.worker_pool.external_client import CAPACITY_REQUEST_SECONDS
+from src.worker.remote.protocol import (
+    WORKERS_DEADLINE_DELETE_SECONDS,
+    WORKERS_DEADLINE_DRAIN_SECONDS,
+    WORKERS_DEADLINE_SKEW_SECONDS,
+)
 
 WORKERS_RELEASE_PATH = Path("/app/artifacts/cloudflare/workers")
 MAX_WORKER_BYTES = 64 * 1024 * 1024
@@ -259,6 +266,13 @@ def installed_workers_release_order() -> WorkersReleaseOrder | None:
         return None
 
 
+def validate_workers_cleanup_margin(cleanup_margin_seconds: int) -> None:
+    if (CAPACITY_REQUEST_SECONDS > WORKERS_DEADLINE_DELETE_SECONDS
+            or WORKERS_DEADLINE_DRAIN_SECONDS + WORKERS_DEADLINE_DELETE_SECONDS
+            + WORKERS_DEADLINE_SKEW_SECONDS > cleanup_margin_seconds):
+        raise WorkersReleaseUnavailable("Workers cleanup margin does not cover drain, delete and clock skew")
+
+
 def load_workers_release(path: Path = WORKERS_RELEASE_PATH) -> WorkersRelease:
     """Read all module bytes once and retain the verified snapshot for upload."""
     try:
@@ -277,6 +291,7 @@ def load_workers_release(path: Path = WORKERS_RELEASE_PATH) -> WorkersRelease:
         serialized_caps = json.dumps(qualifier.launcher_caps, sort_keys=True, separators=(",", ":"))
         lifetime_binding = resource_limits.get("BIFROST_LAUNCHER_METERS_PER_SECOND")
         if lifetime_binding is not None:
+            validate_workers_cleanup_margin(manifest.meter_bounds.cleanup_margin_seconds)
             expected_rates = {
                 name: manifest.meter_bounds.per_launcher_second[name] for name in qualifier.launcher_caps
             }

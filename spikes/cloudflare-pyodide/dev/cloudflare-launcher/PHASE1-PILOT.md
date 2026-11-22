@@ -4,7 +4,7 @@
 
 ## Hosted Follow-up Requiring Owner Approval
 
-- Run one managed launcher incarnation for 900 seconds under real approved
+- Run one managed launcher incarnation for 3,600 seconds under real approved
   Workers load. Mix cold and warm loose and Solution workflows with overlapping
   Provider and Global bursts. Record lifecycle timestamps, per-isolate memory,
   CPU, Durable Object requests, SQLite writes, logs, and the sealed receipt at

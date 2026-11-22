@@ -8,8 +8,9 @@ from uuid import uuid4
 import httpx
 import pytest
 from pydantic import SecretStr
+from scripts.test_cloudflare_fixture import _release
 from shared.models import CloudflareWorkersPolicy
-from src.services.worker_pool import cloudflare_release
+from src.services.worker_pool import cloudflare_policy, cloudflare_release
 from src.services.worker_pool.cloudflare_provisioning import (
     ObservationPending,
     ResourceIntent,
@@ -95,6 +96,31 @@ def test_release_loads_the_verified_bytes(release: Path) -> None:
     assert len(loaded.digest) == 64
     assert loaded.modules["launcher"]["launcher.mjs"] == (release / "launcher.mjs").read_bytes()
     assert loaded.modules["capacity"]["capacity.mjs"] == (release / "capacity.mjs").read_bytes()
+
+
+@pytest.mark.parametrize("lifetime_meters", [False, True])
+def test_suggested_policy_requires_verified_lifetime_meters(monkeypatch, lifetime_meters: bool) -> None:
+    loaded = _release(lifetime_meters=lifetime_meters)
+    monkeypatch.setattr(cloudflare_policy, "load_workers_release", lambda: loaded)
+    cloudflare_policy.suggested_cloudflare_policy.cache_clear()
+    try:
+        suggestion = cloudflare_policy.suggested_cloudflare_policy()
+    finally:
+        cloudflare_policy.suggested_cloudflare_policy.cache_clear()
+    if not lifetime_meters:
+        assert suggestion is None
+    else:
+        assert suggestion is not None
+        assert suggestion.monthly_limit_usd == 75
+        workers = suggestion.workers
+        assert (workers.launcher_cap, workers.slots_per_launcher, workers.installation_slots) == (3, 4, 9)
+        assert (workers.max_lifetime_seconds, workers.linger_seconds) == (3600, 90)
+
+
+def test_workers_cleanup_margin_must_cover_every_allowance() -> None:
+    cloudflare_release.validate_workers_cleanup_margin(300)
+    with pytest.raises(WorkersReleaseUnavailable, match="cover drain, delete and clock skew"):
+        cloudflare_release.validate_workers_cleanup_margin(299)
 
 
 def test_missing_manifest_read_is_not_cached(release: Path, monkeypatch) -> None:
