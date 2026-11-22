@@ -1,0 +1,273 @@
+{
+  "date_utc": "2026-11-22",
+  "standing_approval_run": 1,
+  "spike_source_revision": "8712eb4c63e35b9f6f6b88a2af27ab8c03cf3ceb",
+  "result": "managed_enable_and_connector_rotation_qualified_upgrade_unrun",
+  "policy": {
+    "launchers": 3,
+    "slots_per_launcher": 4,
+    "slots_per_tenant": 4,
+    "installation_slots": 9,
+    "max_launcher_lifetime_seconds": 3600,
+    "queue_prewarm_per_tenant": 0,
+    "overflow_age_seconds": 2,
+    "monthly_limit_usd": "75.00",
+    "fleet_envelope_usd": "32.13"
+  },
+  "releases": {
+    "offline_packaging_tests_passed": 13,
+    "cloudflared_version": "2026.11.1",
+    "cloudflared_checksum_verified": true,
+    "runtime_sha256": "11ade0a1ea1b117d577803cff87d1c3c4074d793df5bcb17a9f473923e55f254",
+    "bundle_sha256": "e9097384c9dd6986a7289c937c81c5b4a019221f6761d37b10ccc60f262da9f8",
+    "meter_bounds_sha256": "7bcbd3aa5bf2444dc9856b3b077639061c20d4aa6d0076e8b1ccb9a29cd02b53",
+    "deployments": [
+      {
+        "version": "0.1.0-requal.1",
+        "source_revision": "59c1565a60c53849d6d7ed140afc57cee985d41d",
+        "digest": "7ca412f5f9d9b8c16fe30499a3a35d394a9106931f2a876f49c2acd78107e077"
+      },
+      {
+        "version": "0.1.0-requal.2",
+        "source_revision": "f9d1a79b4c517764c9d0d43dd54093960dfbff8e",
+        "digest": "e2cc8c851eb9c50512f63ff78c3d898e66d4c2d06eb7e3dce5ed991d41871948"
+      }
+    ]
+  },
+  "start_condition": {
+    "ram_available_gib": 9,
+    "peer_test_stacks": 0,
+    "same_prior_zone_verified": true
+  },
+  "window": {
+    "approved_seconds": 1800,
+    "reserved_cleanup_seconds": 300,
+    "product_trial_and_independent_provider_readback_seconds": 163.678
+  },
+  "managed": {
+    "connect": {
+      "status": "succeeded",
+      "admission_open": false,
+      "fleet_envelope_usd": "32.13"
+    },
+    "enable": {
+      "status": "succeeded",
+      "duration_seconds": 30.7,
+      "execution_class": "remote_launcher",
+      "http_connections": [
+        {
+          "address_family": "ipv4",
+          "tcp_connects_started": 8,
+          "tls_handshakes_started": 8,
+          "tls_handshakes_completed": 8,
+          "reused_requests": 92
+        },
+        {
+          "address_family": "ipv4",
+          "tcp_connects_started": 8,
+          "tls_handshakes_started": 8,
+          "tls_handshakes_completed": 8,
+          "reused_requests": 92
+        },
+        {
+          "address_family": "ipv6",
+          "tcp_connects_started": 1,
+          "tls_handshakes_started": 0,
+          "tls_handshakes_completed": 0,
+          "reused_requests": 0
+        },
+        {
+          "address_family": "ipv6",
+          "tcp_connects_started": 1,
+          "tls_handshakes_started": 0,
+          "tls_handshakes_completed": 0,
+          "reused_requests": 0
+        }
+      ],
+      "signed_canary": true
+    },
+    "initial_configuration": {
+      "category": "unobservable_on_success",
+      "reason": "only conflicts include the initial shape"
+    },
+    "provider_readback": {
+      "warp_routing_enabled": false,
+      "route_list_http": 200,
+      "private_routes": 0,
+      "dns_receipt_matches": true,
+      "tunnel_receipt_matches": true,
+      "approved_ingress_readback": true,
+      "live_connector_sessions": 1,
+      "post_enable_config_version": 1,
+      "confirmed_after_each_enable": true
+    },
+    "rotation": {
+      "status": "succeeded",
+      "duration_seconds": 7.926,
+      "old_sessions_evicted": 1,
+      "replacement_sessions": 1,
+      "explicit_refusal": true,
+      "reported_connection": false,
+      "current_sessions": 1
+    },
+    "worker_preflight": {
+      "execution_class": "remote_launcher",
+      "route_checks": 100,
+      "http_connections": [
+        {
+          "address_family": "ipv4",
+          "tcp_connects_started": 8,
+          "tls_handshakes_started": 8,
+          "tls_handshakes_completed": 8,
+          "reused_requests": 92
+        },
+        {
+          "address_family": "ipv4",
+          "tcp_connects_started": 8,
+          "tls_handshakes_started": 8,
+          "tls_handshakes_completed": 8,
+          "reused_requests": 92
+        },
+        {
+          "address_family": "ipv6",
+          "tcp_connects_started": 1,
+          "tls_handshakes_started": 0,
+          "tls_handshakes_completed": 0,
+          "reused_requests": 0
+        },
+        {
+          "address_family": "ipv6",
+          "tcp_connects_started": 1,
+          "tls_handshakes_started": 0,
+          "tls_handshakes_completed": 0,
+          "reused_requests": 0
+        }
+      ],
+      "failure": null
+    },
+    "reenable": {
+      "status": "succeeded",
+      "duration_seconds": 22.947,
+      "execution_class": "remote_launcher",
+      "http_connections": [
+        {
+          "address_family": "ipv4",
+          "tcp_connects_started": 8,
+          "tls_handshakes_started": 8,
+          "tls_handshakes_completed": 8,
+          "reused_requests": 92
+        },
+        {
+          "address_family": "ipv4",
+          "tcp_connects_started": 8,
+          "tls_handshakes_started": 8,
+          "tls_handshakes_completed": 8,
+          "reused_requests": 92
+        },
+        {
+          "address_family": "ipv6",
+          "tcp_connects_started": 1,
+          "tls_handshakes_started": 0,
+          "tls_handshakes_completed": 0,
+          "reused_requests": 0
+        },
+        {
+          "address_family": "ipv6",
+          "tcp_connects_started": 1,
+          "tls_handshakes_started": 0,
+          "tls_handshakes_completed": 0,
+          "reused_requests": 0
+        }
+      ],
+      "signed_canary": true
+    }
+  },
+  "upgrade": {
+    "status": "not_run",
+    "reason": "the rehearsed exact socket cut uses a local provider fixture and has no hosted adapter in this revision"
+  },
+  "launcher_incarnations": [
+    {
+      "started": "2026-11-22T16:20:48.029216+00:00",
+      "retired": "2026-11-22T16:20:50.218105+00:00",
+      "actual_seconds": 2.188889,
+      "sealed": true,
+      "uncertain": false,
+      "kind": "signed_canary",
+      "slots": 4,
+      "pinned_max_lifetime_seconds": 120
+    },
+    {
+      "started": "2026-11-22T16:21:50.164036+00:00",
+      "retired": "2026-11-22T16:21:51.957442+00:00",
+      "actual_seconds": 1.793406,
+      "sealed": true,
+      "uncertain": false,
+      "kind": "signed_canary",
+      "slots": 4,
+      "pinned_max_lifetime_seconds": 120
+    }
+  ],
+  "spend": {
+    "opening_account_estimate_usd": "0.0771186740524892775481481499771776",
+    "live_target_increment_usd": "3.60",
+    "live_abort_increment_usd": "4.50",
+    "settled_target_increment_usd": "0.15",
+    "status_endpoint_precision_usd": "0.01",
+    "phase_measurements": [
+      {
+        "phase": "offline_release_verification",
+        "peak_live_increment_usd": "0.00",
+        "settled_increment_usd": "0.00"
+      },
+      {
+        "phase": "managed_connect_enable_scale_in",
+        "peak_live_increment_usd": "0.02",
+        "settled_increment_usd": "0.00"
+      },
+      {
+        "phase": "rotation_preflight_reenable",
+        "peak_live_increment_usd": "0.02",
+        "settled_increment_usd": "0.00"
+      },
+      {
+        "phase": "upgrade",
+        "peak_live_increment_usd": null,
+        "settled_increment_usd": null
+      },
+      {
+        "phase": "final_scale_in_disconnect",
+        "peak_live_increment_usd": "0.00",
+        "settled_increment_usd": "0.00"
+      }
+    ],
+    "final_settled_increment_usd_at_retirement": "0.00043196691487075516543209896334080000000000",
+    "final_including_opening_usd": "0.07755064096736003271358024894051840000000000"
+  },
+  "teardown": {
+    "scripts_exact_404": 6,
+    "namespaces_exact_404": 8,
+    "script_inventory_matches": 0,
+    "namespace_inventory_matches": 0,
+    "dns_inventory_matches": 0,
+    "dns_ids_verified": 1,
+    "tunnel_tombstones": 1,
+    "live_tunnel_sessions": 0,
+    "connector_projection_empty": true,
+    "installation_absent": true,
+    "ledger": {
+      "incarnations": 0,
+      "slots": 0,
+      "staged_credentials": 0,
+      "ciphertexts": 0,
+      "pending_effects": 0
+    },
+    "token_exact_404": true,
+    "token_inventory_matches": 0,
+    "authoritative_dns_absence_servers": 2,
+    "ct128_stack_images_volumes_and_scratch_absent": true,
+    "workstation_and_hypervisor_transfer_files_absent": true,
+    "disconnect_seconds": 12.815,
+    "readback_observation": "The first exact namespace read used journal map keys and returned HTTP 400. Re-reading the exact namespace IDs from the map values verified absence without repeating any hosted mutation."
+  }
+}

@@ -153,3 +153,11 @@ The first Enable stopped at the version-zero tunnel configuration fence,
 before any Worker upload. Hosted Upgrade remained unqualified.
 Both local image tags were removed.
 [Sanitized Managed-only receipt](../../results/cloudflare-scaleout-managed-hosted-a922.json)
+
+### Hosted Managed Run 1 at `8712eb4c6`
+
+Both pinned packages passed offline verification. Hosted Managed Enable,
+rotation and re-Enable passed. Upgrade was unrun because the exact
+control-socket interruption is available in the committed local fixture.
+The hosted run closed through Scale In and verified Disconnect.
+[Sanitized run receipt](../../results/cloudflare-scaleout-managed-hosted-8712.json)

@@ -245,3 +245,19 @@ creation or rotation secret. Connect checks the account entitlement
 with the supplied management token. [DNS record GET](https://developers.cloudflare.com/api/resources/dns/subresources/records/methods/get/) ·
 [Connector token GET](https://developers.cloudflare.com/api/resources/zero_trust/subresources/tunnels/subresources/cloudflared/subresources/token/methods/get/) ·
 [cloudflared token fields](https://github.com/cloudflare/cloudflared/blob/2026.11.1/connection/connection.go)
+
+### Hosted Managed Enable and Rotation at `8712eb4c6`
+
+The hosted preset B run passed Enable and the signed canary. The exact
+owned tunnel, proxied CNAME and approved ingress matched independently.
+The provider echoed disabled WARP routing and granted the scoped route
+list with HTTP 200 and zero private routes. The approved configuration
+read back at version 1. Successful Enable leaves the initial configuration
+body unclassified in its receipt.
+
+Rotation evicted the old connector session, refused its token, and
+established one replacement session. Worker preflight and signed re-Enable
+passed on `remote_launcher`. Disconnect verified exact DNS absence, the
+tunnel tombstone, zero sessions, and an empty connector token projection.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-managed-hosted-8712.json).
