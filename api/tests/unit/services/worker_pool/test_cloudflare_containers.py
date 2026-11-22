@@ -15,18 +15,16 @@ from src.models.orm.execution_workers import ExecutionWorker
 from src.services.worker_pool.cloudflare_admission import PrimaryPool
 from src.services.worker_pool.cloudflare_containers_admission import (
     LinuxReview,
+    linux_review_digest,
     primary_has_no_fit,
 )
 from src.services.worker_pool.cloudflare_containers_policy import (
-    ContainersPolicy,
     container_envelope,
     container_reserve_cost,
 )
 from src.services.worker_pool.cloudflare_containers_release import (
-    ENTRYPOINT,
     ContainersManifest,
     ContainersReleaseUnavailable,
-    VerifiedContainerRelease,
     verify_containers_release,
 )
 from src.services.worker_pool.cloudflare_containers_rest import (
@@ -39,48 +37,12 @@ from src.services.worker_pool.cloudflare_provisioning import (
     ResourceIntent,
     ResourceTarget,
 )
+from tests.helpers.cloudflare_containers import json_bytes, make_release, policy
 
 ACCOUNT = "a" * 32
 NAMESPACE = "b" * 32
 APP = "c" * 32
 TOKEN = SecretStr("synthetic-token")
-
-
-def json_bytes(value) -> bytes:
-    return json.dumps(value, sort_keys=True).encode()
-
-
-def make_release() -> tuple[VerifiedContainerRelease, bytes, bytes]:
-    config = json_bytes({
-        "os": "linux", "architecture": "amd64",
-        "config": {"Entrypoint": list(ENTRYPOINT), "User": "1000:1000", "Labels": {
-            "org.opencontainers.image.revision": "1" * 40,
-        }},
-    })
-    image = json_bytes({
-        "schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
-        "layers": [{"digest": "sha256:" + "4" * 64}], "config": {"digest": "sha256:" + sha256(config).hexdigest()},
-    })
-    manifest = ContainersManifest.model_validate({
-        "manifest_version": 1, "source_revision": "1" * 40, "repository": "ghcr.io/example/linux",
-        "image_digest": "sha256:" + sha256(image).hexdigest(),
-        "platform": "linux/amd64", "instance_type": "standard-1", "entrypoint": ENTRYPOINT,
-        "capacity_protocol": 2, "sdk_protocol": 1, "ingress_contract": "worker-ingress-only-v1",
-        "workers_release_digest": "2" * 64, "provider_modules": {"container-registry.mjs": "3" * 64},
-        "wheels": {"example-1.0-py3-none-any.whl": "5" * 64},
-        "rates": {
-            "version": "standard-1-v1", "instance_second_usd": "0.00002056", "outbound_gb_usd": "0.05",
-            "control_usd": "0.000001", "cleanup_seconds": 60,
-        },
-    })
-    return VerifiedContainerRelease(manifest, "6" * 64), image, config
-
-
-def policy() -> ContainersPolicy:
-    return ContainersPolicy(
-        lifetime_seconds=300, queue_wait_seconds=1, queue_depth=1, cooldown_seconds=30,
-        ingress_bytes=100, outbound_bytes=100,
-    )
 
 
 def test_image_requires_both_exact_manifest_and_config() -> None:
@@ -112,6 +74,8 @@ async def test_descriptor_requires_release_signer_and_exact_source(tmp_path, mon
 
     async def tool(executable, *args, **kwargs):
         assert executable == Path("cosign")
+        if args == ("version",):
+            return b"GitVersion:    v2.4.1\n"
         assert args[:3] == ("verify-blob", "--certificate-identity", signer)
         if not trusted:
             raise ContainersReleaseUnavailable("Invalid signature")
@@ -130,13 +94,15 @@ async def test_descriptor_requires_release_signer_and_exact_source(tmp_path, mon
 
 
 @pytest.mark.asyncio
-async def test_ambiguous_registry_copy_is_observe_only(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("initial_tags", [[], ["release"], ["other"]])
+async def test_registry_replays_only_into_an_empty_repository(tmp_path, monkeypatch, initial_tags) -> None:
     release, image, config = make_release()
     installation = uuid4()
     name = f"bifrost-{installation.hex}-r1"
     intent = ResourceIntent(ResourceTarget(installation, ACCOUNT, "containers", "container_image", name), uuid4(), 1, release.digest)
-    visible = False
-    upload_seen = False
+    tags = initial_tags.copy()
+    permissions = []
+    copies = []
 
     async def tool(executable, *args, **kwargs):
         if args == ("version",):
@@ -146,17 +112,19 @@ async def test_ambiguous_registry_copy_is_observe_only(tmp_path, monkeypatch) ->
         if args[:2] == ("accounts", "get"):
             return json_bytes({"id": ACCOUNT})
         if args[:3] == ("containers", "images", "list"):
-            return json_bytes([{"name": name, "tags": ["release" if visible else "other"]}])
+            return json_bytes([{"name": name, "tags": tags}] if tags else [])
         if args[0] == "manifest":
             return image + b"\n"
         if args[0] == "config":
             return config + b"\n"
-        pytest.fail("An unconfirmed effect must not issue another push")
+        if args[0] == "copy":
+            copies.append(args[:3])
+            tags.append("release")
+            return b""
+        pytest.fail(f"Unexpected OCI tool call {args[0]}")
 
     def provider(request: httpx.Request) -> httpx.Response:
-        nonlocal upload_seen
-        upload_seen = True
-        assert json.loads(request.content)["permissions"] == ["pull"]
+        permissions.append(json.loads(request.content)["permissions"])
         return httpx.Response(200, json={"success": True, "result": {
             "account_id": ACCOUNT, "registry_host": "registry.cloudflare.com",
             "username": "synthetic", "password": "synthetic",
@@ -165,12 +133,27 @@ async def test_ambiguous_registry_copy_is_observe_only(tmp_path, monkeypatch) ->
     monkeypatch.setattr("src.services.worker_pool.cloudflare_containers_rest.run_oci_tool", tool)
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
         registry = ContainerRegistry(ContainersRest(http), crane=tmp_path / "crane", cf=tmp_path / "cf")
-        with pytest.raises(ObservationPending):
-            await registry.copy(TOKEN, intent, release, previously_sent=True)
-        assert not upload_seen
-        visible = True
+        if initial_tags == ["other"]:
+            with pytest.raises(OwnershipConflict):
+                await registry.copy(TOKEN, intent, release, previously_sent=True)
+            assert not permissions and not copies
+            return
         result = await registry.copy(TOKEN, intent, release, previously_sent=True)
-        assert upload_seen and result.provider_version == release.manifest.image_digest
+        assert result.provider_version == release.manifest.image_digest
+        if initial_tags:
+            assert permissions == [["pull"]] and not copies
+        else:
+            assert permissions == [["pull", "push"]]
+            assert copies == [("copy", release.manifest.image, result.provider_id)]
+
+
+def test_linux_review_digest_distinguishes_replacement_and_reacceptance() -> None:
+    workflow = uuid4()
+    declaration = {"path": "workflow.py", "previous_revision": None, "inactive_history_count": 0}
+    first = linux_review_digest(workflow, None, declaration)
+    replaced = linux_review_digest(workflow, None, {**declaration, "previous_revision": first})
+    reaccepted = linux_review_digest(workflow, None, {**declaration, "inactive_history_count": 1})
+    assert len({first, replaced, reaccepted}) == 3
 
 
 def test_baked_wheel_closure_is_required_for_package_finding() -> None:
@@ -200,7 +183,7 @@ def test_pilot_defaults_and_reserve_splits_at_utc_rollover() -> None:
     now = end - timedelta(seconds=60)
     fixed = Decimal(reserve["fixed_usd"])
     assert container_reserve_cost(reserve, now, start, end) == fixed + Decimal("0.00002056") * 60
-    assert container_reserve_cost(reserve, now, end, end + timedelta(days=31)) == fixed + Decimal("0.00002056") * 300
+    assert container_reserve_cost(reserve, now, end, end + timedelta(days=31)) == fixed + Decimal("0.00002056") * 330
 
 
 def test_primary_requires_healthy_saturation_and_no_memory_fit() -> None:

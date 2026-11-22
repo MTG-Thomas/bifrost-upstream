@@ -9,8 +9,10 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from shared.models import CloudflareCapacityPolicy
-from sqlalchemy import String, cast, func, select, text
+from sqlalchemy import String, case, cast, exists, func, literal, or_, select, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from src.models.contracts.cloudflare_approval import SolutionApprovalScope
 from src.models.enums import ExecutionStatus
@@ -22,12 +24,10 @@ from src.models.orm.cloudflare_capacity import (
 )
 from src.models.orm.execution_workers import ExecutionWorker
 from src.models.orm.executions import Execution
+from src.models.orm.file_index import FileIndex, SolutionFileIndex
+from src.models.orm.solutions import Solution
 from src.models.orm.work_dispatches import WorkDispatch
 from src.models.orm.workflows import Workflow
-from src.services.execution.cloudflare_eligibility import (
-    indexed_pins,
-    solution_approval_scope,
-)
 from src.services.worker_pool.claims import CAPACITY_LOCK
 from src.services.worker_pool.cloudflare_admission import (
     PrimaryPool,
@@ -83,6 +83,8 @@ class LinuxReview(BaseModel):
     timeout_seconds: int = Field(gt=0)
     ingress_bytes: int = Field(gt=0)
     outbound_bytes: int = Field(gt=0)
+    previous_revision: Digest | None = None
+    inactive_history_count: int = Field(default=0, ge=0)
 
     def matches_release(self, release: VerifiedContainerRelease) -> bool:
         return (
@@ -93,16 +95,18 @@ class LinuxReview(BaseModel):
         )
 
 
-def linux_review_digest(workflow_id: UUID, tenant: UUID | None, declaration: dict) -> str:
+def linux_review_digest(workflow_id: UUID, owner: UUID | None, declaration: dict) -> str:
+    # The stored declaration includes the predecessor or inactive history
+    # count at acceptance, so an identical review can be accepted after revoke.
     return sha256(json.dumps({
         "policy_version": LINUX_REVIEW_VERSION,
-        "workflow_id": str(workflow_id), "organization_id": str(tenant) if tenant else None,
+        "workflow_id": str(workflow_id), "organization_id": str(owner) if owner else None,
         "declaration": declaration,
     }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-async def eligible_linux_review(
-    db: AsyncSession, *, dispatch: WorkDispatch, execution: Execution, workflow: Workflow,
+def eligible_linux_review(
+    *, dispatch: WorkDispatch, execution: Execution, workflow: Workflow,
     approval: CloudflareApproval, installation: CloudflareInstallation, policy: ContainersPolicy,
     release: VerifiedContainerRelease,
 ) -> LinuxReview | None:
@@ -116,9 +120,10 @@ async def eligible_linux_review(
         or dispatch.payload.get("script_name") or dispatch.payload.get("artifact_workspace_id") is not None
         or dispatch.message.get("code") is not None
         or approval.policy_version != LINUX_REVIEW_VERSION or not approval.is_current
-        or approval.workflow_id != workflow.id or workflow.organization_id != execution.organization_id
-        or approval.organization_id != execution.organization_id
-        or approval.revision != linux_review_digest(workflow.id, execution.organization_id, approval.declaration)
+        or approval.workflow_id != workflow.id
+        or (workflow.organization_id is not None and workflow.organization_id != execution.organization_id)
+        or approval.organization_id != workflow.organization_id
+        or approval.revision != linux_review_digest(workflow.id, workflow.organization_id, approval.declaration)
     ):
         return None
     try:
@@ -139,13 +144,36 @@ async def eligible_linux_review(
         or (review.solution.install_id if review.solution else None) != workflow.solution_id
     ):
         return None
-    if workflow.solution_id is not None and (
-        await solution_approval_scope(db, workflow.solution_id, execution.organization_id) != review.solution
-    ):
-        return None
-    if await indexed_pins(db, set(review.source_pins), install_id=workflow.solution_id) != review.source_pins:
-        return None
     return review
+
+
+def linux_source_current_sql() -> ColumnElement[bool]:
+    """Check the review's indexed closure and Solution generation in the candidate query."""
+    declaration = CloudflareApproval.declaration
+    source = declaration["source_pins"]
+    pins = func.jsonb_each_text(case(
+        (func.jsonb_typeof(source) == "object", source), else_=literal({}, type_=JSONB),
+    )).table_valued("key", "value")
+    loose = exists(select(FileIndex.path).where(
+        FileIndex.path == pins.c.key, FileIndex.content_hash == pins.c.value,
+    ).correlate(pins))
+    installed = exists(select(SolutionFileIndex.path).where(
+        SolutionFileIndex.solution_id == Workflow.solution_id,
+        SolutionFileIndex.path == pins.c.key, SolutionFileIndex.content_hash == pins.c.value,
+    ).correlate(pins, Workflow))
+    solution = declaration["solution"]
+    current_solution = exists(select(Solution.id).where(
+        Solution.id == Workflow.solution_id, Solution.status == "active",
+        Solution.organization_id.is_not_distinct_from(Workflow.organization_id),
+        ~Solution.allow_outbound_access,
+        cast(Solution.runtime_source_generation, String) == solution["source_generation"].as_string(),
+        Solution.version.is_not_distinct_from(solution["version"].as_string()),
+    ).correlate(Workflow, CloudflareApproval))
+    mismatched = exists(select(pins.c.key).where(or_(
+        (Workflow.solution_id.is_(None) & ~loose),
+        (Workflow.solution_id.is_not(None) & ~installed),
+    )).correlate(Workflow, CloudflareApproval))
+    return ~mismatched & (Workflow.solution_id.is_(None) | current_solution)
 
 
 def primary_has_no_fit(
@@ -173,16 +201,19 @@ def primary_has_no_fit(
 
 async def reserve_container(
     db: AsyncSession, *, installation_id: UUID, controller_id: UUID,
-    primary: PrimaryPool, release: VerifiedContainerRelease,
+    primary: PrimaryPool, release: VerifiedContainerRelease, verified_egress_origin: str | None,
 ) -> CloudflareWorkerReservation | None:
-    """Reserve physical capacity and exposure before a provider effect can be issued."""
+    """Reserve capacity. Step 3 must wire verified egress, stop and settlement before any production caller."""
     await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": CAPACITY_LOCK})
-    installation = await db.get(CloudflareInstallation, installation_id, with_for_update=True, populate_existing=True)
+    installation = await db.get(
+        CloudflareInstallation, installation_id, with_for_update={"key_share": True}, populate_existing=True,
+    )
     if (
         installation is None or installation.retired_at is not None
         or installation.desired_state != "enabled" or installation.admitted_revision is None
         or installation.admitted_revision != installation.containers_ready_revision
         or installation.containers_release_digest != release.digest
+        or verified_egress_origin != installation.worker_ingress_origin
         or installation.control_root_version is None
     ):
         return None
@@ -230,6 +261,7 @@ async def reserve_container(
     linux_workers = [worker for worker in workers if worker.runtime_profile == LINUX_RUNTIME_PROFILE]
     covered = {row.reserved_for_dispatch_id for row in workers if row.reserved_for_dispatch_id is not None}
     blocked_tenants = seats.blocked_tenants | {tenant for tenant, _ in live}
+    declaration = CloudflareApproval.declaration
     queue = select(WorkDispatch, Execution, Workflow, CloudflareApproval).join(
         Execution, Execution.id == WorkDispatch.subject_id,
     ).join(Workflow, Workflow.id == Execution.workflow_id).join(
@@ -237,15 +269,26 @@ async def reserve_container(
     ).where(
         Execution.status == ExecutionStatus.PENDING, WorkDispatch.assigned_worker_id.is_(None),
         WorkDispatch.id.not_in(covered), WorkDispatch.created_at <= now - timedelta(seconds=containers.queue_wait_seconds),
+        WorkDispatch.execution_lane == "normal", Execution.execution_lane == "normal",
+        WorkDispatch.handler == CLOUDFLARE_WORKFLOW_HANDLER[0],
+        WorkDispatch.handler_version == CLOUDFLARE_WORKFLOW_HANDLER[1],
+        WorkDispatch.cloudflare_revision.is_(None),
+        Workflow.is_active, Workflow.type == "workflow", Workflow.execution_lane != "fast_path",
+        or_(Workflow.organization_id.is_(None), Workflow.organization_id == Execution.organization_id),
+        CloudflareApproval.organization_id.is_not_distinct_from(Workflow.organization_id),
+        func.coalesce(cast(Execution.organization_id, String), tenant_key(None)).not_in(blocked_tenants),
         CloudflareApproval.is_current, CloudflareApproval.policy_version == LINUX_REVIEW_VERSION,
+        declaration["release_digest"].as_string() == release.digest,
+        declaration["installation_id"].as_string() == str(installation_id),
+        declaration["worker_ingress_origin"].as_string() == verified_egress_origin,
+        linux_source_current_sql(),
     ).order_by(WorkDispatch.created_at, WorkDispatch.id).limit(1000)
     demand: list[tuple[WorkDispatch, Execution, CloudflareApproval]] = []
     for dispatch, execution, workflow, approval in (await db.execute(queue)).tuples():
         if (
-            tenant_key(execution.organization_id) not in blocked_tenants
-            and primary_has_no_fit(primary, linux_workers, now, dispatch.memory_request_bytes)
-            and await eligible_linux_review(
-                db, dispatch=dispatch, execution=execution, workflow=workflow, approval=approval,
+            primary_has_no_fit(primary, linux_workers, now, dispatch.memory_request_bytes)
+            and eligible_linux_review(
+                dispatch=dispatch, execution=execution, workflow=workflow, approval=approval,
                 installation=installation, policy=containers, release=release,
             ) is not None
         ):
@@ -300,6 +343,7 @@ async def reserve_container(
         container_reserved_at=now, container_envelope={
             **envelope, "approval": approval.revision, "instance_type": containers.instance_type,
             "credential_version": scope.bearer_version,
+            "start_deadline": (now + timedelta(seconds=containers.start_timeout_seconds)).isoformat(),
         },
     )
     db.add(reservation)

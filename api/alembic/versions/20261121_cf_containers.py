@@ -94,6 +94,10 @@ def upgrade() -> None:
         "AND (container_stopped_at IS NULL OR "
         "(container_reserved_at IS NOT NULL AND container_stopped_at >= container_reserved_at))",
     )
+    op.create_index(
+        "ix_cf_container_reservations", "cloudflare_worker_reservations", ["installation_id", "container_reserved_at"],
+        postgresql_where=sa.text("container_reserved_at IS NOT NULL"),
+    )
     _workers_usage(contain_linux=True)
 
 
@@ -107,6 +111,7 @@ def downgrade() -> None:
         END $$
     """)
     _workers_usage(contain_linux=False)
+    op.drop_index("ix_cf_container_reservations", table_name="cloudflare_worker_reservations")
     op.drop_constraint("ck_cf_container_reservation", "cloudflare_worker_reservations", type_="check")
     op.drop_constraint("ck_cf_containers_readiness", "cloudflare_installations", type_="check")
     for name in (

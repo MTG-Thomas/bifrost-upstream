@@ -26,7 +26,6 @@ from src.services.worker_pool.cloudflare_workers_rest import WorkersRestCleanup
 REGISTRY = "registry.cloudflare.com"
 _HEX32 = re.compile(r"[a-f0-9]{32}")
 _APP_ID = re.compile(r"[a-f0-9]{32}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}")
-_DIGEST = re.compile(r"sha256:[a-f0-9]{64}")
 
 
 def _name(intent: ResourceIntent, kind: str) -> str:
@@ -120,44 +119,6 @@ class ContainersRest(WorkersRestCleanup):
             raise OwnershipConflict("Container application ID changed")
         return ResourceObservation(intent, app_id, namespace)
 
-    async def instances(self, token: SecretStr, app: ResourceObservation) -> list[dict[str, Any]]:
-        name = _name(app.intent, "container_application")
-        account = app.intent.target.account_id
-        if not _APP_ID.fullmatch(app.provider_id) or not _HEX32.fullmatch(app.provider_version):
-            raise OwnershipConflict("Container application inventory pin is invalid")
-        path = f"containers/applications/{app.provider_id}"
-        current = await self._request(token, account, "GET", path)
-        assert current is not None
-        if self._application(current["result"], account, name, app.provider_version) != app.provider_id:
-            raise OwnershipConflict("Container application ID changed")
-        rows = await self._inventory(token, account, f"{path}/instances-v2")
-        if any(
-            not re.fullmatch(r"[a-f0-9]{64}", row["id"]) or row.get("application_id") != app.provider_id
-            or not isinstance(row.get("status"), dict) or not isinstance(row["status"].get("state"), str)
-            for row in rows
-        ):
-            raise ObservationPending("Container instance inventory is unconfirmed")
-        return rows
-
-    async def prepare(self, token: SecretStr, image: ResourceObservation) -> ResourceObservation:
-        name = _name(image.intent, "container_image")
-        account = image.intent.target.account_id
-        if not _DIGEST.fullmatch(image.provider_version) or image.provider_id != f"{REGISTRY}/{account}/{name}:release":
-            raise OwnershipConflict("Container image observation has a different identity")
-        pinned = f"{REGISTRY}/{account}/{name}@{image.provider_version}"
-        result = await self._request(
-            token, account, "POST", "containers/image-preparations", json_body={"image": pinned},
-        )
-        assert result is not None
-        receipt = result["result"]
-        if not isinstance(receipt, dict) or receipt.get("image") != pinned:
-            raise OwnershipConflict("Container preparation refers to a different image")
-        digest = receipt.get("artifact_digest")
-        if receipt.get("status") != "ready" or not isinstance(digest, str) or not _DIGEST.fullmatch(digest):
-            raise ObservationPending("Exact Container preparation is not ready")
-        return ResourceObservation(image.intent, pinned, digest)
-
-
 class ContainerRegistry:
     """Use the qualified crane and cf paths with isolated credential files."""
 
@@ -194,7 +155,7 @@ class ContainerRegistry:
     async def copy(
         self, token: SecretStr, intent: ResourceIntent, release: VerifiedContainerRelease, *, previously_sent: bool,
     ) -> ResourceObservation:
-        """Call after committing the intent and fencing its one possible push."""
+        """Replay only the journaled digest into an empty owned repository."""
         name = _name(intent, "container_image")
         account = intent.target.account_id
         if release.digest != intent.artifact_digest:
@@ -207,10 +168,8 @@ class ContainerRegistry:
             await self._verify_image(release.manifest.image, release, cwd)
             tags = await self._tags(token, account, name, cwd)
             visible = "release" in tags
-            if tags and not previously_sent:
+            if tags and (not previously_sent or not visible):
                 raise OwnershipConflict("Container registry repository is occupied")
-            if not visible and previously_sent:
-                raise ObservationPending("Earlier registry push has no confirmed tag")
             credentials = await self.rest._request(
                 token, account, "POST", f"containers/registries/{REGISTRY}/credentials",
                 json_body={"expiration_minutes": 15, "permissions": ["pull"] if visible else ["pull", "push"]},

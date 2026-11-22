@@ -27,11 +27,11 @@ class ContainersPolicy(BaseModel):
     workflow_slots: Literal[1] = 1
     idle_seconds: int = Field(default=120, ge=1, le=120)
     # Required on explicit enablement. The pilot did not set defaults for
-    # execution duration, ingress byte budgets or queue/cooldown envelopes.
+    # execution duration, ingress byte budgets or queue envelopes.
+    start_timeout_seconds: int = Field(ge=1, le=3600)
     lifetime_seconds: int = Field(ge=121, le=86400)
     queue_wait_seconds: int = Field(ge=1, le=3600)
     queue_depth: int = Field(ge=1, le=1000)
-    cooldown_seconds: int = Field(ge=1, le=86400)
     ingress_bytes: int = Field(ge=1, le=10**9)
     outbound_bytes: int = Field(ge=1, le=10**9)
 
@@ -39,7 +39,7 @@ class ContainersPolicy(BaseModel):
 def container_envelope(policy: ContainersPolicy, rates: ContainerRates) -> dict[str, str | int]:
     return {
         "version": rates.version,
-        "seconds": policy.lifetime_seconds + rates.cleanup_seconds,
+        "seconds": policy.start_timeout_seconds + policy.lifetime_seconds + rates.cleanup_seconds,
         "second_usd": rates.instance_second_usd,
         "fixed_usd": str(rates.control_usd + Decimal(rates.outbound_gb_usd) * policy.outbound_bytes / 10**9),
     }
@@ -57,14 +57,14 @@ def fleet_envelope(policy: ContainersPolicy, rates: ContainerRates, month_second
 
 
 def container_account_usage(now):
-    """Price unsettled horizons and overdue exposure in the same UTC account ledger."""
+    """Price reserved and settled exposure within the pinned absolute deadline."""
     reservation = CloudflareWorkerReservation
     owner = aliased(CloudflareInstallation)
     period = func.date_trunc("month", now, "UTC")
     end = func.timezone("UTC", func.timezone("UTC", period) + literal("1 month").cast(Interval))
     envelope = reservation.container_envelope
     reserve_end = reservation.container_reserved_at + func.make_interval(0, 0, 0, 0, 0, 0, envelope["seconds"].as_integer())
-    charged_end = func.coalesce(reservation.container_stopped_at, func.greatest(reserve_end, now))
+    charged_end = func.least(reserve_end, func.coalesce(reservation.container_stopped_at, reserve_end))
     seconds = func.greatest(0, extract(
         "epoch", func.least(end, charged_end) - func.greatest(period, reservation.container_reserved_at),
     ))
@@ -75,6 +75,7 @@ def container_account_usage(now):
         owner, owner.id == reservation.installation_id,
     ).where(
         owner.account_id == CloudflareInstallation.account_id,
+        reservation.container_reserved_at.is_not(None),
         reservation.container_reserved_at < end,
         charged_end > period,
     ).correlate(CloudflareInstallation).scalar_subquery()

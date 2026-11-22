@@ -297,8 +297,9 @@ Use gross rates for estimates, without subtracting shared included usage.
 Charge elapsed live time at provisioned memory and disk and conservatively
 at provisioned vCPU until calibrated active CPU evidence is trustworthy.
 Settlement uses independently witnessed time bounds and measured egress
-where complete. Otherwise keep the relevant reserve and accrue unconfirmed
-exposure beyond its original horizon. Track scoped source reads and
+where complete. Bound an unsettled billing reserve at the absolute deadline
+formed by the start deadline, maximum lifetime and cleanup margin. An unresolved
+stop keeps its seat occupied after the billing horizon. Track scoped source reads and
 outbound ACK, heartbeat, log, SDK and response bytes separately. Bound both
 directions through the relay and reserve for overhead and failed or retried
 transfers. Price egress at the maximum published regional rate until a
@@ -473,6 +474,21 @@ carry their focused tests and keep Containers gated until release qualification.
    contracts, and API e2e on provider stubs (3–4 days).
 5. Run owner-approved hosted qualification, record evidence, and enable only
    the independently verified release envelope (2 days active work).
+
+The seams staged in steps 1–2 have these first callers:
+
+| Seam | First production use |
+| --- | --- |
+| Release CI Linux image, baked wheel manifest and signature | Step 1 release packaging. Make the GHCR `…-cloudflare-linux` package public so the trusted runner can check the source anonymously before obtaining Cloudflare registry credentials. |
+| `verify_containers_release`, `ContainerRegistry.copy` and `ContainersRest.application` | Step 4 joint provisioning verifies the pinned release, copies the owned revision tag and inventories the application. |
+| `ScopeRegistry.reserve` | Step 3 authenticated capacity controller reserves before it requests an instance start. |
+| `reserve_container`, Linux review/source predicates and joint slot and spend accounting | Step 3 admission and bootstrap. Use the execution tenant for capacity and the workflow owner for approval and source scope. |
+
+Step 3 must ship verified stop and settlement before adding any production
+caller of `reserve_container`. A start requires independent evidence that
+the exact worker ingress is allowed and every other egress destination is
+denied. Pass the verified origin to the reservation seam. Provider readiness
+and successful image preparation alone cannot satisfy that precondition.
 
 ## Owner decisions
 

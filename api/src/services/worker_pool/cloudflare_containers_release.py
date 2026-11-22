@@ -120,6 +120,9 @@ async def verify_containers_release(
     """Verify trusted CI identity before any registry credential is requested."""
     if not re.fullmatch(r"https://github\.com/[^/]+/[^/]+/\.github/workflows/[^@]+@refs/tags/[^\s]+", signer):
         raise ContainersReleaseUnavailable("Expected an exact trusted release workflow identity")
+    version = await run_oci_tool(cosign, "version", cwd=workspace)
+    if re.findall(rb"(?m)^GitVersion:[ \t]*(\S+)[ \t]*\r?$", version) != [b"v2.4.1"]:
+        raise ContainersReleaseUnavailable("Expected cosign v2.4.1")
     try:
         content = (path / "manifest.json").read_bytes()
         bundle = (path / "manifest.sigstore.json").read_bytes()

@@ -186,6 +186,10 @@ class CloudflareWorkerReservation(Base):
         CheckConstraint("deployment_revision > 0", name="ck_cf_reservation_revision"),
         CheckConstraint("control_root_version IS NOT NULL", name="ck_cf_reservation_has_root", postgresql_not_valid=True),
         Index("ix_cf_reservations_installation", "installation_id"),
+        Index(
+            "ix_cf_container_reservations", "installation_id", "container_reserved_at",
+            postgresql_where=text("container_reserved_at IS NOT NULL"),
+        ),
         CheckConstraint(
             "num_nonnulls(container_tenant, container_release, container_envelope, container_reserved_at) IN (0, 4) "
             "AND (container_stopped_at IS NULL OR "
