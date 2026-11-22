@@ -20,6 +20,7 @@ from src.models.orm.work_dispatches import WorkDispatch
 from src.services.kubernetes_execution import load_kubernetes_policy
 from src.services.execution.summary_dispatch import LINUX_ONLY_SUMMARY
 from src.services.worker_pool.cloudflare_admission import cloudflare_claim_allowed
+from src.services.worker_pool.cloudflare_containers_policy import container_identity_matches
 from src.services.worker_pool.cloudflare_slots import (
     QueuePreparation,
     WorkflowSlotTicket,
@@ -117,6 +118,7 @@ async def admit_worker(
 
 async def admit_external_worker(
     incarnation_id: UUID, *, resource_uid: str, launcher_id: UUID, version: str | None, hostname: str,
+    container_release: str | None = None,
 ) -> UUID | None:
     """Bind the first physical process to a prepared external incarnation."""
     async with get_db_context() as db:
@@ -129,6 +131,7 @@ async def admit_external_worker(
                 ExecutionWorker.form == "external",
                 ExecutionWorker.runtime_profile != CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
                 ExecutionWorker.state == "starting",
+                container_identity_matches(incarnation_id, container_release),
                 ExecutionWorker.capacity_resource_uid == resource_uid,
                 ExecutionWorker.remote_launcher_id.is_(None),
                 ExecutionWorker.version.is_not(None),

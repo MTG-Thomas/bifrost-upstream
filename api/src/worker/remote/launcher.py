@@ -210,17 +210,19 @@ class Launcher:
         on_stop: Callable[[], None] | None = None,
         authenticated_control: bool = False,
         containers: bool = False,
+        container_release: str | None = None,
     ) -> None:
         self.socket = socket
         self.identity = identity
         self.secret = secret
         self._authenticated_control = authenticated_control
         self.containers = containers
+        self.container_release = container_release
         self.platform_stages = (
             PlatformStages(
                 {SOLUTION_GIT_CAPABILITY: StageProgram("src.worker.remote.solution_git_stage", 45)},
             )
-            if containers else None
+            if containers and container_release is None else None
         )
         self.session_generation = 0
         self._sequence = 0
@@ -360,6 +362,7 @@ class Launcher:
             hello_sequence=self._hello_sequence,
             execution_lane=os.environ.get("BIFROST_POOL_WORKER_EXECUTION_LANE", "normal"),
             runtime_profile=LINUX_RUNTIME_PROFILE if self.containers else None,
+            container_release=self.container_release,
         )
         await self.socket.send(json.dumps({
             "event": "hello",
@@ -373,7 +376,8 @@ class Launcher:
             "credential_protocol": CREDENTIAL_PROTOCOL,
             "handlers": (
                 (CLOUDFLARE_WORKFLOW_HANDLER, (SOLUTION_GIT_CAPABILITY, 1))
-                if self.containers else EXECUTION_HANDLERS
+                if self.platform_stages is not None else
+                (CLOUDFLARE_WORKFLOW_HANDLER,) if self.containers else EXECUTION_HANDLERS
             ),
             "summary_claim_protocol": SUMMARY_CLAIM_PROTOCOL,
         }, separators=(",", ":")))
@@ -920,10 +924,11 @@ async def _run_launcher(
     control_headers = load_control_headers(control_url)
     identity = load_launcher_identity()
     containers = identity.form == "external" and "BIFROST_WORKER_CONTROL_SECRET" in os.environ
-    if os.environ.get("BIFROST_BAKED_WHEELS_ONLY") == "1" and (
-        not containers or not api_url.startswith("https://")
-    ):
-        raise RuntimeError("The Container release requires explicit incarnation credentials and HTTPS worker ingress")
+    container_release = None
+    if os.environ.get("BIFROST_BAKED_WHEELS_ONLY") == "1":
+        container_release = os.environ.pop("BIFROST_CONTAINER_RELEASE", "")
+        if not containers or not api_url.startswith("https://") or not container_release:
+            raise RuntimeError("The Container release requires explicit incarnation, release and HTTPS ingress pins")
     secret = _load_containers_control_secret() if containers else os.environ["BIFROST_SECRET_KEY"]
     launcher: Launcher | None = None
     candidate: Launcher | None = None
@@ -935,7 +940,11 @@ async def _run_launcher(
         drain_task: asyncio.Task[None] | None = None
         while launcher is None or (not launcher.retired.is_set() and not launcher.failed):
             try:
-                async with connect_control(control_url, control_headers) as socket:
+                connection = (
+                    connect_control(control_url, control_headers, container_intercept=True)
+                    if container_release is not None else connect_control(control_url, control_headers)
+                )
+                async with connection as socket:
                     if launcher is None:
                         if candidate is None:
                             candidate = Launcher(
@@ -943,6 +952,7 @@ async def _run_launcher(
                                 on_ready=on_ready, on_stop=on_stop,
                                 authenticated_control=bool(control_headers),
                                 containers=containers,
+                                container_release=container_release,
                             )
                         else:
                             # A lost welcome may follow a committed enrollment.

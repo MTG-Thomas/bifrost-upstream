@@ -2,7 +2,14 @@
 
 import json
 from hashlib import sha256
+from uuid import UUID
 
+from src.services.worker_pool.cloudflare_containers_egress import (
+    REQUIRED_DENIALS,
+    ContainerEgressObservation,
+    VerifiedEgress,
+    verify_container_egress,
+)
 from src.services.worker_pool.cloudflare_containers_policy import ContainersPolicy
 from src.services.worker_pool.cloudflare_containers_release import (
     ENTRYPOINT,
@@ -46,3 +53,16 @@ def policy() -> ContainersPolicy:
         lifetime_seconds=300, queue_wait_seconds=1, queue_depth=1, start_timeout_seconds=30,
         ingress_bytes=100, outbound_bytes=100,
     )
+
+
+async def verified_egress(installation_id: UUID, revision: int, digest: str, origin: str) -> VerifiedEgress:
+    async def probe() -> ContainerEgressObservation:
+        return ContainerEgressObservation(
+            installation_id, revision, digest, origin, False, frozenset({origin}), True, True, REQUIRED_DENIALS,
+        )
+
+    proof = await verify_container_egress(
+        probe, installation_id=installation_id, revision=revision, release_digest=digest, origin=origin,
+    )
+    assert proof is not None
+    return proof

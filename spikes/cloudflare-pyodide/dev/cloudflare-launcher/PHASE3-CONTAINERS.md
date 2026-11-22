@@ -487,8 +487,23 @@ The seams staged in steps 1–2 have these first callers:
 Step 3 must ship verified stop and settlement before adding any production
 caller of `reserve_container`. A start requires independent evidence that
 the exact worker ingress is allowed and every other egress destination is
-denied. Pass the verified origin to the reservation seam. Provider readiness
-and successful image preparation alone cannot satisfy that precondition.
+denied. Pass the release-bound `VerifiedEgress` from the qualification
+probe to the reservation seam. Provider readiness and successful image
+preparation alone cannot satisfy that precondition.
+
+The scope controller must persist a start fence before requesting a start
+and supply its closure to settlement. Pending effects keep their seats
+across controller resets. The control relay charges each fragment in the
+original direction against the incarnation's durable byte budget. Before
+using those bytes for settlement, charge the scoped HTTP paths to the same
+budget and verify that the scope has fenced all relays. Pair the scope's
+closure with a read of the named management API instance. If Cloudflare
+omits placement timestamps, keep the seat unresolved until exact stop and
+time evidence is available.
+
+The future Linux review writer must require platform-level permission to
+accept a Global Linux approval because the approval can authorize runs for
+every tenant. Provider-organization membership grants no such permission.
 
 ## Owner decisions
 

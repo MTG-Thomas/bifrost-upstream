@@ -169,6 +169,7 @@ class Hello:
     resource_uid: str | None = field(default=None, kw_only=True)
     runtime_profile: str | None = field(default=None, kw_only=True)
     execution_lane: str = field(default="normal", kw_only=True)
+    container_release: str | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         if self.runtime_profile is not None and (
@@ -193,6 +194,12 @@ class Hello:
             raise ProtocolError("hello sequence must be positive")
         if self.execution_lane not in {"normal", "fast_path"}:
             raise ProtocolError("hello execution lane is invalid")
+        if self.container_release is not None and (
+            self.form != "external" or self.runtime_profile != LINUX_RUNTIME_PROFILE
+            or self.execution_lane != "normal" or not isinstance(self.container_release, str)
+            or re.fullmatch(r"[a-f0-9]{64}", self.container_release) is None
+        ):
+            raise ProtocolError("managed Linux hello requires an exact Container release")
 
     def canonical_bytes(self) -> bytes:
         fields = {
@@ -214,6 +221,8 @@ class Hello:
             fields["resource_uid"] = self.resource_uid
         if self.runtime_profile is not None:
             fields["runtime_profile"] = self.runtime_profile
+        if self.container_release is not None:
+            fields["container_release"] = self.container_release
         return json.dumps(
             fields,
             separators=(",", ":"),
@@ -241,6 +250,7 @@ class SignedHello(Hello):
                 resource_uid=str(value["resource_uid"]) if value.get("resource_uid") is not None else None,
                 runtime_profile=value.get("runtime_profile"),
                 execution_lane=str(value.get("execution_lane", "normal")),
+                container_release=value.get("container_release"),
                 proof=str(value["proof"]),
             )
         except (KeyError, TypeError, ValueError) as exc:
@@ -252,6 +262,8 @@ class SignedHello(Hello):
             fields.pop("resource_uid")
         if self.runtime_profile is None:
             fields.pop("runtime_profile")
+        if self.container_release is None:
+            fields.pop("container_release")
         return {key: str(value) if isinstance(value, UUID) else value for key, value in fields.items()}
 
 
@@ -439,6 +451,7 @@ def verify_hello(
         resource_uid=hello.resource_uid,
         runtime_profile=hello.runtime_profile,
         execution_lane=hello.execution_lane,
+        container_release=hello.container_release,
     )
     expected = sign_hello(secret, unsigned).proof
     if not hmac.compare_digest(hello.proof, expected):

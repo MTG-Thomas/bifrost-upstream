@@ -1,6 +1,7 @@
 """Release, provider readback and placement checks without Cloudflare calls."""
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
@@ -17,6 +18,12 @@ from src.services.worker_pool.cloudflare_containers_admission import (
     LinuxReview,
     linux_review_digest,
     primary_has_no_fit,
+)
+from src.services.worker_pool.cloudflare_containers_egress import (
+    REQUIRED_DENIALS,
+    ContainerEgressObservation,
+    VerifiedEgress,
+    verify_container_egress,
 )
 from src.services.worker_pool.cloudflare_containers_policy import (
     container_envelope,
@@ -94,13 +101,23 @@ async def test_descriptor_requires_release_signer_and_exact_source(tmp_path, mon
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("initial_tags", [[], ["release"], ["other"]])
-async def test_registry_replays_only_into_an_empty_repository(tmp_path, monkeypatch, initial_tags) -> None:
+@pytest.mark.parametrize(("initial_tags", "previously_sent", "conflict"), [
+    (None, True, False),
+    ([], True, False),
+    (["release"], True, False),
+    (["other"], True, True),
+    (["release"], False, True),
+    (["release", "other"], True, True),
+    (["release", "other"], False, True),
+])
+async def test_registry_replays_only_into_an_empty_repository(
+    tmp_path, monkeypatch, initial_tags, previously_sent, conflict,
+) -> None:
     release, image, config = make_release()
     installation = uuid4()
     name = f"bifrost-{installation.hex}-r1"
     intent = ResourceIntent(ResourceTarget(installation, ACCOUNT, "containers", "container_image", name), uuid4(), 1, release.digest)
-    tags = initial_tags.copy()
+    tags = list(initial_tags or [])
     permissions = []
     copies = []
 
@@ -112,7 +129,7 @@ async def test_registry_replays_only_into_an_empty_repository(tmp_path, monkeypa
         if args[:2] == ("accounts", "get"):
             return json_bytes({"id": ACCOUNT})
         if args[:3] == ("containers", "images", "list"):
-            return json_bytes([{"name": name, "tags": tags}] if tags else [])
+            return json_bytes([{"name": name, "tags": tags}] if tags or initial_tags is not None else [])
         if args[0] == "manifest":
             return image + b"\n"
         if args[0] == "config":
@@ -133,12 +150,12 @@ async def test_registry_replays_only_into_an_empty_repository(tmp_path, monkeypa
     monkeypatch.setattr("src.services.worker_pool.cloudflare_containers_rest.run_oci_tool", tool)
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
         registry = ContainerRegistry(ContainersRest(http), crane=tmp_path / "crane", cf=tmp_path / "cf")
-        if initial_tags == ["other"]:
+        if conflict:
             with pytest.raises(OwnershipConflict):
-                await registry.copy(TOKEN, intent, release, previously_sent=True)
+                await registry.copy(TOKEN, intent, release, previously_sent=previously_sent)
             assert not permissions and not copies
             return
-        result = await registry.copy(TOKEN, intent, release, previously_sent=True)
+        result = await registry.copy(TOKEN, intent, release, previously_sent=previously_sent)
         assert result.provider_version == release.manifest.image_digest
         if initial_tags:
             assert permissions == [["pull"]] and not copies
@@ -156,6 +173,28 @@ def test_linux_review_digest_distinguishes_replacement_and_reacceptance() -> Non
     assert len({first, replaced, reaccepted}) == 3
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", [
+    {"revision": 2}, {"internet_enabled": True}, {"signed_control_round_trip": False},
+    {"bounded_relay": False}, {"denied": frozenset()}, {"intercepted_origins": frozenset()},
+])
+async def test_egress_proof_requires_exact_release_and_observed_network_controls(change) -> None:
+    origin = "https://worker.example.test"
+    installation_id = uuid4()
+    observation = ContainerEgressObservation(
+        installation_id, 1, "a" * 64, origin, False, frozenset({origin}), True, True, REQUIRED_DENIALS,
+    )
+
+    async def probe():
+        return replace(observation, **change)
+
+    assert await verify_container_egress(
+        probe, installation_id=installation_id, revision=1, release_digest="a" * 64, origin=origin,
+    ) is None
+    with pytest.raises(TypeError, match="must be verified"):
+        VerifiedEgress(observation, _mint=object())
+
+
 def test_baked_wheel_closure_is_required_for_package_finding() -> None:
     release, _, _ = make_release()
     fields = {
@@ -164,6 +203,7 @@ def test_baked_wheel_closure_is_required_for_package_finding() -> None:
         "egress": "worker-ingress-only-v1", "path": "workflow.py", "function_name": "run",
         "source_pins": {"workflow.py": "1" * 64}, "memory_bytes": 123, "timeout_seconds": 123,
         "ingress_bytes": 100, "outbound_bytes": 100,
+        "previous_revision": None, "inactive_history_count": 0,
     }
     assert LinuxReview(**fields, wheels=release.manifest.wheels).matches_release(release)
     assert not LinuxReview(**fields, wheels={}).matches_release(release)

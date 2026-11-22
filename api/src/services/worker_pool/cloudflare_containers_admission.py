@@ -33,6 +33,7 @@ from src.services.worker_pool.cloudflare_admission import (
     PrimaryPool,
     workers_release_matches,
 )
+from src.services.worker_pool.cloudflare_containers_egress import VerifiedEgress
 from src.services.worker_pool.cloudflare_containers_policy import (
     CONTAINERS_SCOPE,
     ContainersPolicy,
@@ -83,8 +84,8 @@ class LinuxReview(BaseModel):
     timeout_seconds: int = Field(gt=0)
     ingress_bytes: int = Field(gt=0)
     outbound_bytes: int = Field(gt=0)
-    previous_revision: Digest | None = None
-    inactive_history_count: int = Field(default=0, ge=0)
+    previous_revision: Digest | None
+    inactive_history_count: int = Field(ge=0)
 
     def matches_release(self, release: VerifiedContainerRelease) -> bool:
         return (
@@ -201,7 +202,7 @@ def primary_has_no_fit(
 
 async def reserve_container(
     db: AsyncSession, *, installation_id: UUID, controller_id: UUID,
-    primary: PrimaryPool, release: VerifiedContainerRelease, verified_egress_origin: str | None,
+    primary: PrimaryPool, release: VerifiedContainerRelease, verified_egress: VerifiedEgress | None,
 ) -> CloudflareWorkerReservation | None:
     """Reserve capacity. Step 3 must wire verified egress, stop and settlement before any production caller."""
     await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": CAPACITY_LOCK})
@@ -213,7 +214,11 @@ async def reserve_container(
         or installation.desired_state != "enabled" or installation.admitted_revision is None
         or installation.admitted_revision != installation.containers_ready_revision
         or installation.containers_release_digest != release.digest
-        or verified_egress_origin != installation.worker_ingress_origin
+        or not isinstance(verified_egress, VerifiedEgress)
+        or (
+            verified_egress.installation_id, verified_egress.revision,
+            verified_egress.release_digest, verified_egress.origin,
+        ) != (installation.id, installation.admitted_revision, release.digest, installation.worker_ingress_origin)
         or installation.control_root_version is None
     ):
         return None
@@ -252,6 +257,7 @@ async def reserve_container(
             ExecutionWorker, ExecutionWorker.id == pin.worker_id,
         ).where(
             ExecutionWorker.capacity_resource_deleted_at.is_(None), ExecutionWorker.state.not_in(LIVE_STATES),
+            pin.container_stopped_at.is_(None),
         )) or 0) >= policy.shared_managed_worker_cap
     ):
         return None
@@ -280,7 +286,7 @@ async def reserve_container(
         CloudflareApproval.is_current, CloudflareApproval.policy_version == LINUX_REVIEW_VERSION,
         declaration["release_digest"].as_string() == release.digest,
         declaration["installation_id"].as_string() == str(installation_id),
-        declaration["worker_ingress_origin"].as_string() == verified_egress_origin,
+        declaration["worker_ingress_origin"].as_string() == verified_egress.origin,
         linux_source_current_sql(),
     ).order_by(WorkDispatch.created_at, WorkDispatch.id).limit(1000)
     demand: list[tuple[WorkDispatch, Execution, CloudflareApproval]] = []
@@ -331,7 +337,7 @@ async def reserve_container(
     worker_id, uid = uuid4(), uuid4()
     db.add(ExecutionWorker(
         id=worker_id, form="external", state="reserved", runtime_profile=LINUX_RUNTIME_PROFILE,
-        execution_lane="normal", capacity_scope=CONTAINERS_SCOPE, capacity_resource_uid=str(uid),
+        execution_lane="normal", capacity_scope=CONTAINERS_SCOPE, capacity_resource_uid=uid.hex,
         supported_handlers=[CLOUDFLARE_WORKFLOW_HANDLER[0]], reserved_for_dispatch_id=dispatch.id,
         memory_limit_bytes=4 * 1024**3, launched_by=controller_id,
     ))

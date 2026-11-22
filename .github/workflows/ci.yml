@@ -170,6 +170,11 @@ jobs:
       - name: Dependabot automation contracts
         run: node --test scripts/test_dependabot_product_updates.cjs scripts/test_dependabot_alert_lookup.cjs
 
+      - name: Cloudflare capacity contracts
+        run: |
+          npm ci --prefix api/src/services/app_bundler --omit=dev
+          node --test deploy/capacity/cloudflare/container-registry.test.mjs deploy/capacity/cloudflare/build-workers.test.mjs
+
       - name: Install client deps
         working-directory: client
         run: npm ci
