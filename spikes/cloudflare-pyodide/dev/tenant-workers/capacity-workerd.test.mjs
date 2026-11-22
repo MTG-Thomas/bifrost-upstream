@@ -369,7 +369,7 @@ async function start() {
               type: 'text', value: JSON.stringify(lifetimeRates),
             }} : {}),
             LOADER: {type: 'worker-loader'},
-            RUNTIME_SHA256: {type: 'text', value: 'fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5'},
+            RUNTIME_SHA256: {type: 'text', value: '11ade0a1ea1b117d577803cff87d1c3c4074d793df5bcb17a9f473923e55f254'},
             BIFROST_METER_ENGINE_CPU_MS: {type: 'text', value: '30000'},
             BIFROST_METER_BOOT_CPU_MS: {type: 'text', value: process.env.BIFROST_QUALIFIED_BOOT_CPU_MS ?? '30000'},
             BIFROST_METER_WARM_CPU_MS: {type: 'text', value: process.env.BIFROST_QUALIFIED_WARM_CPU_MS ?? '30000'},

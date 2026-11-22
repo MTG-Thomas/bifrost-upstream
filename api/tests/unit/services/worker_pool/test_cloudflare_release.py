@@ -36,7 +36,7 @@ def release(tmp_path: Path, monkeypatch) -> Path:
         "source_revision": "a" * 40,
         "release_version": "1.0.0-rc.1",
         "release_sequence": 1,
-        "runtime_sha256": "fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5",
+        "runtime_sha256": cloudflare_release.QUALIFIED_RUNTIME_SHA256,
         "pyodide_version": "314.0.6",
         "compatibility_date": "2026-10-30",
         "compatibility_flags": [],

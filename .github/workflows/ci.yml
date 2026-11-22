@@ -913,7 +913,7 @@ jobs:
           trap 'rm -rf "$staging"' EXIT
           runtime="$staging/runtime.mjs"
           curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
-            --max-time 120 --max-filesize 22017944 --output "$runtime" "$QUALIFIED_WORKERS_RUNTIME_URL"
+            --max-time 120 --max-filesize 22020012 --output "$runtime" "$QUALIFIED_WORKERS_RUNTIME_URL"
           npm ci --prefix api/src/services/app_bundler --omit=dev
           node --test deploy/capacity/cloudflare/build-workers.test.mjs deploy/capacity/cloudflare/container-registry.test.mjs
           node deploy/capacity/cloudflare/build-workers.mjs "$runtime" \
