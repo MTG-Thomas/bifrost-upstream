@@ -84,6 +84,7 @@ const measuredLauncher = process.env.BIFROST_QUALIFIED_LAUNCHER_BUNDLE;
 const measuredGateway = process.env.BIFROST_QUALIFIED_GATEWAY_BUNDLE;
 const slotQualification = process.env.BIFROST_LOCAL_TENANT_SLOTS === 'true';
 const lifetimeSoak = process.env.BIFROST_LIFETIME_SOAK_RESULT;
+const soakSeconds = Number(process.env.BIFROST_LIFETIME_SOAK_SECONDS ?? 900);
 const launcherSlots = slotQualification ? 4 : measuredLauncher ? 2 : 1;
 const controllerPolls = Number(process.env.BIFROST_QUALIFIED_CONTROLLER_POLLS ?? 0);
 const controllerSource = new URL('../../../../api/src/services/pool_cadence.py', import.meta.url);
@@ -159,11 +160,12 @@ async function referenceAttempt(record, solution, slotCase) {
   if (slotCase?.soak) {
     const value = terminal.result?.result;
     if (terminal.result?.success === true) {
-      assert.deepEqual({...value, module_count: undefined}, {
-        case: caseName, table_count: 0, isolated: true, module_count: undefined,
+      const {module_count, ...output} = value;
+      assert.deepEqual(output, {
+        case: caseName, table_count: 0, isolated: true,
         ...(solution ? {install_value: 'solution'} : {}),
       });
-      assert.ok(Number.isSafeInteger(value.module_count) && value.module_count > 0);
+      assert.ok(Number.isSafeInteger(module_count) && module_count > 0);
     }
     return {state: terminal.attempt_state, success: terminal.result?.success === true,
       error_type: terminal.result?.error_type ?? null, route_id,
@@ -396,7 +398,8 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
   const key = randomBytes(32).toString('hex');
   const reservation = {worker_id: id, worker_version: settings.version,
     memory_limit_bytes: launcherSlots * 128 * 1024 ** 2,
-    max_lifetime_seconds: lifetimeSoak ? 900 : controllerPolls ? Math.ceil(controllerPolls * reconcileSeconds) + 120 : 60,
+    max_lifetime_seconds: lifetimeSoak ? soakSeconds :
+      controllerPolls ? Math.ceil(controllerPolls * reconcileSeconds) + 120 : 60,
     drain_grace_seconds: 5,
     resource_uid: uid, control_key: key};
   assert.equal((await request(path, 'PUT', reservation, {...auth, Authorization: `Bearer ${key}`})).status, 401);
@@ -429,7 +432,7 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
     const verifySession = async () => {
       const records = hellos.get(id);
       const previous = record.hello.hello;
-      sockets.get(id).close(4001);
+      sockets.get(id).close(1012);
       record = await next(() => records.find(item => item !== seen && item.inventory));
       const {proof, ...hello} = record.hello.hello;
       assert.equal((await signHello(key, hello)).proof, proof);
@@ -452,7 +455,7 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
       }
     };
     await runLifetimeSoak({
-      result: lifetimeSoak, storage, run, verifySession, launcher: measuredLauncher,
+      result: lifetimeSoak, seconds: soakSeconds, storage, run, verifySession, launcher: measuredLauncher,
       cadence: controllerPolls ? () => observeAtControllerCadence(path) : undefined,
       observe: async () => (await (await request(path)).json()).state,
       settle: async () => {

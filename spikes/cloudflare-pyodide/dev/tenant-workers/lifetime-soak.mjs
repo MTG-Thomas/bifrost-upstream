@@ -6,8 +6,6 @@ import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {setTimeout as delay} from 'node:timers/promises';
 
-const seconds = 900;
-
 function processSampler() {
   const childPids = readFileSync(`/proc/${process.pid}/task/${process.pid}/children`, 'utf8').trim().split(/\s+/);
   const workerd = childPids.filter(pid => readFileSync(`/proc/${pid}/comm`, 'utf8').trim() === 'workerd');
@@ -39,7 +37,7 @@ function readMeter(storage) {
   return null;
 }
 
-export async function runLifetimeSoak({result, storage, run, verifySession, launcher, observe, cadence, settle}) {
+export async function runLifetimeSoak({result, seconds, storage, run, verifySession, launcher, observe, cadence, settle}) {
   const processMetrics = processSampler();
   const started = performance.now();
   const baseline = processMetrics().cpu_ms;
@@ -56,17 +54,19 @@ export async function runLifetimeSoak({result, storage, run, verifySession, laun
     receipt.samples.push({at_seconds: elapsed(), ...memory, cpu_ms: cpu_ms - baseline,
       meter: readMeter(storage), state});
     save();
-    assert.equal(state, 'running');
+    return state;
   };
   // Keep a frequently reused seat, use the other seats for four-way bursts,
   // and let those seats lapse between bursts. Every submission is distinct.
   const bursts = new Set([0, 180, 360, 540, 720, 870]);
   const routeIds = [];
-  await sample();
+  let state = await sample();
+  assert.equal(state, 'running');
   const controller = cadence?.().then(value => ({value}), error => ({error}));
-  for (let at = 0; at < seconds; at += 30) {
+  const reconnectAt = seconds === 120 ? 90 : 450;
+  for (let at = 0; at < seconds && state === 'running'; at += 30) {
     await delay(Math.max(0, at * 1000 - (performance.now() - started)));
-    if (at === 450) receipt.hello_sequences.push(await verifySession());
+    if (at === reconnectAt) receipt.hello_sequences.push(await verifySession());
     const batch = bursts.has(at) ? [0, 1, 2, 3] : [0];
     for (const workflow of await Promise.all(batch.map(async slot => {
       const outcome = await run(slot, (at / 30 + slot) % 2 === 1);
@@ -76,13 +76,14 @@ export async function runLifetimeSoak({result, storage, run, verifySession, laun
       routeIds.push(route_id);
       receipt.workflows.push(sanitized);
     }
-    await sample();
+    state = await sample();
   }
-  await delay(Math.max(0, seconds * 1000 - (performance.now() - started)));
+  if (state === 'running') {
+    await delay(Math.max(0, seconds * 1000 - (performance.now() - started)));
+    state = await sample();
+  }
   const observation = await controller;
-  if (observation?.error) throw observation.error;
-  receipt.cadence = observation?.value;
-  await sample();
+  receipt.cadence = observation?.value ?? (observation?.error && {failed: true});
   const drainStart = elapsed();
   const {routes, ...seal} = await settle();
   receipt.cleanup_seconds = elapsed() - drainStart;
@@ -100,6 +101,8 @@ export async function runLifetimeSoak({result, storage, run, verifySession, laun
     return totals;
   }, {});
   save();
+  assert.equal(state, 'running');
+  if (observation?.error) throw observation.error;
   assert.ok(receipt.workflows.every(({success, sdk}) => success && sdk), 'At least one scheduled workflow failed');
   assert.equal(seal.exhausted, false, 'Launcher exhausted its release meter during the soak');
 }
