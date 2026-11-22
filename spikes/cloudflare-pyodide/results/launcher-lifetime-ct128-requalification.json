@@ -658,5 +658,535 @@
       481
     ],
     "result": "Runtime and conformance passed. Observer rejected the deliberately disconnected control window."
-  }
+  },
+  "corrected_soak_900": {
+    "node": "v26.13.1",
+    "target_seconds": 900,
+    "launcher_sha256": "cfde3ae6c54cee5326bf50ab78f90f7d7623fef28a75ff318ff1b5e1ed61f51b",
+    "process_memory_is_aggregate": true,
+    "samples": [
+      {
+        "at_seconds": 0.056,
+        "deadline_offset_ms": -899676,
+        "rss_kib": 208264,
+        "peak_rss_kib": 208264,
+        "cpu_ms": 0,
+        "meter": null,
+        "state": "running"
+      },
+      {
+        "at_seconds": 16.884,
+        "deadline_offset_ms": -882848,
+        "rss_kib": 747948,
+        "peak_rss_kib": 747948,
+        "cpu_ms": 18760,
+        "meter": {
+          "sqlite_rows_written": 126,
+          "do_requests": 12,
+          "log_events": 4,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 30.078,
+        "deadline_offset_ms": -869655,
+        "rss_kib": 742884,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 18850,
+        "meter": {
+          "sqlite_rows_written": 158,
+          "do_requests": 15,
+          "log_events": 5,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 60.146,
+        "deadline_offset_ms": -839586,
+        "rss_kib": 737128,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 18930,
+        "meter": {
+          "sqlite_rows_written": 190,
+          "do_requests": 18,
+          "log_events": 6,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 90.068,
+        "deadline_offset_ms": -809664,
+        "rss_kib": 739016,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 19030,
+        "meter": {
+          "sqlite_rows_written": 222,
+          "do_requests": 21,
+          "log_events": 7,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 120.063,
+        "deadline_offset_ms": -779669,
+        "rss_kib": 740432,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 19110,
+        "meter": {
+          "sqlite_rows_written": 254,
+          "do_requests": 24,
+          "log_events": 8,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 150.054,
+        "deadline_offset_ms": -749678,
+        "rss_kib": 740168,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 19190,
+        "meter": {
+          "sqlite_rows_written": 286,
+          "do_requests": 27,
+          "log_events": 9,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 180.169,
+        "deadline_offset_ms": -719563,
+        "rss_kib": 741820,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 19410,
+        "meter": {
+          "sqlite_rows_written": 414,
+          "do_requests": 39,
+          "log_events": 13,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 210.056,
+        "deadline_offset_ms": -689676,
+        "rss_kib": 738028,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 19500,
+        "meter": {
+          "sqlite_rows_written": 446,
+          "do_requests": 42,
+          "log_events": 14,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 240.045,
+        "deadline_offset_ms": -659688,
+        "rss_kib": 738520,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 19570,
+        "meter": {
+          "sqlite_rows_written": 478,
+          "do_requests": 45,
+          "log_events": 15,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 270.042,
+        "deadline_offset_ms": -629690,
+        "rss_kib": 737764,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 19660,
+        "meter": {
+          "sqlite_rows_written": 510,
+          "do_requests": 48,
+          "log_events": 16,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 300.048,
+        "deadline_offset_ms": -599684,
+        "rss_kib": 738184,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 19730,
+        "meter": {
+          "sqlite_rows_written": 542,
+          "do_requests": 51,
+          "log_events": 17,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 330.057,
+        "deadline_offset_ms": -569675,
+        "rss_kib": 739196,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 19820,
+        "meter": {
+          "sqlite_rows_written": 574,
+          "do_requests": 54,
+          "log_events": 18,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 360.193,
+        "deadline_offset_ms": -539540,
+        "rss_kib": 742260,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 20060,
+        "meter": {
+          "sqlite_rows_written": 702,
+          "do_requests": 66,
+          "log_events": 22,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 390.074,
+        "deadline_offset_ms": -509658,
+        "rss_kib": 741704,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 20160,
+        "meter": {
+          "sqlite_rows_written": 734,
+          "do_requests": 69,
+          "log_events": 23,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 420.059,
+        "deadline_offset_ms": -479673,
+        "rss_kib": 742264,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 20270,
+        "meter": {
+          "sqlite_rows_written": 766,
+          "do_requests": 72,
+          "log_events": 24,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 451.12,
+        "deadline_offset_ms": -448612,
+        "rss_kib": 743416,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 20360,
+        "meter": {
+          "sqlite_rows_written": 798,
+          "do_requests": 75,
+          "log_events": 25,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 480.078,
+        "deadline_offset_ms": -419654,
+        "rss_kib": 744392,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 20460,
+        "meter": {
+          "sqlite_rows_written": 830,
+          "do_requests": 78,
+          "log_events": 26,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 510.081,
+        "deadline_offset_ms": -389651,
+        "rss_kib": 743828,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 20570,
+        "meter": {
+          "sqlite_rows_written": 862,
+          "do_requests": 81,
+          "log_events": 27,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 540.232,
+        "deadline_offset_ms": -359500,
+        "rss_kib": 746996,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 20850,
+        "meter": {
+          "sqlite_rows_written": 990,
+          "do_requests": 93,
+          "log_events": 31,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 570.082,
+        "deadline_offset_ms": -329650,
+        "rss_kib": 749492,
+        "peak_rss_kib": 749492,
+        "cpu_ms": 20960,
+        "meter": {
+          "sqlite_rows_written": 1022,
+          "do_requests": 96,
+          "log_events": 32,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 600.055,
+        "deadline_offset_ms": -299677,
+        "rss_kib": 750512,
+        "peak_rss_kib": 750512,
+        "cpu_ms": 21060,
+        "meter": {
+          "sqlite_rows_written": 1054,
+          "do_requests": 99,
+          "log_events": 33,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 630.076,
+        "deadline_offset_ms": -269656,
+        "rss_kib": 751708,
+        "peak_rss_kib": 751708,
+        "cpu_ms": 21160,
+        "meter": {
+          "sqlite_rows_written": 1086,
+          "do_requests": 102,
+          "log_events": 34,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 660.056,
+        "deadline_offset_ms": -239676,
+        "rss_kib": 752384,
+        "peak_rss_kib": 752384,
+        "cpu_ms": 21250,
+        "meter": {
+          "sqlite_rows_written": 1118,
+          "do_requests": 105,
+          "log_events": 35,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 690.058,
+        "deadline_offset_ms": -209674,
+        "rss_kib": 753252,
+        "peak_rss_kib": 753252,
+        "cpu_ms": 21350,
+        "meter": {
+          "sqlite_rows_written": 1150,
+          "do_requests": 108,
+          "log_events": 36,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 720.292,
+        "deadline_offset_ms": -179440,
+        "rss_kib": 756196,
+        "peak_rss_kib": 756196,
+        "cpu_ms": 21680,
+        "meter": {
+          "sqlite_rows_written": 1278,
+          "do_requests": 120,
+          "log_events": 40,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 750.046,
+        "deadline_offset_ms": -149686,
+        "rss_kib": 757724,
+        "peak_rss_kib": 757724,
+        "cpu_ms": 21780,
+        "meter": {
+          "sqlite_rows_written": 1310,
+          "do_requests": 123,
+          "log_events": 41,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 780.047,
+        "deadline_offset_ms": -119685,
+        "rss_kib": 754880,
+        "peak_rss_kib": 757476,
+        "cpu_ms": 21870,
+        "meter": {
+          "sqlite_rows_written": 1342,
+          "do_requests": 126,
+          "log_events": 42,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 810.076,
+        "deadline_offset_ms": -89656,
+        "rss_kib": 755060,
+        "peak_rss_kib": 757476,
+        "cpu_ms": 21990,
+        "meter": {
+          "sqlite_rows_written": 1374,
+          "do_requests": 129,
+          "log_events": 43,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 840.057,
+        "deadline_offset_ms": -59675,
+        "rss_kib": 755568,
+        "peak_rss_kib": 757476,
+        "cpu_ms": 22070,
+        "meter": {
+          "sqlite_rows_written": 1406,
+          "do_requests": 132,
+          "log_events": 44,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 870.222,
+        "deadline_offset_ms": -29510,
+        "rss_kib": 757816,
+        "peak_rss_kib": 757816,
+        "cpu_ms": 22330,
+        "meter": {
+          "sqlite_rows_written": 1534,
+          "do_requests": 144,
+          "log_events": 48,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 899.749,
+        "deadline_offset_ms": 17,
+        "rss_kib": 752512,
+        "peak_rss_kib": 757476,
+        "cpu_ms": 22340,
+        "meter": {
+          "sqlite_rows_written": 1542,
+          "do_requests": 144,
+          "log_events": 48,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "deleted"
+      }
+    ],
+    "hello_sequences": [
+      1,
+      2
+    ],
+    "cadence": {
+      "polls": 420,
+      "spacingSeconds": 2,
+      "elapsedSeconds": 842.6727384747937,
+      "reconnectObservations": 1
+    },
+    "cleanup_seconds": 0.013000000000033651,
+    "seal": {
+      "sqlite_rows_written": 1542,
+      "do_requests": 144,
+      "log_events": 48,
+      "sqlite_database_bytes": 45056,
+      "exhausted": false,
+      "launcher_storage_cleared": true,
+      "ledger_receipt_pending": true
+    },
+    "route_invocations": {
+      "boot_cold": 4,
+      "workflow_warm": 48,
+      "boot_warm": 44
+    },
+    "workflows_completed": 48,
+    "module_counts": [
+      479,
+      481
+    ],
+    "harness_source": "950c845c7c5940f24cbf8bd3584d4949e0d617b5",
+    "result": "Passed deadline retirement, sealed receipt, 420 observations including one deliberately interrupted control connection, and provider conformance."
+  },
+  "verification": [
+    {
+      "command": "./test.sh tests/e2e/platform/test_cloudflare_capacity_persistence.py",
+      "passed": 128
+    },
+    {
+      "command": "./test.sh tests/unit/services/worker_pool tests/unit/test_contract_version.py tests/unit/test_dto_flags.py tests/unit/test_access_list.py",
+      "passed": 548,
+      "by_target": {
+        "worker_pool": 395,
+        "contract_version": 2,
+        "dto_flags": 76,
+        "access_list": 75
+      }
+    },
+    {
+      "command": "node --test deploy/capacity/cloudflare/build-workers.test.mjs",
+      "passed": 11,
+      "expected_failure": "The meter inventory rejects the changed launcher-core.mjs hash."
+    },
+    {
+      "command": "node --test spikes/cloudflare-pyodide/dev/cloudflare-launcher/capacity.test.mjs spikes/cloudflare-pyodide/dev/cloudflare-launcher/launcher-core.test.mjs spikes/cloudflare-pyodide/dev/cloudflare-launcher/launcher-meter.test.mjs spikes/cloudflare-pyodide/dev/tenant-workers/launcher-host.test.mjs",
+      "passed": 65
+    },
+    {
+      "command": "node --test spikes/cloudflare-pyodide/dev/tenant-workers/capacity-workerd.test.mjs",
+      "120_seconds": {
+        "passed": 2,
+        "provider_conformance_checks": 17
+      },
+      "900_seconds_initial": {
+        "passed": 1,
+        "failed": 1,
+        "failure": "The cadence observer expected running during the deliberate reconnect."
+      },
+      "900_seconds_corrected": {
+        "passed": 2,
+        "provider_conformance_checks": 17
+      }
+    },
+    {
+      "command": "npm exec -- vitest run --pool=threads src/pages/settings/CloudflareCapacity.test.tsx",
+      "location": "client",
+      "passed": 18
+    }
+  ],
+  "fleet_policy": "Preset B is the new-installation activation suggestion in this branch. Release requires meter requalification. The policy-save fleet-fit check still applies."
 }

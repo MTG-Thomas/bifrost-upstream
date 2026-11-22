@@ -51,12 +51,12 @@ For Containers, apply the same fleet-fit check to the combined envelope before p
 
 ## Activation Preview
 
-Show the forecast, fee, fleet minimum and admission limit together before consent. Example for Option A:
+Show the forecast, fee, fleet minimum and admission limit together before consent. Example for Option B after meter requalification:
 
-- **Estimated Overflow Usage** — Under $1/month at about 40 workflows/month across four events, mostly cold starts. Show the assumptions and a range when useful. With Containers enabled, show billed instance duty, expected outbound traffic and the lane subtotals.
+- **Estimated Overflow Usage** — About $3.72/month at 40 workflows/day in clustered bursts, with 35% cold starts and 0.077% Workers duty. For Containers, show billed instance duty, expected outbound traffic and the lane subtotals.
 - **Workers Paid Subscription** — $5/month billed separately by Cloudflare.
-- **Minimum Limit for This Fleet** — $17.61/month for one launcher and two physical slots with this release. Recalculate when the release, capacity or spend-relevant bounds change.
-- **Monthly Estimated Usage Limit** — $30/month. “At the limit, new work stays on the primary. Bifrost can pause overflow earlier if the next start cannot be reserved or usage cannot be verified.”
+- **Minimum Limit for This Fleet** — $68.50/month for three four-slot launchers, nine installation slots, and a 900 s lifetime with the checked-in rates. Recalculate when the release, capacity or spend-relevant bounds change.
+- **Monthly Estimated Usage Limit** — $75/month. “At the limit, new work stays on the primary. Bifrost can pause overflow earlier if the next start cannot be reserved or usage cannot be verified.”
 
 After activation, show month-to-date settled and reserved usage, remaining headroom and UTC reset. Keep the forecast approximate and display the limit and fleet minimum to cents so policy failures can be explained. Describe the fleet minimum and admission limit as Bifrost backstops. Provider retries and overages, charge adjustments, delayed cleanup and traffic elsewhere in the account can affect the Cloudflare bill. Where attributed Analytics are available, display them separately as advisory.
 
@@ -66,5 +66,6 @@ The owner selected **Option B** for new Workers installations once the
 deadline-aware bundle clears local validation and meter requalification.
 The $75 suggested limit covers the $68.50 modeled fleet envelope for three
 four-slot launchers, capped at nine installation slots. Existing
-installations keep their saved limits. Option D still requires explicit
+installations keep their saved limits and can choose the new values in Edit
+Policy after the requalified release is installed. Option D still requires explicit
 opt-in and verification of its signed release rates and byte bounds.

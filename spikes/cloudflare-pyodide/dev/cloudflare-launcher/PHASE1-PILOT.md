@@ -13,9 +13,12 @@
   Confirm that idle retirement and an explicit upgrade drain release
   capacity. Obtain separate owner approval before starting this hosted run.
 
-The CT128 run stopped after 180 seconds when the four-slot launcher exhausted
-its usable SQLite journal budget. Preset B remains gated. See the
-[local qualification receipt](../../results/launcher-lifetime-ct128.json).
+The original CT128 run stopped after 180 seconds when the four-slot launcher
+exhausted its usable SQLite journal budget. The deadline-aware local bundle
+completed 48 workflows and retired at the 900-second deadline with budget
+remaining. Preset B requires meter requalification before release.
+[Original result](../../results/launcher-lifetime-ct128.json) ·
+[Deadline-aware result](../../results/launcher-lifetime-ct128-requalification.json)
 
 ## Usage-only limit
 
