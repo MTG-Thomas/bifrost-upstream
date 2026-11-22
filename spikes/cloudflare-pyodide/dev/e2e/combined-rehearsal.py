@@ -554,7 +554,18 @@ async def {name}():
         result = self.install()["spend"]
         assert result["state"] == "ready" and result["estimated_usd"] is not None
         amount = Decimal(result["estimated_usd"])
-        assert 0 <= amount < Decimal("0.50")
+        limit = Decimal("0.50")
+        ledger = self.sql("""
+            SELECT json_build_object(
+                'retired', count(*) FILTER (WHERE deleted_at IS NOT NULL),
+                'uncertain', count(*) FILTER (WHERE meter_uncertain),
+                'uncertain_with_final_receipt', count(*) FILTER (WHERE meter_uncertain AND meter_final IS NOT NULL)
+            )
+            FROM cloudflare_usage_incarnations
+        """)
+        evidence("meter_guard", {"estimated_usd": str(amount), "limit_usd": str(limit),
+                                 "within_limit": 0 <= amount < limit, "ledger": ledger})
+        assert 0 <= amount < limit, f"Trial spend estimate {amount} is outside the {limit} guard"
         analytics = self.provider("/client/v4/graphql", "POST", {
             "query": "{ viewer { accounts { workersInvocationsAdaptive(limit: 1) { sum { requests cpuTimeUs } } } } }",
         })
@@ -615,14 +626,16 @@ def main():
     tunnel, dns = trial.managed()
     trial.upgrade()
     trial.scale_in()
-    trial.meter()
-    trial.disconnect()
-    root = "/client/v4/accounts/" + "a"*32 + "/cfd_tunnel"
-    assert trial.provider(root) == []
-    assert trial.provider(root + "/" + tunnel + "/connections") == []
-    assert trial.provider(root + "/" + tunnel)["deleted_at"]
-    trial.provider("/client/v4/zones/" + "b"*32 + "/dns_records/" + dns, status=404)
-    evidence("managed-teardown", {"tunnel_deleted": True, "sessions": 0})
+    try:
+        trial.meter()
+    finally:
+        trial.disconnect()
+        root = "/client/v4/accounts/" + "a"*32 + "/cfd_tunnel"
+        assert trial.provider(root) == []
+        assert trial.provider(root + "/" + tunnel + "/connections") == []
+        assert trial.provider(root + "/" + tunnel)["deleted_at"]
+        trial.provider("/client/v4/zones/" + "b"*32 + "/dns_records/" + dns, status=404)
+        evidence("managed-teardown", {"tunnel_deleted": True, "sessions": 0})
 
 
 if __name__ == "__main__":
