@@ -20,6 +20,7 @@ from alembic.operations import Operations
 from alembic.script import ScriptDirectory
 from fastapi import HTTPException, Response
 from pydantic import SecretStr
+from scripts.test_cloudflare_fixture import block_cloudflare_network
 from shared.models import (
     CloudflareCapacityPolicy,
     CloudflareLauncherUsage,
@@ -567,10 +568,12 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
             await cloudflare_connector_channel.project_connector(key)
             assert delivered() == ""
             assert not await change(cloudflare_tunnel.cleanup, client)  # DNS delete intent
+            assert not await change(cloudflare_tunnel.cleanup, client)  # DNS verified absent
             assert not await change(cloudflare_tunnel.cleanup, client)  # Tunnel delete intent
             with pytest.raises(DeletionSettling, match="remain attached"):
                 await change(cloudflare_tunnel.cleanup, client)
             provider.connectors = []
+            assert not await change(cloudflare_tunnel.cleanup, client)  # Tunnel verified absent
             assert await change(cloudflare_tunnel.cleanup, client)
             assert provider.dns is None
             assert provider.tunnel and provider.tunnel["deleted_at"]
@@ -606,7 +609,9 @@ async def test_managed_tunnel_disconnect_preserves_foreign_dns(db_session, insta
             with pytest.raises(DeletionSettling, match="late Managed Tunnel write"):
                 await cloudflare_tunnel.cleanup(db_session, installation, client)
             record.observed_at = datetime.now(UTC) - timedelta(minutes=2)
-            assert not await cloudflare_tunnel.cleanup(db_session, installation, client)
+            assert not await cloudflare_tunnel.cleanup(db_session, installation, client)  # DNS verified absent
+        assert not await cloudflare_tunnel.cleanup(db_session, installation, client)  # Tunnel delete intent
+        assert not await cloudflare_tunnel.cleanup(db_session, installation, client)  # Tunnel verified absent
         assert await cloudflare_tunnel.cleanup(db_session, installation, client)
     assert provider.dns == foreign and provider.tunnel and provider.tunnel["deleted_at"]
 
@@ -617,6 +622,61 @@ def _platform_operator() -> Caller:
         UserPrincipal(OPERATOR_ID, "operator@example.test", None),
         AuthorizationContext(OPERATOR_ID, None, uuid4(), False, frozenset(), (role,)),
     )
+
+
+@pytest.fixture(autouse=True)
+def refuse_hosted_cloudflare(monkeypatch):
+    block_cloudflare_network(monkeypatch.setattr)
+
+
+@pytest.mark.asyncio
+async def test_managed_tunnel_disconnect_commits_absence_before_retirement(
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch, lifecycle_audit_actor,
+) -> None:
+    installation.reachability_mode = "managed_tunnel"
+    installation.zone_id = _TunnelAPI.zone
+    monkeypatch.setattr(cloudflare_tunnel, "get_settings", lambda: SimpleNamespace(cloudflare_tunnel_channel="compose"))
+    provider = _TunnelAPI()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+        client = cloudflare_tunnel.adapter(http, installation, SecretStr("synthetic-cloudflare-management-token"))
+        await cloudflare_tunnel.prepare(db_session, installation, actor=str(OPERATOR_ID))
+        await db_session.flush()
+        with pytest.raises(CloudflareRestUnavailable):
+            await cloudflare_tunnel.provision_tunnel(db_session, installation, client)
+        await cloudflare_tunnel.provision_tunnel(db_session, installation, client)
+    record = await cloudflare_tunnel.resource(db_session, installation, cloudflare_tunnel.DNS)
+    assert record is not None
+    record.state = "absent"
+    record.observed_at = datetime.now(UTC)
+    await db_session.flush()
+
+    admin = _platform_operator()
+    job, _ = await lifecycle_job.enqueue_cloudflare_disable(
+        db_session, admin, installation_id=installation.id, expected_revision=1, action="disconnect",
+    )
+    lease = uuid4()
+    job.lease_token = lease
+    job.status = "running"
+    await db_session.flush()
+    connection = await db_session.connection()
+    sessions = async_sessionmaker(
+        connection, autoflush=False, expire_on_commit=False, join_transaction_mode="create_savepoint",
+    )
+    monkeypatch.setattr(lifecycle_job, "get_db_context", sessions.begin)
+    monkeypatch.setattr(lifecycle_job, "httpx", SimpleNamespace(
+        AsyncClient=lambda **_: httpx.AsyncClient(transport=httpx.MockTransport(provider)),
+    ))
+    monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
+    running = PlatformJobContext(job.id, lease, None, str(OPERATOR_ID), admin.principal.email, "")
+    payload = lifecycle_job.CloudflareDisablePayload.model_validate(job.payload)
+
+    assert await lifecycle_job.CLOUDFLARE_DISABLE_DEFINITION.handler(running, payload) == {"outcome": "disconnected"}
+    assert provider.tunnel and provider.tunnel["deleted_at"]
+    await db_session.refresh(installation)
+    assert installation.retired_at is not None
+    assert set(await db_session.scalars(select(CloudflareOwnedResource.state).where(
+        CloudflareOwnedResource.installation_id == installation.id,
+    ))) == {"absent"}
 
 
 @pytest.fixture

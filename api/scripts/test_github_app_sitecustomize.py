@@ -52,13 +52,17 @@ if "src.jobs.platform.runner" in sys.orig_argv:
         module.http_client = fixture_client
 
     def install_enable(module):
+        from test_cloudflare_fixture import block_cloudflare_network
         from test_cloudflare_fixture import install_enable as install
 
+        block_cloudflare_network()
         install(module)
 
     def install_lifecycle(module):
+        from test_cloudflare_fixture import block_cloudflare_network
         from test_cloudflare_fixture import install_lifecycle as install
 
+        block_cloudflare_network()
         install(module)
 
     installers = {

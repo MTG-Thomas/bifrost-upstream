@@ -977,3 +977,52 @@ releases its held read after the launcher accepts terminate. An earlier
 long sleep returned an uncertain stop and correctly retained its fence.
 The harness also corrected the Compose image pull option and made the
 connector stub detach its last session on projection withdrawal.
+
+### Managed Disconnect retirement fix
+
+The cleanup helper and retirement query used the same worker session and
+transaction. Cleanup set the tunnel row to `absent` in memory. With
+autoflush disabled, retirement still saw `deleting` in PostgreSQL and
+raised before the transaction could commit. The rollback left the same
+row to be retried even after the provider had deleted the tunnel.
+
+DNS and tunnel cleanup now report progress when they observe absence.
+The job commits each journal update before taking the next step and
+rechecks the job lease and installation revision before retirement. A
+runner lost after provider deletion can resume from the committed delete
+intent and verify the provider tombstone again. A successor after the
+absence commit can retire from the durable journal. Connector token
+withdrawal already waits for the projection receipt. Workers scripts
+already commit progress after verifying script and namespace absence.
+
+The original Phase 2 lifecycle test used autoflush and committed between
+direct cleanup helper calls. It never ran retirement in the transaction
+that marked the tunnel absent. The new regression runs the Disconnect
+job with fresh autoflush-disabled PostgreSQL sessions and checks both the
+provider tombstone and the retired installation. It returned
+`CF_CLEANUP_PENDING` on `0bbaa403e` and passed with this fix.
+
+The local rehearsal checks that the API, worker and connector are on
+internal IPv4 networks before each Connect. The API and worker must also
+load the fixture hooks under the service user. The persistence and
+browser fixtures block real Cloudflare endpoints at HTTPX's network
+transport and continue to accept in-process mock responses.
+
+The CT128 rerun passed all nine items with Miniflare/workerd, the Bifrost
+Compose services, and both pinned packages loaded in offline images.
+Removing the fixture hooks blocked Connect before the first API request.
+
+| Item | Verified on the rerun |
+| --- | --- |
+| 1. Releases | The Bifrost loader accepted both pinned packages with distinct deployment digests. |
+| 2. Existing HTTPS | Worker preflight passed 100 routes. Preflight and signed `remote_launcher` Enable each recorded eight completed TLS handshakes and 92 reused requests. |
+| 3. Hold and latency | The primary hold left 24 MiB free. Queue-to-entry was 10.454 s cold and 0.321 s warm. Queue-to-completion was 10.507 s and 0.335 s. Both runs used slot 0. |
+| 4. Burst and cancel | Four Provider and four Global runs overlapped. The third tenant used the ninth slot. The tenth waited across two controller passes and entered after a cancel released one fence while preserving eight sibling fences. |
+| 5. Reconcile, Scale In and first Disconnect | Reconcile preserved the deployment. Active Scale In drained the workflow. The first Disconnect retired the installation with three script and four namespace 404s. |
+| 6–7. Managed Tunnel and rotation | The route-list request returned HTTP 200 and `warp-routing.enabled` was `false`. Rotation evicted one old session. One replacement session connected and signed re-Enable passed. |
+| 8. Upgrade | The original claim drained, reconnected and received a terminal ACK after one dispatch. Three old scripts and four old namespaces returned 404. |
+| 9. Spend and final Disconnect | Spend readback was `ready` and parsed one synthetic Analytics sample. Disconnect retired the installation and cleared the live ledger, occupied slots and credential ciphertext. The final three script reads, four namespace reads and DNS read returned 404. The tunnel tombstone had zero live sessions. |
+
+The rehearsal project, fixture process, networks, volumes and image tags
+were removed and checked for absence. Cloudflare billing remains
+hosted-only.
