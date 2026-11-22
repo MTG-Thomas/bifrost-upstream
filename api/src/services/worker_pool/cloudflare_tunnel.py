@@ -257,6 +257,7 @@ async def verify_management_writes(
     )
     if dns is not None:
         await client.verify_dns_write(dns, owner.provider_id)
+        record.observed_at = datetime.now(UTC)
 
 
 async def connector_ready(db: AsyncSession, row: CloudflareInstallation, client: TunnelRest) -> bool:

@@ -19,7 +19,6 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from alembic.script import ScriptDirectory
 from fastapi import FastAPI, HTTPException, Response
-from fastapi.responses import JSONResponse
 from pydantic import SecretStr
 from scripts.test_cloudflare_fixture import _release, block_cloudflare_network
 from shared.models import (
@@ -36,6 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from src.config import Settings
 from src.core.auth import get_current_active_user
 from src.core.db_deps import get_db
+from src.core.exceptions import StructuredRequestRefusal
 from src.core.principal import UserPrincipal
 from src.jobs.platform import cloudflare_capacity as lifecycle_job
 from src.jobs.platform import cloudflare_enable as enable_job
@@ -5486,12 +5486,11 @@ async def test_preset_b_policy_api_uses_the_qualified_fleet_price(
         )
         return await capacity_routes.configure_cloudflare_capacity(request, db_session, object())
 
-    refusal = await save("32.12", 1)
-    assert isinstance(refusal, JSONResponse) and refusal.status_code == 422
-    assert json.loads(refusal.body)["details"]["fleet_envelope_usd"] == "32.13"
+    with pytest.raises(StructuredRequestRefusal) as refusal:
+        await save("32.12", 1)
+    assert refusal.value.details["fleet_envelope_usd"] == "32.13"
     for limit, revision in (("32.13", 1), ("75.00", 2)):
         status = await save(limit, revision)
-        assert not isinstance(status, JSONResponse)
         assert status.installation is not None
         assert status.installation.policy.monthly_limit_usd == Decimal(limit)
         assert status.installation.fleet_envelope_usd == Decimal("32.13")

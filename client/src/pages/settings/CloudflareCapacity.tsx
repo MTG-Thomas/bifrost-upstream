@@ -372,7 +372,9 @@ function PlacementReasons({ reasons }: { reasons: components["schemas"]["Cloudfl
 				<li key={reason.code}>
 					<p className="font-medium">{reason.label}</p>
 					<p>{reason.remedy}</p>
-					{reason.next_eligible_at && <p>Next Eligible Check {timestamp(reason.next_eligible_at)}</p>}
+					{reason.next_eligible_at && (
+						<p>{reason.code === "cloudflare_capacity_unavailable" ? "Cooldown Until" : "Next Eligible Check"} {timestamp(reason.next_eligible_at)}</p>
+					)}
 				</li>
 			))}
 		</BoundedList>
@@ -679,11 +681,11 @@ export function CloudflareCapacity() {
 							{data?.deployment && (
 								<>
 									<div><dt>Last Verified Ingress Probe</dt><dd>{timestamp(data.deployment.ingress_verified_at)}</dd></div>
+									<div><dt>Last Verified DNS</dt><dd>{timestamp(data.deployment.dns_verified_at)}</dd></div>
 									<div><dt>Last Signed Canary</dt><dd>{timestamp(data.deployment.signed_canary_at)}</dd></div>
 									{data.deployment.revision != null && <div><dt>Ingress and Canary Evidence Revision</dt><dd>{data.deployment.revision}</dd></div>}
 									{installation.reachability_mode === "managed_tunnel" && (
 										<>
-											<div><dt>Last Verified DNS</dt><dd>{timestamp(data.deployment.dns_verified_at)}</dd></div>
 											<div><dt>Last Observed Connector Session</dt><dd>{({
 												connected: "Connected", disconnected: "Disconnected", unobserved: "Unobserved",
 												waiting_for_projection: "Waiting for Token Projection",
@@ -713,6 +715,10 @@ export function CloudflareCapacity() {
 									}
 								</dd>
 							</div>
+						</dl>
+						<section aria-labelledby="cf-spend-heading" className="space-y-2">
+							<h4 id="cf-spend-heading" className="font-semibold">Spending</h4>
+							<dl className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
 							<div>
 								<dt className="text-muted-foreground">
 									Monthly Estimated Usage Limit
@@ -763,7 +769,8 @@ export function CloudflareCapacity() {
 									) : null}
 								</>
 							)}
-						</dl>
+							</dl>
+						</section>
 						{Boolean(data?.lanes?.length) && (
 							<section className="space-y-3" aria-labelledby="cf-placement-heading">
 								<h4 id="cf-placement-heading" className="font-semibold">Overflow Placement</h4>

@@ -16665,7 +16665,19 @@ export interface components {
              * @default false
              */
             managed_tunnel_available: boolean;
-            suggested_policy?: components["schemas"]["CloudflareCapacityPolicy"] | null;
+            suggested_policy?: components["schemas"]["CloudflareCapacityPolicy-Output"] | null;
+            /** Observed At */
+            observed_at?: string | null;
+            /** Approved Workflow Count */
+            approved_workflow_count?: number | null;
+            /** Lanes */
+            lanes?: components["schemas"]["CloudflareLaneStatus"][];
+            /** Placement Reasons */
+            placement_reasons?: components["schemas"]["CloudflarePlacementReason"][];
+            deployment?: components["schemas"]["CloudflareDeploymentEvidence"] | null;
+            recovery?: components["schemas"]["CloudflareRecoveryDetails"] | null;
+            /** Disconnected At */
+            disconnected_at?: string | null;
         };
         /** CloudflareConnectRequest */
         CloudflareConnectRequest: {
@@ -16699,6 +16711,23 @@ export interface components {
             credential_ref?: string | null;
             policy: components["schemas"]["CloudflareCapacityPolicy-Input"];
         };
+        /** CloudflareDeploymentEvidence */
+        CloudflareDeploymentEvidence: {
+            /** Revision */
+            revision?: number | null;
+            /** Connector Session */
+            connector_session?: ("unobserved" | "waiting_for_projection" | "connected" | "disconnected") | null;
+            /** Connector Checked At */
+            connector_checked_at?: string | null;
+            /** Connector Last Ready At */
+            connector_last_ready_at?: string | null;
+            /** Dns Verified At */
+            dns_verified_at?: string | null;
+            /** Ingress Verified At */
+            ingress_verified_at?: string | null;
+            /** Signed Canary At */
+            signed_canary_at?: string | null;
+        };
         /** CloudflareInstallationStatus */
         CloudflareInstallationStatus: {
             /**
@@ -16706,18 +16735,12 @@ export interface components {
              * Format: uuid
              */
             installation_id: string;
-            /** Account Id */
-            account_id: string;
-            /** Worker Ingress Origin */
-            worker_ingress_origin: string;
             /**
              * Reachability Mode
              * @default existing_https_endpoint
              * @enum {string}
              */
             reachability_mode: "existing_https_endpoint" | "managed_tunnel";
-            /** Zone Id */
-            zone_id?: string | null;
             /** Connector Token Version */
             connector_token_version?: number | null;
             /** Consent Version */
@@ -16758,6 +16781,44 @@ export interface components {
             owned_resources_pending: number;
             spend?: components["schemas"]["CloudflareSpendStatus"] | null;
         };
+        /** CloudflareLaneStatus */
+        CloudflareLaneStatus: {
+            /**
+             * Lane
+             * @enum {string}
+             */
+            lane: "workers" | "containers";
+            /** Eligible Queued */
+            eligible_queued: number;
+            /** Claimed */
+            claimed: number;
+            /** Running */
+            running: number;
+            /** Primary Fit */
+            primary_fit?: number | null;
+            /** Primary Saturated */
+            primary_saturated?: boolean | null;
+            /** Oldest Eligible Queue Age Seconds */
+            oldest_eligible_queue_age_seconds?: number | null;
+            /** Launch Gate Seconds */
+            launch_gate_seconds: number;
+            /** Reasons */
+            reasons: components["schemas"]["CloudflarePlacementReason"][];
+        };
+        /** CloudflarePlacementReason */
+        CloudflarePlacementReason: {
+            /**
+             * Code
+             * @enum {string}
+             */
+            code: "setup_required" | "workflow_review_required" | "waiting_for_demand" | "primary_has_capacity" | "primary_capacity_unverified" | "waiting_for_launch_gate" | "tenant_limit_reached" | "installation_slots_full" | "spend_guard_closed" | "cleanup_pending" | "cloudflare_capacity_unavailable" | "release_mismatch" | "connector_unavailable" | "eligible_for_overflow";
+            /** Label */
+            label: string;
+            /** Remedy */
+            remedy: string;
+            /** Next Eligible At */
+            next_eligible_at?: string | null;
+        };
         /** CloudflarePolicyUpdate */
         CloudflarePolicyUpdate: {
             /**
@@ -16789,6 +16850,21 @@ export interface components {
              * @default false
              */
             reset_release_fence: boolean;
+        };
+        /** CloudflareRecoveryDetails */
+        CloudflareRecoveryDetails: {
+            /** Code */
+            code: string;
+            /** Remedy */
+            remedy: string;
+            /** Resource Class */
+            resource_class?: string | null;
+            /** Check */
+            check?: string | null;
+            /** Observed Category */
+            observed_category?: string | null;
+            /** Expected Category */
+            expected_category?: string | null;
         };
         /** CloudflareSpendStatus */
         CloudflareSpendStatus: {
@@ -16822,6 +16898,12 @@ export interface components {
              */
             period_end: string;
             analytics?: components["schemas"]["CloudflareUsageAdvisory"] | null;
+            /** Settled Usd */
+            settled_usd?: string | null;
+            /** Reserved Usd */
+            reserved_usd?: string | null;
+            /** Remaining Headroom Usd */
+            remaining_headroom_usd?: string | null;
         };
         /** CloudflareStageCredentialRequest */
         CloudflareStageCredentialRequest: {

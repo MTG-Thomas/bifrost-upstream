@@ -77,6 +77,47 @@ function snapshot(id: string, status: string, phase: string, result?: Record<str
 	return { id, status, revision: status === "running" ? 1 : 2, progress: { phase }, result };
 }
 
+it("displays scoped overflow, ledger and recovery evidence from status", async () => {
+	mocks.get.mockResolvedValue({
+		installation: {
+			...installation,
+			spend: {
+				state: "ready", settled_usd: "1.25", reserved_usd: "0.75",
+				remaining_headroom_usd: "38.00", period_end: "2026-12-01T00:00:00Z",
+			},
+		},
+		approved_workflow_count: 2,
+		lanes: [{
+			lane: "workers", eligible_queued: 3, claimed: 1, running: 2,
+			primary_fit: 0, primary_saturated: true, oldest_eligible_queue_age_seconds: 1, launch_gate_seconds: 2,
+			reasons: [{
+				code: "waiting_for_launch_gate", label: "Waiting for Launch Gate", remedy: "Wait for the queue age threshold.",
+				next_eligible_at: "2026-11-22T00:00:02Z",
+			}],
+		}],
+		recovery: {
+			code: "CF_DEPLOYMENT_UNVERIFIED", remedy: "Reconcile to verify the deployed revision.",
+			check: "capabilities_shape", observed_category: "invalid", expected_category: "valid_profile",
+		},
+	});
+	renderCapacity();
+
+	await screen.findByRole("heading", { name: "Overflow Placement" });
+	expect(screen.getByText("2 approved workflows.")).toBeVisible();
+	expect(screen.getByText("Waiting for Launch Gate")).toBeVisible();
+	expect(screen.getByText("1.00 s / 2 s")).toBeVisible();
+	expect(screen.getByText("$0.75")).toBeVisible();
+	expect(within(screen.getByRole("region", { name: "Cloudflare Recovery" })).getByText("capabilities_shape")).toBeVisible();
+});
+
+it("acknowledges a completed disconnect when opening the page again", async () => {
+	mocks.get.mockResolvedValue({ installation: null, disconnected_at: "2026-11-22T00:00:00Z" });
+	renderCapacity();
+
+	expect(await screen.findByText(/^Cloudflare was disconnected/)).toHaveAttribute("role", "status");
+	expect(mocks.observe).not.toHaveBeenCalled();
+});
+
 
 it.each([
 	["Scale In", "scale-in", "scaled_in", "Scaled In"],

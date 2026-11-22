@@ -61,6 +61,7 @@ Estimates are remaining engineer-days from this revision, including focused veri
 ## 4. Status and Observability
 
 The expected gross usage or expected invoice display is deferred pending owner approval of the spend model.
+The reservation breakdown identifies unretired or unsealed launcher resource charges and outstanding Container resource reservations. The monthly guard's estimate also retains aggregate workflow-activity charges that the current ledger cannot separately attribute to settled and unsettled routes.
 
 | Operator question | At the audited revision | Evidence still needed in product |
 | --- | --- | --- |

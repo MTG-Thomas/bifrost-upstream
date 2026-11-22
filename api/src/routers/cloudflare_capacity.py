@@ -3,7 +3,6 @@
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Body, HTTPException, Response, status
-from fastapi.responses import JSONResponse
 from shared.models import (
     CloudflareAccountTokenRotation,
     CloudflareAccountTokenReferenceRotation,
@@ -19,6 +18,7 @@ from shared.models import (
 
 from src.core.auth import CurrentActiveUser
 from src.core.db_deps import DbSession
+from src.core.exceptions import StructuredRequestRefusal
 from src.jobs.platform.cloudflare_capacity import (
     enqueue_cloudflare_account_token_rotation,
     enqueue_cloudflare_disable,
@@ -50,10 +50,9 @@ from src.services.worker_pool.cloudflare_workers_rest import (
 router = APIRouter(prefix="/api/capacity/cloudflare", tags=["Capacity"])
 
 
-def _configuration_refusal(code: str, message: str, field: str, remedy: str) -> JSONResponse:
-    return JSONResponse(status_code=422, content={
-        "error": "cloudflare_configuration_refused", "message": message,
-        "details": {"code": code, "fields": {field: message}, "remedy": remedy},
+def _configuration_refusal(code: str, message: str, field: str, remedy: str) -> StructuredRequestRefusal:
+    return StructuredRequestRefusal("cloudflare_configuration_refused", message, {
+        "code": code, "fields": {field: message}, "remedy": remedy,
     })
 
 
@@ -85,35 +84,33 @@ async def configure_cloudflare_capacity(
     body: Annotated[CloudflareConnectRequest | CloudflarePolicyUpdate, Body(discriminator="action")],
     db: DbSession,
     user: CurrentActiveUser,
-) -> CloudflareCapacityStatus | JSONResponse:
+) -> CloudflareCapacityStatus:
     caller = await load_caller(db, user)
     require_operation(caller, "capacity.cloudflare_configure", GLOBAL)
     try:
         return await configure_cloudflare(db, caller, body)
     except CloudflareBudgetTooLow as exc:
         message = f"The fleet envelope is {exc.envelope} USD/month. The submitted limit was {body.policy.monthly_limit_usd} USD/month."
-        return JSONResponse(status_code=422, content={
-            "error": "cloudflare_budget_refused", "message": message,
-            "details": {
-                "code": "CF_BUDGET_REFUSED",
-                "fields": {"policy.monthly_limit_usd": f"{message} Raise the limit or reduce the fleet size or lifetime."},
-                "fleet_envelope_usd": str(exc.envelope),
-                "monthly_limit_usd": str(body.policy.monthly_limit_usd),
-                "remedy": "Raise the limit or reduce the fleet size or lifetime.",
-            },
-        })
+        remedy = "Raise the limit or reduce the fleet size or lifetime."
+        raise StructuredRequestRefusal("cloudflare_budget_refused", message, {
+            "code": "CF_BUDGET_REFUSED",
+            "fields": {"policy.monthly_limit_usd": f"{message} {remedy}"},
+            "fleet_envelope_usd": str(exc.envelope),
+            "monthly_limit_usd": str(body.policy.monthly_limit_usd),
+            "remedy": remedy,
+        }) from None
     except WorkersReleaseUnavailable:
         raise HTTPException(503, "Install a qualified Workers release with metering ceilings.") from None
     except WorkersPaidUnverified as exc:
-        return _configuration_refusal(
+        raise _configuration_refusal(
             "CF_WORKERS_PAID_UNVERIFIED", str(exc), "account_id",
             "Verify Workers Paid and confirm that the token can read the account entitlements.",
-        )
+        ) from None
     except CloudflareManagementDenied:
-        return _configuration_refusal(
+        raise _configuration_refusal(
             "CF_MANAGEMENT_CREDENTIAL", "Cloudflare refused account or entitlement read access.", "api_token",
             "Grant Account Settings Read for the selected account.",
-        )
+        ) from None
     except (CloudflareRestUnavailable, ObservationPending):
         raise HTTPException(503, "Cloudflare account verification is temporarily unavailable.") from None
     except (CloudflareInstallationExists, CloudflarePolicyConflict) as exc:
