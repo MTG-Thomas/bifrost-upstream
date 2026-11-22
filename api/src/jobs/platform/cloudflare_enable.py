@@ -4,7 +4,7 @@ import secrets
 from asyncio import sleep
 from datetime import UTC, datetime
 from time import monotonic
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 import httpx
@@ -181,7 +181,7 @@ async def _install_script(
 async def _settle_enable(
     context: PlatformJobContext, payload: CloudflareEnablePayload, http: httpx.AsyncClient,
     release: WorkersRelease, *, repair_tunnel_ingress: bool = False,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     async with get_db_context() as db:
         row = await _locked_current(db, context, payload)
         if row is None:
@@ -363,7 +363,7 @@ async def _settle_enable(
         row.upgrade_release = None
         row.upgrade_drained_at = None
         wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
-    return {"outcome": "enabled"}
+    return {"outcome": "enabled", "http_connections": ingress.http_connections_as_result()}
 
 
 async def _drain_previous_revision(
@@ -420,7 +420,7 @@ async def _require_budget(db: AsyncSession, row: CloudflareInstallation) -> None
 
 async def _enable(
     context: PlatformJobContext, parsed: BaseModel, *, repair_tunnel_ingress: bool = False,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     payload = CloudflareEnablePayload.model_validate(parsed)
     await context.report("Checking Cloudflare Release and Entitlement")
     try:
