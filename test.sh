@@ -11,6 +11,7 @@
 #   ./test.sh e2e                       Backend e2e tests.
 #   ./test.sh all                       All backend tests, including slow tests.
 #   ./test.sh tests/path/... [args]     Pass through to pytest.
+#   ./test.sh cloudflare-containers <local-api-image>   Isolated Linux guest conformance.
 #
 # Local Kubernetes spike (isolated Kind cluster):
 #   ./test.sh kubernetes up|status|down|collect|kubectl
@@ -51,6 +52,11 @@ fi
 if [ "${1:-}" = "bench" ]; then
     shift
     exec python3 "$SCRIPT_DIR/scripts/bench/run.py" "$@"
+fi
+
+if [ "${1:-}" = "cloudflare-containers" ]; then
+    shift
+    exec bash "$SCRIPT_DIR/deploy/capacity/cloudflare/test-container-guest.sh" "$@"
 fi
 
 # shellcheck source=scripts/lib/test_helpers.sh

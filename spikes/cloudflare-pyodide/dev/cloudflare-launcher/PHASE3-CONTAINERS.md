@@ -535,9 +535,16 @@ its own tenant key, and no dispatch. It can obtain the first egress proof
 before admission opens.
 
 The API sends a relative lease derived from the database clock, subtracting
-the elapsed send preparation time and a one-second transit margin. A
+the elapsed send preparation time and a three-second transit margin.
+The margin matches the admission telemetry freshness window and leaves
+seven seconds after a halfway renewal of a twenty-second lease.
+Hosted qualification shall measure API-to-guest one-way frame delay
+through the exact ingress relay during startup, normal renewal, and
+reconnect, and confirm the margin against the delay tail. A
 supervisor needs its first grant within 15 seconds. It uses its own
 monotonic clock for later grants and keeps the pinned absolute deadline.
+Losing control while the guest is initializing ends the launch before
+workflow dispatch. Ready guests retain the fenced reconnect path.
 An API crash ends any in-flight Container workflows at lease expiry unless
 a fenced API owner reconnects and renews first. A reconnect cannot revive
 an expired process.
@@ -550,8 +557,11 @@ escalation. The return pipe is bounded JSON and cannot carry Python objects.
 The supervisor reaps all adopted guest descendants before a terminal result.
 If it cannot prove they exited, it stops the whole namespace and leaves
 settlement to independent provider observation. The Docker fixture exercises
-the real guest launch, native package import, subprocess, UID denial and
-detached-descendant cleanup. Hosted qualification must confirm the private
+the real guest launch, execution engine, native package import, subprocess,
+UID denial and detached-descendant cleanup. Run it on CT128 with
+`./test.sh cloudflare-containers <local-api-image>` using Buildx v0.21.3 and
+a local API test image with the matched dependencies.
+Hosted qualification must confirm the private
 PID namespace and capability behavior with the signed release.
 
 HTTP arrival accounting reserves the request line, all headers exposed by

@@ -1,4 +1,4 @@
-"""Docker conformance fixture. Replace the guest's workflow without an API."""
+"""Source submitted to the real execution engine by the Docker fixture."""
 
 import os
 import socket
@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 
-def _workflow(execution_id, worker_id, context):
+def exercise(cancel: bool) -> int:
     from cryptography.hazmat.bindings._rust import openssl
 
     assert openssl is not None and os.getuid() == 1001
@@ -32,24 +32,11 @@ def _workflow(execution_id, worker_id, context):
         raise AssertionError("Guest reached an unrelated network")
     assert subprocess.check_output(["/bin/sh", "-c", "printf native"]) == b"native"
     descendant = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"], start_new_session=True)
-    Path("/tmp/container-fixture-descendant").write_text(str(descendant.pid))
-    if context["cancel"]:
+    marker = Path("/tmp/container-fixture-descendant")
+    partial = marker.with_suffix(".tmp")
+    partial.write_text(str(descendant.pid))
+    partial.replace(marker)
+    if cancel:
         while True:
             time.sleep(1)
-    return {"execution_id": execution_id, "success": True, "duration_ms": 1, "result": descendant.pid}
-
-
-if os.getuid() == 1001:
-    # Install the fixture after the real runtime's requirements and source
-    # setup. This module is mounted for the Docker test only.
-    from src.services.execution import template_process
-
-    _run = template_process._run_forked_child
-
-    def _run_fixture(*args, **kwargs):
-        from src.services.execution import simple_worker
-
-        simple_worker._execute_sync = _workflow
-        _run(*args, **kwargs)
-
-    template_process._run_forked_child = _run_fixture
+    return descendant.pid

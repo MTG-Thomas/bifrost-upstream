@@ -5,6 +5,7 @@ import os
 import sys
 from pathlib import Path
 from queue import Empty
+from uuid import uuid4
 
 from src.worker.remote.container_guest import ContainerGuest
 
@@ -16,7 +17,17 @@ async def exercise(cancel: bool) -> None:
     try:
         await asyncio.to_thread(guest.wait_ready)
         pid, work, result = guest.take()
-        work.put_nowait(("fixture", {"cancel": cancel}))
+        execution = str(uuid4())
+        script = Path(__file__).with_name("guest_workflow.py").read_text() + "\nreturn exercise(cancel)\n"
+        work.put_nowait((execution, {
+            "code": script,
+            "name": "container-guest-conformance",
+            "engine_token": "synthetic-run-credential",
+            "caller": {"user_id": str(uuid4()), "email": "fixture@example.test", "name": "Fixture"},
+            "parameters": {"cancel": cancel},
+            "transient": True,
+            "no_cache": True,
+        }))
         marker = Path("/tmp/container-fixture-descendant")
         async with asyncio.timeout(10):
             while not marker.is_file() or not marker.read_text():
@@ -30,7 +41,9 @@ async def exercise(cancel: bool) -> None:
                         break
                     except Empty:
                         await asyncio.sleep(0.05)
-                assert outcome == {"execution_id": "fixture", "success": True, "duration_ms": 1, "result": descendant}
+                assert outcome["execution_id"] == execution and outcome["success"] is True, outcome
+                assert outcome["status"] == "Success" and outcome["result"] == descendant
+                assert outcome["duration_ms"] >= 0
         assert Path(f"/proc/{descendant}").is_dir()
         assert await guest.stop(grace=0.5 if cancel else 0)
         assert not Path(f"/proc/{pid}").exists()
@@ -41,4 +54,6 @@ async def exercise(cancel: bool) -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(exercise(cancel=sys.argv[1] == "cancel"))
+    scenario = sys.argv[1]
+    assert scenario in ("isolation", "cancel")
+    asyncio.run(exercise(cancel=scenario == "cancel"))
