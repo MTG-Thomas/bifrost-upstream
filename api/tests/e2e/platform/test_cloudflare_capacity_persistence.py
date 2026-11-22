@@ -1862,7 +1862,7 @@ async def test_supervisor_reserves_and_retires_without_restarting(
             async def reconcile(binding, settings, _http, controllers, *, kubernetes):
                 await reconcile_scope(binding, settings, http, controllers, kubernetes=kubernetes)
 
-            async with monkeypatch.context() as supervisor_stubs:
+            with monkeypatch.context() as supervisor_stubs:
                 supervisor_stubs.setattr(cloudflare_supervisor, "_reconcile_scope", reconcile)
                 supervisor_stubs.setattr(cloudflare_supervisor, "listen_for_pool_wake", AsyncMock())
                 supervisor_stubs.setattr(cloudflare_supervisor, "may_manage_jobs", AsyncMock(return_value=False))
