@@ -232,7 +232,7 @@ targets and both recorded namespaces absent.
 ### Enable Readback Classification
 
 Run 2's result identified the deployment gate. Its cause is unknown.
-A stale namespace list and a 404 from the replacement capacity
+A stale namespace list and a 404 from the new capacity
 `/v1/capabilities` endpoint during `workers.dev` propagation are both
 plausible. The capabilities 404 stays terminal as `PROFILE_HTTP`.
 This change classifies failures and adds enum-only `result.details`
@@ -282,3 +282,11 @@ original claim and one dispatch and ACK on the original connection.
 The replacement inventory readback followed the old absence checkpoint
 by 121 ms. The replacement passed the canary, completed its workflow
 and ACK, and Disconnect verified six script and eight namespace 404s.
+
+The duration-based rehearsal at `b6a12fd38` held one expected namespace
+back for ten seconds per revision. Enable and Upgrade each passed on
+attempt two with one capacity upload. The first settled reads followed
+their uploads by 26.280 and 18.793 seconds, respectively. The original
+dispatch and ACK stayed on one connection. The replacement readback
+followed the old absence checkpoint by 19.088 seconds, the new workflow
+finished, and Disconnect verified six script and eight namespace 404s.
