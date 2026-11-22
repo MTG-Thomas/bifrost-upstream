@@ -378,10 +378,13 @@ async def test_preparation_send_timeout_leaves_live_control_session_usable() -> 
     socket.close.assert_not_awaited()
 
 
-@pytest.mark.parametrize("kind", ["result", "summary_result", "cloudflare_agent_result"])
+@pytest.mark.parametrize(("kind", "route"), [
+    ("result", "test-route"), ("result", None), ("summary_result", "test-route"),
+    ("cloudflare_agent_result", "test-route"),
+])
 @pytest.mark.parametrize("state", ["uncertain", "stopped"])
 async def test_terminal_receipts_in_all_cloudflare_domains_are_checked_before_ack(
-    kind: str, state: str,
+    kind: str, route: str | None, state: str,
 ) -> None:
     bridge = Bridge(Mock(), {
         "hostname": "runner", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE, "managed_cloudflare": True,
@@ -391,7 +394,7 @@ async def test_terminal_receipts_in_all_cloudflare_domains_are_checked_before_ac
     bridge.pool = SimpleNamespace(handle_event=deliver)
     bridge.summaries = SimpleNamespace(handle_result=deliver)
     bridge.autonomous = SimpleNamespace(handle_result=deliver)
-    event = {"event": kind, "_event_id": "terminal", "attempt_state": state, "route_id": "test-route",
+    event = {"event": kind, "_event_id": "terminal", "attempt_state": state, "route_id": route,
              "usage": {"sqlite_rows_written": 100, "log_events": 2, "do_requests": 3, "exhausted": True}}
 
     @asynccontextmanager
@@ -412,7 +415,10 @@ async def test_terminal_receipts_in_all_cloudflare_domains_are_checked_before_ac
         await asyncio.gather(*bridge.results)
     assert [call[0] for call in calls.mock_calls] == ["deliver", "meter", "ack"]
     assert calls.meter.await_args.args[1:] == (LEASE.worker_id, event["usage"])
-    assert calls.meter.await_args.kwargs == {"uncertain_route": "test-route" if state == "uncertain" else None}
+    assert calls.meter.await_args.kwargs == {
+        "uncertain_route": route if kind == "result" else None,
+        "incarnation_uncertain": kind != "result" or route is None,
+    }
 
 
 async def test_adopted_autonomous_route_reserves_memory_and_one_physical_slot() -> None:

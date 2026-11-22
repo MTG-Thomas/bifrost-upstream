@@ -145,6 +145,7 @@ from src.services.worker_pool.cloudflare_workers_rest import (
     CloudflareManagementDenied,
     CloudflareRestUnavailable,
     ConfiguredWorkersScript,
+    WorkersDeployment,
     WorkersRestCleanup,
     WorkersRestProvisioner,
     worker_owner_value,
@@ -811,6 +812,71 @@ async def test_connect_uses_opaque_credential_from_protected_rest_entry(e2e_clie
                 await db.execute(delete(CloudflareCredential).where(CloudflareCredential.installation_id == installation_id))
                 await db.execute(delete(CloudflareInstallation).where(CloudflareInstallation.id == installation_id))
             await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_canary_pins_meter_caps_for_120_seconds_under_preset_b(
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _release(lifetime_meters=True)
+    policy = CloudflareCapacityPolicy(
+        workers=CloudflareWorkersPolicy(
+            launcher_cap=3, slots_per_launcher=4, installation_slots=9, max_lifetime_seconds=3600,
+            work_kinds=frozenset({"workflow"}),
+        ),
+        monthly_limit_usd=Decimal("75"),
+        shared_managed_worker_cap=8,
+    )
+    installation.policy = cloudflare_policy._price_policy(policy, cloudflare_policy.release_meter_bounds(release))
+    deployment = WorkersDeployment(
+        release, installation.worker_ingress_origin, "launcher", "capacity", policy.workers, "gateway",
+    )
+    job, _ = await enable_job.enqueue_cloudflare_enable(
+        db_session, _platform_operator(), installation_id=installation.id, expected_revision=1,
+    )
+    lease = uuid4()
+    job.status = "running"
+    job.lease_token = lease
+    job.lease_expires_at = datetime.now(UTC) + timedelta(minutes=2)
+    await db_session.flush()
+    connection = await db_session.connection()
+
+    @asynccontextmanager
+    async def context():
+        async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as session:
+            yield session
+            await session.commit()
+
+    class PinObserved(Exception):
+        pass
+
+    async def observe_prepare(reservation, _scope, **_kwargs):
+        pin = await db_session.get(CloudflareWorkerReservation, reservation.worker_id)
+        usage = await db_session.get(CloudflareUsageIncarnation, reservation.worker_id)
+        assert pin is not None and pin.workers_deadline_wire and pin.workers_lifetime_seconds == 120
+        assert reservation.max_lifetime_seconds == 120
+        assert usage is not None and usage.meter_bounds is not None
+        rates = installation.policy["meter_launcher"]["per_second_caps"]
+        assert installation.policy["meter_launcher"]["caps"] == {name: rate * 3600 for name, rate in rates.items()}
+        assert usage.meter_bounds["caps"] == {name: rate * 120 for name, rate in rates.items()}
+        raise PinObserved
+
+    monkeypatch.setattr(cloudflare_canary, "get_db_context", context)
+    monkeypatch.setattr(cloudflare_canary, "load_managed_control_key", AsyncMock(return_value="synthetic"))
+    monkeypatch.setattr(cloudflare_canary, "_retire_canary", AsyncMock())
+    client = Mock(
+        profile=AsyncMock(return_value=SimpleNamespace(
+            scope="workers", protocol_version=2, worker_version=release.digest,
+            runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE, max_workers=3, max_lifetime_seconds=3600,
+            memory_limit_bytes=4 * 128 * 2**20,
+        )),
+        prepare=observe_prepare,
+    )
+    with pytest.raises(PinObserved):
+        await cloudflare_canary.run_workers_canary(
+            PlatformJobContext(job.id, lease, None, str(OPERATOR_ID), "test@example.test", "Test"),
+            installation.id, 1, deployment.worker_ingress_origin, client, deployment,
+        )
 
 
 @pytest.mark.asyncio
@@ -4647,7 +4713,7 @@ async def test_qualified_dispatch_prices_pinned_cpu_and_keeps_sdk_events_attribu
 @pytest.mark.asyncio
 @pytest.mark.parametrize("evidence", [
     "complete", "reloaded", "over_cpu", "missing_timing", "missing", "uncertain", "stopped",
-    "incomplete", "invalid", "regressing", "drift",
+    "unbooked", "historical", "incomplete", "invalid", "regressing", "drift",
 ])
 async def test_foreground_pricing_keeps_reserves_until_a_confirmed_seal(
     db_session: AsyncSession, installation: CloudflareInstallation, evidence: str, monkeypatch: pytest.MonkeyPatch,
@@ -4663,6 +4729,7 @@ async def test_foreground_pricing_keeps_reserves_until_a_confirmed_seal(
     row = CloudflareUsageIncarnation(
         worker_id=worker_id, installation_id=installation.id, started_at=now - timedelta(seconds=75), slots=1,
         meter_rate_version=WORKERS_RATE_TABLE_VERSION, meter_release_digest="f" * 64,
+        meter_uncertain=evidence == "historical",
         meter_bounds={
             **installation.policy["meter_launcher"], "second_usd": "0.0013", "root_second_usd": "0.0012",
             "cpu_expected_ms": {**installation.policy["meter_launcher"]["cpu_ms"], "workflow": 110},
@@ -4675,10 +4742,11 @@ async def test_foreground_pricing_keeps_reserves_until_a_confirmed_seal(
         tenant_id=tenant_id, route_id="fixture",
     )
     assert await cloudflare_spend.reserve_engine_generation(db_session, worker_id, identity)
-    if evidence == "uncertain":
+    attempt_route = f"{evidence}-route" if evidence in ("uncertain", "stopped", "unbooked") else None
+    if evidence in ("uncertain", "stopped"):
         assert await reserve_tenant_host_usage(
             db_session, worker_id, noon + timedelta(seconds=10), workflow_cpu_ms=20_000, subrequests=10,
-            tenant_id=tenant_id, route_id="uncertain-route",
+            tenant_id=tenant_id, route_id=attempt_route,
         )
     event = {"sqlite_rows_written": 12, "do_requests": 3, "log_events": 1}
     booking = await db_session.get(cloudflare_spend.CloudflareDispatchMeter, (worker_id, "fixture"))
@@ -4688,16 +4756,16 @@ async def test_foreground_pricing_keeps_reserves_until_a_confirmed_seal(
             **event, "sqlite_rows_written": {"regressing": 13, "invalid": -1}.get(evidence, 12),
             "do_requests": 0 if evidence == "drift" else event["do_requests"],
         },
-        uncertain_route="uncertain-route" if evidence == "uncertain" else None,
+        uncertain_route=attempt_route,
     )
     calls = [
         {"identity": identity, "kind": "boot", "cold": True, "started_at": now},
         {"identity": identity, "kind": "workflow", "cold": evidence == "reloaded", "started_at": now,
          "wall_ms": {"over_cpu": 30_000, "missing_timing": None}.get(evidence, 12_000)},
     ]
-    routes = {} if evidence in ("incomplete", "stopped") else {"fixture": calls}
-    if evidence == "uncertain":
-        routes["uncertain-route"] = calls
+    routes = {} if evidence == "incomplete" else {"fixture": calls}
+    if attempt_route is not None and evidence != "unbooked":
+        routes[attempt_route] = calls
     price = select(cloudflare_estimated_usage(now)).where(CloudflareInstallation.id == installation.id)
     payload = CloudflareLauncherUsage.model_validate({
         **event, "do_requests": 0 if evidence == "drift" else event["do_requests"],
@@ -4718,21 +4786,25 @@ async def test_foreground_pricing_keeps_reserves_until_a_confirmed_seal(
     assert settled is not None
     lifetime = Decimal(str((now - max(row.started_at, period)).total_seconds()))
     counter_and_root_release = Decimal("0.00009295") + lifetime * Decimal("0.0012")
-    if evidence in ("complete", "reloaded", "over_cpu", "missing_timing", "uncertain"):
+    if evidence in ("complete", "reloaded", "over_cpu", "missing_timing", "uncertain", "stopped"):
         extra_load_us = 500_000 if evidence == "reloaded" else 0
-        workflow_release_us = 8_000_000 if evidence in ("complete", "reloaded", "uncertain") else 0
+        workflow_release_us = 8_000_000 if evidence in ("complete", "reloaded", "uncertain", "stopped") else 0
         assert activity.released_cpu_us == 7_500_000 - extra_load_us + workflow_release_us
         assert activity.released_engine_requests == 2
         assert activity.qualified_creations == 1
         assert reserved - settled == (
             counter_and_root_release + Decimal("0.00015060") + (workflow_release_us - extra_load_us) * Decimal("2e-11")
         )
-    elif evidence in ("incomplete", "stopped"):
+    elif evidence == "incomplete":
         assert activity.released_cpu_us == activity.released_engine_requests == 0
         assert reserved - settled == counter_and_root_release
     else:
         assert activity.released_cpu_us == activity.released_engine_requests == 0
         assert reserved == settled
+    if evidence in ("unbooked", "historical"):
+        assert row.meter_uncertain
+        assert row.meter_final is not None and row.meter_final["settled"]
+        assert row.meter_final["reconciliation_drift"] is False
     if evidence == "drift":
         coverage = await cloudflare_spend.spend_coverage(db_session, installation.account_id, period)
         assert any("counts diverged" in line for line in coverage)

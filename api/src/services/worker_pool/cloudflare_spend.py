@@ -511,7 +511,8 @@ def _retained_storage_cost(installation: type[CloudflareInstallation], now):
 
 
 async def record_launcher_terminal_meter(
-    db: AsyncSession, worker_id: UUID, raw: object, *, uncertain_route: str | None = None,
+    db: AsyncSession, worker_id: UUID, raw: object, *,
+    uncertain_route: str | None = None, incarnation_uncertain: bool = False,
 ) -> None:
     row = await db.get(CloudflareUsageIncarnation, worker_id, with_for_update=True)
     if row is None or row.deleted_at is not None:
@@ -523,11 +524,15 @@ async def record_launcher_terminal_meter(
     except ValidationError:
         row.meter_uncertain = True
         return
+    if incarnation_uncertain:
+        row.meter_uncertain = True
     if uncertain_route is not None:
         meter = CloudflareDispatchMeter
-        await db.execute(update(meter).where(
+        matched_route = await db.scalar(update(meter).where(
             meter.worker_id == worker_id, meter.route_id == uncertain_route,
-        ).values(attempt_uncertain=True))
+        ).values(attempt_uncertain=True).returning(meter.route_id))
+        if matched_route is None:
+            row.meter_uncertain = True
     previous = row.meter_terminal or {}
     row.meter_terminal = {**previous, **{name: max(value, previous.get(name, 0)) for name, value in receipt.items()}}
 

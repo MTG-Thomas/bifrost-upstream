@@ -985,11 +985,16 @@ class Bridge:
                         async with get_db_context() as db:
                             if not await fence_remote_owner(db):
                                 raise ConnectionError("Remote API ownership was replaced before metering")
-                            state = event.get("attempt_state")
+                            uncertain_attempt = event.get("attempt_state") in ("stopped", "uncertain")
                             route = event.get("route_id")
+                            uncertain_route = (
+                                route if uncertain_attempt and event.get("event") == "result" and isinstance(route, str)
+                                else None
+                            )
                             await record_launcher_terminal_meter(
                                 db, terminal_ref.lease.worker_id, event.get("usage"),
-                                uncertain_route=route if state == "uncertain" and isinstance(route, str) else None,
+                                uncertain_route=uncertain_route,
+                                incarnation_uncertain=uncertain_attempt and uncertain_route is None,
                             )
                     if isinstance(event_id, str):
                         await self.acknowledge(event_id)
