@@ -35,7 +35,7 @@ except ValueError:
     raise SystemExit(2) from None
 
 print(json.dumps({
-    "preflight_execution_class": "worker_pool",
+    "preflight_execution_class": "remote_launcher",
     "reachable": result.reachable,
     "route_checks": len(result.routes),
     "failure": None if result.reachable else result.failure.as_result(),

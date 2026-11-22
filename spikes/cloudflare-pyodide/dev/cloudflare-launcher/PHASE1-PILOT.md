@@ -543,17 +543,20 @@ WebSocket, and signed runtime gates still apply.
 
 Obtain separate owner approval before provisioning or spending. After staging
 Connect with admission closed, identify the platform-job execution backend
-configured to claim Enable. Run the preflight inside the worker container
-for a local worker-pool claim. For a physical Linux remote launcher, run
-it in the launcher runner's network namespace or container with the same
-Python environment, resolver, trust store, and egress. The local execution
-backend can be claimed by either of these classes. For Kubernetes, use an approved
+configured to claim Enable. The Compose `worker` service runs the physical
+remote launcher (`python -m src.worker.main`). The API's remote host claims
+platform jobs and the launcher runs them as subprocesses in that container,
+so a standard Compose Enable records `remote_launcher`. `worker_pool` is
+recorded only when an in-process pool runs the job. For a separately
+enrolled physical Linux remote launcher, run the preflight in that launcher's
+network namespace or container with the same Python environment, resolver,
+trust store, and egress. For Kubernetes, use an approved
 qualification pod with the same platform-job pod spec and replace the job
 entrypoint with the preflight command. Match the worker image, trust store,
 service account, DNS configuration, namespace, network policy, egress and
 scheduling constraints. The single-host Compose qualification uses one
-running `worker` replica and no enrolled remote launcher. From the project
-root, pass the same project options used to start the stack:
+running `worker` replica and no separately enrolled remote launcher. From
+the project root, pass the same project options used to start the stack:
 
 ```sh
 sh spikes/cloudflare-pyodide/dev/cloudflare-launcher/preflight-compose-worker.sh \
@@ -630,11 +633,11 @@ effect identities and avoid a second provisioning submission.
 | Order | Action and required evidence | Incremental budget |
 | --- | --- | ---: |
 | 1 | Requalify and build both releases offline. Verify the three module digests, bounds hash, deployment digests and image/manifest pairs. Bind each hosted job to the appropriate release. | $0.00 |
-| 2 | Existing HTTPS Connect. Stage an expiring scoped token, record consent and the policy envelope, and verify admission is closed. From the sole worker replica, require the complete preflight to pass. Submit Enable once. Require `worker_pool` and a passing signed hello, scoped SDK receipt and terminal ACK before admission opens. | $0.03 |
+| 2 | Existing HTTPS Connect. Stage an expiring scoped token, record consent and the policy envelope, and verify admission is closed. From the sole worker replica, require the complete preflight to pass. Submit Enable once. Require `remote_launcher` (the Compose `worker` container that ran the preflight) and a passing signed hello, scoped SDK receipt and terminal ACK before admission opens. | $0.03 |
 | 3 | Measure a cold approved loose workflow and a warm repeat on the same tenant, launcher and ordinal within linger. Record queue-to-entry and end-to-end latency, loader identity, generation, cold/warm flags and terminal receipts. Verify scoped SDK results for a Solution fixture in the burst. | $0.04 |
 | 4 | Hold four Provider and four Global executions simultaneously at a no-effect barrier. Offer a ninth execution to a different tenant with zero slots, then prove a tenth from a fourth tenant stays queued through two controller observations without a ticket or entry. Cancel one running execution mid-burst. Require confirmed stop and exact fence release, unchanged sibling fences, and admission of the waiting execution only after release. Open the barrier and collect the remaining terminal ACKs. | $0.14 |
 | 5 | Reconcile and verify the owned revision and canary without duplicate resources. Start one harmless hold, request Scale In, then let it finish. Verify admission and sends close, the original claim settles, launchers retire, and scripts remain. Disconnect, retain spend evidence, and verify the first installation's resource absence. | $0.04 |
-| 6 | Managed Tunnel Connect and Enable. Independently read back the exact CNAME, tunnel and connector session. Require `worker_pool`, the signed canary and ingress refusal checks. Verify normalized ingress GET rules, empty origin-request fields and the actual disabled `warp-routing` echo. With the same Tunnel Write grant, list account `teamnet/routes` and verify no private IP route targets the tunnel. | $0.04 |
+| 6 | Managed Tunnel Connect and Enable. Independently read back the exact CNAME, tunnel and connector session. Require `remote_launcher`, the signed canary and ingress refusal checks. Verify normalized ingress GET rules, empty origin-request fields and the actual disabled `warp-routing` echo. With the same Tunnel Write grant, list account `teamnet/routes` and verify no private IP route targets the tunnel. | $0.04 |
 | 7 | Scale In and rotate the connector token. Compare live session sets and require all prior session IDs absent and a replacement session present. With approved bounded tooling, check the old token cannot establish a session while keeping it out of the receipt. Run the worker preflight on the managed origin, Enable, and verify the signed canary on the same tunnel and CNAME. | $0.04 |
 | 8 | Upgrade once with one harmless held execution. Stage the newer compatible release. Require the admission and send fence, then interrupt only the old attempt's control connection. Release the hold and verify replay and terminal ACK under the original claim. Require old runtime retirement, exact script and namespace absence before any replacement upload, then provider readback and a signed canary before reopening. | $0.07 |
 | 9 | Capture the spend comparison. Scale In and Disconnect. Verify both installations' cleanup independently, including the replacement revision. Reserve for bounded cleanup and remaining observation. | $0.05 |
@@ -732,6 +735,16 @@ Its platform-job command records `remote_launcher`. This accounts for
 the difference between the preflight label and the Enable receipt. The
 receipt provides evidence of a successful ingress and canary path and
 does not meet this run's execution-class requirement.
+
+**Disposition.** The requirement itself was wrong, not the run. The
+preparation brief named `worker_pool` for single-host Compose, but in that
+topology the `worker` container hosts the remote launcher that runs platform
+jobs, so `remote_launcher` is the correct class. The preflight and Enable
+ran in the same container, which is the property the gate protects. The
+runbook and the preflight label now require `remote_launcher` for Compose.
+This is the first hosted run in which the ingress probe passed and Enable
+opened admission with a signed canary, which supports the single-flight
+origin-lookup fix as the cause of the two earlier `tls_error` stops.
 
 The two previous attempts carried $0.00 of observed Bifrost spend. The
 public meter displayed $0.00 during this trial. The retired ledger's
