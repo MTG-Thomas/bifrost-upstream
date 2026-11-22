@@ -17,6 +17,17 @@ from .base import _apply_flags, entity_group, output_result, pass_resolver, run_
 approval_group = entity_group("cloudflare-approval", "Review Cloudflare workflow eligibility and approval.")
 
 
+@approval_group.command("list")
+@click.pass_context
+@pass_resolver
+@run_async
+async def list_approvals(ctx: click.Context, *, client: BifrostClient, resolver: RefResolver) -> None:
+    """List workflow approval states and counts in your authorized scope."""
+    response = await client.get("/api/workflows/cloudflare-approvals")
+    response.raise_for_status()
+    output_result(response.json(), ctx=ctx)
+
+
 @approval_group.command("status")
 @click.argument("ref")
 @click.pass_context

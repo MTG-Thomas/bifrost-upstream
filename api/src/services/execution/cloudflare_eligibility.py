@@ -79,18 +79,20 @@ async def current_approval(db: AsyncSession, workflow_id: UUID) -> CloudflareApp
 
 async def _history_count(db: AsyncSession, workflow_id: UUID) -> int:
     return await db.scalar(
-        select(func.count()).select_from(CloudflareApproval).where(CloudflareApproval.workflow_id == workflow_id)
+        select(func.count()).select_from(CloudflareApproval).where(
+            CloudflareApproval.workflow_id == workflow_id, ~CloudflareApproval.is_review,
+        )
     ) or 0
 
 
-async def _lock_workflow(db: AsyncSession, workflow_id: UUID) -> Workflow | None:
+async def lock_workflow(db: AsyncSession, workflow_id: UUID) -> Workflow | None:
     # PostgreSQL FOR NO KEY UPDATE serializes review writers without
     # conflicting with foreign-key checks on the workflow row.
     return await db.get(Workflow, workflow_id, with_for_update={"key_share": True}, populate_existing=True)
 
 
 async def revoke_approval(db: AsyncSession, workflow_id: UUID) -> str | None:
-    if await _lock_workflow(db, workflow_id) is None:
+    if await lock_workflow(db, workflow_id) is None:
         raise AnalysisRejected("Workflow does not exist")
     current = await current_approval(db, workflow_id)
     if current is None:
@@ -160,6 +162,7 @@ async def propose_approval(
     expected_pins: dict[str, str | None] | None = None,
     analysed_pins: dict[str, str | None] | None = None,
     https_hosts: list[str] | None = None,
+    sources: dict[str, bytes] | None = None,
     expected_scope: tuple[UUID | None, UUID | None, str, str] | None = None,
 ) -> ApprovalProposal:
     async with get_db_context() as db:
@@ -192,6 +195,8 @@ async def propose_approval(
             content = None
         if analysed_pins is not None:
             await check_pin(path, hashlib.sha256(content).hexdigest() if content is not None else None)
+        if sources is not None and content is not None:
+            sources[path] = content
         return content
 
     async def check_pin(path: str, pin: str | None) -> None:
@@ -219,7 +224,7 @@ async def accept_proposal(
     db: AsyncSession, proposal: ApprovalProposal, *, accepted_by: str,
 ) -> CloudflareApproval:
     """Serialize acceptance and revocation with a PostgreSQL FOR NO KEY UPDATE lock."""
-    workflow = await _lock_workflow(db, proposal.workflow_id)
+    workflow = await lock_workflow(db, proposal.workflow_id)
     declaration = proposal.declaration
     current = await current_approval(db, proposal.workflow_id)
     solution = declaration.solution

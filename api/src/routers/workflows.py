@@ -71,6 +71,7 @@ from shared.identities import validate_run_identity
 from shared.run_lineage import identity_lineage
 from src.models.contracts.cloudflare_approval import (
     CloudflareApprovalAccept,
+    CloudflareApprovalList,
     CloudflareApprovalOptions,
     CloudflareApprovalState,
 )
@@ -83,7 +84,7 @@ from src.services.authorization.enforce import (
     require_permission,
     user_reach,
 )
-from src.services.execution.cloudflare_approval import get_approval_state, review_approval, revoke_review
+from src.services.execution.cloudflare_approval import get_approval_state, list_approvals, review_approval, revoke_review
 from src.services.identities import list_run_identities, require_delegation
 from src.services.recommended_access import recommended_access
 from src.models.orm.solution_workflow_permission_requests import SolutionWorkflowPermissionRequest
@@ -315,6 +316,11 @@ async def list_workflows(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve workflows",
         )
+
+
+@router.get("/cloudflare-approvals", **operation_route("workflows.cloudflare_approval.list"))
+async def list_workflow_cloudflare_approvals(user: CurrentActiveUser, db: DbSession) -> CloudflareApprovalList:
+    return await list_approvals(db, user)
 
 
 @router.get(

@@ -102,6 +102,7 @@ from src.models.contracts.workflows import (  # noqa: E402
 
 from src.models.contracts.cloudflare_approval import (  # noqa: E402
     CloudflareApprovalAccept,
+    CloudflareApprovalList,
     CloudflareApprovalOptions,
     CloudflareApprovalState,
 )
@@ -121,6 +122,7 @@ _COMMAND_DTOS: list[type] = [
     CloudflareApprovalOptions,
     CloudflareApprovalAccept,
     CloudflareApprovalState,
+    CloudflareApprovalList,
     BaseRoleDefaultsResponse,
     BaseRoleDefaultsUpdate,
     OrganizationCreate,

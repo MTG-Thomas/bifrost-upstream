@@ -63,6 +63,18 @@ describe("CloudflareApprovalPanel", () => {
 		expect(await screen.findByText("Pending Review")).toBeVisible();
 	});
 
+	it("reviews a saved proposal and full source on open", async () => {
+		vi.mocked(getCloudflareApproval).mockResolvedValue({
+			...pending, proposal, proposal_sources: { "test.py": "def run(): return 7" },
+		});
+		const user = open();
+		await user.click(await screen.findByText("Review Full Source"));
+		expect(screen.getByText("def run(): return 7")).toBeVisible();
+		expect(screen.getByText("Approving this Global workflow allows it to run on Cloudflare for every tenant.")).toBeVisible();
+		expect(screen.getByRole("button", { name: "Accept Reviewed Digest" })).toBeVisible();
+		expect(proposeCloudflareApproval).not.toHaveBeenCalled();
+	});
+
 	it("shows status diagnostics without exposing analysis controls to readers", async () => {
 		vi.mocked(getCloudflareApproval).mockResolvedValue({
 			...pending, can_manage: false, status: "ineligible", diagnostics: [{

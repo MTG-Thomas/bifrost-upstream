@@ -1,3 +1,4 @@
+import { CloudflareWorkflowApprovals } from "@/components/workflows/CloudflareWorkflowApprovals";
 import { useEffect, useState, type FormEvent } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 
@@ -280,6 +281,7 @@ export function CloudflareCapacity() {
 				<CardTitle>Scale Out With Cloudflare</CardTitle>
 			</CardHeader>
 			<CardContent className="space-y-4">
+				{canRead && <CloudflareWorkflowApprovals />}
 				{(authorization.isLoading || isLoading) && (
 					<p role="status">Loading Cloudflare capacity…</p>
 				)}

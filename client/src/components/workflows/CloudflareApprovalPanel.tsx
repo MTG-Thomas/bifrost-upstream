@@ -15,7 +15,7 @@ import {
 	type ApprovalState,
 } from "@/services/cloudflare-approval";
 
-const statuses: Record<ApprovalState["status"], string> = {
+export const approvalStatuses: Record<ApprovalState["status"], string> = {
 	approved: "Approved",
 	pending_review: "Pending Review",
 	revision_changed: "Revision Changed",
@@ -23,21 +23,24 @@ const statuses: Record<ApprovalState["status"], string> = {
 	temporarily_unavailable: "Temporarily Unavailable",
 };
 
-export function CloudflareApprovalPanel({ workflowId }: { workflowId: string }) {
+export function CloudflareApprovalPanel({ workflowId, onChange }: {
+	workflowId: string;
+	onChange?: () => void;
+}) {
 	const id = useId();
 	const queryClient = useQueryClient();
 	const queryKey = ["cloudflare-approval", workflowId];
 	const status = useQuery({
 		queryKey, queryFn: () => getCloudflareApproval(workflowId), retry: false,
 	});
-	const [review, setReview] = useState<{ state: ApprovalState; options: ApprovalOptions }>();
+	const [optionsEdited, setOptionsEdited] = useState(false);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState("");
 	const [confirmRevoke, setConfirmRevoke] = useState(false);
 	const accessDenied = status.error instanceof ApiError
 		&& (status.error.statusCode === 403 || status.error.statusCode === 404);
-	const state = accessDenied ? undefined : review?.state ?? status.data;
-	const proposal = accessDenied ? undefined : review?.state.proposal;
+	const state = accessDenied ? undefined : status.data;
+	const proposal = optionsEdited ? undefined : state?.proposal;
 	const declaration = proposal ?? state?.current_declaration;
 
 	async function request(action: () => Promise<void>) {
@@ -46,7 +49,7 @@ export function CloudflareApprovalPanel({ workflowId }: { workflowId: string }) 
 		try {
 			await action();
 		} catch (cause) {
-			setReview(undefined);
+			setOptionsEdited(true);
 			setError(cause instanceof Error ? cause.message : "The approval request failed.");
 			if (cause instanceof ApprovalReviewError) {
 				queryClient.setQueryData(queryKey, cause.state);
@@ -59,14 +62,15 @@ export function CloudflareApprovalPanel({ workflowId }: { workflowId: string }) 
 	}
 
 	function saveState(next: ApprovalState) {
-		setReview(undefined);
+		setOptionsEdited(false);
 		queryClient.setQueryData(queryKey, next);
+		onChange?.();
 	}
 
 	return (
 		<section aria-label="Cloudflare Approval" className="space-y-4">
 			<Badge variant="outline" role="status">
-				{accessDenied ? "Unavailable" : state ? statuses[state.status] : status.isPending ? "Loading" : "Temporarily Unavailable"}
+				{accessDenied ? "Unavailable" : state ? approvalStatuses[state.status] : status.isPending ? "Loading" : "Temporarily Unavailable"}
 			</Badge>
 			{(error || status.isError) && (
 				<p className="text-sm text-destructive" role="alert">
@@ -78,7 +82,7 @@ export function CloudflareApprovalPanel({ workflowId }: { workflowId: string }) 
 			)}
 			{state?.can_manage && !accessDenied && (
 				<form
-					onChange={() => setReview(undefined)}
+					onChange={() => setOptionsEdited(true)}
 					onSubmit={(event) => {
 						event.preventDefault();
 						const data = new FormData(event.currentTarget);
@@ -87,10 +91,7 @@ export function CloudflareApprovalPanel({ workflowId }: { workflowId: string }) 
 							cpu_budget_ms: Number(data.get("cpu")),
 							https_hosts: String(data.get("hosts") ?? "").split(/[\s,]+/).filter(Boolean),
 						};
-						void request(async () => {
-							const next = await proposeCloudflareApproval(workflowId, options);
-							setReview({ state: next, options });
-						});
+						void request(async () => saveState(await proposeCloudflareApproval(workflowId, options)));
 					}}
 					className="space-y-3"
 				>
@@ -98,19 +99,19 @@ export function CloudflareApprovalPanel({ workflowId }: { workflowId: string }) 
 						<div className="space-y-1.5">
 							<Label htmlFor={`${id}-subrequests`}>Subrequest Allowance</Label>
 							<Input id={`${id}-subrequests`} name="subrequests" type="number" min={0} max={50} required
-								defaultValue={state.current_declaration?.subrequest_allowance ?? 10} />
+								defaultValue={(state.proposal ?? state.current_declaration)?.subrequest_allowance ?? 10} />
 						</div>
 						<div className="space-y-1.5">
 							<Label htmlFor={`${id}-cpu`}>CPU Budget (ms)</Label>
 							<Input id={`${id}-cpu`} name="cpu" type="number" min={1} required
-								defaultValue={state.current_declaration?.cpu_budget_ms ?? 1000} />
+								defaultValue={(state.proposal ?? state.current_declaration)?.cpu_budget_ms ?? 1000} />
 						</div>
 						{state.can_manage && (
 							<div className="space-y-1.5 sm:col-span-2">
 								<Label htmlFor={`${id}-hosts`}>Additional HTTPS Hosts</Label>
 								<Input id={`${id}-hosts`} name="hosts" placeholder="api.example.com, *.example.com"
-									defaultValue={state.current_declaration?.https_hosts.filter(
-										(host) => !state.current_declaration?.required_https_hosts.includes(host),
+									defaultValue={(state.proposal ?? state.current_declaration)?.https_hosts.filter(
+										(host) => !(state.proposal ?? state.current_declaration)?.required_https_hosts.includes(host),
 									).join(", ")} />
 							</div>
 						)}
@@ -145,12 +146,34 @@ export function CloudflareApprovalPanel({ workflowId }: { workflowId: string }) 
 							{proposal.wildcard_https_hosts.join(", ")}
 						</p>
 					)}
-					{proposal && review && state?.can_manage && (
-						<Button type="button" disabled={busy} onClick={() => {
-							void request(async () => saveState(await acceptCloudflareApproval(workflowId, {
-								...review.options, review_sha256: proposal.review_sha256,
-							})));
-						}}>Accept Reviewed Digest</Button>
+					{proposal && state?.proposal_sources && (
+						<details>
+							<summary className="cursor-pointer">Review Full Source</summary>
+							{Object.entries(state.proposal_sources).map(([path, source]) => (
+								<div key={path} className="mt-2">
+									<p className="break-all font-mono">{path}</p>
+									<pre className="max-h-64 overflow-auto text-xs">{source}</pre>
+								</div>
+							))}
+						</details>
+					)}
+					{proposal && state?.can_manage && (
+						<>
+							{proposal.organization_id === null && (
+								<p>Approving this Global workflow allows it to run on Cloudflare for every tenant.</p>
+							)}
+							<Button type="button" disabled={busy} onClick={() => {
+								void request(async () => {
+									const next = await acceptCloudflareApproval(workflowId, {
+										subrequest_allowance: proposal.subrequest_allowance,
+										cpu_budget_ms: proposal.cpu_budget_ms,
+										https_hosts: proposal.https_hosts.filter((host) => !proposal.required_https_hosts.includes(host)),
+										review_sha256: proposal.review_sha256,
+									});
+									saveState({ ...next, proposal: null, proposal_sources: null });
+								});
+							}}>Accept Reviewed Digest</Button>
+						</>
 					)}
 				</div>
 			)}

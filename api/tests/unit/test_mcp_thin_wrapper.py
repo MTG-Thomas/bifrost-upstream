@@ -71,6 +71,7 @@ from src.services.mcp_server.tools import (  # noqa: E402
 PARITY_HANDLERS: dict[str, set[str]] = {
     "base_role_defaults": {"bifrost_base_role_default_get", "bifrost_base_role_default_update"},
     "cloudflare_approval": {
+        "bifrost_workflow_cloudflare_approval_list",
         "bifrost_workflow_cloudflare_approval_status",
         "bifrost_workflow_cloudflare_approval_propose",
         "bifrost_workflow_cloudflare_approval_accept",
