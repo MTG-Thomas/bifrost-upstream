@@ -262,3 +262,11 @@ Rehearse with `combined-stack.py --lag-worker-namespace` and
 expected capacity namespace from the first read after upload. The
 harness requires Enable to succeed on attempt two with one capacity
 upload, then runs the uninterrupted Upgrade and Disconnect checks.
+
+CT128 reproduced the hosted error code at baseline `10b450f95` with
+that single omission. At `2fc7e9ae4` the signed Enable passed on
+attempt two with one capacity upload. Upgrade completed with the
+original claim and one dispatch and ACK on the original connection.
+The replacement inventory readback followed the old absence checkpoint
+by 121 ms. The replacement passed the canary, completed its workflow
+and ACK, and Disconnect verified six script and eight namespace 404s.
