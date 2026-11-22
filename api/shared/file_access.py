@@ -20,13 +20,11 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 from uuid import UUID
 
 from sqlalchemy import select, text
-
 from src.services.access_check_policies import record_file_policy
 from src.services.audit import emit_file_policy_deny
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
-
     from src.core.principal import UserPrincipal
 
 _USE_CONTEXT_SOLUTION_ID: Any = object()
@@ -176,14 +174,15 @@ async def authorize_file_policy(
     policy_cache: Any = None,
 ) -> bool:
     """Evaluate file policy access (non-final per-tier probe, no audit)."""
-    from src.services.file_policy_service import FilePolicyService
     from src.models.contracts.policies import FileAction
+    from src.services.file_policy_service import FilePolicyService
 
     user = caller_or_ctx.user
     db = caller_or_ctx.db
     if location == "workspace":
         from src.services.authorization.enforce import load_caller, require_permission
 
+        await reject_container_workspace_access(db, user)
         permission = (
             "repository.read"
             if action in ("read", "exists", "signed_get", "list")
@@ -239,6 +238,19 @@ async def authorize_file_policy(
         allowed=decision.allowed,
     )
     return decision.allowed
+
+
+async def reject_container_workspace_access(db: AsyncSession, user: UserPrincipal) -> None:
+    """Workspace code is available to Container executions only via pinned module reads."""
+    runtime = user.runtime_authority
+    if runtime is None or runtime.kind != "workflow_execution":
+        return
+    from src.services.worker_pool.cloudflare_containers_source import (
+        container_execution_reservations,
+    )
+
+    if await db.scalar(container_execution_reservations(runtime.credential_id).exists().select()):
+        raise FileServiceError(403, "Workspace files are unavailable to Container executions")
 
 
 async def deny_file_policy(

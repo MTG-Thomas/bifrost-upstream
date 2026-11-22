@@ -1,6 +1,7 @@
 """Plan and reserve a tenant-pinned Linux overflow incarnation."""
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
@@ -25,6 +26,7 @@ from src.models.orm.cloudflare_capacity import (
 from src.models.orm.execution_workers import ExecutionWorker
 from src.models.orm.executions import Execution
 from src.models.orm.file_index import FileIndex, SolutionFileIndex
+from src.models.orm.platform_jobs import PlatformJob
 from src.models.orm.solutions import Solution
 from src.models.orm.work_dispatches import WorkDispatch
 from src.models.orm.workflows import Workflow
@@ -39,6 +41,7 @@ from src.services.worker_pool.cloudflare_containers_egress import (
     current_container_application,
 )
 from src.services.worker_pool.cloudflare_containers_policy import (
+    CONTAINERS_CLEANUP_PENDING,
     CONTAINERS_SCOPE,
     ContainersPolicy,
     container_envelope,
@@ -51,6 +54,7 @@ from src.services.worker_pool.cloudflare_containers_release import (
     VerifiedContainerRelease,
 )
 from src.services.worker_pool.cloudflare_slots import (
+    WorkflowSlotAdmission,
     read_workflow_slot_admission,
     tenant_key,
 )
@@ -205,59 +209,57 @@ def primary_has_no_fit(
     return True
 
 
-async def reserve_container(
-    db: AsyncSession, *, installation_id: UUID, controller_id: UUID,
-    primary: PrimaryPool, release: VerifiedContainerRelease, verified_egress: VerifiedEgress | None,
-) -> CloudflareWorkerReservation | None:
-    """Reserve capacity. Step 3 must wire verified egress, stop and settlement before any production caller."""
+@dataclass(frozen=True, slots=True)
+class ContainerAdmissionRefused:
+    code: Literal["CF_CONTAINERS_CLEANUP_PENDING"] = CONTAINERS_CLEANUP_PENDING
+
+
+@dataclass(frozen=True, slots=True)
+class _ContainerCapacity:
+    installation: CloudflareInstallation
+    scope: CloudflareCapacityScope
+    limits: ContainersPolicy
+    monthly_limit: Decimal
+    now: datetime
+    workers: list[ExecutionWorker]
+    seats: WorkflowSlotAdmission
+    container_tenants: frozenset[str | None]
+
+
+async def _lock_container_capacity(
+    db: AsyncSession, installation_id: UUID, release: VerifiedContainerRelease,
+) -> _ContainerCapacity | ContainerAdmissionRefused | None:
     await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": CAPACITY_LOCK})
     installation = await db.get(
         CloudflareInstallation, installation_id, with_for_update={"key_share": True}, populate_existing=True,
     )
     if (
         installation is None or installation.retired_at is not None
-        or installation.desired_state != "enabled" or installation.admitted_revision is None
-        or installation.admitted_revision != installation.containers_ready_revision
-        or installation.containers_release_digest != release.digest
-        or not isinstance(verified_egress, VerifiedEgress)
-        or (
-            verified_egress.installation_id, verified_egress.revision,
-            verified_egress.release_digest, verified_egress.origin,
-        ) != (installation.id, installation.admitted_revision, release.digest, installation.worker_ingress_origin)
-        or installation.control_root_version is None
+        or installation.desired_state != "enabled" or installation.control_root_version is None
     ):
         return None
-    revision = installation.admitted_revision
+    revision = installation.desired_revision
     try:
         containers = ContainersPolicy.model_validate(installation.containers_policy)
         policy = CloudflareCapacityPolicy.model_validate(installation.policy["limits"])
         workers_envelope = Decimal(installation.policy["fleet_envelope_usd"])
     except (ValidationError, KeyError, ArithmeticError, TypeError):
         return None
-    if not containers.enabled or await db.scalar(
-        select(workers_release_matches()).where(CloudflareInstallation.id == installation.id),
-    ) is not True:
+    if not containers.enabled:
         return None
     scope = await db.get(CloudflareCapacityScope, (installation.id, CONTAINERS_SCOPE, revision))
     if scope is None:
         return None
     now = await db.scalar(select(func.clock_timestamp()))
     assert now is not None
-    if not now - EGRESS_PROOF_MAX_AGE <= verified_egress.observed_at <= now:
-        return None
-    application = (await db.execute(current_container_application(installation, revision, release.digest))).one_or_none()
-    if application != (verified_egress.provider_id, verified_egress.provider_version):
-        return None
     if await db.scalar(overdue_container_reservations(installation.account_id, now).limit(1)) is not None:
-        return None
+        return ContainerAdmissionRefused()
     # A month can contain 31 days. The current account balance is checked
     # separately, including a reservation that crosses the next boundary.
     if workers_envelope + fleet_envelope(containers, release.manifest.rates, 31 * 86400) > policy.monthly_limit_usd:
         return None
     pin = CloudflareWorkerReservation
-    live = (await db.execute(select(pin.container_tenant, ExecutionWorker.reserved_for_dispatch_id).join(
-        ExecutionWorker, ExecutionWorker.id == pin.worker_id,
-    ).where(
+    live = (await db.scalars(select(pin.container_tenant).where(
         pin.installation_id == installation_id, pin.container_reserved_at.is_not(None), pin.container_stopped_at.is_(None),
     ))).all()
     if len(live) >= containers.installation_instances:
@@ -276,9 +278,38 @@ async def reserve_container(
     seats = await read_workflow_slot_admission(db, installation_id, policy.workers)
     if seats.full:
         return None
+    return _ContainerCapacity(installation, scope, containers, policy.monthly_limit_usd, now, workers, seats, frozenset(live))
+
+
+async def reserve_container(
+    db: AsyncSession, *, installation_id: UUID, controller_id: UUID,
+    primary: PrimaryPool, release: VerifiedContainerRelease, verified_egress: VerifiedEgress | None,
+) -> CloudflareWorkerReservation | ContainerAdmissionRefused | None:
+    """Reserve overflow only against a fresh proof for the admitted revision."""
+    if not isinstance(verified_egress, VerifiedEgress):
+        return None
+    capacity = await _lock_container_capacity(db, installation_id, release)
+    if not isinstance(capacity, _ContainerCapacity):
+        return capacity
+    installation, containers, now, workers, seats = (
+        capacity.installation, capacity.limits, capacity.now, capacity.workers, capacity.seats,
+    )
+    revision = capacity.scope.deployment_revision
+    if (
+        installation.admitted_revision != revision or installation.containers_ready_revision != revision
+        or installation.containers_release_digest != release.digest
+        or (verified_egress.installation_id, verified_egress.revision, verified_egress.release_digest, verified_egress.origin)
+        != (installation_id, revision, release.digest, installation.worker_ingress_origin)
+        or not now - EGRESS_PROOF_MAX_AGE <= verified_egress.observed_at <= now
+        or await db.scalar(select(workers_release_matches()).where(CloudflareInstallation.id == installation_id)) is not True
+    ):
+        return None
+    application = (await db.execute(current_container_application(installation, revision, release.digest))).one_or_none()
+    if application != (verified_egress.provider_id, verified_egress.provider_version):
+        return None
     linux_workers = [worker for worker in workers if worker.runtime_profile == LINUX_RUNTIME_PROFILE]
     covered = {row.reserved_for_dispatch_id for row in workers if row.reserved_for_dispatch_id is not None}
-    blocked_tenants = seats.blocked_tenants | {tenant for tenant, _ in live}
+    blocked_tenants = seats.blocked_tenants | capacity.container_tenants
     declaration = CloudflareApproval.declaration
     queue = select(WorkDispatch, Execution, Workflow, CloudflareApproval).join(
         Execution, Execution.id == WorkDispatch.subject_id,
@@ -316,7 +347,7 @@ async def reserve_container(
     if len(demand) < containers.queue_depth:
         return None
     dispatch, execution, approval = demand[0]
-    if seats.occupied.total() == policy.workers.installation_slots - 1:
+    if seats.occupied.total() == seats.policy.installation_slots - 1:
         older_workers = await db.scalars(select(WorkDispatch.memory_request_bytes).join(
             Execution, Execution.id == WorkDispatch.subject_id,
         ).where(
@@ -335,35 +366,86 @@ async def reserve_container(
         WorkDispatch.id == dispatch.id, WorkDispatch.assigned_worker_id.is_(None),
     ).with_for_update(skip_locked=True)) is None:
         return None
-    envelope = container_envelope(containers, release.manifest.rates)
+    return await _create_container_reservation(
+        db, capacity, release, controller_id=controller_id, tenant=tenant_key(execution.organization_id),
+        dispatch_id=dispatch.id, execution_id=execution.id, approval=approval.revision,
+    )
+
+
+async def reserve_container_canary(
+    db: AsyncSession, *, installation_id: UUID, controller_id: UUID, release: VerifiedContainerRelease,
+    job_id: UUID, lease_token: UUID,
+) -> CloudflareWorkerReservation | ContainerAdmissionRefused | None:
+    """Book one bounded synthetic launch under the current qualification job."""
+    job_revision = await db.scalar(select(PlatformJob.payload["revision"].as_integer()).where(
+        PlatformJob.id == job_id, PlatformJob.lease_token == lease_token,
+        PlatformJob.resource_type == "cloudflare_installation", PlatformJob.resource_id == str(installation_id),
+        PlatformJob.job_type.in_(("capacity.cloudflare_enable", "capacity.cloudflare_reconcile")),
+        PlatformJob.status == "running", PlatformJob.lease_expires_at > func.clock_timestamp(),
+    ).with_for_update())
+    if job_revision is None:
+        return None
+    capacity = await _lock_container_capacity(db, installation_id, release)
+    if not isinstance(capacity, _ContainerCapacity):
+        return capacity
+    if (
+        job_revision != capacity.scope.deployment_revision
+        or "platform" in capacity.container_tenants or not capacity.seats.allows(None)
+    ):
+        return None
+    if (await db.execute(current_container_application(
+        capacity.installation, capacity.scope.deployment_revision, release.digest,
+    ))).one_or_none() is None:
+        return None
+    return await _create_container_reservation(
+        db, capacity, release, controller_id=controller_id, tenant="platform", canary=(job_id, lease_token),
+    )
+
+
+async def _create_container_reservation(
+    db: AsyncSession, capacity: _ContainerCapacity, release: VerifiedContainerRelease, *,
+    controller_id: UUID, tenant: str, dispatch_id: UUID | None = None, execution_id: UUID | None = None,
+    approval: str | None = None, canary: tuple[UUID, UUID] | None = None,
+) -> CloudflareWorkerReservation | None:
+    now, installation, scope = capacity.now, capacity.installation, capacity.scope
+    limits = capacity.limits
+    if canary is not None:
+        # Keep the probe within a short start window and the minimum permitted runtime envelope.
+        limits = limits.model_copy(update={"start_timeout_seconds": min(limits.start_timeout_seconds, 15),
+                                          "lifetime_seconds": 121})
+    envelope = container_envelope(limits, release.manifest.rates)
     period = usage_period(now)
     for start, end in (period, usage_period(period[1])):
         cost = container_reserve_cost(envelope, now, start, end)
         if not cost:
             continue
         estimate = await db.scalar(select(cloudflare_estimated_usage(max(now, start))).where(
-            CloudflareInstallation.id == installation_id,
+            CloudflareInstallation.id == installation.id,
         ))
-        if estimate is None or estimate + cost >= policy.monthly_limit_usd:
+        if estimate is None or estimate + cost >= capacity.monthly_limit:
             return None
     worker_id, uid = uuid4(), uuid4()
     db.add(ExecutionWorker(
-        id=worker_id, form="external", state="reserved", runtime_profile=LINUX_RUNTIME_PROFILE,
+        id=worker_id, form="external", state="starting" if canary is not None else "reserved",
+        runtime_profile=LINUX_RUNTIME_PROFILE,
         execution_lane="normal", capacity_scope=CONTAINERS_SCOPE, capacity_resource_uid=uid.hex,
-        supported_handlers=[CLOUDFLARE_WORKFLOW_HANDLER[0]], reserved_for_dispatch_id=dispatch.id,
+        supported_handlers=[] if canary is not None else [CLOUDFLARE_WORKFLOW_HANDLER[0]],
+        reserved_for_dispatch_id=dispatch_id,
         memory_limit_bytes=4 * 1024**3, launched_by=controller_id,
     ))
     await db.flush()
-    reservation = pin(
-        worker_id=worker_id, installation_id=installation_id, scope=CONTAINERS_SCOPE,
-        deployment_revision=revision, control_root_version=installation.control_root_version,
-        container_tenant=tenant_key(execution.organization_id), container_release=release.digest,
+    reservation = CloudflareWorkerReservation(
+        worker_id=worker_id, installation_id=installation.id, scope=CONTAINERS_SCOPE,
+        deployment_revision=scope.deployment_revision, control_root_version=installation.control_root_version,
+        canary_job_id=canary[0] if canary else None, canary_lease_token=canary[1] if canary else None,
+        container_tenant=tenant, container_release=release.digest,
         container_reserved_at=now, container_envelope={
-            **envelope, "approval": approval.revision, "instance_type": containers.instance_type,
+            **envelope, "approval": approval, "instance_type": limits.instance_type,
+            "execution_id": str(execution_id) if execution_id is not None else None,
             "credential_version": scope.bearer_version,
-            "ingress_bytes": containers.ingress_bytes,
+            "ingress_bytes": limits.ingress_bytes,
             "image_digest": release.manifest.image_digest,
-            "start_deadline": (now + timedelta(seconds=containers.start_timeout_seconds)).isoformat(),
+            "start_deadline": (now + timedelta(seconds=limits.start_timeout_seconds)).isoformat(),
         },
     )
     db.add(reservation)

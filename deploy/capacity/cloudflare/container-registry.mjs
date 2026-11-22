@@ -4,6 +4,11 @@ const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const UID = /^[a-f0-9]{32}$/;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const MAX_CONTROL_FRAME_BYTES = 2 ** 20;
+// Reserve both legs of the relay. The byte floor covers framing and an
+// attempt whose body never reached the upstream. Provider billing still
+// requires hosted measurement before this meter can settle spend.
+const HTTP_RELAY_MULTIPLIER = 2;
+const HTTP_REQUEST_BODY_FLOOR = 256;
 
 export class ScopeRegistry {
     constructor(ctx, env) {
@@ -30,7 +35,8 @@ export class ScopeRegistry {
             worker TEXT PRIMARY KEY, uid TEXT NOT NULL UNIQUE, tenant TEXT NOT NULL,
             binding TEXT NOT NULL, state TEXT NOT NULL,
             reserved_at INTEGER NOT NULL, start_deadline INTEGER NOT NULL, deadline INTEGER NOT NULL,
-            ingress_limit INTEGER NOT NULL, outbound_limit INTEGER NOT NULL
+            ingress_limit INTEGER NOT NULL, outbound_limit INTEGER NOT NULL,
+            voided_at INTEGER, void_instance TEXT
         )`);
         this.sql.exec(`CREATE TABLE IF NOT EXISTS start_fences (
             uid TEXT PRIMARY KEY REFERENCES reservations(uid), instance TEXT NOT NULL,
@@ -43,6 +49,18 @@ export class ScopeRegistry {
     }
 
     reserve(pin) {
+        return this.#storeReservation(pin);
+    }
+
+    // Accept the immutable API pin even if the controller crashed before prepare.
+    // A void tombstone occupies no seat and denies all later prepare/start replays.
+    voidUnstarted(pin, instance, now) {
+        if (!/^[a-f0-9]{64}$/.test(instance)) return { status: "invalid" };
+        if (!Number.isSafeInteger(now) || now < pin.startDeadline) return { status: "pending" };
+        return this.#storeReservation(pin, { instance, now });
+    }
+
+    #storeReservation(pin, tombstone = null) {
         const { reservedAt, startDeadline, deadline, seconds, ingressBytes, outboundBytes } = pin;
         if (pin.installation !== this.installation || pin.revision !== this.revision
             || pin.image !== this.image || pin.instance !== "standard-1"
@@ -64,25 +82,45 @@ export class ScopeRegistry {
         ]);
         return this.storage.transactionSync(() => {
             const matching = this.sql.exec(
-                "SELECT binding, state FROM reservations WHERE worker = ? OR uid = ?", pin.worker, pin.uid,
+                "SELECT binding, state, voided_at, void_instance FROM reservations WHERE worker = ? OR uid = ?",
+                pin.worker, pin.uid,
             ).toArray();
             if (matching.length) {
                 if (matching.length !== 1 || matching[0].binding !== binding) return { status: "conflict" };
-                return { status: matching[0].state };
+                if (tombstone === null) return { status: matching[0].state };
+                if (matching[0].void_instance !== null && matching[0].void_instance !== tombstone.instance) {
+                    return { status: "conflict" };
+                }
+                if (this.sql.exec("SELECT uid FROM start_fences WHERE uid = ?", pin.uid).toArray().length) {
+                    return { status: "conflict" };
+                }
+                if (matching[0].voided_at === null) {
+                    this.sql.exec(
+                        "UPDATE reservations SET state = 'retired', voided_at = ?, void_instance = ? WHERE uid = ?",
+                        tombstone.now, tombstone.instance, pin.uid,
+                    );
+                }
+                return {
+                    status: "void", uid: pin.uid, instance: tombstone.instance, startDeadline,
+                    voidedAt: matching[0].voided_at ?? tombstone.now,
+                };
             }
             const { total, tenant } = this.sql.exec(
                 "SELECT count(*) AS total, count(CASE WHEN tenant = ? THEN 1 END) AS tenant "
                 + "FROM reservations WHERE state <> 'retired'", pin.tenant,
             ).one();
-            if (total >= this.cap || tenant >= 1) return { status: "full" };
+            if (tombstone === null && (total >= this.cap || tenant >= 1)) return { status: "full" };
             this.sql.exec(
                 "INSERT INTO reservations (worker, uid, tenant, binding, state, "
-                + "reserved_at, start_deadline, deadline, ingress_limit, outbound_limit) "
-                + "VALUES (?, ?, ?, ?, 'reserved', ?, ?, ?, ?, ?)",
-                pin.worker, pin.uid, pin.tenant, binding,
+                + "reserved_at, start_deadline, deadline, ingress_limit, outbound_limit, voided_at, void_instance) "
+                + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                pin.worker, pin.uid, pin.tenant, binding, tombstone === null ? "reserved" : "retired",
                 reservedAt, startDeadline, deadline, ingressBytes, outboundBytes,
+                tombstone?.now ?? null, tombstone?.instance ?? null,
             );
-            return { status: "reserved" };
+            return tombstone === null ? { status: "reserved" } : {
+                status: "void", uid: pin.uid, instance: tombstone.instance, startDeadline, voidedAt: tombstone.now,
+            };
         });
     }
 
@@ -164,16 +202,21 @@ export class ScopeRegistry {
         return row?.deadline ?? null;
     }
 
-    chargeRelay(uid, instance, direction, bytes, now) {
+    chargeRelay(uid, instance, direction, bytes, now, arrived = false) {
         if ((direction !== "ingress" && direction !== "outbound") || !Number.isSafeInteger(bytes) || bytes <= 0) {
             return false;
         }
         return this.storage.transactionSync(() => {
             const row = this.sql.exec("SELECT * FROM start_fences WHERE uid = ?", uid).toArray()[0];
-            if (!row || row.instance !== instance || row.closed_at !== null || row.relay_blocked
+            if (!row || row.instance !== instance || row.closed_at !== null
                 || !Number.isSafeInteger(now) || now < row.authorized_at || now >= row.deadline) return false;
-            if (row[direction] + bytes > row[`${direction}_limit`]) {
-                this.sql.exec("UPDATE start_fences SET relay_blocked = 1 WHERE uid = ?", uid);
+            const total = Math.min(Number.MAX_SAFE_INTEGER, row[direction] + bytes);
+            if (row.relay_blocked || total > row[`${direction}_limit`]) {
+                if (arrived) {
+                    this.sql.exec(`UPDATE start_fences SET ${direction} = ?, relay_blocked = 1 WHERE uid = ?`, total, uid);
+                } else if (!row.relay_blocked) {
+                    this.sql.exec("UPDATE start_fences SET relay_blocked = 1 WHERE uid = ?", uid);
+                }
                 return false;
             }
             this.sql.exec(`UPDATE start_fences SET ${direction} = ${direction} + ? WHERE uid = ?`, bytes, uid);
@@ -302,37 +345,55 @@ function meterBody(body, charge, signal) {
 
 export async function forwardContainerHttp(registry, uid, instance, request, origin, policy, fetchUpstream = fetch) {
     const url = new URL(request.url);
+    const now = Date.now();
+    const rawLength = request.headers.get("content-length");
+    const declared = rawLength !== null && /^\d+$/.test(rawLength) ? Number(rawLength) : HTTP_REQUEST_BODY_FLOOR;
+    const prepaid = Math.min(Number.MAX_SAFE_INTEGER, declared);
+    const headerBytes = byteSize(request.headers, `${request.method} ${request.url} HTTP/1.1\r\n`);
+    const arrival = Math.min(Number.MAX_SAFE_INTEGER, HTTP_RELAY_MULTIPLIER * (headerBytes + prepaid));
+    const local = (status) => {
+        registry.chargeRelay(uid, instance, "ingress", HTTP_RELAY_MULTIPLIER * byteSize([], `HTTP/1.1 ${status}\r\n`),
+            Date.now(), true);
+        return new Response(null, { status });
+    };
+    if (!registry.chargeRelay(uid, instance, "outbound", arrival, now, true)) return local(429);
     if (url.protocol !== "https:" || url.origin !== origin || url.username || url.password || url.hash
         || request.headers.get("host") !== url.host || request.headers.has("upgrade")
         || policy.version !== 1 || !allowsIngressRoute(policy, request, url)) {
-        return new Response(null, { status: 403 });
+        return local(403);
     }
     const deadline = registry.relayDeadline(uid, instance);
     const remaining = deadline === null ? 0 : deadline - Date.now();
-    const charge = (direction) => (bytes) => registry.chargeRelay(uid, instance, direction, bytes, Date.now());
-    const sent = charge("outbound");
-    const received = charge("ingress");
+    const charge = (direction, bytes) =>
+        registry.chargeRelay(uid, instance, direction, bytes * HTTP_RELAY_MULTIPLIER, Date.now(), true);
+    let unspent = prepaid;
+    const sendBody = (bytes) => {
+        const activeUntil = registry.relayDeadline(uid, instance);
+        if (activeUntil === null || Date.now() >= activeUntil) return false;
+        const covered = Math.min(unspent, bytes);
+        unspent -= covered;
+        return covered === bytes || charge("outbound", bytes - covered);
+    };
+    const received = (bytes) => charge("ingress", bytes);
     const headers = outboundHeaders(request.headers, ["accept", "authorization", "content-type"]);
-    if (remaining <= 0 || !sent(byteSize(headers, `${request.method} ${url.pathname}${url.search}\r\n`))) {
-        return new Response(null, { status: 429 });
-    }
+    if (remaining <= 0) return local(429);
     const signal = AbortSignal.timeout(remaining);
     try {
         const response = await fetchUpstream(url, {
-            method: request.method, headers, body: meterBody(request.body, sent, signal),
+            method: request.method, headers, body: meterBody(request.body, sendBody, signal),
             redirect: "manual", signal, duplex: "half",
         });
+        if (!received(byteSize(response.headers, `HTTP/1.1 ${response.status}\r\n`))) {
+            await response.body?.cancel();
+            return local(429);
+        }
         if (response.status >= 300 && response.status < 400) {
             await response.body?.cancel();
-            return new Response(null, { status: 403 });
+            return local(403);
         }
         const reply = outboundHeaders(response.headers, ["content-type", "content-disposition", "retry-after"]);
-        if (!received(byteSize(reply, `${response.status}\r\n`))) {
-            await response.body?.cancel();
-            return new Response(null, { status: 429 });
-        }
         return new Response(meterBody(response.body, received, signal), { status: response.status, headers: reply });
     } catch {
-        return new Response(null, { status: 502 });
+        return local(502);
     }
 }

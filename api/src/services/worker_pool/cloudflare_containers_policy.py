@@ -9,6 +9,7 @@ from sqlalchemy import (
     DateTime,
     Interval,
     Numeric,
+    case,
     cast,
     exists,
     extract,
@@ -112,7 +113,8 @@ def container_account_usage(now):
         "epoch", func.least(end, charged_end) - func.greatest(period, charged_start),
     ))
     return select(func.coalesce(func.sum(
-        seconds * envelope["second_usd"].as_string().cast(Numeric(30, 12))
+        case((envelope["voided_unstarted"].as_boolean().is_(True), 0), else_=seconds)
+        * envelope["second_usd"].as_string().cast(Numeric(30, 12))
         + func.coalesce(
             envelope["settled_fixed_usd"].as_string().cast(Numeric(30, 12)),
             envelope["fixed_usd"].as_string().cast(Numeric(30, 12)),
