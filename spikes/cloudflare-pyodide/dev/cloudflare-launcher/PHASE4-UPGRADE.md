@@ -139,3 +139,11 @@ and hosted Upgrade drain and replay remain unqualified. Teardown verified
 both trial image tags were gone.
 
 See the [sanitized ownership-stop receipt](../../results/cloudflare-scaleout-combined-hosted-ownership-stop.json).
+
+### Hosted Preset B Run at `e7c59788c`
+
+Both requalified packages loaded in production API images. The managed
+ingress ownership stop occurred before Upgrade submission. Hosted drain
+and terminal replay remain unqualified. Both image tags were removed.
+
+See the [sanitized preset B receipt](../../results/cloudflare-scaleout-preset-b-hosted.json).

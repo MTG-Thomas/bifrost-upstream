@@ -154,3 +154,16 @@ route-list grant, or rotation evidence. The Existing HTTPS tunnel was
 retired, with a deletion tombstone and zero sessions.
 
 See the [sanitized ownership-stop receipt](../../results/cloudflare-scaleout-combined-hosted-ownership-stop.json).
+
+### Hosted Preset B Stop at `e7c59788c`
+
+Managed Connect accepted preset B with admission closed. Enable
+returned `CF_OWNERSHIP_CONFLICT` with resource class `tunnel_ingress`,
+check `ingress_occupied`, observed category `already_configured` and
+expected category `empty_or_matching`. The stop preceded the signed
+canary, warp-routing echo, route-list grant readback, and rotation.
+Disconnect verified a deleted tunnel with zero sessions. The DNS
+intent had no provider ID. Exact-name inventory and both authorities
+verified its absence.
+
+See the [sanitized preset B receipt](../../results/cloudflare-scaleout-preset-b-hosted.json).

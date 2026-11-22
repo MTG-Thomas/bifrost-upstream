@@ -776,3 +776,20 @@ attributed Workers or Durable Object samples, so the provider cost proxy
 and spend ratio are unavailable.
 
 See the [sanitized ownership-stop receipt](../../results/cloudflare-scaleout-combined-hosted-ownership-stop.json).
+
+### Hosted Preset B Spend at `e7c59788c`
+
+The Existing HTTPS leg passed the nine-slot burst, isolated cancel and
+active Scale In. Its live estimate peaked at $2.02 above the
+$0.015317311140 opening estimate. Managed Enable stopped before a
+launcher started. The complete run settled at $0.061801362912
+incremental and $0.077118674052 including carry-in. All four
+incarnations sealed their meters before teardown, with zero unresolved
+incarnation or route flags at final readback.
+
+Attributed Workers Analytics returned 196 requests and 70,698 µs of
+CPU. Those rows imply a $0.00006021396 Workers-only proxy and a
+Bifrost-to-proxy ratio of 1,026.36. The Durable Object datasets returned
+no attributed rows. The proxy covers the sampled Workers charges.
+
+See the [sanitized preset B receipt](../../results/cloudflare-scaleout-preset-b-hosted.json).

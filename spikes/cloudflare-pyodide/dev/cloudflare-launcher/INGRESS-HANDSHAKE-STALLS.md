@@ -163,3 +163,13 @@ ran as `remote_launcher` and stopped on `CF_OWNERSHIP_CONFLICT`, so this
 run has no successful Enable counters.
 
 See the [sanitized ownership-stop receipt](../../results/cloudflare-scaleout-combined-hosted-ownership-stop.json).
+
+### Hosted Preset B Preflight at `e7c59788c`
+
+Existing HTTPS worker preflight passed all 100 checks. It and the
+`remote_launcher` Enable receipt each recorded eight completed TLS
+handshakes and 92 reused requests on each IPv4 address, plus one TCP
+attempt and zero TLS starts on each IPv6 address. Managed Enable stopped
+at the tunnel ingress ownership check before its ingress probe.
+
+See the [sanitized preset B receipt](../../results/cloudflare-scaleout-preset-b-hosted.json).

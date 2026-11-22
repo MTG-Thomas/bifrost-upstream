@@ -215,3 +215,15 @@ tenth, and isolated cancellation remain unqualified on hosted.
 Disconnect verified zero held slots and live launcher incarnations.
 
 See the [sanitized ownership-stop receipt](../../results/cloudflare-scaleout-combined-hosted-ownership-stop.json).
+
+### Hosted Preset B Burst at `e7c59788c`
+
+Four Provider and four Global executions held distinct slots at the
+same time. All eight had entered 7.134 s after the last dispatch read.
+The third tenant took the reserved ninth slot, and the tenth remained
+unassigned through two eligible passes. A confirmed cancel released
+one fence and left the other eight unchanged. The tenth entered after
+release. The scoped Solution fixture returned its expected value.
+Reconcile, active Scale In and Disconnect verified retirement.
+
+See the [sanitized preset B receipt](../../results/cloudflare-scaleout-preset-b-hosted.json).

@@ -402,3 +402,18 @@ attempt. Hosted eligibility offset and cold and warm latency are
 unmeasured.
 
 See the [sanitized ownership-stop receipt](../../results/cloudflare-scaleout-combined-hosted-ownership-stop.json).
+
+### Hosted Preset B With the 2-Second Gate at `e7c59788c`
+
+On a fresh launcher and engine, the cold runtime recorded these
+queue-relative stages in milliseconds.
+
+| Gate | Decision | Start sent | Start accepted | Hello | Claim | Prepare | Dispatch | Engine ready | Runtime entry |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2,000 | 2,161 | 3,112 | 3,297 | 3,492 | 3,625 | 3,745 | 3,892 | 5,761 | 6,068 |
+
+The PostgreSQL entry-log and completion measurements were 6.380 s and
+6.486 s cold, and 0.678 s and 0.780 s warm. Both runs used slot 0 on the
+same launcher and received distinct terminal ACKs.
+
+See the [sanitized preset B receipt](../../results/cloudflare-scaleout-preset-b-hosted.json).
