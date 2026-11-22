@@ -985,9 +985,14 @@ class Bridge:
                         async with get_db_context() as db:
                             if not await fence_remote_owner(db):
                                 raise ConnectionError("Remote API ownership was replaced before metering")
+                            state = event.get("attempt_state")
+                            managed_workflow = self.managed_cloudflare and event["event"] == "result"
+                            # Managed workflow "stopped" requires TenantHost confirmation.
+                            # A clean final seal can settle the launcher counters. Foreground
+                            # work without invocation evidence keeps its separate reservation.
                             await record_launcher_terminal_meter(
                                 db, terminal_ref.lease.worker_id, event.get("usage"),
-                                uncertain=event.get("attempt_state") in ("stopped", "uncertain"),
+                                uncertain=state == "uncertain" or (state == "stopped" and not managed_workflow),
                             )
                     if isinstance(event_id, str):
                         await self.acknowledge(event_id)

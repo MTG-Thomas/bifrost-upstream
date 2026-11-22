@@ -378,15 +378,27 @@ async def test_preparation_send_timeout_leaves_live_control_session_usable() -> 
     socket.close.assert_not_awaited()
 
 
-@pytest.mark.parametrize("kind", ["result", "summary_result", "cloudflare_agent_result"])
-async def test_terminal_receipts_in_all_cloudflare_domains_are_checked_before_ack(kind) -> None:
-    bridge = Bridge(Mock(), {"hostname": "runner", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE}, LEASE)
+@pytest.mark.parametrize(("kind", "state", "managed", "uncertain"), [
+    ("result", "uncertain", True, True),
+    ("summary_result", "uncertain", True, True),
+    ("cloudflare_agent_result", "uncertain", True, True),
+    ("result", "stopped", True, False),
+    ("result", "stopped", False, True),
+    ("summary_result", "stopped", True, True),
+    ("cloudflare_agent_result", "stopped", True, True),
+])
+async def test_terminal_receipts_in_all_cloudflare_domains_are_checked_before_ack(
+    kind: str, state: str, managed: bool, uncertain: bool,
+) -> None:
+    bridge = Bridge(Mock(), {
+        "hostname": "runner", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE, "managed_cloudflare": managed,
+    }, LEASE)
     bridge.lease_ref = LeaseRef(LEASE)
     deliver = AsyncMock()
     bridge.pool = SimpleNamespace(handle_event=deliver)
     bridge.summaries = SimpleNamespace(handle_result=deliver)
     bridge.autonomous = SimpleNamespace(handle_result=deliver)
-    event = {"event": kind, "_event_id": "terminal", "attempt_state": "uncertain",
+    event = {"event": kind, "_event_id": "terminal", "attempt_state": state,
              "usage": {"sqlite_rows_written": 100, "log_events": 2, "do_requests": 3, "exhausted": True}}
 
     @asynccontextmanager
@@ -407,7 +419,7 @@ async def test_terminal_receipts_in_all_cloudflare_domains_are_checked_before_ac
         await asyncio.gather(*bridge.results)
     assert [call[0] for call in calls.mock_calls] == ["deliver", "meter", "ack"]
     assert calls.meter.await_args.args[1:] == (LEASE.worker_id, event["usage"])
-    assert calls.meter.await_args.kwargs == {"uncertain": True}
+    assert calls.meter.await_args.kwargs == {"uncertain": uncertain}
 
 
 async def test_adopted_autonomous_route_reserves_memory_and_one_physical_slot() -> None:
