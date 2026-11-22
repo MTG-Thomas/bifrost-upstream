@@ -752,13 +752,13 @@ capacity value, Workers Paid subscription and trial limit are separate.
 
 The estimates in the table were calculated for the earlier 120-second
 policy and its $415.59 monthly fleet envelope. Obtain approval for a
-recalculated trial budget before provisioning preset B. Include the
-carry-in, maximum launch and dispatch reserves, canaries, cleanup and
-the unresolved counter reserve observed after cancellation. Use the
-packaged marginal rates without assumed free allowances. Record the
-high-water live estimate and settled usage by phase. Occupy or cap the
-primary with controlled fixtures and verify each admission witness
-is an actual Workers claim.
+recalculated trial budget before provisioning preset B. The 30-minute
+trial proposal derives a $3.60 live-estimate target, $4.50 live abort,
+and $0.15 settled-spend target from the pinned rates and caps. Add
+account carry-in and check the remaining reserve before each phase.
+Record the high-water live estimate and settled usage by phase. Occupy
+or cap the primary with controlled fixtures and verify each admission
+witness is an actual Workers claim. [Preset B trial budget](../../results/cloudflare-scaleout-preset-b-followup.md#nine-item-trial-budget)
 
 ### Observe Each Gate Before Advancing
 

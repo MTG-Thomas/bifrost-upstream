@@ -133,12 +133,53 @@ tunnel, sessions and DNS.
 | 1 | $0.079814 | $0.08 |
 | 2 | $0.084736 | $0.09 |
 
-The nine-slot live sample was $1.99 while launcher and foreground
-reservations were still outstanding. For owner review, the proposed
-thresholds are $2.25 for planned live Bifrost exposure and $2.50 for
-abort, with a $0.15 settled estimate target. Include account carry-in
-and remaining cleanup before each phase. The fixture exercised the
-original $0.50 post-retirement check. Provider billing was unmeasured.
+### Nine-item trial budget
+
+Use a 30-minute trial window within one UTC day, with the last five
+minutes reserved for cleanup. The model assumes 14 workflow dispatches
+with 110-second timeouts, four Enable or Upgrade canaries, and queue
+pre-warming disabled. The account's opening estimate is carry-in. All
+values here are trial increments.
+
+| Reserve | Calculation | USD |
+| --- | --- | ---: |
+| Active launchers | Three × $0.6336. Each 3,600-second pin prices 460,800 writes, 230,400 DO requests and 230,400 log events. | $1.900800 |
+| Revision or Scale In transition | One additional full reserve while a draining launcher's final meter clears. Scale In drains the existing fleet. Upgrade requires old script and namespace absence before replacement upload, so there is no second live three-launcher fleet. | $0.633600 |
+| Canaries | Four × $0.02112. Each has 120 seconds of counter caps. This allows all four reserves to overlap the regular fleet estimate. | $0.084480 |
+| Launcher elapsed time | `(4 × 1,800 + 4 × 120) s × $0.000072778/s`, the policy's pinned `second_usd`. | $0.558935 |
+| Slot residence | `7,680 s × 4 × $0.0000016/s`, including the inventory slot correction and full occupancy. | $0.049152 |
+| Workflow bookings | Nine concurrent × $0.007541438 = $0.067872942. Budget all 14 × $0.007541438 to include uncleared bookings from previous steps. | $0.105580 |
+| Lifecycle and remaining work | Eight × $0.00004395 for launcher setup, cleanup and acknowledgement, plus $0.152811 of checked-in fixed meter allowances for control, storage and other trial work. | $0.153163 |
+| **Planned live estimate** | **Sum before rounding** | **$3.485710** |
+
+The per-workflow allowance prices up to `4 × 48,522 + 3 × 7,315 +
+30,000 + 50 × 214 = 256,733 ms` of CPU at $0.02 per million ms,
+$0.000062228 of dispatch and generation-control requests, reads, writes
+and logs, `51 × $0.00000045` for the request portion of one dispatch
+plus 50 SDK activity entries, 201 seconds of TenantHost duration at
+$0.0000016/s including the 90-second linger and one second for rounding,
+and a $0.002 engine identity. The fixed reserve uses the gross checked-in
+limits, including the full fixed CPU allowance. The measured nine-slot
+live sample was $1.99.
+
+Propose a **$3.60 live-estimate target**, **$4.50 live abort**, and
+**$0.15 settled-spend target** for owner approval. The $0.90 gap covers
+one further $0.6336 full-size unsealed launcher and up to
+`1,800 × ($0.000072778 + 4 × $0.0000016) = $0.1425204` if it also
+remains resident for the full window. Carry the opening account
+estimate into each threshold and check remaining work before advancing.
+At abort or when the cleanup window starts, stop admitting new work and
+continue authorized cleanup.
+
+The two rehearsal reads put expected settled spend at **$0.072–$0.075**
+for this workload. If one full-size launcher is confirmed retired with
+its seal missing, the estimate can reach about **$0.706–$0.709** from
+the counter reserve alone. Allow **$0.78** including the foreground
+credits that would also be withheld. The upper bound for those credits is
+`14 × $0.00492186 = $0.06890604`, even if all 14 routes belonged to
+the same launcher. The precise increment depends on the missing
+launcher's final counts and booked routes. Provider billing was
+unmeasured.
 
 ## Verification
 
@@ -177,3 +218,30 @@ API quality passed with zero Pyright diagnostics and a clean Ruff check.
 The follow-up logs and diagnostic fixture are retained on CT128 under
 /opt/bifrost-tests/requal-dd1fa2785c60ee0a9e4e0ab6d171344fc9f47265/verification.
 The owned test stacks, fixture processes and image tags were removed.
+
+### Unbooked and stopped terminals
+
+Commit `1d48409c4` restores the incarnation-wide reserve when a stopped
+or uncertain terminal cannot be tied to an exact workflow booking.
+This includes summary and autonomous agent terminals. A booked stop
+retains its own foreground reserve, so its receipt cannot claim credit
+if a launcher reports partial invocations. Sibling routes still settle
+with a consistent final receipt.
+
+CT128 ran the same backend and quality commands above against that
+commit. All 880 cases passed, including 139 capacity persistence tests
+and six workflow approval tests. Pyright reported zero diagnostics and
+Ruff passed. The canary regression exercised the production pin path
+against PostgreSQL and verified 15,360 writes, 7,680 DO requests and
+7,680 log events under the 3,600-second policy.
+
+The full local rehearsal used both original Worker release packages,
+with the API rebuilt from `1d48409c4`. The diagnostic copy of
+`combined-rehearsal.py` retained the original gates and recorded the
+database spend readback. During the burst, the confirmed stop left one
+flagged booking and zero incarnation-wide flags. Item 9 passed at
+$0.0720068330304167, with eight retired incarnations and zero uncertain
+incarnations. Upgrade kept its original claim, reconnected and
+acknowledged the single dispatch. Disconnect verified both installations'
+resource absence. CT128 evidence is in the `verification` directory
+under `/opt/bifrost-tests/requal-1d48409c46996ae73003867a62d3851e1cf75d6e`.
