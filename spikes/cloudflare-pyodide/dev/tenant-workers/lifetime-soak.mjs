@@ -50,8 +50,9 @@ export async function runLifetimeSoak({result, seconds, deadlineMs, storage, run
   const save = () => writeFileSync(result, JSON.stringify(receipt, null, 2) + '\n');
   const sample = async () => {
     const state = await observe();
+    const deadline_offset_ms = Date.now() - deadlineMs;
     const {cpu_ms, ...memory} = processMetrics();
-    receipt.samples.push({at_seconds: elapsed(), ...memory, cpu_ms: cpu_ms - baseline,
+    receipt.samples.push({at_seconds: elapsed(), deadline_offset_ms, ...memory, cpu_ms: cpu_ms - baseline,
       meter: readMeter(storage), state});
     save();
     return state;
@@ -107,7 +108,7 @@ export async function runLifetimeSoak({result, seconds, deadlineMs, storage, run
   }, {});
   save();
   assert.ok(['stopped', 'deleted'].includes(state), 'Provider must stop the idle incarnation at its deadline');
-  assert.ok(Date.now() >= deadlineMs, 'Launcher stopped before its lifetime deadline');
+  assert.ok(receipt.samples.at(-1).deadline_offset_ms >= 0, 'Launcher stopped before its lifetime deadline');
   if (observation?.error) throw observation.error;
   assert.ok(receipt.workflows.every(({success, sdk}) => success && sdk), 'At least one scheduled workflow failed');
   assert.equal(seal.exhausted, false, 'Launcher exhausted its release meter during the soak');
