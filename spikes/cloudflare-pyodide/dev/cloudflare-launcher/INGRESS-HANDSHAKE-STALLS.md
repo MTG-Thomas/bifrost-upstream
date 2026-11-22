@@ -45,6 +45,22 @@ TLS p95 was 340.157 ms in the first 20 attempts and 18.450 ms in the last 20. Th
 
 ## Hypothesis Disposition
 
+### Docker-Bridge Follow-Up
+
+At 01:03:30 UTC on November 22, the same IPv4 resolver sample ran in a throwaway container on the LXC's Docker bridge, through its NAT path. The local worker image `stage128-worker:latest` was already present. The test overrode its entry point with Python and sent only TLS handshakes. The LXC had 9,951,053 KiB available and no active Bifrost test stack at launch. Docker used the cached image and the throwaway container's removal was verified.
+
+| Latency (ms), nearest rank | Min | p50 | p95 | p99 | Max |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| TCP connect | 10.301 | 11.582 | 13.625 | 15.337 | 17.181 |
+| TLS after TCP | 14.525 | 17.184 | 21.847 | 54.504 | 54.672 |
+| TCP plus TLS | 25.693 | 28.812 | 34.848 | 65.828 | 66.507 |
+
+All 200 fresh connections completed in 0.824 s at eight-way concurrency, with zero four-second timeouts. Every socket negotiated non-resumed TLS 1.3 and HTTP/1.1 and reported PMTU 1500 and three TCP data segments in each direction. LXC `nstat -asz` before and after the burst showed no change in retransmissions (850), TCP timeouts (91), loss probes (264), SYN retransmissions (3), or IP discards (84 outbound, 0 inbound). The worker image lacked `nstat`, so the throwaway namespace's snapshots used the underlying kernel counters in `/proc/net/snmp` and `/proc/net/netstat`. They showed +200 TCP opens, +1,191 incoming and +1,873 outgoing TCP segments, and zero retransmissions, timeouts, loss probes, SYN retransmissions, or IP discards both before and after.
+
+The bridge sample provides evidence against a persistent bridge-path defect under this load. It used the default Docker bridge and the public resolver, rather than the exact Compose network and the hosted SNI. The two bursts were sampled at different times. Their timing difference does not establish that the bridge improved latency.
+
+### Findings
+
 | Hypothesis | Disposition |
 | --- | --- |
 | Normal loss and TCP retransmission | **Supported as a source of shorter tails.** The resolver burst saw client retransmissions and a sub-second TLS tail. A four-second TLS timeout with an established TCP connection requires a larger or more persistent disturbance under the measured timers. Correlated loss, queueing, or handshakes delayed before edge response remain plausible. No packet trace was captured during Run 4. |
