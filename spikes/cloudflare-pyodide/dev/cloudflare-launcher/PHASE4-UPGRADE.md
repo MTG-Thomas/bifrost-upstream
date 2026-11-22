@@ -193,10 +193,12 @@ Use the private operator configuration with `--hosted-upgrade-config`.
    independently confirm the saved old script and namespace IDs are
    absent.
 4. Require the replacement's signed canary and inventory readback in
-   the successful Upgrade job before admission reopens. Run a new
-   workflow pinned to the replacement revision and verify its terminal
-   ACK. Read spend, Disconnect, and verify all saved namespace IDs
-   from the journal map values for both revisions.
+   the successful Upgrade job before admission reopens. After the
+   original ACK, retire the original API and give the successor up to
+   40 seconds to take the scheduler lease. It retains the Compose API
+   alias. Run a new workflow pinned to the replacement revision and
+   verify its terminal ACK. Read spend, Disconnect, and verify all
+   saved namespace IDs from the journal map values for both revisions.
 
 Terminal replay after a deliberate socket interruption is a separate
 local-only check. Hosted evidence from this procedure covers uninterrupted

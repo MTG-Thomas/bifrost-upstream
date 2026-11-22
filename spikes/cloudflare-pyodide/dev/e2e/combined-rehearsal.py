@@ -529,13 +529,17 @@ async def {name}():
         self.release_primary()
         receipts = [row for row in self.worker_receipts() if row["revision"] == old["revision"]]
         assert len(receipts) == 3 and sum(len(row["namespaces"]) for row in receipts) == 4
+        original_api = subprocess.check_output(
+            self.compose + ["ps", "-q", "api"], text=True, timeout=8,
+        ).strip()
+        assert re.fullmatch("[a-f0-9]{12,64}", original_api)
         # Keep the old API's ingress alive until the new package installs its fence.
         env = {**os.environ, "TRIAL_RELEASE": "2"}
         image = self.cfg["image"] + ":release-2"
         expected = subprocess.check_output(["docker", "image", "inspect", "--format", "{{.Id}}", image], text=True).strip()
-        successor = subprocess.check_output(self.compose + [
-            "run", "-d", "--no-deps", "api",
-        ], text=True, env=env, timeout=30).strip()
+        run_options = ["--use-aliases"] if not replay else []
+        successor = subprocess.check_output(self.compose + ["run", "-d", "--no-deps", *run_options, "api"],
+                                            text=True, env=env, timeout=30).strip()
         actual = subprocess.check_output(["docker", "inspect", "--format", "{{.Image}}", successor], text=True).strip()
         assert actual == expected
         inspected, = json.loads(subprocess.check_output(["docker", "inspect", successor]))
@@ -616,13 +620,24 @@ async def {name}():
                 old_namespace_ids = {value for row in receipts for value in row["namespaces"].values()}
                 inventory_reads = [entry["ids"] for entry in wire[:first_upload] if entry["kind"] == "namespace-inventory"]
                 assert inventory_reads and old_namespace_ids.isdisjoint(inventory_reads[-1])
+            # The original may still hold the singleton scheduler lease. Its
+            # older release cannot admit the new digest. The ACK is already
+            # witnessed, so retire the original API before submitting new work.
+            subprocess.run(["docker", "stop", "--time", "30", original_api], check=True,
+                           timeout=40, stdout=subprocess.DEVNULL)
+            successor_hostname = inspected["Config"]["Hostname"]
+            assert re.fullmatch("[a-f0-9]{12,64}", successor_hostname)
+            wait("replacement scheduler lease", lambda: self.sql(f"""
+                SELECT to_json(coalesce((SELECT split_part(owner_id, ':', 1) = '{successor_hostname}'
+                  AND lease_expires_at > now() FROM scheduler_leases WHERE name='scheduler-triggers'), false))
+            """), 40)
             self.primary_hold()
             self.submit("replacement", "third")
             new = self.settle("replacement")
             assert new["revision"] == new_revision
             wait("replacement route terminal ACK", lambda: self.terminal_ack(new), 10)
             self.release_primary()
-            evidence_fields.update(admission_fenced=True, same_control_connection=True,
+            evidence_fields.update(admission_fenced=True, same_control_connection=True, successor_scheduler_lease=True,
                                    old_absence_checkpoint_before_replacement=True,
                                    first_replacement_observation_after_checkpoint_ms=duration(
                                        checkpoint["drained"], min(row["observed"] for row in replacement),
