@@ -121,3 +121,12 @@ before the replacement image was staged on the running stack. Upgrade
 drain and terminal replay were not exercised. Both image tags were removed.
 
 See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-observable-gates.json).
+
+## Hosted Cold and Warm Reuse Run
+
+Both pinned releases passed offline loader verification from source
+`788ffc641`. The run stopped at a post-latency harness gate before
+the replacement image started. Hosted Upgrade drain and terminal
+replay remain unqualified. Both local image tags were removed.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-latency-reuse.json).

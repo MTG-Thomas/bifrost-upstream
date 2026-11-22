@@ -1,0 +1,289 @@
+{
+  "date_utc": "2026-11-22",
+  "spike_source_revision": "788ffc64164a5e91256e6bf266156912784920f6",
+  "qualified_bundle_sha256": "370246c011982ac686a1a6e5aab0d4cf09bf2cd88f6d6059861759001d0f0063",
+  "release_verification": {
+    "built_from_pinned_source": true,
+    "worker_packaging_tests_passed": 12,
+    "runtime_sha256": "fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5",
+    "meter_bounds_sha256": "5bd0c64824fb504b3161037385fd2e835d1c766d1d7682e388de02467b319bd0",
+    "modules_sha256": {
+      "capacity": "914baebf27bd2148eb1a86d9bdcae7e8a8f598507b6b02d13c2c042659d03c94",
+      "launcher": "027adc29f73b04142282b1677ad0185f5f668b58f6d660168df4c2cf1d9b6213",
+      "gateway": "6fb1025b11b308d3a628bed063cb5aa5d11f141819eb3ddd1c0b8153621847d5"
+    },
+    "releases": [
+      {
+        "version": "0.0.0-hosted.1",
+        "source_revision": "dd5481c43c599515a5f2dd10aff1c9cd753e380d",
+        "manifest_sha256": "5270d1d42525c7c8034f9523093080146193ba66bcb327a26d31ebf88ac14770",
+        "deployment_sha256": "1dca773e987a4fe002f4efc80748e4a8c8f209089f38bda570365eacade54ea4",
+        "image_sha256": "b84f3dba4e89ea60e4b5402f9a7b83915bdbda3650a1ef2fd34173a1a419639e"
+      },
+      {
+        "version": "0.0.0-hosted.2",
+        "source_revision": "eb5399823821b2e640e6a7af555d914f8833259d",
+        "manifest_sha256": "3aaa19bbde06c227ebb55a8fa98cec9ce5cf405aa6d76689c39f0db9cd773140",
+        "deployment_sha256": "c51e92adda8959261e068cea36937065f58601f438c33ac882460c45e52e4669",
+        "image_sha256": "9dc6cd39ec4043e9e3734893c2070bf959c329518fdbd9b1fd0ee0123e6a88e1"
+      }
+    ]
+  },
+  "start_condition": {
+    "available_gib": 8,
+    "other_running_test_stacks": 0
+  },
+  "policy": {
+    "configured_launcher_lifetime_s": 120,
+    "linger_s": 90,
+    "launcher_cap": 3,
+    "slots_per_launcher": 4,
+    "slots_per_tenant": 4,
+    "installation_slots": 9,
+    "queue_prewarm_per_tenant": 0
+  },
+  "runbook": {
+    "item_1": "passed_offline",
+    "item_2": "passed",
+    "item_3": "stop_on_harness_gate_after_both_workflows_completed",
+    "item_4": "not_reached",
+    "item_5": "normal_reconcile_and_active_scale_in_not_reached",
+    "item_6": "not_reached",
+    "item_7": "not_reached",
+    "item_8": "not_reached",
+    "item_9": "stop_path_teardown_passed_analytics_empty"
+  },
+  "connect": {
+    "http": 200,
+    "at_utc": "2026-11-22T06:03:56.702187+00:00",
+    "envelope_usd": 415.59,
+    "admission_open": false
+  },
+  "worker_preflight": {
+    "stage": "preflight",
+    "checks": 100,
+    "connections": [
+      {
+        "address_family": "ipv4",
+        "tcp_connects_started": 8,
+        "tls_handshakes_started": 8,
+        "tls_handshakes_completed": 8,
+        "reused_requests": 92
+      },
+      {
+        "address_family": "ipv4",
+        "tcp_connects_started": 8,
+        "tls_handshakes_started": 8,
+        "tls_handshakes_completed": 8,
+        "reused_requests": 92
+      },
+      {
+        "address_family": "ipv6",
+        "tcp_connects_started": 1,
+        "tls_handshakes_started": 0,
+        "tls_handshakes_completed": 0,
+        "reused_requests": 0
+      },
+      {
+        "address_family": "ipv6",
+        "tcp_connects_started": 1,
+        "tls_handshakes_started": 0,
+        "tls_handshakes_completed": 0,
+        "reused_requests": 0
+      }
+    ],
+    "failure": null
+  },
+  "enable": {
+    "status": "succeeded",
+    "code": null,
+    "outcome": "enabled",
+    "execution_class": "remote_launcher",
+    "started_at": "2026-11-22T06:04:06.285023Z",
+    "completed_at": "2026-11-22T06:04:25.402869Z",
+    "http_connections": [
+      {
+        "address_family": "ipv4",
+        "tcp_connects_started": 8,
+        "tls_handshakes_started": 8,
+        "tls_handshakes_completed": 8,
+        "reused_requests": 92
+      },
+      {
+        "address_family": "ipv4",
+        "tcp_connects_started": 8,
+        "tls_handshakes_started": 8,
+        "tls_handshakes_completed": 8,
+        "reused_requests": 92
+      },
+      {
+        "address_family": "ipv6",
+        "tcp_connects_started": 1,
+        "tls_handshakes_started": 0,
+        "tls_handshakes_completed": 0,
+        "reused_requests": 0
+      },
+      {
+        "address_family": "ipv6",
+        "tcp_connects_started": 1,
+        "tls_handshakes_started": 0,
+        "tls_handshakes_completed": 0,
+        "reused_requests": 0
+      }
+    ],
+    "diagnostics": {}
+  },
+  "workload": {
+    "primary_ready_workers_held": 1,
+    "primary_whole_mib_free": 24,
+    "same_launcher_and_slot": true,
+    "latency_ms": {
+      "cold": {
+        "queue_to_entry_ms": 9959,
+        "queue_to_completion_ms": 10032,
+        "ordinal": 0
+      },
+      "warm": {
+        "queue_to_entry_ms": 582,
+        "queue_to_completion_ms": 650,
+        "ordinal": 0
+      }
+    },
+    "terminal_receipts": {
+      "cold": {
+        "dispatches": 1,
+        "terminal_ack": true,
+        "terminal_states": [
+          "completed"
+        ],
+        "generation_events": 1,
+        "generations": [
+          0
+        ]
+      },
+      "warm": {
+        "dispatches": 1,
+        "terminal_ack": true,
+        "terminal_states": [
+          "completed"
+        ],
+        "generation_events": 0,
+        "generations": []
+      }
+    },
+    "gate_failure": {
+      "exception": "KeyError",
+      "key": "cold",
+      "cause": "operator wrapper looked up the cold execution's slot after the warm execution replaced its current holder",
+      "retry_submitted": false
+    }
+  },
+  "launcher_incarnations": [
+    {
+      "role": "enable_canary",
+      "revision": 1,
+      "lifetime_s": 1.863725
+    },
+    {
+      "role": "workflow",
+      "revision": 1,
+      "lifetime_s": 54.073605
+    }
+  ],
+  "spend": {
+    "carried_in_usd": "0.007517685058815009",
+    "item_1_usd": "0",
+    "item_2_after_enable_estimated_usd": "0.0002021998830053520000000005154432",
+    "item_3_live_at_stop_estimated_run_usd": "0.0185599594892513546716049380184704",
+    "items_4_through_8_additional_usd": "0",
+    "items_3_and_9_combined_settled_usd": "0.0075974261983654763111111108536064",
+    "settled_run_usd": "0.00779962608137082831111111136904960000000000",
+    "settled_cumulative_usd": "0.0153173111401858373111111113690496",
+    "largest_observed_cumulative_usd": "0.0260776445480663636716049380184704",
+    "target_usd": "0.50",
+    "hard_abort_usd": "1.00",
+    "provider_cost_proxy_usd": null,
+    "bifrost_to_cloudflare_ratio": null,
+    "provider_analytics": {
+      "window_start_utc": "2026-11-22T06:04:06.285023Z",
+      "samples": {
+        "1-gateway": {
+          "worker": {
+            "workersInvocationsAdaptive": []
+          },
+          "durable_objects": []
+        },
+        "2-launcher": {
+          "worker": {
+            "workersInvocationsAdaptive": []
+          },
+          "durable_objects": [
+            {
+              "durableObjectsInvocationsAdaptiveGroups": []
+            },
+            {
+              "durableObjectsInvocationsAdaptiveGroups": []
+            }
+          ]
+        },
+        "3-capacity": {
+          "worker": {
+            "workersInvocationsAdaptive": []
+          },
+          "durable_objects": [
+            {
+              "durableObjectsInvocationsAdaptiveGroups": []
+            },
+            {
+              "durableObjectsInvocationsAdaptiveGroups": []
+            }
+          ]
+        }
+      }
+    }
+  },
+  "teardown": {
+    "disconnect": {
+      "status": "succeeded",
+      "code": null,
+      "outcome": "disconnected",
+      "execution_class": null,
+      "started_at": "2026-11-22T06:05:28.961218Z",
+      "completed_at": "2026-11-22T06:05:34.857744Z",
+      "http_connections": null,
+      "diagnostics": {}
+    },
+    "script_exact_reads_http": [
+      404,
+      404,
+      404
+    ],
+    "namespace_exact_reads_http": [
+      404,
+      404,
+      404,
+      404
+    ],
+    "product_installation_absent": true,
+    "independent_script_and_namespace_listings_empty_for_owned_set": true,
+    "live_launcher_incarnations": 0,
+    "held_workflow_slots": 0,
+    "staged_credentials": 0,
+    "retained_credential_ciphertexts": 0,
+    "pending_owned_journal_rows": 0,
+    "authoritative_dns_absence": {
+      "checked": 2,
+      "passed": 2
+    },
+    "dns_exact_http": 404,
+    "token_exact_http": 404,
+    "dns_inventory": 0,
+    "token_inventory": 0,
+    "tunnel_tombstone": true,
+    "live_tunnels": 0,
+    "live_connector_sessions": 0,
+    "managed_token_created": false,
+    "compose_owned_resources_remaining": 0,
+    "local_processes_and_scratch_absent": true
+  }
+}

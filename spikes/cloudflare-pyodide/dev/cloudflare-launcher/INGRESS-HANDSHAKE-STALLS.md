@@ -143,3 +143,13 @@ Both checks directly observed HTTP connection reuse through the
 Cloudflare edge. Enable succeeded 18.7 seconds after its job started.
 
 See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-observable-gates.json).
+
+## Reuse Readback on `788ffc641`
+
+The worker preflight passed all 100 routes. Both the preflight and
+signed Enable observed eight TCP starts, eight completed TLS
+handshakes and 92 reused requests on each of two IPv4 addresses.
+Each of two IPv6 addresses recorded one TCP attempt and zero TLS
+starts. Enable ran as `remote_launcher` and completed in 19.117 s.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-latency-reuse.json).
