@@ -5632,9 +5632,12 @@ async def test_status_uses_scoped_runs_and_deployed_controller_observation(db_se
                         SecretStr("synthetic-control-root"), actor=str(owner.id), now=now),
         seal_credential(CredentialRef(installation.id, installation.account_id, "scope_bearer", "workers", 1),
                         SecretStr("synthetic-scope-bearer"), actor=str(owner.id), now=now),
-        CloudflareCapacityScope(installation_id=installation.id, scope="workers", deployment_revision=1,
-                                endpoint="https://capacity.example.test", bearer_version=1),
     ])
+    await db_session.flush()
+    db_session.add(CloudflareCapacityScope(
+        installation_id=installation.id, scope="workers", deployment_revision=1,
+        endpoint="https://capacity.example.test", bearer_version=1,
+    ))
     primary = ExecutionWorker(form="external", capacity_scope="gap5-scoped", state="ready",
                               heartbeat_at=now, memory_budget_bytes=2**28)
     worker = ExecutionWorker(form="external", runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE, state="ready")
