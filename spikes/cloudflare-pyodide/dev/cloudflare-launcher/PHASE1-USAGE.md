@@ -466,6 +466,9 @@ the reserved lifetime. The fleet envelope already prices those units over
 the lifetime and cleanup allowance. The new launcher and capacity bytes
 require meter requalification before preset B can take effect.
 
+The [CT128 receipt](../../results/launcher-lifetime-ct128-requalification.json)
+records the local deadline runs and the change in the meter inventory.
+
 #### Hosted SDK Measurement
 
 The hosted reference used manifest
