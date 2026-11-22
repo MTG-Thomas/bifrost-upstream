@@ -66,7 +66,9 @@ from src.services.worker_pool.cloudflare_provisioning import (
     DeletionSettling,
     ObservationPending,
     OwnedResourceCleanup,
+    OwnershipCheck,
     OwnershipConflict,
+    OwnershipResource,
     ResourceIntent,
     ResourceObservation,
     ResourceTarget,
@@ -231,7 +233,10 @@ async def _cleanup_one(
         resource.provider_id = observed.provider_id
         resource.provider_version = observed.provider_version
     if resource.provider_id is None or resource.provider_version is None:
-        raise OwnershipConflict("Cloudflare cleanup has no exact provider receipt")
+        raise OwnershipConflict(
+            "Cloudflare cleanup has no exact provider receipt",
+            OwnershipResource.WORKER_SCRIPT, OwnershipCheck.RECEIPT_MISSING,
+        )
     if resource.state != "deleting":
         resource.state = "deleting"
         return "progressed"  # Commit the deletion intent before issuing DELETE.
@@ -602,7 +607,10 @@ async def _observe_inventory(
 ) -> None:
     for receipt in inventory:
         if receipt.provider_id is None or receipt.provider_version is None:
-            raise OwnershipConflict("Cloudflare Worker has no exact deployment receipt")
+            raise OwnershipConflict(
+                "Cloudflare Worker has no exact deployment receipt",
+                OwnershipResource.WORKER_SCRIPT, OwnershipCheck.RECEIPT_MISSING,
+            )
         observation = ResourceObservation(receipt.intent, receipt.provider_id, receipt.provider_version)
         remote = await observe_owned(adapter, api_token=token, intent=receipt.intent, recorded=observation)
         if remote is None:

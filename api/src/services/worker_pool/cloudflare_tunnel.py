@@ -27,7 +27,9 @@ from src.services.worker_pool.cloudflare_credentials import (
 from src.services.worker_pool.cloudflare_provisioning import (
     DeletionSettling,
     ObservationPending,
+    OwnershipCheck,
     OwnershipConflict,
+    OwnershipResource,
     ResourceIntent,
     ResourceObservation,
     ResourceTarget,
@@ -83,7 +85,8 @@ def _intent(item: CloudflareOwnedResource) -> ResourceIntent:
 def _recorded(item: CloudflareOwnedResource) -> ResourceObservation | None:
     if item.provider_id is None or item.provider_version is None:
         if item.state != "creating" and item.state != "absent":
-            raise OwnershipConflict("Managed Tunnel receipt is incomplete")
+            resource_class = OwnershipResource.TUNNEL if item.kind == TUNNEL else OwnershipResource.DNS_RECORD
+            raise OwnershipConflict("Managed Tunnel receipt is incomplete", resource_class, OwnershipCheck.RECEIPT_MISSING)
         return None
     return ResourceObservation(_intent(item), item.provider_id, item.provider_version)
 
@@ -102,7 +105,10 @@ def _ref(row: CloudflareInstallation, purpose: CredentialPurpose, version: int) 
 async def _credential(db: AsyncSession, ref: CredentialRef) -> SecretStr:
     entry = await db.get(CloudflareCredential, (ref.installation_id, ref.purpose, ref.scope, ref.version))
     if entry is None:
-        raise OwnershipConflict("Managed Tunnel credential receipt is missing")
+        raise OwnershipConflict(
+            "Managed Tunnel credential receipt is missing",
+            OwnershipResource.CONNECTOR_CREDENTIAL, OwnershipCheck.RECEIPT_MISSING,
+        )
     return open_credential(ref, entry)
 
 
@@ -132,7 +138,10 @@ async def provision_tunnel(
 ) -> None:
     item = await resource(db, row, TUNNEL)
     if item is None:
-        raise OwnershipConflict("Managed Tunnel has no creation intent")
+        raise OwnershipConflict(
+            "Managed Tunnel has no creation intent",
+            OwnershipResource.TUNNEL, OwnershipCheck.JOURNAL_INTENT,
+        )
     await client.verify_zone()
     receipt = _recorded(item)
     if receipt is None:
@@ -155,7 +164,10 @@ async def provision_dns(
     tunnel = await _owned_tunnel(db, row, client)
     record = await resource(db, row, DNS)
     if record is None:
-        raise OwnershipConflict("Managed Tunnel has no DNS creation intent")
+        raise OwnershipConflict(
+            "Managed Tunnel has no DNS creation intent",
+            OwnershipResource.DNS_RECORD, OwnershipCheck.JOURNAL_INTENT,
+        )
     receipt = _recorded(record)
     if receipt is None:
         receipt = await client.create_dns(_intent(record), tunnel)
@@ -168,7 +180,10 @@ async def provision_dns(
     if not compare_digest(
         connector_secret(token.get_secret_value(), row.account_id, tunnel.provider_id), expected.get_secret_value(),
     ):
-        raise OwnershipConflict("The Cloudflare tunnel credential changed outside Bifrost")
+        raise OwnershipConflict(
+            "The Cloudflare tunnel credential changed outside Bifrost",
+            OwnershipResource.CONNECTOR_CREDENTIAL, OwnershipCheck.CONNECTOR_SECRET,
+        )
     if row.tunnel_token_version is None:
         db.add(seal_credential(_ref(row, "connector_token", version), token, actor=actor, now=datetime.now(UTC)))
         row.tunnel_token_version = version
@@ -195,7 +210,10 @@ async def verify(db: AsyncSession, row: CloudflareInstallation, client: TunnelRe
         raise ObservationPending("Managed Tunnel has not published a connector credential")
     expected = await _credential(db, _ref(row, "tunnel_secret", row.tunnel_token_version))
     if not compare_digest(await client.secret(tunnel.provider_id), expected.get_secret_value()):
-        raise OwnershipConflict("The Cloudflare tunnel credential changed outside Bifrost")
+        raise OwnershipConflict(
+            "The Cloudflare tunnel credential changed outside Bifrost",
+            OwnershipResource.CONNECTOR_CREDENTIAL, OwnershipCheck.CONNECTOR_SECRET,
+        )
     if not await connector_ready(db, row, client):
         raise TunnelUnavailable("Cloudflare has no connected tunnel supervisor")
 

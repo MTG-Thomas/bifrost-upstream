@@ -69,7 +69,9 @@ from src.services.worker_pool.cloudflare_policy import (
 from src.services.worker_pool.cloudflare_provisioning import (
     DeletionSettling,
     ObservationPending,
+    OwnershipCheck,
     OwnershipConflict,
+    OwnershipResource,
     ProvisioningAdapter,
     ResourceObservation,
     observe_owned,
@@ -148,7 +150,10 @@ async def _journal(
             )
             db.add(resource)
         elif resource.state not in ("creating", "present") or resource.artifact_digest != deployment.release.digest:
-            raise OwnershipConflict("The current deployment intent is incompatible with the release")
+            raise OwnershipConflict(
+                "The current deployment intent is incompatible with the release",
+                OwnershipResource.WORKER_SCRIPT, OwnershipCheck.RELEASE_INTENT,
+            )
         identifiers.append(resource.id)
     return bearer, tuple(identifiers)
 
@@ -166,10 +171,16 @@ async def _install_script(
         if observed is None:
             raise ObservationPending("The recorded Worker is absent")
     else:
-        raise OwnershipConflict("The Worker journal cannot be created in its current state")
+        raise OwnershipConflict(
+            "The Worker journal cannot be created in its current state",
+            OwnershipResource.WORKER_SCRIPT, OwnershipCheck.JOURNAL_STATE,
+        )
     endpoint = await adapter.configure_endpoint(api_token=token, expected=observed)
     if resource.namespace_ids and resource.namespace_ids != endpoint.namespaces:
-        raise OwnershipConflict("Cloudflare namespace identity changed")
+        raise OwnershipConflict(
+            "Cloudflare namespace identity changed",
+            OwnershipResource.DURABLE_OBJECT_NAMESPACE, OwnershipCheck.RECEIPT_MISMATCH,
+        )
     resource.state = "present"
     resource.provider_id = observed.provider_id
     resource.provider_version = observed.provider_version
@@ -287,7 +298,10 @@ async def _settle_enable(
                 return {"outcome": "superseded"}
             resource = await db.get(CloudflareOwnedResource, identifier, with_for_update=True)
             if resource is None:
-                raise OwnershipConflict("The Worker intent disappeared")
+                raise OwnershipConflict(
+                    "The Worker intent disappeared",
+                    OwnershipResource.WORKER_SCRIPT, OwnershipCheck.JOURNAL_INTENT,
+                )
             is_capacity = resource.target_name == deployment.capacity_name
             result = await _install_script(
                 adapter, resource, token=await _management_token(db, row),
@@ -319,7 +333,10 @@ async def _settle_enable(
                 gateway_required=True,
             ))
         elif scope.endpoint != capacity_endpoint or scope.bearer_version != payload.revision:
-            raise OwnershipConflict("Cloudflare scope differs from the verified deployment")
+            raise OwnershipConflict(
+                "Cloudflare scope differs from the verified deployment",
+                OwnershipResource.WORKERS_SCOPE, OwnershipCheck.RECEIPT_MISMATCH,
+            )
 
     async def canary(origin: str):
         return await run_workers_canary(context, payload.installation_id, payload.revision, origin, client, deployment)
@@ -377,7 +394,10 @@ async def _drain_previous_revision(
             if row is None:
                 return False
             if upgrading and (row.upgrade_release is None or row.admitted_revision is not None):
-                raise OwnershipConflict("Cloudflare upgrade no longer owns the paused revision")
+                raise OwnershipConflict(
+                    "Cloudflare upgrade no longer owns the paused revision",
+                    OwnershipResource.UPGRADE_REVISION, OwnershipCheck.UPGRADE_FENCE,
+                )
             if row.upgrade_drained_at is not None:
                 return True
             workers_remain = await cloudflare_workers_remain(db, row.id, before_revision=payload.revision)
@@ -433,8 +453,10 @@ async def _enable(
         raise PlatformJobRequiresAction(str(exc), {"code": "CF_WORKERS_PAID_UNVERIFIED"}) from None
     except ValueError as exc:
         raise PlatformJobRequiresAction("Verify Cloudflare Connection Configuration", {"code": "CF_CONNECTION_INVALID"}) from exc
-    except OwnershipConflict:
-        raise PlatformJobRequiresAction("Verify Cloudflare Ownership", {"code": "CF_OWNERSHIP_CONFLICT"}) from None
+    except OwnershipConflict as exc:
+        raise PlatformJobRequiresAction(
+            "Verify Cloudflare Ownership", {"code": "CF_OWNERSHIP_CONFLICT", "details": exc.as_result()},
+        ) from None
     except (ObservationPending, CapacityProtocolError):
         raise PlatformJobRequiresAction("Verify Cloudflare Deployment", {"code": "CF_DEPLOYMENT_UNVERIFIED"}) from None
     except CloudflareManagementDenied:

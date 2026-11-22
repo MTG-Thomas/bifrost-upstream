@@ -143,6 +143,7 @@ from src.services.worker_pool.cloudflare_workers_rest import (
     CloudflareRestUnavailable,
     ConfiguredWorkersScript,
     WorkersRestCleanup,
+    WorkersRestProvisioner,
     worker_owner_value,
 )
 from src.services.worker_pool.recovery import end_runs_of_lost_worker
@@ -507,7 +508,13 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
                     )
                     with pytest.raises(PlatformJobRequiresAction) as upgrade_conflict:
                         await lifecycle_job._reconcile(running, upgrade)
-                    assert upgrade_conflict.value.result == {"code": "CF_OWNERSHIP_CONFLICT"}
+                    assert upgrade_conflict.value.result == {
+                        "code": "CF_OWNERSHIP_CONFLICT",
+                        "details": {
+                            "resource_class": "private_route", "check": "private_route",
+                            "observed_category": "present", "expected_category": "absent",
+                        },
+                    }
                     workers.delete.assert_not_awaited()
                     await db_session.refresh(prior)
                     await db_session.refresh(installation)
@@ -880,6 +887,82 @@ async def test_canary_proof_requires_current_lease_worker_generation_and_revisio
     await cloudflare_canary.record_canary_failure(worker.id, 7, ingress_probes.CanaryFailure("ack", "timeout"))
     await db_session.refresh(job)
     assert job.result is not None and job.result["canary_failure"]["reason"] == failure.as_result()
+
+
+@pytest.mark.asyncio
+async def test_enable_reports_ambiguous_launcher_namespaces_without_opening_admission(
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch,
+) -> None:
+    digest = "d" * 64
+    installation.policy = {**installation.policy, "bounds_release": digest}
+    release = SimpleNamespace(digest=digest, manifest=SimpleNamespace(
+        release_version="1.1.0", release_sequence=1, workers={"gateway": SimpleNamespace(exports={})},
+    ))
+    job, _ = await enable_job.enqueue_cloudflare_enable(
+        db_session, _platform_operator(), installation_id=installation.id, expected_revision=1,
+    )
+    lease = uuid4()
+    job.status, job.lease_token = "running", lease
+    await db_session.flush()
+    sessions = async_sessionmaker(
+        await db_session.connection(), autoflush=False, expire_on_commit=False, join_transaction_mode="create_savepoint",
+    )
+    uploaded: dict[str, ResourceObservation] = {}
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET" and request.url.host == "api.cloudflare.com"
+        if request.url.path.endswith("/namespaces"):
+            result = [
+                {"script": name, "class": "FixtureNamespace", "id": f"fixture-namespace-{index}", "preview": False}
+                for name in uploaded if name.endswith("-launcher") for index in range(2)
+            ]
+            return httpx.Response(200, json={
+                "success": True, "result": result, "result_info": {"page": 1, "total_count": len(result)},
+            })
+        assert request.url.path.endswith("-gateway/subdomain")
+        return httpx.Response(200, json={"success": True, "result": {"enabled": False, "previews_enabled": False}})
+
+    class Provisioner(WorkersRestProvisioner):
+        async def observe(self, *, api_token: SecretStr, intent: ResourceIntent) -> ResourceObservation | None:
+            return uploaded.get(intent.target.name)
+
+        async def create(self, *, api_token: SecretStr, intent: ResourceIntent, scope_bearer: SecretStr | None) -> None:
+            name = intent.target.name
+            assert name not in uploaded and scope_bearer is None
+            uploaded[name] = ResourceObservation(intent, str(uuid4()), str(uuid4()))
+
+    monkeypatch.setattr(enable_job, "get_db_context", sessions.begin)
+    monkeypatch.setattr(enable_job, "load_workers_release", lambda: release)
+    monkeypatch.setattr(enable_job, "WorkersRestCleanup", lambda _: SimpleNamespace(verify_workers_paid=AsyncMock()))
+    monkeypatch.setattr(enable_job, "WorkersRestProvisioner", Provisioner)
+    monkeypatch.setattr(enable_job, "httpx", SimpleNamespace(
+        AsyncClient=lambda **_: httpx.AsyncClient(transport=httpx.MockTransport(provider)),
+    ))
+    monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
+    ingress = AsyncMock()
+    monkeypatch.setattr(enable_job, "probe_worker_ingress", ingress)
+    context = PlatformJobContext(job.id, lease, None, str(OPERATOR_ID), "operator@example.test", "")
+    payload = enable_job.CloudflareEnablePayload.model_validate(job.payload)
+
+    with pytest.raises(PlatformJobRequiresAction) as failure:
+        await enable_job.CLOUDFLARE_ENABLE_DEFINITION.handler(context, payload)
+
+    assert failure.value.result == {
+        "code": "CF_OWNERSHIP_CONFLICT",
+        "details": {
+            "resource_class": "durable_object_namespace", "check": "namespace_bindings",
+            "observed_category": "multiple", "expected_category": "one_per_class",
+        },
+    }
+    ingress.assert_not_awaited()
+    await db_session.refresh(installation)
+    assert installation.admitted_revision is None
+    rows = (await db_session.scalars(select(CloudflareOwnedResource).where(
+        CloudflareOwnedResource.installation_id == installation.id,
+    ))).all()
+    assert {row.target_name.rsplit("-", 1)[1]: row.state for row in rows} == {
+        "gateway": "present", "launcher": "creating", "capacity": "creating",
+    }
 
 
 @pytest.mark.asyncio
@@ -3051,8 +3134,8 @@ async def test_upgrade_policy_save_fences_older_replicas_without_enqueuing_upgra
     assert installation.workers_release_sequence == newer.sequence
     assert installation.workers_release_digest == "current"
     for digest, order in (("current", newer), ("old", older)):
-        monkeypatch.setattr(lifecycle_job, "installed_workers_release_digest", lambda: digest)
-        monkeypatch.setattr(lifecycle_job, "installed_workers_release_order", lambda: order)
+        monkeypatch.setattr(lifecycle_job, "installed_workers_release_digest", lambda digest=digest: digest)
+        monkeypatch.setattr(lifecycle_job, "installed_workers_release_order", lambda order=order: order)
         await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=datetime.now(UTC))
     assert installation.desired_revision == revision
     assert installation.upgrade_release is None

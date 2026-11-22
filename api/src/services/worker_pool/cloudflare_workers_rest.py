@@ -15,7 +15,9 @@ from shared.models import CloudflareWorkersPolicy
 from src.services.worker_pool.cloudflare_provisioning import (
     DeletionSettling,
     ObservationPending,
+    OwnershipCheck,
     OwnershipConflict,
+    OwnershipResource,
     ResourceIntent,
     ResourceObservation,
     ResourceTarget,
@@ -51,7 +53,10 @@ def _script_path(target: ResourceTarget) -> str:
         or not _ACCOUNT_ID.fullmatch(target.account_id)
         or not re.fullmatch(r"[a-z0-9-]{1,63}", target.name)
     ):
-        raise OwnershipConflict("Cloudflare resource is outside the Workers cleanup contract")
+        raise OwnershipConflict(
+            "Cloudflare resource is outside the Workers cleanup contract",
+            OwnershipResource.WORKER_SCRIPT, OwnershipCheck.TARGET_CONTRACT,
+        )
     return f"workers/scripts/{target.name}"
 
 
@@ -228,7 +233,10 @@ class WorkersRestCleanup:
             raise ObservationPending("Cloudflare Worker binding readback is unavailable")
         owners = [binding for binding in bindings if binding.get("name") == OWNER_BINDING]
         if len(owners) != 1 or owners[0].get("type") != "plain_text" or owners[0].get("text") != worker_owner_value(intent):
-            raise OwnershipConflict("Cloudflare Worker has a different or missing owner")
+            raise OwnershipConflict(
+                "Cloudflare Worker has a different or missing owner",
+                OwnershipResource.WORKER_SCRIPT, OwnershipCheck.FOREIGN_OCCUPANT,
+            )
         deployments = await self._request(
             api_token, target.account_id, "GET", f"{path}/deployments", params={"page": 1, "per_page": 1},
         )
@@ -244,7 +252,10 @@ class WorkersRestCleanup:
             or not isinstance(versions[0].get("version_id"), str)
             or not _CF_UUID.fullmatch(versions[0]["version_id"])
         ):
-            raise OwnershipConflict("Cloudflare Worker does not have one exact active version")
+            raise OwnershipConflict(
+                "Cloudflare Worker does not have one exact active version",
+                OwnershipResource.WORKER_SCRIPT, OwnershipCheck.ACTIVE_VERSION,
+            )
         return ResourceObservation(intent, deployment_id, versions[0]["version_id"])
 
     async def delete(self, *, api_token: SecretStr, expected: ResourceObservation) -> None:
@@ -318,7 +329,10 @@ class WorkersRestCleanup:
         if await self._request(
             api_token, target.account_id, "GET", f"{path}/settings", allow_missing=True,
         ) is not None:
-            raise OwnershipConflict("Cloudflare Worker reappeared during absence verification")
+            raise OwnershipConflict(
+                "Cloudflare Worker reappeared during absence verification",
+                OwnershipResource.WORKER_SCRIPT, OwnershipCheck.REAPPEARED,
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -346,14 +360,20 @@ class WorkersRestProvisioner(WorkersRestCleanup):
 
     def _worker_role(self, intent: ResourceIntent) -> WorkerRole:
         if intent.artifact_digest != self._deployment.release.digest:
-            raise OwnershipConflict("Cloudflare upload intent is bound to a different release")
+            raise OwnershipConflict(
+                "Cloudflare upload intent is bound to a different release",
+                OwnershipResource.WORKERS_RELEASE, OwnershipCheck.RELEASE_INTENT,
+            )
         if intent.target.name == self._deployment.launcher_name:
             return "launcher"
         if intent.target.name == self._deployment.capacity_name:
             return "capacity"
         if intent.target.name == self._deployment.gateway_name:
             return "gateway"
-        raise OwnershipConflict("Cloudflare upload intent has an unknown deployment target")
+        raise OwnershipConflict(
+            "Cloudflare upload intent has an unknown deployment target",
+            OwnershipResource.WORKER_SCRIPT, OwnershipCheck.TARGET_BINDING,
+        )
 
     def _render_upload(
         self, role: WorkerRole, intent: ResourceIntent, bearer: SecretStr | None,
@@ -362,7 +382,10 @@ class WorkersRestProvisioner(WorkersRestCleanup):
         manifest = deployment.release.manifest
         artifact = manifest.workers[role]
         if (role == "capacity") != (bearer is not None):
-            raise OwnershipConflict("Only the capacity Worker must receive the scope bearer")
+            raise OwnershipConflict(
+                "Only the capacity Worker must receive the scope bearer",
+                OwnershipResource.WORKERS_SCOPE, OwnershipCheck.SCOPE_BEARER,
+            )
         values = {
             "worker_ingress_origin": deployment.worker_ingress_origin,
             "launcher_cap": str(deployment.policy.launcher_cap),
@@ -372,17 +395,26 @@ class WorkersRestProvisioner(WorkersRestCleanup):
             "worker_version": deployment.release.digest,
         }
         if deployment.policy.slots_per_launcher > manifest.max_slots_per_launcher:
-            raise OwnershipConflict("Cloudflare release supports fewer slots than this policy")
+            raise OwnershipConflict(
+                "Cloudflare release supports fewer slots than this policy",
+                OwnershipResource.WORKERS_RELEASE, OwnershipCheck.SLOT_POLICY,
+            )
         bindings = []
         for binding in artifact.bindings:
             value = binding.model_dump(exclude_none=True, exclude={"source", "script"})
             if binding.type == "secret_text":
                 if role != "capacity" or binding.name != "CAPACITY_TOKEN" or binding.source != "scope_bearer" or bearer is None:
-                    raise OwnershipConflict("Cloudflare release declares an invalid secret binding")
+                    raise OwnershipConflict(
+                        "Cloudflare release declares an invalid secret binding",
+                        OwnershipResource.WORKERS_RELEASE, OwnershipCheck.SECRET_BINDING,
+                    )
                 value["text"] = bearer.get_secret_value()
             elif binding.source is not None:
                 if binding.type != "plain_text" or binding.source not in values:
-                    raise OwnershipConflict("Cloudflare release declares an invalid dynamic binding")
+                    raise OwnershipConflict(
+                        "Cloudflare release declares an invalid dynamic binding",
+                        OwnershipResource.WORKERS_RELEASE, OwnershipCheck.DYNAMIC_BINDING,
+                    )
                 value["text"] = values[binding.source]
             if binding.script is not None:
                 if (role, binding.type, binding.script) == ("capacity", "durable_object_namespace", "launcher"):
@@ -390,11 +422,17 @@ class WorkersRestProvisioner(WorkersRestCleanup):
                 elif (role, binding.type, binding.script) == ("launcher", "service", "gateway"):
                     value.update(service=deployment.gateway_name, environment="production")
                 else:
-                    raise OwnershipConflict("Cloudflare release declares an invalid cross-script binding")
+                    raise OwnershipConflict(
+                        "Cloudflare release declares an invalid cross-script binding",
+                        OwnershipResource.WORKERS_RELEASE, OwnershipCheck.CROSS_SCRIPT_BINDING,
+                    )
             bindings.append(value)
         bindings.append({"name": OWNER_BINDING, "type": "plain_text", "text": worker_owner_value(intent)})
         if len({row["name"] for row in bindings}) != len(bindings):
-            raise OwnershipConflict("Cloudflare release contains duplicate bindings")
+            raise OwnershipConflict(
+                "Cloudflare release contains duplicate bindings",
+                OwnershipResource.WORKERS_RELEASE, OwnershipCheck.DUPLICATE_BINDING,
+            )
         metadata = {
             "main_module": artifact.main_module,
             "compatibility_date": manifest.compatibility_date.isoformat(),
@@ -423,7 +461,10 @@ class WorkersRestProvisioner(WorkersRestCleanup):
         # Check immediately before the upload. REST has no conditional create,
         # so the caller must retain its effect receipt if confirmation is lost.
         if await observe_owned(self, api_token=api_token, intent=intent, recorded=None) is not None:
-            raise OwnershipConflict("Cloudflare Worker already exists at the intended target")
+            raise OwnershipConflict(
+                "Cloudflare Worker already exists at the intended target",
+                OwnershipResource.WORKER_SCRIPT, OwnershipCheck.TARGET_OCCUPIED,
+            )
         try:
             async with asyncio.timeout(30):
                 payload = await self._request(api_token, intent.target.account_id, "PUT", path, files=files)
@@ -450,8 +491,16 @@ class WorkersRestProvisioner(WorkersRestCleanup):
             if row.get("preview") is True:
                 continue
             class_name = row.get("class")
-            if not isinstance(class_name, str) or class_name in namespaces:
-                raise OwnershipConflict("Cloudflare Worker has ambiguous namespace bindings")
+            if not isinstance(class_name, str):
+                raise OwnershipConflict(
+                    "Cloudflare Worker namespace has no class",
+                    OwnershipResource.DURABLE_OBJECT_NAMESPACE, OwnershipCheck.NAMESPACE_CLASS,
+                )
+            if class_name in namespaces:
+                raise OwnershipConflict(
+                    "Cloudflare Worker has ambiguous namespace bindings",
+                    OwnershipResource.DURABLE_OBJECT_NAMESPACE, OwnershipCheck.NAMESPACE_BINDINGS,
+                )
             namespaces[class_name] = row["id"]
         if namespaces.keys() != self._deployment.release.manifest.workers[role].exports.keys():
             raise ObservationPending("Cloudflare namespace exports differ from the packaged release")

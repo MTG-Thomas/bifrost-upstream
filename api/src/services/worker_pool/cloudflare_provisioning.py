@@ -1,6 +1,7 @@
 """Adapter contract for a qualified Cloudflare provisioning backend."""
 
 from dataclasses import dataclass
+from enum import Enum, StrEnum
 from typing import Protocol
 from uuid import UUID
 
@@ -39,8 +40,78 @@ class DeletionSettling(ObservationPending):
     """An owned resource or its namespace is still visible during deletion."""
 
 
+class OwnershipResource(StrEnum):
+    UNKNOWN = "unknown"
+    WORKER_SCRIPT = "worker_script"
+    DURABLE_OBJECT_NAMESPACE = "durable_object_namespace"
+    WORKERS_RELEASE = "workers_release"
+    WORKERS_SCOPE = "workers_scope"
+    UPGRADE_REVISION = "upgrade_revision"
+    CONTAINER_APPLICATION = "container_application"
+    TUNNEL = "tunnel"
+    TUNNEL_INGRESS = "tunnel_ingress"
+    CONNECTOR_CREDENTIAL = "connector_credential"
+    DNS_ZONE = "dns_zone"
+    DNS_RECORD = "dns_record"
+    PRIVATE_ROUTE = "private_route"
+
+
+class OwnershipCheck(Enum):
+    # Wire values are fixed categories. Provider values and exception text are never serialized.
+    UNCLASSIFIED = ("unclassified", "unknown", "unknown")
+    TARGET_CONTRACT = ("target_contract", "unsupported", "supported")
+    TARGET_BINDING = ("target_binding", "different", "matching")
+    FOREIGN_OCCUPANT = ("foreign_occupant", "owner_missing_or_different", "exact_owner")
+    TARGET_OCCUPIED = ("target_occupied", "present", "absent")
+    ACTIVE_VERSION = ("active_version", "missing_or_not_single_full_version", "single_full_version")
+    RECEIPT_MISMATCH = ("receipt_mismatch", "different", "exact_receipt")
+    RECEIPT_MISSING = ("receipt_missing", "missing", "exact_receipt")
+    REAPPEARED = ("reappeared", "present", "absent")
+    RELEASE_INTENT = ("release_intent", "incompatible", "matching_release")
+    JOURNAL_STATE = ("journal_state", "incompatible", "creating_or_receipted")
+    JOURNAL_INTENT = ("journal_intent", "missing", "present")
+    SCOPE_BEARER = ("scope_bearer", "unexpected_presence_or_absence", "capacity_only")
+    SLOT_POLICY = ("slot_policy", "above_release_limit", "supported")
+    SECRET_BINDING = ("secret_binding", "invalid", "supported")
+    DYNAMIC_BINDING = ("dynamic_binding", "invalid", "supported")
+    CROSS_SCRIPT_BINDING = ("cross_script_binding", "invalid", "supported")
+    DUPLICATE_BINDING = ("duplicate_binding", "multiple", "unique")
+    NAMESPACE_CLASS = ("namespace_class", "missing_or_invalid", "valid_class")
+    NAMESPACE_BINDINGS = ("namespace_bindings", "multiple", "one_per_class")
+    UPGRADE_FENCE = ("upgrade_fence", "not_owned", "owned_and_paused")
+    ZONE_IDENTITY = ("zone_identity", "missing_or_different", "matching")
+    ZONE_ACCOUNT = ("zone_account", "missing_or_different", "matching")
+    EXACT_INVENTORY = ("exact_inventory", "ambiguous", "single_page")
+    MULTIPLE_OCCUPANTS = ("multiple_occupants", "multiple", "at_most_one")
+    CONNECTOR_SECRET = ("connector_secret", "missing_or_different", "matching")
+    ADOPTION_CREDENTIAL = ("adoption_credential", "missing_or_different", "committed")
+    TUNNEL_METADATA = ("tunnel_metadata", "incompatible", "active_and_account_owned")
+    INGRESS_OCCUPIED = ("ingress_occupied", "already_configured", "empty_or_matching")
+    INGRESS_IDENTITY = ("ingress_identity", "different_or_missing", "approved_ingress")
+    INGRESS_CONFIG_OWNER = ("ingress_config_owner", "missing_or_different", "exact_owner")
+    PRIVATE_ROUTE = ("private_route", "present", "absent")
+    DNS_TARGET_MOVED = ("dns_target_moved", "different", "matching")
+
+
 class OwnershipConflict(Exception):
     """The provider returned an incompatible owner, resource ID or revision."""
+
+    def __init__(
+        self, message: str, resource: OwnershipResource = OwnershipResource.UNKNOWN,
+        check: OwnershipCheck = OwnershipCheck.UNCLASSIFIED,
+    ) -> None:
+        super().__init__(message)
+        self.resource = resource
+        self.check = check
+
+    def as_result(self) -> dict[str, str]:
+        check, observed, expected = self.check.value
+        return {
+            "resource_class": self.resource.value,
+            "check": check,
+            "observed_category": observed,
+            "expected_category": expected,
+        }
 
 
 class OwnedResourceCleanup(Protocol):
@@ -98,14 +169,18 @@ async def observe_owned(
 ) -> ResourceObservation | None:
     """Adopt only the exact journaled creation effect or a recorded resource."""
     observed = await adapter.observe(api_token=api_token, intent=intent)
-    if observed is not None and (
-        observed.intent != intent
-        or not observed.provider_id
-        or not observed.provider_version
-        or (recorded is not None and observed != recorded)
-    ):
-        raise OwnershipConflict("Cloudflare resource does not match its journal")
-    return observed
+    if observed is None:
+        return None
+    if observed.intent != intent:
+        check = OwnershipCheck.TARGET_BINDING
+    elif not observed.provider_id or not observed.provider_version:
+        check = OwnershipCheck.RECEIPT_MISSING
+    elif recorded is not None and observed != recorded:
+        check = OwnershipCheck.RECEIPT_MISMATCH
+    else:
+        return observed
+    resource = next((item for item in OwnershipResource if item.value == intent.target.kind), OwnershipResource.UNKNOWN)
+    raise OwnershipConflict("Cloudflare resource does not match its journal", resource, check)
 
 
 async def resume_creation(

@@ -9,7 +9,6 @@ from uuid import uuid4
 
 import pytest
 from pydantic import BaseModel
-
 from src.jobs.platform.base import (
     PlatformJobDefinition,
     PlatformJobPolicy,
@@ -46,8 +45,8 @@ def _running_job(*, payload_version: int, payload: dict[str, object]) -> SimpleN
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("executor", list(PlatformJobExecutor))
-@pytest.mark.parametrize("status", ["succeeded", "requires_action"])
-async def test_enable_receipt_identifies_actual_executor(monkeypatch, executor, status) -> None:
+@pytest.mark.parametrize("failure_code", [None, "CF_WORKER_INGRESS_UNVERIFIED", "CF_OWNERSHIP_CONFLICT"])
+async def test_enable_receipt_identifies_actual_executor(monkeypatch, executor, failure_code) -> None:
     from src.jobs.platform import runner
     from src.jobs.platform.catalog import get_platform_job_metadata
 
@@ -60,10 +59,17 @@ async def test_enable_receipt_identifies_actual_executor(monkeypatch, executor, 
     async def db_context():
         yield db
 
+    result: dict[str, str | dict[str, str]] = {"code": failure_code} if failure_code else {"outcome": "enabled"}
+    if failure_code == "CF_OWNERSHIP_CONFLICT":
+        result["details"] = {
+            "resource_class": "worker_script", "check": "foreign_occupant",
+            "observed_category": "owner_missing_or_different", "expected_category": "exact_owner",
+        }
+
     async def handle(_context, _payload):
-        if status == "requires_action":
-            raise PlatformJobRequiresAction("Verify Ingress", {"code": "CF_WORKER_INGRESS_UNVERIFIED"})
-        return {"outcome": "enabled"}
+        if failure_code:
+            raise PlatformJobRequiresAction("Verify Cloudflare Deployment", result)
+        return result
 
     definition = PlatformJobDefinition(
         job_type=job.job_type, payload_version=1, payload_model=_Payload, handler=handle,
@@ -75,9 +81,8 @@ async def test_enable_receipt_identifies_actual_executor(monkeypatch, executor, 
     monkeypatch.setattr(runner, "finish_platform_job", finish)
 
     assert await run_claimed_platform_job(job.id, job.lease_token, executor=executor)
-    assert finish.await_args.kwargs["status"] == status
-    expected = {"outcome": "enabled"} if status == "succeeded" else {"code": "CF_WORKER_INGRESS_UNVERIFIED"}
-    assert finish.await_args.kwargs["result"] == {**expected, "execution_class": executor.value}
+    assert finish.await_args.kwargs["status"] == ("requires_action" if failure_code else "succeeded")
+    assert finish.await_args.kwargs["result"] == {**result, "execution_class": executor.value}
 
 
 @pytest.mark.asyncio

@@ -16,7 +16,9 @@ from pydantic import SecretStr
 from src.services.worker_pool.cloudflare_provisioning import (
     DeletionSettling,
     ObservationPending,
+    OwnershipCheck,
     OwnershipConflict,
+    OwnershipResource,
     ResourceIntent,
     ResourceObservation,
 )
@@ -36,7 +38,10 @@ def connector_secret(token: str, account_id: str, tunnel_id: str) -> str:
                 return value
     except (ValueError, TypeError, KeyError, binascii.Error):
         pass
-    raise OwnershipConflict("Cloudflare returned a different connector credential")
+    raise OwnershipConflict(
+        "Cloudflare returned a different connector credential",
+        OwnershipResource.CONNECTOR_CREDENTIAL, OwnershipCheck.CONNECTOR_SECRET,
+    )
 
 
 def dedicated_hostname(origin: str) -> str:
@@ -68,11 +73,17 @@ class TunnelRest(WorkersRestCleanup):
     async def verify_zone(self) -> None:
         zone = await self._result("GET", f"zones/{self.zone_id}")
         if not isinstance(zone, dict) or zone.get("id") != self.zone_id:
-            raise OwnershipConflict("Cloudflare zone identity did not match")
+            raise OwnershipConflict(
+                "Cloudflare zone identity did not match",
+                OwnershipResource.DNS_ZONE, OwnershipCheck.ZONE_IDENTITY,
+            )
         account = zone.get("account")
         name = zone.get("name")
         if not isinstance(account, dict) or account.get("id") != self.account_id:
-            raise OwnershipConflict("Cloudflare zone belongs to a different account")
+            raise OwnershipConflict(
+                "Cloudflare zone belongs to a different account",
+                OwnershipResource.DNS_ZONE, OwnershipCheck.ZONE_ACCOUNT,
+            )
         if not isinstance(name, str) or not self.hostname.endswith("." + name) or zone.get("status") != "active":
             raise ValueError("Managed Tunnel requires a dedicated hostname in the selected active DNS zone")
 
@@ -91,7 +102,7 @@ class TunnelRest(WorkersRestCleanup):
 
     async def _find(
         self, path: str, params: dict[str, int | str], name: str,
-        *, matches_body: Callable[[dict[str, Any]], bool] | None = None,
+        *, resource: OwnershipResource, matches_body: Callable[[dict[str, Any]], bool] | None = None,
     ) -> dict[str, Any] | None:
         payload = await self._request_resource(self.token, "GET", path, params={**params, "per_page": 20})
         items = payload["result"] if payload else None
@@ -99,19 +110,21 @@ class TunnelRest(WorkersRestCleanup):
             raise ObservationPending("Cloudflare returned an invalid inventory")
         info = payload.get("result_info") if payload else None
         if len(items) >= 20 or (isinstance(info, dict) and info.get("total_pages", 1) not in (0, 1)):
-            raise OwnershipConflict("Cloudflare exact-target inventory is ambiguous")
+            raise OwnershipConflict("Cloudflare exact-target inventory is ambiguous", resource, OwnershipCheck.EXACT_INVENTORY)
         matches = [
             item for item in items if item.get("name") == name and (matches_body is None or matches_body(item))
         ]
         if len(matches) > 1:
-            raise OwnershipConflict("Cloudflare exact target has multiple occupants")
+            raise OwnershipConflict("Cloudflare exact target has multiple occupants", resource, OwnershipCheck.MULTIPLE_OCCUPANTS)
         return matches[0] if matches else None
 
     async def tunnel(
         self, intent: ResourceIntent, recorded: ResourceObservation | None, *, secret: SecretStr | None = None,
     ) -> ResourceObservation | None:
         name = intent.target.name
-        item = await self._find(self.tunnels, {"name": name, "is_deleted": "false"}, name)
+        item = await self._find(
+            self.tunnels, {"name": name, "is_deleted": "false"}, name, resource=OwnershipResource.TUNNEL,
+        )
         if item is None:
             if recorded is not None:
                 exact = await self._result("GET", f"{self.tunnels}/{recorded.provider_id}", allow_missing=True)
@@ -119,7 +132,10 @@ class TunnelRest(WorkersRestCleanup):
                     not isinstance(exact, dict) or exact.get("id") != recorded.provider_id
                     or exact.get("name") != name or not exact.get("deleted_at")
                 ):
-                    raise OwnershipConflict("Cloudflare tunnel changed outside its journal")
+                    raise OwnershipConflict(
+                        "Cloudflare tunnel changed outside its journal",
+                        OwnershipResource.TUNNEL, OwnershipCheck.RECEIPT_MISMATCH,
+                    )
             return None
         try:
             tunnel_id = str(UUID(item["id"]))
@@ -127,17 +143,26 @@ class TunnelRest(WorkersRestCleanup):
             raise ObservationPending("Cloudflare tunnel has no resource ID") from None
         created = item.get("created_at")
         if item.get("account_tag") != self.account_id or item.get("config_src") != "cloudflare" or item.get("deleted_at"):
-            raise OwnershipConflict("Cloudflare tunnel differs from its journal")
+            raise OwnershipConflict(
+                "Cloudflare tunnel differs from its journal",
+                OwnershipResource.TUNNEL, OwnershipCheck.TUNNEL_METADATA,
+            )
         if not isinstance(created, str) or not created or len(created) > 255:
             raise ObservationPending("Cloudflare tunnel has no creation timestamp")
         observed = ResourceObservation(intent, tunnel_id, created)
         if recorded is not None:
             if observed != recorded:
-                raise OwnershipConflict("Cloudflare tunnel differs from its journal")
+                raise OwnershipConflict(
+                    "Cloudflare tunnel differs from its journal",
+                    OwnershipResource.TUNNEL, OwnershipCheck.RECEIPT_MISMATCH,
+                )
         elif secret is None or not compare_digest(
             await self.secret(tunnel_id), secret.get_secret_value(),
         ):
-            raise OwnershipConflict("Cloudflare tunnel does not match the committed creation credential")
+            raise OwnershipConflict(
+                "Cloudflare tunnel does not match the committed creation credential",
+                OwnershipResource.CONNECTOR_CREDENTIAL, OwnershipCheck.ADOPTION_CREDENTIAL,
+            )
         return observed
 
     async def create_tunnel(self, intent: ResourceIntent, secret: SecretStr) -> ResourceObservation:
@@ -182,7 +207,10 @@ class TunnelRest(WorkersRestCleanup):
             or current.get("account_id") != self.account_id or current.get("version") != 0
             or current.get("config") not in ({}, None)
         ):
-            raise OwnershipConflict("Cloudflare tunnel already has a different ingress configuration")
+            raise OwnershipConflict(
+                "Cloudflare tunnel already has a different ingress configuration",
+                OwnershipResource.TUNNEL_INGRESS, OwnershipCheck.INGRESS_OCCUPIED,
+            )
         if await self.tunnel(tunnel.intent, tunnel) is None:
             raise ObservationPending("The recorded Cloudflare tunnel is absent")
         await self._put_ingress(path, desired)
@@ -216,7 +244,10 @@ class TunnelRest(WorkersRestCleanup):
     async def verify_ingress(self, tunnel: ResourceObservation, origin: str) -> None:
         current = await self._result("GET", f"{self.tunnels}/{tunnel.provider_id}/configurations", allow_missing=True)
         if not self._matches_ingress(current, tunnel.provider_id, self.ingress(origin)):
-            raise IngressMismatch("Cloudflare tunnel ingress differs from the approved route")
+            raise IngressMismatch(
+                "Cloudflare tunnel ingress differs from the approved route",
+                OwnershipResource.TUNNEL_INGRESS, OwnershipCheck.INGRESS_IDENTITY,
+            )
 
     async def verify_private_routes(self, tunnel_id: str) -> None:
         rows = await self._result(
@@ -228,7 +259,10 @@ class TunnelRest(WorkersRestCleanup):
         ):
             raise ObservationPending("Cloudflare private-network route inventory could not be confirmed")
         if rows:
-            raise OwnershipConflict("Cloudflare private-network routes target the managed tunnel")
+            raise OwnershipConflict(
+                "Cloudflare private-network routes target the managed tunnel",
+                OwnershipResource.PRIVATE_ROUTE, OwnershipCheck.PRIVATE_ROUTE,
+            )
 
     async def write_ingress(
         self, tunnel: ResourceObservation, origin: str, *, repair: bool = False, prove_write: bool = False,
@@ -242,19 +276,28 @@ class TunnelRest(WorkersRestCleanup):
                 "created_at": tunnel.provider_version, "config_src": "cloudflare",
             }.items()
         ) or exact.get("deleted_at"):
-            raise OwnershipConflict("Cloudflare tunnel differs from its journal")
+            raise OwnershipConflict(
+                "Cloudflare tunnel differs from its journal",
+                OwnershipResource.TUNNEL, OwnershipCheck.RECEIPT_MISMATCH,
+            )
         path = f"{self.tunnels}/{tunnel.provider_id}/configurations"
         current = await self._result("GET", path, allow_missing=True)
         desired = self.ingress(origin)
         matches = self._matches_ingress(current, tunnel.provider_id, desired)
         if repair:
             if current is not None and not self._config_identity(current, tunnel.provider_id):
-                raise OwnershipConflict("Cloudflare tunnel configuration identity changed")
+                raise OwnershipConflict(
+                    "Cloudflare tunnel configuration identity changed",
+                    OwnershipResource.TUNNEL_INGRESS, OwnershipCheck.INGRESS_CONFIG_OWNER,
+                )
             if matches and not prove_write:
                 return
         else:
             if not matches:
-                raise IngressMismatch("Cloudflare tunnel ingress differs from the approved route")
+                raise IngressMismatch(
+                    "Cloudflare tunnel ingress differs from the approved route",
+                    OwnershipResource.TUNNEL_INGRESS, OwnershipCheck.INGRESS_IDENTITY,
+                )
         await self._put_ingress(path, desired)
         await self.verify_ingress(tunnel, origin)
 
@@ -276,17 +319,24 @@ class TunnelRest(WorkersRestCleanup):
 
         item = await self._find(
             self.records, {"name.exact": intent.target.name}, intent.target.name,
+            resource=OwnershipResource.DNS_RECORD,
             matches_body=matches_body if ignore_foreign else None,
         )
         if item is None or (ignore_foreign and recorded is not None and item.get("id") != recorded.provider_id):
             if recorded is not None and await self._result(
                 "GET", f"{self.records}/{recorded.provider_id}", allow_missing=True,
             ) is not None:
-                raise OwnershipConflict("The recorded Cloudflare DNS record moved")
+                raise OwnershipConflict(
+                    "The recorded Cloudflare DNS record moved",
+                    OwnershipResource.DNS_RECORD, OwnershipCheck.DNS_TARGET_MOVED,
+                )
             return None
         identity, version = item.get("id"), item.get("modified_on")
         if not matches_body(item):
-            raise OwnershipConflict("The dedicated Cloudflare hostname already has a different DNS record")
+            raise OwnershipConflict(
+                "The dedicated Cloudflare hostname already has a different DNS record",
+                OwnershipResource.DNS_RECORD, OwnershipCheck.FOREIGN_OCCUPANT,
+            )
         if not isinstance(identity, str) or not re.fullmatch(r"[a-f0-9]{32}", identity):
             raise ObservationPending("Cloudflare DNS record has no resource ID")
         if not isinstance(version, str) or not version or len(version) > 255:
@@ -294,7 +344,10 @@ class TunnelRest(WorkersRestCleanup):
         observed = ResourceObservation(intent, identity, version)
         # A same-body permissions probe can advance modified_on even if its response is lost.
         if recorded is not None and observed.provider_id != recorded.provider_id:
-            raise OwnershipConflict("Cloudflare DNS record differs from its journal")
+            raise OwnershipConflict(
+                "Cloudflare DNS record differs from its journal",
+                OwnershipResource.DNS_RECORD, OwnershipCheck.RECEIPT_MISMATCH,
+            )
         return observed
 
     async def verify_dns_write(self, record: ResourceObservation, tunnel_id: str) -> None:

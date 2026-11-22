@@ -1163,3 +1163,60 @@ zero sessions. The owned Compose stack, image tags, processes, scratch
 and secret files were removed and verified absent.
 
 See the [sanitized ownership-stop receipt](../../results/cloudflare-scaleout-combined-hosted-ownership-stop.json).
+
+### Local Investigation of the Enable Ownership Stop
+
+The retained result identified `remote_launcher` and
+`CF_OWNERSHIP_CONFLICT`. The original handler discarded the ownership
+exception. The retained logs and journal counts establish the phase
+but cannot identify the exact guard. Enable journals all three Workers,
+then provisions and commits each in gateway, launcher, capacity order.
+One present script and two creating intents place the stop at the
+launcher step, before capacity, scope activation, or the signed canary.
+The independent preflight had passed.
+
+| Ownership checks reachable from Enable | What each checks |
+| --- | --- |
+| Journal and release | Intent or receipt missing, invalid journal state, wrong release digest or target role, unsupported slot policy, and invalid or duplicate binding definitions. |
+| Workers effect and observation | Target contract, exact owner binding, a single full active version, exact effect and provider receipt, an occupied target before PUT, and a script reappearing during absence verification. Any write proof using exact observation shares those checks. A missing write proof itself has a separate error code. |
+| Durable Object namespaces | A production row's class must be valid and unique per script. Previously committed namespace IDs must match the new readback. Incomplete pagination and missing exports use deployment-observation errors. |
+| Workers scope and upgrade | Endpoint and bearer receipt, paused upgrade revision fence, and exact deployment receipts for upgrade inventory and cleanup. |
+| Managed Tunnel and DNS | Zone identity and account, unambiguous exact inventories, tunnel metadata and receipts, connector secret, tunnel ingress configuration and identity, private-route absence, and exact DNS body and identity. These checks require Managed Tunnel mode. |
+
+The hosted code diff since the previous passing run does not change
+Workers provisioning or receipt rules. Approval proposals and the
+shorter overflow gate govern workflow placement, after the failed
+provisioning step. Script names include the full per-installation UUID
+and deployment revision, and each ownership marker binds the creation
+effect. The namespace inventory matches its exact script name or
+recorded namespace IDs. A listed namespace for a different trial name
+alone cannot produce a duplicate class for this launcher. A record
+without script attribution can instead make inventory observation
+pending. Persistent foreign ownership is also inconsistent with a
+successful independently verified Disconnect. Transient readback
+differences and a provider response shape missing from the stub remain
+possible, with no retained evidence to choose between them.
+
+The persistence rehearsal stubs two production namespace rows of the
+same launcher class at the REST boundary. It reaches the original
+one-present/two-creating journal pattern, retains closed admission, and
+returns `durable_object_namespace / namespace_bindings / multiple /
+one_per_class`. This reproduces a provider response shape capable of
+the observed stop. The hosted predicate remains unknown. Future
+Enable receipts carry `result.details.resource_class`, `check`,
+`observed_category`, and `expected_category`. These fields contain
+only fixed categories.
+
+Keep the existing fences. Deletion already waits under an exact
+journaled deletion intent. Extend that behavior across installations
+only if a future receipt establishes that an exact resource from a
+retired installation is pending provider deletion. Any such wait
+should be bounded and read-only, require independently verified
+absence before progressing, and stop on missing ownership or a
+different receipt.
+
+CT128 passed all 130 persistence cases, 401 worker-pool unit cases,
+78 contract and DTO checks, 19 platform-job runner cases, and API
+quality. The Compose and Kustomize Upgrade cases now assert the
+`private_route` diagnostic and still verify that the prior deployment
+remains intact.

@@ -92,8 +92,12 @@ async def test_unknown_observation_cannot_authorize_creation(intent: ResourceInt
 async def test_unmarked_occupant_prevents_create(intent: ResourceIntent) -> None:
     adapter = FakeProvisioningAdapter()
     adapter.unmarked = True
-    with pytest.raises(OwnershipConflict, match="requires operator action"):
+    with pytest.raises(OwnershipConflict, match="requires operator action") as failure:
         await resume_creation(adapter, api_token=SecretStr("token"), scope_bearer=None, committed_intent=intent)
+    assert failure.value.as_result() == {
+        "resource_class": "unknown", "check": "unclassified",
+        "observed_category": "unknown", "expected_category": "unknown",
+    }
     assert adapter.calls == ["observe"]
 
 
@@ -123,10 +127,16 @@ async def test_foreign_or_changed_resource_cannot_be_deleted(intent: ResourceInt
     }
     adapter.resource = changes[changed]
 
-    with pytest.raises(OwnershipConflict):
+    with pytest.raises(OwnershipConflict) as failure:
         await resume_deletion(adapter, api_token=SecretStr("token"), committed_deletion=record)
 
     assert adapter.calls == ["observe"]
+    assert failure.value.as_result() == {
+        "resource_class": "worker_script",
+        "check": "receipt_mismatch" if changed in {"id", "version"} else "target_binding",
+        "observed_category": "different",
+        "expected_category": "exact_receipt" if changed in {"id", "version"} else "matching",
+    }
 
 
 @pytest.mark.asyncio
