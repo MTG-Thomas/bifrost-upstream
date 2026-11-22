@@ -411,6 +411,8 @@ async def {name}():
         receipts = {}
         for case in ("cold", "warm"):
             self.submit(case, "provider")
+            if case == "cold":
+                self.observe_status("cold-dispatch")
             slot = self.settle(case)
             wait(f"{case} terminal receipt ACK", lambda settled=slot: self.terminal_ack(settled), 10)
             receipts[case] = slot
@@ -601,6 +603,8 @@ async def {name}():
     def upgrade(self, *, replay=True):
         self.primary_hold()
         execution = self.submit("upgrade", "third", hold=65)
+        if "managementToken" not in self.cfg:
+            self.observe_status("upgrade-original-dispatch")
         old = wait("upgrade live original claim", lambda: self.held(["upgrade"]))["upgrade"]
         assert old["claim"]
         self.release_primary()
@@ -634,6 +638,7 @@ async def {name}():
         subprocess.run(self.compose + ["up", "-d", "--no-deps", "--pull", "never", "worker"],
                        check=True, env=env, timeout=40, stdout=subprocess.DEVNULL)
         assert self.verify_isolation(successor=successor) == address
+        upgrade_events_start = len(self.provider("/local/evidence")) if "managementToken" not in self.cfg else None
         job = self.job("upgrade")
         pinned = Path(".release-2.checked").read_text().split()[1]
         install_id = str(UUID(self.install()["installation_id"]))
@@ -693,12 +698,15 @@ async def {name}():
             assert len(replacement) == 3 and all(row["state"] == "present" and row["observed"] for row in replacement)
             assert drained < min(datetime.fromisoformat(row["observed"]) for row in replacement)
             assert new_revision > old["revision"]
-            if "managementToken" not in self.cfg:
-                first_upload = next(number for number, entry in enumerate(wire)
+            if upgrade_events_start is not None:
+                upgrade_events = wire[upgrade_events_start:]
+                first_upload = next(number for number, entry in enumerate(upgrade_events)
                                     if entry["kind"] == "upload" and entry["revision"] == new_revision)
-                assert sum(entry["kind"] == "delete" for entry in wire[:first_upload]) == 3
+                prior_events = upgrade_events[:first_upload]
+                deletes = [entry for entry in prior_events if entry["kind"] == "delete"]
+                assert len(deletes) == 3 and all(entry["revision"] == old["revision"] for entry in deletes)
                 old_namespace_ids = {value for row in receipts for value in row["namespaces"].values()}
-                inventory_reads = [entry["ids"] for entry in wire[:first_upload] if entry["kind"] == "namespace-inventory"]
+                inventory_reads = [entry["ids"] for entry in prior_events if entry["kind"] == "namespace-inventory"]
                 assert inventory_reads and old_namespace_ids.isdisjoint(inventory_reads[-1])
             # The original may still hold the singleton scheduler lease. Its
             # older release cannot admit the new digest. The ACK is already
@@ -946,12 +954,15 @@ def main():
         evidence("reconcile-and-scale-in", {"active_drain": True, "scripts_retained": 3})
         trial.disconnect()
     tunnel, dns = trial.managed()
-    trial.upgrade(replay=args.managed_only)
-    trial.scale_in()
     try:
+        trial.upgrade(replay=args.managed_only)
+        trial.scale_in()
         trial.meter()
     finally:
-        trial.disconnect()
+        try:
+            trial.release_primary()
+        finally:
+            trial.disconnect()
         root = "/client/v4/accounts/" + "a"*32 + "/cfd_tunnel"
         assert trial.provider(root) == []
         assert trial.provider(root + "/" + tunnel + "/connections") == []
