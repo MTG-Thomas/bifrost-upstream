@@ -13,7 +13,8 @@ class CloudflareApprovalOptions(BaseModel):
     https_hosts: list[str] = Field(default_factory=list)
 
 
-class CloudflareApprovalAccept(CloudflareApprovalOptions):
+class CloudflareApprovalAccept(BaseModel):
     subrequest_allowance: int
     cpu_budget_ms: int
+    https_hosts: list[str] = Field(default_factory=list)
     review_sha256: str

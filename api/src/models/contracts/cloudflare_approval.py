@@ -58,9 +58,12 @@ class CloudflareApprovalOptions(BaseModel):
     https_hosts: list[str] = Field(default_factory=list, max_length=32)
 
 
-class CloudflareApprovalAccept(CloudflareApprovalOptions):
+class CloudflareApprovalAccept(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     subrequest_allowance: int = Field(strict=True, ge=0, le=MAX_SUBREQUESTS)
     cpu_budget_ms: int = Field(strict=True, gt=0, le=MAX_CPU_MS)
+    https_hosts: list[str] = Field(default_factory=list, max_length=32)
     review_sha256: _SourceDigest
 
 

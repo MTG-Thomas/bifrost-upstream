@@ -333,7 +333,8 @@ async def get_approval_state(
 
 
 async def review_approval(
-    db: AsyncSession, user: UserPrincipal, workflow_id: UUID, options: CloudflareApprovalOptions,
+    db: AsyncSession, user: UserPrincipal, workflow_id: UUID,
+    options: CloudflareApprovalOptions | CloudflareApprovalAccept,
 ) -> CloudflareApprovalState:
     accepting = isinstance(options, CloudflareApprovalAccept)
     workflow, caller, _ = await _authorized_workflow(
