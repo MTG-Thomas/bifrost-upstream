@@ -9,7 +9,7 @@ from src.core.cache import redis_client
 from tests.helpers.isolation import isolated_test_database
 
 
-@pytest_asyncio.fixture(scope="session")
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def worker_pool_database(async_engine):
     async with isolated_test_database(async_engine.url) as engine:
         yield engine
