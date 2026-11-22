@@ -135,3 +135,13 @@ The separately owned Existing HTTPS tunnel was verified deleted with
 zero live sessions.
 
 See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-observable-gates.json).
+
+## Hosted Cold and Warm Reuse Run
+
+The run from `788ffc641` stopped after Existing HTTPS latency at a
+post-reuse harness gate, before Managed Tunnel Connect. The
+warp-routing echo, route-list grant and old-session eviction remain
+unqualified on hosted. The Existing HTTPS tunnel had a deletion
+tombstone with zero live sessions.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-latency-reuse.json).

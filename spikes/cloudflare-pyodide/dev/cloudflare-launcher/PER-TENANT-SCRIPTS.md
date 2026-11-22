@@ -194,3 +194,15 @@ run and isolated cancellation were not reached. Teardown showed zero
 held workflow slots.
 
 See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-observable-gates.json).
+
+## Hosted Cold and Warm Slot Reuse
+
+The run from `788ffc641` completed cold and warm workflows in slot 0
+on one launcher. The hosted wrapper stopped when a post-reuse query
+looked for the cold execution ID in the current slot row. The transport
+witness confirmed one dispatch and a terminal ACK for each execution.
+The burst, reserved ninth slot, waiting tenth execution and isolated
+cancellation remain unqualified on hosted. Disconnect verified zero
+held slots.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-latency-reuse.json).

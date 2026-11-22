@@ -1052,3 +1052,40 @@ could reserve a worker. The worker-pool fixtures now use a private clone
 of the migrated PostgreSQL template and a separate Redis database for
 controller telemetry. API, worker and scheduler services stay live for
 the persistence E2E tests in the same invocation.
+
+## Hosted Cold and Warm Reuse Run
+
+The 2026-11-22 UTC run used spike `788ffc641`, the two pinned releases,
+and the 120-second launcher policy. CT128 started with 8 GiB available
+and no other running test stack.
+
+| Item | Result |
+| --- | --- |
+| 1. Releases | Passed. Both image loaders accepted the pinned manifests and distinct deployment digests. All 12 packaging tests passed. |
+| 2. Connect, preflight and Enable | Passed. Connect returned HTTP 200 with admission closed. The Compose worker passed 100 routes. Signed Enable reported `remote_launcher` and opened admission. Both checks recorded eight completed TLS handshakes and 92 reused requests per IPv4 address. Each of two IPv6 addresses recorded one TCP attempt and zero TLS starts. |
+| 3. Hold, cold and warm latency | The primary hold left 24 MiB free. Queue-to-entry was 9.959 s cold and 0.582 s warm. Queue-to-completion was 10.032 s and 0.650 s. Both used slot 0 on the same launcher. A post-latency harness gate then failed. |
+| 4. Burst and cancel | Unreached. This run did not qualify Provider and Global overlap, ninth-slot admission, tenth-run waiting, or isolated cancellation. |
+| 5. Reconcile and active Scale In | Unreached. The stop path submitted one Disconnect and verified retirement. |
+| 6–8. Managed Tunnel, rotation and Upgrade | Unreached. No Managed Tunnel token was created and the replacement image was never started. |
+| 9. Spend and teardown | The settled estimate was $0.007799626 for the run and $0.015317311 cumulative. The largest observed cumulative estimate was $0.026077645. Exact Analytics samples were empty. Teardown passed. |
+
+The hosted wrapper added a post-latency query for both execution IDs.
+The durable slot row tracks its current holder. Warm reuse had already
+replaced the cold execution ID, so the added lookup raised `KeyError:
+'cold'`. The rehearsed gate reads each released row before submitting
+the next execution. Preserve that per-run snapshot and join each terminal
+receipt and ACK by its route. The relay confirmed one dispatch and a
+terminal ACK for each execution, generation 0 booked for cold, and no
+new generation booking for warm. The run stopped at the failed gate.
+
+The canary incarnation lived 1.864 s. The shared cold and warm workflow
+incarnation lived 54.074 s. Disconnect returned three exact script and
+four exact namespace 404s, with no owned entries in either inventory.
+Product readback showed no current installation, live incarnation, held
+slot, staged credential, retained ciphertext or pending resource row.
+DNS and token exact reads returned 404. Both authoritative servers
+confirmed DNS absence and the tunnel tombstone had zero sessions.
+The owned Compose resources, processes, image tags, scratch and secret
+files were removed and checked for absence.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-latency-reuse.json).
