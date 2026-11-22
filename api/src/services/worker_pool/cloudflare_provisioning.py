@@ -32,14 +32,6 @@ class ResourceObservation:
     provider_version: str
 
 
-class ObservationPending(Exception):
-    """The adapter cannot establish current ownership or settle an earlier effect."""
-
-
-class DeletionSettling(ObservationPending):
-    """An owned resource or its namespace is still visible during deletion."""
-
-
 class OwnershipResource(StrEnum):
     UNKNOWN = "unknown"
     WORKER_SCRIPT = "worker_script"
@@ -54,6 +46,81 @@ class OwnershipResource(StrEnum):
     DNS_ZONE = "dns_zone"
     DNS_RECORD = "dns_record"
     PRIVATE_ROUTE = "private_route"
+    ACCOUNT = "account"
+    WORKERS_ENDPOINT = "workers_endpoint"
+    CONNECTOR = "connector"
+    CANARY_LAUNCHER = "canary_launcher"
+
+
+class ObservationCheck(Enum):
+    UNCLASSIFIED = ("unclassified", "unknown", "unknown")
+    REST_REJECTED = ("rest_request", "rejected", "successful_response")
+    REST_JSON = ("response_envelope", "invalid_json", "json_object")
+    REST_RESULT = ("response_envelope", "unconfirmed_result", "successful_result")
+    SCRIPT_BINDINGS = ("script_bindings", "missing_or_invalid", "binding_inventory")
+    SCRIPT_DEPLOYMENT_PENDING = ("active_deployment", "empty", "single_full_version")
+    SCRIPT_UPLOAD_RESULT = ("upload_acknowledgement", "missing_or_different_identity", "matching_script_identity")
+    SCRIPT_UPLOAD_PENDING = ("upload_readback", "absent", "exact_uploaded_script")
+    SCRIPT_RECORDED_ABSENT = ("recorded_script", "absent", "exact_recorded_script")
+    SCRIPT_CHANGED_DURING_READBACK = ("script_readback", "absent", "exact_observed_script")
+    NAMESPACE_PAGE = ("namespace_inventory", "malformed_page", "valid_page")
+    NAMESPACE_IDENTITY = ("namespace_inventory", "invalid_identity", "valid_identity")
+    NAMESPACE_UNASSIGNED = ("namespace_assignment", "unassigned_without_receipt", "script_or_exact_receipt")
+    NAMESPACE_PAGINATION = ("namespace_inventory", "inconsistent_pages", "complete_snapshot")
+    NAMESPACE_LIMIT = ("namespace_inventory", "incomplete", "complete_snapshot")
+    NAMESPACE_EXPORTS_PENDING = ("namespace_exports", "missing_expected_classes", "exact_export_set")
+    NAMESPACE_EXPORTS_UNEXPECTED = ("namespace_exports", "unexpected_classes", "exact_export_set")
+    ENDPOINT_UPDATE = ("endpoint_update", "unconfirmed_settings", "requested_settings")
+    ACCOUNT_SUBDOMAIN = ("account_subdomain", "missing_or_invalid", "valid_subdomain")
+    SCOPE_ENDPOINT = ("deployment_endpoint", "missing", "confirmed_endpoint")
+    SCOPE_ABSENCE = ("scope_retirement", "missing_absence_receipt", "verified_absence")
+    TUNNEL_INVENTORY = ("exact_inventory", "malformed", "valid_inventory")
+    TUNNEL_ID = ("tunnel_identity", "missing_or_invalid", "valid_identity")
+    TUNNEL_VERSION = ("tunnel_version", "missing_or_invalid", "valid_creation_timestamp")
+    TUNNEL_CREATE = ("tunnel_create_readback", "absent", "exact_creation_receipt")
+    TUNNEL_ABSENT = ("recorded_tunnel", "absent", "exact_recorded_tunnel")
+    DNS_ID = ("dns_identity", "missing_or_invalid", "valid_identity")
+    DNS_VERSION = ("dns_version", "missing_or_invalid", "valid_revision")
+    DNS_CREATE = ("dns_create_readback", "absent", "exact_creation_receipt")
+    DNS_ABSENT = ("recorded_dns", "absent", "exact_recorded_dns")
+    CONNECTOR_INVENTORY = ("connector_inventory", "incomplete", "complete_inventory")
+    CONNECTOR_IDENTITY = ("connector_inventory", "malformed_identity", "valid_identity")
+    CONNECTOR_TOKEN = ("connector_token", "invalid", "valid_token")
+    PRIVATE_ROUTES = ("private_route_inventory", "unconfirmed", "confirmed_inventory")
+    CANARY_RETIREMENT = ("canary_retirement", "unverified", "exact_deletion_receipt")
+
+
+def verification_details(resource_class: str, detail: tuple[str, str, str]) -> dict[str, str]:
+    check, observed, expected = detail
+    return {
+        "resource_class": resource_class,
+        "check": check,
+        "observed_category": observed,
+        "expected_category": expected,
+    }
+
+
+class ObservationPending(Exception):
+    """The adapter cannot establish current ownership or settle an earlier effect."""
+
+    def __init__(
+        self, message: str = "", resource: OwnershipResource = OwnershipResource.UNKNOWN,
+        check: ObservationCheck = ObservationCheck.UNCLASSIFIED,
+    ) -> None:
+        super().__init__(message)
+        self.resource = resource
+        self.check = check
+
+    def as_result(self) -> dict[str, str]:
+        return verification_details(self.resource.value, self.check.value)
+
+
+class ObservationSettling(ObservationPending):
+    """A bounded retry may re-read a provider observation under existing fences."""
+
+
+class DeletionSettling(ObservationPending):
+    """An owned resource or its namespace is still visible during deletion."""
 
 
 class OwnershipCheck(Enum):
@@ -105,13 +172,7 @@ class OwnershipConflict(Exception):
         self.check = check
 
     def as_result(self) -> dict[str, object]:
-        check, observed, expected = self.check.value
-        return {
-            "resource_class": self.resource.value,
-            "check": check,
-            "observed_category": observed,
-            "expected_category": expected,
-        }
+        return dict(verification_details(self.resource.value, self.check.value))
 
 
 class OwnedResourceCleanup(Protocol):
@@ -183,24 +244,19 @@ async def observe_owned(
     raise OwnershipConflict("Cloudflare resource does not match its journal", resource, check)
 
 
-async def resume_creation(
+async def request_creation(
     adapter: ProvisioningAdapter,
     *,
     api_token: SecretStr,
     scope_bearer: SecretStr | None,
     committed_intent: ResourceIntent,
-) -> ResourceObservation:
-    """Resume a committed creation intent under the caller's mutation fence."""
+) -> None:
+    """Request creation once, or witness the exact earlier effect under its fence."""
     if scope_bearer is not None and committed_intent.target.kind != "worker_script":
         raise ValueError("A scope bearer can be installed only on a Worker script")
     observed = await observe_owned(adapter, api_token=api_token, intent=committed_intent, recorded=None)
-    if observed is not None:
-        return observed
-    await adapter.create(api_token=api_token, intent=committed_intent, scope_bearer=scope_bearer)
-    observed = await observe_owned(adapter, api_token=api_token, intent=committed_intent, recorded=None)
     if observed is None:
-        raise ObservationPending("Cloudflare creation has no confirmed resource")
-    return observed
+        await adapter.create(api_token=api_token, intent=committed_intent, scope_bearer=scope_bearer)
 
 
 async def resume_deletion(

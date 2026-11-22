@@ -64,7 +64,9 @@ from src.services.worker_pool.cloudflare_policy import (
 )
 from src.services.worker_pool.cloudflare_provisioning import (
     DeletionSettling,
+    ObservationCheck,
     ObservationPending,
+    ObservationSettling,
     OwnedResourceCleanup,
     OwnershipCheck,
     OwnershipConflict,
@@ -218,7 +220,11 @@ async def _cleanup_one(
     intent = _resource_intent(resource)
     token = await _management_token(db, row)
     if resource.state == "creating":
-        observed = await observe_owned(adapter, api_token=token, intent=intent, recorded=None)
+        recorded = (
+            ResourceObservation(intent, resource.provider_id, resource.provider_version)
+            if resource.provider_id and resource.provider_version else None
+        )
+        observed = await observe_owned(adapter, api_token=token, intent=intent, recorded=recorded)
         if observed is None:
             now = datetime.now(UTC)
             if resource.observed_at is None:
@@ -351,7 +357,9 @@ async def _cleanup_stranded_workflow_slots(
             cleanup = await _cleanup_one(db, row, adapter, stranded_scope=(scope, revision))
         except DeletionSettling:
             return "settling"
-        except (ObservationPending, OwnershipConflict, CloudflareManagementDenied):
+        except (ObservationPending, OwnershipConflict, CloudflareManagementDenied) as exc:
+            if isinstance(exc, ObservationSettling) and before_revision is not None:
+                raise
             raise _stranded_cleanup_action(revision, worker_ids, resources) from None
         if cleanup != "complete":
             return cleanup
@@ -543,7 +551,9 @@ async def _remove_verified_scopes(
         ).correlate(CloudflareCapacityScope).exists(),
     ).limit(1))
     if unverified_scope is not None:
-        raise ObservationPending("Cloudflare scope absence is unverified")
+        raise ObservationPending(
+            "Cloudflare scope absence is unverified", OwnershipResource.WORKERS_SCOPE, ObservationCheck.SCOPE_ABSENCE,
+        )
     await db.execute(delete(CloudflareCapacityScope).where(*scopes))
 
 
@@ -614,7 +624,10 @@ async def _observe_inventory(
         observation = ResourceObservation(receipt.intent, receipt.provider_id, receipt.provider_version)
         remote = await observe_owned(adapter, api_token=token, intent=receipt.intent, recorded=observation)
         if remote is None:
-            raise ObservationPending("An owned Cloudflare Worker has disappeared")
+            raise ObservationPending(
+                "An owned Cloudflare Worker has disappeared",
+                OwnershipResource.WORKER_SCRIPT, ObservationCheck.SCRIPT_RECORDED_ABSENT,
+            )
 
 
 async def usage_script_identities(db: AsyncSession, installation_id: UUID) -> dict[str, dict[str, str]]:

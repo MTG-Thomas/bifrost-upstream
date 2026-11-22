@@ -9,7 +9,8 @@ from src.services.worker_pool.cloudflare_provisioning import (
     ResourceIntent,
     ResourceObservation,
     ResourceTarget,
-    resume_creation,
+    observe_owned,
+    request_creation,
     resume_deletion,
 )
 
@@ -67,11 +68,9 @@ async def test_creation_retry_adopts_exact_effect_after_lost_response(intent: Re
     token, bearer = SecretStr("fake-api-token"), SecretStr("fake-scope-bearer")
 
     with pytest.raises(ObservationPending):
-        await resume_creation(adapter, api_token=token, scope_bearer=bearer, committed_intent=intent)
+        await request_creation(adapter, api_token=token, scope_bearer=bearer, committed_intent=intent)
 
-    observed = await resume_creation(adapter, api_token=token, scope_bearer=bearer, committed_intent=intent)
-
-    assert observed == ResourceObservation(intent, "provider-id", "provider-version")
+    await request_creation(adapter, api_token=token, scope_bearer=bearer, committed_intent=intent)
     assert adapter.calls == ["observe", "create", "observe"]
 
 
@@ -81,7 +80,7 @@ async def test_unknown_observation_cannot_authorize_creation(intent: ResourceInt
     adapter.observation_pending = True
 
     with pytest.raises(ObservationPending):
-        await resume_creation(
+        await request_creation(
             adapter, api_token=SecretStr("token"), scope_bearer=SecretStr("bearer"), committed_intent=intent,
         )
 
@@ -93,7 +92,7 @@ async def test_unmarked_occupant_prevents_create(intent: ResourceIntent) -> None
     adapter = FakeProvisioningAdapter()
     adapter.unmarked = True
     with pytest.raises(OwnershipConflict, match="requires operator action") as failure:
-        await resume_creation(adapter, api_token=SecretStr("token"), scope_bearer=None, committed_intent=intent)
+        await request_creation(adapter, api_token=SecretStr("token"), scope_bearer=None, committed_intent=intent)
     assert failure.value.as_result() == {
         "resource_class": "unknown", "check": "unclassified",
         "observed_category": "unknown", "expected_category": "unknown",
@@ -105,8 +104,10 @@ async def test_unmarked_occupant_prevents_create(intent: ResourceIntent) -> None
 async def test_foreign_result_after_create_requires_operator_action(intent: ResourceIntent) -> None:
     adapter = FakeProvisioningAdapter()
     adapter.replace_on_create = ResourceObservation(replace(intent, creation_effect_id=uuid4()), "id", "version")
+    token = SecretStr("token")
+    await request_creation(adapter, api_token=token, scope_bearer=None, committed_intent=intent)
     with pytest.raises(OwnershipConflict):
-        await resume_creation(adapter, api_token=SecretStr("token"), scope_bearer=None, committed_intent=intent)
+        await observe_owned(adapter, api_token=token, intent=intent, recorded=None)
     assert adapter.calls == ["observe", "create", "observe"]
 
 

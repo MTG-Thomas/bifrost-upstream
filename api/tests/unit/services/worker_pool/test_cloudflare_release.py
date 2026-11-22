@@ -13,10 +13,13 @@ from scripts.test_cloudflare_fixture import _release
 from shared.models import CloudflareCapacityPolicy, CloudflareWorkersPolicy
 from src.services.worker_pool import cloudflare_policy, cloudflare_release
 from src.services.worker_pool.cloudflare_provisioning import (
+    ObservationCheck,
     ObservationPending,
+    ObservationSettling,
     ResourceIntent,
     ResourceTarget,
-    resume_creation,
+    observe_owned,
+    request_creation,
 )
 from src.services.worker_pool.cloudflare_release import (
     WorkersReleaseUnavailable,
@@ -309,8 +312,8 @@ async def test_paid_check_identifies_the_missing_entitlement() -> None:
             await WorkersRestCleanup(http).verify_workers_paid(account, SecretStr("synthetic-account-token"))
 
 
-@pytest.mark.parametrize("confirmed", [True, False])
-async def test_rest_upload_scopes_the_bearer_and_finalizes_the_verified_endpoint(release: Path, confirmed: bool) -> None:
+@pytest.mark.parametrize("readback", ["confirmed", "endpoint_mismatch", "missing_namespace", "unexpected_namespace"])
+async def test_rest_upload_scopes_the_bearer_and_finalizes_the_verified_endpoint(release: Path, readback: str) -> None:
     path = release / "manifest.json"
     manifest = json.loads(path.read_bytes())
     manifest["workers"]["capacity"]["bindings"] = [
@@ -355,7 +358,7 @@ async def test_rest_upload_scopes_the_bearer_and_finalizes_the_verified_endpoint
         elif request.method == "POST":
             mutations.append("POST")
             endpoint = json.loads(await request.aread())
-            result = {**endpoint, "previews_enabled": not confirmed}
+            result = {**endpoint, "previews_enabled": readback == "endpoint_mismatch"}
         elif request.url.path.endswith("/settings"):
             if not bindings:
                 return httpx.Response(404)
@@ -365,6 +368,10 @@ async def test_rest_upload_scopes_the_bearer_and_finalizes_the_verified_endpoint
         elif request.url.path.endswith("/namespaces"):
             result = [{"script": target.name, "class": name, "id": identity, "preview": False}
                       for name, identity in namespaces.items()]
+            if readback == "missing_namespace":
+                result.pop()
+            elif readback == "unexpected_namespace":
+                result[-1]["class"] = "Unexpected"
         elif request.url.path.endswith("/workers/subdomain"):
             result = {"subdomain": "test-account"}
         else:
@@ -383,14 +390,28 @@ async def test_rest_upload_scopes_the_bearer_and_finalizes_the_verified_endpoint
             gateway_name="bifrost-gateway",
         ))
         token = SecretStr("synthetic-management")
-        observed = await resume_creation(
+        await request_creation(
             adapter, api_token=token, scope_bearer=SecretStr("synthetic-bearer"), committed_intent=intent,
         )
-        assert observed.provider_version == version
-        if not confirmed:
-            with pytest.raises(ObservationPending, match="did not confirm the requested settings"):
+        observed = await observe_owned(adapter, api_token=token, intent=intent, recorded=None)
+        assert observed is not None and observed.provider_version == version
+        if readback == "endpoint_mismatch":
+            with pytest.raises(ObservationPending, match="did not confirm the requested settings") as failure:
                 await adapter.configure_endpoint(api_token=token, expected=observed)
+            assert failure.value.check is ObservationCheck.ENDPOINT_UPDATE
+            assert not isinstance(failure.value, ObservationSettling)
             assert endpoint_reads == 1
+            return
+        if readback in {"missing_namespace", "unexpected_namespace"}:
+            with pytest.raises(ObservationPending) as failure:
+                await adapter.configure_endpoint(api_token=token, expected=observed)
+            if readback == "missing_namespace":
+                assert isinstance(failure.value, ObservationSettling)
+                assert failure.value.check is ObservationCheck.NAMESPACE_EXPORTS_PENDING
+            else:
+                assert not isinstance(failure.value, ObservationSettling)
+                assert failure.value.check is ObservationCheck.NAMESPACE_EXPORTS_UNEXPECTED
+            assert mutations == ["PUT"]
             return
         configured = await adapter.configure_endpoint(api_token=token, expected=observed)
         assert configured.endpoint == "https://bifrost-capacity.test-account.workers.dev"

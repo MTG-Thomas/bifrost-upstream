@@ -172,7 +172,9 @@ if any(row.split()[1] == "00000000" for row in Path("/proc/net/route").read_text
         if state["status"] != "succeeded" or result.get("outcome") != outcome:
             code = result.get("code") or (state.get("error") or {}).get("code")
             print(json.dumps({"outcome": outcome, "status": state["status"], "code": code,
-                              "failure": result.get("canary_failure")}), flush=True)
+                              "failure": result.get("canary_failure"),
+                              "details": result.get("details") if code == "CF_DEPLOYMENT_UNVERIFIED" else None}),
+                  flush=True)
             raise RuntimeError(f"{outcome} job did not succeed")
         return result
 
@@ -214,9 +216,18 @@ if any(row.split()[1] == "00000000" for row in Path("/proc/net/route").read_text
         assert result["route_checks"] == 100 and result["http_connections"]
 
     def enable(self):
-        result = self.completed(self.job("enable"), "enabled")
+        job = self.job("enable")
+        result = self.completed(job, "enabled")
         assert result["execution_class"] == "remote_launcher" and result["http_connections"]
         assert self.install()["admission_open"]
+        if self.cfg.get("lagWorkerNamespace"):
+            wire = self.provider("/local/evidence")
+            assert sum(item["kind"] == "namespace-lag" for item in wire) == 1
+            assert sum(item["kind"] == "upload" and item["revision"] == 1 and item["role"] == "capacity"
+                       for item in wire) == 1
+            attempts = self.sql(f"SELECT attempt FROM platform_jobs WHERE id='{job}'")
+            assert attempts == 2
+            evidence("enable_namespace_lag", {"attempts": attempts, "capacity_uploads": 1})
         evidence("enable", {"class": result["execution_class"], "connections": result["http_connections"]})
 
     def register(self, name, source, org=None, memory=None, *, timeout=110):

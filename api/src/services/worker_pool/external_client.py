@@ -2,17 +2,49 @@
 
 from collections.abc import Awaitable, Callable
 from datetime import datetime
+from enum import Enum
 from uuid import UUID
 
 import httpx
 from pydantic import ValidationError
-
-from shared.models import WorkerCapacityProfile, WorkerCapacityReservation, WorkerCapacityResource
+from shared.models import (
+    WorkerCapacityProfile,
+    WorkerCapacityReservation,
+    WorkerCapacityResource,
+)
 
 CAPACITY_REQUEST_SECONDS = 10
 
 
+class CapacityProtocolCheck(Enum):
+    UNCLASSIFIED = ("capacity_provider", "protocol", "invalid", "valid")
+    PROFILE = ("workers_scope", "capabilities_shape", "invalid", "valid_profile")
+    RESOURCE_SHAPE = ("canary_launcher", "resource_shape", "invalid", "valid_resource")
+    RESOURCE_IDENTITY = ("canary_launcher", "resource_identity", "different", "exact_reservation")
+    PREPARE = ("canary_launcher", "prepare_receipt", "wrong_state_or_release", "prepared_matching_release")
+    START = ("canary_launcher", "start_receipt", "wrong_state", "starting_or_running")
+    REMOVE = ("canary_launcher", "delete_receipt", "wrong_state", "deleted")
+    COMPACT = ("canary_launcher", "receipt_compaction", "unconfirmed", "compacted")
+    INGRESS_ORIGIN = ("workers_scope", "canary_origin", "different", "approved_origin")
+    PROFILE_CONTRACT = ("workers_scope", "capabilities_contract", "different", "installed_release_policy")
+    PROFILE_HTTP = ("workers_scope", "capabilities_request", "rejected", "successful_response")
+    PREPARE_HTTP = ("canary_launcher", "prepare_request", "rejected", "successful_response")
+    START_HTTP = ("canary_launcher", "start_request", "rejected", "successful_response")
+
+
 class CapacityProtocolError(RuntimeError):
+    def __init__(self, message: str, check: CapacityProtocolCheck = CapacityProtocolCheck.UNCLASSIFIED) -> None:
+        super().__init__(message)
+        self.check = check
+
+    def as_result(self) -> dict[str, str]:
+        resource, check, observed, expected = self.check.value
+        return {
+            "resource_class": resource,
+            "check": check,
+            "observed_category": observed,
+            "expected_category": expected,
+        }
     """Provider response cannot be bound to the requested worker resource."""
 
 
@@ -70,7 +102,7 @@ class ExternalCapacityClient:
         try:
             return WorkerCapacityProfile.model_validate_json(response.content)
         except ValidationError:
-            raise CapacityProtocolError("Invalid capacity provider capabilities") from None
+            raise CapacityProtocolError("Invalid capacity provider capabilities", CapacityProtocolCheck.PROFILE) from None
 
     @staticmethod
     def _resource(response: httpx.Response, worker_id: UUID, scope: str, uid: str | None = None) -> WorkerCapacityResource:
@@ -78,9 +110,13 @@ class ExternalCapacityClient:
         try:
             resource = WorkerCapacityResource.model_validate_json(response.content)
         except ValidationError:
-            raise CapacityProtocolError("Invalid capacity provider resource response") from None
+            raise CapacityProtocolError(
+                "Invalid capacity provider resource response", CapacityProtocolCheck.RESOURCE_SHAPE,
+            ) from None
         if resource.worker_id != worker_id or resource.scope != scope or (uid is not None and resource.resource_uid != uid):
-            raise CapacityProtocolError("Capacity resource identity does not match its reservation")
+            raise CapacityProtocolError(
+                "Capacity resource identity does not match its reservation", CapacityProtocolCheck.RESOURCE_IDENTITY,
+            )
         return resource
 
     async def get(self, worker_id: UUID, scope: str) -> WorkerCapacityResource | None:
@@ -107,7 +143,9 @@ class ExternalCapacityClient:
         )
         resource = self._resource(response, reservation.worker_id, scope, uid)
         if resource.state != "prepared" or resource.worker_version != reservation.worker_version:
-            raise CapacityProtocolError("A new capacity reservation must be prepared before starting")
+            raise CapacityProtocolError(
+                "A new capacity reservation must be prepared before starting", CapacityProtocolCheck.PREPARE,
+            )
         return resource
 
     async def start(self, worker_id: UUID, scope: str, uid: str) -> WorkerCapacityResource:
@@ -116,7 +154,7 @@ class ExternalCapacityClient:
         )
         resource = self._resource(response, worker_id, scope, uid)
         if resource.state not in ("starting", "running"):
-            raise CapacityProtocolError("Provider did not start the bound capacity resource")
+            raise CapacityProtocolError("Provider did not start the bound capacity resource", CapacityProtocolCheck.START)
         return resource
 
     async def remove(self, worker_id: UUID, scope: str, uid: str) -> WorkerCapacityResource:
@@ -125,7 +163,7 @@ class ExternalCapacityClient:
         )
         resource = self._resource(response, worker_id, scope, uid)
         if resource.state != "deleted":
-            raise CapacityProtocolError("Provider did not delete the bound capacity resource")
+            raise CapacityProtocolError("Provider did not delete the bound capacity resource", CapacityProtocolCheck.REMOVE)
         return resource
 
     async def acknowledge_receipt(self, worker_id: UUID, scope: str, uid: str) -> None:
@@ -134,4 +172,6 @@ class ExternalCapacityClient:
         )
         resource = self._resource(response, worker_id, scope, uid)
         if resource.state != "deleted" or resource.usage is not None:
-            raise CapacityProtocolError("Capacity provider did not compact its deletion receipt")
+            raise CapacityProtocolError(
+                "Capacity provider did not compact its deletion receipt", CapacityProtocolCheck.COMPACT,
+            )

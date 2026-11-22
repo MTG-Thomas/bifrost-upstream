@@ -45,6 +45,7 @@ const projectAddresses = new BlockList();
 const [networkAddress, prefix] = config.subnet.split('/');
 projectAddresses.addSubnet(networkAddress, Number(prefix), 'ipv4');
 let ingressHost;
+let lagNamespace;
 
 function event(kind, details = {}) {
   observations.push({kind, ...details});
@@ -284,6 +285,13 @@ async function provider(req, res) {
   if (relative === '/workers/scripts') return ok([...workers.keys()].map((id) => ({id})));
   const namespaces = [...workers.values()].flatMap((item) => item.namespaces);
   if (relative === '/workers/durable_objects/namespaces') {
+    if (lagNamespace) {
+      const stale = namespaces.filter(({id}) => id !== lagNamespace);
+      lagNamespace = undefined;
+      event('namespace-lag');
+      event('namespace-inventory', {ids: stale.map(({id}) => id)});
+      return ok(stale);
+    }
     event('namespace-inventory', {ids: namespaces.map(({id}) => id)});
     return ok(namespaces);
   }
@@ -304,7 +312,12 @@ async function provider(req, res) {
         endpoint: {enabled: false, previews_enabled: false},
         namespaces: Object.keys(meta.exports).map((exported) =>
           ({id: randomBytes(16).toString('hex'), script: name, class: exported}))});
-      event('upload', {revision: Number(owner.split(':')[2]), role: name.split('-').at(-1)});
+      const revision = Number(owner.split(':')[2]);
+      const role = name.split('-').at(-1);
+      if (config.lagWorkerNamespace && revision === 1 && role === 'capacity') {
+        lagNamespace = workers.get(name).namespaces[0].id;
+      }
+      event('upload', {revision, role});
       return ok({id: name});
     }
     if (!item) return missing();

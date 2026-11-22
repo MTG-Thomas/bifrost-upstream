@@ -29,10 +29,18 @@ from src.services.worker_ingress_probes import CanaryFailure, RuntimeCanary
 from src.services.worker_pool.cloudflare_admission import ManagedCloudflareScope
 from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
 from src.services.worker_pool.cloudflare_policy import cloudflare_workers_remain
-from src.services.worker_pool.cloudflare_provisioning import ObservationPending
-from src.services.worker_pool.cloudflare_spend import compact_ledger_receipt, seal_launcher_meter
+from src.services.worker_pool.cloudflare_provisioning import (
+    ObservationCheck,
+    ObservationPending,
+    OwnershipResource,
+)
+from src.services.worker_pool.cloudflare_spend import (
+    compact_ledger_receipt,
+    seal_launcher_meter,
+)
 from src.services.worker_pool.cloudflare_workers_rest import WorkersDeployment
 from src.services.worker_pool.external_client import (
+    CapacityProtocolCheck,
     CapacityProtocolError,
     ExternalCapacityClient,
 )
@@ -183,7 +191,7 @@ async def run_workers_canary(
     origin: str, client: ExternalCapacityClient, deployment: WorkersDeployment,
 ) -> RuntimeCanary:
     if origin != deployment.worker_ingress_origin:
-        raise CapacityProtocolError("The canary ingress origin changed")
+        raise CapacityProtocolError("The canary ingress origin changed", CapacityProtocolCheck.INGRESS_ORIGIN)
     profile = await client.profile()
     if (
         profile.scope != "workers" or profile.protocol_version != 2
@@ -193,7 +201,9 @@ async def run_workers_canary(
         or profile.max_lifetime_seconds != deployment.policy.max_lifetime_seconds
         or cloudflare_slots(profile.memory_limit_bytes) != deployment.policy.slots_per_launcher
     ):
-        raise CapacityProtocolError("The canary provider contract differs from the installed release")
+        raise CapacityProtocolError(
+            "The canary provider contract differs from the installed release", CapacityProtocolCheck.PROFILE_CONTRACT,
+        )
     worker_id, resource_uid = uuid4(), uuid4().hex
     async with get_db_context() as db:
         try:
@@ -292,5 +302,8 @@ async def run_workers_canary(
     finally:
         retired = await _retire_canary(client, worker_id, resource_uid)
     if not retired and signed and scoped:
-        raise ObservationPending("The runtime canary has no verified deletion receipt")
+        raise ObservationPending(
+            "The runtime canary has no verified deletion receipt",
+            OwnershipResource.CANARY_LAUNCHER, ObservationCheck.CANARY_RETIREMENT,
+        )
     return RuntimeCanary(signed, scoped, failure)

@@ -983,8 +983,9 @@ async def test_canary_proof_requires_current_lease_worker_generation_and_revisio
 
 
 @pytest.mark.asyncio
-async def test_enable_reports_ambiguous_launcher_namespaces_without_opening_admission(
-    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch,
+@pytest.mark.parametrize("readback", ["ambiguous_namespaces", "invisible_upload"])
+async def test_enable_keeps_admission_closed_on_unverified_readback(
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch, readback,
 ) -> None:
     digest = "d" * 64
     installation.policy = {**installation.policy, "bounds_release": digest}
@@ -1017,6 +1018,8 @@ async def test_enable_reports_ambiguous_launcher_namespaces_without_opening_admi
 
     class Provisioner(WorkersRestProvisioner):
         async def observe(self, *, api_token: SecretStr, intent: ResourceIntent) -> ResourceObservation | None:
+            if readback == "invisible_upload":
+                return None
             return uploaded.get(intent.target.name)
 
         async def create(self, *, api_token: SecretStr, intent: ResourceIntent, scope_bearer: SecretStr | None) -> None:
@@ -1036,6 +1039,27 @@ async def test_enable_reports_ambiguous_launcher_namespaces_without_opening_admi
     monkeypatch.setattr(enable_job, "probe_worker_ingress", ingress)
     context = PlatformJobContext(job.id, lease, None, str(OPERATOR_ID), "operator@example.test", "")
     payload = enable_job.CloudflareEnablePayload.model_validate(job.payload)
+
+    if readback == "invisible_upload":
+        for _ in range(2):
+            with pytest.raises(PlatformJobFailure) as pending:
+                await enable_job.CLOUDFLARE_ENABLE_DEFINITION.handler(context, payload)
+            assert pending.value.retryable
+            assert pending.value.result == {"code": "CF_DEPLOYMENT_UNVERIFIED", "details": {
+                "resource_class": "worker_script", "check": "upload_readback",
+                "observed_category": "absent", "expected_category": "exact_uploaded_script",
+            }}
+        name, = uploaded
+        journal = await db_session.scalar(select(CloudflareOwnedResource).where(
+            CloudflareOwnedResource.installation_id == installation.id,
+            CloudflareOwnedResource.target_name == name,
+        ))
+        assert journal is not None and journal.state == "creating"
+        assert journal.provider_details == {"upload_acknowledged": True}
+        ingress.assert_not_awaited()
+        await db_session.refresh(installation)
+        assert installation.admitted_revision is None
+        return
 
     with pytest.raises(PlatformJobRequiresAction) as failure:
         await enable_job.CLOUDFLARE_ENABLE_DEFINITION.handler(context, payload)
