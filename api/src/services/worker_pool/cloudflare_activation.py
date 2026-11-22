@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
 from hmac import compare_digest
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 from uuid import UUID, uuid4
 
 import httpx
@@ -34,6 +34,7 @@ from src.models.orm.cloudflare_capacity import CloudflareInstallation
 from src.models.orm.platform_jobs import PlatformJob
 from src.services.audit import emit_audit
 from src.services.authorization.enforce import Caller
+from src.services.kubernetes_control import may_manage_jobs
 from src.services.worker_pool.cloudflare_connector_channel import connector_channel_ready
 from src.services.worker_pool.cloudflare_credentials import consume_staged_token, read_staged_connect_token
 from src.services.worker_pool.cloudflare_policy import (
@@ -141,6 +142,14 @@ async def preflight_cloudflare(
         raise ValueError("The staged credential is bound to a different Cloudflare account")
 
     settings = get_settings()
+    primary: Literal["static", "job", "external", "unknown"] = "static"
+    if settings.worker_capacity_url and settings.worker_capacity_token:
+        primary = "external"
+    elif os.environ.get("KUBERNETES_SERVICE_HOST"):
+        try:
+            primary = "job" if await may_manage_jobs(settings) else "unknown"
+        except httpx.HTTPError:
+            primary = "unknown"
     ready = await connector_channel_ready()
     recommended = "managed_tunnel" if ready else "existing_https_endpoint"
     mode = body.reachability_mode or recommended
@@ -153,10 +162,7 @@ async def preflight_cloudflare(
         result = CloudflarePreflight(
             accounts=accounts, account_id=account_id, connector_channel=settings.cloudflare_tunnel_channel,
             connector_ready=ready,
-            primary="external" if settings.worker_capacity_url and settings.worker_capacity_token else (
-                "job" if settings.kubernetes_job_namespace else
-                "unknown" if os.environ.get("KUBERNETES_SERVICE_HOST") else "static"
-            ),
+            primary=primary,
             recommended_reachability=recommended, reachability_mode=mode,
             preview=CloudflareActivationPreview(
                 policy=policy, fleet_envelope_usd=Decimal(str(priced["fleet_envelope_usd"])),

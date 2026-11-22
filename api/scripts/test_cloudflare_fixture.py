@@ -37,7 +37,7 @@ from src.services.worker_pool.cloudflare_workers_rest import (
     ConfiguredWorkersScript,
     WorkersRestCleanup,
 )
-from src.worker.remote.protocol import ControlEnvelope, Hello, new_nonce, sign_hello
+from src.worker.remote.protocol import CLOUDFLARE_DEV_BUDGET_BYTES, ControlEnvelope, Hello, new_nonce, sign_hello
 from websockets.asyncio.client import connect
 
 ACCOUNT = "f" * 32
@@ -289,11 +289,12 @@ def install_enable(job_module):
         async def profile(self):
             return WorkerCapacityProfile(
                 protocol_version=2, scope="workers", worker_version=_fixture_digest(),
-                runtime_profile="cloudflare-python-v1", memory_limit_bytes=256 * 2**20,
-                max_workers=1, max_lifetime_seconds=3600,
+                runtime_profile="cloudflare-python-v1", memory_limit_bytes=4 * CLOUDFLARE_DEV_BUDGET_BYTES,
+                max_workers=3, max_lifetime_seconds=3600,
             )
 
-        async def prepare(self, reservation, scope, *, managed_identity):
+        async def prepare(self, reservation, scope, *, managed_identity, managed_deadline):
+            assert managed_deadline > datetime.now(UTC)
             uid, self.key = managed_identity
             self.resource = WorkerCapacityResource(
                 scope=scope, worker_id=reservation.worker_id, worker_version=reservation.worker_version,

@@ -67,7 +67,6 @@ function amount(value?: string | number | null) {
 	return value == null ? "Unavailable" : `${value} USD`;
 }
 const fieldNames: Record<string, string> = {
-	worker_ingress_origin: "origin",
 	slots_per_launcher: "slots",
 	slots_per_tenant: "tenant_slots",
 	max_lifetime_seconds: "lifetime",
@@ -443,11 +442,7 @@ function CloudflareConfigurationForm({ installation, onSaved, onCancel, onRefres
 			if (!(field instanceof HTMLInputElement || field instanceof HTMLSelectElement)) continue;
 			labels[field.name] = field.labels?.[0]?.textContent?.trim() || field.name;
 			if (!field.validity.valid) {
-				invalid[field.name] = field.name === "consent"
-					? "Accept the Cloudflare terms to connect."
-					: field.validity.patternMismatch
-						? "Enter a 32-character lowercase hexadecimal ID."
-						: field.validationMessage;
+				invalid[field.name] = field.validationMessage;
 			}
 		}
 		if (Object.keys(invalid).length) {
@@ -569,7 +564,6 @@ export function CloudflareCapacity() {
 	const [connecting, setConnecting] = useState(false);
 	const [focusTarget, setFocusTarget] = useState<"setup" | "policy">();
 	const setupRef = useRef<HTMLButtonElement>(null);
-	const enableRef = useRef<HTMLButtonElement>(null);
 	const policyRef = useRef<HTMLButtonElement>(null);
 	const jobStatusRef = useRef<HTMLDivElement>(null);
 	const actionErrorRef = useRef<HTMLDivElement>(null);
@@ -967,7 +961,6 @@ export function CloudflareCapacity() {
 									Edit Policy
 								</Button>
 								<Button
-									ref={enableRef}
 									disabled={enableDisabled}
 									onClick={() => mutation.mutate("enable")}
 								>
