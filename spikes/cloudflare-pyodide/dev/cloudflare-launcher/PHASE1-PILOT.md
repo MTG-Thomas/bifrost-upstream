@@ -719,14 +719,34 @@ Use a dedicated route to worker ingress on port 8001. Use Account Settings
 Read, Workers Scripts Write and Account Analytics Read. For Managed Tunnel
 also grant Tunnel Write on the selected account and Zone Read and DNS Write
 on the selected zone only. Complete the first Disconnect and verify resource
-absence before connecting the second origin as a Managed Tunnel in the same
-Compose project. Managed Tunnel provisions its route
-during the first Enable. That job performs the full ingress probe after the
+absence before activating Managed Tunnel in the same Compose project.
+Managed Tunnel provisions its route in the Enable job queued by activation.
+That job performs the full ingress probe after the
 connector is ready. Run the operator command against the actual managed
 origin before the post-rotation Enable. If the initial Managed Tunnel job
 returns the retryable connector-readiness result, observe its existing job
 until the connector is healthy or the phase deadline arrives. Preserve its
 effect identities and avoid a second provisioning submission.
+
+Use CLI 1.4.3 or later. For each installation, stage the scoped token
+with `bifrost capacity cloudflare stage-credential --purpose connect --account-id "$ACCOUNT_ID"`.
+Keep the returned credential reference private. Pass it as
+`--credential-ref` to `bifrost capacity cloudflare activate` with the
+reviewed mode, origin or zone, and `--monthly-limit-usd`. The command
+preflights and prompts for consent before queuing Enable. Use
+`bifrost capacity cloudflare preflight` with the same reference for a
+separate preview when needed. For MCP, pass the staged reference to
+`bifrost_cloudflare_preflight_validate`, then pass that reference and the
+returned receipt and consent version to `bifrost_cloudflare_activate_execute`
+with explicit consent and the confirmed limit. The `connect` credential
+purpose is still used for initial activation.
+
+Preflight allows 10 requests per actor per minute. The API harness uses
+one activation preflight per installation, which leaves room for observing
+the two installations in one run. The worker ingress probe and capacity
+status reads are separate. Poll the one Enable job returned by activation
+until it settles. After Scale In or connector rotation on an existing
+installation, use Enable to resume that installation.
 
 Retain the sanitized `http_connections` array from the worker preflight
 and the Enable result. Use each result's own counts to report reuse.
@@ -734,7 +754,7 @@ and the Enable result. Use each result's own counts to report reuse.
 | Order | Action and required evidence | Incremental budget |
 | --- | --- | ---: |
 | 1 | Requalify and build both releases offline. Verify the three module digests, bounds hash, deployment digests and image/manifest pairs. Bind each hosted job to the appropriate release. | $0.00 |
-| 2 | Existing HTTPS activation. Stage an expiring scoped token and review the preflight and policy envelope. From the sole worker replica, require the complete worker ingress preflight to pass. Confirm consent and submit activation once. Require `remote_launcher` (the Compose `worker` container that ran the preflight) and a passing signed hello, scoped SDK receipt and terminal ACK before admission opens. | $0.03 |
+| 2 | Existing HTTPS activation. Stage an expiring scoped token and review the read-only preflight and policy envelope. Confirm consent and activate once. The ingress listener starts after the installation exists. Require the returned Enable job to verify ingress, signed hello, scoped SDK receipt and terminal ACK on `remote_launcher` before admission opens. Then run the standalone worker ingress probe from the same worker container. | $0.03 |
 | 3 | Measure a cold approved loose workflow and a warm repeat on the same tenant, launcher and ordinal within linger. Record queue-to-entry and end-to-end latency, loader identity, generation, cold/warm flags and terminal receipts. Verify scoped SDK results for a Solution fixture in the burst. | $0.04 |
 | 4 | Hold four Provider and four Global executions simultaneously at a no-effect barrier. Offer a ninth execution to a different tenant with zero slots, then prove a tenth from a fourth tenant stays queued through two controller observations without a ticket or entry. Cancel one running execution mid-burst. Require confirmed stop and exact fence release, unchanged sibling fences, and admission of the waiting execution only after release. Open the barrier and collect the remaining terminal ACKs. | $0.14 |
 | 5 | Reconcile and verify the owned revision and canary without duplicate resources. Start one harmless hold, request Scale In, then let it finish. Verify admission and sends close, the original claim settles, launchers retire, and scripts remain. Disconnect, retain spend evidence, and verify the first installation's resource absence. | $0.04 |
@@ -743,6 +763,12 @@ and the Enable result. Use each result's own counts to report reuse.
 | 8 | Upgrade once with one harmless held execution and an intact control connection. Require the admission and send fence, the original claim and one dispatch with a terminal ACK, and the durable old-revision absence checkpoint before replacement upload. Verify readback and the signed canary before reopening, then run a workflow on the replacement. The deliberate socket interruption and replay check is local-only. | $0.07 |
 | 9 | Capture the spend comparison. Scale In and Disconnect. Verify both installations' cleanup independently, including the replacement revision. Reserve for bounded cleanup and remaining observation. | $0.05 |
 | | **Cumulative estimate with $0.00 carried from the two failed combined attempts** | **$0.45** |
+
+During the local rehearsal, record the Workers lane reason codes and
+queue counts just after the first burst dispatch and after the tenth
+dispatch clears its launch gate. Record the placement reason codes
+while Disconnect is in progress. These observations accompany the
+existing workflow, slot, and teardown evidence.
 | | Optional queue pre-warm with one extra parallel boot per tenant | **+$0.04** |
 
 The next candidate uses the verified preset B suggestion with three

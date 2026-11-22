@@ -3,6 +3,10 @@
 Managed Tunnel uses an exact hostname in an active DNS zone owned by the
 selected Cloudflare account. Preflight proposes the hostname and discovers
 the zone. Review both before selecting **Scale Out with Cloudflare**.
+For CLI or MCP, stage the scoped credential and use its reference for
+preflight and activation. Confirm the discovered zone, proposed hostname,
+consent and spend limit using the combined activation procedure.
+[Combined activation procedure](PHASE1-PILOT.md#combined-hosted-qualification-plan)
 The account token needs Account Settings Read, Workers Scripts Write and
 Cloudflare Tunnel Write on that account. Grant Zone Read and DNS Write only
 for the selected zone. Leave the dedicated hostname unoccupied.
@@ -39,8 +43,9 @@ proposed change outside this branch. It requires a breaking-change Product
 Updates disposition and an upgrade note showing how to replace port mappings
 with `ports: !override`.
 
-Use Enable to create and verify the tunnel, ingress and proxied CNAME before
-running the existing signed Worker canary. If a connector is lost, Reconcile
+Activation saves consent and policy and queues one Enable job. That job
+creates and verifies the tunnel, ingress and proxied CNAME, checks for a
+live connector, then runs the signed Worker canary. If a connector is lost, Reconcile
 closes admission when it observes the loss. A transient Cloudflare REST
 outage leaves admission as observed before the failed reconcile. On ingress
 drift, Reconcile closes admission before reasserting the approved config on
@@ -75,7 +80,8 @@ and Kubernetes installations. Start with read-only entitlement and grant
 checks. Use the same packaged release and pinned cloudflared build in both
 layouts. Record only sanitized resource receipts and job outcomes.
 
-1. Enable Managed Tunnel. Independently verify exact account, zone, tunnel
+1. Preflight and activate Managed Tunnel once. Poll the returned Enable
+   job. Independently verify exact account, zone, tunnel
    ID, CNAME and connector sessions. Exercise a signed hello, scoped SDK call
    and terminal receipt. Probe login, OpenAPI, wrong Host, wrong method,
    normalized path escapes and unsigned WebSocket hello for refusal.

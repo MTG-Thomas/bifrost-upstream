@@ -879,8 +879,8 @@ class HostedUpgrade(Rehearsal):
         try:
             self.seed_upgrade()
             self.review_activation("existing")
-            self.preflight()
             self.enable()
+            self.preflight()
             self.sample_spend(settled=True)
             if time.time() - self.cfg["started"] < 1200 and max(self.spending["connect_enable"].values()) < Decimal("3.60"):
                 self.phase = "upgrade"
@@ -918,9 +918,9 @@ def main():
     if args.upgrade_only:
         trial.seed_upgrade()
         trial.review_activation("existing")
-        trial.preflight()
         trial.enable()
         try:
+            trial.preflight()
             trial.upgrade(replay=False)
             trial.scale_in()
             trial.meter()
@@ -933,8 +933,8 @@ def main():
     trial.seed()
     if not args.managed_only:
         trial.review_activation("existing")
-        trial.preflight()
         trial.enable()
+        trial.preflight()
         trial.primary_hold()
         trial.latency()
         trial.burst()
@@ -946,7 +946,7 @@ def main():
         evidence("reconcile-and-scale-in", {"active_drain": True, "scripts_retained": 3})
         trial.disconnect()
     tunnel, dns = trial.managed()
-    trial.upgrade(replay=False)
+    trial.upgrade(replay=args.managed_only)
     trial.scale_in()
     try:
         trial.meter()

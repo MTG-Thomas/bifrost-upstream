@@ -178,8 +178,11 @@ connections to the successor API after observing the persisted admission
 fence. Each established socket keeps its original upstream until close.
 Use the private operator configuration with `--hosted-upgrade-config`.
 
-1. Verify both pins. Review activation, run the worker ingress preflight,
-   and activate once. Require the Enable job's signed canary. Submit one approved, bounded no-effect workflow on
+1. Verify both pins. Stage the credential and review the read-only activation
+   preflight, then confirm consent and activate once. Require the ingress
+   probe and signed canary in the returned Enable job. Run the standalone
+   worker probe after Enable, when the dedicated listener is available.
+   Submit one approved, bounded no-effect workflow on
    the old revision. Retain the sent fence, launcher and original claim.
 2. Stage the successor while the old API continues to serve its socket.
    Trigger Upgrade and observe admission closed while the saved claim
