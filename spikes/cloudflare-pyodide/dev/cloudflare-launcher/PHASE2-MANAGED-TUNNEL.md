@@ -145,3 +145,12 @@ unqualified on hosted. The Existing HTTPS tunnel had a deletion
 tombstone with zero live sessions.
 
 See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-latency-reuse.json).
+
+### Combined Hosted Run at `db39a3698`
+
+The Existing HTTPS Enable ownership gate stopped the run before the
+Managed Tunnel leg. This run produced no hosted warp-routing echo,
+route-list grant, or rotation evidence. The Existing HTTPS tunnel was
+retired, with a deletion tombstone and zero sessions.
+
+See the [sanitized ownership-stop receipt](../../results/cloudflare-scaleout-combined-hosted-ownership-stop.json).
