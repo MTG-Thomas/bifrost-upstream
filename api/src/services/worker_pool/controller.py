@@ -65,6 +65,7 @@ from src.services.memory_requests import (
     workflow_request_sql,
 )
 from src.services.pool_cadence import (
+    CLOUDFLARE_WORKERS_LAUNCH_AGE_SECONDS,
     POOL_RECONCILE_SPACING_SECONDS,
     POOL_RECONCILE_SWEEP_SECONDS,
 )
@@ -483,6 +484,11 @@ class WorkerCapacityController(ABC):
             if not cloudflare and not self.containers_mode:
                 await _publish_launchable(confirmed_largest, generation)
 
+            launch_cutoff = None
+            if managed_scope is not None:
+                database_now = await db.scalar(select(func.clock_timestamp()))
+                assert database_now is not None
+                launch_cutoff = database_now - timedelta(seconds=CLOUDFLARE_WORKERS_LAUNCH_AGE_SECONDS)
             waiting_requests = [
                 Request(
                     row.id, row.memory_request_bytes, row.handler, row.handler_version,
@@ -490,7 +496,7 @@ class WorkerCapacityController(ABC):
                     platform_job_type=row.platform_job_type,
                 )
                 for row in waiting
-                if managed_scope is None or row.created_at <= _now() - timedelta(seconds=SWEEP_SECONDS)
+                if launch_cutoff is None or row.created_at <= launch_cutoff
             ]
             requests = {request.id: request for request in waiting_requests}
             free: list[FreeBudget] = []
@@ -684,8 +690,17 @@ class WorkerCapacityController(ABC):
                 ]
                 if launched:
                     if managed_scope is not None and control_root_version is not None:
+                        decision_at = await db.scalar(select(func.clock_timestamp()))
                         await db.flush()
-                        db.add_all(managed_scope.pin(worker_id, control_root_version) for worker_id in launched)
+                        reserved_at = await db.scalar(select(func.clock_timestamp()))
+                        assert decision_at is not None and reserved_at is not None
+                        for worker_id in launched:
+                            pin = managed_scope.pin(worker_id, control_root_version)
+                            pin.launch_timing = {
+                                "controller_decision_at": decision_at.isoformat(),
+                                "launcher_reserved_at": reserved_at.isoformat(),
+                            }
+                            db.add(pin)
                     await db.commit()
                 return launched
             # Fast Path capacity is a fixed exclusive reservation, not an

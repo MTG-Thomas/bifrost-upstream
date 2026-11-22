@@ -50,6 +50,7 @@ class Execution(Base):
     result_type: Mapped[str | None] = mapped_column(String(50), default=None)
     variables: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     execution_context: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    cloudflare_timing: Mapped[dict[str, str] | None] = mapped_column(JSONB(none_as_null=True))
     error_message: Mapped[str | None] = mapped_column(Text, default=None)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)

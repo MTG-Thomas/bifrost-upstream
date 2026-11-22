@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
@@ -74,6 +74,7 @@ class PoolClaim:
     tenant_id: UUID | None = None
     workflow_slot: WorkflowSlotTicket | None = None
     queue_preparations: tuple[QueuePreparation, ...] = ()
+    cloudflare_claim_committed_at: datetime | None = None
 
 
 def _now() -> datetime:
@@ -558,6 +559,8 @@ async def claim_next(
         if reserved and claim is not None and release_reservation is not None:
             release_reservation(claim)
         raise
+    if claim is not None and claim.workflow_slot is not None:
+        claim = replace(claim, cloudflare_claim_committed_at=_now())
     return claim
 
 

@@ -5,11 +5,11 @@ import logging
 import os
 import time
 from contextlib import suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from shared.models import CloudflareCapacityPolicy
-from sqlalchemy import and_, select
+from sqlalchemy import and_, func, select
 
 from src.config import Settings
 from src.core.database import get_db_context
@@ -22,9 +22,11 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareCredential,
     CloudflareInstallation,
 )
+from src.models.orm.work_dispatches import WorkDispatch
 from src.scheduler.leadership import SchedulerLeadershipLease
 from src.services.kubernetes_control import may_manage_jobs
 from src.services.kubernetes_execution import load_kubernetes_policy
+from src.services.pool_cadence import CLOUDFLARE_WORKERS_LAUNCH_AGE_SECONDS
 from src.services.work_dispatch import (
     WAKE_CLOUDFLARE_CAPACITY,
     WAKE_WORKFLOW,
@@ -50,6 +52,7 @@ from src.services.worker_pool.controller import (
     SWEEP_SECONDS,
     _withdraw_live,
 )
+from src.services.worker_pool.eligibility import cloudflare_dispatch_sql
 from src.services.worker_pool.external_client import (
     CapacityProtocolError,
     ExternalCapacityClient,
@@ -62,6 +65,32 @@ from src.worker.remote.protocol import (
 )
 
 logger = logging.getLogger(__name__)
+
+LAUNCH_AGE = timedelta(seconds=CLOUDFLARE_WORKERS_LAUNCH_AGE_SECONDS)
+
+
+async def _next_launch_age(since: float) -> tuple[datetime, float] | None:
+    """Find the first compatible dispatch whose age could change this pass."""
+    elapsed = timedelta(seconds=max(0.0, time.monotonic() - since))
+    async with get_db_context() as db:
+        queued = select(func.min(WorkDispatch.created_at)).where(
+            cloudflare_dispatch_sql(),
+            WorkDispatch.assigned_worker_id.is_(None),
+            WorkDispatch.created_at > func.now() - (elapsed + LAUNCH_AGE),
+        ).scalar_subquery()
+        database_now, queued_at = (await db.execute(select(func.now(), queued))).one()
+    if queued_at is None:
+        return None
+    deadline = queued_at + LAUNCH_AGE
+    return deadline, (deadline - database_now).total_seconds()
+
+
+def _schedule_launch_wake(wake: asyncio.Event, delay: float) -> asyncio.TimerHandle:
+    # Feed the same coalescing event as the Redis workflow and capacity hints.
+    # The next pass still observes spacing and rechecks admission and demand.
+    loop = asyncio.get_running_loop()
+    # asyncio timers may run up to one clock-resolution tick early.
+    return loop.call_later(max(0.0, delay) + time.get_clock_info("monotonic").resolution, wake.set)
 
 
 async def _primary_pool(
@@ -182,6 +211,8 @@ async def cloudflare_supervisor_loop(
         listener = asyncio.create_task(listen_for_pool_wake(
             settings.redis_url, {WAKE_CLOUDFLARE_CAPACITY: wake, WAKE_WORKFLOW: wake},
         ))
+        age_deadline = None
+        age_wake = None
         try:
             while not stop_event.is_set() and lease.holds_lease():
                 started = time.monotonic()
@@ -219,8 +250,25 @@ async def cloudflare_supervisor_loop(
                                 await prune_spend_receipt_keys(db)
                         except Exception:
                             logger.warning("Could not prune Cloudflare spend history", exc_info=True)
+                age = None
+                try:
+                    if lease.holds_lease() and any(c.burst_launch_allowed for c in controllers.values()):
+                        async with asyncio.timeout(lease.seconds_remaining()):
+                            age = await _next_launch_age(started)
+                    # An ordinary wake can run a pass before the deadline.
+                    # Keep the existing timer armed when the same row is due.
+                    deadline = age[0] if age is not None else None
+                    if deadline != age_deadline:
+                        if age_wake is not None:
+                            age_wake.cancel()
+                        age_wake = _schedule_launch_wake(wake, age[1]) if age is not None else None
+                        age_deadline = deadline
+                except Exception:
+                    logger.warning("Could not schedule Cloudflare launch-age wake", exc_info=True)
                 await wait_for_next_pass(stop_event, wake, since=started, spacing=RECONCILE_SECONDS, sweep=SWEEP_SECONDS)
         finally:
+            if age_wake is not None:
+                age_wake.cancel()
             listener.cancel()
             with suppress(asyncio.CancelledError):
                 await listener

@@ -99,10 +99,12 @@ async def test_cloudflare_claim_starts_preparation_without_waiting_for_reply() -
         assert sent.is_set()
         started.set()
 
+    queued_at = datetime.now(UTC)
     claim = PoolClaim(
-        lease.launcher_id, "workflow.execute", {}, lease.worker_id, 1, datetime.now(UTC),
+        lease.launcher_id, "workflow.execute", {}, lease.worker_id, 1, queued_at,
         claimed={}, cloudflare_revision="approved", tenant_id=lease.owner_id,
         workflow_slot=WorkflowSlotTicket(2, lease.launcher_id, prewarming=True),
+        cloudflare_claim_committed_at=queued_at,
     )
     with patch.object(bridge, "request", request), patch.object(worker, "_run_claim", run):
         worker._start(claim)
@@ -113,6 +115,9 @@ async def test_cloudflare_claim_starts_preparation_without_waiting_for_reply() -
         finally:
             finish.set()
             await asyncio.gather(*preparations)
+    assert bridge.take_workflow_timing(claim.workflow_slot.workflow_route(claim.subject_id)) == {
+        "queued_at": queued_at, "gate_eligible_at": queued_at + timedelta(seconds=2), "claim_at": queued_at,
+    }
 
 
 async def test_preparation_reservation_leaves_the_control_send_lock_free() -> None:
@@ -149,6 +154,37 @@ async def test_preparation_reservation_leaves_the_control_send_lock_free() -> No
             finish.set()
             await task
     assert sent == ["ready", "prepare_workflow"]
+
+
+async def test_managed_workflow_retains_send_and_session_stamps_on_its_route() -> None:
+    lease = replace(LEASE, declared_slots=1)
+    socket = Mock()
+    bridge = Bridge(socket, {
+        "hostname": "opaque", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE, "managed_cloudflare": True,
+    }, lease)
+
+    async def send(frame):
+        command = json.loads(frame)["payload"]
+        await bridge.receive({"reply": command["id"], "result": {}})
+
+    socket.send_text = send
+    execution_id = str(lease.worker_id)
+    route_id = f"workflow:{execution_id}:{lease.launcher_id}"
+    with patch.object(bridge, "_reserve_cloudflare_usage", AsyncMock()):
+        await bridge.reconciliation_complete()
+        await bridge.request("prepare_workflow", {
+            "route_id": f"prepare:{lease.launcher_id}", "execution_id": execution_id, "org_id": None,
+        })
+        await bridge.request("workflow", {
+            "route_id": route_id, "execution_id": execution_id, "engine_slot": 0, "active_execution": {},
+            "context": {"cloudflare_workspace": {"cpu_budget_ms": 1, "subrequest_allowance": 1}},
+        })
+
+    stages = bridge.take_workflow_timing(route_id)
+    assert set(stages) == {"session_ready_at", "prepare_sent_at", "dispatch_sent_at"}
+    assert stages["session_ready_at"] <= stages["prepare_sent_at"] <= stages["dispatch_sent_at"]
+    assert bridge.take_workflow_timing(route_id) == {}
+    assert not bridge.results
 
 
 async def test_preparation_lock_timeout_preserves_session_with_a_queued_waiter() -> None:
