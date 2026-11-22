@@ -32,6 +32,10 @@ vi.mock("@/services/platformJobs", () => ({
 vi.mock("@/services/websocket", () => ({
 	webSocketService: { onPlatformJobUpdate: mocks.subscribe, onAnyPlatformJobUpdate: () => vi.fn(), onConnectionStatusChange: mocks.connection },
 }));
+// The approvals section has its own tests; keep this page test focused on capacity behaviour.
+vi.mock("@/components/workflows/CloudflareWorkflowApprovals", () => ({
+	CloudflareWorkflowApprovals: () => null,
+}));
 
 import { CloudflareCapacity } from "./CloudflareCapacity";
 
