@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
-import { forwardContainerHttp, relayControlSockets, ScopeRegistry } from "./container-registry.mjs";
+import { ContainerInstanceLifecycle, forwardContainerHttp, relayControlSockets, ScopeRegistry } from "./container-registry.mjs";
 
 const policy = JSON.parse(readFileSync(new URL("../../../api/src/services/worker_ingress_routes.json", import.meta.url)));
 
@@ -148,6 +148,70 @@ test("an expired unstarted seat is voided after a reset and can never start", (t
     assert.equal(registry().voidUnstarted(next, instance, next.startDeadline).status, "conflict");
     assert.equal(registry().voidUnstarted(missing, "d".repeat(64), missing.startDeadline).status, "void");
     assert.equal(registry().reserve(missing).status, "retired");
+});
+
+test("the instance lifecycle pins the intercept and launch options, then stops at the durable deadline", async (t) => {
+    const { db, registry, pin } = fixture(1);
+    t.after(() => db.close());
+    t.mock.timers.enable({ apis: ["Date"], now: 100 });
+    const slot = pin();
+    const actor = "b".repeat(64);
+    const stored = new Map();
+    const events = [];
+    const intercepted = {};
+    const origin = "https://ingress.example.test";
+    const image = `registry.cloudflare.com/${"a".repeat(32)}/bifrost-${slot.installation.replaceAll("-", "")}-r2@${slot.image}`;
+    const container = {
+        running: false,
+        async interceptOutboundHttps(host, binding) {
+            assert.equal(host, "ingress.example.test");
+            assert.equal(binding, intercepted);
+            events.push("intercept");
+        },
+        start(options) {
+            assert.equal(options.image, image);
+            assert.equal(options.enableInternet, false);
+            assert.equal(options.env.BIFROST_API_URL, origin);
+            assert.equal(options.env.BIFROST_WORKER_CONTROL_SECRET, "f".repeat(64));
+            assert.equal(options.env.BIFROST_WORKER_RESOURCE_UID, slot.uid);
+            assert.equal(options.env.BIFROST_CONTAINER_PROBE_NONCE, "n".repeat(43));
+            assert.equal(options.env.BIFROST_SECRET_KEY, undefined);
+            assert.equal(options.env.BIFROST_DATABASE_URL, undefined);
+            assert.equal(stored.get("deadline"), slot.deadline);
+            assert.equal(db.prepare("SELECT instance FROM start_fences WHERE uid = ?").get(slot.uid).instance, actor);
+            this.running = true;
+            events.push("start");
+        },
+        async setInactivityTimeout(ms) {
+            assert.equal(ms, 120_000);
+            events.push("idle");
+        },
+        async destroy() {
+            assert.equal(this.running, true);
+            this.running = false;
+            events.push("destroy");
+        },
+    };
+    const ctx = {
+        container, id: actor, blockConcurrencyWhile: async (action) => action(),
+        storage: {
+            get: async (key) => stored.get(key), put: async (key, value) => stored.set(key, value),
+            setAlarm: async (when) => stored.set("deadline", when),
+        },
+    };
+    const controller = () => new ContainerInstanceLifecycle(ctx, registry(), {
+        origin, image, release: "c".repeat(64), intercept: intercepted,
+    });
+    assert.deepEqual(await controller().start(slot, "f".repeat(64), "n".repeat(43)), { status: "pending" });
+    assert.deepEqual(await controller().start(slot, "f".repeat(64), "n".repeat(43)), { status: "pending" });
+    assert.equal(JSON.stringify([...stored]).includes("f".repeat(64)), false);
+    assert.deepEqual(await controller().stop(pin().uid), { status: "conflict" });
+    await controller().restore();
+    t.mock.timers.setTime(slot.deadline);
+    await controller().alarm();
+    assert.deepEqual(await controller().stop(slot.uid), { status: "pending" });
+    assert.deepEqual(events, ["intercept", "start", "idle", "idle", "destroy"]);
+    assert.equal(registry().closeStart(slot.uid, actor, Date.now()).status, "pending");
 });
 
 test("the control relay preserves fragments and fences both directions across reconnects", (t) => {

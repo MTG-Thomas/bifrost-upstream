@@ -225,6 +225,93 @@ export class ScopeRegistry {
     }
 }
 
+// The per-incarnation Durable Object calls this before it exposes a control
+// endpoint. The registry may be a remote DO stub. A running bit or the
+// return from start/destroy never substitutes for independent inventory.
+export class ContainerInstanceLifecycle {
+    constructor(ctx, registry, { origin, image, release, intercept, idleSeconds = 120 }) {
+        const target = new URL(origin);
+        if (origin !== target.origin || target.protocol !== "https:" || target.port
+            || !/^registry\.cloudflare\.com\/[a-f0-9]{32}\/bifrost-[a-f0-9]{32}-r[1-9]\d*@sha256:[a-f0-9]{64}$/.test(image)
+            || !/^[a-f0-9]{64}$/.test(release)
+            || !Number.isSafeInteger(idleSeconds) || idleSeconds < 1 || idleSeconds > 120
+            || !ctx.container || !intercept) {
+            throw new Error("Container lifecycle deployment is not pinned");
+        }
+        this.ctx = ctx;
+        this.registry = registry;
+        this.origin = origin;
+        this.image = image;
+        this.release = release;
+        this.intercept = intercept;
+        this.idleMs = idleSeconds * 1000;
+        this.instance = ctx.id.toString();
+    }
+
+    async restore() {
+        return this.ctx.blockConcurrencyWhile(async () => {
+            const ticket = await this.ctx.storage.get("start-ticket");
+            if (!ticket || !this.ctx.container.running) return;
+            if (Date.now() >= ticket.deadline) await this.#destroy(ticket);
+            else await this.ctx.container.setInactivityTimeout(this.idleMs);
+        });
+    }
+
+    async start(pin, controlKey, probeNonce = null) {
+        if (!/^[a-f0-9]{64}$/.test(controlKey) || !UUID.test(pin.installation)
+            || !this.image.endsWith(`/bifrost-${pin.installation.replaceAll("-", "")}-r${pin.revision}@${pin.image}`)
+            || (probeNonce !== null && !/^[A-Za-z0-9_-]{43}$/.test(probeNonce))) {
+            return { status: "invalid" };
+        }
+        return this.ctx.blockConcurrencyWhile(async () => {
+            const prepared = await this.registry.reserve(pin);
+            if (prepared.status !== "reserved") return prepared;
+            const ticket = await this.ctx.storage.get("start-ticket");
+            if (ticket && (ticket.uid !== pin.uid || ticket.deadline !== pin.deadline)) return { status: "conflict" };
+            if (ticket?.destroyed) return { status: "closed" };
+            if (!ticket && this.ctx.container.running) return { status: "conflict" };
+            if (!ticket) {
+                // Install the exact HTTPS intercept before crossing the launch fence.
+                await this.ctx.container.interceptOutboundHttps(new URL(this.origin).hostname, this.intercept);
+                await this.ctx.storage.setAlarm(pin.deadline);
+                await this.ctx.storage.put("start-ticket", { uid: pin.uid, deadline: pin.deadline });
+            }
+            const authority = await this.registry.authorizeStart(pin.uid, this.instance, Date.now(), pin.deadline);
+            if (authority.status !== "authorized") return authority;
+            if (Date.now() >= pin.startDeadline) return { status: "pending" };
+            const env = {
+                BIFROST_WORKER_FORM: "external", BIFROST_WORKER_INCARNATION_ID: pin.worker,
+                BIFROST_WORKER_RESOURCE_UID: pin.uid, BIFROST_WORKER_CONTROL_SECRET: controlKey,
+                BIFROST_CONTAINER_RELEASE: this.release, BIFROST_API_URL: this.origin, HOSTNAME: `bifrost-${pin.uid}`,
+            };
+            if (probeNonce !== null) env.BIFROST_CONTAINER_PROBE_NONCE = probeNonce;
+            this.ctx.container.start({ image: this.image, env, enableInternet: false });
+            await this.ctx.container.setInactivityTimeout(this.idleMs);
+            return { status: "pending" };
+        });
+    }
+
+    async stop(uid) {
+        return this.ctx.blockConcurrencyWhile(async () => {
+            const ticket = await this.ctx.storage.get("start-ticket");
+            if (!ticket || ticket.uid !== uid) return { status: "conflict" };
+            await this.#destroy(ticket);
+            return { status: "pending" };
+        });
+    }
+
+    async #destroy(ticket) {
+        if (ticket.destroyed) return;
+        await this.ctx.container.destroy();
+        await this.ctx.storage.put("start-ticket", { ...ticket, destroyed: true });
+    }
+
+    async alarm() {
+        const ticket = await this.ctx.storage.get("start-ticket");
+        if (ticket && Date.now() >= ticket.deadline) await this.stop(ticket.uid);
+    }
+}
+
 // The outbound interceptor must validate the origin, Host and upgrade before
 // opening these sockets. Keep protocol fragments intact and charge each one
 // across reconnects before forwarding it. Settlement can use this meter only
