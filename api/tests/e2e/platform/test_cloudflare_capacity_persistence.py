@@ -5611,13 +5611,16 @@ async def test_status_explains_placement_over_rest(
 
 @pytest.mark.asyncio
 async def test_status_uses_scoped_runs_and_deployed_controller_observation(db_session, installation, monkeypatch):
-    owner = User(email="gap5-status-fixture@example.test")
+    org = Organization(name="Gap 5 Status Fixture", created_by="test")
+    db_session.add(org)
+    await db_session.flush()
+    owner = User(email="gap5-status-fixture@example.test", organization_id=org.id)
     db_session.add(owner)
     await db_session.flush()
     role = RoleGrant(uuid4(), frozenset({"platform.read"}), (Boundary(BoundaryKind.PLATFORM),))
     caller = Caller(
-        UserPrincipal(owner.id, owner.email, None),
-        AuthorizationContext(owner.id, None, uuid4(), False, frozenset(), (role,)),
+        UserPrincipal(owner.id, owner.email, org.id),
+        AuthorizationContext(owner.id, org.id, uuid4(), False, frozenset(), (role,)),
     )
     monkeypatch.setattr(cloudflare_policy, "installed_workers_release_digest", lambda: installation.policy["bounds_release"])
     now = await db_session.scalar(select(func.statement_timestamp()))
@@ -5643,7 +5646,7 @@ async def test_status_uses_scoped_runs_and_deployed_controller_observation(db_se
     for executed_by in (owner.id, None):
         for state in ("queued", "claimed", "running"):
             run = Execution(
-                workflow_name="fixture", executed_by=executed_by, executed_by_name="fixture",
+                workflow_name="fixture", executed_by=executed_by, executed_by_name="fixture", organization_id=org.id,
                 status=ExecutionStatus.RUNNING if state == "running" else ExecutionStatus.PENDING,
                 started_at=now if state == "running" else None,
             )
@@ -5673,9 +5676,10 @@ async def test_status_splits_only_identifiable_resource_reservations(db_session,
     now = await db_session.scalar(select(func.statement_timestamp()))
     assert now is not None
     period, _ = usage_period(now)
+    live = CloudflareUsageIncarnation(worker_id=uuid4(), installation_id=installation.id,
+                                     started_at=now - timedelta(minutes=2), slots=1)
     db_session.add_all([
-        CloudflareUsageIncarnation(worker_id=uuid4(), installation_id=installation.id,
-                                   started_at=now - timedelta(minutes=2), slots=1),
+        live,
         CloudflareUsageIncarnation(worker_id=uuid4(), installation_id=installation.id,
                                    started_at=now - timedelta(minutes=2), deleted_at=now, slots=1),
         CloudflareUsageActivity(installation_id=installation.id, period_start=period, dispatched_runs=10),
@@ -5692,6 +5696,11 @@ async def test_status_splits_only_identifiable_resource_reservations(db_session,
     assert spend.reserved_usd == pytest.approx(outstanding, rel=Decimal("0.01"))
     assert spend.settled_usd > 0
     assert spend.estimated_usd == (spend.settled_usd + spend.reserved_usd).quantize(Decimal("0.01"))
+    live.deleted_at = now
+    await db_session.flush()
+    assert await db_session.scalar(select(cloudflare_spend.cloudflare_unsettled_resource_usage()).where(
+        CloudflareInstallation.id == installation.id,
+    )) == Decimal(0)
 
 
 @pytest.mark.asyncio

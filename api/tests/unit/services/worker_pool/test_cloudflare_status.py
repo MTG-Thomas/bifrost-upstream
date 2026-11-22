@@ -90,7 +90,7 @@ def test_five_queued_workflows_fit_only_one_primary_slot():
 def test_primary_coverage_respects_held_memory_and_handler_slots():
     from src.worker.remote.protocol import HANDLER_CONCURRENCY_LIMITS
 
-    limited, limit = next(iter(HANDLER_CONCURRENCY_LIMITS.items()))
+    limited, limit = HANDLER_CONCURRENCY_LIMITS[0]
     held = Request(uuid4(), 30, limited)
     blocked = Request(uuid4(), 30, limited)
     fits = Request(uuid4(), 60, "workflow.execute")
@@ -108,3 +108,19 @@ def test_primary_coverage_respects_held_memory_and_handler_slots():
         now=NOW, gate_seconds=2, approvals=1, blockers=[],
     )
     assert [item.code for item in reasons] == ["primary_has_capacity", "waiting_for_launch_gate"]
+
+
+@pytest.mark.parametrize(("cause", "code", "remedy_text"), [
+    ("below_ceiling", "primary_has_capacity", "can add workers"),
+    ("unhealthy", "primary_capacity_unverified", "reporting heartbeats"),
+    ("profile_mismatch", "primary_capacity_unverified", "runtime profile"),
+    ("not_admitting", "primary_capacity_unverified", "admission blockers"),
+    ("unreachable", "primary_capacity_unverified", "controller connectivity"),
+])
+def test_primary_observation_cause_explains_the_remainder(cause, code, remedy_text):
+    result, = lane_reasons(
+        PlacementObservation(queued=1, aged_demand=1, primary_cause=cause),
+        now=NOW, gate_seconds=2, approvals=1, blockers=[],
+    )
+    assert result.code == code
+    assert remedy_text in result.remedy
