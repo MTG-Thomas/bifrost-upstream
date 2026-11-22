@@ -1957,6 +1957,8 @@ class RemoteControlHost:
                         )
             hello = verify_hello(control_key, signed)
             admit_ingress = socket.scope.get("worker_ingress_authenticate")
+            if hello.container_release is not None and admit_ingress is None:
+                raise AuthenticationError("Managed Container control requires dedicated worker ingress")
             if admit_ingress is not None and not admit_ingress(hello.incarnation_id):
                 raise AuthenticationError("Worker ingress incarnation quota exceeded")
             if "runtime_profile" in initial:

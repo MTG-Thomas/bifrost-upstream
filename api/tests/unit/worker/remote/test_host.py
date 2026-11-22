@@ -479,7 +479,7 @@ async def test_containers_hello_uses_only_the_reserved_scope_key(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["bound", "legacy-key", "changed-release", "unknown-reservation"])
+@pytest.mark.parametrize("mode", ["bound", "legacy-key", "changed-release", "unknown-reservation", "public-ingress"])
 async def test_managed_linux_hello_is_bound_to_its_incarnation_key_and_release(mode) -> None:
     release, derived, platform = "a" * 64, "derived-incarnation-key", "platform-key"
     hello = Hello(
@@ -491,7 +491,8 @@ async def test_managed_linux_hello_is_bound_to_its_incarnation_key_and_release(m
     signed = sign_hello(platform if mode == "legacy-key" else derived, hello).to_dict()
     if mode == "changed-release":
         signed["container_release"] = "b" * 64
-    socket = AsyncMock(scope={})
+    scope = {} if mode == "public-ingress" else {"worker_ingress_authenticate": Mock(return_value=True)}
+    socket = AsyncMock(scope=scope)
     socket.receive_text.return_value = json.dumps({
         "event": "hello", "hello": signed, "sample": {"current": 1, "limit": 100},
         "version": "test-build", "credential_protocol": 2, "handlers": [["workflow.execute", 1]],
