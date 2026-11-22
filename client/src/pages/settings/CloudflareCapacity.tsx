@@ -528,9 +528,9 @@ export function CloudflareCapacity() {
 		|| (ownJob?.action === "disconnect" && job?.status === "succeeded" && data?.installation === null));
 
 	useEffect(() => {
-		if (disconnected && ownJob?.action === "disconnect") setupRef.current?.focus();
+		if (disconnected && localAction?.action === "disconnect") setupRef.current?.focus();
 		else if (ownJob) jobStatusRef.current?.focus();
-	}, [disconnected, ownJob, jobRefused]);
+	}, [disconnected, localAction, ownJob, jobRefused]);
 
 	const jobAnnouncements: Partial<Record<PlatformJob["status"], string>> = {
 		queued: "The Cloudflare job is queued.",
@@ -539,7 +539,7 @@ export function CloudflareCapacity() {
 		cancelled: "The Cloudflare job was cancelled.",
 		requires_action: "The Cloudflare job needs your attention.",
 	};
-	const jobAnnouncement = readbackFailure === jobId ? "Could not read the Cloudflare job status."
+	const jobAnnouncement = readbackFailure && readbackFailure === jobId ? "Could not read the Cloudflare job status."
 			: job && ((terminal.has(job.status) ? job.error?.message : undefined) ?? jobAnnouncements[job.status]);
 
 	function finishConfiguration(next: CloudflareCapacityStatus) {
@@ -680,6 +680,7 @@ export function CloudflareCapacity() {
 								<>
 									<div><dt>Last Verified Ingress Probe</dt><dd>{timestamp(data.deployment.ingress_verified_at)}</dd></div>
 									<div><dt>Last Signed Canary</dt><dd>{timestamp(data.deployment.signed_canary_at)}</dd></div>
+									{data.deployment.revision != null && <div><dt>Ingress and Canary Evidence Revision</dt><dd>{data.deployment.revision}</dd></div>}
 									{installation.reachability_mode === "managed_tunnel" && (
 										<>
 											<div><dt>Last Verified DNS</dt><dd>{timestamp(data.deployment.dns_verified_at)}</dd></div>

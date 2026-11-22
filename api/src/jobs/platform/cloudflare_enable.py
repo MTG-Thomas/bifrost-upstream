@@ -377,19 +377,6 @@ async def _settle_enable(
         return await run_workers_canary(context, payload.installation_id, payload.revision, origin, client, deployment)
 
     ingress = await probe_worker_ingress(installation, runtime_canary=canary)
-    if ingress.reachable or (ingress.runtime_canary is not None and ingress.runtime_canary.signed_hello):
-        async with get_db_context() as db:
-            row = await _locked_current(db, context, payload)
-            if row is None:
-                return {"outcome": "superseded"}
-            observed_at = datetime.now(UTC).isoformat()
-            previous = row.deployment_evidence or {}
-            row.deployment_evidence = {
-                **previous,
-                "revision": payload.revision,
-                "ingress_verified_at": observed_at if ingress.reachable else None,
-                "signed_canary_at": observed_at if ingress.runtime_canary and ingress.runtime_canary.signed_hello else None,
-            }
     if not ingress.ready:
         failure = ingress.failure
         abbreviations = {"ack", "dns", "http", "sdk", "tls"}
@@ -419,6 +406,13 @@ async def _settle_enable(
                 await _inventory_snapshot(db, row.id, revision=payload.revision),
             )
         await _require_budget(db, row)
+        observed_at = datetime.now(UTC).isoformat()
+        row.deployment_evidence = {
+            **(row.deployment_evidence or {}),
+            "revision": payload.revision,
+            "ingress_verified_at": observed_at,
+            "signed_canary_at": observed_at,
+        }
         row.admitted_revision = payload.revision
         row.deployed_revision = payload.revision
         floor = workers_release_floor(row)

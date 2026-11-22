@@ -18,7 +18,8 @@ import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from alembic.script import ScriptDirectory
-from fastapi import HTTPException, Response
+from fastapi import FastAPI, HTTPException, Response
+from fastapi.responses import JSONResponse
 from pydantic import SecretStr
 from scripts.test_cloudflare_fixture import _release, block_cloudflare_network
 from shared.models import (
@@ -33,6 +34,8 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from src.config import Settings
+from src.core.auth import get_current_active_user
+from src.core.db_deps import get_db
 from src.core.principal import UserPrincipal
 from src.jobs.platform import cloudflare_capacity as lifecycle_job
 from src.jobs.platform import cloudflare_enable as enable_job
@@ -71,6 +74,7 @@ from src.services.authorization.context import (
     RoleGrant,
 )
 from src.services.authorization.enforce import Caller
+from src.services.execution import cloudflare_approval
 from src.services.execution.workflow_dispatch import release_workflow_run
 from src.services.kubernetes_execution import KubernetesExecutionService
 from src.services.work_dispatch import WAKE_WORKFLOW, stage_dispatch
@@ -82,6 +86,7 @@ from src.services.worker_pool import (
     cloudflare_connector_channel,
     cloudflare_policy,
     cloudflare_spend,
+    cloudflare_status,
     cloudflare_supervisor,
     cloudflare_tunnel,
     controller,
@@ -90,6 +95,7 @@ from src.services.worker_pool import (
 from src.services.worker_pool.claims import claim_next
 from src.services.worker_pool.cloudflare_admission import (
     ManagedCloudflareScope,
+    PrimaryPool,
     cloudflare_claim_allowed,
     cloudflare_dispatch_started_at,
 )
@@ -5481,10 +5487,88 @@ async def test_preset_b_policy_api_uses_the_qualified_fleet_price(
         return await capacity_routes.configure_cloudflare_capacity(request, db_session, object())
 
     refusal = await save("32.12", 1)
-    assert refusal.status_code == 422
+    assert isinstance(refusal, JSONResponse) and refusal.status_code == 422
     assert json.loads(refusal.body)["details"]["fleet_envelope_usd"] == "32.13"
     for limit, revision in (("32.13", 1), ("75.00", 2)):
         status = await save(limit, revision)
+        assert not isinstance(status, JSONResponse)
         assert status.installation is not None
         assert status.installation.policy.monthly_limit_usd == Decimal(limit)
         assert status.installation.fleet_envelope_usd == Decimal("32.13")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", [
+    "setup_required", "workflow_review_required", "waiting_for_demand", "primary_has_capacity",
+    "primary_capacity_unverified", "waiting_for_launch_gate", "tenant_limit_reached", "installation_slots_full",
+    "spend_guard_closed", "cleanup_pending", "cloudflare_capacity_unavailable", "release_mismatch",
+    "connector_unavailable", "eligible_for_overflow",
+])
+async def test_status_explains_placement_over_rest(
+    db_session, installation, lifecycle_audit_actor, monkeypatch, code,
+):
+    caller = _platform_operator()
+    monkeypatch.setattr(capacity_routes, "load_caller", AsyncMock(return_value=caller))
+    monkeypatch.setattr(cloudflare_approval, "current_visible_approval_count", AsyncMock(
+        return_value=0 if code == "workflow_review_required" else 1,
+    ))
+    monkeypatch.setattr(cloudflare_policy, "installed_workers_release_digest", lambda: (
+        None if code == "release_mismatch" else installation.policy["bounds_release"]
+    ))
+    as_of = await db_session.scalar(select(func.statement_timestamp()))
+    assert as_of is not None
+    primary = None if code == "primary_capacity_unverified" else PrimaryPool("static")
+    cooldown = as_of + timedelta(seconds=30) if code == "cloudflare_capacity_unavailable" else None
+    monkeypatch.setattr(cloudflare_status, "_controller_observation", AsyncMock(return_value=(primary, cooldown)))
+    if code != "setup_required":
+        installation.desired_state = "enabled"
+        installation.admitted_revision = installation.desired_revision
+    if code == "spend_guard_closed":
+        installation.usage_incomplete_until = as_of + timedelta(days=1)
+    if code == "cleanup_pending":
+        installation.drain_required = True
+    if code == "connector_unavailable":
+        installation.reachability_mode = "managed_tunnel"
+        installation.zone_id = "b" * 32
+        installation.deployment_evidence = {"connector_session": "disconnected"}
+
+    queue_codes = {
+        "primary_has_capacity", "primary_capacity_unverified", "waiting_for_launch_gate",
+        "tenant_limit_reached", "installation_slots_full", "eligible_for_overflow",
+    }
+    if code in queue_codes:
+        run = Execution(workflow_name="fixture", executed_by_name="fixture", executed_by=OPERATOR_ID)
+        primary_worker = ExecutionWorker(
+            form="static", state="ready", heartbeat_at=as_of, supported_handlers=["workflow.execute"],
+            memory_budget_bytes=2**28, memory_reserved_bytes=0 if code == "primary_has_capacity" else 2**28,
+        )
+        db_session.add_all((run, primary_worker))
+        await db_session.flush()
+        db_session.add(WorkDispatch(
+            family=WAKE_WORKFLOW, handler="workflow.execute", handler_version=1, subject_id=run.id,
+            message={}, payload={}, cloudflare_revision="c" * 64,
+            created_at=as_of if code == "waiting_for_launch_gate" else as_of - timedelta(minutes=1),
+        ))
+        count = {"tenant_limit_reached": 4, "installation_slots_full": 9}.get(code, 0)
+        db_session.add_all(CloudflareWorkflowSlot(
+            installation_id=installation.id, tenant="platform", ordinal=ordinal, worker_id=primary_worker.id,
+            execution_id=uuid4(), dispatch_id=uuid4(), fence=uuid4(), sent=True,
+        ) for ordinal in range(count))
+    await db_session.flush()
+
+    app = FastAPI()
+    app.include_router(capacity_routes.router)
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[get_current_active_user] = lambda: caller.principal
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as http:
+        response = await http.get("/api/capacity/cloudflare")
+    assert response.status_code == 200
+    snapshot = response.json()
+    assert installation.account_id not in response.text
+    assert installation.worker_ingress_origin not in response.text
+    workers, = snapshot["lanes"]
+    reasons = {item["code"]: item for item in workers["reasons"]}
+    assert reasons[code]["remedy"]
+    assert workers["eligible_queued"] == (1 if code in queue_codes else 0)
+    if code in ("waiting_for_launch_gate", "cloudflare_capacity_unavailable"):
+        assert reasons[code]["next_eligible_at"] is not None

@@ -35,12 +35,16 @@ test("a platform operator enables and reconciles Cloudflare capacity", async ({ 
 	await page.getByRole("button", { name: "Connect Cloudflare" }).click();
 	const connected = await connect;
 	expect(connected.status()).toBe(200);
-	expect(await connected.text()).not.toContain(token);
-	await expect(page.getByText(origin, { exact: true })).toBeVisible();
+	const status = await connected.text();
+	expect(status).not.toContain(token);
+	expect(status).not.toContain(origin);
 	await expect(page.getByText("Ready to Enable", { exact: true })).toBeVisible();
 	await expect(page.getByRole("button", { name: "Enable", exact: true })).toBeFocused();
-	await expect(page.getByText("Estimated Fleet Usage")).toBeVisible();
+	await expect(page.getByText("Fleet Envelope Backstop")).toBeVisible();
 	await expect(page.getByText("Estimated Bifrost Usage This UTC Month")).toBeVisible();
+	await expect(page.getByText("Outstanding Reservations")).toBeVisible();
+	await expect(page.getByText("0 approved workflows.")).toBeVisible();
+	await expect(page.getByText("Waiting for Setup")).toBeVisible();
 	await expect(page.getByText("Workers Paid Subscription (Billed by Cloudflare)")).toBeVisible();
 
 	await page.getByRole("button", { name: "Rotate API Token", exact: true }).click();
@@ -65,7 +69,8 @@ test("a platform operator enables and reconciles Cloudflare capacity", async ({ 
 	expect((await enable).status()).toBe(202);
 	await admitted;
 	await expect(page.getByText("Enabled", { exact: true })).toBeVisible();
-	await expect(page.getByText("Deployed Revision", { exact: true })).toBeVisible();
+	await expect(page.getByText("Observed Deployment Revision", { exact: true })).toBeVisible();
+	await expect(page.getByText("Workflow Review Required", { exact: true })).toBeVisible();
 
 	await expect(page.getByRole("button", { name: "Upgrade Cloudflare" })).toBeDisabled();
 	const reconcile = page.waitForResponse((response) => response.url().endsWith("/api/capacity/cloudflare/reconcile"));
@@ -85,4 +90,8 @@ test("a platform operator enables and reconciles Cloudflare capacity", async ({ 
 	await retired;
 	await expect(page.getByRole("status").filter({ hasText: "Cloudflare was disconnected." })).toBeVisible();
 	await expect(setup).toBeFocused();
+	await page.goto("/settings/ai");
+	await page.getByRole("button", { name: "Capacity", exact: true }).click();
+	await page.getByRole("button", { name: "Scale Out with Cloudflare", exact: true }).click();
+	await expect(page.getByRole("status").filter({ hasText: "Cloudflare was disconnected." })).toBeVisible();
 });

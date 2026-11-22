@@ -470,7 +470,9 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Queue pre-warming is opt-in. Existing clients can omit the cap.
     # Optional Cloudflare Workers activation suggestion.
     # Long-lived launcher receipts can include more routes.
-    "524f4ed1e1e55b49b33b91125fa2e13051dfa9ce792717b5104f2ef8f83abce1"
+    # Capacity CLI status forwards the raw JSON; placement evidence is additive
+    # and provider identifiers are redacted from the status response.
+    "6a00b8b3afc4adfbc0b382b58f5853ce8168d490b7ad9b657e0b236f9c981191"
 )
 
 

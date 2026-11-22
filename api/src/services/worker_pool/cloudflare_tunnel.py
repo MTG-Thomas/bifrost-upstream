@@ -285,6 +285,7 @@ async def connector_ready(db: AsyncSession, row: CloudflareInstallation, client:
     row.deployment_evidence = {
         **(row.deployment_evidence or {}),
         "connector_checked_at": checked_at,
+        "connector_observed_token_version": row.tunnel_token_version,
         "connector_session": (
             "waiting_for_projection" if row.tunnel_token_projected_version != row.tunnel_token_version
             else "connected" if ready else "disconnected"

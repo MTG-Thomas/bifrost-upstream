@@ -139,7 +139,7 @@ def lane_reasons(
     reasons = list(blockers)
     if observation.provider_unavailable:
         reasons.append(reason("cloudflare_capacity_unavailable", observation.cooldown_until))
-    if approvals == 0:
+    if approvals == 0 and observation.queued == 0:
         reasons.append(reason("workflow_review_required"))
     if observation.queued == 0:
         if approvals:
@@ -199,7 +199,8 @@ async def _controller_observation(
 
 
 async def deployment_evidence(db: AsyncSession, installation: CloudflareInstallation) -> CloudflareDeploymentEvidence:
-    evidence = CloudflareDeploymentEvidence.model_validate(installation.deployment_evidence or {})
+    stored = installation.deployment_evidence or {}
+    evidence = CloudflareDeploymentEvidence.model_validate(stored)
     if installation.reachability_mode == "managed_tunnel":
         evidence.dns_verified_at = await db.scalar(select(func.max(CloudflareOwnedResource.observed_at)).where(
             CloudflareOwnedResource.installation_id == installation.id,
@@ -210,8 +211,10 @@ async def deployment_evidence(db: AsyncSession, installation: CloudflareInstalla
             installation.tunnel_token_version != installation.tunnel_token_projected_version
         ):
             evidence.connector_session = "waiting_for_projection"
-        elif evidence.connector_session is None:
+        elif evidence.connector_session is None or stored.get("connector_observed_token_version") != installation.tunnel_token_version:
             evidence.connector_session = "unobserved"
+    else:
+        evidence.dns_verified_at = evidence.ingress_verified_at
     return evidence
 
 
@@ -317,13 +320,15 @@ async def overflow_status(
                 linux_source_current_sql(),
             )
         fits = WorkDispatch.memory_request_bytes <= (largest_fit if largest_fit is not None else -1)
-        queued, oldest, fit_count, aged, tenant_blocked = (await db.execute(eligible.with_only_columns(
-            func.count(), func.min(WorkDispatch.created_at), func.count().filter(fits),
-            func.count().filter(and_(~fits, tenant.not_in(blocked), WorkDispatch.created_at <= now - timedelta(seconds=gate))),
+        unblocked = and_(~fits, tenant.not_in(blocked))
+        queued, oldest, first_launch, fit_count, aged, tenant_blocked = (await db.execute(eligible.with_only_columns(
+            func.count(), func.min(WorkDispatch.created_at), func.min(WorkDispatch.created_at).filter(unblocked),
+            func.count().filter(fits),
+            func.count().filter(and_(unblocked, WorkDispatch.created_at <= now - timedelta(seconds=gate))),
             func.count().filter(and_(~fits, tenant.in_(blocked))),
         ))).one()
         observation = PlacementObservation(
-            queued=queued, oldest=oldest, primary_fit=fit_count if largest_fit is not None else None,
+            queued=queued, oldest=first_launch, primary_fit=fit_count if largest_fit is not None else None,
             primary_saturated=saturated, minimum_demand=depth, aged_demand=aged,
             tenant_blocked=bool(tenant_blocked), installation_full=full,
             cooldown_until=cooldown if cooldown is not None and cooldown > now else None,
@@ -332,10 +337,15 @@ async def overflow_status(
             ),
         )
         reserved, running = counts.get(lane, (0, 0))
+        lane_blockers = blockers
+        if lane == "containers" and not any(blocker.code == "setup_required" for blocker in blockers):
+            lane_blockers = [*blockers, reason("setup_required").model_copy(update={
+                "remedy": "Automatic Containers placement requires a release that runs the Containers reservation controller.",
+            })]
         statuses.append(CloudflareLaneStatus(
             lane=lane, eligible_queued=queued, claimed=reserved, running=running, primary_fit=observation.primary_fit,
             primary_saturated=saturated, oldest_eligible_queue_age_seconds=max(0, (now - oldest).total_seconds()) if oldest else None,
             launch_gate_seconds=gate,
-            reasons=lane_reasons(observation, now=now, gate_seconds=gate, approvals=approvals, blockers=blockers),
+            reasons=lane_reasons(observation, now=now, gate_seconds=gate, approvals=approvals, blockers=lane_blockers),
         ))
     return statuses

@@ -37,7 +37,6 @@ from src.models.orm.cloudflare_capacity import (
 from src.models.orm.execution_workers import ExecutionWorker
 from src.models.orm.platform_jobs import PlatformJob
 from src.services.authorization.enforce import Caller
-from src.services.execution.cloudflare_approval import current_visible_approval_count
 from src.services.platform_job_access import platform_job_visibility_filter
 from src.services.work_dispatch import (
     WAKE_CLOUDFLARE_CAPACITY,
@@ -215,6 +214,8 @@ def _qualified_workers_suggestion() -> CloudflareCapacityPolicy:
 
 
 async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> CloudflareCapacityStatus:
+    from src.services.execution.cloudflare_approval import current_visible_approval_count
+
     approvals = await current_visible_approval_count(db, caller)
     row = (await db.execute(
         select(

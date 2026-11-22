@@ -50,6 +50,13 @@ from src.services.worker_pool.cloudflare_workers_rest import (
 router = APIRouter(prefix="/api/capacity/cloudflare", tags=["Capacity"])
 
 
+def _configuration_refusal(code: str, message: str, field: str, remedy: str) -> JSONResponse:
+    return JSONResponse(status_code=422, content={
+        "error": "cloudflare_configuration_refused", "message": message,
+        "details": {"code": code, "fields": {field: message}, "remedy": remedy},
+    })
+
+
 @router.get("", response_model=CloudflareCapacityStatus, **operation_route("capacity.cloudflare_status"))
 async def get_cloudflare_capacity(db: DbSession, user: CurrentActiveUser) -> CloudflareCapacityStatus:
     caller = await load_caller(db, user)
@@ -98,9 +105,15 @@ async def configure_cloudflare_capacity(
     except WorkersReleaseUnavailable:
         raise HTTPException(503, "Install a qualified Workers release with metering ceilings.") from None
     except WorkersPaidUnverified as exc:
-        raise HTTPException(422, str(exc)) from None
+        return _configuration_refusal(
+            "CF_WORKERS_PAID_UNVERIFIED", str(exc), "account_id",
+            "Verify Workers Paid and confirm that the token can read the account entitlements.",
+        )
     except CloudflareManagementDenied:
-        raise HTTPException(422, "Cloudflare refused account or entitlement read access. Check Account Settings Read for the selected account.") from None
+        return _configuration_refusal(
+            "CF_MANAGEMENT_CREDENTIAL", "Cloudflare refused account or entitlement read access.", "api_token",
+            "Grant Account Settings Read for the selected account.",
+        )
     except (CloudflareRestUnavailable, ObservationPending):
         raise HTTPException(503, "Cloudflare account verification is temporarily unavailable.") from None
     except (CloudflareInstallationExists, CloudflarePolicyConflict) as exc:
