@@ -836,7 +836,8 @@ Usage: capacity cloudflare stage-credential [OPTIONS]
   Enter a Cloudflare token for a one-time MCP credential reference.
 
 Options:
-  --account-id TEXT           [required]
+  --account-id TEXT           Account ID for connecting Cloudflare.
+  --installation-id UUID      Installation ID for rotating a connected token.
   --purpose [connect|rotate]  [required]
   --json                      Emit JSON instead of human-readable output.
   --help                      Show this message and exit.

@@ -16898,7 +16898,10 @@ export interface components {
              */
             period_end: string;
             analytics?: components["schemas"]["CloudflareUsageAdvisory"] | null;
-            /** Settled Usd */
+            /**
+             * Settled Usd
+             * @description Estimated usage outside identifiable resource reservations.
+             */
             settled_usd?: string | null;
             /** Reserved Usd */
             reserved_usd?: string | null;
@@ -16908,7 +16911,9 @@ export interface components {
         /** CloudflareStageCredentialRequest */
         CloudflareStageCredentialRequest: {
             /** Account Id */
-            account_id: string;
+            account_id?: string | null;
+            /** Installation Id */
+            installation_id?: string | null;
             /**
              * Purpose
              * @enum {string}

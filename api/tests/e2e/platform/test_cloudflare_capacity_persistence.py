@@ -1511,9 +1511,12 @@ async def test_upgrade_drains_before_replacement_and_resumes_after_lost_lease(
             True, False, ingress_probes.CanaryFailure("sdk_response", "http_status", 404),
         ),
     )
+    ingress_time = datetime(2026, 1, 1, tzinfo=UTC)
+    canary_time = ingress_time + timedelta(seconds=1)
     good = ingress_probes.WorkerIngressProbeResult(
         installation.worker_ingress_origin, True, True, True, routes,
-        runtime_canary=ingress_probes.RuntimeCanary(True, True),
+        runtime_canary=ingress_probes.RuntimeCanary(True, True, verified_at=canary_time),
+        verified_at=ingress_time,
     )
     monkeypatch.setattr(enable_job, "probe_worker_ingress", AsyncMock(side_effect=[probe, good]))
     recovered = PlatformJobContext(job.id, job.lease_token, None, str(OPERATOR_ID), admin.principal.email, "")
@@ -1526,6 +1529,9 @@ async def test_upgrade_drains_before_replacement_and_resumes_after_lost_lease(
     await db_session.refresh(installation)
     assert installation.deployed_revision == installation.admitted_revision == 2
     assert installation.upgrade_release is installation.upgrade_drained_at is None
+    evidence = await cloudflare_status.deployment_evidence(db_session, installation)
+    assert (evidence.ingress_verified_at, evidence.signed_canary_at) == (ingress_time, canary_time)
+    assert evidence.dns_verified_at is None
     assert effects == [
         ("delete", "prior-capacity"), ("delete", "prior-launcher"),
         ("create", "gateway"), ("create", "launcher"), ("create", "capacity"),

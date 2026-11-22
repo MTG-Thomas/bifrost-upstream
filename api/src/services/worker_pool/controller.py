@@ -129,6 +129,7 @@ from src.worker.remote.protocol import (
 )
 
 logger = logging.getLogger(__name__)
+_LIMITED_HANDLERS = frozenset(handler for handler, _ in HANDLER_CONCURRENCY_LIMITS)
 
 # How long a lost worker's Job is kept under watch for deletion.
 LOST_JOB_CLEANUP = timedelta(hours=1)
@@ -1272,7 +1273,7 @@ def take_first_budget(
             if budget.containers and item.platform_job_type == SOLUTION_UPDATE_CHECK_JOB else item.handler
         )
         remaining = slots[index]
-        available = None if handler is None else remaining.get(handler, 0 if handler in HANDLER_CONCURRENCY_LIMITS else None)
+        available = None if handler is None else remaining.get(handler, 0 if handler in _LIMITED_HANDLERS else None)
         if rooms[index] >= item.bytes and budget.takes(item) and (available is None or available > 0):
             rooms[index] -= item.bytes
             if handler is not None and available is not None:
@@ -1293,7 +1294,7 @@ def linux_handler_slots(worker: ExecutionWorker, held_handler: str | None, *, co
                 handler: max(0, limit - worker.active_handler_counts.get(handler, 0))
                 for handler, limit in HANDLER_CONCURRENCY_LIMITS
             }
-    if held_handler in slots:
+    if held_handler is not None and held_handler in slots:
         slots[held_handler] = max(0, slots[held_handler] - 1)
     return slots
 

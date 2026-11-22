@@ -343,7 +343,7 @@ async def overflow_status(
         state = primary.capacity_state(workers, now)
         saturated = state == "saturated"
         if cause in (None, "unhealthy", "below_ceiling"):
-            cause = None if saturated else state
+            cause = None if state == "saturated" else state
         pool_policy = await load_kubernetes_policy(db)
         waiting = await waiting_capacity_rows(db, await pending_local_platform_job_ids(db, pool_policy, now), now)
         threshold = get_settings().memory_pressure_threshold

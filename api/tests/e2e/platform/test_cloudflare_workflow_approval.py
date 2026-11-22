@@ -84,6 +84,8 @@ async def test_workflow_approval_rest_enforces_global_operator_and_audits_revisi
         admin = await world.person(org)
         operator_role = await world.role("platform.readwrite")
         await world.assign(admin, operator_role.id, ("platform", None))
+        capacity_reader = await world.role("platform.read")
+        await world.assign(admin, capacity_reader.id, ("platform", None))
         source_operator = await world.person(org)
         repository_role = await world.role("repository.read")
         await world.assign(source_operator, operator_role.id, ("platform", None))
@@ -166,6 +168,8 @@ async def test_workflow_approval_rest_enforces_global_operator_and_audits_revisi
                 global_sha = global_review.json()["proposal"]["review_sha256"]
                 assert global_review.json()["proposal_sources"][global_path] == global_source
                 global_accept = {**options, "review_sha256": global_sha}
+                before_capacity = await client.get("/api/capacity/cloudflare", headers=admin_headers)
+                before_capacity.raise_for_status()
                 for denied in (reader_headers, provider_headers):
                     assert (await client.post(f"{global_endpoint}/accept", json=global_accept, headers=denied)).status_code == 403
                 assert (await client.post(
@@ -176,6 +180,9 @@ async def test_workflow_approval_rest_enforces_global_operator_and_audits_revisi
                 )
                 accepted_global.raise_for_status()
                 assert accepted_global.json()["status"] == "approved"
+                after_capacity = await client.get("/api/capacity/cloudflare", headers=admin_headers)
+                after_capacity.raise_for_status()
+                assert after_capacity.json()["approved_workflow_count"] == before_capacity.json()["approved_workflow_count"] + 1
                 review = await client.post(f"{endpoint}/propose", json={}, headers=admin_headers)
                 review.raise_for_status()
                 persisted = (await client.get(endpoint, headers=admin_headers)).json()

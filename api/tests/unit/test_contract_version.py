@@ -472,7 +472,9 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Long-lived launcher receipts can include more routes.
     # Capacity CLI status forwards the raw JSON; placement evidence is additive
     # and provider identifiers are redacted from the status response.
-    "6a00b8b3afc4adfbc0b382b58f5853ce8168d490b7ad9b657e0b236f9c981191"
+    # Compatible: old account-ID staging requests still work and new clients can
+    # stage by installation ID. Gate seconds remain a JSON number for readers.
+    "1011055e2801ea6b870de078ca8c03d32dfe2e35a6db1f32369e4bff1d9d9dd1"
 )
 
 
