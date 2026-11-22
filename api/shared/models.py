@@ -71,7 +71,7 @@ class CloudflareSpendStatus(BaseModel):
     period_start: datetime
     period_end: datetime
     analytics: CloudflareUsageAdvisory | None = None
-    settled_usd: Decimal | None = None
+    settled_usd: Decimal | None = Field(default=None, description="Estimated usage outside identifiable resource reservations.")
     reserved_usd: Decimal | None = None
     remaining_headroom_usd: Decimal | None = None
 
@@ -109,7 +109,7 @@ class CloudflareLaneStatus(BaseModel):
     primary_fit: int | None = None
     primary_saturated: bool | None = None
     oldest_eligible_queue_age_seconds: float | None = None
-    launch_gate_seconds: int
+    launch_gate_seconds: float
     reasons: list[CloudflarePlacementReason]
 
 
@@ -189,9 +189,18 @@ class CloudflareAccountTokenReferenceRotation(CloudflareCapacityAction):
 class CloudflareStageCredentialRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
-    account_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    account_id: str | None = Field(default=None, pattern=CLOUDFLARE_ID_PATTERN)
+    installation_id: UUID | None = None
     purpose: Literal["connect", "rotate"]
     api_token: SecretStr = Field(min_length=16, max_length=512, json_schema_extra={"writeOnly": True})
+
+    @model_validator(mode="after")
+    def validate_target(self) -> CloudflareStageCredentialRequest:
+        if (self.account_id is None) == (self.installation_id is None):
+            raise ValueError("Specify exactly one Cloudflare credential target")
+        if self.purpose == "connect" and self.installation_id is not None:
+            raise ValueError("Connecting Cloudflare requires the account ID")
+        return self
 
 
 class CloudflareStagedCredential(BaseModel):

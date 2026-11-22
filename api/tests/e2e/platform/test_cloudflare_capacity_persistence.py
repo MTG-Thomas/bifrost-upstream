@@ -26,6 +26,7 @@ from shared.models import (
     CloudflareLauncherUsage,
     CloudflarePolicyUpdate,
     CloudflareReconcileAction,
+    CloudflareStageCredentialRequest,
     CloudflareWorkersPolicy,
 )
 from sqlalchemy import delete, func, insert, literal, select, text, update
@@ -63,6 +64,7 @@ from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerCla
 from src.models.orm.executions import Execution
 from src.models.orm.organizations import Organization
 from src.models.orm.platform_jobs import PlatformJob
+from src.models.orm.users import User
 from src.models.orm.work_dispatches import WorkDispatch
 from src.routers import cloudflare_capacity as capacity_routes
 from src.services import worker_ingress_probes as ingress_probes
@@ -428,7 +430,14 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
                 "originRequest": {}, "warp-routing": {"enabled": False},
                 "ingress": [{**rule, "originRequest": {}} for rule in provider.config["ingress"]],
             }
+            async with context() as db:
+                row = await db.get(CloudflareInstallation, installation_id)
+                row.deployment_evidence = {**(row.deployment_evidence or {}), "connector_session": "disconnected"}
             await change(cloudflare_tunnel.verify, client)
+            await db_session.refresh(installation)
+            evidence = await cloudflare_status.deployment_evidence(db_session, installation)
+            assert evidence.connector_session == "connected"
+            assert evidence.connector_last_ready_at is not None and evidence.dns_verified_at is not None
             monkeypatch.setattr(lifecycle_job, "get_db_context", context)
             monkeypatch.setattr(lifecycle_job, "_hold_installation_lease", AsyncMock())
             monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
@@ -797,7 +806,7 @@ async def test_staged_credential_is_encrypted_bound_expiring_and_single_use(db_s
     with pytest.raises(ValueError, match="Invalid or expired"):
         await consume_staged_token(db_session, ref, actor_id=OPERATOR_ID, account_id=account, purpose="connect")
     expired, _ = await stage_account_token(
-        db_session, actor_id=OPERATOR_ID, account_id=account, purpose="rotate", token=token,
+        db_session, actor_id=OPERATOR_ID, account_id=account, purpose="rotate", token=token, installation_id=uuid4(),
     )
     await db_session.flush()
     await db_session.execute(update(CloudflareStagedToken).where(
@@ -1600,6 +1609,7 @@ async def test_account_rotation_switches_only_a_valid_same_account_version(
         for replacement_version in (2, 3, 4, 5):
             ref, _ = await stage_account_token(
                 db_session, actor_id=OPERATOR_ID, account_id=installation.account_id, purpose="rotate", token=candidate,
+                installation_id=installation.id,
             )
             await db_session.flush()
             job, reused = await lifecycle_job.enqueue_cloudflare_account_token_rotation(
@@ -5528,7 +5538,7 @@ async def test_status_explains_placement_over_rest(
     assert as_of is not None
     primary = None if code == "primary_capacity_unverified" else PrimaryPool("external", "gap5-fixture", 1)
     cooldown = as_of + timedelta(seconds=30) if code == "cloudflare_capacity_unavailable" else None
-    monkeypatch.setattr(cloudflare_status, "_controller_observation", AsyncMock(return_value=(primary, cooldown)))
+    monkeypatch.setattr(cloudflare_status, "_controller_observation", AsyncMock(return_value=(primary, cooldown, None)))
     if code != "setup_required":
         installation.desired_state = "enabled"
         installation.admitted_revision = installation.desired_revision
@@ -5578,8 +5588,142 @@ async def test_status_explains_placement_over_rest(
     assert installation.worker_ingress_origin not in response.text
     workers, = snapshot["lanes"]
     reasons = {item["code"]: item for item in workers["reasons"]}
-    assert code in reasons, workers
-    assert reasons[code]["remedy"]
+    expected = {
+        "setup_required": ["setup_required", "waiting_for_demand"],
+        "installation_slots_full": ["installation_slots_full", "tenant_limit_reached"],
+        **{blocker: [blocker, "waiting_for_demand"] for blocker in (
+            "spend_guard_closed", "cleanup_pending", "cloudflare_capacity_unavailable",
+            "release_mismatch", "connector_unavailable",
+        )},
+    }
+    assert list(reasons) == expected.get(code, [code]), workers
+    assert all(item["remedy"] for item in reasons.values())
     assert workers["eligible_queued"] == (1 if code in queue_codes else 0)
     if code in ("waiting_for_launch_gate", "cloudflare_capacity_unavailable"):
         assert reasons[code]["next_eligible_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_status_uses_scoped_runs_and_deployed_controller_observation(db_session, installation, monkeypatch):
+    owner = User(email="gap5-status-fixture@example.test")
+    db_session.add(owner)
+    await db_session.flush()
+    role = RoleGrant(uuid4(), frozenset({"platform.read"}), (Boundary(BoundaryKind.PLATFORM),))
+    caller = Caller(
+        UserPrincipal(owner.id, owner.email, None),
+        AuthorizationContext(owner.id, None, uuid4(), False, frozenset(), (role,)),
+    )
+    monkeypatch.setattr(cloudflare_policy, "installed_workers_release_digest", lambda: installation.policy["bounds_release"])
+    now = await db_session.scalar(select(func.statement_timestamp()))
+    assert now is not None
+    installation.desired_revision = 2
+    installation.control_root_version = 1
+    db_session.add_all([
+        seal_credential(CredentialRef(installation.id, installation.account_id, "control_root", "", 1),
+                        SecretStr("synthetic-control-root"), actor=str(owner.id), now=now),
+        seal_credential(CredentialRef(installation.id, installation.account_id, "scope_bearer", "workers", 1),
+                        SecretStr("synthetic-scope-bearer"), actor=str(owner.id), now=now),
+        CloudflareCapacityScope(installation_id=installation.id, scope="workers", deployment_revision=1,
+                                endpoint="https://capacity.example.test", bearer_version=1),
+    ])
+    primary = ExecutionWorker(form="external", capacity_scope="gap5-scoped", state="ready",
+                              heartbeat_at=now, memory_budget_bytes=2**28)
+    worker = ExecutionWorker(form="external", runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE, state="ready")
+    db_session.add_all([primary, worker])
+    await db_session.flush()
+    db_session.add(ManagedCloudflareScope(installation.id, "workers", 1).pin(
+        worker.id, 1, reserved_at=now, lifetime=3600, deadline_wire=False,
+    ))
+    for executed_by in (owner.id, None):
+        for state in ("queued", "claimed", "running"):
+            run = Execution(
+                workflow_name="fixture", executed_by=executed_by, executed_by_name="fixture",
+                status=ExecutionStatus.RUNNING if state == "running" else ExecutionStatus.PENDING,
+                started_at=now if state == "running" else None,
+            )
+            db_session.add(run)
+            await db_session.flush()
+            db_session.add(
+                WorkDispatch(family=WAKE_WORKFLOW, handler="workflow.execute", handler_version=1,
+                             subject_id=run.id, message={}, payload={}, cloudflare_revision="c" * 64)
+                if state == "queued"
+                else ExecutionWorkerClaim(worker_id=worker.id, family=WAKE_WORKFLOW, subject_id=run.id)
+            )
+    await db_session.flush()
+    await cloudflare_status.record_controller_observation(
+        ManagedCloudflareScope(installation.id, "workers", 1),
+        primary=PrimaryPool("external", "gap5-scoped", 2), cause="below_ceiling",
+    )
+    status = await get_cloudflare_capacity_status(db_session, caller)
+    workers, = status.lanes
+    assert status.approved_workflow_count == 0
+    assert (workers.eligible_queued, workers.claimed, workers.running) == (1, 1, 1)
+    assert workers.primary_saturated is False
+    assert workers.primary_fit == 1
+
+
+@pytest.mark.asyncio
+async def test_status_splits_only_identifiable_resource_reservations(db_session, installation):
+    now = await db_session.scalar(select(func.statement_timestamp()))
+    assert now is not None
+    period, _ = usage_period(now)
+    db_session.add_all([
+        CloudflareUsageIncarnation(worker_id=uuid4(), installation_id=installation.id,
+                                   started_at=now - timedelta(minutes=2), slots=1),
+        CloudflareUsageIncarnation(worker_id=uuid4(), installation_id=installation.id,
+                                   started_at=now - timedelta(minutes=2), deleted_at=now, slots=1),
+        CloudflareUsageActivity(installation_id=installation.id, period_start=period, dispatched_runs=10),
+    ])
+    await db_session.flush()
+    result = await get_cloudflare_capacity_status(db_session, _platform_operator())
+    assert result.installation is not None
+    spend = result.installation.spend
+    assert spend is not None and spend.reserved_usd is not None and spend.settled_usd is not None
+    outstanding = await db_session.scalar(select(cloudflare_spend.cloudflare_unsettled_resource_usage()).where(
+        CloudflareInstallation.id == installation.id,
+    ))
+    assert outstanding is not None and outstanding > 0
+    assert spend.reserved_usd == pytest.approx(outstanding, rel=Decimal("0.01"))
+    assert spend.settled_usd > 0
+    assert spend.estimated_usd == (spend.settled_usd + spend.reserved_usd).quantize(Decimal("0.01"))
+
+
+@pytest.mark.asyncio
+async def test_status_requires_global_platform_read(db_session, monkeypatch):
+    role = RoleGrant(uuid4(), frozenset({"platform.read"}), (Boundary(BoundaryKind.ORGANIZATION, uuid4()),))
+    caller = Caller(
+        UserPrincipal(OPERATOR_ID, "operator@example.test", None),
+        AuthorizationContext(OPERATOR_ID, None, uuid4(), False, frozenset(), (role,)),
+    )
+    monkeypatch.setattr(capacity_routes, "load_caller", AsyncMock(return_value=caller))
+    app = FastAPI()
+    app.include_router(capacity_routes.router)
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[get_current_active_user] = lambda: caller.principal
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as http:
+        response = await http.get("/api/capacity/cloudflare")
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_target", [False, True])
+async def test_rotation_staging_binds_reference_to_the_active_installation(
+    db_session, installation, lifecycle_audit_actor, monkeypatch, legacy_target,
+):
+    caller = _platform_operator()
+    monkeypatch.setattr(capacity_routes, "load_caller", AsyncMock(return_value=caller))
+    token = SecretStr("synthetic-rotation-token")
+    target = {"account_id": installation.account_id} if legacy_target else {"installation_id": installation.id}
+    request = CloudflareStageCredentialRequest(purpose="rotate", api_token=token, **target)
+    staged = await capacity_routes.stage_cloudflare_credential(request, db_session, caller.principal)
+    await db_session.flush()
+    with pytest.raises(ValueError, match="Invalid or expired"):
+        async with db_session.begin_nested():
+            await consume_staged_token(
+                db_session, staged.credential_ref, actor_id=OPERATOR_ID, account_id=installation.account_id,
+                purpose="rotate", installation_id=uuid4(),
+            )
+    assert await consume_staged_token(
+        db_session, staged.credential_ref, actor_id=OPERATOR_ID, account_id=installation.account_id,
+        purpose="rotate", installation_id=installation.id,
+    ) == token

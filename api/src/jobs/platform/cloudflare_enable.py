@@ -377,6 +377,7 @@ async def _settle_enable(
         return await run_workers_canary(context, payload.installation_id, payload.revision, origin, client, deployment)
 
     ingress = await probe_worker_ingress(installation, runtime_canary=canary)
+    probe_completed_at = datetime.now(UTC)
     if not ingress.ready:
         failure = ingress.failure
         abbreviations = {"ack", "dns", "http", "sdk", "tls"}
@@ -406,12 +407,13 @@ async def _settle_enable(
                 await _inventory_snapshot(db, row.id, revision=payload.revision),
             )
         await _require_budget(db, row)
-        observed_at = datetime.now(UTC).isoformat()
         row.deployment_evidence = {
             **(row.deployment_evidence or {}),
             "revision": payload.revision,
-            "ingress_verified_at": observed_at,
-            "signed_canary_at": observed_at,
+            "ingress_verified_at": (ingress.verified_at or probe_completed_at).isoformat(),
+            "signed_canary_at": (
+                (ingress.runtime_canary.verified_at if ingress.runtime_canary else None) or probe_completed_at
+            ).isoformat(),
         }
         row.admitted_revision = payload.revision
         row.deployed_revision = payload.revision

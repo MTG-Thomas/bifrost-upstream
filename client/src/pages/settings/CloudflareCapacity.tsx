@@ -54,14 +54,13 @@ const statusKey = ["cloudflare-capacity"];
 const utcDate = new Intl.DateTimeFormat(undefined, {
 	dateStyle: "medium", timeStyle: "medium", timeZone: "UTC",
 });
-const usd = new Intl.NumberFormat(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 8 });
 
 function timestamp(value?: string | null) {
 	return value ? `${utcDate.format(new Date(value))} UTC` : "Unobserved";
 }
 
 function amount(value?: string | number | null) {
-	return value == null ? "Unavailable" : usd.format(Number(value));
+	return value == null ? "Unavailable" : `${value} USD`;
 }
 const fieldNames: Record<string, string> = {
 	worker_ingress_origin: "origin",
@@ -387,10 +386,10 @@ function RecoveryDetails({ recovery }: { recovery: components["schemas"]["Cloudf
 			<p>{recovery.remedy}</p>
 			{recovery.check && (
 				<dl className="grid gap-2 text-sm sm:grid-cols-2">
-					<div><dt>Resource Class</dt><dd><code>{recovery.resource_class}</code></dd></div>
-					<div><dt>Verification Check</dt><dd><code>{recovery.check}</code></dd></div>
-					<div><dt>Observed Category</dt><dd><code>{recovery.observed_category}</code></dd></div>
-					<div><dt>Expected Category</dt><dd><code>{recovery.expected_category}</code></dd></div>
+					<div><dt className="text-muted-foreground">Resource Class</dt><dd><code>{recovery.resource_class}</code></dd></div>
+					<div><dt className="text-muted-foreground">Verification Check</dt><dd><code>{recovery.check}</code></dd></div>
+					<div><dt className="text-muted-foreground">Observed Category</dt><dd><code>{recovery.observed_category}</code></dd></div>
+					<div><dt className="text-muted-foreground">Expected Category</dt><dd><code>{recovery.expected_category}</code></dd></div>
 				</dl>
 			)}
 		</div>
@@ -647,8 +646,9 @@ export function CloudflareCapacity() {
 				)}
 				{canRead && data && (
 					<p>
-						{data.approved_workflow_count == null ? "Approved workflow count is unavailable." :
-							`${data.approved_workflow_count} approved ${data.approved_workflow_count === 1 ? "workflow" : "workflows"}.`}{" "}
+						<span>{data.approved_workflow_count == null ? "Approved workflow count is unavailable." :
+							`${data.approved_workflow_count} approved ${data.approved_workflow_count === 1 ? "workflow" : "workflows"}.`}</span>{" "}
+						Only approved workflows can use Cloudflare capacity.{" "}
 						<Link className="underline" to="/workflows">Review Workflows</Link>
 					</p>
 				)}
@@ -680,18 +680,18 @@ export function CloudflareCapacity() {
 							</div>
 							{data?.deployment && (
 								<>
-									<div><dt>Last Verified Ingress Probe</dt><dd>{timestamp(data.deployment.ingress_verified_at)}</dd></div>
-									<div><dt>Last Verified DNS</dt><dd>{timestamp(data.deployment.dns_verified_at)}</dd></div>
-									<div><dt>Last Signed Canary</dt><dd>{timestamp(data.deployment.signed_canary_at)}</dd></div>
-									{data.deployment.revision != null && <div><dt>Ingress and Canary Evidence Revision</dt><dd>{data.deployment.revision}</dd></div>}
+									<div><dt className="text-muted-foreground">Last Verified Ingress Probe</dt><dd>{timestamp(data.deployment.ingress_verified_at)}</dd></div>
+									<div><dt className="text-muted-foreground">Last Verified DNS</dt><dd>{installation.reachability_mode === "managed_tunnel" ? timestamp(data.deployment.dns_verified_at) : "Not Separately Verified"}</dd></div>
+									<div><dt className="text-muted-foreground">Last Signed Canary</dt><dd>{timestamp(data.deployment.signed_canary_at)}</dd></div>
+									{data.deployment.revision != null && <div><dt className="text-muted-foreground">Ingress and Canary Evidence Revision</dt><dd>{data.deployment.revision}</dd></div>}
 									{installation.reachability_mode === "managed_tunnel" && (
 										<>
-											<div><dt>Last Observed Connector Session</dt><dd>{({
+											<div><dt className="text-muted-foreground">Last Observed Connector Session</dt><dd>{({
 												connected: "Connected", disconnected: "Disconnected", unobserved: "Unobserved",
 												waiting_for_projection: "Waiting for Token Projection",
 											})[data.deployment.connector_session ?? "unobserved"]}</dd></div>
-											<div><dt>Connector Session Checked</dt><dd>{timestamp(data.deployment.connector_checked_at)}</dd></div>
-											<div><dt>Connector Last Ready</dt><dd>{timestamp(data.deployment.connector_last_ready_at)}</dd></div>
+											<div><dt className="text-muted-foreground">Connector Session Checked</dt><dd>{timestamp(data.deployment.connector_checked_at)}</dd></div>
+											<div><dt className="text-muted-foreground">Connector Last Ready</dt><dd>{timestamp(data.deployment.connector_last_ready_at)}</dd></div>
 										</>
 									)}
 								</>
@@ -740,10 +740,10 @@ export function CloudflareCapacity() {
 										<dd>{installation.spend.estimated_usd === null ? "Spend Ledger Unavailable" : `${installation.spend.estimated_usd} USD`}</dd>
 										{installation.spend.state === "budget_reached" && <dd>Estimated usage reached the monthly limit.</dd>}
 									</div>
-									<div><dt>Settled Usage This UTC Month</dt><dd>{amount(installation.spend.settled_usd)}</dd></div>
-									<div><dt>Outstanding Reservations</dt><dd>{amount(installation.spend.reserved_usd)}</dd></div>
-									<div><dt>Remaining Monthly Headroom</dt><dd>{amount(installation.spend.remaining_headroom_usd)}</dd></div>
-									<div><dt>Monthly Limit Resets</dt><dd>{timestamp(installation.spend.period_end)}</dd></div>
+									<div><dt className="text-muted-foreground">Estimated Usage Outside Reservations</dt><dd>{amount(installation.spend.settled_usd)}</dd><dd className="text-muted-foreground">Workflow activity charges are estimated and cannot yet be split into settled and unsettled amounts.</dd></div>
+									<div><dt className="text-muted-foreground">Outstanding Reservations</dt><dd>{amount(installation.spend.reserved_usd)}</dd></div>
+									<div><dt className="text-muted-foreground">Remaining Monthly Headroom</dt><dd>{amount(installation.spend.remaining_headroom_usd)}</dd></div>
+									<div><dt className="text-muted-foreground">Monthly Limit Resets</dt><dd>{timestamp(installation.spend.period_end)}</dd></div>
 									<div>
 										<dt className="text-muted-foreground">Workers Paid Subscription (Billed by Cloudflare)</dt>
 										<dd>{installation.spend.workers_paid_subscription_usd} USD/month</dd>
@@ -780,12 +780,12 @@ export function CloudflareCapacity() {
 									<section key={lane.lane} className="space-y-2 text-sm">
 										<h5 className="font-semibold">{lane.lane === "workers" ? "Workers" : "Containers"}</h5>
 										<dl className="grid gap-2 sm:grid-cols-2">
-											<div><dt>Eligible Queued</dt><dd>{lane.eligible_queued}</dd></div>
-											<div><dt>Claimed</dt><dd>{lane.claimed}</dd></div>
-											<div><dt>Running</dt><dd>{lane.running}</dd></div>
-											<div><dt>Queued Work Fitting the Primary</dt><dd>{lane.primary_fit ?? "Unobserved"}</dd></div>
-											<div><dt>Primary Saturation</dt><dd>{lane.primary_saturated == null ? "Unobserved" : lane.primary_saturated ? "At Capacity Ceiling" : "Ceiling Not Confirmed"}</dd></div>
-											<div><dt>Oldest Eligible Queue Age / Launch Gate</dt><dd>{lane.oldest_eligible_queue_age_seconds == null
+											<div><dt className="text-muted-foreground">Eligible Queued</dt><dd>{lane.eligible_queued}</dd></div>
+											<div><dt className="text-muted-foreground">Claimed</dt><dd>{lane.claimed}</dd></div>
+											<div><dt className="text-muted-foreground">Running</dt><dd>{lane.running}</dd></div>
+											<div><dt className="text-muted-foreground">Queued Work Fitting the Primary</dt><dd>{lane.primary_fit ?? "Unobserved"}</dd></div>
+											<div><dt className="text-muted-foreground">Primary Saturation</dt><dd>{lane.primary_saturated == null ? "Unobserved" : lane.primary_saturated ? "At Capacity Ceiling" : "Ceiling Not Confirmed"}</dd></div>
+											<div><dt className="text-muted-foreground">Oldest Eligible Queue Age / Launch Gate</dt><dd>{lane.oldest_eligible_queue_age_seconds == null
 												? "Queue Empty" : `${lane.oldest_eligible_queue_age_seconds.toFixed(2)} s`} / {lane.launch_gate_seconds} s</dd></div>
 										</dl>
 										<PlacementReasons reasons={lane.reasons} />
@@ -965,19 +965,19 @@ export function CloudflareCapacity() {
 								readbackRef.current?.();
 							}}>Check Job Status</Button>
 						)}
-						{(job?.error || typeof job?.result?.code === "string") && (
+						{jobRefused && (job?.error || typeof job?.result?.code === "string") && (
 							<p>Error Code <code>{job.error?.code ?? String(job.result?.code)}</code></p>
 						)}
-						{typeof job?.result?.reason === "string" && <p>{job.result.reason}</p>}
-						{typeof job?.result?.remedy === "string" && <p>{job.result.remedy}</p>}
-						{data?.recovery && job?.id === data.latest_job_id && <RecoveryDetails recovery={data.recovery} />}
-						{Array.isArray(instructions) && (
+						{jobRefused && typeof job?.result?.reason === "string" && <p>{job.result.reason}</p>}
+						{jobRefused && !data?.recovery && typeof job?.result?.remedy === "string" && <p>{job.result.remedy}</p>}
+						{jobRefused && data?.recovery && job?.id === data.latest_job_id && <RecoveryDetails recovery={data.recovery} />}
+						{jobRefused && Array.isArray(instructions) && (
 							<BoundedList as="ol" label="Recovery Instructions" className="list-decimal pl-5 text-sm">
 								{instructions.filter((instruction): instruction is string => typeof instruction === "string")
 									.map((instruction) => <li key={instruction}>{instruction}</li>)}
 							</BoundedList>
 						)}
-						{Array.isArray(legacyWorkers) && (
+						{jobRefused && Array.isArray(legacyWorkers) && (
 							<BoundedList label="Workers Requiring Review" className="text-sm">
 								{legacyWorkers.map((worker) => (
 									<li className="break-all" key={String(worker.worker_id)}>

@@ -1186,7 +1186,7 @@ async def enqueue_cloudflare_account_token_rotation(
         raise CloudflarePolicyConflict("A Cloudflare API token rotation is already pending")
     if isinstance(replacement, UUID):
         replacement = await consume_staged_token(
-            db, replacement, actor_id=actor.user_id, account_id=row.account_id, purpose="rotate",
+            db, replacement, actor_id=actor.user_id, account_id=row.account_id, purpose="rotate", installation_id=row.id,
         )
     versions = (
         CloudflareCredential.installation_id == row.id,

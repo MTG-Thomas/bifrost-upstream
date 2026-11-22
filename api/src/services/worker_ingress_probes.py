@@ -11,6 +11,7 @@ import ssl
 from collections.abc import Awaitable, Callable
 from contextlib import aclosing
 from dataclasses import asdict, dataclass, field, replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal, cast
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -147,6 +148,7 @@ class RuntimeCanary:
     signed_hello: bool
     scoped_sdk: bool
     failure: CanaryFailure | None = None
+    verified_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +170,7 @@ class WorkerIngressProbeResult:
     runtime_canary: RuntimeCanary | None = None
     probe_failure: CanaryFailure | None = None
     http_connections: tuple[ProbeHttpConnections, ...] = ()
+    verified_at: datetime | None = None
 
     def http_connections_as_result(self) -> list[dict[str, str | int]]:
         """Return counts in address attempt order without exposing addresses."""
@@ -577,5 +580,6 @@ async def probe_worker_ingress(
     result = await probe_public_worker_ingress(origin)
     if not result.reachable:
         return result
+    verified_at = datetime.now(UTC)
     canary = await runtime_canary(origin)
-    return replace(result, runtime_canary=canary)
+    return replace(result, runtime_canary=canary, verified_at=verified_at)

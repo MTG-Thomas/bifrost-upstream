@@ -1,9 +1,18 @@
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 
+from src.models.orm.execution_workers import ExecutionWorker
 from src.models.orm.platform_jobs import PlatformJob
-from src.services.worker_pool.cloudflare_status import PlacementObservation, lane_reasons, placement_blockers, recovery_for_job
+from src.services.worker_pool.cloudflare_status import (
+    PlacementObservation,
+    lane_reasons,
+    placement_blockers,
+    primary_coverage,
+    recovery_for_job,
+)
+from src.services.worker_pool.controller import Request
 
 NOW = datetime(2026, 11, 22, tzinfo=UTC)
 
@@ -56,3 +65,46 @@ def test_recovery_does_not_return_provider_values():
     assert recovery is not None
     assert recovery.resource_class is None
     assert recovery.remedy
+
+
+@pytest.mark.parametrize("status", ["queued", "running"])
+def test_recovery_hides_previous_attempt_during_retry(status):
+    assert recovery_for_job(PlatformJob(status=status, error_code="CF_BUDGET_REACHED")) is None
+
+
+def test_five_queued_workflows_fit_only_one_primary_slot():
+    worker = ExecutionWorker(
+        form="static", state="ready", execution_lane="normal", heartbeat_at=NOW,
+        memory_budget_bytes=256 * 2**20, memory_reserved_bytes=0, supported_handlers=["workflow.execute"],
+    )
+    queue = [Request(uuid4(), 256 * 2**20, "workflow.execute", 1) for _ in range(5)]
+    covered = primary_coverage([worker], queue, NOW)
+    assert covered == {queue[0].id}
+    reasons = lane_reasons(
+        PlacementObservation(queued=5, primary_fit=len(covered), primary_saturated=True, aged_demand=4),
+        now=NOW, gate_seconds=2, approvals=1, blockers=[],
+    )
+    assert [item.code for item in reasons] == ["primary_has_capacity", "eligible_for_overflow"]
+
+
+def test_primary_coverage_respects_held_memory_and_handler_slots():
+    from src.worker.remote.protocol import HANDLER_CONCURRENCY_LIMITS
+
+    limited, limit = next(iter(HANDLER_CONCURRENCY_LIMITS.items()))
+    held = Request(uuid4(), 30, limited)
+    blocked = Request(uuid4(), 30, limited)
+    fits = Request(uuid4(), 60, "workflow.execute")
+    full = Request(uuid4(), 20, "workflow.execute")
+    worker = ExecutionWorker(
+        form="static", state="ready", execution_lane="normal", heartbeat_at=NOW, memory_budget_bytes=100,
+        memory_reserved_bytes=0, supported_handlers=["workflow.execute", limited],
+        active_handler_counts={limited: limit - 1}, reserved_for_dispatch_id=held.id,
+    )
+    assert primary_coverage([worker], [blocked, fits, full, held], NOW) == {fits.id, held.id}
+    reasons = lane_reasons(
+        PlacementObservation(
+            queued=4, primary_fit=2, primary_saturated=True, oldest=NOW - timedelta(seconds=1),
+        ),
+        now=NOW, gate_seconds=2, approvals=1, blockers=[],
+    )
+    assert [item.code for item in reasons] == ["primary_has_capacity", "waiting_for_launch_gate"]

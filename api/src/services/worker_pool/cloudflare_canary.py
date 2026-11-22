@@ -251,6 +251,7 @@ async def run_workers_canary(
         key = await load_managed_control_key(db, pin, resource_uid)
 
     signed = scoped = False
+    verified_at = None
     failure = None
     try:
         await client.prepare(WorkerCapacityReservation(
@@ -289,6 +290,7 @@ async def run_workers_canary(
                         and proof.canary_sdk_generation == proof.remote_session_generation
                     )
                     if scoped:
+                        verified_at = proof.canary_ack_at
                         failure = None
                         break
                     failure = _canary_session_failure(proof.result or {}, worker_id, proof.remote_session_generation)
@@ -306,4 +308,4 @@ async def run_workers_canary(
             "The runtime canary has no verified deletion receipt",
             OwnershipResource.CANARY_LAUNCHER, ObservationCheck.CANARY_RETIREMENT,
         )
-    return RuntimeCanary(signed, scoped, failure)
+    return RuntimeCanary(signed, scoped, failure, verified_at)

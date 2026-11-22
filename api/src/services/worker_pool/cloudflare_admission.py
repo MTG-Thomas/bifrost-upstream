@@ -99,6 +99,11 @@ class PrimaryPool:
     ceiling: int | None = None
 
     def saturated(self, linux_workers: list[ExecutionWorker], now: datetime) -> bool:
+        return self.capacity_state(linux_workers, now) == "saturated"
+
+    def capacity_state(
+        self, linux_workers: list[ExecutionWorker], now: datetime,
+    ) -> Literal["saturated", "below_ceiling", "unhealthy"]:
         cohort = [
             worker for worker in linux_workers
             if worker.form == self.form and worker.capacity_scope == self.scope
@@ -108,10 +113,12 @@ class PrimaryPool:
             worker.heartbeat_at is None or worker.heartbeat_at < now - HEARTBEAT_LOST_AFTER
             for worker in normal
         ):
-            return False
+            return "unhealthy"
         if self.form == "static":
-            return len(normal) == len([worker for worker in cohort if worker.execution_lane == "normal"])
-        return self.ceiling is not None and len(cohort) >= self.ceiling
+            return "saturated" if len(normal) == sum(w.execution_lane == "normal" for w in cohort) else "unhealthy"
+        if self.ceiling is None:
+            return "unhealthy"
+        return "saturated" if len(cohort) >= self.ceiling else "below_ceiling"
 
 
 async def _lock_worker_installation(db: AsyncSession, worker_id: UUID) -> UUID | None:

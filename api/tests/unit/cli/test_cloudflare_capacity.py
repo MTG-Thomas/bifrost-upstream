@@ -53,3 +53,25 @@ def test_cli_workers_reconcile_submits_optional_reset(monkeypatch, command: str,
 
     assert result.exit_code == 0, result.exception
     post.assert_awaited_once_with(f"/api/capacity/cloudflare/{command}", json=payload)
+
+
+@pytest.mark.parametrize(("target_flag", "target_key", "target"), [
+    ("--installation-id", "installation_id", str(UUID(int=1))),
+    ("--account-id", "account_id", "a" * 32),
+])
+def test_cli_can_stage_rotation_by_installation_and_preserves_account_id_compatibility(
+    monkeypatch, target_flag, target_key, target,
+) -> None:
+    token = "synthetic-rotation-token"
+    response = Mock()
+    response.json.return_value = {"credential_ref": str(UUID(int=2))}
+    post = AsyncMock(return_value=response)
+    monkeypatch.setattr(BifrostClient, "get_instance", lambda **_: Mock(post=post))
+    result = CliRunner().invoke(
+        cloudflare_group, ["stage-credential", "--purpose", "rotate", target_flag, target], input=token + "\n",
+    )
+    assert result.exit_code == 0, result.exception
+    assert token not in result.output
+    post.assert_awaited_once_with("/api/capacity/cloudflare/credential", json={
+        target_key: target, "purpose": "rotate", "api_token": token,
+    })

@@ -22,6 +22,7 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareCredential,
     CloudflareInstallation,
 )
+from src.models.orm.execution_workers import ExecutionWorker
 from src.models.orm.work_dispatches import WorkDispatch
 from src.scheduler.leadership import SchedulerLeadershipLease
 from src.services.kubernetes_control import may_manage_jobs
@@ -47,7 +48,7 @@ from src.services.worker_pool.cloudflare_spend import (
     cloudflare_usage_within_limit,
     prune_spend_receipt_keys,
 )
-from src.services.worker_pool.cloudflare_status import record_controller_observation
+from src.services.worker_pool.cloudflare_status import PrimaryCause, record_controller_observation
 from src.services.worker_pool.controller import (
     RECONCILE_SECONDS,
     SWEEP_SECONDS,
@@ -96,7 +97,7 @@ def _schedule_launch_wake(wake: asyncio.Event, delay: float) -> asyncio.TimerHan
 
 async def _primary_pool(
     settings: Settings, http: httpx.AsyncClient, *, kubernetes: bool, shared_cap: int | None,
-) -> PrimaryPool | None:
+) -> tuple[PrimaryPool | None, PrimaryCause | None]:
     async with get_db_context() as db:
         limit = (await load_kubernetes_policy(db)).max_workers
     if shared_cap is not None:
@@ -107,13 +108,13 @@ async def _primary_pool(
         )
         profile = await client.profile()
         if profile.runtime_profile != LINUX_RUNTIME_PROFILE:
-            return None
-        return PrimaryPool("external", profile.scope, min(limit, profile.max_workers))
+            return None, "profile_mismatch"
+        return PrimaryPool("external", profile.scope, min(limit, profile.max_workers)), None
     if kubernetes:
-        return PrimaryPool("job", ceiling=limit)
+        return PrimaryPool("job", ceiling=limit), None
     # A pod without Job access cannot infer that another replica's cluster
     # primary is a static cohort.
-    return None if os.environ.get("KUBERNETES_SERVICE_HOST") else PrimaryPool("static")
+    return (None, "unreachable") if os.environ.get("KUBERNETES_SERVICE_HOST") else (PrimaryPool("static"), None)
 
 
 async def _installations() -> list[ManagedCloudflareScope]:
@@ -181,25 +182,39 @@ async def _reconcile_scope(
     if controller.client.endpoint != client.endpoint:
         raise CapacityProtocolError("Managed Cloudflare endpoint changed within a deployment revision")
     controller.client = client
-    controller.burst_launch_allowed = (
+    matches = (
         controller.profile.max_workers == policy.workers.launcher_cap
         and cloudflare_slots(controller.profile.memory_limit_bytes) == policy.workers.slots_per_launcher
         and policy.workers.max_lifetime_seconds <= controller.profile.max_lifetime_seconds
-        and admitting
     )
+    controller.burst_launch_allowed = matches and admitting
+    cause: PrimaryCause | None = "profile_mismatch" if not matches else "not_admitting" if not admitting else None
     controller.cloudflare_primary = None
     if controller.burst_launch_allowed:
         try:
-            controller.cloudflare_primary = await _primary_pool(
+            controller.cloudflare_primary, cause = await _primary_pool(
                 settings, http, kubernetes=kubernetes, shared_cap=policy.shared_managed_worker_cap,
             )
-        except (CapacityProtocolError, httpx.HTTPError):
+        except (CapacityProtocolError, httpx.HTTPError) as exc:
+            cause = "profile_mismatch" if isinstance(exc, CapacityProtocolError) else "unreachable"
             logger.warning("Primary worker capacity is unavailable for Cloudflare placement")
         if controller.cloudflare_primary is None:
             controller.burst_launch_allowed = False
     if await controller.reachability.check():
         await controller.reconcile()
-        await record_controller_observation(binding, primary=controller.cloudflare_primary)
+        primary = controller.cloudflare_primary
+        if primary is not None:
+            async with get_db_context() as db:
+                cohort = list(await db.scalars(select(ExecutionWorker).where(
+                    ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE,
+                    ExecutionWorker.form == primary.form, ExecutionWorker.capacity_scope == primary.scope,
+                    ExecutionWorker.state.in_(("reserved", "starting", "ready", "draining")),
+                )))
+            state = primary.capacity_state(cohort, datetime.now(UTC))
+            cause = None if state == "saturated" else state
+        await record_controller_observation(binding, primary=primary, cause=cause)
+    else:
+        await record_controller_observation(binding, cause="unreachable")
 
 
 async def cloudflare_supervisor_loop(
@@ -231,8 +246,11 @@ async def cloudflare_supervisor_loop(
                                 await _reconcile_scope(
                                     binding, settings, http, controllers, kubernetes=kubernetes,
                                 )
-                            except (CapacityProtocolError, httpx.HTTPError):
-                                await record_controller_observation(binding, unavailable=True)
+                            except (CapacityProtocolError, httpx.HTTPError) as exc:
+                                await record_controller_observation(
+                                    binding, unavailable=True,
+                                    cause="profile_mismatch" if isinstance(exc, CapacityProtocolError) else "unreachable",
+                                )
                                 logger.warning("Managed Cloudflare scope reconciliation failed", exc_info=True)
                             except Exception:
                                 logger.warning("Managed Cloudflare scope reconciliation failed", exc_info=True)

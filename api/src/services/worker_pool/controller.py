@@ -39,6 +39,7 @@ from shared.models import CloudflareWorkersPolicy, WorkerCapacityProfile
 from shared.solution_git_stage import SOLUTION_GIT_CAPABILITY, SOLUTION_UPDATE_CHECK_JOB
 from shared.version import get_version
 from sqlalchemy import and_, func, literal, select, text, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import Settings, get_settings
 from src.core.database import get_db_context
@@ -392,58 +393,7 @@ class WorkerCapacityController(ABC):
                 deadline_wire = "per_second_caps" in policy_data.get("meter_launcher", {})
                 workflow_slots = await read_workflow_slot_admission(db, managed_scope.installation_id, workers_policy)
             platform_job_ids = await pending_local_platform_job_ids(db, policy, _now())
-            waiting = (
-                await db.execute(
-                    select(
-                        WorkDispatch.id.label("id"),
-                        WorkDispatch.memory_request_bytes.label("memory_request_bytes"),
-                        WorkDispatch.created_at.label("created_at"),
-                        WorkDispatch.handler.label("handler"),
-                        WorkDispatch.handler_version,
-                        WorkDispatch.cloudflare_revision,
-                        Execution.organization_id.label("tenant_id"),
-                        literal(None).label("platform_job_type"),
-                    )
-                    .outerjoin(Execution, Execution.id == WorkDispatch.subject_id)
-                    .where(
-                        WorkDispatch.assigned_worker_id.is_(None),
-                        WorkDispatch.execution_lane == "normal",
-                        # Every advertised execution handler, including live
-                        # and backfill summaries, gains physical capacity.
-                        WorkDispatch.handler.in_(REMOTE_WORKER_HANDLER_NAMES),
-                    )
-                    .union_all(
-                        select(
-                            PlatformJob.id,
-                            PlatformJob.memory_required_bytes,
-                            PlatformJob.created_at,
-                            # Any physical worker runs local platform jobs.
-                            literal(None),
-                            literal(None),
-                            literal(None),
-                            literal(None),
-                            PlatformJob.job_type,
-                        ).where(
-                            PlatformJob.id.in_(platform_job_ids),
-                            PlatformJob.status == "queued",
-                            PlatformJob.execution_backend == "local",
-                            PlatformJob.available_at <= _now(),
-                        ),
-                        pending_service_statement(_now()).with_only_columns(
-                            ServiceDefinition.id,
-                            workflow_request_sql(Workflow),
-                            ServiceDefinition.updated_at,
-                            # Every physical executor supervises services.
-                            literal(None),
-                            literal(None),
-                            literal(None),
-                            literal(None),
-                            literal(None),
-                        ),
-                    )
-                    .order_by(text("created_at"))
-                )
-            ).all()
+            waiting = await waiting_capacity_rows(db, platform_job_ids, _now())
             # Managed resources share the worker ceiling across provider forms.
             # Only Linux workers participate in memory calibration and probes.
             workers = (
@@ -514,24 +464,13 @@ class WorkerCapacityController(ABC):
                 if worker.state == "draining" or worker.memory_pressured:
                     continue
                 # A worker launched for one dispatch holds it until it claims it.
-                held = 0
-                handler_slots = dict(HANDLER_CONCURRENCY_LIMITS)
-                if containers:
-                    handler_slots[SOLUTION_GIT_CAPABILITY] = 1
-                if worker.state not in ("reserved", "starting"):
-                    if worker.active_handler_counts is None:
-                        handler_slots = {handler: 0 for handler in handler_slots}
-                    else:
-                        handler_slots = {
-                            handler: max(0, limit - worker.active_handler_counts.get(handler, 0))
-                            for handler, limit in HANDLER_CONCURRENCY_LIMITS
-                        }
-                if worker.reserved_for_dispatch_id in requests:
-                    covered.add(worker.reserved_for_dispatch_id)
-                    reservation = requests[worker.reserved_for_dispatch_id]
-                    held, held_handler = reservation.bytes, reservation.handler
-                    if held_handler in handler_slots:
-                        handler_slots[held_handler] = max(0, handler_slots[held_handler] - 1)
+                reservation = requests.get(worker.reserved_for_dispatch_id)
+                held = reservation.bytes if reservation else 0
+                if reservation:
+                    covered.add(reservation.id)
+                handler_slots = linux_handler_slots(
+                    worker, reservation.handler if reservation else None, containers=containers,
+                )
                 # A Job admitted but still starting its pool has not measured
                 # its budget yet; until it reports, count the one expected.
                 # A static executor counts only once ready and measured.
@@ -1228,6 +1167,59 @@ class LaunchPlan:
     sized: list[tuple[UUID, int]]
 
 
+async def waiting_capacity_rows(db: AsyncSession, platform_job_ids: list[UUID], now: datetime):
+    return (await db.execute(
+        select(
+            WorkDispatch.id.label("id"),
+            WorkDispatch.memory_request_bytes.label("memory_request_bytes"),
+            WorkDispatch.created_at.label("created_at"),
+            WorkDispatch.handler.label("handler"),
+            WorkDispatch.handler_version,
+            WorkDispatch.cloudflare_revision,
+            Execution.organization_id.label("tenant_id"),
+            literal(None).label("platform_job_type"),
+        )
+        .outerjoin(Execution, Execution.id == WorkDispatch.subject_id)
+        .where(
+            WorkDispatch.assigned_worker_id.is_(None),
+            WorkDispatch.execution_lane == "normal",
+            # Every advertised execution handler, including live
+            # and backfill summaries, gains physical capacity.
+            WorkDispatch.handler.in_(REMOTE_WORKER_HANDLER_NAMES),
+        )
+        .union_all(
+            select(
+                PlatformJob.id,
+                PlatformJob.memory_required_bytes,
+                PlatformJob.created_at,
+                # Any physical worker runs local platform jobs.
+                literal(None),
+                literal(None),
+                literal(None),
+                literal(None),
+                PlatformJob.job_type,
+            ).where(
+                PlatformJob.id.in_(platform_job_ids),
+                PlatformJob.status == "queued",
+                PlatformJob.execution_backend == "local",
+                PlatformJob.available_at <= now,
+            ),
+            pending_service_statement(now).with_only_columns(
+                ServiceDefinition.id,
+                workflow_request_sql(Workflow),
+                ServiceDefinition.updated_at,
+                # Every physical executor supervises services.
+                literal(None),
+                literal(None),
+                literal(None),
+                literal(None),
+                literal(None),
+            ),
+        )
+        .order_by(text("created_at"))
+    )).all()
+
+
 @dataclass(frozen=True)
 class Request:
     """Waiting work: a dispatch (with its handler) or a local platform job (None)."""
@@ -1266,6 +1258,44 @@ class FreeBudget:
 
     def fits(self, request: Request) -> bool:
         return request.bytes <= self.bytes and self.takes(request)
+
+
+def take_first_budget(
+    item: Request, budgets: list[FreeBudget], rooms: list[int], slots: list[dict[str, int]],
+    *, allow_cloudflare: bool = True,
+) -> FreeBudget | None:
+    for index, budget in enumerate(budgets):
+        if not allow_cloudflare and budget.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
+            continue
+        handler = (
+            SOLUTION_GIT_CAPABILITY
+            if budget.containers and item.platform_job_type == SOLUTION_UPDATE_CHECK_JOB else item.handler
+        )
+        remaining = slots[index]
+        available = None if handler is None else remaining.get(handler, 0 if handler in HANDLER_CONCURRENCY_LIMITS else None)
+        if rooms[index] >= item.bytes and budget.takes(item) and (available is None or available > 0):
+            rooms[index] -= item.bytes
+            if handler is not None and available is not None:
+                remaining[handler] = available - 1
+            return budget
+    return None
+
+
+def linux_handler_slots(worker: ExecutionWorker, held_handler: str | None, *, containers: bool = False) -> dict[str, int]:
+    slots = dict(HANDLER_CONCURRENCY_LIMITS)
+    if containers:
+        slots[SOLUTION_GIT_CAPABILITY] = 1
+    if worker.state not in ("reserved", "starting"):
+        if worker.active_handler_counts is None:
+            slots = dict.fromkeys(slots, 0)
+        else:
+            slots = {
+                handler: max(0, limit - worker.active_handler_counts.get(handler, 0))
+                for handler, limit in HANDLER_CONCURRENCY_LIMITS
+            }
+    if held_handler in slots:
+        slots[held_handler] = max(0, slots[held_handler] - 1)
+    return slots
 
 
 def _cloudflare_budget(slots: int, *, used: int = 0, reserved_bytes: int = 0) -> FreeBudget:
@@ -1318,32 +1348,10 @@ def _plan_launches(
     sized: list[tuple[UUID, int]] = []
     for item in waiting:
         dispatch_id, request = item.id, item.bytes
-        placed = False
-        for index, budget in enumerate(bins):
-            opaque = budget.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
-            if opaque and not allows(item.tenant_id):
-                continue
-            remaining_slots = slots[index]
-            handler = (
-                SOLUTION_GIT_CAPABILITY
-                if budget.containers and item.platform_job_type == SOLUTION_UPDATE_CHECK_JOB
-                else item.handler
-            )
-            available_slots = (
-                None if handler is None else remaining_slots.get(handler, 0 if handler in limited else None)
-            )
-            if (
-                rooms[index] >= request and budget.takes(item)
-                and (available_slots is None or available_slots > 0)
-            ):
-                rooms[index] -= request
-                if handler is not None and available_slots is not None:
-                    remaining_slots[handler] = available_slots - 1
-                if opaque:
-                    occupy(item.tenant_id)
-                placed = True
-                break
-        if placed:
+        placed = take_first_budget(item, bins, rooms, slots, allow_cloudflare=allows(item.tenant_id))
+        if placed is not None:
+            if placed.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
+                occupy(item.tenant_id)
             continue
         new_handlers = frozenset({CLOUDFLARE_WORKFLOW_HANDLER[0], SOLUTION_GIT_CAPABILITY}) if new_containers else frozenset(REMOTE_WORKER_HANDLER_NAMES)
         new_budget = FreeBudget(standard_budget, new_handlers, containers=new_containers)

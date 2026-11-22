@@ -2,6 +2,7 @@
 
 import json
 from typing import Any, TextIO
+from uuid import UUID
 
 import click
 from pydantic import ValidationError
@@ -81,17 +82,22 @@ def _read_policy(policy: TextIO) -> dict[str, Any]:
 
 
 @cloudflare_group.command("stage-credential")
-@click.option("--account-id", required=True)
+@click.option("--account-id", help="Account ID for connecting Cloudflare.")
+@click.option("--installation-id", type=click.UUID, help="Installation ID for rotating a connected token.")
 @click.option("--purpose", type=click.Choice(["connect", "rotate"]), required=True)
 @click.pass_context
 @pass_resolver
 @run_async
 async def stage_credential(
-    ctx: click.Context, account_id: str, purpose: str, *, client: BifrostClient, resolver: RefResolver,
+    ctx: click.Context, account_id: str | None, installation_id: UUID | None, purpose: str,
+    *, client: BifrostClient, resolver: RefResolver,
 ) -> None:
     """Enter a Cloudflare token for a one-time MCP credential reference."""
+    if (account_id is None) == (installation_id is None) or (purpose == "connect" and account_id is None):
+        raise click.UsageError("Provide --account-id for connect or --installation-id for rotate.")
+    target = {"installation_id": str(installation_id)} if installation_id is not None else {"account_id": account_id}
     response = await client.post(f"{_PATH}/credential", json={
-        "account_id": account_id, "purpose": purpose,
+        **target, "purpose": purpose,
         "api_token": click.prompt("Cloudflare API Token", hide_input=True),
     })
     response.raise_for_status()

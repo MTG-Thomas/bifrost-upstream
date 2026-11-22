@@ -213,6 +213,8 @@ async def verify(db: AsyncSession, row: CloudflareInstallation, client: TunnelRe
     receipt = _recorded(record) if record is not None else None
     if receipt is None or await client.dns(receipt.intent, receipt, tunnel.provider_id) is None:
         raise TunnelUnavailable("The recorded Cloudflare DNS record is absent")
+    assert record is not None
+    record.observed_at = datetime.now(UTC)
     await client.verify_ingress(tunnel, tunnel_origin())
     await client.verify_private_routes(tunnel.provider_id)
     if row.tunnel_token_version is None:

@@ -5,6 +5,7 @@ import logging
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal
+from uuid import UUID
 
 from shared.models import (
     CloudflareCapacityPolicy,
@@ -14,33 +15,52 @@ from shared.models import (
     CloudflarePlacementReason,
     CloudflareRecoveryDetails,
 )
-from sqlalchemy import String, and_, cast, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.config import get_settings
 from src.core.cache.redis_client import CacheConnectionError, CacheOperationError, get_redis
 from src.models.enums import LIVE_EXECUTION_STATUSES, ExecutionStatus
 from src.models.orm.cloudflare_approvals import CloudflareApproval
-from src.models.orm.cloudflare_capacity import CloudflareInstallation, CloudflareOwnedResource, CloudflareWorkerReservation
-from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
+from src.models.orm.cloudflare_capacity import (
+    CloudflareCapacityScope,
+    CloudflareInstallation,
+    CloudflareOwnedResource,
+    CloudflareWorkerReservation,
+)
+from src.models.orm.execution_workers import MANAGED_WORKER_FORMS, ExecutionWorker, ExecutionWorkerClaim
 from src.models.orm.executions import Execution
 from src.models.orm.platform_jobs import PlatformJob
 from src.models.orm.work_dispatches import WorkDispatch
 from src.models.orm.workflows import Workflow
 from src.services.authorization.enforce import Caller
 from src.services.authorization.execution_access import execution_list_filter
+from src.services.kubernetes_execution import load_kubernetes_policy
 from src.services.pool_cadence import CLOUDFLARE_WORKERS_LAUNCH_AGE_SECONDS, POOL_RECONCILE_SPACING_SECONDS
 from src.services.work_dispatch import WAKE_WORKFLOW
 from src.services.worker_pool.cloudflare_admission import ManagedCloudflareScope, PrimaryPool
 from src.services.worker_pool.cloudflare_containers_admission import LINUX_REVIEW_VERSION, linux_source_current_sql
 from src.services.worker_pool.cloudflare_containers_policy import ContainersPolicy
 from src.services.worker_pool.cloudflare_provisioning import ObservationCheck, OwnershipCheck, OwnershipResource
-from src.services.worker_pool.cloudflare_slots import read_workflow_slot_admission
+from src.services.worker_pool.cloudflare_slots import read_workflow_slot_admission, tenant_key
+from src.services.worker_pool.controller import FreeBudget, Request, linux_handler_slots, take_first_budget, waiting_capacity_rows
+from src.services.worker_pool.demand import pending_local_platform_job_ids
 from src.services.worker_pool.eligibility import cloudflare_dispatch_sql
 from src.services.worker_pool.external_client import CapacityProtocolCheck
 from src.services.worker_pool.liveness import HEARTBEAT_LOST_AFTER
+from src.services.worker_pool.sizing import JobSizing, job_baseline, launch_limit
 from src.worker.remote.protocol import CLOUDFLARE_WORKFLOW_HANDLER, LINUX_RUNTIME_PROFILE
 
 logger = logging.getLogger(__name__)
+
+PrimaryCause = Literal["below_ceiling", "unhealthy", "profile_mismatch", "not_admitting", "unreachable"]
+PRIMARY_REMEDIES: dict[PrimaryCause, str] = {
+    "below_ceiling": "The primary can add workers before Cloudflare overflow is needed.",
+    "unhealthy": "Check that Normal primary workers are ready and reporting heartbeats.",
+    "profile_mismatch": "Verify the primary runtime profile and the deployed Workers capacity policy.",
+    "not_admitting": "Resolve the installation admission blockers and reconcile Cloudflare.",
+    "unreachable": "Restore capacity controller connectivity and check the next observation.",
+}
 
 PLACEMENT: dict[CloudflarePlacementCode, tuple[str, str]] = {
     "setup_required": ("Waiting for Setup", "Connect Cloudflare and enable capacity to provision and verify overflow."),
@@ -78,7 +98,7 @@ def reason(code: CloudflarePlacementCode, at: datetime | None = None) -> Cloudfl
 
 
 def recovery_for_job(job: PlatformJob | None) -> CloudflareRecoveryDetails | None:
-    if job is None or job.status == "succeeded":
+    if job is None or job.status not in ("failed", "requires_action"):
         return None
     result = job.result or {}
     code = result.get("code", job.error_code)
@@ -124,6 +144,7 @@ class PlacementObservation:
     oldest: datetime | None = None
     primary_fit: int | None = None
     primary_saturated: bool | None = None
+    primary_cause: PrimaryCause | None = None
     tenant_blocked: bool = False
     installation_full: bool = False
     minimum_demand: int = 1
@@ -133,7 +154,7 @@ class PlacementObservation:
 
 
 def lane_reasons(
-    observation: PlacementObservation, *, now: datetime, gate_seconds: int, approvals: int,
+    observation: PlacementObservation, *, now: datetime, gate_seconds: float, approvals: int,
     blockers: list[CloudflarePlacementReason],
 ) -> list[CloudflarePlacementReason]:
     reasons = list(blockers)
@@ -145,12 +166,18 @@ def lane_reasons(
         if approvals:
             reasons.append(reason("waiting_for_demand"))
         return reasons
-    if observation.primary_fit:
-        reasons.append(reason("primary_has_capacity"))
+    if observation.primary_fit or observation.primary_cause == "below_ceiling":
+        primary_reason = reason("primary_has_capacity")
+        if observation.primary_cause == "below_ceiling":
+            primary_reason.remedy = PRIMARY_REMEDIES["below_ceiling"]
+        reasons.append(primary_reason)
     if observation.primary_fit == observation.queued:
         return reasons
-    if observation.primary_saturated is not True:
-        reasons.append(reason("primary_capacity_unverified"))
+    if observation.primary_saturated is not True and observation.primary_cause != "below_ceiling":
+        unverified = reason("primary_capacity_unverified")
+        if observation.primary_cause is not None:
+            unverified.remedy = PRIMARY_REMEDIES[observation.primary_cause]
+        reasons.append(unverified)
     if observation.installation_full:
         reasons.append(reason("installation_slots_full"))
     if observation.tenant_blocked:
@@ -161,7 +188,9 @@ def lane_reasons(
             reasons.append(reason("waiting_for_launch_gate", gate))
         elif observation.minimum_demand > 1:
             reasons.append(reason("waiting_for_demand"))
-    return reasons or [reason("eligible_for_overflow")]
+    if not reasons or (observation.primary_saturated and len(reasons) == 1 and reasons[0].code == "primary_has_capacity"):
+        reasons.append(reason("eligible_for_overflow"))
+    return reasons
 
 
 def _controller_key(binding: ManagedCloudflareScope) -> str:
@@ -170,11 +199,13 @@ def _controller_key(binding: ManagedCloudflareScope) -> str:
 
 async def record_controller_observation(
     binding: ManagedCloudflareScope, *, primary: PrimaryPool | None = None, unavailable: bool = False,
+    cause: PrimaryCause | None = None,
 ) -> None:
     try:
         async with get_redis() as redis:
             await redis.set(_controller_key(binding), json.dumps({
                 "primary": asdict(primary) if primary is not None else None,
+                "cause": cause,
                 "cooldown": (datetime.now(UTC) + timedelta(seconds=POOL_RECONCILE_SPACING_SECONDS)).isoformat()
                 if unavailable else None,
             }), ex=int(HEARTBEAT_LOST_AFTER.total_seconds()))
@@ -183,19 +214,26 @@ async def record_controller_observation(
 
 
 async def _controller_observation(
-    installation: CloudflareInstallation,
-) -> tuple[PrimaryPool | None, datetime | None]:
-    binding = ManagedCloudflareScope(installation.id, "workers", installation.desired_revision)
+    db: AsyncSession, installation: CloudflareInstallation,
+) -> tuple[PrimaryPool | None, datetime | None, PrimaryCause | None]:
+    scope = CloudflareCapacityScope
+    revision = await db.scalar(select(scope.deployment_revision).where(
+        scope.installation_id == installation.id, scope.scope == "workers",
+    ).order_by((scope.deployment_revision == installation.admitted_revision).desc().nulls_last(),
+               scope.deployment_revision.desc()).limit(1))
+    if revision is None:
+        return None, None, None
+    binding = ManagedCloudflareScope(installation.id, "workers", revision)
     try:
         async with get_redis() as redis:
             value = await redis.get(_controller_key(binding))
     except (CacheConnectionError, CacheOperationError):
-        return None, None
+        return None, None, "unreachable"
     if value is None:
-        return None, None
+        return None, None, None
     data = json.loads(value)
     return (PrimaryPool(**data["primary"]) if data["primary"] else None,
-            datetime.fromisoformat(data["cooldown"]) if data["cooldown"] else None)
+            datetime.fromisoformat(data["cooldown"]) if data["cooldown"] else None, data.get("cause"))
 
 
 async def deployment_evidence(db: AsyncSession, installation: CloudflareInstallation) -> CloudflareDeploymentEvidence:
@@ -213,9 +251,46 @@ async def deployment_evidence(db: AsyncSession, installation: CloudflareInstalla
             evidence.connector_session = "waiting_for_projection"
         elif evidence.connector_session is None or stored.get("connector_observed_token_version") != installation.tunnel_token_version:
             evidence.connector_session = "unobserved"
-    else:
-        evidence.dns_verified_at = evidence.ingress_verified_at
     return evidence
+
+
+def primary_coverage(
+    workers: list[ExecutionWorker], waiting: list[Request], now: datetime, sizing: JobSizing | None = None,
+) -> set[UUID]:
+    """Pack primary capacity oldest first, honoring pinned dispatches."""
+    requests = {request.id: request for request in waiting}
+    covered: set[UUID] = set()
+    free = []
+    for worker in workers:
+        if (
+            worker.state == "draining" or worker.execution_lane != "normal" or worker.memory_pressured
+            or CLOUDFLARE_WORKFLOW_HANDLER[0] not in worker.supported_handlers
+        ):
+            continue
+        held = requests.get(worker.reserved_for_dispatch_id)
+        if held:
+            covered.add(held.id)
+        available = None
+        if sizing is not None and worker.form in MANAGED_WORKER_FORMS and (
+            worker.state in ("reserved", "starting") or worker.memory_budget_bytes is None
+        ):
+            available = sizing.budget_bytes(launch_limit(worker, sizing.standard_limit_bytes))
+        elif (
+            worker.state == "ready" and worker.memory_budget_bytes is not None
+            and worker.heartbeat_at is not None and worker.heartbeat_at >= now - HEARTBEAT_LOST_AFTER
+        ):
+            available = worker.memory_budget_bytes - worker.memory_reserved_bytes
+        if available is not None:
+            free.append(FreeBudget(
+                max(0, available - (held.bytes if held else 0)),
+                frozenset(worker.supported_handlers), linux_handler_slots(worker, held.handler if held else None),
+            ))
+    rooms = [budget.bytes for budget in free]
+    slots = [dict(budget.handler_slots) for budget in free]
+    for request in waiting:
+        if request.id not in covered and take_first_budget(request, free, rooms, slots) is not None:
+            covered.add(request.id)
+    return covered
 
 
 def placement_blockers(
@@ -256,32 +331,36 @@ async def overflow_status(
         Execution.status.in_(LIVE_EXECUTION_STATUSES), visibility,
     ).group_by(pin.scope))).all()
     counts = {scope: (reserved, running) for scope, reserved, running in claimed}
-    primary, cooldown = await _controller_observation(installation)
+    primary, cooldown, cause = await _controller_observation(db, installation)
     saturated = None
-    largest_fit = None
+    covered: set[UUID] = set()
     if primary is not None:
         workers = list(await db.scalars(select(ExecutionWorker).where(
             ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE,
             ExecutionWorker.form == primary.form, ExecutionWorker.capacity_scope == primary.scope,
             ExecutionWorker.state.in_(("reserved", "starting", "ready", "draining")),
         )))
-        saturated = primary.saturated(workers, now)
-        largest_fit = max((
-            worker.memory_budget_bytes - worker.memory_reserved_bytes
-            for worker in workers if worker.state == "ready" and worker.execution_lane == "normal"
-            and not worker.memory_pressured and worker.memory_budget_bytes is not None
-            and worker.heartbeat_at is not None and worker.heartbeat_at >= now - HEARTBEAT_LOST_AFTER
-            and CLOUDFLARE_WORKFLOW_HANDLER[0] in worker.supported_handlers
-        ), default=-1)
+        state = primary.capacity_state(workers, now)
+        saturated = state == "saturated"
+        if cause in (None, "unhealthy", "below_ceiling"):
+            cause = None if saturated else state
+        pool_policy = await load_kubernetes_policy(db)
+        waiting = await waiting_capacity_rows(db, await pending_local_platform_job_ids(db, pool_policy, now), now)
+        threshold = get_settings().memory_pressure_threshold
+        sizing = JobSizing.of(pool_policy, threshold, job_baseline([], pool_policy.worker_memory_mib * 2**20, threshold))
+        covered = primary_coverage(workers, [
+            Request(row.id, row.memory_request_bytes, row.handler, row.handler_version, row.cloudflare_revision,
+                    row.tenant_id, platform_job_type=row.platform_job_type)
+            for row in waiting
+        ], now, sizing)
     slots = await read_workflow_slot_admission(db, installation.id, policy.workers)
-    tenant = func.coalesce(cast(Execution.organization_id, String), "platform")
     queue = select(WorkDispatch.id).select_from(WorkDispatch).join(
         Execution, Execution.id == WorkDispatch.subject_id,
     ).where(
         WorkDispatch.assigned_worker_id.is_(None), Execution.status == ExecutionStatus.PENDING, visibility,
     )
-    lanes: list[tuple[Literal["workers", "containers"], int, int]] = [
-        ("workers", int(CLOUDFLARE_WORKERS_LAUNCH_AGE_SECONDS), 1),
+    lanes: list[tuple[Literal["workers", "containers"], float, int]] = [
+        ("workers", CLOUDFLARE_WORKERS_LAUNCH_AGE_SECONDS, 1),
     ]
     containers = None
     if installation.containers_policy.get("enabled") is True:
@@ -319,18 +398,19 @@ async def overflow_status(
                 WorkDispatch.memory_request_bytes <= review["memory_bytes"].as_integer(),
                 linux_source_current_sql(),
             )
-        fits = WorkDispatch.memory_request_bytes <= (largest_fit if largest_fit is not None else -1)
-        unblocked = and_(~fits, tenant.not_in(blocked))
-        queued, oldest, first_launch, fit_count, aged, tenant_blocked = (await db.execute(eligible.with_only_columns(
-            func.count(), func.min(WorkDispatch.created_at), func.min(WorkDispatch.created_at).filter(unblocked),
-            func.count().filter(fits),
-            func.count().filter(and_(unblocked, WorkDispatch.created_at <= now - timedelta(seconds=gate))),
-            func.count().filter(and_(~fits, tenant.in_(blocked))),
-        ))).one()
+        demand = (await db.execute(eligible.with_only_columns(
+            WorkDispatch.id, WorkDispatch.created_at, Execution.organization_id,
+        ).order_by(WorkDispatch.created_at, WorkDispatch.id))).all()
+        oldest = demand[0].created_at if demand else None
+        overflow = [row for row in demand if row.id not in covered]
+        unblocked = [row for row in overflow if tenant_key(row.organization_id) not in blocked]
+        cutoff = now - timedelta(seconds=gate)
         observation = PlacementObservation(
-            queued=queued, oldest=first_launch, primary_fit=fit_count if largest_fit is not None else None,
-            primary_saturated=saturated, minimum_demand=depth, aged_demand=aged,
-            tenant_blocked=bool(tenant_blocked), installation_full=full,
+            queued=len(demand), oldest=unblocked[0].created_at if unblocked else None,
+            primary_fit=len(demand) - len(overflow) if primary is not None else None,
+            primary_saturated=saturated, primary_cause=cause, minimum_demand=depth,
+            aged_demand=sum(row.created_at <= cutoff for row in unblocked),
+            tenant_blocked=len(unblocked) < len(overflow), installation_full=full,
             cooldown_until=cooldown if cooldown is not None and cooldown > now else None,
             provider_unavailable=cooldown is not None and not any(
                 blocker.code == "cloudflare_capacity_unavailable" for blocker in blockers
@@ -343,7 +423,7 @@ async def overflow_status(
                 "remedy": "Automatic Containers placement requires a release that runs the Containers reservation controller.",
             })]
         statuses.append(CloudflareLaneStatus(
-            lane=lane, eligible_queued=queued, claimed=reserved, running=running, primary_fit=observation.primary_fit,
+            lane=lane, eligible_queued=len(demand), claimed=reserved, running=running, primary_fit=observation.primary_fit,
             primary_saturated=saturated, oldest_eligible_queue_age_seconds=max(0, (now - oldest).total_seconds()) if oldest else None,
             launch_gate_seconds=gate,
             reasons=lane_reasons(observation, now=now, gate_seconds=gate, approvals=approvals, blockers=lane_blockers),

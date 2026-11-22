@@ -106,7 +106,7 @@ it("displays scoped overflow, ledger and recovery evidence from status", async (
 	expect(screen.getByText("2 approved workflows.")).toBeVisible();
 	expect(screen.getByText("Waiting for Launch Gate")).toBeVisible();
 	expect(screen.getByText("1.00 s / 2 s")).toBeVisible();
-	expect(screen.getByText("$0.75")).toBeVisible();
+	expect(screen.getByText("0.75 USD")).toBeVisible();
 	expect(within(screen.getByRole("region", { name: "Cloudflare Recovery" })).getByText("capabilities_shape")).toBeVisible();
 });
 
@@ -371,7 +371,8 @@ it("explains a rejected spending envelope beside the editable limit", async () =
 		message: "The fleet envelope exceeds the submitted limit.",
 		details: {
 			code: "CF_BUDGET_REFUSED",
-			fields: { "policy.monthly_limit_usd": "The fleet envelope is 41 USD/month. The submitted limit was 40 USD/month. Raise the limit or reduce the fleet size or lifetime." },
+			fields: { "policy.monthly_limit_usd": "The fleet envelope is 41 USD/month. The submitted limit was 40 USD/month." },
+			remedy: "Raise the limit or reduce the fleet size or lifetime.",
 		},
 	}, 422));
 	renderCapacity();
@@ -385,7 +386,8 @@ it("explains a rejected spending envelope beside the editable limit", async () =
 	expect(await screen.findByRole("region", { name: "Cloudflare Settings Error" })).toHaveFocus();
 	const limit = screen.getByRole("spinbutton", { name: "Monthly Estimated Usage Limit" });
 	expect(limit).toHaveValue(40);
-	expect(limit).toHaveAccessibleDescription(/fleet envelope is 41 USD.*submitted limit was 40.*Raise the limit/);
+	expect(limit).toHaveAccessibleDescription(/fleet envelope is 41 USD.*submitted limit was 40/);
+	expect(screen.getByText("Raise the limit or reduce the fleet size or lifetime.")).toBeVisible();
 });
 
 it("reads back a lost job snapshot on reconnect and focuses the refusal", async () => {

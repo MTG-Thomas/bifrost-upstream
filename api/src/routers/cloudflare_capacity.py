@@ -3,6 +3,7 @@
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Body, HTTPException, Response, status
+from sqlalchemy import select
 from shared.models import (
     CloudflareAccountTokenRotation,
     CloudflareAccountTokenReferenceRotation,
@@ -26,6 +27,7 @@ from src.jobs.platform.cloudflare_capacity import (
     enqueue_cloudflare_worker_credential_rotation,
 )
 from src.jobs.platform.cloudflare_enable import enqueue_cloudflare_enable
+from src.models.orm.cloudflare_capacity import CloudflareInstallation
 from src.models.contracts.platform_jobs import PlatformJobAccepted
 from src.services.audit import emit_audit
 from src.services.authorization.enforce import load_caller, require_operation
@@ -72,10 +74,25 @@ async def stage_cloudflare_credential(
 ) -> CloudflareStagedCredential:
     caller = await load_caller(db, user)
     require_operation(caller, "capacity.cloudflare_credential_stage", GLOBAL)
+    account_id = body.account_id
+    installation_id = None
+    if body.purpose == "rotate":
+        target = CloudflareInstallation
+        match = target.id == body.installation_id if body.installation_id is not None else target.account_id == account_id
+        installation = await db.scalar(select(target).where(match, target.retired_at.is_(None)))
+        if installation is None:
+            raise HTTPException(404, "Active Cloudflare installation not found.")
+        installation_id = installation.id
+        account_id = installation.account_id
+    assert account_id is not None
     ref, expires_at = await stage_account_token(
-        db, actor_id=caller.principal.user_id, account_id=body.account_id, purpose=body.purpose, token=body.api_token,
+        db, actor_id=caller.principal.user_id, account_id=account_id, purpose=body.purpose, token=body.api_token,
+        installation_id=installation_id,
     )
-    await emit_audit(db, "capacity.cloudflare_credential_stage", details={"account_id": body.account_id, "purpose": body.purpose})
+    await emit_audit(
+        db, "capacity.cloudflare_credential_stage", resource_id=installation_id,
+        details={"account_id": account_id, "purpose": body.purpose},
+    )
     return CloudflareStagedCredential(credential_ref=ref, expires_at=expires_at)
 
 
@@ -94,7 +111,7 @@ async def configure_cloudflare_capacity(
         remedy = "Raise the limit or reduce the fleet size or lifetime."
         raise StructuredRequestRefusal("cloudflare_budget_refused", message, {
             "code": "CF_BUDGET_REFUSED",
-            "fields": {"policy.monthly_limit_usd": f"{message} {remedy}"},
+            "fields": {"policy.monthly_limit_usd": message},
             "fleet_envelope_usd": str(exc.envelope),
             "monthly_limit_usd": str(body.policy.monthly_limit_usd),
             "remedy": remedy,

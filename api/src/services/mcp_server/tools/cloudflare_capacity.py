@@ -132,7 +132,7 @@ _TOOLS = (
     (bifrost_cloudflare_upgrade_execute, "Upgrade Cloudflare", "Apply the Workers release packaged with Bifrost."),
     (bifrost_cloudflare_worker_credential_replace, "Rotate Cloudflare Worker Credential", "After Scale In, rotate the internal control root, Workers scope bearer, or Managed Tunnel connector token."),
     (bifrost_cloudflare_connect_execute, "Connect Cloudflare", "Use a one-time reference from the operator's capacity cloudflare stage-credential command with purpose connect."),
-    (bifrost_cloudflare_account_token_replace, "Rotate Cloudflare API Token", "Use a one-time reference from the operator's capacity cloudflare stage-credential command with purpose rotate."),
+    (bifrost_cloudflare_account_token_replace, "Rotate Cloudflare API Token", "Use a one-time reference from capacity cloudflare stage-credential --purpose rotate --installation-id."),
     (bifrost_cloudflare_policy_update, "Update Cloudflare Policy", "Update the current Cloudflare capacity policy."),
 )
 TOOLS = [(tool.__name__, title, description) for tool, title, description in _TOOLS]

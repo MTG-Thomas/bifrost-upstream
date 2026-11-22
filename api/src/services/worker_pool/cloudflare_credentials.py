@@ -23,8 +23,13 @@ CredentialPurpose = Literal["account_token", "control_root", "scope_bearer", "tu
 StagePurpose = Literal["connect", "rotate"]
 
 
-def _stage_binding(ref: UUID, actor_id: UUID, account_id: str, purpose: StagePurpose) -> list[str]:
-    return ["cloudflare-staged-token-v1", str(ref), str(actor_id), account_id, purpose]
+def _stage_binding(
+    ref: UUID, actor_id: UUID, account_id: str, purpose: StagePurpose, installation_id: UUID | None,
+) -> list[str]:
+    binding = ["cloudflare-staged-token-v1", str(ref), str(actor_id), account_id, purpose]
+    if installation_id is not None:
+        return [*binding, str(installation_id)]
+    return binding
 
 
 async def purge_expired_staged_tokens(db: AsyncSession) -> None:
@@ -35,11 +40,14 @@ async def purge_expired_staged_tokens(db: AsyncSession) -> None:
 
 async def stage_account_token(
     db: AsyncSession, *, actor_id: UUID, account_id: str, purpose: StagePurpose, token: SecretStr,
+    installation_id: UUID | None = None,
 ) -> tuple[UUID, datetime]:
+    if (purpose == "rotate") != (installation_id is not None):
+        raise ValueError("Cloudflare rotation requires an installation binding")
     await purge_expired_staged_tokens(db)
     ref = uuid4()
     expires_at = datetime.now(UTC) + timedelta(minutes=10)
-    binding = _stage_binding(ref, actor_id, account_id, purpose)
+    binding = _stage_binding(ref, actor_id, account_id, purpose, installation_id)
     db.add(CloudflareStagedToken(
         id=ref, actor_id=actor_id, account_id=account_id, purpose=purpose, expires_at=expires_at,
         ciphertext=encrypt_secret(json.dumps([binding, token.get_secret_value()])),
@@ -49,6 +57,7 @@ async def stage_account_token(
 
 async def consume_staged_token(
     db: AsyncSession, ref: UUID, *, actor_id: UUID, account_id: str, purpose: StagePurpose,
+    installation_id: UUID | None = None,
 ) -> SecretStr:
     row = await db.scalar(delete(CloudflareStagedToken).where(
         CloudflareStagedToken.id == ref,
@@ -59,7 +68,7 @@ async def consume_staged_token(
     ).returning(CloudflareStagedToken.ciphertext))
     if row is not None:
         binding, value = json.loads(decrypt_secret(row))
-        if binding == _stage_binding(ref, actor_id, account_id, purpose) and isinstance(value, str):
+        if binding == _stage_binding(ref, actor_id, account_id, purpose, installation_id) and isinstance(value, str):
             return SecretStr(value)
     raise ValueError("Invalid or expired Cloudflare credential reference")
 
