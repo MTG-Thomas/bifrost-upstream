@@ -70,6 +70,14 @@ The bridge sample provides evidence against a persistent bridge-path defect unde
 | Client-side handshake churn | **Supported by the pinned HTTP/1.1 stack.** The probe reads headers through `client.stream()` and exits without consuming the response to end-of-message, including for expected empty responses. HTTPX closes the stream at exit. httpcore returns a socket to the pool only when both h11 states are `DONE`. Parsing response headers alone leaves the response unfinished. A shared client therefore still opens a new connection for each normal route check in this code path. The latest receipt confirms a fresh socket for the failed request. [HTTPX 0.28.1 stream lifecycle](https://github.com/encode/httpx/blob/0.28.1/httpx/_client.py#L1474-L1483) · [httpcore 1.0.9 HTTP/1.1 implementation](https://github.com/encode/httpcore/blob/1.0.9/httpcore/_async/http11.py#L154-L235) |
 | Origin `Connection: close` forces edge closure | **The header alone establishes closure on the origin hop.** `Connection` is hop-by-hop and Cloudflare documents separate client and origin connections with client keep-alive. The edge can independently close the client connection. Whether it keeps this ingress's replies reusable after the client finishes reading them remains unverified. The TLS-only resolver sample contains no HTTP evidence. [RFC 9110 §7.6.1](https://www.rfc-editor.org/rfc/rfc9110.html#section-7.6.1) · [Cloudflare connection limits](https://developers.cloudflare.com/fundamentals/reference/connection-limits/) |
 
+Client-to-edge reuse remains unverified until a hosted ingress receipt records
+`reused_requests > 0` for a probed address. The local TLS regression verifies
+that every route also passes when the peer sends `Connection: close`, in
+which case each request starts its own TCP connection. Keep the origin close
+behavior because it prevents desynchronization when a refused request has an
+unread body. The sanitized preflight and Enable failure details use
+`tcp_connects_started` for attempts, including failed TCP connects.
+
 ## Probability of a Four-Second Timeout
 
 Let `p` be an independent one-way packet loss probability and `q` the probability a fresh connection exhausts a four-second phase budget. For `N` independent fresh connections, the chance of at least one timeout is `1 - (1 - q)^N`. The present HTTP design has `N=100` per fully exercised address, or `N=200` when two addresses each run the complete matrix. The WebSocket uses a separate five-second budget for its combined operations and is outside this calculation. Failures of HTTP checks, incomplete address matrices and the global deadline are outside this model.
