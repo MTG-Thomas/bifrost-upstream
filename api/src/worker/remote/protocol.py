@@ -84,6 +84,10 @@ def cloudflare_slots(memory_limit_bytes: int | None) -> int:
 # backfill, and adding physical workers adds one slot for each handler.
 HANDLER_CONCURRENCY_LIMITS = (("agent.summarize", 1), ("agent.summarize_backfill", 1))
 WORKER_DRAIN_GRACE_SECONDS = 300
+WORKERS_DEADLINE_SKEW_SECONDS = 5
+WORKERS_DEADLINE_DELETE_SECONDS = 10
+WORKERS_DEADLINE_DRAIN_SECONDS = 285
+WORKERS_DEADLINE_DISPATCH_SECONDS = 3
 
 
 def hello_execution_handlers(frame: Mapping[str, Any]) -> tuple[tuple[str, int], ...]:
