@@ -274,21 +274,297 @@
     "launcher_cap": 3,
     "slots_per_launcher": 4,
     "installation_slots": 9,
-    "recommended_limit_usd": "75.00",
     "forecast_duty_percent": "0.077",
     "save_time_projection_cpu_ms_per_launcher_second": "12392.122",
     "save_time_projection_fixed_cpu_ms": 2200,
     "rotation_usd_900_seconds": "54.126",
     "envelope_usd_900_seconds": "68.50",
     "rotation_usd_120_seconds": "402.318",
-    "envelope_usd_120_seconds": "415.59"
+    "envelope_usd_120_seconds": "415.59",
+    "owner_candidate_limit_usd": "75.00"
   },
   "source_findings": {
-    "lifetime_enforcement": "The managed capacity provider validates the requested lifetime against the profile. Launcher enrollment carries no lifetime or deadline. ApiExecutor inherits the process-wide PoolWorker lifetime clock, which defaults to 21600 seconds.",
+    "lifetime_enforcement": "The managed capacity provider validates the requested lifetime against the profile. Launcher enrollment carries no lifetime or deadline. ApiExecutor inherits the process-wide PoolWorker lifetime clock, which defaults to 21600 seconds. The loop's clock starts with the executor rather than being persisted with the incarnation.",
     "credentials": "Run credentials are per attempt. Managed control keys are derived by installation, root version, scope, incarnation and resource UID, without a timestamp expiry. The API validates hello freshness and increasing sequence and renews the 20-second owner lease. The local SDK and hello fixture uses synthetic credentials and does not run the API lease.",
     "idle": "Ordinary terminal ACK releases occupancy. The 90-second linger gates readiness reuse without a scheduled idle ping. Physical idle drain is a separate PoolWorker policy. Local Miniflare does not run that API-side idle loop.",
     "upgrade": "Closing revision admission initiates drain independently of nominal lifetime. Active attempts use a 300-second drain grace and the upgrade job retains its 600-second deadline.",
     "memory": "RSS is aggregate workerd process memory. sys.modules counts cover the fixture child. Per-isolate JS and Wasm heap and hosted limit behavior require separate qualification."
   },
-  "verdict": "Hold preset B. The 900-second value reached the provider reservation but the release's fixed four-slot journal budget stopped the workload at approximately 180 seconds."
+  "verdict": "Hold preset B. The 900-second value reached the provider reservation but the release's fixed four-slot journal budget stopped the workload at approximately 180 seconds.",
+  "control_120_seconds": {
+    "harness_source": "2c791a2318ee25f882d2374607739f46c774e62b",
+    "preflight_available_kib": 9404775,
+    "verdict": "passed for the tested workload",
+    "retirement": "The fixture issued DELETE after the final observation and acknowledged its receipt. The test did not rely on automatic retirement at 120 seconds.",
+    "reconnect": "The same incarnation signed hello sequence 2 with a new nonce. The subsequent workflow returned its own credential-bound result on the original engine identity.",
+    "node": "v26.13.1",
+    "target_seconds": 120,
+    "launcher_sha256": "027adc29f73b04142282b1677ad0185f5f668b58f6d660168df4c2cf1d9b6213",
+    "process_memory_is_aggregate": true,
+    "samples": [
+      {
+        "at_seconds": 0.072,
+        "rss_kib": 210596,
+        "peak_rss_kib": 210596,
+        "cpu_ms": 0,
+        "meter": null,
+        "state": "running"
+      },
+      {
+        "at_seconds": 14.652,
+        "rss_kib": 749776,
+        "peak_rss_kib": 749776,
+        "cpu_ms": 16750,
+        "meter": {
+          "sqlite_rows_written": 126,
+          "do_requests": 12,
+          "log_events": 4,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 30.051,
+        "rss_kib": 749760,
+        "peak_rss_kib": 749760,
+        "cpu_ms": 16810,
+        "meter": {
+          "sqlite_rows_written": 158,
+          "do_requests": 15,
+          "log_events": 5,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 60.052,
+        "rss_kib": 745968,
+        "peak_rss_kib": 749456,
+        "cpu_ms": 16870,
+        "meter": {
+          "sqlite_rows_written": 190,
+          "do_requests": 18,
+          "log_events": 6,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 91.118,
+        "rss_kib": 746500,
+        "peak_rss_kib": 749456,
+        "cpu_ms": 16940,
+        "meter": {
+          "sqlite_rows_written": 222,
+          "do_requests": 21,
+          "log_events": 7,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 120.005,
+        "rss_kib": 745848,
+        "peak_rss_kib": 749456,
+        "cpu_ms": 16950,
+        "meter": {
+          "sqlite_rows_written": 222,
+          "do_requests": 21,
+          "log_events": 7,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      }
+    ],
+    "workflows": [
+      {
+        "at_seconds": 14.63,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 9904
+          }
+        ]
+      },
+      {
+        "at_seconds": 14.647,
+        "slot": 1,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 2,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 6580
+          }
+        ]
+      },
+      {
+        "at_seconds": 14.639,
+        "slot": 2,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 3,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 3278
+          }
+        ]
+      },
+      {
+        "at_seconds": 14.647,
+        "slot": 3,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 4,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 106
+          }
+        ]
+      },
+      {
+        "at_seconds": 30.046,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 31
+          }
+        ]
+      },
+      {
+        "at_seconds": 60.047,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 33
+          }
+        ]
+      },
+      {
+        "at_seconds": 91.114,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 39
+          }
+        ]
+      }
+    ],
+    "hello_sequences": [
+      1,
+      2
+    ],
+    "cleanup_seconds": 0.013999999999995794,
+    "seal": {
+      "sqlite_rows_written": 230,
+      "do_requests": 21,
+      "log_events": 7,
+      "sqlite_database_bytes": 20480,
+      "exhausted": false,
+      "launcher_storage_cleared": true,
+      "ledger_receipt_pending": true
+    },
+    "route_invocations": {
+      "boot_cold": 4,
+      "workflow_warm": 7,
+      "boot_warm": 3
+    }
+  },
+  "verification": {
+    "backend_test_image": "sha256:6b0a47e1baf59846e40fa5366bff0029a723c84a693fff14a5fd1c41e4b20b66",
+    "backend_setup": "Initial Compose build hung after exporting the image and before pytest started. The test stack cleaned up. The successful commands used the same exported image through BIFROST_SKIP_BUILD=1.",
+    "results": [
+      {
+        "command": "./test.sh tests/e2e/platform/test_cloudflare_capacity_persistence.py",
+        "passed": 127
+      },
+      {
+        "command": "./test.sh tests/unit/services/worker_pool tests/unit/test_contract_version.py tests/unit/test_dto_flags.py tests/unit/test_access_list.py",
+        "passed": 548,
+        "by_target": {
+          "worker_pool": 395,
+          "contract_version": 2,
+          "dto_flags": 76,
+          "access_list": 75
+        }
+      },
+      {
+        "command": "./test.sh quality api",
+        "ruff": "passed",
+        "pyright": "passed"
+      },
+      {
+        "command": "node --test deploy/capacity/cloudflare/build-workers.test.mjs spikes/cloudflare-pyodide/dev/cloudflare-launcher/launcher-meter.test.mjs spikes/cloudflare-pyodide/dev/tenant-workers/launcher-host.test.mjs",
+        "passed": 27
+      },
+      {
+        "command": "node --test spikes/cloudflare-pyodide/dev/tenant-workers/launcher-workerd.test.mjs spikes/cloudflare-pyodide/dev/cloudflare-launcher/upgrade-drain.test.mjs",
+        "passed": 33
+      },
+      {
+        "command": "node --test spikes/cloudflare-pyodide/dev/tenant-workers/capacity-workerd.test.mjs",
+        "900_seconds": {
+          "failed": 2,
+          "notes": "One early stop and one subsequent conformance failure from the held reservation."
+        },
+        "120_seconds": {
+          "passed": 2,
+          "conformance_checks_passed": 17
+        }
+      }
+    ],
+    "not_run": [
+      "Hosted Cloudflare validation",
+      "Full backend suite beyond the selected files",
+      "Browser suites"
+    ],
+    "ct128_cleanup": "No owned Docker containers, networks, volumes, or temporary test image tag remained."
+  }
 }
