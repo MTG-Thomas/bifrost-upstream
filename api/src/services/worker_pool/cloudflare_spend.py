@@ -511,7 +511,7 @@ def _retained_storage_cost(installation: type[CloudflareInstallation], now):
 
 
 async def record_launcher_terminal_meter(
-    db: AsyncSession, worker_id: UUID, raw: object, *, uncertain: bool,
+    db: AsyncSession, worker_id: UUID, raw: object, *, uncertain_route: str | None = None,
 ) -> None:
     row = await db.get(CloudflareUsageIncarnation, worker_id, with_for_update=True)
     if row is None or row.deleted_at is not None:
@@ -523,7 +523,11 @@ async def record_launcher_terminal_meter(
     except ValidationError:
         row.meter_uncertain = True
         return
-    row.meter_uncertain |= uncertain
+    if uncertain_route is not None:
+        meter = CloudflareDispatchMeter
+        await db.execute(update(meter).where(
+            meter.worker_id == worker_id, meter.route_id == uncertain_route,
+        ).values(attempt_uncertain=True))
     previous = row.meter_terminal or {}
     row.meter_terminal = {**previous, **{name: max(value, previous.get(name, 0)) for name, value in receipt.items()}}
 
@@ -560,7 +564,7 @@ async def seal_launcher_meter(db: AsyncSession, worker_id: UUID, receipt: Cloudf
         row.meter_uncertain |= counter_drift
         if not row.meter_uncertain and receipt.routes:
             records = list(await db.scalars(select(meter).where(
-                meter.worker_id == worker_id, meter.route_id.in_(receipt.routes),
+                meter.worker_id == worker_id, meter.route_id.in_(receipt.routes), ~meter.attempt_uncertain,
             )))
             await _settle_foreground(db, row, receipt.routes, records)
     row.meter_final = counts

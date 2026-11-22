@@ -1,4 +1,5 @@
 import json
+from decimal import Decimal
 from email import policy as email_policy
 from email.parser import BytesParser
 from hashlib import sha256
@@ -9,7 +10,7 @@ import httpx
 import pytest
 from pydantic import SecretStr
 from scripts.test_cloudflare_fixture import _release
-from shared.models import CloudflareWorkersPolicy
+from shared.models import CloudflareCapacityPolicy, CloudflareWorkersPolicy
 from src.services.worker_pool import cloudflare_policy, cloudflare_release
 from src.services.worker_pool.cloudflare_provisioning import (
     ObservationPending,
@@ -96,6 +97,23 @@ def test_release_loads_the_verified_bytes(release: Path) -> None:
     assert len(loaded.digest) == 64
     assert loaded.modules["launcher"]["launcher.mjs"] == (release / "launcher.mjs").read_bytes()
     assert loaded.modules["capacity"]["capacity.mjs"] == (release / "capacity.mjs").read_bytes()
+
+
+@pytest.mark.parametrize(("launchers", "slots", "lifetime", "expected"), [
+    (3, 4, 3600, "32.13"),
+    (3, 4, 120, "415.59"),
+    (1, 2, 3600, "17.61"),
+])
+def test_checked_in_meter_bounds_price_the_workers_presets(launchers, slots, lifetime, expected) -> None:
+    bounds = cloudflare_policy.release_meter_bounds(_release(lifetime_meters=True))
+    policy = CloudflareCapacityPolicy(
+        monthly_limit_usd=Decimal("500"),
+        workers=CloudflareWorkersPolicy(
+            launcher_cap=launchers, slots_per_launcher=slots, installation_slots=9,
+            max_lifetime_seconds=lifetime, work_kinds=frozenset({"workflow"}),
+        ),
+    )
+    assert cloudflare_policy._price_policy(policy, bounds)["fleet_envelope_usd"] == expected
 
 
 @pytest.mark.parametrize("lifetime_meters", [False, True])

@@ -18,6 +18,7 @@ from src.jobs.platform.base import (
 )
 from src.models.orm.cloudflare_capacity import (
     CloudflareInstallation,
+    CloudflareUsageIncarnation,
     CloudflareWorkerReservation,
 )
 from src.models.orm.execution_workers import ExecutionWorker
@@ -228,6 +229,15 @@ async def run_workers_canary(
         pin.canary_job_id = context.job_id
         pin.canary_lease_token = context.lease_token
         db.add(pin)
+        if pin.workers_deadline_wire:
+            await db.flush()
+            usage = await db.get(CloudflareUsageIncarnation, worker_id, with_for_update=True)
+            assert usage is not None and pin.workers_lifetime_seconds is not None
+            if usage.meter_bounds is not None and (rates := usage.meter_bounds.get("per_second_caps")) is not None:
+                usage.meter_bounds = {
+                    **usage.meter_bounds,
+                    "caps": {name: rate * pin.workers_lifetime_seconds for name, rate in rates.items()},
+                }
         key = await load_managed_control_key(db, pin, resource_uid)
 
     signed = scoped = False

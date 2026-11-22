@@ -4646,7 +4646,8 @@ async def test_qualified_dispatch_prices_pinned_cpu_and_keeps_sdk_events_attribu
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("evidence", [
-    "complete", "reloaded", "over_cpu", "missing_timing", "missing", "uncertain", "incomplete", "regressing", "drift",
+    "complete", "reloaded", "over_cpu", "missing_timing", "missing", "uncertain", "stopped",
+    "incomplete", "invalid", "regressing", "drift",
 ])
 async def test_foreground_pricing_keeps_reserves_until_a_confirmed_seal(
     db_session: AsyncSession, installation: CloudflareInstallation, evidence: str, monkeypatch: pytest.MonkeyPatch,
@@ -4674,24 +4675,33 @@ async def test_foreground_pricing_keeps_reserves_until_a_confirmed_seal(
         tenant_id=tenant_id, route_id="fixture",
     )
     assert await cloudflare_spend.reserve_engine_generation(db_session, worker_id, identity)
+    if evidence == "uncertain":
+        assert await reserve_tenant_host_usage(
+            db_session, worker_id, noon + timedelta(seconds=10), workflow_cpu_ms=20_000, subrequests=10,
+            tenant_id=tenant_id, route_id="uncertain-route",
+        )
     event = {"sqlite_rows_written": 12, "do_requests": 3, "log_events": 1}
     booking = await db_session.get(cloudflare_spend.CloudflareDispatchMeter, (worker_id, "fixture"))
     assert booking is not None and booking.workflow_cpu_ms == 20_000
     await cloudflare_spend.record_launcher_terminal_meter(
         db_session, worker_id, {
-            **event, "sqlite_rows_written": 13 if evidence == "regressing" else 12,
+            **event, "sqlite_rows_written": {"regressing": 13, "invalid": -1}.get(evidence, 12),
             "do_requests": 0 if evidence == "drift" else event["do_requests"],
         },
-        uncertain=evidence == "uncertain",
+        uncertain_route="uncertain-route" if evidence == "uncertain" else None,
     )
+    calls = [
+        {"identity": identity, "kind": "boot", "cold": True, "started_at": now},
+        {"identity": identity, "kind": "workflow", "cold": evidence == "reloaded", "started_at": now,
+         "wall_ms": {"over_cpu": 30_000, "missing_timing": None}.get(evidence, 12_000)},
+    ]
+    routes = {} if evidence in ("incomplete", "stopped") else {"fixture": calls}
+    if evidence == "uncertain":
+        routes["uncertain-route"] = calls
     price = select(cloudflare_estimated_usage(now)).where(CloudflareInstallation.id == installation.id)
     payload = CloudflareLauncherUsage.model_validate({
         **event, "do_requests": 0 if evidence == "drift" else event["do_requests"],
-        "routes": {} if evidence == "incomplete" else {"fixture": [
-            {"identity": identity, "kind": "boot", "cold": True, "started_at": now},
-            {"identity": identity, "kind": "workflow", "cold": evidence == "reloaded", "started_at": now,
-             "wall_ms": {"over_cpu": 30_000, "missing_timing": None}.get(evidence, 12_000)},
-        ]},
+        "routes": routes,
     })
     await cloudflare_spend.seal_launcher_meter(db_session, worker_id, payload)
     assert row.meter_final is None
@@ -4708,16 +4718,16 @@ async def test_foreground_pricing_keeps_reserves_until_a_confirmed_seal(
     assert settled is not None
     lifetime = Decimal(str((now - max(row.started_at, period)).total_seconds()))
     counter_and_root_release = Decimal("0.00009295") + lifetime * Decimal("0.0012")
-    if evidence in ("complete", "reloaded", "over_cpu", "missing_timing"):
+    if evidence in ("complete", "reloaded", "over_cpu", "missing_timing", "uncertain"):
         extra_load_us = 500_000 if evidence == "reloaded" else 0
-        workflow_release_us = 8_000_000 if evidence in ("complete", "reloaded") else 0
+        workflow_release_us = 8_000_000 if evidence in ("complete", "reloaded", "uncertain") else 0
         assert activity.released_cpu_us == 7_500_000 - extra_load_us + workflow_release_us
         assert activity.released_engine_requests == 2
         assert activity.qualified_creations == 1
         assert reserved - settled == (
             counter_and_root_release + Decimal("0.00015060") + (workflow_release_us - extra_load_us) * Decimal("2e-11")
         )
-    elif evidence == "incomplete":
+    elif evidence in ("incomplete", "stopped"):
         assert activity.released_cpu_us == activity.released_engine_requests == 0
         assert reserved - settled == counter_and_root_release
     else:

@@ -175,6 +175,12 @@ export function assertMeterInventory(role, inputs, inventory) {
   }
 }
 
+export function lifetimeMeterBinding(bounds, launcherMeters) {
+  return plain("BIFROST_LAUNCHER_METERS_PER_SECOND", JSON.stringify(Object.fromEntries(
+    Object.keys(launcherMeters).map(name => [name, Number(bounds.per_launcher_second[name])]),
+  )));
+}
+
 export async function buildWorkers(runtimePath, outputPath, sourceRevision, meterBounds, releaseVersion, releaseSequence) {
   if (!Number.isSafeInteger(releaseSequence) || releaseSequence < 1) {
     throw new Error("A positive Workers release sequence is required");
@@ -235,9 +241,7 @@ export async function buildWorkers(runtimePath, outputPath, sourceRevision, mete
         plain("BIFROST_METER_WARM_CPU_MS", limits.warmCpuMs),
         plain("BIFROST_METER_EXERCISE_CPU_MS", limits.exerciseCpuMs),
         plain("BIFROST_LAUNCHER_METERS", JSON.stringify(limits.launcherMeters)),
-        plain("BIFROST_LAUNCHER_METERS_PER_SECOND", JSON.stringify(Object.fromEntries(
-          Object.keys(limits.launcherMeters).map(name => [name, Number(pinnedBounds.per_launcher_second[name])]),
-        ))),
+        lifetimeMeterBinding(pinnedBounds, limits.launcherMeters),
       ] : bindings,
       cpu_ms: {capacity: limits.capacityCpuMs, gateway: limits.launcherCpuMs, launcher: theoreticalCpuMs}[role],
       preview_urls: false,

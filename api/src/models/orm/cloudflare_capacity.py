@@ -345,6 +345,7 @@ class CloudflareDispatchMeter(Base):
     period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     tenant_id: Mapped[str] = mapped_column(String(32))
     workflow_cpu_ms: Mapped[int | None]
+    attempt_uncertain: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
 
 
 class CloudflareUsageActivity(Base):

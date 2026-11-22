@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
-import {assertMeterInventory, buildWorkers, bundleWorker, qualifiedMeterLimits} from './build-workers.mjs';
+import {assertMeterInventory, buildWorkers, bundleWorker, lifetimeMeterBinding, qualifiedMeterLimits} from './build-workers.mjs';
 
 test('a Workers release requires a positive sequence before reading artifacts', async () => {
   await assert.rejects(buildWorkers('unused-runtime', 'unused-output', 'a'.repeat(40), {}, '1.0.0', 0),
@@ -38,6 +38,14 @@ test('build uses the pinned measured capacity CPU and request inputs with the re
     bootCpuMs: 30_000, warmCpuMs: 440, exerciseCpuMs: 714,
     launcherMeters: Object.fromEntries(Object.entries(qualification().qualification.launcher_reference.observed)
       .map(([meter, count]) => [meter, count * 10])),
+  });
+});
+
+test('the launcher emits literal per-second meter allowances', () => {
+  const bounds = qualification();
+  assert.deepEqual(lifetimeMeterBinding(bounds, qualifiedMeterLimits(bounds).launcherMeters), {
+    name: 'BIFROST_LAUNCHER_METERS_PER_SECOND', type: 'plain_text',
+    text: '{"do_requests":64,"log_events":64,"sqlite_rows_written":128}',
   });
 });
 
