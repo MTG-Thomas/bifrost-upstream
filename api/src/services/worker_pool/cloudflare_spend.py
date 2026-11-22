@@ -353,7 +353,7 @@ def _has_settlement_bounds(bounds):
     )
 
 
-def _incarnation_cost_sql(installation: type[CloudflareInstallation], now):
+def _incarnation_cost_sql(installation: type[CloudflareInstallation], now, *, unsettled_only: bool = False):
     usage = CloudflareUsageIncarnation
     period = func.date_trunc("month", now, "UTC")
     seconds = func.extract("epoch", func.least(func.coalesce(usage.deleted_at, now), now)
@@ -408,7 +408,17 @@ def _incarnation_cost_sql(installation: type[CloudflareInstallation], now):
         owner.account_id == installation.account_id,
         or_(usage.deleted_at.is_(None), usage.deleted_at > period),
         usage.started_at <= now,
+        *((or_(usage.deleted_at.is_(None), usage.meter_uncertain,
+               (version == WORKERS_RATE_TABLE_VERSION) & ~func.coalesce(settled, False)),) if unsettled_only else ()),
     ).correlate(installation).scalar_subquery()
+
+
+def cloudflare_unsettled_resource_usage() -> ColumnElement[Decimal | None]:
+    """The guard's resource charges still backed by unverified retirement or receipts."""
+    now = func.statement_timestamp()
+    return _incarnation_cost_sql(CloudflareInstallation, now, unsettled_only=True) + container_account_usage(
+        now, unsettled_only=True,
+    )
 
 
 def _launcher_high_water(usage):

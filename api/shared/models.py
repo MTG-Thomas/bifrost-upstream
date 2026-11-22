@@ -71,6 +71,56 @@ class CloudflareSpendStatus(BaseModel):
     period_start: datetime
     period_end: datetime
     analytics: CloudflareUsageAdvisory | None = None
+    settled_usd: Decimal | None = None
+    reserved_usd: Decimal | None = None
+    remaining_headroom_usd: Decimal | None = None
+
+
+CloudflarePlacementCode = Literal[
+    "setup_required", "workflow_review_required", "waiting_for_demand",
+    "primary_has_capacity", "primary_capacity_unverified", "waiting_for_launch_gate",
+    "tenant_limit_reached", "installation_slots_full", "spend_guard_closed",
+    "cleanup_pending", "cloudflare_capacity_unavailable", "release_mismatch",
+    "connector_unavailable", "eligible_for_overflow",
+]
+
+
+class CloudflareRecoveryDetails(BaseModel):
+    code: str
+    remedy: str
+    resource_class: str | None = None
+    check: str | None = None
+    observed_category: str | None = None
+    expected_category: str | None = None
+
+
+class CloudflarePlacementReason(BaseModel):
+    code: CloudflarePlacementCode
+    label: str
+    remedy: str
+    next_eligible_at: datetime | None = None
+
+
+class CloudflareLaneStatus(BaseModel):
+    lane: Literal["workers", "containers"]
+    eligible_queued: int
+    claimed: int
+    running: int
+    primary_fit: int | None = None
+    primary_saturated: bool | None = None
+    oldest_eligible_queue_age_seconds: float | None = None
+    launch_gate_seconds: int
+    reasons: list[CloudflarePlacementReason]
+
+
+class CloudflareDeploymentEvidence(BaseModel):
+    revision: int | None = None
+    connector_session: Literal["unobserved", "waiting_for_projection", "connected", "disconnected"] | None = None
+    connector_checked_at: datetime | None = None
+    connector_last_ready_at: datetime | None = None
+    dns_verified_at: datetime | None = None
+    ingress_verified_at: datetime | None = None
+    signed_canary_at: datetime | None = None
 
 
 CloudflareReachabilityMode = Literal["existing_https_endpoint", "managed_tunnel"]
@@ -79,10 +129,7 @@ CLOUDFLARE_ID_PATTERN = r"^[a-f0-9]{32}$"
 
 class CloudflareInstallationStatus(BaseModel):
     installation_id: UUID
-    account_id: str
-    worker_ingress_origin: str
     reachability_mode: CloudflareReachabilityMode = "existing_https_endpoint"
-    zone_id: str | None = None
     connector_token_version: int | None = None
     consent_version: str
     consent_at: datetime
@@ -105,6 +152,13 @@ class CloudflareCapacityStatus(BaseModel):
     latest_job_id: UUID | None = None
     managed_tunnel_available: bool = False
     suggested_policy: CloudflareCapacityPolicy | None = None
+    observed_at: datetime | None = None
+    approved_workflow_count: int | None = None
+    lanes: list[CloudflareLaneStatus] = Field(default_factory=list)
+    placement_reasons: list[CloudflarePlacementReason] = Field(default_factory=list)
+    deployment: CloudflareDeploymentEvidence | None = None
+    recovery: CloudflareRecoveryDetails | None = None
+    disconnected_at: datetime | None = None
 
 
 class CloudflareCapacityAction(BaseModel):

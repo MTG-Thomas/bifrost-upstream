@@ -60,6 +60,8 @@ Estimates are remaining engineer-days from this revision, including focused veri
 
 ## 4. Status and Observability
 
+The expected gross usage or expected invoice display is deferred pending owner approval of the spend model.
+
 | Operator question | At the audited revision | Evidence still needed in product |
 | --- | --- | --- |
 | **Is the connection or rollout ready?** | The page shows state, reachability origin, optional deployed revision, and one job phase or error. A 202 is queued work. It observes shared notifications and takes one job-status snapshot. It refetches capacity on job changes/terminal updates, with no explicit socket-reconnect readback on this page. The snapshot rejection is suppressed. `managed_tunnel_available` means a configured channel, and `connector_token_version` is a credential version. Neither proves a live connection. [CloudflareCapacity.tsx:187](../../../../client/src/pages/settings/CloudflareCapacity.tsx#L187) · [platformJobs.ts:32](../../../../client/src/services/platformJobs.ts#L32) · [cloudflare_policy.py:237](../../../../api/src/services/worker_pool/cloudflare_policy.py#L237) · [cloudflare_tunnel.py:235](../../../../api/src/services/worker_pool/cloudflare_tunnel.py#L235) | Connector projection and connected state, last verified DNS/ingress probe, desired vs. observed revision, signed canary and explicit reconnect/readback recovery. |

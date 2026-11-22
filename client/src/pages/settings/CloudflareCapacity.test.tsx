@@ -325,7 +325,14 @@ it("focuses the error summary and links a rejected field to its inline message",
 it("explains a rejected spending envelope beside the editable limit", async () => {
 	const user = userEvent.setup();
 	mocks.get.mockResolvedValue({ installation });
-	mocks.configure.mockRejectedValue(new ApiError("The estimated fleet usage is USD 41", 422));
+	mocks.configure.mockRejectedValue(new ApiError({
+		error: "cloudflare_budget_refused",
+		message: "The fleet envelope exceeds the submitted limit.",
+		details: {
+			code: "CF_BUDGET_REFUSED",
+			fields: { "policy.monthly_limit_usd": "The fleet envelope is 41 USD/month. The submitted limit was 40 USD/month. Raise the limit or reduce the fleet size or lifetime." },
+		},
+	}, 422));
 	renderCapacity();
 
 	await user.click(await screen.findByRole("button", { name: "Edit Policy" }));
@@ -337,7 +344,7 @@ it("explains a rejected spending envelope beside the editable limit", async () =
 	expect(await screen.findByRole("region", { name: "Cloudflare Settings Error" })).toHaveFocus();
 	const limit = screen.getByRole("spinbutton", { name: "Monthly Estimated Usage Limit" });
 	expect(limit).toHaveValue(40);
-	expect(limit).toHaveAccessibleDescription(/estimated fleet usage is USD 41.*submitted limit was 40.*Raise the limit/);
+	expect(limit).toHaveAccessibleDescription(/fleet envelope is 41 USD.*submitted limit was 40.*Raise the limit/);
 });
 
 it("reads back a lost job snapshot on reconnect and focuses the refusal", async () => {

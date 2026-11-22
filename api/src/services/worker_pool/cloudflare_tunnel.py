@@ -281,6 +281,16 @@ async def connector_ready(db: AsyncSession, row: CloudflareInstallation, client:
         and row.tunnel_token_projected_version == row.tunnel_token_version
     )
     item.provider_details = {**item.provider_details, "connectors": sorted(connectors)}
+    checked_at = datetime.now(UTC).isoformat()
+    row.deployment_evidence = {
+        **(row.deployment_evidence or {}),
+        "connector_checked_at": checked_at,
+        "connector_session": (
+            "waiting_for_projection" if row.tunnel_token_projected_version != row.tunnel_token_version
+            else "connected" if ready else "disconnected"
+        ),
+        **({"connector_last_ready_at": checked_at} if ready else {}),
+    }
     if ready and rotating:
         item.provider_details = {
             key: value for key, value in item.provider_details.items()

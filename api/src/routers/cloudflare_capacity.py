@@ -3,6 +3,7 @@
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Body, HTTPException, Response, status
+from fastapi.responses import JSONResponse
 from shared.models import (
     CloudflareAccountTokenRotation,
     CloudflareAccountTokenReferenceRotation,
@@ -33,6 +34,7 @@ from src.services.operation_catalog import operation_route
 from src.services.worker_pool.cloudflare_connection import configure_cloudflare
 from src.services.worker_pool.cloudflare_credentials import stage_account_token
 from src.services.worker_pool.cloudflare_policy import (
+    CloudflareBudgetTooLow,
     CloudflareInstallationExists,
     CloudflarePolicyConflict,
     get_cloudflare_capacity_status,
@@ -76,11 +78,23 @@ async def configure_cloudflare_capacity(
     body: Annotated[CloudflareConnectRequest | CloudflarePolicyUpdate, Body(discriminator="action")],
     db: DbSession,
     user: CurrentActiveUser,
-) -> CloudflareCapacityStatus:
+) -> CloudflareCapacityStatus | JSONResponse:
     caller = await load_caller(db, user)
     require_operation(caller, "capacity.cloudflare_configure", GLOBAL)
     try:
         return await configure_cloudflare(db, caller, body)
+    except CloudflareBudgetTooLow as exc:
+        message = f"The fleet envelope is {exc.envelope} USD/month. The submitted limit was {body.policy.monthly_limit_usd} USD/month."
+        return JSONResponse(status_code=422, content={
+            "error": "cloudflare_budget_refused", "message": message,
+            "details": {
+                "code": "CF_BUDGET_REFUSED",
+                "fields": {"policy.monthly_limit_usd": f"{message} Raise the limit or reduce the fleet size or lifetime."},
+                "fleet_envelope_usd": str(exc.envelope),
+                "monthly_limit_usd": str(body.policy.monthly_limit_usd),
+                "remedy": "Raise the limit or reduce the fleet size or lifetime.",
+            },
+        })
     except WorkersReleaseUnavailable:
         raise HTTPException(503, "Install a qualified Workers release with metering ceilings.") from None
     except WorkersPaidUnverified as exc:

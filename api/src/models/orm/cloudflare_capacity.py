@@ -117,6 +117,7 @@ class CloudflareInstallation(Base):
     retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     usage_incomplete_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     usage_advisory: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    deployment_evidence: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     api_token_purpose: Mapped[str] = mapped_column(String(16), server_default="account_token")
     api_token_scope: Mapped[str] = mapped_column(String(64), server_default="")
     api_token_version: Mapped[int | None]

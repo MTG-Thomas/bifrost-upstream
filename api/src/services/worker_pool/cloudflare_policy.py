@@ -37,6 +37,7 @@ from src.models.orm.cloudflare_capacity import (
 from src.models.orm.execution_workers import ExecutionWorker
 from src.models.orm.platform_jobs import PlatformJob
 from src.services.authorization.enforce import Caller
+from src.services.execution.cloudflare_approval import current_visible_approval_count
 from src.services.platform_job_access import platform_job_visibility_filter
 from src.services.work_dispatch import (
     WAKE_CLOUDFLARE_CAPACITY,
@@ -65,6 +66,7 @@ from src.services.worker_pool.cloudflare_spend import (
     WORKERS_PAID_SUBSCRIPTION_USD,
     WORKERS_RATE_TABLE_VERSION,
     cloudflare_estimated_usage,
+    cloudflare_unsettled_resource_usage,
     exhausted_managed_workers,
     launcher_lifetime_rate,
     launcher_root_rate,
@@ -72,6 +74,13 @@ from src.services.worker_pool.cloudflare_spend import (
     usage_period,
     valid_cpu_limits,
     workers_fleet_envelope_usd,
+)
+from src.services.worker_pool.cloudflare_status import (
+    deployment_evidence,
+    overflow_status,
+    placement_blockers,
+    reason,
+    recovery_for_job,
 )
 from src.services.worker_pool.cloudflare_tunnel_rest import dedicated_hostname
 
@@ -173,6 +182,10 @@ class CloudflarePolicyConflict(ValueError):
 class CloudflareBudgetTooLow(ValueError):
     """The full supported fleet lifetime exceeds the policy's monthly limit."""
 
+    def __init__(self, envelope: Decimal) -> None:
+        self.envelope = envelope
+        super().__init__(f"The estimated fleet usage is USD {envelope}")
+
 
 class CloudflareInstallationExists(ValueError):
     """A current installation must finish disconnecting before another is created."""
@@ -202,10 +215,12 @@ def _qualified_workers_suggestion() -> CloudflareCapacityPolicy:
 
 
 async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> CloudflareCapacityStatus:
+    approvals = await current_visible_approval_count(db, caller)
     row = (await db.execute(
         select(
             CloudflareInstallation,
             cloudflare_estimated_usage().label("estimated_usage"),
+            cloudflare_unsettled_resource_usage().label("reserved_usage"),
             func.statement_timestamp().label("as_of"),
             select(func.count()).select_from(CloudflareOwnedResource).where(
                 CloudflareOwnedResource.installation_id == CloudflareInstallation.id,
@@ -217,12 +232,20 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
         ).where(CloudflareInstallation.retired_at.is_(None)).execution_options(populate_existing=True)
     )).tuples().one_or_none()
     if row is None:
+        retired_at, observed_at = (await db.execute(select(
+            select(func.max(CloudflareInstallation.retired_at)).scalar_subquery(),
+            func.statement_timestamp(),
+        ))).one()
         return CloudflareCapacityStatus(
             consent_text_version=CONSENT_TEXT_VERSION, consent_text=CONSENT_TEXT, installation=None,
             managed_tunnel_available=get_settings().cloudflare_tunnel_channel is not None,
             suggested_policy=suggested_cloudflare_policy(),
+            observed_at=observed_at,
+            approved_workflow_count=approvals,
+            placement_reasons=[reason("setup_required")],
+            disconnected_at=retired_at,
         )
-    installation, estimate, as_of, owned_resources_pending, overdue_containers = row
+    installation, estimate, reserved, as_of, owned_resources_pending, overdue_containers = row
     policy = CloudflareCapacityPolicy.model_validate(installation.policy["limits"])
     period_start, period_end = usage_period(as_of)
     rate = installation.policy.get("rate_table_version")
@@ -245,6 +268,7 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
             f"Unresolved cleanup for {overdue_containers} Cloudflare Container reservation(s) past their deadline. "
             f"[{CONTAINERS_CLEANUP_PENDING}] Container admission is paused for this account until stop is verified."
         )
+    outstanding = min(max(Decimal(0), reserved), estimate) if estimate is not None and reserved is not None else None
     spend = CloudflareSpendStatus(
         state="ledger_unavailable" if estimate is None else (
             "budget_reached" if estimate >= policy.monthly_limit_usd else "ready"
@@ -255,8 +279,11 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
         coverage=coverage,
         period_start=period_start, period_end=period_end,
         analytics=advisory if advisory is not None and advisory.period_start == period_start else None,
+        settled_usd=estimate - outstanding if estimate is not None and outstanding is not None else None,
+        reserved_usd=outstanding,
+        remaining_headroom_usd=max(Decimal(0), policy.monthly_limit_usd - estimate) if estimate is not None else None,
     )
-    latest_job_id = await db.scalar(select(PlatformJob.id).where(
+    latest_job = await db.scalar(select(PlatformJob).where(
         PlatformJob.resource_type == "cloudflare_installation",
         PlatformJob.resource_id == str(installation.id),
         platform_job_visibility_filter(caller),
@@ -268,17 +295,39 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
         ),
     ).order_by(PlatformJob.created_at.desc(), PlatformJob.id.desc()).limit(1))
     installed_release = installed_workers_release_digest()
+    release_matches = (
+        installation.upgrade_release is None
+        and installed_release is not None and installed_release == installation.policy.get("bounds_release")
+    )
+    deployment = await deployment_evidence(db, installation)
+    recovery = recovery_for_job(latest_job) if latest_job is not None and (
+        latest_job.payload.get("revision") == installation.desired_revision
+    ) else None
+    job_code = recovery.code if recovery else None
+    cooldown = latest_job.available_at if latest_job is not None and latest_job.available_at > as_of else None
+    blockers = placement_blockers(
+        enabled=installation.desired_state == "enabled", admitted=installation.admitted_revision is not None,
+        release_matches=release_matches, spend_ready=spend.state == "ready",
+        cleanup_pending=bool(exhausted or overdue_containers or installation.drain_required
+                             or installation.desired_state == "disconnected"
+                             or job_code in ("CF_CLEANUP_PENDING", "CF_CLEANUP_SETTLING", "CF_PRIOR_WORKERS_LIVE")),
+        connector_session=deployment.connector_session, job_code=job_code, cooldown_until=cooldown,
+    )
+    lanes = await overflow_status(db, caller, installation, policy, now=as_of, approvals=approvals, blockers=blockers)
     return CloudflareCapacityStatus(
         consent_text_version=CONSENT_TEXT_VERSION,
         consent_text=CONSENT_TEXT,
         managed_tunnel_available=get_settings().cloudflare_tunnel_channel is not None,
-        latest_job_id=latest_job_id,
+        latest_job_id=latest_job.id if latest_job else None,
+        observed_at=as_of,
+        approved_workflow_count=approvals,
+        lanes=lanes,
+        placement_reasons=blockers,
+        deployment=deployment,
+        recovery=recovery,
         installation=CloudflareInstallationStatus.model_validate({
             "installation_id": installation.id,
-            "account_id": installation.account_id,
-            "worker_ingress_origin": installation.worker_ingress_origin,
             "reachability_mode": installation.reachability_mode,
-            "zone_id": installation.zone_id,
             "connector_token_version": installation.tunnel_token_version,
             "consent_version": installation.consent_version,
             "consent_at": installation.consent_at,
@@ -290,9 +339,7 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
             ),
             "desired_state": installation.desired_state,
             "admission_open": (
-                installation.admitted_revision is not None and installation.upgrade_release is None
-                and installed_release is not None and installed_release == installation.policy.get("bounds_release")
-                and spend.state == "ready"
+                installation.admitted_revision is not None and release_matches and spend.state == "ready"
             ),
             "policy": policy,
             "fleet_envelope_usd": installation.policy["fleet_envelope_usd"],
@@ -351,7 +398,7 @@ def _price_policy(
         rotation_slots=min(policy.workers.installation_slots, policy.workers.launcher_cap * policy.workers.slots_per_launcher),
     )
     if envelope > policy.monthly_limit_usd:
-        raise CloudflareBudgetTooLow(f"The estimated fleet usage is USD {envelope}")
+        raise CloudflareBudgetTooLow(envelope)
     limits = policy.model_dump(mode="json")
     limits["workers"]["work_kinds"] = sorted(policy.workers.work_kinds)
     return {

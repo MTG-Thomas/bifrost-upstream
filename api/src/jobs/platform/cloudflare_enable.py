@@ -377,6 +377,19 @@ async def _settle_enable(
         return await run_workers_canary(context, payload.installation_id, payload.revision, origin, client, deployment)
 
     ingress = await probe_worker_ingress(installation, runtime_canary=canary)
+    if ingress.reachable or (ingress.runtime_canary is not None and ingress.runtime_canary.signed_hello):
+        async with get_db_context() as db:
+            row = await _locked_current(db, context, payload)
+            if row is None:
+                return {"outcome": "superseded"}
+            observed_at = datetime.now(UTC).isoformat()
+            previous = row.deployment_evidence or {}
+            row.deployment_evidence = {
+                **previous,
+                "revision": payload.revision,
+                "ingress_verified_at": observed_at if ingress.reachable else None,
+                "signed_canary_at": observed_at if ingress.runtime_canary and ingress.runtime_canary.signed_hello else None,
+            }
     if not ingress.ready:
         failure = ingress.failure
         abbreviations = {"ack", "dns", "http", "sdk", "tls"}
@@ -468,9 +481,17 @@ async def _drain_previous_revision(
 async def _require_budget(db: AsyncSession, row: CloudflareInstallation) -> None:
     cost = await db.scalar(select(cloudflare_estimated_usage()).where(CloudflareInstallation.id == row.id))
     if cost is None:
-        raise PlatformJobRequiresAction("Verify Cloudflare Spend", {"code": "CF_SPEND_UNVERIFIED"})
+        raise PlatformJobRequiresAction("Verify Cloudflare Spend", {
+            "code": "CF_SPEND_UNVERIFIED",
+            "details": {"resource_class": "spend_guard", "check": "monthly_usage",
+                        "observed_category": "ledger_unavailable", "expected_category": "under_limit"},
+        })
     if cost >= CloudflareCapacityPolicy.model_validate(row.policy["limits"]).monthly_limit_usd:
-        raise PlatformJobRequiresAction("Cloudflare Budget Reached", {"code": "CF_BUDGET_REACHED"})
+        raise PlatformJobRequiresAction("Cloudflare Budget Reached", {
+            "code": "CF_BUDGET_REACHED",
+            "details": {"resource_class": "spend_guard", "check": "monthly_usage",
+                        "observed_category": "limit_reached", "expected_category": "under_limit"},
+        })
 
 
 async def _enable(

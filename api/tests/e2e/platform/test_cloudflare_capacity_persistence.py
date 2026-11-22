@@ -5480,9 +5480,9 @@ async def test_preset_b_policy_api_uses_the_qualified_fleet_price(
         )
         return await capacity_routes.configure_cloudflare_capacity(request, db_session, object())
 
-    with pytest.raises(HTTPException, match=r"estimated fleet usage is USD 32\.13") as refusal:
-        await save("32.12", 1)
-    assert refusal.value.status_code == 422
+    refusal = await save("32.12", 1)
+    assert refusal.status_code == 422
+    assert json.loads(refusal.body)["details"]["fleet_envelope_usd"] == "32.13"
     for limit, revision in (("32.13", 1), ("75.00", 2)):
         status = await save(limit, revision)
         assert status.installation is not None

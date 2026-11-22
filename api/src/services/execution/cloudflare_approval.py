@@ -229,8 +229,7 @@ async def _observations_match(
     return all(indexed.get(path) == pin for path, pin in observations.items())
 
 
-async def list_approvals(db: AsyncSession, user: UserPrincipal) -> CloudflareApprovalList:
-    caller = await load_caller(db, user)
+async def _visible_workflows(db: AsyncSession, caller: Caller, *, current_only: bool = False) -> list[Workflow]:
     can_propose = _can_propose(caller)
     reach = user_reach(caller).where(Workflow.organization_id)
     scope_order = case(
@@ -243,7 +242,24 @@ async def list_approvals(db: AsyncSession, user: UserPrincipal) -> CloudflareApp
     )
     if reach is not None:
         query = query.where(reach)
-    workflows = [workflow for workflow in await db.scalars(query) if _can_see(caller, workflow, can_propose)]
+    if current_only:
+        query = query.where(select(CloudflareApproval.revision).where(
+            CloudflareApproval.workflow_id == Workflow.id, CloudflareApproval.is_current,
+            CloudflareApproval.policy_version == POLICY_VERSION,
+        ).exists())
+    return [workflow for workflow in await db.scalars(query) if _can_see(caller, workflow, can_propose)]
+
+
+async def current_visible_approval_count(db: AsyncSession, caller: Caller) -> int:
+    workflows = await _visible_workflows(db, caller, current_only=True)
+    states = await _states(db, workflows, _can_propose(caller), include_review=False)
+    return sum(state.status == "approved" for state in states)
+
+
+async def list_approvals(db: AsyncSession, user: UserPrincipal) -> CloudflareApprovalList:
+    caller = await load_caller(db, user)
+    can_propose = _can_propose(caller)
+    workflows = await _visible_workflows(db, caller)
     states = await _states(db, workflows, can_propose)
     items = []
     for workflow, state in zip(workflows, states, strict=True):

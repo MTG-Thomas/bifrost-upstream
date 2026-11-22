@@ -29,6 +29,7 @@ import { Label } from "@/components/ui/label";
 import { CloudflareWorkflowApprovals } from "@/components/workflows/CloudflareWorkflowApprovals";
 import { ApiError, getErrorMessage } from "@/lib/api-error";
 import { GLOBAL_TARGET } from "@/lib/authorization";
+import type { components } from "@/lib/v1";
 import { useAuthorization } from "@/services/authorization";
 import {
 	configureCloudflareCapacity,
@@ -50,6 +51,18 @@ const terminal = new Set([
 ]);
 
 const statusKey = ["cloudflare-capacity"];
+const utcDate = new Intl.DateTimeFormat(undefined, {
+	dateStyle: "medium", timeStyle: "medium", timeZone: "UTC",
+});
+const usd = new Intl.NumberFormat(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 8 });
+
+function timestamp(value?: string | null) {
+	return value ? `${utcDate.format(new Date(value))} UTC` : "Unobserved";
+}
+
+function amount(value?: string | number | null) {
+	return value == null ? "Unavailable" : usd.format(Number(value));
+}
 const fieldNames: Record<string, string> = {
 	worker_ingress_origin: "origin",
 	slots_per_launcher: "slots",
@@ -248,9 +261,6 @@ function CloudflareConfigurationForm({ status, onSaved, onCancel, onRefresh, bus
 		} catch (cause) {
 			const message = getErrorMessage(cause, "Could not save Cloudflare capacity.");
 			const { fields: rejected, messages } = validationMessages(cause, form);
-			if (message.startsWith("The estimated fleet usage is USD ")) {
-				rejected.monthly_limit = `${message}. The submitted limit was ${policy.monthly_limit_usd} USD/month. Raise the limit or reduce the fleet size or lifetime.`;
-			}
 			const summary = Object.keys(rejected).length ? "Review the highlighted fields."
 				: messages.length ? "Review the settings below." : message;
 			setFailure({ message: summary, fields: rejected, labels, messages, cause });
@@ -355,6 +365,36 @@ function CloudflareConfigurationForm({ status, onSaved, onCancel, onRefresh, bus
 	);
 }
 
+function PlacementReasons({ reasons }: { reasons: components["schemas"]["CloudflarePlacementReason"][] }) {
+	return (
+		<BoundedList label="Placement Reasons" className="space-y-2">
+			{reasons.map((reason) => (
+				<li key={reason.code}>
+					<p className="font-medium">{reason.label}</p>
+					<p>{reason.remedy}</p>
+					{reason.next_eligible_at && <p>Next Eligible Check {timestamp(reason.next_eligible_at)}</p>}
+				</li>
+			))}
+		</BoundedList>
+	);
+}
+
+function RecoveryDetails({ recovery }: { recovery: components["schemas"]["CloudflareRecoveryDetails"] }) {
+	return (
+		<div className="space-y-1">
+			<p>{recovery.remedy}</p>
+			{recovery.check && (
+				<dl className="grid gap-2 text-sm sm:grid-cols-2">
+					<div><dt>Resource Class</dt><dd><code>{recovery.resource_class}</code></dd></div>
+					<div><dt>Verification Check</dt><dd><code>{recovery.check}</code></dd></div>
+					<div><dt>Observed Category</dt><dd><code>{recovery.observed_category}</code></dd></div>
+					<div><dt>Expected Category</dt><dd><code>{recovery.expected_category}</code></dd></div>
+				</dl>
+			)}
+		</div>
+	);
+}
+
 export function CloudflareCapacity() {
 	const authorization = useAuthorization();
 	const canRead = authorization.canAt("platform.read", GLOBAL_TARGET);
@@ -434,7 +474,7 @@ export function CloudflareCapacity() {
 			setReadbackFailure(undefined);
 			if (terminal.has(next.status)) {
 				void refetch().then(({ data: status, isSuccess }) => {
-					if (!disposed && isSuccess && status?.latest_job_id) {
+					if (!disposed && isSuccess && (status?.latest_job_id || status?.disconnected_at)) {
 						setAcceptedJobId((accepted) => accepted === next.id ? undefined : accepted);
 					}
 				});
@@ -484,10 +524,11 @@ export function CloudflareCapacity() {
 
 	const ownJob = localAction?.id === jobId ? localAction : undefined;
 	const jobRefused = job?.status === "failed" || job?.status === "requires_action";
-	const disconnected = ownJob?.action === "disconnect" && job?.status === "succeeded" && data?.installation === null;
+	const disconnected = !installation && (Boolean(data?.disconnected_at)
+		|| (ownJob?.action === "disconnect" && job?.status === "succeeded" && data?.installation === null));
 
 	useEffect(() => {
-		if (disconnected) setupRef.current?.focus();
+		if (disconnected && ownJob?.action === "disconnect") setupRef.current?.focus();
 		else if (ownJob) jobStatusRef.current?.focus();
 	}, [disconnected, ownJob, jobRefused]);
 
@@ -498,8 +539,7 @@ export function CloudflareCapacity() {
 		cancelled: "The Cloudflare job was cancelled.",
 		requires_action: "The Cloudflare job needs your attention.",
 	};
-	const jobAnnouncement = disconnected ? "Cloudflare was disconnected."
-		: readbackFailure === jobId ? "Could not read the Cloudflare job status."
+	const jobAnnouncement = readbackFailure === jobId ? "Could not read the Cloudflare job status."
 			: job && ((terminal.has(job.status) ? job.error?.message : undefined) ?? jobAnnouncements[job.status]);
 
 	function finishConfiguration(next: CloudflareCapacityStatus) {
@@ -595,8 +635,9 @@ export function CloudflareCapacity() {
 				{canRead && data && !installation && (
 					<section className="space-y-2">
 						<h3 className="font-semibold">Cloudflare Connection</h3>
+						{disconnected && <p role="status">Cloudflare was disconnected. Bifrost verified removal of its owned resources.{data.disconnected_at && ` ${timestamp(data.disconnected_at)}.`}</p>}
 						<p>Use a Cloudflare account with Workers Paid, an account API token, and a reachable HTTPS endpoint or a managed tunnel.</p>
-						<p>Connecting authorizes Bifrost to manage Cloudflare resources for approved workflows.</p>
+						<PlacementReasons reasons={data.placement_reasons ?? []} />
 						{canWrite && !connecting && (
 							<Button ref={setupRef} disabled={busy} onClick={() => setConnecting(true)}>Set Up Cloudflare</Button>
 						)}
@@ -604,7 +645,8 @@ export function CloudflareCapacity() {
 				)}
 				{canRead && data && (
 					<p>
-						Only approved workflows can use Cloudflare capacity.{" "}
+						{data.approved_workflow_count == null ? "Approved workflow count is unavailable." :
+							`${data.approved_workflow_count} approved ${data.approved_workflow_count === 1 ? "workflow" : "workflows"}.`}{" "}
 						<Link className="underline" to="/workflows">Review Workflows</Link>
 					</p>
 				)}
@@ -628,20 +670,29 @@ export function CloudflareCapacity() {
 								</dt>
 								<dd>{connectionStatus}</dd>
 							</div>
-							{installation.deployed_revision != null && (
-								<div>
-									<dt className="text-muted-foreground">Deployed Revision</dt>
-									<dd>{installation.deployed_revision}</dd>
-								</div>
-							)}
+							<div><dt className="text-muted-foreground">Desired Revision</dt><dd>{installation.desired_revision}</dd></div>
+							<div><dt className="text-muted-foreground">Observed Deployment Revision</dt><dd>{installation.deployed_revision ?? "Unobserved"}</dd></div>
 							<div>
-								<dt className="text-muted-foreground">
-									{installation.reachability_mode === "managed_tunnel" ? "Managed Tunnel" : "Existing HTTPS Endpoint"}
-								</dt>
-								<dd className="break-all">
-									{installation.worker_ingress_origin}
-								</dd>
+								<dt className="text-muted-foreground">Reachability</dt>
+								<dd>{installation.reachability_mode === "managed_tunnel" ? "Managed Tunnel" : "Existing HTTPS Endpoint"}</dd>
 							</div>
+							{data?.deployment && (
+								<>
+									<div><dt>Last Verified Ingress Probe</dt><dd>{timestamp(data.deployment.ingress_verified_at)}</dd></div>
+									<div><dt>Last Signed Canary</dt><dd>{timestamp(data.deployment.signed_canary_at)}</dd></div>
+									{installation.reachability_mode === "managed_tunnel" && (
+										<>
+											<div><dt>Last Verified DNS</dt><dd>{timestamp(data.deployment.dns_verified_at)}</dd></div>
+											<div><dt>Last Observed Connector Session</dt><dd>{({
+												connected: "Connected", disconnected: "Disconnected", unobserved: "Unobserved",
+												waiting_for_projection: "Waiting for Token Projection",
+											})[data.deployment.connector_session ?? "unobserved"]}</dd></div>
+											<div><dt>Connector Session Checked</dt><dd>{timestamp(data.deployment.connector_checked_at)}</dd></div>
+											<div><dt>Connector Last Ready</dt><dd>{timestamp(data.deployment.connector_last_ready_at)}</dd></div>
+										</>
+									)}
+								</>
+							)}
 							<div>
 								<dt className="text-muted-foreground">
 									Workers Launcher Limit
@@ -671,7 +722,7 @@ export function CloudflareCapacity() {
 							</div>
 							<div>
 								<dt className="text-muted-foreground">
-									Estimated Fleet Usage
+									Fleet Envelope Backstop
 								</dt>
 								<dd>{installation.fleet_envelope_usd} USD/month</dd>
 							</div>
@@ -682,6 +733,10 @@ export function CloudflareCapacity() {
 										<dd>{installation.spend.estimated_usd === null ? "Spend Ledger Unavailable" : `${installation.spend.estimated_usd} USD`}</dd>
 										{installation.spend.state === "budget_reached" && <dd>Estimated usage reached the monthly limit.</dd>}
 									</div>
+									<div><dt>Settled Usage This UTC Month</dt><dd>{amount(installation.spend.settled_usd)}</dd></div>
+									<div><dt>Outstanding Reservations</dt><dd>{amount(installation.spend.reserved_usd)}</dd></div>
+									<div><dt>Remaining Monthly Headroom</dt><dd>{amount(installation.spend.remaining_headroom_usd)}</dd></div>
+									<div><dt>Monthly Limit Resets</dt><dd>{timestamp(installation.spend.period_end)}</dd></div>
 									<div>
 										<dt className="text-muted-foreground">Workers Paid Subscription (Billed by Cloudflare)</dt>
 										<dd>{installation.spend.workers_paid_subscription_usd} USD/month</dd>
@@ -708,6 +763,34 @@ export function CloudflareCapacity() {
 								</>
 							)}
 						</dl>
+						{Boolean(data?.lanes?.length) && (
+							<section className="space-y-3" aria-labelledby="cf-placement-heading">
+								<h4 id="cf-placement-heading" className="font-semibold">Overflow Placement</h4>
+								<p>Observed {timestamp(data?.observed_at)}</p>
+								<Button variant="outline" disabled={isFetching} onClick={() => void refetch()}>Refresh Capacity Status</Button>
+								{data?.lanes?.map((lane) => (
+									<section key={lane.lane} className="space-y-2 text-sm">
+										<h5 className="font-semibold">{lane.lane === "workers" ? "Workers" : "Containers"}</h5>
+										<dl className="grid gap-2 sm:grid-cols-2">
+											<div><dt>Eligible Queued</dt><dd>{lane.eligible_queued}</dd></div>
+											<div><dt>Claimed</dt><dd>{lane.claimed}</dd></div>
+											<div><dt>Running</dt><dd>{lane.running}</dd></div>
+											<div><dt>Queued Work Fitting the Primary</dt><dd>{lane.primary_fit ?? "Unobserved"}</dd></div>
+											<div><dt>Primary Saturation</dt><dd>{lane.primary_saturated == null ? "Unobserved" : lane.primary_saturated ? "At Capacity Ceiling" : "Ceiling Not Confirmed"}</dd></div>
+											<div><dt>Oldest Eligible Queue Age / Launch Gate</dt><dd>{lane.oldest_eligible_queue_age_seconds == null
+												? "Queue Empty" : `${lane.oldest_eligible_queue_age_seconds.toFixed(2)} s`} / {lane.launch_gate_seconds} s</dd></div>
+										</dl>
+										<PlacementReasons reasons={lane.reasons} />
+									</section>
+								))}
+							</section>
+						)}
+						{data?.recovery && !job && (
+							<section aria-label="Cloudflare Recovery">
+								<p>Error Code <code>{data.recovery.code}</code></p>
+								<RecoveryDetails recovery={data.recovery} />
+							</section>
+						)}
 						{canWrite && (
 							<div className="flex flex-wrap gap-2">
 								<Button ref={policyRef} variant="outline" disabled={busy || editing || installation.desired_state === "disconnected"}
@@ -862,7 +945,7 @@ export function CloudflareCapacity() {
 						)}
 					</div>
 				)}
-				{canRead && jobId && (
+				{canRead && jobId && !disconnected && (
 					<section ref={jobStatusRef} tabIndex={-1} className="space-y-2" aria-labelledby="cf-job-status-heading">
 						<h3 id="cf-job-status-heading" className="font-semibold">Cloudflare Job Status</h3>
 						<p role="status" className={jobAnnouncement ? undefined : "sr-only"}>{jobAnnouncement}</p>
@@ -879,6 +962,7 @@ export function CloudflareCapacity() {
 						)}
 						{typeof job?.result?.reason === "string" && <p>{job.result.reason}</p>}
 						{typeof job?.result?.remedy === "string" && <p>{job.result.remedy}</p>}
+						{data?.recovery && job?.id === data.latest_job_id && <RecoveryDetails recovery={data.recovery} />}
 						{Array.isArray(instructions) && (
 							<BoundedList as="ol" label="Recovery Instructions" className="list-decimal pl-5 text-sm">
 								{instructions.filter((instruction): instruction is string => typeof instruction === "string")

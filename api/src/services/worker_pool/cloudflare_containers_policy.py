@@ -97,7 +97,7 @@ def fleet_envelope(policy: ContainersPolicy, rates: ContainerRates, month_second
     )
 
 
-def container_account_usage(now):
+def container_account_usage(now, *, unsettled_only: bool = False):
     """Cap unsettled exposure at the deadline and price witnessed runtime."""
     reservation = CloudflareWorkerReservation
     owner = aliased(CloudflareInstallation)
@@ -127,6 +127,7 @@ def container_account_usage(now):
         reservation.container_reserved_at < end,
         charged_start < end,
         charged_end > period,
+        *((reservation.container_stopped_at.is_(None),) if unsettled_only else ()),
     ).correlate(CloudflareInstallation).scalar_subquery()
 
 

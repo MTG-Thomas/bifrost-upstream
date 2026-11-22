@@ -47,6 +47,7 @@ from src.services.worker_pool.cloudflare_spend import (
     cloudflare_usage_within_limit,
     prune_spend_receipt_keys,
 )
+from src.services.worker_pool.cloudflare_status import record_controller_observation
 from src.services.worker_pool.controller import (
     RECONCILE_SECONDS,
     SWEEP_SECONDS,
@@ -198,6 +199,7 @@ async def _reconcile_scope(
             controller.burst_launch_allowed = False
     if await controller.reachability.check():
         await controller.reconcile()
+        await record_controller_observation(binding, primary=controller.cloudflare_primary)
 
 
 async def cloudflare_supervisor_loop(
@@ -229,6 +231,9 @@ async def cloudflare_supervisor_loop(
                                 await _reconcile_scope(
                                     binding, settings, http, controllers, kubernetes=kubernetes,
                                 )
+                            except (CapacityProtocolError, httpx.HTTPError):
+                                await record_controller_observation(binding, unavailable=True)
+                                logger.warning("Managed Cloudflare scope reconciliation failed", exc_info=True)
                             except Exception:
                                 logger.warning("Managed Cloudflare scope reconciliation failed", exc_info=True)
                 except TimeoutError:
