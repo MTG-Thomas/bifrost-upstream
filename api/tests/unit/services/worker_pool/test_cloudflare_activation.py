@@ -100,6 +100,7 @@ async def test_preflight_discovery(discovery, context, case):
     else:
         assert result.preflight_receipt is None
     if case == "multiple":
+        assert result.zones is not None
         assert [zone.id for zone in result.zones] == [ZONE, SECOND_ZONE]
         assert result.zone_id is None
     if case == "unlisted":
