@@ -3085,6 +3085,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/capacity/cloudflare/preflight": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Run Cloudflare Preflight */
+        post: operations["capacity.cloudflare_preflight"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/capacity/cloudflare/activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Activate Cloudflare Capacity */
+        post: operations["capacity.cloudflare_activate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/capacity/cloudflare/enable": {
         parameters: {
             query?: never;
@@ -16455,6 +16489,36 @@ export interface components {
              */
             api_token: string;
         };
+        /** CloudflareActivateRequest */
+        CloudflareActivateRequest: {
+            /** Api Token */
+            api_token?: string | null;
+            /** Credential Ref */
+            credential_ref?: string | null;
+            /** Preflight Receipt */
+            preflight_receipt: string;
+            /** Consent Version */
+            consent_version: string;
+            /**
+             * Consent
+             * @constant
+             */
+            consent: true;
+            /** Monthly Limit Usd */
+            monthly_limit_usd: number | string;
+        };
+        /** CloudflareActivationPreview */
+        CloudflareActivationPreview: {
+            policy: components["schemas"]["CloudflareCapacityPolicy-Output"];
+            /** Fleet Envelope Usd */
+            fleet_envelope_usd: string;
+            /** Estimated Usage Min Usd */
+            estimated_usage_min_usd: string;
+            /** Estimated Usage Max Usd */
+            estimated_usage_max_usd: string;
+            /** Workers Paid Subscription Usd */
+            workers_paid_subscription_usd: string;
+        };
         /** CloudflareApprovalAccept */
         CloudflareApprovalAccept: {
             /** Subrequest Allowance */
@@ -16728,6 +16792,13 @@ export interface components {
             /** Signed Canary At */
             signed_canary_at?: string | null;
         };
+        /** CloudflareDiscoveryChoice */
+        CloudflareDiscoveryChoice: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+        };
         /** CloudflareInstallationStatus */
         CloudflareInstallationStatus: {
             /**
@@ -16834,6 +16905,70 @@ export interface components {
              */
             action: "policy";
             policy: components["schemas"]["CloudflareCapacityPolicy-Input"];
+        };
+        /** CloudflarePreflight */
+        CloudflarePreflight: {
+            /** Accounts */
+            accounts: components["schemas"]["CloudflareDiscoveryChoice"][] | null;
+            /** Zones */
+            zones?: components["schemas"]["CloudflareDiscoveryChoice"][] | null;
+            /** Account Id */
+            account_id?: string | null;
+            /** Zone Id */
+            zone_id?: string | null;
+            /** Zone Name */
+            zone_name?: string | null;
+            /** Workers Paid */
+            workers_paid?: ("verified" | "unverified" | "denied") | null;
+            /** Connector Channel */
+            connector_channel: ("compose" | "kustomize") | null;
+            /** Connector Ready */
+            connector_ready: boolean;
+            /**
+             * Primary
+             * @enum {string}
+             */
+            primary: "static" | "job" | "external" | "unknown";
+            /**
+             * Recommended Reachability
+             * @enum {string}
+             */
+            recommended_reachability: "existing_https_endpoint" | "managed_tunnel";
+            /**
+             * Reachability Mode
+             * @enum {string}
+             */
+            reachability_mode: "existing_https_endpoint" | "managed_tunnel";
+            /** Worker Ingress Origin */
+            worker_ingress_origin?: string | null;
+            /**
+             * Hostname Collision
+             * @default false
+             */
+            hostname_collision: boolean;
+            preview?: components["schemas"]["CloudflareActivationPreview"] | null;
+            /** Consent Version */
+            consent_version: string;
+            /** Consent Text */
+            consent_text: string;
+            /** Preflight Receipt */
+            preflight_receipt?: string | null;
+        };
+        /** CloudflarePreflightRequest */
+        CloudflarePreflightRequest: {
+            /** Api Token */
+            api_token?: string | null;
+            /** Credential Ref */
+            credential_ref?: string | null;
+            /** Account Id */
+            account_id?: string | null;
+            /** Zone Id */
+            zone_id?: string | null;
+            /** Reachability Mode */
+            reachability_mode?: ("existing_https_endpoint" | "managed_tunnel") | null;
+            /** Worker Ingress Origin */
+            worker_ingress_origin?: string | null;
+            policy?: components["schemas"]["CloudflareCapacityPolicy-Input"] | null;
         };
         /** CloudflareReconcileAction */
         CloudflareReconcileAction: {
@@ -39383,6 +39518,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CloudflareStagedCredential"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "capacity.cloudflare_preflight": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CloudflarePreflightRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CloudflarePreflight"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "capacity.cloudflare_activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CloudflareActivateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformJobAccepted"];
                 };
             };
             /** @description Validation Error */

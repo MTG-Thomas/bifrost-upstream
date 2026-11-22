@@ -32,13 +32,17 @@ import { GLOBAL_TARGET } from "@/lib/authorization";
 import type { components } from "@/lib/v1";
 import { useAuthorization } from "@/services/authorization";
 import {
+	activateCloudflareCapacity,
 	configureCloudflareCapacity,
 	getCloudflareCapacity,
+	preflightCloudflareCapacity,
 	rotateCloudflareAccountToken,
 	startCloudflareAction,
 	type CloudflareAction,
 	type CloudflareCapacityStatus,
-	type CloudflareConfiguration,
+	type CloudflareJobAccepted,
+	type CloudflarePreflight,
+	type CloudflarePreflightRequest,
 } from "@/services/cloudflareCapacity";
 import { observePlatformJob, type PlatformJob } from "@/services/platformJobs";
 import { webSocketService } from "@/services/websocket";
@@ -155,15 +159,247 @@ function BoundedList({ as: List = "ul", children, label, className }: {
 	);
 }
 
-function CloudflareConfigurationForm({ status, onSaved, onCancel, onRefresh, busy }: {
+type CapacityPolicy = components["schemas"]["CloudflareCapacityPolicy-Input"];
+
+function readPolicy(fields: FormData): CapacityPolicy {
+	const sharedCap = String(fields.get("shared_cap") ?? "");
+		return {
+			version: 1 as const,
+			workers: {
+				launcher_cap: Number(fields.get("launcher_cap")),
+				slots_per_launcher: Number(fields.get("slots")),
+				slots_per_tenant: Number(fields.get("tenant_slots")),
+				installation_slots: Number(fields.get("installation_slots")),
+				max_lifetime_seconds: Number(fields.get("lifetime")),
+				linger_seconds: Number(fields.get("linger")),
+				queue_prewarm_per_tenant: Number(fields.get("queue_prewarm")),
+				work_kinds: fields.get("workflows") === "on" ? ["workflow" as const] : [],
+			},
+			monthly_limit_usd: String(fields.get("monthly_limit")),
+			shared_managed_worker_cap: sharedCap ? Number(sharedCap) : null,
+		};
+}
+
+function PolicyFields({ settings, fieldProps = () => ({}), fieldError = () => null }: {
+	settings: CapacityPolicy;
+	fieldProps?: (name: string, help?: string) => Record<string, unknown>;
+	fieldError?: (name: string) => ReactNode;
+}) {
+	return (
+			<fieldset className="min-w-0 space-y-3">
+				<legend className="pb-2 font-semibold">Advanced Policy</legend>
+				<div className="grid gap-3 sm:grid-cols-2">
+					<div><Label htmlFor="cf-launcher-cap">Workers Launcher Limit</Label><Input id="cf-launcher-cap" name="launcher_cap" type="number" min={1} max={1000} defaultValue={settings?.workers.launcher_cap ?? 1} required {...fieldProps("launcher_cap")} />{fieldError("launcher_cap")}</div>
+					<div><Label htmlFor="cf-slots">Slots per Launcher</Label><Input id="cf-slots" name="slots" type="number" min={1} max={4} defaultValue={settings?.workers.slots_per_launcher ?? 2} required {...fieldProps("slots")} />{fieldError("slots")}</div>
+					<div><Label htmlFor="cf-tenant-slots">Slots per Tenant</Label><Input id="cf-tenant-slots" name="tenant_slots" type="number" min={1} max={32} defaultValue={settings?.workers.slots_per_tenant ?? 4} required {...fieldProps("tenant_slots")} />{fieldError("tenant_slots")}</div>
+					<div><Label htmlFor="cf-installation-slots">Installation Slot Limit</Label><Input id="cf-installation-slots" name="installation_slots" type="number" min={2} max={256} defaultValue={settings?.workers.installation_slots ?? 9} required {...fieldProps("installation_slots")} />{fieldError("installation_slots")}</div>
+					<div><Label htmlFor="cf-lifetime">Maximum Lifetime in Seconds</Label><Input id="cf-lifetime" name="lifetime" type="number" min={60} max={604800} defaultValue={settings?.workers.max_lifetime_seconds ?? 3600} required {...fieldProps("lifetime")} />{fieldError("lifetime")}</div>
+					<div><Label htmlFor="cf-linger">Tenant Engine Linger in Seconds</Label><Input id="cf-linger" name="linger" type="number" min={0} max={300} defaultValue={settings?.workers.linger_seconds ?? 90} required {...fieldProps("linger")} />{fieldError("linger")}</div>
+					<div><Label htmlFor="cf-queue-prewarm">Max Queue Pre-Warms per Tenant</Label><Input id="cf-queue-prewarm" name="queue_prewarm" type="number" min={0} max={32} defaultValue={settings?.workers.queue_prewarm_per_tenant ?? 0} required {...fieldProps("queue_prewarm", "cf-prewarm-help")} />{fieldError("queue_prewarm")}<p id="cf-prewarm-help" className="text-sm text-muted-foreground">Set to 0 to disable. Requires a positive engine linger.</p></div>
+					<div><Label htmlFor="cf-shared-cap">Shared Managed Worker Limit</Label><Input id="cf-shared-cap" name="shared_cap" type="number" min={1} max={1000} defaultValue={settings?.shared_managed_worker_cap ?? undefined} {...fieldProps("shared_cap")} />{fieldError("shared_cap")}</div>
+				</div>
+				<label className="flex items-center gap-2 text-sm">
+					<input type="checkbox" name="workflows" defaultChecked={settings?.workers.work_kinds.includes("workflow") ?? true} {...fieldProps("workflows")} />
+					Allow Approved Workflows
+				</label>
+				{fieldError("workflows")}
+			</fieldset>
+	);
+}
+
+function CloudflareSetupForm({ status, onAccepted, onCancel }: {
 	status: CloudflareCapacityStatus;
+	onAccepted: (accepted: CloudflareJobAccepted) => void;
+	onCancel: () => void;
+}) {
+	const [preflight, setPreflight] = useState<CloudflarePreflight>();
+	const [stale, setStale] = useState(false);
+	const [policyEdited, setPolicyEdited] = useState(false);
+	const [limit, setLimit] = useState(String(status.suggested_policy?.monthly_limit_usd ?? ""));
+	const [consent, setConsent] = useState(false);
+	const [limitConfirmed, setLimitConfirmed] = useState(false);
+	const [saving, setSaving] = useState(false);
+	const [error, setError] = useState<unknown>();
+	const submitLock = useRef(false);
+	const tokenRef = useRef<HTMLInputElement>(null);
+	const mode = preflight?.reachability_mode;
+	const [reachability, setReachability] = useState<CloudflarePreflightRequest["reachability_mode"]>();
+	const selectedMode = reachability ?? mode;
+	const receipt = stale ? undefined : preflight?.preflight_receipt;
+	const preview = preflight?.preview;
+	const showZones = selectedMode === "managed_tunnel" && preflight?.connector_ready && preflight.workers_paid === "verified";
+	useEffect(() => { tokenRef.current?.focus(); }, []);
+
+	async function submit(event: FormEvent<HTMLFormElement>) {
+		event.preventDefault();
+		if (submitLock.current) return;
+		const form = event.currentTarget;
+		const fields = new FormData(form);
+		const value = (name: string) => String(fields.get(name) ?? "") || undefined;
+		const api_token = value("api_token");
+		submitLock.current = true;
+		setSaving(true);
+		setError(undefined);
+		try {
+			if (receipt && preflight) {
+				if (!consent || !limitConfirmed || Number(limit) < Number(preview?.fleet_envelope_usd)) return;
+				const accepted = await activateCloudflareCapacity({
+					api_token, preflight_receipt: receipt, consent: true,
+					consent_version: preflight.consent_version, monthly_limit_usd: limit,
+				});
+				form.reset();
+				onAccepted(accepted);
+			} else {
+				const next = await preflightCloudflareCapacity({
+					api_token,
+					account_id: value("account_id") ?? preflight?.account_id ?? undefined,
+					zone_id: selectedMode === "managed_tunnel" ? value("zone_id") ?? preflight?.zone_id ?? undefined : undefined,
+					reachability_mode: selectedMode,
+					worker_ingress_origin: value("worker_ingress_origin"),
+					policy: policyEdited ? readPolicy(fields) : undefined,
+				});
+				setPreflight(next);
+				setStale(false);
+				setConsent(false);
+				setLimitConfirmed(false);
+			}
+		} catch (cause) {
+			setError(cause);
+			if (receipt && cause instanceof ApiError && cause.statusCode === 409) setStale(true);
+		} finally {
+			setSaving(false);
+			submitLock.current = false;
+		}
+	}
+
+	function invalidate() {
+		setStale(true);
+		setConsent(false);
+		setLimitConfirmed(false);
+	}
+
+	return (
+		<form aria-label="Cloudflare Setup" className="space-y-4" onSubmit={submit}>
+			{Boolean(error) && (
+				<div role="alert" className="rounded-md border border-destructive p-3">
+					<p>{getErrorMessage(error, "Could not complete Cloudflare setup.")}</p>
+					<ErrorDetails error={error} />
+				</div>
+			)}
+			<fieldset disabled={saving} className="min-w-0 space-y-4">
+				<div className="space-y-1">
+					<Label htmlFor="cf-connect-token">Cloudflare API Token</Label>
+						<Input ref={tokenRef} id="cf-connect-token" name="api_token" type="password" autoComplete="new-password" required minLength={16} maxLength={512}
+						onChange={() => { setPreflight(undefined); setReachability(undefined); invalidate(); }} />
+				</div>
+				{preflight && (
+					<div className="space-y-3">
+						<dl className="grid gap-2 text-sm sm:grid-cols-2">
+							<div><dt>Primary Capacity</dt><dd>{{ static: "Local Workers", job: "Kubernetes Jobs", external: "External Worker Provider", unknown: "Unconfirmed" }[preflight.primary]}</dd></div>
+							<div><dt>Managed Tunnel Channel</dt><dd>{preflight.connector_ready ? (preflight.connector_channel === "compose" ? "Compose Ready" : "Kustomize Ready") : "Unavailable"}</dd></div>
+							<div><dt>Workers Paid</dt><dd>{preflight.workers_paid === "verified" ? "Verified" : "Unverified"}</dd></div>
+							<div><dt>Placement</dt><dd>Unrestricted for Approved Workflows</dd></div>
+						</dl>
+						{preflight.workers_paid === "denied" && <p>Grant Account Settings Read for the selected account and check it again.</p>}
+						{preflight.workers_paid === "unverified" && <p>Verify Workers Paid and active Workers and Containers entitlements in Cloudflare.</p>}
+						<div className="space-y-1">
+							{preflight.accounts === null && !preflight.account_id ? (
+								<><Label htmlFor="cf-account-id">Cloudflare Account ID</Label><Input id="cf-account-id" name="account_id" required pattern="[a-f0-9]{32}" onChange={invalidate} /></>
+							) : (preflight.accounts?.length ?? 0) > 1 ? (
+								<><Label htmlFor="cf-account-id">Cloudflare Account</Label>
+									<select id="cf-account-id" name="account_id" className="block max-w-full rounded-md border bg-background p-2" defaultValue={preflight.account_id ?? ""} required onChange={invalidate}>
+										<option value="">Select an Account</option>
+										{preflight.accounts?.map(({ id, name }) => <option key={id} value={id}>{name}</option>)}
+									</select></>
+							) : preflight.account_id ? (
+								<p>Cloudflare Account: {preflight.accounts?.find(({ id }) => id === preflight.account_id)?.name ?? preflight.account_id}</p>
+							) : <p>No Cloudflare accounts are available to this token.</p>}
+						</div>
+						<div className="space-y-1">
+							<Label htmlFor="cf-reachability-mode">Reachability</Label>
+							<select id="cf-reachability-mode" name="reachability_mode" className="block max-w-full rounded-md border bg-background p-2"
+								value={selectedMode ?? undefined} onChange={(event) => {
+									setReachability(event.target.value === "managed_tunnel" ? "managed_tunnel" : "existing_https_endpoint");
+									invalidate();
+								}}>
+								<option value="existing_https_endpoint">Existing HTTPS Endpoint</option>
+								{preflight.connector_ready && <option value="managed_tunnel">Managed Tunnel</option>}
+							</select>
+							{!preflight.connector_ready && <p className="text-sm text-muted-foreground">Managed Tunnel requires the Compose connector or the Kustomize component.</p>}
+						</div>
+						{showZones && (
+							<div className="space-y-1">
+								{preflight.zones == null && !preflight.zone_id ? (
+									<><Label htmlFor="cf-zone-id">Cloudflare DNS Zone ID</Label><Input id="cf-zone-id" name="zone_id" required pattern="[a-f0-9]{32}" onChange={invalidate} /></>
+								) : (preflight.zones?.length ?? 0) > 1 ? (
+									<><Label htmlFor="cf-zone-id">Cloudflare DNS Zone</Label>
+										<select id="cf-zone-id" name="zone_id" className="block max-w-full rounded-md border bg-background p-2" defaultValue={preflight.zone_id ?? ""} required onChange={invalidate}>
+											<option value="">Select a DNS Zone</option>
+											{preflight.zones?.map(({ id, name }) => <option key={id} value={id}>{name}</option>)}
+										</select></>
+								) : preflight.zone_name ? <p>Cloudflare DNS Zone: {preflight.zone_name}</p> : <p>No active zones are available to this token.</p>}
+								{mode === "managed_tunnel" && preflight.worker_ingress_origin && <p className="break-all">Dedicated Hostname: {preflight.worker_ingress_origin}</p>}
+								{preflight.hostname_collision && <p role="alert">The proposed hostname is already in use. Choose another zone or use an existing HTTPS endpoint.</p>}
+							</div>
+						)}
+						{selectedMode === "existing_https_endpoint" && (
+							<div className="space-y-1">
+								<Label htmlFor="cf-ingress-origin">Existing HTTPS Endpoint</Label>
+								<Input id="cf-ingress-origin" name="worker_ingress_origin" type="url" required defaultValue={mode === selectedMode ? preflight.worker_ingress_origin ?? "" : ""}
+									onChange={invalidate} />
+							</div>
+						)}
+					</div>
+				)}
+				{preview && (
+					<div className="space-y-2">
+						<h3 className="font-semibold">Workers Capacity Preview</h3>
+						<p>{preview.policy.workers.launcher_cap} launchers × {preview.policy.workers.slots_per_launcher} slots, {preview.policy.workers.installation_slots} installation slots, and a {preview.policy.workers.max_lifetime_seconds.toLocaleString()}-second lifetime.</p>
+						<dl className="grid gap-2 text-sm sm:grid-cols-2">
+							<div><dt>Estimated Overflow Usage</dt><dd>About ${Number(preview.estimated_usage_min_usd)}–${Number(preview.estimated_usage_max_usd)}/month</dd></div>
+							<div><dt>Workers Paid Subscription</dt><dd>{amount(preview.workers_paid_subscription_usd)}/month, billed separately</dd></div>
+							<div><dt>Minimum Limit for This Fleet</dt><dd>{amount(preview.fleet_envelope_usd)}/month</dd></div>
+						</dl>
+						<p className="text-sm text-muted-foreground">The moderate forecast assumes 40 workflows per day in bursts, 35% cold starts, and about 0.077% Workers duty with nine slots. At the usage limit, new work stays on the primary. Overflow can pause earlier if usage or the next reservation cannot be verified.</p>
+					</div>
+				)}
+				{preflight && (
+					<div className="space-y-2">
+						<Label htmlFor="cf-activation-limit">Monthly Estimated Usage Limit</Label>
+						<Input id="cf-activation-limit" name="monthly_limit" type="number" required min={receipt ? Number(preview?.fleet_envelope_usd) : 0.01}
+							step="0.01" value={limit} onChange={(event) => { setLimit(event.target.value); setLimitConfirmed(false); }} />
+						{status.suggested_policy && (
+							<details onChange={() => { setPolicyEdited(true); invalidate(); }}>
+								<summary className="cursor-pointer font-medium">Edit Policy</summary>
+								<PolicyFields settings={status.suggested_policy} />
+							</details>
+						)}
+					</div>
+				)}
+				{receipt && (
+					<div className="space-y-2">
+						<label className="flex items-center gap-2"><input type="checkbox" required checked={limitConfirmed} onChange={(event) => setLimitConfirmed(event.target.checked)} /> Confirm Monthly Usage Limit</label>
+						<p id="cf-activation-consent" className="text-sm">{preflight?.consent_text}</p>
+						<label className="flex items-center gap-2"><input type="checkbox" required checked={consent} aria-describedby="cf-activation-consent" onChange={(event) => setConsent(event.target.checked)} /> Accept Cloudflare Terms</label>
+					</div>
+				)}
+				<div className="flex flex-wrap gap-2">
+					<Button type="submit">{receipt ? "Scale Out with Cloudflare" : preflight ? "Check Cloudflare Setup" : "Run Preflight"}</Button>
+					<Button type="button" variant="outline" onClick={onCancel}>Cancel</Button>
+				</div>
+			</fieldset>
+		</form>
+	);
+}
+
+function CloudflareConfigurationForm({ installation, onSaved, onCancel, onRefresh, busy }: {
+	installation: NonNullable<CloudflareCapacityStatus["installation"]>;
 	onSaved: (status: CloudflareCapacityStatus) => void;
 	onCancel: () => void;
 	onRefresh: () => void;
 	busy: boolean;
 }) {
-	const installation = status.installation;
-	const settings = installation ? installation.policy : status.suggested_policy;
+	const settings = installation.policy;
 	const [saving, setSaving] = useState(false);
 	const [failure, setFailure] = useState<{
 		message: string;
@@ -195,7 +431,6 @@ function CloudflareConfigurationForm({ status, onSaved, onCancel, onRefresh, bus
 		const error = failure?.fields[name];
 		return error && <p className="text-sm text-destructive" id={`cf-error-${name}`}>{error}</p>;
 	}
-	const [managedTunnel, setManagedTunnel] = useState(false);
 
 	async function save(event: FormEvent<HTMLFormElement>) {
 		event.preventDefault();
@@ -219,40 +454,12 @@ function CloudflareConfigurationForm({ status, onSaved, onCancel, onRefresh, bus
 			setFailure({ message: "Review the highlighted fields.", fields: invalid, labels });
 			return;
 		}
-		const sharedCap = String(fields.get("shared_cap") ?? "");
-		const policy = {
-			version: 1 as const,
-			workers: {
-				launcher_cap: Number(fields.get("launcher_cap")),
-				slots_per_launcher: Number(fields.get("slots")),
-				slots_per_tenant: Number(fields.get("tenant_slots")),
-				installation_slots: Number(fields.get("installation_slots")),
-				max_lifetime_seconds: Number(fields.get("lifetime")),
-				linger_seconds: Number(fields.get("linger")),
-				queue_prewarm_per_tenant: Number(fields.get("queue_prewarm")),
-				work_kinds: fields.get("workflows") === "on" ? ["workflow" as const] : [],
-			},
-			monthly_limit_usd: String(fields.get("monthly_limit")),
-			shared_managed_worker_cap: sharedCap ? Number(sharedCap) : null,
-		};
-		const request: CloudflareConfiguration = installation ? {
-			action: "policy",
+		const request = {
+			action: "policy" as const,
 			installation_id: installation.installation_id,
 			expected_revision: installation.desired_revision,
-			policy,
-		} : {
-			action: "connect",
-			account_id: String(fields.get("account_id")),
-			worker_ingress_origin: String(fields.get("origin")),
-			reachability_mode: managedTunnel ? "managed_tunnel" : "existing_https_endpoint",
-			...(managedTunnel ? { zone_id: String(fields.get("zone_id")) } : {}),
-			api_token: String(fields.get("api_token")),
-			consent: true,
-			consent_version: status.consent_text_version,
-			policy,
+			policy: readPolicy(fields),
 		};
-		const secretInput = form.elements.namedItem("api_token");
-		if (secretInput instanceof HTMLInputElement) secretInput.value = "";
 		setSaving(true);
 		setFailure(undefined);
 		try {
@@ -293,71 +500,17 @@ function CloudflareConfigurationForm({ status, onSaved, onCancel, onRefresh, bus
 					)}
 				</div>
 			)}
-			{!installation && (
-				<fieldset className="min-w-0 space-y-3">
-					<legend className="pb-2 font-semibold">Connection</legend>
-					<Label htmlFor="cf-account-id">Cloudflare Account ID</Label>
-					<Input id="cf-account-id" name="account_id" pattern="[a-f0-9]{32}" required {...fieldProps("account_id")} />{fieldError("account_id")}
-					{status.managed_tunnel_available && (
-						<div className="grid gap-2">
-							<Label htmlFor="cf-reachability-mode">Reachability</Label>
-							<select id="cf-reachability-mode" name="reachability_mode" {...fieldProps("reachability_mode")} className="rounded-md border bg-background p-2"
-								value={managedTunnel ? "managed_tunnel" : "existing_https_endpoint"}
-								onChange={(event) => setManagedTunnel(event.target.value === "managed_tunnel")}
-							>
-								<option value="existing_https_endpoint">Existing HTTPS Endpoint</option>
-								<option value="managed_tunnel">Managed Tunnel</option>
-							</select>
-							{fieldError("reachability_mode")}
-						</div>
-					)}
-					{managedTunnel && (
-						<>
-							<Label htmlFor="cf-zone-id">Cloudflare DNS Zone ID</Label>
-							<Input id="cf-zone-id" name="zone_id" pattern="[a-f0-9]{32}" required {...fieldProps("zone_id", "cf-tunnel-help")} />{fieldError("zone_id")}
-							<p id="cf-tunnel-help" className="text-sm text-muted-foreground">Grant Cloudflare Tunnel Write on the account and Zone Read and DNS Write on this zone.</p>
-						</>
-					)}
-					<Label htmlFor="cf-ingress-origin">{managedTunnel ? "Dedicated Tunnel HTTPS Origin" : "Existing HTTPS Endpoint"}</Label>
-					<Input id="cf-ingress-origin" name="origin" type="url" required {...fieldProps("origin")} />{fieldError("origin")}
-					<Label htmlFor="cf-connect-token">Cloudflare API Token</Label>
-					<Input id="cf-connect-token" name="api_token" type="password" autoComplete="new-password" required {...fieldProps("api_token", managedTunnel ? "cf-tunnel-help" : undefined)} />{fieldError("api_token")}
-					<p id="cf-consent-help" className="text-sm text-muted-foreground">{status.consent_text}</p>
-					<label className="flex items-center gap-2 text-sm">
-						<input type="checkbox" name="consent" required {...fieldProps("consent", "cf-consent-help")} />
-						Accept Cloudflare Terms
-					</label>
-					{fieldError("consent")}
-				</fieldset>
-			)}
 			<fieldset className="min-w-0">
 				<legend className="pb-2 font-semibold">Spending</legend>
 				<div className="space-y-1">
 					<Label htmlFor="cf-monthly">Monthly Estimated Usage Limit</Label>
-					<Input id="cf-monthly" name="monthly_limit" type="number" min="0.01" step="0.01" defaultValue={settings?.monthly_limit_usd ?? "30.00"} required {...fieldProps("monthly_limit", "cf-monthly-unit")} />{fieldError("monthly_limit")}
+					<Input id="cf-monthly" name="monthly_limit" type="number" min="0.01" step="0.01" defaultValue={settings.monthly_limit_usd} required {...fieldProps("monthly_limit", "cf-monthly-unit")} />{fieldError("monthly_limit")}
 					<p id="cf-monthly-unit" className="text-sm text-muted-foreground">USD/month</p>
 				</div>
 			</fieldset>
-			<fieldset className="min-w-0 space-y-3">
-				<legend className="pb-2 font-semibold">Advanced Policy</legend>
-				<div className="grid gap-3 sm:grid-cols-2">
-					<div><Label htmlFor="cf-launcher-cap">Workers Launcher Limit</Label><Input id="cf-launcher-cap" name="launcher_cap" type="number" min={1} max={1000} defaultValue={settings?.workers.launcher_cap ?? 1} required {...fieldProps("launcher_cap")} />{fieldError("launcher_cap")}</div>
-					<div><Label htmlFor="cf-slots">Slots per Launcher</Label><Input id="cf-slots" name="slots" type="number" min={1} max={4} defaultValue={settings?.workers.slots_per_launcher ?? 2} required {...fieldProps("slots")} />{fieldError("slots")}</div>
-					<div><Label htmlFor="cf-tenant-slots">Slots per Tenant</Label><Input id="cf-tenant-slots" name="tenant_slots" type="number" min={1} max={32} defaultValue={settings?.workers.slots_per_tenant ?? 4} required {...fieldProps("tenant_slots")} />{fieldError("tenant_slots")}</div>
-					<div><Label htmlFor="cf-installation-slots">Installation Slot Limit</Label><Input id="cf-installation-slots" name="installation_slots" type="number" min={2} max={256} defaultValue={settings?.workers.installation_slots ?? 9} required {...fieldProps("installation_slots")} />{fieldError("installation_slots")}</div>
-					<div><Label htmlFor="cf-lifetime">Maximum Lifetime in Seconds</Label><Input id="cf-lifetime" name="lifetime" type="number" min={60} max={604800} defaultValue={settings?.workers.max_lifetime_seconds ?? 3600} required {...fieldProps("lifetime")} />{fieldError("lifetime")}</div>
-					<div><Label htmlFor="cf-linger">Tenant Engine Linger in Seconds</Label><Input id="cf-linger" name="linger" type="number" min={0} max={300} defaultValue={settings?.workers.linger_seconds ?? 90} required {...fieldProps("linger")} />{fieldError("linger")}</div>
-					<div><Label htmlFor="cf-queue-prewarm">Max Queue Pre-Warms per Tenant</Label><Input id="cf-queue-prewarm" name="queue_prewarm" type="number" min={0} max={32} defaultValue={settings?.workers.queue_prewarm_per_tenant ?? 0} required {...fieldProps("queue_prewarm", "cf-prewarm-help")} />{fieldError("queue_prewarm")}<p id="cf-prewarm-help" className="text-sm text-muted-foreground">Set to 0 to disable. Requires a positive engine linger.</p></div>
-					<div><Label htmlFor="cf-shared-cap">Shared Managed Worker Limit</Label><Input id="cf-shared-cap" name="shared_cap" type="number" min={1} max={1000} defaultValue={settings?.shared_managed_worker_cap ?? undefined} {...fieldProps("shared_cap")} />{fieldError("shared_cap")}</div>
-				</div>
-				<label className="flex items-center gap-2 text-sm">
-					<input type="checkbox" name="workflows" defaultChecked={settings?.workers.work_kinds.includes("workflow") ?? true} {...fieldProps("workflows")} />
-					Allow Approved Workflows
-				</label>
-				{fieldError("workflows")}
-			</fieldset>
+			<PolicyFields settings={settings} fieldProps={fieldProps} fieldError={fieldError} />
 			<div className="flex flex-wrap gap-2">
-				<Button type="submit" disabled={saving || busy}>{installation ? "Save Policy" : "Connect Cloudflare"}</Button>
+				<Button type="submit" disabled={saving || busy}>Save Policy</Button>
 				<Button type="button" variant="outline" disabled={saving} onClick={onCancel}>Cancel</Button>
 			</div>
 		</form>
@@ -414,7 +567,7 @@ export function CloudflareCapacity() {
 	const [readbackFailure, setReadbackFailure] = useState<string>();
 	const readbackRef = useRef<(replace?: boolean) => void>(null);
 	const [connecting, setConnecting] = useState(false);
-	const [focusTarget, setFocusTarget] = useState<"setup" | "enable" | "policy">();
+	const [focusTarget, setFocusTarget] = useState<"setup" | "policy">();
 	const setupRef = useRef<HTMLButtonElement>(null);
 	const enableRef = useRef<HTMLButtonElement>(null);
 	const policyRef = useRef<HTMLButtonElement>(null);
@@ -512,7 +665,7 @@ export function CloudflareCapacity() {
 
 	useEffect(() => {
 		if (!focusTarget) return;
-		const target = { setup: setupRef, enable: enableRef, policy: policyRef }[focusTarget].current;
+		const target = { setup: setupRef, policy: policyRef }[focusTarget].current;
 		if (target && !target.disabled) {
 			target.focus();
 			setFocusTarget(undefined);
@@ -544,20 +697,22 @@ export function CloudflareCapacity() {
 			: job && ((terminal.has(job.status) ? job.error?.message : undefined) ?? jobAnnouncements[job.status]);
 
 	function finishConfiguration(next: CloudflareCapacityStatus) {
-		if (!installation) {
-			setAcceptedJobId(undefined);
-			setLocalAction(undefined);
-		}
-		setConnecting(false);
 		setEditing(false);
 		queryClient.setQueryData(statusKey, next);
-		setFocusTarget(installation ? "policy" : "enable");
+		setFocusTarget("policy");
 	}
 
 	function cancelConfiguration() {
 		setConnecting(false);
 		setEditing(false);
 		setFocusTarget(installation ? "policy" : "setup");
+	}
+
+	function finishActivation(accepted: CloudflareJobAccepted) {
+		setLocalAction({ id: accepted.job_id, action: "enable" });
+		setAcceptedJobId(accepted.job_id);
+		setConnecting(false);
+		void refetch();
 	}
 
 	async function submitRotation(event: FormEvent<HTMLFormElement>) {
@@ -637,10 +792,12 @@ export function CloudflareCapacity() {
 					<section className="space-y-2">
 						<h3 className="font-semibold">Cloudflare Connection</h3>
 						{disconnected && <p role="status">Cloudflare was disconnected. Bifrost verified removal of its owned resources.{data.disconnected_at && ` ${timestamp(data.disconnected_at)}.`}</p>}
-						<p>Use a Cloudflare account with Workers Paid, an account API token, and a reachable HTTPS endpoint or a managed tunnel.</p>
+						<p>Use a dedicated Cloudflare account with Workers Paid where possible. A shared account is supported.</p>
+						<p>Grant Account Settings Read and Workers Scripts Write. For Managed Tunnel, also grant Cloudflare Tunnel Write, Zone Read, and DNS Write on the selected zone.</p>
+						{!data.suggested_policy && <p>Install a qualified Workers release with lifetime meters to set up Cloudflare capacity.</p>}
 						<PlacementReasons reasons={data.placement_reasons ?? []} />
 						{canWrite && !connecting && (
-							<Button ref={setupRef} disabled={busy} onClick={() => setConnecting(true)}>Set Up Cloudflare</Button>
+							<Button ref={setupRef} disabled={busy || !data.suggested_policy} onClick={() => setConnecting(true)}>Set Up Cloudflare</Button>
 						)}
 					</section>
 				)}
@@ -652,10 +809,13 @@ export function CloudflareCapacity() {
 						<Link className="underline" to="/workflows">Review Workflows</Link>
 					</p>
 				)}
-				{canRead && data && canWrite && (installation ? editing : connecting) && (
+				{canRead && data && canWrite && !installation && connecting && (
+					<CloudflareSetupForm status={data} onAccepted={finishActivation} onCancel={cancelConfiguration} />
+				)}
+				{canRead && data && canWrite && installation && editing && (
 					<CloudflareConfigurationForm
 						key={installation?.desired_revision ?? "connect"}
-						status={data}
+						installation={installation}
 						onSaved={finishConfiguration}
 						onCancel={cancelConfiguration}
 						onRefresh={() => void refetch()}

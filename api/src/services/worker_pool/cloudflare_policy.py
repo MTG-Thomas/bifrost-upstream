@@ -424,6 +424,8 @@ async def create_cloudflare_installation(
     bounds: WorkersReleaseMeterBounds,
     reachability_mode: CloudflareReachabilityMode = "existing_https_endpoint",
     zone_id: str | None = None,
+    installation_id: UUID | None = None,
+    activation_fingerprint: str | None = None,
 ) -> UUID:
     """Persist an already validated connection in the caller's transaction."""
     if not re.fullmatch("[a-f0-9]{32}", account_id):
@@ -433,7 +435,9 @@ async def create_cloudflare_installation(
         raise ValueError("Cloudflare installation requires consent to the current text")
     actor = str(actor_id)
     desired = _price_policy(policy, bounds)
-    installation_id = uuid4()
+    installation_id = installation_id or uuid4()
+    if activation_fingerprint is not None:
+        desired["activation_fingerprint"] = activation_fingerprint
     now = datetime.now(UTC)
     result = await db.execute(
         insert(CloudflareInstallation)
@@ -455,10 +459,7 @@ async def create_cloudflare_installation(
             api_token_version=1,
             control_root_version=1,
         )
-        .on_conflict_do_nothing(
-            index_elements=[CloudflareInstallation.singleton],
-            index_where=CloudflareInstallation.retired_at.is_(None),
-        )
+        .on_conflict_do_nothing()
         .returning(CloudflareInstallation.id)
     )
     if result.scalar_one_or_none() is None:

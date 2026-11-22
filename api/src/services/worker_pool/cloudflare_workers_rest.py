@@ -238,6 +238,33 @@ class WorkersRestCleanup:
         if not isinstance(record, dict) or record.get("id") != account_id:
             raise CloudflareManagementDenied
 
+    async def discovery_inventory(
+        self, candidate: SecretStr, account_id: str | None = None,
+    ) -> list[dict[str, Any]] | None:
+        """List accounts, or active zones for one selected account."""
+        if not re.fullmatch(r"[\x21-\x7e]{16,512}", candidate.get_secret_value()):
+            raise CloudflareManagementDenied
+        path = "accounts" if account_id is None else "zones"
+        filters: dict[str, int | str] = {} if account_id is None else {"account.id": account_id, "status": "active"}
+        entries: list[dict[str, Any]] = []
+        for page in range(1, 21):
+            try:
+                payload = await self._request_resource(
+                    candidate, "GET", path, params={**filters, "per_page": 50, "page": page},
+                )
+            except CloudflareManagementDenied:
+                return None
+            items = payload["result"] if payload else None
+            if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+                raise CloudflareRestUnavailable("Cloudflare returned an invalid discovery inventory")
+            info = payload.get("result_info") if payload else None
+            total_pages = info.get("total_pages") if isinstance(info, dict) else None
+            entries.extend(items)
+            last_page = page >= total_pages if type(total_pages) is int else len(items) < 50
+            if last_page:
+                return entries
+        raise CloudflareRestUnavailable("Cloudflare discovery inventory exceeds the supported size")
+
     async def verify_workers_paid(self, account_id: str, candidate: SecretStr) -> None:
         await self.verify_account(account_id, candidate)
         response = await self._request(candidate, account_id, "GET", "entitlements")

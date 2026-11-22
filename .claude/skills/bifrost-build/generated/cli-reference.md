@@ -655,10 +655,12 @@ Options:
   --help  Show this message and exit.
 
 Commands:
+  activate          Accept the reviewed preflight and provision...
   connect           Validate an account token and connect Cloudflare.
   disconnect        Drain Cloudflare workers and remove verified owned...
   enable            Provision and verify Cloudflare Workers capacity.
   policy            Update the current Cloudflare capacity policy.
+  preflight         Discover Cloudflare prerequisites and price the...
   reconcile         Verify or repair the current Cloudflare Workers...
   rotate            Validate and replace the Cloudflare account API token.
   rotate-bearer     Retire the previous Workers deployment and stage a...
@@ -668,6 +670,23 @@ Commands:
   stage-credential  Enter a Cloudflare token for a one-time MCP...
   status            Show the current Cloudflare connection and capacity...
   upgrade           Apply the Workers release packaged with Bifrost.
+```
+
+#### `capacity cloudflare activate`
+
+```
+Usage: capacity cloudflare activate [OPTIONS]
+
+  Accept the reviewed preflight and provision Cloudflare Workers.
+
+Options:
+  --preflight-receipt TEXT  [required]
+  --credential-ref UUID
+  --monthly-limit-usd TEXT  Confirmed monthly estimated usage limit in USD.
+                            [required]
+  --wait                    Wait for completion through the platform job.
+  --json                    Emit JSON instead of human-readable output.
+  --help                    Show this message and exit.
 ```
 
 #### `capacity cloudflare connect`
@@ -732,6 +751,24 @@ Options:
                                [required]
   --json                       Emit JSON instead of human-readable output.
   --help                       Show this message and exit.
+```
+
+#### `capacity cloudflare preflight`
+
+```
+Usage: capacity cloudflare preflight [OPTIONS]
+
+  Discover Cloudflare prerequisites and price the capacity policy.
+
+Options:
+  --account-id TEXT
+  --zone-id TEXT
+  --reachability-mode [existing_https_endpoint|managed_tunnel]
+  --worker-ingress-origin TEXT
+  --credential-ref UUID
+  --policy FILENAME               Advanced capacity policy JSON file.
+  --json                          Emit JSON instead of human-readable output.
+  --help                          Show this message and exit.
 ```
 
 #### `capacity cloudflare reconcile`

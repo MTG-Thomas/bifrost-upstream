@@ -1,5 +1,7 @@
 """Platform operator controls for Cloudflare capacity."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Body, HTTPException, Response, status
@@ -7,10 +9,13 @@ from sqlalchemy import select
 from shared.models import (
     CloudflareAccountTokenRotation,
     CloudflareAccountTokenReferenceRotation,
+    CloudflareActivateRequest,
     CloudflareCapacityAction,
     CloudflareCapacityStatus,
     CloudflareConnectRequest,
     CloudflarePolicyUpdate,
+    CloudflarePreflight,
+    CloudflarePreflightRequest,
     CloudflareReconcileAction,
     CloudflareStageCredentialRequest,
     CloudflareStagedCredential,
@@ -33,6 +38,7 @@ from src.services.audit import emit_audit
 from src.services.authorization.enforce import load_caller, require_operation
 from src.services.authorization.evaluator import GLOBAL
 from src.services.operation_catalog import operation_route
+from src.services.worker_pool.cloudflare_activation import activate_cloudflare, preflight_cloudflare
 from src.services.worker_pool.cloudflare_connection import configure_cloudflare
 from src.services.worker_pool.cloudflare_credentials import stage_account_token
 from src.services.worker_pool.cloudflare_policy import (
@@ -41,7 +47,7 @@ from src.services.worker_pool.cloudflare_policy import (
     CloudflarePolicyConflict,
     get_cloudflare_capacity_status,
 )
-from src.services.worker_pool.cloudflare_provisioning import ObservationPending
+from src.services.worker_pool.cloudflare_provisioning import ObservationPending, OwnershipConflict
 from src.services.worker_pool.cloudflare_release import WorkersReleaseUnavailable
 from src.services.worker_pool.cloudflare_workers_rest import (
     CloudflareManagementDenied,
@@ -104,16 +110,22 @@ async def configure_cloudflare_capacity(
 ) -> CloudflareCapacityStatus:
     caller = await load_caller(db, user)
     require_operation(caller, "capacity.cloudflare_configure", GLOBAL)
-    try:
+    with _configuration_errors(str(body.policy.monthly_limit_usd)):
         return await configure_cloudflare(db, caller, body)
+
+
+@contextmanager
+def _configuration_errors(monthly_limit: str | None) -> Iterator[None]:
+    try:
+        yield
     except CloudflareBudgetTooLow as exc:
-        message = f"The fleet envelope is {exc.envelope} USD/month. The submitted limit was {body.policy.monthly_limit_usd} USD/month."
+        message = f"The fleet envelope is {exc.envelope} USD/month. The submitted limit was {monthly_limit} USD/month."
         remedy = "Raise the limit or reduce the fleet size or lifetime."
         raise StructuredRequestRefusal("cloudflare_budget_refused", message, {
             "code": "CF_BUDGET_REFUSED",
             "fields": {"policy.monthly_limit_usd": message},
             "fleet_envelope_usd": str(exc.envelope),
-            "monthly_limit_usd": str(body.policy.monthly_limit_usd),
+            "monthly_limit_usd": monthly_limit,
             "remedy": remedy,
         }) from None
     except WorkersReleaseUnavailable:
@@ -130,10 +142,35 @@ async def configure_cloudflare_capacity(
         ) from None
     except (CloudflareRestUnavailable, ObservationPending):
         raise HTTPException(503, "Cloudflare account verification is temporarily unavailable.") from None
-    except (CloudflareInstallationExists, CloudflarePolicyConflict) as exc:
+    except (CloudflareInstallationExists, CloudflarePolicyConflict, OwnershipConflict) as exc:
         raise HTTPException(409, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+
+
+@router.post("/preflight", response_model=CloudflarePreflight, **operation_route("capacity.cloudflare_preflight"))
+async def run_cloudflare_preflight(
+    body: CloudflarePreflightRequest, db: DbSession, user: CurrentActiveUser,
+) -> CloudflarePreflight:
+    caller = await load_caller(db, user)
+    require_operation(caller, "capacity.cloudflare_preflight", GLOBAL)
+    with _configuration_errors(str(body.policy.monthly_limit_usd) if body.policy else None):
+        return await preflight_cloudflare(db, caller, body)
+
+
+@router.post(
+    "/activate", response_model=PlatformJobAccepted, status_code=status.HTTP_202_ACCEPTED,
+    **operation_route("capacity.cloudflare_activate"),
+)
+async def activate_cloudflare_capacity(
+    body: CloudflareActivateRequest, response: Response, db: DbSession, user: CurrentActiveUser,
+) -> PlatformJobAccepted:
+    caller = await load_caller(db, user)
+    require_operation(caller, "capacity.cloudflare_activate", GLOBAL)
+    with _configuration_errors(str(body.monthly_limit_usd)):
+        job, reused = await activate_cloudflare(db, caller, body)
+    response.headers["Location"] = f"/api/platform-jobs/{job.id}"
+    return PlatformJobAccepted(job_id=job.id, status=job.status, notification_id=job.notification_id, reused=reused)
 
 
 @router.post(

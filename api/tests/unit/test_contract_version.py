@@ -474,7 +474,7 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # and provider identifiers are redacted from the status response.
     # Compatible: old account-ID staging requests still work and new clients can
     # stage by installation ID. Gate seconds remain a JSON number for readers.
-    "1011055e2801ea6b870de078ca8c03d32dfe2e35a6db1f32369e4bff1d9d9dd1"
+    "e99001b906c4d8338610bbb5f3b2d113d7023b2dfc67468a2e758e0b83f62430"
 )
 
 

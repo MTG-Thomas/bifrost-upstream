@@ -1149,6 +1149,14 @@ WORKSPACE_FILE_OPERATIONS = {
 }
 
 CANONICAL_OPERATIONS = {
+    "capacity.cloudflare_preflight": (
+        "POST", "/api/capacity/cloudflare/preflight", ("capacity", "cloudflare", "preflight"),
+        "bifrost_cloudflare_preflight_validate", False,
+    ),
+    "capacity.cloudflare_activate": (
+        "POST", "/api/capacity/cloudflare/activate", ("capacity", "cloudflare", "activate"),
+        "bifrost_cloudflare_activate_execute", False,
+    ),
     "capacity.cloudflare_configure": (
         "PATCH", "/api/capacity/cloudflare", ("capacity", "cloudflare", "connect"),
         "bifrost_cloudflare_policy_update", False,

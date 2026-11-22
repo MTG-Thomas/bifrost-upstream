@@ -12,6 +12,10 @@ export type CloudflareConfiguration =
 	| components["schemas"]["CloudflareConnectRequest"]
 	| components["schemas"]["CloudflarePolicyUpdate"];
 export type CloudflareAction = "enable" | "reconcile" | "upgrade" | "scale-in" | "disconnect" | "rotate-root" | "rotate-bearer" | "rotate-connector";
+export type CloudflarePreflight = components["schemas"]["CloudflarePreflight"];
+export type CloudflarePreflightRequest = components["schemas"]["CloudflarePreflightRequest"];
+export type CloudflareActivateRequest = components["schemas"]["CloudflareActivateRequest"];
+export type CloudflareJobAccepted = components["schemas"]["PlatformJobAccepted"];
 
 const actionPaths = {
 	enable: "/api/capacity/cloudflare/enable",
@@ -38,6 +42,18 @@ export async function configureCloudflareCapacity(body: CloudflareConfiguration)
 	if (error) {
 		throw parseApiError(error, response.status);
 	}
+	return data;
+}
+
+export async function preflightCloudflareCapacity(body: CloudflarePreflightRequest): Promise<CloudflarePreflight> {
+	const { data, error, response } = await apiClient.POST("/api/capacity/cloudflare/preflight", { body });
+	if (error) throw parseApiError(error, response.status);
+	return data;
+}
+
+export async function activateCloudflareCapacity(body: CloudflareActivateRequest): Promise<CloudflareJobAccepted> {
+	const { data, error, response } = await apiClient.POST("/api/capacity/cloudflare/activate", { body });
+	if (error) throw parseApiError(error, response.status);
 	return data;
 }
 

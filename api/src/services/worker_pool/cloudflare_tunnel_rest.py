@@ -159,7 +159,7 @@ class TunnelRest(WorkersRestCleanup):
         result = await self._request_resource(self.token, method, path, **kwargs)
         return result["result"] if result is not None else None
 
-    async def verify_zone(self) -> None:
+    async def active_zone_name(self) -> str:
         zone = await self._result("GET", f"zones/{self.zone_id}")
         if not isinstance(zone, dict) or zone.get("id") != self.zone_id:
             raise OwnershipConflict(
@@ -173,8 +173,24 @@ class TunnelRest(WorkersRestCleanup):
                 "Cloudflare zone belongs to a different account",
                 OwnershipResource.DNS_ZONE, OwnershipCheck.ZONE_ACCOUNT,
             )
-        if not isinstance(name, str) or not self.hostname.endswith("." + name) or zone.get("status") != "active":
+        if not isinstance(name, str) or zone.get("status") != "active":
+            raise ValueError("Managed Tunnel requires an active DNS zone")
+        return name
+
+    async def verify_zone(self) -> None:
+        if not self.hostname.endswith("." + await self.active_zone_name()):
             raise ValueError("Managed Tunnel requires a dedicated hostname in the selected active DNS zone")
+
+    async def require_unused_hostname(self) -> None:
+        item = await self._find(
+            self.records, {"name.exact": self.hostname}, self.hostname,
+            resource=OwnershipResource.DNS_RECORD,
+        )
+        if item is not None:
+            raise OwnershipConflict(
+                "The proposed Cloudflare hostname is already in use",
+                OwnershipResource.DNS_RECORD, OwnershipCheck.TARGET_OCCUPIED,
+            )
 
     async def connectors(self, tunnel_id: str) -> frozenset[str]:
         payload = await self._request_resource(self.token, "GET", f"{self.tunnels}/{tunnel_id}/connections")

@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 
 from pydantic import SecretStr
 from shared.worker_control_auth import managed_cloudflare_control_key
-from sqlalchemy import delete, func
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.security import decrypt_secret, encrypt_secret
@@ -70,6 +70,20 @@ async def consume_staged_token(
         binding, value = json.loads(decrypt_secret(row))
         if binding == _stage_binding(ref, actor_id, account_id, purpose, installation_id) and isinstance(value, str):
             return SecretStr(value)
+    raise ValueError("Invalid or expired Cloudflare credential reference")
+
+
+async def read_staged_connect_token(db: AsyncSession, ref: UUID, *, actor_id: UUID) -> tuple[str, SecretStr]:
+    staged = CloudflareStagedToken
+    row = (await db.execute(select(staged.account_id, staged.ciphertext).where(
+        staged.id == ref, staged.actor_id == actor_id, staged.purpose == "connect",
+        staged.expires_at > func.statement_timestamp(),
+    ))).one_or_none()
+    if row is not None:
+        account_id, ciphertext = row
+        binding, value = json.loads(decrypt_secret(ciphertext))
+        if binding == _stage_binding(ref, actor_id, account_id, "connect", None) and isinstance(value, str):
+            return account_id, SecretStr(value)
     raise ValueError("Invalid or expired Cloudflare credential reference")
 
 

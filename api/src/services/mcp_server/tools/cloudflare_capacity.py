@@ -1,14 +1,17 @@
 """Thin REST bridge for the Cloudflare capacity operator actions."""
 
+from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
 from shared.models import (
     CloudflareAccountTokenReferenceRotation,
+    CloudflareActivateRequest,
     CloudflareCapacityAction,
     CloudflareCapacityPolicy,
     CloudflareConnectRequest,
     CloudflarePolicyUpdate,
+    CloudflarePreflightRequest,
     CloudflareReachabilityMode,
     CloudflareReconcileAction,
     CloudflareWorkerCredentialRotation,
@@ -25,6 +28,39 @@ async def bifrost_cloudflare_capacity_get(context: Any) -> ToolResult:
     if status != 200:
         return error_result(f"Cloudflare capacity request failed (HTTP {status})", {"body": body})
     return success_result("Cloudflare Capacity", body)
+
+
+async def bifrost_cloudflare_preflight_validate(
+    context: Any, credential_ref: UUID, account_id: str | None = None, zone_id: str | None = None,
+    reachability_mode: CloudflareReachabilityMode | None = None, worker_ingress_origin: str | None = None,
+    policy: CloudflareCapacityPolicy | None = None,
+) -> ToolResult:
+    request = CloudflarePreflightRequest(
+        credential_ref=credential_ref, account_id=account_id, zone_id=zone_id,
+        reachability_mode=reachability_mode, worker_ingress_origin=worker_ingress_origin, policy=policy,
+    )
+    status, body = await call_rest(
+        context, "POST", f"{_PATH}/preflight", json_body=request.model_dump(mode="json", exclude_none=True),
+    )
+    if status != 200:
+        return error_result(f"Cloudflare preflight failed (HTTP {status})", {"body": body})
+    return success_result("Cloudflare Preflight", body)
+
+
+async def bifrost_cloudflare_activate_execute(
+    context: Any, credential_ref: UUID, preflight_receipt: str, consent_version: str, consent: Literal[True],
+    monthly_limit_usd: Decimal,
+) -> ToolResult:
+    request = CloudflareActivateRequest(
+        credential_ref=credential_ref, preflight_receipt=preflight_receipt, consent_version=consent_version,
+        consent=consent, monthly_limit_usd=monthly_limit_usd,
+    )
+    status, body = await call_rest(
+        context, "POST", f"{_PATH}/activate", json_body=request.model_dump(mode="json", exclude_none=True),
+    )
+    if status != 202:
+        return error_result(f"Cloudflare activation failed (HTTP {status})", {"body": body})
+    return success_result("Cloudflare Job Queued", body)
 
 
 async def _submit(
@@ -125,6 +161,8 @@ async def bifrost_cloudflare_policy_update(
 
 _TOOLS = (
     (bifrost_cloudflare_capacity_get, "Cloudflare Capacity Status", "Read the Global Cloudflare connection and policy."),
+    (bifrost_cloudflare_preflight_validate, "Preview Cloudflare Capacity", "Use a reference from capacity cloudflare stage-credential --purpose connect. Present the resolved account, zone, hostname, usage forecast, limit and consent before activation."),
+    (bifrost_cloudflare_activate_execute, "Scale Out with Cloudflare", "Requires operator acceptance of the preflight and explicit confirmation of the monthly limit. Use the same staged credential reference."),
     (bifrost_cloudflare_scale_in_execute, "Scale In Cloudflare", "Drain Cloudflare workers and retain the connection."),
     (bifrost_cloudflare_disconnect_execute, "Disconnect Cloudflare", "Drain capacity and remove owned resources."),
     (bifrost_cloudflare_enable_execute, "Enable Cloudflare", "Provision and verify Cloudflare Workers capacity."),

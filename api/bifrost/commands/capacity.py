@@ -10,7 +10,9 @@ from pydantic import ValidationError
 from bifrost.client import BifrostClient
 from bifrost.contracts.cloudflare_capacity import (
     CloudflareAccountTokenRotation,
+    CloudflareActivateRequest,
     CloudflareCapacityAction,
+    CloudflarePreflightRequest,
     CloudflareReconcileAction,
 )
 from bifrost.dto_flags import build_cli_flags
@@ -79,6 +81,65 @@ def _read_policy(policy: TextIO) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise click.ClickException("The Cloudflare policy file must contain a JSON object.")
     return value
+
+
+@cloudflare_group.command("preflight")
+@click.option("--account-id")
+@click.option("--zone-id")
+@click.option("--reachability-mode", type=click.Choice(["existing_https_endpoint", "managed_tunnel"]))
+@click.option("--worker-ingress-origin")
+@click.option("--credential-ref", type=click.UUID)
+@click.option("--policy", type=click.File("r", encoding="utf-8"), help="Advanced capacity policy JSON file.")
+@click.pass_context
+@pass_resolver
+@run_async
+async def preflight(
+    ctx: click.Context, policy: TextIO | None, credential_ref: UUID | None,
+    *, client: BifrostClient, resolver: RefResolver, **fields: Any,
+) -> None:
+    """Discover Cloudflare prerequisites and price the capacity policy."""
+    body = CloudflarePreflightRequest(
+        **fields, credential_ref=credential_ref, policy=_read_policy(policy) if policy else None,
+        api_token=None if credential_ref else click.prompt("Cloudflare API Token", hide_input=True),
+    )
+    response = await client.post(f"{_PATH}/preflight", json=body.request_body())
+    response.raise_for_status()
+    output_result(response.json(), ctx=ctx)
+
+
+@cloudflare_group.command("activate")
+@click.option("--preflight-receipt", required=True)
+@click.option("--credential-ref", type=click.UUID)
+@click.option("--monthly-limit-usd", required=True, help="Confirmed monthly estimated usage limit in USD.")
+@click.option("--wait", is_flag=True, help="Wait for completion through the platform job.")
+@click.pass_context
+@pass_resolver
+@run_async
+async def activate(
+    ctx: click.Context, preflight_receipt: str, credential_ref: UUID | None, monthly_limit_usd: str,
+    wait: bool, *, client: BifrostClient, resolver: RefResolver,
+) -> None:
+    """Accept the reviewed preflight and provision Cloudflare Workers."""
+    current = await client.get(_PATH)
+    current.raise_for_status()
+    consent = current.json()
+    click.echo(consent["consent_text"], err=True)
+    click.confirm("Accept the reviewed Cloudflare route and scale out", abort=True)
+    try:
+        body = CloudflareActivateRequest.model_validate({
+            "preflight_receipt": preflight_receipt, "credential_ref": credential_ref,
+            "monthly_limit_usd": monthly_limit_usd, "consent": True, "consent_version": consent["consent_text_version"],
+        })
+    except ValidationError:
+        raise click.UsageError("Enter a positive monthly limit in USD with up to two decimal places.") from None
+    data = body.model_dump(mode="json", exclude_none=True)
+    if credential_ref is None:
+        data["api_token"] = click.prompt("Cloudflare API Token", hide_input=True)
+    response = await client.post(f"{_PATH}/activate", json=data)
+    response.raise_for_status()
+    accepted = response.json()
+    result = await poll_platform_job(client, accepted["job_id"], label="Scale Out with Cloudflare") if wait else accepted
+    output_result(result, ctx=ctx)
 
 
 @cloudflare_group.command("stage-credential")

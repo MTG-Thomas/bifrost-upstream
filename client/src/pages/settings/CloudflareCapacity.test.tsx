@@ -10,6 +10,8 @@ import { ApiError } from "@/lib/api-error";
 const mocks = vi.hoisted(() => ({
 	get: vi.fn(),
 	configure: vi.fn(),
+	preflight: vi.fn(),
+	activate: vi.fn(),
 	start: vi.fn(),
 	rotate: vi.fn(),
 	observe: vi.fn(),
@@ -19,6 +21,8 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("@/services/cloudflareCapacity", () => ({
 	configureCloudflareCapacity: mocks.configure,
+	preflightCloudflareCapacity: mocks.preflight,
+	activateCloudflareCapacity: mocks.activate,
 	getCloudflareCapacity: mocks.get,
 	startCloudflareAction: mocks.start,
 	rotateCloudflareAccountToken: mocks.rotate,
@@ -193,79 +197,63 @@ it.each([
 	);
 });
 
-it.each([false, true])("submits the current consent and clears the token with Managed Tunnel set to %s", async (managed) => {
-	mocks.get.mockResolvedValue({
-		installation: null,
-		managed_tunnel_available: true,
-		suggested_policy: managed ? null : {
-			monthly_limit_usd: "75.00",
-			workers: {
-				launcher_cap: 3, slots_per_launcher: 4, max_lifetime_seconds: 3600,
-				installation_slots: 9, work_kinds: ["workflow"],
-			},
+const suggestedPolicy = {
+	monthly_limit_usd: "75.00",
+	workers: {
+		launcher_cap: 3, slots_per_launcher: 4, max_lifetime_seconds: 3600,
+		installation_slots: 9, work_kinds: ["workflow"],
+	},
+};
+
+it("reviews a discovered account and route, then queues exactly one activation", async () => {
+	const user = userEvent.setup();
+	const token = "synthetic-management-token";
+	mocks.get.mockResolvedValue({ installation: null, suggested_policy: suggestedPolicy });
+	mocks.preflight.mockResolvedValue({
+		account_id: "a".repeat(32), accounts: [{ id: "a".repeat(32), name: "Example Account" }],
+		zone_id: "b".repeat(32), zone_name: "example.test", zones: [{ id: "b".repeat(32), name: "example.test" }],
+		workers_paid: "verified", connector_ready: true, connector_channel: "compose", primary: "static",
+		reachability_mode: "managed_tunnel", worker_ingress_origin: "https://workers.example.test",
+		preview: {
+			policy: suggestedPolicy, fleet_envelope_usd: "32.13",
+			estimated_usage_min_usd: "2", estimated_usage_max_usd: "7", workers_paid_subscription_usd: "5",
 		},
-		consent_text_version: "existing-https-v1",
-		consent_text: "Current operator consent",
+		consent_version: "existing-https-v1", consent_text: "Current operator consent", preflight_receipt: "receipt",
 	});
-	mocks.configure.mockResolvedValue({ installation });
+	mocks.activate.mockImplementation(async () => {
+		mocks.get.mockResolvedValue({ installation });
+		return { job_id: "activation-job", status: "queued" };
+	});
 	renderCapacity();
-	fireEvent.click(await screen.findByRole("button", { name: "Set Up Cloudflare" }));
-	const account = screen.getByLabelText("Cloudflare Account ID");
-	expect(account).toHaveFocus();
-	fireEvent.change(account, { target: { value: "a".repeat(32) } });
-	if (managed) {
-		fireEvent.change(screen.getByLabelText("Reachability"), { target: { value: "managed_tunnel" } });
-		expect(screen.getByLabelText("Cloudflare DNS Zone ID")).toHaveAccessibleDescription(/Grant Cloudflare Tunnel Write/);
-		fireEvent.change(screen.getByLabelText("Cloudflare DNS Zone ID"), { target: { value: "b".repeat(32) } });
-	}
-	fireEvent.change(screen.getByLabelText(managed ? "Dedicated Tunnel HTTPS Origin" : "Existing HTTPS Endpoint"), {
-		target: { value: "https://workers.example.test" },
+
+	await user.click(await screen.findByRole("button", { name: "Set Up Cloudflare" }));
+	const secret = screen.getByLabelText("Cloudflare API Token");
+	expect(secret).toHaveFocus();
+	expect(secret).toHaveAttribute("type", "password");
+	await user.type(secret, token);
+	await user.click(screen.getByRole("button", { name: "Run Preflight" }));
+	await screen.findByText(/Cloudflare Account: Example Account/);
+	expect(screen.getByText(/Cloudflare DNS Zone: example.test/)).toBeVisible();
+	expect(screen.getByText(/Dedicated Hostname: https:\/\/workers.example.test/)).toBeVisible();
+	expect(screen.getByText("32.13 USD/month")).toBeVisible();
+	expect(screen.getByText("About $2–$7/month")).toBeVisible();
+	expect(screen.getByLabelText("Monthly Estimated Usage Limit")).toHaveValue(75);
+	expect(screen.getByLabelText("Monthly Estimated Usage Limit")).toHaveAttribute("min", "32.13");
+	expect(screen.getByRole("button", { name: "Scale Out with Cloudflare" })).toBeVisible();
+	await user.click(screen.getByRole("button", { name: "Scale Out with Cloudflare" }));
+	expect(mocks.activate).not.toHaveBeenCalled();
+
+	await user.click(screen.getByRole("checkbox", { name: "Confirm Monthly Usage Limit" }));
+	await user.click(screen.getByRole("checkbox", { name: "Accept Cloudflare Terms" }));
+	await user.click(screen.getByRole("button", { name: "Scale Out with Cloudflare" }));
+	await waitFor(() => expect(mocks.subscribe).toHaveBeenCalledWith("activation-job", expect.any(Function)));
+	expect(mocks.activate).toHaveBeenCalledExactlyOnceWith({
+		api_token: token, monthly_limit_usd: "75.00", consent: true,
+		consent_version: "existing-https-v1", preflight_receipt: "receipt",
 	});
-	const linger = screen.getByLabelText("Tenant Engine Linger in Seconds");
-	expect(linger).toHaveValue(90);
-	fireEvent.change(linger, { target: { value: "0" } });
-	const tenantSlots = screen.getByLabelText("Slots per Tenant");
-	const installationSlots = screen.getByLabelText("Installation Slot Limit");
-	expect(screen.getByLabelText("Workers Launcher Limit")).toHaveValue(managed ? 1 : 3);
-	expect(screen.getByLabelText("Slots per Launcher")).toHaveValue(managed ? 2 : 4);
-	expect(screen.getByLabelText("Maximum Lifetime in Seconds")).toHaveValue(3600);
-	expect(screen.getByLabelText("Monthly Estimated Usage Limit")).toHaveValue(managed ? 30 : 75);
-	expect(tenantSlots).toHaveValue(4);
-	expect(installationSlots).toHaveValue(9);
-	const prewarm = screen.getByLabelText("Max Queue Pre-Warms per Tenant");
-	expect(prewarm).toHaveValue(0);
-	fireEvent.change(prewarm, { target: { value: "2" } });
-	fireEvent.change(tenantSlots, { target: { value: "3" } });
-	fireEvent.change(installationSlots, { target: { value: "8" } });
-	const token = screen.getByLabelText("Cloudflare API Token");
-	expect(token).toHaveAttribute("type", "password");
-	fireEvent.change(token, { target: { value: "synthetic-management-token" } });
-	expect(screen.getByText("Current operator consent")).toBeVisible();
-	fireEvent.click(screen.getByRole("checkbox", { name: "Accept Cloudflare Terms" }));
-	await act(async () => {
-		fireEvent.submit((screen.getByRole("button", { name: "Connect Cloudflare" }) as HTMLButtonElement).form!);
-	});
-	expect(mocks.configure).toHaveBeenCalledWith(expect.objectContaining({
-		action: "connect",
-		account_id: "a".repeat(32),
-		worker_ingress_origin: "https://workers.example.test",
-		reachability_mode: managed ? "managed_tunnel" : "existing_https_endpoint",
-		...(managed ? { zone_id: "b".repeat(32) } : {}),
-		consent: true,
-		consent_version: "existing-https-v1",
-		api_token: "synthetic-management-token",
-		policy: expect.objectContaining({
-			monthly_limit_usd: managed ? "30.00" : "75.00",
-			workers: expect.objectContaining({
-				launcher_cap: managed ? 1 : 3, slots_per_launcher: managed ? 2 : 4,
-				max_lifetime_seconds: 3600,
-				linger_seconds: 0, slots_per_tenant: 3, installation_slots: 8, queue_prewarm_per_tenant: 2,
-			}),
-		}),
-	}));
-	expect(token).toHaveValue("");
-	expect(screen.getByText("Ready to Enable")).toBeVisible();
-	expect(screen.getByRole("button", { name: "Enable" })).toHaveFocus();
+	expect(mocks.configure).not.toHaveBeenCalled();
+	expect(mocks.start).not.toHaveBeenCalled();
+	expect(secret).toHaveValue("");
 });
 
 it("recovers Action Required from the last visible job on page load", async () => {
@@ -325,7 +313,7 @@ it("lets a read-only operator find the required permission and workflow review",
 
 it("recovers a failed capacity load from the retry button", async () => {
 	const user = userEvent.setup();
-	mocks.get.mockRejectedValueOnce(new Error("Capacity is unavailable.")).mockResolvedValue({ installation: null });
+	mocks.get.mockRejectedValueOnce(new Error("Capacity is unavailable.")).mockResolvedValue({ installation: null, suggested_policy: suggestedPolicy });
 	renderCapacity();
 
 	expect(await screen.findByRole("alert")).toHaveTextContent("Capacity is unavailable.");
@@ -457,7 +445,7 @@ it("recovers a missed notification on demand and announces verified disconnect",
 	await user.click(screen.getByRole("button", { name: "Disconnect" }));
 	await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Disconnect" }));
 	expect(await screen.findByText("Removing resources.")).toBeVisible();
-	mocks.get.mockResolvedValue({ installation: null });
+	mocks.get.mockResolvedValue({ installation: null, suggested_policy: suggestedPolicy });
 	mocks.observe.mockImplementation((_id, update) => ({
 		promise: Promise.resolve().then(() => update(snapshot("disconnect-job", "succeeded", "Complete."))),
 		cancel: vi.fn(),

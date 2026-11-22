@@ -146,6 +146,44 @@ _CONFIG_MANIFEST_EXCLUSION = (
 
 OPERATION_CATALOG: tuple[OperationDefinition, ...] = (
     OperationDefinition(
+        operation_id="capacity.cloudflare_preflight",
+        summary="Preview Cloudflare Capacity",
+        target_kind=OperationTargetKind.PLATFORM,
+        rest=RestOperationBinding(
+            method="POST", path="/api/capacity/cloudflare/preflight",
+            request_model="CloudflarePreflightRequest", response_model="CloudflarePreflight",
+        ),
+        cli=CliOperationBinding(path=("capacity", "cloudflare", "preflight")),
+        mcp=McpOperationBinding(name="bifrost_cloudflare_preflight_validate"),
+        action_scopes=("platform.readwrite",),
+        authorization_resolver="platform.readwrite at Global",
+        exclusions={
+            "native_builder": "Cloudflare capacity is platform administration.",
+            "manifest": "Capacity installations are bound to the deployment.",
+            "sdk": "Runtime SDKs do not administer capacity.",
+        },
+    ),
+    OperationDefinition(
+        operation_id="capacity.cloudflare_activate",
+        summary="Scale Out with Cloudflare",
+        target_kind=OperationTargetKind.PLATFORM,
+        rest=RestOperationBinding(
+            method="POST", path="/api/capacity/cloudflare/activate",
+            request_model="CloudflareActivateRequest", response_model="PlatformJobAccepted",
+        ),
+        cli=CliOperationBinding(path=("capacity", "cloudflare", "activate")),
+        mcp=McpOperationBinding(name="bifrost_cloudflare_activate_execute"),
+        audit_event="capacity.cloudflare_activate",
+        action_scopes=("platform.readwrite",),
+        authorization_resolver="platform.readwrite at Global",
+        async_policy=OperationAsyncPolicy.PLATFORM_JOB,
+        exclusions={
+            "native_builder": "Cloudflare capacity is platform administration.",
+            "manifest": "Capacity installations are bound to the deployment.",
+            "sdk": "Runtime SDKs do not administer capacity.",
+        },
+    ),
+    OperationDefinition(
         operation_id="capacity.cloudflare_configure",
         summary="Connect and Configure Cloudflare Capacity",
         target_kind=OperationTargetKind.PLATFORM,

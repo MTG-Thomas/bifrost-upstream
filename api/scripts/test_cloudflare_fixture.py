@@ -136,6 +136,10 @@ class _Cloudflare(WorkersRestCleanup):
     def __init__(self, _http, deployment=None):
         self.deployment = deployment
 
+    async def discovery_inventory(self, candidate, account_id=None):
+        assert candidate == TOKEN
+        return [{"id": "f" * 32, "name": "Browser Fixture Account"}] if account_id is None else []
+
     async def _request(self, token, account_id, method, path, **kwargs):
         if token == REFUSED_TOKEN:
             raise CloudflareManagementDenied("The browser fixture refused the replacement token")
@@ -226,20 +230,28 @@ async def _forward(reader, writer):
 
 
 def install_api():
+    from src.services.worker_pool import cloudflare_activation
     from src.jobs.platform import cloudflare_capacity
 
     block_cloudflare_network()
-    cloudflare_connection.load_workers_release = _release
+    cloudflare_connection.load_workers_release = _browser_release
     cloudflare_connection.WorkersRestCleanup = _Cloudflare
+    cloudflare_activation.load_workers_release = _browser_release
+    cloudflare_activation.WorkersRestCleanup = _Cloudflare
     cloudflare_capacity.installed_workers_release_digest = _fixture_digest
     cloudflare_capacity.installed_workers_release_order = _fixture_order
     cloudflare_admission.installed_workers_release_digest = _fixture_digest
     cloudflare_policy.installed_workers_release_digest = _fixture_digest
     cloudflare_policy.installed_workers_release_order = _fixture_order
+    cloudflare_policy.load_workers_release = _browser_release
+
+
+def _browser_release():
+    return _release(lifetime_meters=True)
 
 
 def _fixture_digest():
-    return _release().digest
+    return _browser_release().digest
 
 
 def _fixture_order():
@@ -341,7 +353,7 @@ def install_enable(job_module):
             self.resource = self.resource.model_copy(update={"state": "deleted"})
             return self.resource
 
-    job_module.load_workers_release = _release
+    job_module.load_workers_release = _browser_release
     job_module.WorkersRestProvisioner = _Cloudflare
     job_module.WorkersRestCleanup = _Cloudflare
     job_module.ExternalCapacityClient = Launcher

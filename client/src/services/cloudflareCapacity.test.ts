@@ -6,8 +6,10 @@ vi.mock("@/lib/api-client", () => ({
 }));
 
 import {
+	activateCloudflareCapacity,
 	configureCloudflareCapacity,
 	getCloudflareCapacity,
+	preflightCloudflareCapacity,
 	rotateCloudflareAccountToken,
 	startCloudflareAction,
 } from "./cloudflareCapacity";
@@ -27,6 +29,22 @@ describe("Cloudflare capacity service", () => {
 		mocks.get.mockResolvedValue({ data: status, response: { ok: true, status: 200 } });
 		await expect(getCloudflareCapacity()).resolves.toBe(status);
 		expect(mocks.get).toHaveBeenCalledWith("/api/capacity/cloudflare");
+	});
+
+	it("posts preflight and activation through their write-only contracts", async () => {
+		const body = { api_token: "synthetic-management-token" };
+		const preflight = { preflight_receipt: "opaque-receipt", consent_version: "cloudflare-consent" };
+		const activation = {
+			...body, ...preflight, consent: true as const, monthly_limit_usd: "75.00",
+		};
+		const accepted = { job_id: "job-id", status: "queued" };
+		mocks.post.mockResolvedValueOnce({ data: preflight }).mockResolvedValueOnce({ data: accepted });
+		await expect(preflightCloudflareCapacity(body)).resolves.toBe(preflight);
+		await expect(activateCloudflareCapacity(activation)).resolves.toBe(accepted);
+		expect(mocks.post.mock.calls).toEqual([
+			["/api/capacity/cloudflare/preflight", { body }],
+			["/api/capacity/cloudflare/activate", { body: activation }],
+		]);
 	});
 
 	it("preserves the response status on a failed capacity read", async () => {

@@ -236,6 +236,67 @@ class CloudflarePolicyUpdate(CloudflareCapacityAction):
     policy: CloudflareCapacityPolicy
 
 
+class CloudflareCredentialInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    api_token: SecretStr | None = Field(default=None, min_length=16, max_length=512, json_schema_extra={"writeOnly": True})
+    credential_ref: UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_credential(self) -> CloudflareCredentialInput:
+        if (self.api_token is None) == (self.credential_ref is None):
+            raise ValueError("Provide one Cloudflare credential")
+        return self
+
+
+class CloudflarePreflightRequest(CloudflareCredentialInput):
+    account_id: str | None = Field(default=None, pattern=CLOUDFLARE_ID_PATTERN)
+    zone_id: str | None = Field(default=None, pattern=CLOUDFLARE_ID_PATTERN)
+    reachability_mode: CloudflareReachabilityMode | None = None
+    worker_ingress_origin: str | None = Field(default=None, max_length=255)
+    policy: CloudflareCapacityPolicy | None = None
+
+
+class CloudflareDiscoveryChoice(BaseModel):
+    id: str = Field(pattern=CLOUDFLARE_ID_PATTERN)
+    name: str = Field(min_length=1, max_length=255)
+
+
+class CloudflareActivationPreview(BaseModel):
+    policy: CloudflareCapacityPolicy
+    fleet_envelope_usd: Decimal
+    estimated_usage_min_usd: Decimal
+    estimated_usage_max_usd: Decimal
+    workers_paid_subscription_usd: Decimal
+
+
+class CloudflarePreflight(BaseModel):
+    accounts: list[CloudflareDiscoveryChoice] | None
+    zones: list[CloudflareDiscoveryChoice] | None = None
+    account_id: str | None = None
+    zone_id: str | None = None
+    zone_name: str | None = None
+    workers_paid: Literal["verified", "unverified", "denied"] | None = None
+    connector_channel: Literal["compose", "kustomize"] | None
+    connector_ready: bool
+    primary: Literal["static", "job", "external", "unknown"]
+    recommended_reachability: CloudflareReachabilityMode
+    reachability_mode: CloudflareReachabilityMode
+    worker_ingress_origin: str | None = None
+    hostname_collision: bool = False
+    preview: CloudflareActivationPreview | None = None
+    consent_version: str
+    consent_text: str
+    preflight_receipt: str | None = None
+
+
+class CloudflareActivateRequest(CloudflareCredentialInput):
+    preflight_receipt: str = Field(min_length=1, max_length=8192)
+    consent_version: str = Field(max_length=64)
+    consent: Literal[True]
+    monthly_limit_usd: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+
+
 class GitAppManifestRequest(BaseModel):
     purpose: Literal["workspace", "solution"] = "workspace"
     organization_id: UUID | None = None

@@ -5488,6 +5488,92 @@ async def test_policy_save_fences_old_admission_and_rejects_an_unsafe_budget(
 
 
 @pytest.mark.asyncio
+async def test_preflight_and_activation_share_one_enable_job(db_session, monkeypatch, lifecycle_audit_actor):
+    from src.services.worker_pool import cloudflare_activation
+
+    release = _release(lifetime_meters=True)
+    monkeypatch.setattr(cloudflare_activation, "load_workers_release", lambda: release)
+    monkeypatch.setattr(cloudflare_policy, "load_workers_release", lambda: release)
+    monkeypatch.setattr(cloudflare_activation, "connector_channel_ready", AsyncMock(return_value=False))
+    cloudflare_policy._qualified_workers_suggestion.cache_clear()
+    caller = _platform_operator()
+    monkeypatch.setattr(capacity_routes, "load_caller", AsyncMock(return_value=caller))
+    account_id, token = "a" * 32, "synthetic-management-token"
+    reads = []
+
+    def respond(request):
+        assert request.method == "GET"
+        assert request.headers["Authorization"] == f"Bearer {token}"
+        reads.append(request.url.path)
+        if request.url.path.endswith("/entitlements"):
+            result = [
+                {"id": feature, "deleted_date": "", "allocation": {"type": "bool", "value": True}}
+                for feature in ("workers.enabled", "containers.enabled")
+            ]
+        elif request.url.path.endswith(f"/accounts/{account_id}"):
+            result = {"id": account_id}
+        elif request.url.path.endswith("/accounts"):
+            result = [{"id": account_id, "name": "Example Account"}]
+        elif request.url.path.endswith("/zones"):
+            result = []
+        else:
+            raise AssertionError(request.url.path)
+        return httpx.Response(200, json={"success": True, "result": result})
+
+    monkeypatch.setattr(cloudflare_activation, "httpx", SimpleNamespace(
+        AsyncClient=lambda **kw: httpx.AsyncClient(transport=httpx.MockTransport(respond), **kw),
+    ))
+    app = FastAPI()
+    app.include_router(capacity_routes.router)
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[get_current_active_user] = lambda: caller.principal
+    base = "/api/capacity/cloudflare"
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as http:
+            staged = await http.post(f"{base}/credential", json={
+                "purpose": "connect", "account_id": account_id, "api_token": token,
+            })
+            assert staged.status_code == 201, staged.text
+            await db_session.flush()
+            ref = staged.json()["credential_ref"]
+            preview = await http.post(f"{base}/preflight", json={
+                "credential_ref": ref, "worker_ingress_origin": "https://workers.example.test",
+            })
+            assert preview.status_code == 200, preview.text
+            assert token not in preview.text and ref not in preview.text
+            plan = preview.json()
+            assert plan["preview"]["fleet_envelope_usd"] == "32.13"
+            assert await db_session.scalar(select(CloudflareInstallation.id)) is None
+            activation_body = {
+                "credential_ref": ref, "preflight_receipt": plan["preflight_receipt"],
+                "monthly_limit_usd": "75.00", "consent_version": plan["consent_version"], "consent": True,
+            }
+            accepted = await http.post(f"{base}/activate", json=activation_body)
+            assert accepted.status_code == 202, accepted.text
+            identity = accepted.json()
+            assert not identity["reused"]
+            assert accepted.headers["Location"] == f"/api/platform-jobs/{identity['job_id']}"
+            assert reads == [
+                "/client/v4/accounts", f"/client/v4/accounts/{account_id}",
+                f"/client/v4/accounts/{account_id}/entitlements", "/client/v4/zones",
+                f"/client/v4/accounts/{account_id}", f"/client/v4/accounts/{account_id}/entitlements",
+            ]
+            replay = await http.post(f"{base}/activate", json=activation_body)
+            assert replay.status_code == 202, replay.text
+            assert replay.json() == {**identity, "reused": True}
+            changed = await http.post(f"{base}/activate", json={**activation_body, "monthly_limit_usd": "76.00"})
+            assert changed.status_code == 409, changed.text
+        saved = await db_session.scalar(select(CloudflareInstallation))
+        assert saved.desired_state == "enabled" and saved.desired_revision == 1
+        assert saved.policy["limits"]["monthly_limit_usd"] == "75.00"
+        assert await db_session.scalar(select(func.count()).select_from(PlatformJob).where(
+            PlatformJob.job_type == "capacity.cloudflare_enable", PlatformJob.resource_id == str(saved.id),
+        )) == 1
+    finally:
+        cloudflare_policy._qualified_workers_suggestion.cache_clear()
+
+
+@pytest.mark.asyncio
 async def test_preset_b_policy_api_uses_the_qualified_fleet_price(
     db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch, lifecycle_audit_actor,
 ) -> None:
