@@ -5526,7 +5526,7 @@ async def test_status_explains_placement_over_rest(
     ))
     as_of = await db_session.scalar(select(func.statement_timestamp()))
     assert as_of is not None
-    primary = None if code == "primary_capacity_unverified" else PrimaryPool("static")
+    primary = None if code == "primary_capacity_unverified" else PrimaryPool("external", "gap5-fixture", 1)
     cooldown = as_of + timedelta(seconds=30) if code == "cloudflare_capacity_unavailable" else None
     monkeypatch.setattr(cloudflare_status, "_controller_observation", AsyncMock(return_value=(primary, cooldown)))
     if code != "setup_required":
@@ -5548,7 +5548,8 @@ async def test_status_explains_placement_over_rest(
     if code in queue_codes:
         run = Execution(workflow_name="fixture", executed_by_name="fixture")
         primary_worker = ExecutionWorker(
-            form="static", state="ready", heartbeat_at=as_of, supported_handlers=["workflow.execute"],
+            form="external", capacity_scope="gap5-fixture", state="ready",
+            heartbeat_at=as_of, supported_handlers=["workflow.execute"],
             memory_budget_bytes=2**28, memory_reserved_bytes=0 if code == "primary_has_capacity" else 2**28,
         )
         db_session.add_all((run, primary_worker))
@@ -5577,6 +5578,7 @@ async def test_status_explains_placement_over_rest(
     assert installation.worker_ingress_origin not in response.text
     workers, = snapshot["lanes"]
     reasons = {item["code"]: item for item in workers["reasons"]}
+    assert code in reasons, workers
     assert reasons[code]["remedy"]
     assert workers["eligible_queued"] == (1 if code in queue_codes else 0)
     if code in ("waiting_for_launch_gate", "cloudflare_capacity_unavailable"):
