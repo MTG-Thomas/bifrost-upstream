@@ -69,9 +69,10 @@ class ContainerResultReader:
             raise EOFError
         self._buffer.extend(chunk)
         if self._length is None and len(self._buffer) >= _HEADER.size:
-            self._length, = _HEADER.unpack_from(self._buffer)
-            if not 0 < self._length <= MAX_RESULT_BYTES:
+            length = int(_HEADER.unpack_from(self._buffer)[0])
+            if not 0 < length <= MAX_RESULT_BYTES:
                 raise InvalidContainerResult("Container result has an invalid frame length")
+            self._length = length
             del self._buffer[:_HEADER.size]
 
     def _decode_result(self) -> dict[str, Any]:
