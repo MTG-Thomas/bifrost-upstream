@@ -388,8 +388,8 @@ export function CloudflareCapacity() {
 			);
 			setReadbackFailure(undefined);
 			if (terminal.has(next.status)) {
-				void refetch().then(({ data: status }) => {
-					if (!disposed && status?.latest_job_id === next.id) {
+				void refetch().then(({ data: status, isSuccess }) => {
+					if (!disposed && isSuccess && status?.latest_job_id) {
 						setAcceptedJobId((accepted) => accepted === next.id ? undefined : accepted);
 					}
 				});
@@ -794,10 +794,9 @@ export function CloudflareCapacity() {
 						<h3 id="cf-job-status-heading" className="font-semibold">Cloudflare Job Status</h3>
 						<p role="status">
 							{disconnected ? "Cloudflare was disconnected."
-								: job?.error?.message ?? job?.progress.phase
-								?? (readbackFailure === jobId ? "Could not read the Cloudflare job status."
-									: job?.status === "queued" ? "The Cloudflare job is queued."
-										: "Waiting for Cloudflare job status.")}
+								: readbackFailure === jobId ? "Could not read the Cloudflare job status."
+									: job?.error?.message ?? job?.progress.phase
+										?? (job?.status === "queued" ? "The Cloudflare job is queued." : "Waiting for Cloudflare job status.")}
 						</p>
 						{jobPending && (
 							<Button variant="outline" disabled={readingJob} onClick={() => {

@@ -335,6 +335,25 @@ it("reads back a lost job snapshot on reconnect and focuses the refusal", async 
 	expect(mocks.observe).toHaveBeenCalledTimes(2);
 });
 
+it("observes a newer job when the locally accepted job finishes", async () => {
+	const user = userEvent.setup();
+	mocks.get.mockResolvedValue({ installation });
+	mocks.start.mockResolvedValue({ job_id: "enable-job" });
+	mocks.observe.mockImplementation((id, update) => ({
+		promise: Promise.resolve().then(() => update(snapshot(id, "running", "Provisioning capacity."))),
+		cancel: vi.fn(),
+	}));
+	renderCapacity();
+
+	await user.click(await screen.findByRole("button", { name: "Enable" }));
+	expect(await screen.findByText("Provisioning capacity.")).toBeVisible();
+	const [, update] = mocks.subscribe.mock.lastCall!;
+	mocks.get.mockResolvedValue({ installation, latest_job_id: "next-job" });
+	act(() => update(snapshot("enable-job", "succeeded", "Complete.")));
+	await waitFor(() => expect(mocks.observe).toHaveBeenCalledWith("next-job", expect.any(Function)));
+	expect(screen.getByRole("button", { name: "Enable" })).toBeDisabled();
+});
+
 it("recovers a missed notification on demand and announces verified disconnect", async () => {
 	const user = userEvent.setup();
 	mocks.get.mockResolvedValue({ installation });
