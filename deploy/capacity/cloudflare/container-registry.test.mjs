@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
-import { ScopeRegistry } from "./container-registry.mjs";
+import { relayControlSockets, ScopeRegistry } from "./container-registry.mjs";
 
 function fixture(cap = 2) {
     const db = new DatabaseSync(":memory:");
@@ -69,18 +69,87 @@ test("a reset with a pending start cannot issue another start or close its fence
     const request = pin();
     const instance = "b".repeat(64);
     const other = "c".repeat(64);
+    const bounds = { startDeadline: 101, deadline: 201, ingressBytes: 100, outboundBytes: 100 };
     assert.equal(registry().reserve(request).status, "reserved");
-    assert.equal(registry().authorizeStart(request.uid, instance, 100, 101).status, "authorized");
-    assert.equal(registry().authorizeStart(request.uid, instance, 101, 200).status, "pending");
-    assert.equal(registry().authorizeStart(request.uid, other, 101, 200).status, "conflict");
+    assert.equal(registry().authorizeStart(request.uid, instance, 100, bounds).status, "authorized");
+    assert.equal(registry().authorizeStart(request.uid, instance, 101, bounds).status, "pending");
+    assert.equal(registry().authorizeStart(request.uid, other, 101, bounds).status, "conflict");
+    assert.equal(registry().authorizeStart(request.uid, instance, 101, {
+        ...bounds, ingressBytes: 101,
+    }).status, "conflict");
     assert.equal(registry().closeStart(request.uid, instance, 105).status, "pending");
     assert.equal(registry().observeStart(request.uid, instance, 99).status, "conflict");
     assert.equal(registry().observeStart(request.uid, instance, 104).status, "observed");
     assert.equal(registry().observeStart(request.uid, instance, 105).status, "conflict");
-    const closed = { status: "closed", instance, authorizedAt: 100, closedAt: 106 };
+    const closed = { status: "closed", instance, authorizedAt: 100, closedAt: 106, outboundBytes: 0 };
     assert.deepEqual(registry().closeStart(request.uid, instance, 106), closed);
     assert.deepEqual(registry().closeStart(request.uid, instance, 180), closed);
-    assert.equal(registry().authorizeStart(request.uid, instance, 180, 200).status, "closed");
+    assert.equal(registry().authorizeStart(request.uid, instance, 180, bounds).status, "closed");
     assert.equal(registry().reserve(pin(randomUUID())).status, "full");
     db.close();
+});
+
+class Socket extends EventTarget {
+    sent = [];
+    closed = [];
+    send(data) { this.sent.push(data); }
+    close(code) { this.closed.push(code); }
+    frame(data) { this.dispatchEvent(new MessageEvent("message", { data })); }
+}
+
+test("the control relay preserves fragments and fences both directions across reconnects", (t) => {
+    const { db, registry, pin } = fixture();
+    t.after(() => db.close());
+    t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 100 });
+    const uid = pin();
+    const instance = "b".repeat(64);
+    const fragments = ['{"fragment":0,"data":"é"}', '{"fragment":1,"data":"β"}'];
+    const fragmentBytes = new TextEncoder().encode(fragments.join("")).byteLength;
+    assert.equal(registry().reserve(uid).status, "reserved");
+    assert.equal(registry().authorizeStart(uid.uid, instance, Date.now(), {
+        startDeadline: 101, deadline: 200, ingressBytes: 3, outboundBytes: fragmentBytes,
+    }).status, "authorized");
+    t.mock.timers.tick(1);
+    let guest = new Socket();
+    let ingress = new Socket();
+    relayControlSockets(registry(), uid.uid, instance, guest, ingress);
+    guest.frame(fragments[0]);
+    assert.deepEqual(ingress.sent, [fragments[0]]);
+    ingress.frame("é");
+    assert.deepEqual(guest.sent, ["é"]);
+    guest.dispatchEvent(new Event("close"));
+    guest = new Socket();
+    ingress = new Socket();
+    relayControlSockets(registry(), uid.uid, instance, guest, ingress);
+    guest.frame(fragments[1]);
+    assert.deepEqual(ingress.sent, [fragments[1]]);
+    ingress.frame("é");
+    assert.deepEqual(guest.sent, []);
+    assert.deepEqual(guest.closed, [1008]);
+    assert.deepEqual(ingress.closed, [1008]);
+    guest = new Socket();
+    relayControlSockets(registry(), uid.uid, instance, guest, new Socket());
+    assert.deepEqual(guest.closed, [1008]);
+    assert.equal(registry().observeStart(uid.uid, instance, 101).status, "observed");
+    assert.equal(registry().closeStart(uid.uid, instance, 102).outboundBytes, fragmentBytes);
+});
+
+test("a silent relay closes at the pinned deadline", (t) => {
+    const { db, registry, pin } = fixture();
+    t.after(() => db.close());
+    t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 100 });
+    const request = pin();
+    const instance = "b".repeat(64);
+    registry().reserve(request);
+    registry().authorizeStart(request.uid, instance, Date.now(), {
+        startDeadline: 101, deadline: 200, ingressBytes: 100, outboundBytes: 100,
+    });
+    const guest = new Socket();
+    const ingress = new Socket();
+    relayControlSockets(registry(), request.uid, instance, guest, ingress);
+    t.mock.timers.tick(100);
+    guest.frame("late");
+    assert.deepEqual(guest.closed, [1008]);
+    assert.deepEqual(ingress.closed, [1008]);
+    assert.deepEqual(ingress.sent, []);
 });
