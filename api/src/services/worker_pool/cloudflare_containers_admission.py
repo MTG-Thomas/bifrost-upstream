@@ -337,7 +337,7 @@ async def reserve_container(
     worker_id, uid = uuid4(), uuid4()
     db.add(ExecutionWorker(
         id=worker_id, form="external", state="reserved", runtime_profile=LINUX_RUNTIME_PROFILE,
-        execution_lane="normal", capacity_scope=CONTAINERS_SCOPE, capacity_resource_uid=str(uid),
+        execution_lane="normal", capacity_scope=CONTAINERS_SCOPE, capacity_resource_uid=uid.hex,
         supported_handlers=[CLOUDFLARE_WORKFLOW_HANDLER[0]], reserved_for_dispatch_id=dispatch.id,
         memory_limit_bytes=4 * 1024**3, launched_by=controller_id,
     ))

@@ -1,6 +1,7 @@
 // SQLite-backed scope seats and start fences. The controller records a start
 // before calling the scheduler. A reset never grants that effect a second time.
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
+const UID = /^[a-f0-9]{32}$/;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const MAX_CONTROL_FRAME_BYTES = 2 ** 20;
 
@@ -34,7 +35,7 @@ export class ScopeRegistry {
     reserve(pin) {
         if (pin.installation !== this.installation || pin.revision !== this.revision
             || pin.image !== this.image || pin.instance !== "standard-1"
-            || !UUID.test(pin.worker) || !UUID.test(pin.uid)
+            || !UUID.test(pin.worker) || !UID.test(pin.uid)
             || (pin.tenant !== "platform" && !UUID.test(pin.tenant))
             || !Number.isSafeInteger(pin.credentialVersion) || pin.credentialVersion < 1) {
             return { status: "invalid" };
@@ -65,7 +66,7 @@ export class ScopeRegistry {
     }
 
     authorizeStart(uid, instance, now, { startDeadline, deadline, ingressBytes, outboundBytes }) {
-        if (!UUID.test(uid) || !/^[a-f0-9]{64}$/.test(instance)
+        if (!UID.test(uid) || !/^[a-f0-9]{64}$/.test(instance)
             || ![now, startDeadline, deadline].every(Number.isSafeInteger) || now < 0
             || deadline <= startDeadline || deadline - startDeadline > 86_400_000
             || ![ingressBytes, outboundBytes].every((size) => Number.isSafeInteger(size) && size > 0 && size <= 10**9)) {

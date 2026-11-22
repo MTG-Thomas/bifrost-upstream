@@ -35,7 +35,7 @@ function fixture(cap = 2) {
     return {
         db, registry: () => new ScopeRegistry({ storage }, env),
         pin: (tenant = "platform") => ({
-            tenant, installation, revision: 2, image, worker: randomUUID(), uid: randomUUID(),
+            tenant, installation, revision: 2, image, worker: randomUUID(), uid: randomUUID().replaceAll("-", ""),
             instance: "standard-1", credentialVersion: 1,
         }),
     };
@@ -46,7 +46,8 @@ test("a lost reply replays its original reservation across registry reset", () =
     const request = pin();
     assert.deepEqual(registry().reserve(request), { status: "reserved" });
     assert.deepEqual(registry().reserve(request), { status: "reserved" });
-    assert.deepEqual(registry().reserve({ ...request, uid: randomUUID() }), { status: "conflict" });
+    assert.deepEqual(registry().reserve({ ...request, uid: pin().uid }), { status: "conflict" });
+    assert.deepEqual(registry().reserve({ ...request, uid: randomUUID() }), { status: "invalid" });
     assert.deepEqual(registry().reserve({ ...request, credentialVersion: 2 }), { status: "conflict" });
     assert.deepEqual(registry().reserve({ ...request, worker: randomUUID() }), { status: "conflict" });
     assert.deepEqual(registry().reserve({ ...request, revision: 3 }), { status: "invalid" });

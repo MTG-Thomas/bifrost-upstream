@@ -1986,7 +1986,11 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
     }
     # Prove the baseline is admissible before changing only the evidence under test.
     async with db.begin_nested() as nested:
-        assert await reserve_container(db, **admission) is not None
+        reserved = await reserve_container(db, **admission)
+        assert reserved is not None
+        worker = await db.get(ExecutionWorker, reserved.worker_id)
+        assert worker is not None and worker.capacity_resource_uid is not None
+        assert UUID(hex=worker.capacity_resource_uid).hex == worker.capacity_resource_uid
         await nested.rollback()
     if reason == "stale-hash":
         await db.execute(update(FileIndex).where(FileIndex.path == path).values(content_hash="b" * 64))
@@ -2024,7 +2028,7 @@ async def test_capacity_reports_overdue_unsettled_containers(db_session, install
 
     now = datetime.now(UTC)
     workers = [uuid4() for _ in range(3)]
-    uid, actor, app_id, namespace = str(uuid4()), "b" * 64, "c" * 32, "d" * 32
+    uid, actor, app_id, namespace = uuid4().hex, "b" * 64, "c" * 32, "d" * 32
     name = f"bifrost-{installation.id.hex}-r1"
     image = f"registry.cloudflare.com/{installation.account_id}/{name}@sha256:{'a' * 64}"
     release, effect = "a" * 64, uuid4()
@@ -2036,7 +2040,7 @@ async def test_capacity_reports_overdue_unsettled_containers(db_session, install
         provider_id=app_id, provider_version=namespace, state="present", observed_at=now,
     ))
     db_session.add_all(ExecutionWorker(
-        id=worker, form="external", state="lost", capacity_resource_uid=uid if i == 0 else str(uuid4()),
+        id=worker, form="external", state="lost", capacity_resource_uid=uid if i == 0 else uuid4().hex,
         capacity_scope="containers",
     ) for i, worker in enumerate(workers))
     await db_session.flush()
