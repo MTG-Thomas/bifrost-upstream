@@ -9,7 +9,10 @@
       "src/services/execution/engine.py",
       "src/services/execution/worker.py"
     ],
-    "baseline_sources_and_recompiled_bytecode_match": true
+    "baseline_sources_and_recompiled_bytecode_match": true,
+    "bytecode_mode": "unchecked_hash",
+    "mount": "/session/metadata/",
+    "bytes": 22020012
   },
   "queue_prewarm_per_tenant": 0,
   "safety_margin": 10,
@@ -93,5 +96,419 @@
         "workflow_wall_ms": 90
       }
     ]
+  },
+  "releases": [
+    {
+      "revision": "59c1565a60c53849d6d7ed140afc57cee985d41d",
+      "version": "0.1.0-requal.1",
+      "digest": "7ca412f5f9d9b8c16fe30499a3a35d394a9106931f2a876f49c2acd78107e077",
+      "lifetime_meters": true,
+      "envelopes": {
+        "preset_b": "32.13",
+        "prior_pilot": "415.59",
+        "manual_form": "17.61"
+      },
+      "cpu_limits": {
+        "capacity": 112,
+        "gateway": 2133,
+        "boot": 30000,
+        "warm": 440,
+        "exercise": 714,
+        "workflow": 30000,
+        "startup": 48522
+      },
+      "caps": {
+        "do_requests": 230400,
+        "log_events": 230400,
+        "sqlite_rows_written": 460800
+      },
+      "image_sha256": "9b19bc2628691ef4075389028ba1610f774e599743bdaafc8923ab61b5f11925"
+    },
+    {
+      "revision": "f9d1a79b4c517764c9d0d43dd54093960dfbff8e",
+      "version": "0.1.0-requal.2",
+      "digest": "e2cc8c851eb9c50512f63ff78c3d898e66d4c2d06eb7e3dce5ed991d41871948",
+      "lifetime_meters": true,
+      "envelopes": {
+        "preset_b": "32.13",
+        "prior_pilot": "415.59",
+        "manual_form": "17.61"
+      },
+      "cpu_limits": {
+        "capacity": 112,
+        "gateway": 2133,
+        "boot": 30000,
+        "warm": 440,
+        "exercise": 714,
+        "workflow": 30000,
+        "startup": 48522
+      },
+      "caps": {
+        "do_requests": 230400,
+        "log_events": 230400,
+        "sqlite_rows_written": 460800
+      },
+      "image_sha256": "6eb21395c4163f15eab00b8ae4aa820a345082bdfad18116fcd27fb53e20f363"
+    }
+  ],
+  "release_packaging": {
+    "command": "node deploy/capacity/cloudflare/build-workers.mjs <runtime> <output> <source-sha> <release-version> <release-sequence>",
+    "images": "Offline rehearsal images assembled from the cached test API dependency image and each exact Git archive. Production Workers loader and Compose entrypoint used. Fixture cloudflared was mounted for rehearsal.",
+    "production_dockerfile_run": false,
+    "same_workers_modules_in_both_packages": true
+  },
+  "soak": {
+    "seconds": 120,
+    "launcher_sha256": "976cd2cf24c59978bbea2bcf8241522da1ff3ea4f3d079adf0425fb47903df66",
+    "workflow_count": 7,
+    "workflows_with_both_stamps": 7,
+    "engine_ready_to_entry_ms": [
+      47,
+      48,
+      39,
+      46,
+      16,
+      13,
+      16
+    ],
+    "hello_sequences": [
+      1,
+      2
+    ],
+    "final_state": "deleted",
+    "deadline_offset_ms": 6,
+    "seal": {
+      "sqlite_rows_written": 230,
+      "do_requests": 21,
+      "log_events": 7,
+      "exhausted": false
+    }
+  },
+  "rehearsal_initial": {
+    "driver": "f9d1a79b4",
+    "latency": {
+      "stage": "latency",
+      "cold_queue_to_stage_ms": {
+        "gate": 2000,
+        "decision": 2384,
+        "launcher_start": 2599,
+        "launcher_accepted": 2608,
+        "hello": 2661,
+        "claim": 2819,
+        "prepare": 2950,
+        "engine_ready": 7665,
+        "dispatch": 3143,
+        "entry": 7860
+      },
+      "cold": {
+        "queue_to_entry_ms": 8389,
+        "queue_to_completion_ms": 8525,
+        "ordinal": 0,
+        "terminal_ack": true
+      },
+      "warm": {
+        "queue_to_entry_ms": 1449,
+        "queue_to_completion_ms": 1696,
+        "ordinal": 0,
+        "terminal_ack": true
+      }
+    },
+    "disposition": "Items 1\u20138 passed. Item 9 stopped on the spend assertion before product Disconnect. The isolated stack and fixture process were removed."
+  },
+  "rehearsal": {
+    "command": "python3 spikes/cloudflare-pyodide/dev/e2e/combined-rehearsal.py",
+    "driver": "1a66b399a",
+    "policy": {
+      "monthly_limit_usd": "75.00",
+      "launcher_cap": 3,
+      "slots_per_launcher": 4,
+      "installation_slots": 9,
+      "max_lifetime_seconds": 3600
+    },
+    "passed_items": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "stopped_item": 9,
+    "stop": "Trial spend estimate 0.73 is outside the 0.50 guard",
+    "uncertain_incarnation_counter_reserve_usd": "0.6336",
+    "managed_teardown_verified": true,
+    "stages": [
+      {
+        "stage": "isolation",
+        "internal_networks": true,
+        "api_worker_hooks_verified": true
+      },
+      {
+        "stage": "approvals",
+        "accepted_loose": 4,
+        "accepted_solution": 1
+      },
+      {
+        "stage": "isolation",
+        "internal_networks": true,
+        "api_worker_hooks_verified": true
+      },
+      {
+        "stage": "policy",
+        "mode": "existing",
+        "lifetime_seconds": 3600,
+        "fleet_envelope_usd": "32.13"
+      },
+      {
+        "stage": "preflight",
+        "checks": 100,
+        "connections": [
+          {
+            "address_family": "ipv4",
+            "tcp_connects_started": 8,
+            "tls_handshakes_started": 8,
+            "tls_handshakes_completed": 8,
+            "reused_requests": 92
+          }
+        ],
+        "failure": null
+      },
+      {
+        "stage": "enable",
+        "class": "remote_launcher",
+        "connections": [
+          {
+            "address_family": "ipv4",
+            "tcp_connects_started": 7,
+            "tls_handshakes_started": 7,
+            "tls_handshakes_completed": 7,
+            "reused_requests": 93
+          }
+        ]
+      },
+      {
+        "stage": "latency",
+        "cold_queue_to_stage_ms": {
+          "gate": 2000,
+          "decision": 3949,
+          "launcher_start": 4163,
+          "launcher_accepted": 4171,
+          "hello": 4219,
+          "claim": 4362,
+          "prepare": 4480,
+          "engine_ready": 8101,
+          "dispatch": 4671,
+          "entry": 8154
+        },
+        "cold": {
+          "queue_to_entry_ms": 8191,
+          "queue_to_completion_ms": 8211,
+          "ordinal": 0,
+          "terminal_ack": true
+        },
+        "warm": {
+          "queue_to_entry_ms": 449,
+          "queue_to_completion_ms": 466,
+          "ordinal": 0,
+          "terminal_ack": true
+        }
+      },
+      {
+        "stage": "burst",
+        "provider": 4,
+        "global": 4,
+        "reserved": 1,
+        "queued_observations": 2,
+        "cancel_unchanged_fences": 8,
+        "scoped_solution": true,
+        "last_dispatch_read_to_full_entry_ms": 11007
+      },
+      {
+        "stage": "reconcile-and-scale-in",
+        "active_drain": true,
+        "scripts_retained": 3
+      },
+      {
+        "stage": "disconnect",
+        "workers_404": 3,
+        "namespaces_404": 4,
+        "live_ledger_rows": 0
+      },
+      {
+        "stage": "isolation",
+        "internal_networks": true,
+        "api_worker_hooks_verified": true
+      },
+      {
+        "stage": "policy",
+        "mode": "managed",
+        "lifetime_seconds": 3600,
+        "fleet_envelope_usd": "32.13"
+      },
+      {
+        "stage": "enable",
+        "class": "remote_launcher",
+        "connections": [
+          {
+            "address_family": "ipv4",
+            "tcp_connects_started": 8,
+            "tls_handshakes_started": 8,
+            "tls_handshakes_completed": 8,
+            "reused_requests": 92
+          }
+        ]
+      },
+      {
+        "stage": "preflight",
+        "checks": 100,
+        "connections": [
+          {
+            "address_family": "ipv4",
+            "tcp_connects_started": 8,
+            "tls_handshakes_started": 8,
+            "tls_handshakes_completed": 8,
+            "reused_requests": 92
+          }
+        ],
+        "failure": null
+      },
+      {
+        "stage": "enable",
+        "class": "remote_launcher",
+        "connections": [
+          {
+            "address_family": "ipv4",
+            "tcp_connects_started": 7,
+            "tls_handshakes_started": 7,
+            "tls_handshakes_completed": 7,
+            "reused_requests": 93
+          }
+        ]
+      },
+      {
+        "stage": "managed",
+        "warp_routing_enabled": false,
+        "route_list_http": 200,
+        "previous_sessions_evicted": 1,
+        "replacement_sessions": 1
+      },
+      {
+        "stage": "isolation",
+        "internal_networks": true,
+        "api_worker_hooks_verified": true
+      },
+      {
+        "stage": "upgrade",
+        "original_claim": true,
+        "dispatch_count": 1,
+        "reconnect": true,
+        "terminal_ack": true,
+        "old_workers_404": 3,
+        "old_namespaces_404": 4
+      },
+      {
+        "stage": "meter_guard",
+        "estimated_usd": "0.73",
+        "limit_usd": "0.50",
+        "within_limit": false,
+        "ledger": {
+          "retired": 8,
+          "uncertain": 1,
+          "uncertain_with_final_receipt": 1
+        }
+      },
+      {
+        "stage": "disconnect",
+        "workers_404": 3,
+        "namespaces_404": 4,
+        "live_ledger_rows": 0
+      },
+      {
+        "stage": "managed-teardown",
+        "tunnel_deleted": true,
+        "sessions": 0
+      }
+    ]
+  },
+  "verification": {
+    "backend": {
+      "source": "eb593e9d0",
+      "command": "./test.sh tests/e2e/platform/test_cloudflare_capacity_persistence.py tests/e2e/platform/test_worker_ingress.py tests/e2e/platform/test_cloudflare_workflow_approval.py tests/unit/services/worker_pool tests/unit/worker/remote tests/unit/test_contract_version.py tests/unit/test_dto_flags.py tests/unit/test_access_list.py tests/unit/test_alembic_single_head.py tests/unit/test_ci_workflow_contract.py",
+      "passed": 1039,
+      "alembic_head": "20261122_cf_workers_deadline"
+    },
+    "node": {
+      "source": "eb593e9d0",
+      "command": "node --test spikes/cloudflare-pyodide/dev/cloudflare-launcher/*.test.mjs spikes/cloudflare-pyodide/dev/tenant-workers/*.test.mjs spikes/cloudflare-pyodide/dev/e2e/relay-http.test.mjs deploy/capacity/cloudflare/*.test.mjs",
+      "passed": 295,
+      "skipped": 0
+    },
+    "tenant_slots": {
+      "command": "node --test spikes/cloudflare-pyodide/dev/e2e/tenant-slots.test.mjs",
+      "passed": 2
+    },
+    "short_soak": {
+      "command": "node --test --test-name-pattern='prepare, start, signed hello' spikes/cloudflare-pyodide/dev/tenant-workers/capacity-workerd.test.mjs",
+      "env": {
+        "BIFROST_LOCAL_TENANT_SLOTS": "true",
+        "BIFROST_LIFETIME_SOAK_SECONDS": "120",
+        "BIFROST_QUALIFIED_BOOT_CPU_MS": "30000",
+        "BIFROST_QUALIFIED_WARM_CPU_MS": "440",
+        "BIFROST_QUALIFIED_EXERCISE_CPU_MS": "714",
+        "BIFROST_LIFETIME_SOAK_RESULT": "<receipt>",
+        "BIFROST_QUALIFIED_CAPACITY_BUNDLE": "<release>/capacity.mjs",
+        "BIFROST_QUALIFIED_LAUNCHER_BUNDLE": "<release>/launcher.mjs",
+        "BIFROST_QUALIFIED_GATEWAY_BUNDLE": "<release>/gateway.mjs"
+      },
+      "passed": 1
+    },
+    "meter_cpu": {
+      "command": "node spikes/cloudflare-pyodide/dev/tenant-workers/qualify-cpu.mjs <draft-directory>",
+      "batches": 4,
+      "passed": true,
+      "notes": "The local workerd process used the verified Pyodide disk cache with Docker network none. The draft modules matched both final packages byte for byte."
+    },
+    "meter_cadence": {
+      "command": "BIFROST_QUALIFIED_CONTROLLER_POLLS=170 node --test spikes/cloudflare-pyodide/dev/tenant-workers/capacity-workerd.test.mjs",
+      "fixture": "Draft launcher, gateway and capacity modules matching both release packages.",
+      "disposition": "The targeted launcher lifecycle passed and sealed usage. Sibling cases expecting the source-mode probe and canary fixtures failed under the packaged fixture. The normal Node suite passed every sibling case."
+    },
+    "client": {
+      "image": "node:26.13.1-bookworm-slim",
+      "commands": [
+        "npm exec --offline -- vitest run --pool=threads src/pages/settings/CloudflareCapacity.test.tsx",
+        "npm run tsc",
+        "npm run lint"
+      ],
+      "vitest_passed": 18,
+      "tsc_exit": 0,
+      "lint_exit": 0
+    },
+    "additional_unit": {
+      "source": "1a66b399a",
+      "command": "./test.sh tests/unit/services/test_worker_ingress.py tests/unit/services/test_worker_ingress_probes.py tests/unit/test_contracts_parity.py tests/unit/test_execution_request_contract.py",
+      "passed": 122
+    },
+    "quality": {
+      "source": "1a66b399a",
+      "command": "./test.sh quality api",
+      "exit_code": 0,
+      "pyright_errors": 0,
+      "ruff": "All checks passed, with a filesystem permission warning in this archive. The initial merged-source quality run was clean."
+    }
+  },
+  "unrun": [
+    "Hosted Cloudflare qualification and provider billing",
+    "Provider comparison after the rehearsal spend guard tripped",
+    "Full backend, client Vitest and browser suites",
+    "Production Dockerfile build and hosted CI",
+    "A new full 3,600-second soak. The requalified runtime ran the 120-second timing soak and both rehearsals selected the 3,600-second policy."
+  ],
+  "verified_cleanup": {
+    "rehearsal_resources": "Both isolated stacks, fixture processes, image tags, networks and volumes were removed.",
+    "package_evidence": "/opt/bifrost-tests/requal-1a66b399aefe768a51ee8f659004f76131318378/verification/packages",
+    "superseded_archives_removed": true
   }
 }

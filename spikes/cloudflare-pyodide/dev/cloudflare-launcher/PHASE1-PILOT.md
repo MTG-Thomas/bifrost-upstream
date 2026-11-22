@@ -653,6 +653,24 @@ gate and parser against fixture responses. Always remove the project
 containers, volumes, and internal network, and stop the local provider
 process when the rehearsal finishes or fails.
 
+#### Preset B Spend Stop
+
+The lifetime and runtime timing packages both passed the local release
+loader and advertised preset B. The rehearsal passed items 1–8, including
+Upgrade with one dispatch, the original claim, reconnect and terminal ACK.
+Item 9 stopped at a $0.73 Bifrost estimate against the existing $0.50 guard.
+The ledger showed eight retired incarnations, including one uncertain
+incarnation with a final receipt.
+
+A stopped workflow retains its launcher's full counter reserve under the
+current accounting. At 3,600 seconds the qualified SQLite write, DO request
+and log event caps reserve $0.6336 for one uncertain incarnation. The
+monthly fleet envelope is $32.13. The rehearsal verified Disconnect and
+found zero live ledger rows, three script and four namespace 404s, DNS
+absence, tunnel deletion and zero connector sessions after the spend stop.
+The earlier $0.50 trial budget does not cover this preset and cancellation
+scenario. [CT128 measurement and rehearsal receipt](../../results/cloudflare-scaleout-meter-lifetime-timing.json)
+
 ### Hosted Run
 
 Run only the steps and checks exercised by the committed local rehearsal.
@@ -724,24 +742,21 @@ and the Enable result. Use each result's own counts to report reuse.
 | | **Cumulative estimate with $0.00 carried from the two failed combined attempts** | **$0.45** |
 | | Optional queue pre-warm with one extra parallel boot per tenant | **+$0.04** |
 
-Use three launchers with four seats each, nine installation slots, four per
-tenant, 120-second launcher lifetime, 90-second engine linger, and queue
-pre-warming disabled. Occupy or cap the primary with controlled local
-fixtures so it cannot consume the approved Workers dispatches. Confirm
-each admission witness is an actual Workers claim. Set the monthly policy
-at or above the $415.59 requalified fleet envelope with the owner's
-approval. That modeled monthly capacity value and the existing Paid
-subscription are separate from the trial cap. Use the packaged marginal
-rates without assumed free allowances. The table allocates live estimate
-headroom for at most 14 fixture attempts, canaries and their control and
-retirement operations. For scale, ten new engine identities are $0.020 at
-$0.002 each. Three full 120-second launcher lifetimes, even at the
-qualified per-second CPU ceiling, contribute about $0.045 in CPU. The
-remaining allocation covers temporary dispatch reserves, Durable Object
-duration and storage, logging, and lifecycle operations. These are planning
-allocations. Confirm the carry-in for the approved trial series and
-recalculate before provisioning if it differs from the table. Record the
-high-water live estimate and settled usage by phase.
+The next candidate uses the verified preset B suggestion with three
+four-slot launchers, nine installation slots, four per tenant, a 3,600-second
+launcher lifetime, 90-second engine linger and queue pre-warming disabled.
+The $75 monthly policy covers the $32.13 fleet envelope. The modeled monthly
+capacity value, Workers Paid subscription and trial limit are separate.
+
+The estimates in the table were calculated for the earlier 120-second
+policy and its $415.59 monthly fleet envelope. Obtain approval for a
+recalculated trial budget before provisioning preset B. Include the
+carry-in, maximum launch and dispatch reserves, canaries, cleanup and
+the unresolved counter reserve observed after cancellation. Use the
+packaged marginal rates without assumed free allowances. Record the
+high-water live estimate and settled usage by phase. Occupy or cap the
+primary with controlled fixtures and verify each admission witness
+is an actual Workers claim.
 
 ### Observe Each Gate Before Advancing
 
