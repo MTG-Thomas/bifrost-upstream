@@ -167,3 +167,32 @@ intent had no provider ID. Exact-name inventory and both authorities
 verified its absence.
 
 See the [sanitized preset B receipt](../../results/cloudflare-scaleout-preset-b-hosted.json).
+
+### Version 0 or 1 catch-all at initial creation
+
+Cloudflare documents `http_status:404` as a catch-all with no origin.
+Its remote tunnel setup guide creates a tunnel before installing ingress
+rules. The hosted stop retained only a categorized error. The public
+examples and receipt leave the exact initial response body and version
+unconfirmed. The single 404 rule is the narrow provider-default shape
+modeled by the local fixture.
+[Create a remote tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel-api/) · [Configuration API](https://developers.cloudflare.com/api/resources/zero_trust/subresources/tunnels/subresources/cloudflared/subresources/configurations/)
+
+Bifrost accepts that shape only when the current create response names
+the same tunnel as the exact secret-verified ownership read. The
+configuration must identify the same account and tunnel. Its single
+catch-all can have only blank matching fields, empty origin options,
+and default or disabled WARP routing. A replay that finds an existing
+tunnel lacks this fresh-create proof. The prior exact-match and empty
+configuration rules still apply to it.
+
+CT128 exercised combined items 6–8 at `a580a0b70` with both pinned
+release packages and internal-only fixtures. The Managed Tunnel stub
+started with the version 1 404 rule. Enable programmed the approved
+route, then returned a signed canary receipt. Route listing returned
+200 and the WARP echo was disabled. Rotation replaced one old session
+with one new session and refused the old token. Upgrade reconnected the
+original claim, delivered and acknowledged its terminal result after one
+dispatch, and verified three old script and four old namespace 404s.
+Final Disconnect removed the stub tunnel with zero sessions and no DNS
+record. The hosted behavior of this change remains unverified.

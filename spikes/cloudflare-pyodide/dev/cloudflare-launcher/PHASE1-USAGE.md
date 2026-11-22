@@ -793,3 +793,8 @@ Bifrost-to-proxy ratio of 1,026.36. The Durable Object datasets returned
 no attributed rows. The proxy covers the sampled Workers charges.
 
 See the [sanitized preset B receipt](../../results/cloudflare-scaleout-preset-b-hosted.json).
+
+The [preset B calibration](../../results/cloudflare-scaleout-preset-b-spend-calibration.md)
+breaks out the recoverable ledger amounts, explains the incomplete
+Analytics denominator, and proposes a measured expectation alongside
+the existing admission envelope.
