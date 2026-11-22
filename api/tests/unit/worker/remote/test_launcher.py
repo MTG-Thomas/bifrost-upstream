@@ -13,6 +13,7 @@ import pytest
 from src.worker.remote.identity import LauncherIdentity
 from src.worker.remote.launcher import (
     Launcher,
+    _await_container_startup,
     _load_container_lifetime,
     _load_containers_control_secret,
 )
@@ -74,6 +75,43 @@ def test_managed_container_lease_renews_only_up_to_the_absolute_deadline(monkeyp
     with pytest.raises(RuntimeError, match="already expired"):
         launcher.grant_runtime_lease(20_000)
     assert set_timer.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_managed_container_receives_lease_renewal_before_guest_ready(monkeypatch) -> None:
+    socket = AsyncMock()
+    frame = ControlEnvelope(session_generation=1, sequence=2, kind="runtime_lease", payload={"ttl_ms": 1000})
+    pending = asyncio.Event()
+
+    async def receive():
+        if socket.recv.await_count == 1:
+            return frame.to_json()
+        await pending.wait()
+
+    socket.recv.side_effect = receive
+    identity = LauncherIdentity(
+        launcher_id=uuid4(), incarnation_id=uuid4(), job_uid=None, pod_uid=None,
+        hostname="runner", form="external", resource_uid="fixture",
+    )
+    launcher = Launcher(
+        socket, identity=identity, secret="derived", containers=True,
+        container_release="a" * 64, container_deadline=float("inf"),
+    )
+    launcher.session_generation = 1
+    launcher._last_command_sequence = 1
+    granted = asyncio.Event()
+
+    def set_timer(*_args):
+        granted.set()
+
+    async def wait_for_guest():
+        await granted.wait()
+
+    monkeypatch.setattr("src.worker.remote.launcher.signal.setitimer", set_timer)
+    setup = asyncio.create_task(wait_for_guest())
+    await _await_container_startup(launcher, setup)
+    assert launcher._last_command_sequence == 2
+    assert granted.is_set()
 
 
 @pytest.mark.asyncio

@@ -160,6 +160,34 @@ async def _receive_control_commands(
     return drain_task
 
 
+async def _await_container_startup(launcher: Launcher, setup: asyncio.Task[None]) -> None:
+    """Keep the leased supervisor authorized while the isolated guest initializes."""
+    while not setup.done():
+        receive = asyncio.create_task(launcher.socket.recv())
+        try:
+            done, _ = await asyncio.wait({setup, receive}, timeout=5, return_when=asyncio.FIRST_COMPLETED)
+            if receive in done:
+                frame = ControlEnvelope.from_json(receive.result())
+                if (
+                    frame.kind != "runtime_lease" or frame.session_generation != launcher.session_generation
+                    or frame.sequence <= launcher._last_command_sequence
+                ):
+                    raise RuntimeError("Invalid Container startup control frame")
+                launcher._last_command_sequence = frame.sequence
+                launcher.grant_runtime_lease(frame.payload.get("ttl_ms"))
+            elif not setup.done():
+                current, limit = effective_memory_sample()
+                await launcher.send({
+                    "event": "sample", "current": current, "limit": limit,
+                    "pressure_ratio": memory_pressure_ratio(), "runs": {},
+                })
+        finally:
+            if not receive.done():
+                receive.cancel()
+                await asyncio.gather(receive, return_exceptions=True)
+    await setup
+
+
 async def _shutdown_launcher(
     launcher: Launcher,
     drain_task: asyncio.Task[None] | None,
@@ -1097,18 +1125,26 @@ async def _run_launcher(
                         launcher = candidate
                         try:
                             setup = asyncio.create_task(candidate.start())
-                            while not setup.done():
+                            if container_guest is not None:
                                 try:
-                                    await asyncio.wait_for(asyncio.shield(setup), timeout=5)
-                                except TimeoutError:
-                                    current, limit = effective_memory_sample()
-                                    with contextlib.suppress(ConnectionError):
-                                        await candidate.send({
-                                            "event": "sample", "current": current,
-                                            "limit": limit,
-                                            "pressure_ratio": memory_pressure_ratio(), "runs": {},
-                                        })
-                            await asyncio.gather(setup)
+                                    await _await_container_startup(candidate, setup)
+                                finally:
+                                    if not setup.done():
+                                        setup.cancel()
+                                        await asyncio.gather(setup, return_exceptions=True)
+                            else:
+                                while not setup.done():
+                                    try:
+                                        await asyncio.wait_for(asyncio.shield(setup), timeout=5)
+                                    except TimeoutError:
+                                        current, limit = effective_memory_sample()
+                                        with contextlib.suppress(ConnectionError):
+                                            await candidate.send({
+                                                "event": "sample", "current": current,
+                                                "limit": limit,
+                                                "pressure_ratio": memory_pressure_ratio(), "runs": {},
+                                            })
+                                await asyncio.gather(setup)
                         except Exception:
                             # Initialization is not a transport failure. Exit so
                             # the provider can replace this failed physical worker.
