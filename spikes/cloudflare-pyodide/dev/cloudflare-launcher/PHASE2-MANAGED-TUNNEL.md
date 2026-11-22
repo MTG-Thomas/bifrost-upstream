@@ -203,3 +203,20 @@ original claim, delivered and acknowledged its terminal result after one
 dispatch, and verified three old script and four old namespace 404s.
 Final Disconnect removed the stub tunnel with zero sessions and no DNS
 record. The hosted behavior of this change remains unverified.
+
+### Hosted version-zero configuration envelope
+
+The Managed-only run at `a9226cb62` stopped at
+`tunnel_ingress / ingress_occupied / already_configured / empty_or_matching`.
+The provider returned version 0 with the envelope keys `config`,
+`created_at`, `source`, `tunnel_id`, and `version`. The missing
+`account_id` key fails the exact configuration identity check before
+Bifrost evaluates the empty-config or catch-all rule. Shape diagnostics
+classify `config` as a non-object without recording its raw value, so
+the run cannot establish that the value was JSON null.
+
+The signed canary, disabled WARP echo, route-list grant and connector
+rotation remain unqualified on this run. Disconnect verified the tunnel
+tombstone, zero sessions, and DNS and token absence.
+
+See the [sanitized Managed-only receipt](../../results/cloudflare-scaleout-managed-hosted-a922.json).
