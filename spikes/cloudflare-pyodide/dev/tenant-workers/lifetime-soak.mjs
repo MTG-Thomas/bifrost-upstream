@@ -68,7 +68,7 @@ export async function runLifetimeSoak({result, seconds, deadlineMs, storage, run
   for (let at = 0; at < seconds && state === 'running'; at += 30) {
     await delay(Math.max(0, at * 1000 - (performance.now() - started)));
     if (at === reconnectAt) receipt.hello_sequences.push(await verifySession());
-    const batch = bursts.has(at) ? [0, 1, 2, 3] : [0];
+    const batch = bursts.has(at % 900) ? [0, 1, 2, 3] : [0];
     for (const workflow of await Promise.all(batch.map(async slot => {
       const outcome = await run(slot, (at / 30 + slot) % 2 === 1);
       return {at_seconds: elapsed(), slot, ...outcome};

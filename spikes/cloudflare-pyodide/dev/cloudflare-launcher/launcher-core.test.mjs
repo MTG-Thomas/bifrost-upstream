@@ -668,6 +668,11 @@ test('an incarnation deadline drains the accepted workflow and stops after its A
   api.setClock(START + 1000);
   await api.command('workflow', workflow('2'));
   assert.equal(api.frames().at(-1).error_type, 'LauncherRetired');
+  api.setClock(START + 1001);
+  await api.command('workflow', workflow('3'));
+  assert.equal(api.frames().at(-1).error_type, 'LauncherRetired');
+  assert.equal(api.data.has(`seen:${workflow('2').route_id}`), false);
+  assert.equal(api.data.has(`seen:${workflow('3').route_id}`), false);
   assert.equal(await api.core.isStopped(), false);
   running.resolve(COMPLETED);
   await api.finish();

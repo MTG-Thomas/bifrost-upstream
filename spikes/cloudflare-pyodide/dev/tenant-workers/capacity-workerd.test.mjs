@@ -417,7 +417,7 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
     memory_limit_bytes: launcherSlots * 128 * 1024 ** 2,
     max_lifetime_seconds: lifetimeSoak ? soakSeconds :
       controllerPolls ? Math.ceil(controllerPolls * reconcileSeconds) + 120 : 60,
-    drain_grace_seconds: 5,
+    drain_grace_seconds: lifetimeSoak ? 285 : 5,
     ...(deadlineMs === undefined ? {} : {deadline_ms: deadlineMs}),
     resource_uid: uid, control_key: key};
   assert.equal((await request(path, 'PUT', reservation, {...auth, Authorization: `Bearer ${key}`})).status, 401);

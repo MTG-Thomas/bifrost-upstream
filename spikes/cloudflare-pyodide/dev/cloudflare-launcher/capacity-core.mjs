@@ -15,6 +15,7 @@ export const STATE = Object.freeze({
 });
 
 const LIVE = new Set([STATE.PREPARED, STATE.STARTING, STATE.RUNNING]);
+export const WORKERS_DEADLINE_SKEW_MS = 5000;
 const RESERVATION_FIELDS = [
     "worker_id",
     "worker_version",
@@ -115,7 +116,7 @@ export function createEngine({ profile, store, runtime, clock = { now: () => Dat
         }
         if (reservation.deadline_ms !== undefined &&
             (!Number.isSafeInteger(reservation.deadline_ms) || reservation.deadline_ms <= 0 ||
-             reservation.deadline_ms > clock.now() + reservation.max_lifetime_seconds * 1000 + 1000)) {
+             reservation.deadline_ms > clock.now() + reservation.max_lifetime_seconds * 1000 + WORKERS_DEADLINE_SKEW_MS)) {
             throw new ProtocolError(400, "invalid reservation deadline");
         }
     }

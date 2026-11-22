@@ -598,7 +598,7 @@ export class LauncherCore {
         await this.#settle(index, route, timeout(route));
         return null;
       }
-      if (this.retired || this.draining) {
+      if (this.retired) {
         await this.#settle(index, route, failure('not_started', 'LauncherRetired', 'The incarnation ended'));
         return null;
       }
