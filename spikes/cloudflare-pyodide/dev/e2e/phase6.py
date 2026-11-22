@@ -26,7 +26,7 @@ def mount_private_fixture(root: Path) -> None:
     ))
 
 
-def seed_solution_workflows(admin, send, tenant_fixtures, *, hosted=False):
+def seed_solution_workflows(admin, send, tenant_fixtures, *, hosted=False, timeout_seconds=60):
     if hosted:
         content = (HERE / "fixture-hosted.py").read_text().replace("phase5b_fixture", FUNCTION)
     else:
@@ -47,7 +47,7 @@ def seed_solution_workflows(admin, send, tenant_fixtures, *, hosted=False):
             archive.writestr("bifrost.solution.yaml", "slug: phase6-fixture\nname: Phase 6 Fixture\nversion: '1.0.0'\n")
             archive.writestr(".bifrost/workflows.yaml", json.dumps({"workflows": {str(manifest_id): {
                 "name": FUNCTION, "function_name": FUNCTION, "path": ENTRY, "type": "workflow",
-                "timeout_seconds": 60,
+                "timeout_seconds": timeout_seconds,
             }}}))
             archive.writestr(ENTRY, content)
             archive.writestr("phase6_support/values.py", helper)

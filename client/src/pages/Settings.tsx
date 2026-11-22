@@ -179,7 +179,7 @@ const workerSection: SettingsSection = {
 		},
 		{
 			value: "cloudflare-capacity",
-			label: "Scale Out With Cloudflare",
+			label: "Scale Out with Cloudflare",
 			icon: Container,
 			content: CloudflareCapacity,
 		},
