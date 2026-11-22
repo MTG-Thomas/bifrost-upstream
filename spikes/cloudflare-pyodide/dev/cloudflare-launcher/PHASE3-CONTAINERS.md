@@ -523,6 +523,12 @@ The qualification canary holds a real account budget and platform seat
 under the Enable or reconcile job lease. It uses a short start window,
 no dispatch, and can obtain the first egress proof before admission opens.
 
+The API sends its committed database ownership deadline in the signed-hello
+session's bootstrap and renews it in that session's ordered control stream.
+The supervisor's watchdog uses the earlier of that deadline and the
+incarnation's pinned absolute deadline. A reconnect cannot revive an
+expired process.
+
 HTTP arrival accounting reserves the request line, all headers exposed by
 the Fetch API, and the announced body length or a 256-byte floor. It
 includes rejected requests, failed attempts, and repeated transfers.

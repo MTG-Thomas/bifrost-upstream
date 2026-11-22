@@ -146,6 +146,9 @@ async def _receive_control_commands(
                 launcher.pending_terminal.pop(event_id, None)
                 launcher.pending_terminal_inventory.pop(event_id, None)
             continue
+        if command.kind == "runtime_lease":
+            launcher.grant_runtime_lease(command.payload.get("expires_at_ms"))
+            continue
         if command.kind != "command":
             raise RuntimeError("unexpected API control message")
         launcher.task(launcher.command(command.payload, generation=launcher.session_generation))
@@ -232,6 +235,7 @@ class Launcher:
         container_release: str | None = None,
         container_probe_nonce: str | None = None,
         container_idle_seconds: int | None = None,
+        container_deadline: float | None = None,
     ) -> None:
         self.socket = socket
         self.identity = identity
@@ -241,6 +245,8 @@ class Launcher:
         self.container_release = container_release
         self.container_probe_nonce = container_probe_nonce
         self.container_idle_seconds = container_idle_seconds
+        self.container_deadline = container_deadline
+        self._container_lease_until: float | None = None
         self._idle_since = time.monotonic()
         self._idle_draining = False
         self.platform_stages = (
@@ -372,6 +378,23 @@ class Launcher:
             self.socket = socket
             await self._hello(requirements)
 
+    def grant_runtime_lease(self, expires_at_ms: object) -> None:
+        """Arm hard expiry from a fenced API grant without extending the pinned lifetime."""
+        if self.container_release is None or self.container_deadline is None or type(expires_at_ms) is not int:
+            raise RuntimeError("Invalid managed Container runtime lease")
+        now = time.monotonic()
+        if self._container_lease_until is not None and now >= self._container_lease_until:
+            raise RuntimeError("Managed Container runtime lease already expired")
+        try:
+            granted_until = now + (expires_at_ms / 1000 - time.time())
+        except OverflowError:
+            raise RuntimeError("Invalid managed Container runtime lease") from None
+        deadline = min(self.container_deadline, granted_until)
+        if deadline <= now:
+            raise RuntimeError("Managed Container runtime lease is expired")
+        signal.setitimer(signal.ITIMER_REAL, deadline - now)
+        self._container_lease_until = deadline
+
     async def _hello(self, requirements: dict[str, Any]) -> None:
         current, limit = effective_memory_sample()
         self._hello_sequence += 1
@@ -430,6 +453,8 @@ class Launcher:
                 content = startup.payload["requirements_content"]
                 if content is not None and not isinstance(content, str):
                     raise RuntimeError("Invalid worker requirements content")
+                if self.container_release is not None:
+                    self.grant_runtime_lease(startup.payload.get("expires_at_ms"))
                 self.requirements_content = content
                 break
 
@@ -974,6 +999,7 @@ async def _run_launcher(
     probe_nonce = None
     idle_seconds = None
     remaining = None
+    container_deadline = None
     if os.environ.get("BIFROST_BAKED_WHEELS_ONLY") == "1":
         container_release = os.environ.pop("BIFROST_CONTAINER_RELEASE", "")
         probe_nonce = os.environ.pop("BIFROST_CONTAINER_PROBE_NONCE", None)
@@ -982,6 +1008,7 @@ async def _run_launcher(
         if probe_nonce is not None and re.fullmatch(r"[A-Za-z0-9_-]{43}", probe_nonce) is None:
             raise RuntimeError("Invalid Container qualification challenge")
         remaining, idle_seconds = _load_container_lifetime()
+        container_deadline = time.monotonic() + remaining
     secret = _load_containers_control_secret() if containers else os.environ["BIFROST_SECRET_KEY"]
     launcher: Launcher | None = None
     candidate: Launcher | None = None
@@ -1012,6 +1039,7 @@ async def _run_launcher(
                                 container_release=container_release,
                                 container_probe_nonce=probe_nonce,
                                 container_idle_seconds=idle_seconds,
+                                container_deadline=container_deadline,
                             )
                         else:
                             # A lost welcome may follow a committed enrollment.

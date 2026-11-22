@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from unittest.mock import AsyncMock
+import signal
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
@@ -48,6 +49,31 @@ def test_managed_container_requires_a_bounded_lifetime(monkeypatch, deadline_ms,
     else:
         with pytest.raises(RuntimeError, match="Invalid managed Container lifetime"):
             _load_container_lifetime()
+
+
+def test_managed_container_lease_renews_only_up_to_the_absolute_deadline(monkeypatch) -> None:
+    identity = LauncherIdentity(
+        launcher_id=uuid4(), incarnation_id=uuid4(), job_uid=None, pod_uid=None,
+        hostname="runner", form="external", resource_uid="fixture",
+    )
+    now, wall_now = 100.0, 1000.0
+    monkeypatch.setattr("src.worker.remote.launcher.time.monotonic", lambda: now)
+    monkeypatch.setattr("src.worker.remote.launcher.time.time", lambda: wall_now)
+    set_timer = Mock()
+    monkeypatch.setattr("src.worker.remote.launcher.signal.setitimer", set_timer)
+    launcher = Launcher(
+        AsyncMock(), identity=identity, secret="derived", containers=True,
+        container_release="a" * 64, container_deadline=125.0,
+    )
+    launcher.grant_runtime_lease(1020000)
+    set_timer.assert_called_once_with(signal.ITIMER_REAL, 20.0)
+    now, wall_now = 110.0, 1010.0
+    launcher.grant_runtime_lease(1030000)
+    set_timer.assert_called_with(signal.ITIMER_REAL, 15.0)
+    now, wall_now = 125.0, 1025.0
+    with pytest.raises(RuntimeError, match="already expired"):
+        launcher.grant_runtime_lease(1045000)
+    assert set_timer.call_count == 2
 
 
 @pytest.mark.asyncio
