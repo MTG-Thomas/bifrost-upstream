@@ -290,3 +290,32 @@ their uploads by 26.280 and 18.793 seconds, respectively. The original
 dispatch and ACK stayed on one connection. The replacement readback
 followed the old absence checkpoint by 19.088 seconds, the new workflow
 finished, and Disconnect verified six script and eight namespace 404s.
+
+### Hosted Existing HTTPS Upgrade Run 3 at `707937c27`
+
+The uninterrupted Upgrade passed on Cloudflare with `0.1.0-requal.1`
+and `0.1.0-requal.2`. Initial signed Enable passed on attempt one in
+19.468 seconds. Upgrade passed on attempt one in 55.898 seconds after
+10.691 seconds queued. No settling retry or failure details were
+recorded. Run 2's failing provider check remains unknown.
+
+Admission closed while the first workflow held its original claim and
+fence. It finished with one dispatch and a terminal ACK on the same
+control connection. All old scripts and namespaces were verified
+absent before replacement upload. The first replacement readback
+followed the old absence checkpoint by 2.312 seconds. The replacement
+canary ACK preceded successful Upgrade job completion by 1.647 seconds.
+The job verified readback and the signed canary before reopening
+admission. The replacement workflow completed with a terminal ACK.
+
+| Workflow | Revision | Queued to Start | Start to Finish | Result |
+| --- | --- | ---: | ---: | --- |
+| Original | 1 | 3.787 s | 68.621 s | Success |
+| Replacement | 2 | 5.530 s | 3.289 s | Success |
+
+Terminal replay after a deliberate disconnect remains a local-only
+proof. The hosted run preserved the original socket through drain.
+Disconnect and independent readback verified six script and eight
+namespace 404s using the saved namespace IDs. The ledger had zero live
+incarnations and no uncertain meters.
+[Sanitized hosted receipt](../../results/cloudflare-scaleout-hosted-upgrade-run3.json)

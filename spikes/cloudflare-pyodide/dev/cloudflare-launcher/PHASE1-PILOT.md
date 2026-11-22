@@ -1421,3 +1421,43 @@ or retained credentials remained. The trial stack, relay, connector
 and private scratch were removed.
 
 See the [sanitized run receipt](../../results/cloudflare-scaleout-hosted-upgrade-run2.json).
+
+### Existing HTTPS Hosted Upgrade Run 3 at `707937c27`
+
+The final approved run passed on November 22, 2026 UTC. Both release
+pins and all 14 offline packaging and relay tests passed. Preset B
+Connect left admission closed. The 100-route worker preflight and
+signed Enable each recorded eight completed TLS handshakes and 92
+reused requests per IPv4 address. The two IPv6 addresses produced no
+TLS handshakes. Enable and Upgrade each succeeded on attempt one.
+[Upgrade ordering and workflow results](PHASE4-UPGRADE.md#hosted-existing-https-upgrade-run-3-at-707937c27)
+
+| Phase | Observed Peak Live Estimate | Estimate at Phase End |
+| --- | ---: | ---: |
+| Offline | $0.00 | $0.00 |
+| Connect, preflight and Enable | $0.02 | $0.00 |
+| Upgrade, replacement workflow and Scale In | $0.65 | $0.01 |
+| Disconnect | $0.01 | $0.012847448 |
+
+API estimates round to cents and represent cumulative trial snapshots.
+The final phase-end figure uses the raw settled ledger. The opening
+estimate was $0.077550642674 and the final cumulative estimate was
+$0.090398090399. The run stayed below the $3.60 live target, $4.50 live
+abort and $0.15 settled target.
+
+| Revision | Incarnation | Actual Lifetime | Pinned Lifetime |
+| --- | --- | ---: | ---: |
+| 1 | Enable canary | 1.992 s | 120 s |
+| 1 | Workflow launcher | 72.839 s | 3,600 s |
+| 2 | Upgrade canary | 2.215 s | 120 s |
+| 2 | Workflow launcher | 12.458 s | 3,600 s |
+
+All four meters sealed with no uncertainty. Disconnect retired the
+installation. Independent listing and exact reads verified six script
+and eight namespace 404s using the saved namespace IDs, token and DNS
+404s, a tunnel tombstone with zero sessions, and DNS absence from both
+authorities. No live ledger rows, held slots or retained credentials
+remained. The CT128 stack, trial processes and private scratch were
+removed. The run and verified teardown took 305 seconds.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-hosted-upgrade-run3.json).
