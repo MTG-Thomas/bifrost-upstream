@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { defaultApprovalOptions, listCloudflareApprovals, proposeCloudflareApproval, type ApprovalList } from "@/services/cloudflare-approval";
+import { listCloudflareApprovals, proposeCloudflareApproval, type ApprovalList } from "@/services/cloudflare-approval";
 import { approvalStatuses, CloudflareApprovalPanel } from "./CloudflareApprovalPanel";
 
 const queryKey = ["cloudflare-approval-list"];
@@ -21,7 +21,7 @@ export function CloudflareWorkflowApprovals() {
 	const [selected, setSelected] = useState<Workflow>();
 	const refresh = () => void queryClient.invalidateQueries({ queryKey });
 	const generate = useMutation({
-		mutationFn: (workflow: Workflow) => proposeCloudflareApproval(workflow.workflow_id, defaultApprovalOptions),
+		mutationFn: (workflow: Workflow) => proposeCloudflareApproval(workflow.workflow_id, {}),
 		onSuccess: (state, workflow) => {
 			queryClient.setQueryData(["cloudflare-approval", workflow.workflow_id], state);
 			refresh();
@@ -50,24 +50,26 @@ export function CloudflareWorkflowApprovals() {
 					{showWorkflows && (
 						<ul className="max-h-96 divide-y overflow-auto">
 							{data.workflows.map((workflow) => {
-								const offerDefaults = data.can_propose && !workflow.has_proposal
+								const offerDefaults = data.can_propose && !workflow.has_proposal && !workflow.needs_larger_budget
 									&& (workflow.status === "pending_review" || workflow.status === "revision_changed");
+								const action = workflow.needs_larger_budget ? "Adjust Budget"
+									: offerDefaults ? "Generate Proposal" : "Review Approval";
 								return (
 									<li key={workflow.workflow_id} className="flex flex-wrap items-center justify-between gap-2 py-2">
 										<div>
 											<p className="font-medium">{workflow.name}</p>
 											<p className="text-sm text-muted-foreground">
-												{scopes[workflow.scope]} · {approvalStatuses[workflow.status]}
+												{scopes[workflow.scope]} · {workflow.needs_larger_budget ? "Needs Larger Budget" : approvalStatuses[workflow.status]}
 											</p>
 										</div>
 										<Button variant="outline" size="sm" disabled={generate.isPending}
-											aria-label={offerDefaults ? `Generate Proposal for ${workflow.name}` : `Review Approval for ${workflow.name}`}
+											aria-label={`${action} for ${workflow.name}`}
 											onClick={() => {
 												generate.reset();
 												if (offerDefaults) generate.mutate(workflow);
 												else setSelected(workflow);
 											}}>
-											{offerDefaults ? "Generate Proposal" : "Review Approval"}
+											{action}
 										</Button>
 									</li>
 								);

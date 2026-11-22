@@ -8,7 +8,6 @@ import { Label } from "@/components/ui/label";
 import {
 	ApprovalReviewError,
 	acceptCloudflareApproval,
-	defaultApprovalOptions,
 	getCloudflareApproval,
 	proposeCloudflareApproval,
 	revokeCloudflareApproval,
@@ -43,6 +42,7 @@ export function CloudflareApprovalPanel({ workflowId, onChange }: {
 	const state = accessDenied ? undefined : status.data;
 	const proposal = optionsEdited ? undefined : state?.proposal;
 	const declaration = proposal ?? state?.current_declaration;
+	const needsBudget = state?.diagnostics?.some(({ rule_id }) => rule_id === "CF_CPU" || rule_id === "CF_SUBREQUESTS");
 
 	async function request(action: () => Promise<void>) {
 		setBusy(true);
@@ -71,7 +71,7 @@ export function CloudflareApprovalPanel({ workflowId, onChange }: {
 	return (
 		<section aria-label="Cloudflare Approval" className="space-y-4">
 			<Badge variant="outline" role="status">
-				{accessDenied ? "Unavailable" : state ? approvalStatuses[state.status] : status.isPending ? "Loading" : "Temporarily Unavailable"}
+				{accessDenied ? "Unavailable" : state ? needsBudget ? "Needs Larger Budget" : approvalStatuses[state.status] : status.isPending ? "Loading" : "Temporarily Unavailable"}
 			</Badge>
 			{(error || status.isError) && (
 				<p className="text-sm text-destructive" role="alert">
@@ -87,9 +87,11 @@ export function CloudflareApprovalPanel({ workflowId, onChange }: {
 					onSubmit={(event) => {
 						event.preventDefault();
 						const data = new FormData(event.currentTarget);
+						const subrequests = data.get("subrequests");
+						const cpu = data.get("cpu");
 						const options: ApprovalOptions = {
-							subrequest_allowance: Number(data.get("subrequests")),
-							cpu_budget_ms: Number(data.get("cpu")),
+							...(subrequests ? { subrequest_allowance: Number(subrequests) } : {}),
+							...(cpu ? { cpu_budget_ms: Number(cpu) } : {}),
 							https_hosts: String(data.get("hosts") ?? "").split(/[\s,]+/).filter(Boolean),
 						};
 						void request(async () => saveState(await proposeCloudflareApproval(workflowId, options)));
@@ -99,13 +101,13 @@ export function CloudflareApprovalPanel({ workflowId, onChange }: {
 					<fieldset disabled={busy} className="grid gap-3 sm:grid-cols-2">
 						<div className="space-y-1.5">
 							<Label htmlFor={`${id}-subrequests`}>Subrequest Allowance</Label>
-							<Input id={`${id}-subrequests`} name="subrequests" type="number" min={0} max={50} required
-								defaultValue={(state.proposal ?? state.current_declaration)?.subrequest_allowance ?? defaultApprovalOptions.subrequest_allowance} />
+							<Input id={`${id}-subrequests`} name="subrequests" type="number" min={0} max={50} placeholder="Server Default"
+								defaultValue={(state.proposal ?? state.current_declaration)?.subrequest_allowance} />
 						</div>
 						<div className="space-y-1.5">
 							<Label htmlFor={`${id}-cpu`}>CPU Budget (ms)</Label>
-							<Input id={`${id}-cpu`} name="cpu" type="number" min={1} required
-								defaultValue={(state.proposal ?? state.current_declaration)?.cpu_budget_ms ?? defaultApprovalOptions.cpu_budget_ms} />
+							<Input id={`${id}-cpu`} name="cpu" type="number" min={1} max={Number.MAX_SAFE_INTEGER} placeholder="Server Default"
+								defaultValue={(state.proposal ?? state.current_declaration)?.cpu_budget_ms} />
 						</div>
 						{state.can_manage && (
 							<div className="space-y-1.5 sm:col-span-2">

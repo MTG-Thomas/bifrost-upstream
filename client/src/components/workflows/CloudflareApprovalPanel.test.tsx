@@ -75,6 +75,19 @@ describe("CloudflareApprovalPanel", () => {
 		expect(proposeCloudflareApproval).not.toHaveBeenCalled();
 	});
 
+	it("lets the operator supply a larger reviewed allowance after a budget refusal", async () => {
+		vi.mocked(getCloudflareApproval).mockResolvedValue({
+			...pending,
+			diagnostics: [{ rule_id: "CF_SUBREQUESTS", severity: "warning", message: "Estimated subrequests exceed the allowance", hint: "Review the allowance." }],
+		});
+		vi.mocked(proposeCloudflareApproval).mockResolvedValue({ ...pending, proposal });
+		const user = open();
+		expect(await screen.findByText("Needs Larger Budget")).toBeVisible();
+		await user.type(screen.getByLabelText("Subrequest Allowance"), "20");
+		await user.click(screen.getByRole("button", { name: "Propose Approval" }));
+		expect(proposeCloudflareApproval).toHaveBeenCalledWith("workflow", { subrequest_allowance: 20, https_hosts: [] });
+	});
+
 	it("shows status diagnostics without exposing analysis controls to readers", async () => {
 		vi.mocked(getCloudflareApproval).mockResolvedValue({
 			...pending, can_manage: false, status: "ineligible", diagnostics: [{

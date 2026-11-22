@@ -138,8 +138,7 @@ class ObservationChanged(AnalysisRejected):
     """Storage has moved beyond the source digests used to schedule the job."""
 
 
-async def approval_placement(db: AsyncSession, workflow: Workflow) -> SolutionApprovalScope | None:
-    """Resolve the source boundary before analysis or status reporting."""
+def resolve_approval_placement(workflow: Workflow, solution: Solution | None) -> SolutionApprovalScope | None:
     if not workflow.is_active:
         raise ObservationChanged("Expected an active workflow")
     if workflow.type != "workflow":
@@ -148,13 +147,48 @@ async def approval_placement(db: AsyncSession, workflow: Workflow) -> SolutionAp
         raise ObservationChanged("Cloudflare supplies Normal capacity only", "CF_FAST_PATH")
     if workflow.solution_id is None:
         return None
-    solution = await solution_approval_scope(db, workflow.solution_id, workflow.organization_id)
-    if solution is None:
-        outbound = await db.scalar(select(Solution.allow_outbound_access).where(Solution.id == workflow.solution_id))
-        if outbound:
-            raise ObservationChanged("The Solution install allows outbound access", "CF_OUTBOUND")
+    if solution is not None and solution.allow_outbound_access:
+        raise ObservationChanged("The Solution install allows outbound access", "CF_OUTBOUND")
+    if (
+        solution is None or solution.status != "active" or solution.organization_id != workflow.organization_id
+        or solution.runtime_source_generation is None
+    ):
         raise ObservationChanged("Expected an active Solution with published install-local source")
-    return solution
+    return SolutionApprovalScope(
+        install_id=solution.id, version=solution.version, source_generation=solution.runtime_source_generation,
+    )
+
+
+async def approval_placement(db: AsyncSession, workflow: Workflow) -> SolutionApprovalScope | None:
+    solution = await db.get(Solution, workflow.solution_id, populate_existing=True) if workflow.solution_id else None
+    return resolve_approval_placement(workflow, solution)
+
+
+async def read_pinned_sources(declaration: ApprovalDeclaration) -> dict[str, str]:
+    """Read an exact reviewed bundle without retaining a second copy."""
+    manifest = declaration.manifest
+    if digest(manifest) != declaration.manifest_sha256:
+        raise ObservationChanged("Reviewed source changed")
+    install_id = declaration.solution.install_id if declaration.solution else None
+    storage = _source_storage(install_id)
+    sources: dict[str, str] = {}
+    remaining = MAX_BUNDLE_BYTES
+    try:
+        for path, sha256 in manifest.items():
+            content = await storage.read(path, max_bytes=min(remaining, MAX_SOURCE_BYTES))
+            if hashlib.sha256(content).hexdigest() != sha256:
+                raise ObservationChanged("Reviewed source changed")
+            sources[path] = content.decode("utf-8")
+            remaining -= len(content)
+    except ObservationChanged:
+        raise
+    except ValueError as exc:
+        raise ObservationChanged("Reviewed source changed") from exc
+    except StorageError as exc:
+        if exc.kind == "not_found":
+            raise ObservationChanged("Reviewed source changed") from exc
+        raise
+    return sources
 
 
 async def propose_approval(
@@ -299,21 +333,11 @@ async def prepare_approved_workspace(
     ):
         return None
 
-    sources: dict[str, str] = {}
-    remaining = MAX_BUNDLE_BYTES
-    storage = _source_storage(install_id)
     manifest = declaration.manifest
-    if digest(manifest) != declaration.manifest_sha256:
-        return None
     try:
         async with asyncio.timeout(20):
-            for path, sha256 in manifest.items():
-                content = await storage.read(path, max_bytes=min(remaining, MAX_SOURCE_BYTES))
-                if hashlib.sha256(content).hexdigest() != sha256:
-                    return None
-                sources[path] = content.decode("utf-8")
-                remaining -= len(content)
-    except (StorageError, TimeoutError, ValueError):
+            sources = await read_pinned_sources(declaration)
+    except (StorageError, TimeoutError, ObservationChanged):
         return None
 
     # A review or scope change can race the storage reads.

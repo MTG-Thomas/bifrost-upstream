@@ -5,8 +5,6 @@ export type ApprovalList = components["schemas"]["CloudflareApprovalList"];
 
 export type ApprovalState = components["schemas"]["CloudflareApprovalState"];
 export type ApprovalOptions = components["schemas"]["CloudflareApprovalOptions"];
-export const defaultApprovalOptions: ApprovalOptions = { subrequest_allowance: 10, cpu_budget_ms: 1000 };
-
 export type ApprovalAccept = components["schemas"]["CloudflareApprovalAccept"];
 
 const path = "/api/workflows/{workflow_id}/cloudflare-approval";

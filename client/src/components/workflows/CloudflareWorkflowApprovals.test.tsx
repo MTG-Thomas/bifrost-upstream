@@ -30,6 +30,6 @@ it("lists scoped counts and generates a proposal with the default budgets", asyn
 	expect(await screen.findByText("Temporarily Unavailable")).toBeVisible();
 	await user.click(screen.getByRole("button", { name: "Review Eligible Workflows" }));
 	await user.click(screen.getByRole("button", { name: "Generate Proposal for Global Workflow" }));
-	expect(proposeCloudflareApproval).toHaveBeenCalledWith("workflow", { subrequest_allowance: 10, cpu_budget_ms: 1000 });
+	expect(proposeCloudflareApproval).toHaveBeenCalledWith("workflow", {});
 	expect(await screen.findByRole("dialog", { name: "Global Workflow" })).toBeVisible();
 });

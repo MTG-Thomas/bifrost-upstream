@@ -53,8 +53,8 @@ class ApprovalDeclaration(BaseModel):
 class CloudflareApprovalOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    subrequest_allowance: int = Field(DEFAULT_SUBREQUEST_ALLOWANCE, strict=True, ge=0, le=MAX_SUBREQUESTS)
-    cpu_budget_ms: int = Field(DEFAULT_CPU_BUDGET_MS, strict=True, gt=0, le=MAX_CPU_MS)
+    subrequest_allowance: int = Field(default_factory=lambda: DEFAULT_SUBREQUEST_ALLOWANCE, strict=True, ge=0, le=MAX_SUBREQUESTS)
+    cpu_budget_ms: int = Field(default_factory=lambda: DEFAULT_CPU_BUDGET_MS, strict=True, gt=0, le=MAX_CPU_MS)
     https_hosts: list[str] = Field(default_factory=list, max_length=32)
 
 
@@ -95,7 +95,7 @@ class CloudflareApprovalState(BaseModel):
     current_revision: _SourceDigest | None = None
     current_declaration: ApprovalDeclaration | None = None
     proposal: CloudflareApprovalReview | None = None
-    proposal_sources: dict[str, str] | None = None
+    proposal_sources: dict[str, str] | None = Field(default=None, exclude_if=lambda sources: sources is None)
     diagnostics: list[CloudflareApprovalDiagnostic] = Field(default_factory=list)
 
 
@@ -107,6 +107,7 @@ class CloudflareApprovalListItem(BaseModel):
     scope: Literal["provider", "global", "organization"]
     status: CloudflareApprovalStatus
     has_proposal: bool
+    needs_larger_budget: bool = False
 
 
 class CloudflareApprovalList(BaseModel):
@@ -122,5 +123,4 @@ class StoredCloudflareReview(BaseModel):
     observed_pins: dict[str, _SourceDigest | None]
     status: CloudflareApprovalStatus
     proposal: CloudflareApprovalReview | None = None
-    sources: dict[str, str] | None = None
     diagnostics: list[CloudflareApprovalDiagnostic]
