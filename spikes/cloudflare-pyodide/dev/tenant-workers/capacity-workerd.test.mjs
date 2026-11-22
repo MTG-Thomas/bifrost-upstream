@@ -14,6 +14,7 @@ import {fileURLToPath} from 'node:url';
 import {envelope, fragment, FragmentAssembler, signHello} from '../cloudflare-launcher/protocol.mjs';
 import {capacityWorker} from '../e2e/capacity-miniflare.mjs';
 import {runLifetimeSoak} from './lifetime-soak.mjs';
+import {isolateSampler, pythonMemoryProbe} from './lifetime-memory.mjs';
 
 const {Miniflare} = createRequire(import.meta.resolve('wrangler'))('miniflare');
 const {WebSocketServer} = createRequire(import.meta.url)('ws');
@@ -86,6 +87,7 @@ const measuredGateway = process.env.BIFROST_QUALIFIED_GATEWAY_BUNDLE;
 const slotQualification = process.env.BIFROST_LOCAL_TENANT_SLOTS === 'true';
 const lifetimeSoak = process.env.BIFROST_LIFETIME_SOAK_RESULT;
 const soakSeconds = Number(process.env.BIFROST_LIFETIME_SOAK_SECONDS ?? 900);
+const memoryProbe = process.env.BIFROST_LIFETIME_MEMORY_PROBE === 'true';
 const meterBounds = JSON.parse(readFileSync(new URL(
   '../../../../api/src/services/worker_pool/cloudflare_meter_bounds.json', import.meta.url,
 ), 'utf8'));
@@ -124,6 +126,9 @@ async function referenceAttempt(record, solution, slotCase) {
     source = source.replace('import logging', 'import logging\nfrom phase6_support.values import INSTALL_VALUE')
       .replace('"table_count": len(rows)', '"table_count": len(rows), "install_value": INSTALL_VALUE');
     Object.assign(sources, {[file_path]: source, 'phase6_support/values.py': 'INSTALL_VALUE = "solution"\n'});
+  }
+  if (slotCase?.soak && memoryProbe) {
+    sources[file_path] = source = source.replace('    return {', `${pythonMemoryProbe}    return {"memory": memory, `);
   }
   const org = slotCase?.org ?? randomUUID();
   const solution_id = solution ? randomUUID() : null;
@@ -167,7 +172,7 @@ async function referenceAttempt(record, solution, slotCase) {
   if (slotCase?.soak) {
     const value = terminal.result?.result;
     if (terminal.result?.success === true) {
-      const {module_count, ...output} = value;
+      const {module_count, memory, ...output} = value;
       assert.deepEqual(output, {
         case: caseName, table_count: 0, isolated: true,
         ...(solution ? {install_value: 'solution'} : {}),
@@ -176,7 +181,7 @@ async function referenceAttempt(record, solution, slotCase) {
     }
     return {state: terminal.attempt_state, success: terminal.result?.success === true,
       error_type: terminal.result?.error_type ?? null, route_id,
-      module_count: value?.module_count};
+      module_count: value?.module_count, ...(memoryProbe ? {memory: value?.memory} : {})};
   }
   if (slotCase?.cancel) return terminal;
   assert.equal(terminal.attempt_state, 'completed', JSON.stringify(terminal));
@@ -343,7 +348,7 @@ async function start() {
     }
     return fetch(new Request(${JSON.stringify(base)} + new URL(request.url).pathname, request));
   }};`;
-  mf = new Miniflare({cf: false, resourcePersistencePath: storage, workers: [
+  mf = new Miniflare({cf: false, ...(memoryProbe ? {inspectorPort: 0} : {}), resourcePersistencePath: storage, workers: [
     capacityWorker({...settings, bundle: measuredBundle, slots: launcherSlots}),
     {
       dev: {outboundService: {type: 'worker', worker: 'relay'}},
@@ -480,6 +485,8 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
     await runLifetimeSoak({
       result: lifetimeSoak, seconds: soakSeconds, deadlineMs, storage, run, verifySession, launcher: measuredLauncher,
       cadence: controllerPolls ? () => observeAtControllerCadence(path) : undefined,
+      spacing: Number(process.env.BIFROST_LIFETIME_SOAK_SPACING_SECONDS ?? 30),
+      sampleIsolates: memoryProbe ? isolateSampler(await mf.getInspectorURL()) : undefined,
       observe: async () => (await (await request(path)).json()).state,
       settle: async () => {
         await next(() => record.heartbeat?.occupied_routes?.length === 0 &&

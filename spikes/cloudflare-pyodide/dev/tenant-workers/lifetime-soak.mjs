@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {globSync, readFileSync, writeFileSync} from 'node:fs';
+import {globSync, readFileSync, statSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {setTimeout as delay} from 'node:timers/promises';
@@ -37,7 +37,8 @@ function readMeter(storage) {
   return null;
 }
 
-export async function runLifetimeSoak({result, seconds, deadlineMs, storage, run, verifySession, launcher, observe, cadence, settle}) {
+export async function runLifetimeSoak({result, seconds, deadlineMs, storage, run, verifySession, launcher, observe, cadence,
+  settle, spacing = 30, sampleIsolates}) {
   const processMetrics = processSampler();
   const started = performance.now();
   const baseline = processMetrics().cpu_ms;
@@ -52,8 +53,13 @@ export async function runLifetimeSoak({result, seconds, deadlineMs, storage, run
     const state = await observe();
     const deadline_offset_ms = Date.now() - deadlineMs;
     const {cpu_ms, ...memory} = processMetrics();
+    const diagnostic = sampleIsolates ? {
+      isolates: await sampleIsolates(),
+      sqlite_bytes: globSync('**/*.sqlite', {cwd: storage}).reduce((sum, file) => sum + statSync(join(storage, file)).size, 0),
+      sqlite_wal_bytes: globSync('**/*.sqlite-wal', {cwd: storage}).reduce((sum, file) => sum + statSync(join(storage, file)).size, 0),
+    } : {};
     receipt.samples.push({at_seconds: elapsed(), deadline_offset_ms, ...memory, cpu_ms: cpu_ms - baseline,
-      meter: readMeter(storage), state});
+      meter: readMeter(storage), state, ...diagnostic});
     save();
     return state;
   };
@@ -64,13 +70,13 @@ export async function runLifetimeSoak({result, seconds, deadlineMs, storage, run
   let state = await sample();
   assert.equal(state, 'running');
   let controller;
-  const reconnectAt = seconds === 120 ? 90 : 450;
-  for (let at = 0; at < seconds && state === 'running'; at += 30) {
+  const reconnectAt = spacing === 30 ? (seconds === 120 ? 90 : 450) : Math.floor(seconds / (2 * spacing)) * spacing;
+  for (let at = 0; at < seconds && state === 'running'; at += spacing) {
     await delay(Math.max(0, at * 1000 - (performance.now() - started)));
     if (at === reconnectAt) receipt.hello_sequences.push(await verifySession());
     const batch = bursts.has(at % 900) ? [0, 1, 2, 3] : [0];
     for (const workflow of await Promise.all(batch.map(async slot => {
-      const outcome = await run(slot, (at / 30 + slot) % 2 === 1);
+      const outcome = await run(slot, (at / spacing + slot) % 2 === 1);
       return {at_seconds: elapsed(), slot, ...outcome};
     }))) {
       const {route_id, ...sanitized} = workflow;
