@@ -268,7 +268,11 @@ async def claim_next(
             AgentRun.status == "queued",
         ).correlate(WorkDispatch).exists()
     )
-    linux_eligible = ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE
+    # Managed Linux reservations are provisionable only after their dedicated
+    # readiness and send path exists. A generic Linux hello grants no claim.
+    linux_eligible = (ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE) & ~exists().where(
+        managed_workers.c.worker_id == incarnation_id, managed_workers.c.container_reserved_at.is_not(None),
+    )
     containers_scope = getattr(get_settings(), "cloudflare_containers_scope", None)
     if containers_scope is not None:
         linux_eligible = linux_eligible & (

@@ -6,12 +6,24 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import String, and_, case, cast, delete, exists, func, or_, select, tuple_, update
+from shared.models import CloudflareWorkersPolicy
+from sqlalchemy import (
+    String,
+    and_,
+    case,
+    cast,
+    delete,
+    exists,
+    func,
+    or_,
+    select,
+    tuple_,
+    update,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.sql.selectable import ScalarSelect
 
-from shared.models import CloudflareWorkersPolicy
 from src.models.enums import ExecutionStatus
 from src.models.orm.cloudflare_capacity import (
     CloudflareInstallation,
@@ -85,14 +97,26 @@ async def read_workflow_slot_admission(
     db: AsyncSession, installation_id: UUID, policy: CloudflareWorkersPolicy,
 ) -> WorkflowSlotAdmission:
     slot = CloudflareWorkflowSlot
-    counts = (await db.execute(
-        select(slot.tenant, func.count()).where(
-            slot.installation_id == installation_id,
-            or_(and_(slot.released_at.is_(None), ~_stale_unsent()), _live_prewarm()),
+    reservation = CloudflareWorkerReservation
+    # One physical seat per incarnation, including starting, idle and
+    # uncertain-stop instances. An attached dispatch ticket uses that seat.
+    occupied_seats = select(slot.tenant.label("tenant")).where(
+        slot.installation_id == installation_id,
+        or_(and_(slot.released_at.is_(None), ~_stale_unsent()), _live_prewarm()),
+    ).union_all(
+        select(reservation.container_tenant).where(
+            reservation.installation_id == installation_id, reservation.container_reserved_at.is_not(None),
+            reservation.container_stopped_at.is_(None),
+            ~exists().where(
+                slot.worker_id == reservation.worker_id, slot.released_at.is_(None), ~_stale_unsent(),
+            ).correlate(reservation),
         )
-        .group_by(slot.tenant)
+    ).subquery()
+    counts = (await db.execute(
+        select(occupied_seats.c.tenant, func.count()).group_by(occupied_seats.c.tenant),
     )).all()
-    return WorkflowSlotAdmission(installation_id, policy, Counter({tenant: count for tenant, count in counts}))
+    occupied = Counter({tenant: count for tenant, count in counts if tenant is not None})
+    return WorkflowSlotAdmission(installation_id, policy, occupied)
 
 
 def _pending_prewarm_dispatch() -> ColumnElement[bool]:

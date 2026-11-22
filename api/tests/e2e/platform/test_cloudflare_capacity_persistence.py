@@ -26,9 +26,9 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.models import (
-    CloudflareReconcileAction,
     CloudflareCapacityPolicy,
     CloudflareLauncherUsage,
+    CloudflareReconcileAction,
     CloudflareWorkersPolicy,
 )
 from src.config import Settings
@@ -115,6 +115,7 @@ from src.services.worker_pool.cloudflare_provisioning import (
     ResourceObservation,
     ResourceTarget,
 )
+from src.services.worker_pool.cloudflare_release import WorkersReleaseOrder
 from src.services.worker_pool.cloudflare_slots import (
     adoptable_workflow_slot,
     authorized_queue_preparation,
@@ -138,13 +139,12 @@ from src.services.worker_pool.cloudflare_spend import (
 )
 from src.services.worker_pool.cloudflare_workers_rest import (
     OWNER_BINDING,
+    CloudflareManagementDenied,
     CloudflareRestUnavailable,
     ConfiguredWorkersScript,
-    CloudflareManagementDenied,
     WorkersRestCleanup,
     worker_owner_value,
 )
-from src.services.worker_pool.cloudflare_release import WorkersReleaseOrder
 from src.services.worker_pool.recovery import end_runs_of_lost_worker
 from src.worker.remote.fencing import LeaseRef, fence_remote_owner, remote_owner_context
 from src.worker.remote.host import ApiExecutor, Bridge, _cloudflare_tenant_key
@@ -155,6 +155,9 @@ from src.worker.remote.protocol import (
     CredentialRouteChanged,
 )
 from src.worker.remote.remote_pool import ThinRemoteProcessPool
+
+from tests.helpers.cloudflare_containers import make_release
+from tests.helpers.cloudflare_containers import policy as container_policy
 
 OPERATOR_ID = UUID("20cb7fe5-78e2-48d7-8f1e-8edcac69ffab")
 TEST_ORDER = WorkersReleaseOrder("1.0.0", 1)
@@ -1887,6 +1890,267 @@ async def create_installation(
             60, zero, zero, "fixture-release", rated_slots, TEST_LAUNCHER_CAPS, TEST_CPU_LIMITS, 500_000, TEST_ORDER,
         ),
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("race", [
+    "installation", "tenant", "prewarm",
+    "claim-installation", "claim-tenant", "prepare-installation", "prepare-tenant",
+])
+async def test_container_reservation_serializes_shared_capacity(async_session_factory, monkeypatch, race) -> None:
+    from src.models.orm.cloudflare_approvals import CloudflareApproval
+    from src.models.orm.file_index import FileIndex
+    from src.models.orm.workflows import Workflow
+    from src.services.worker_pool.cloudflare_containers_admission import (
+        LINUX_REVIEW_VERSION,
+        LinuxReview,
+        linux_review_digest,
+        reserve_container,
+    )
+    from src.services.worker_pool.cloudflare_containers_policy import container_account_usage
+
+    release, _, _ = make_release()
+    now = datetime.now(UTC)
+    account, primary, warmer = uuid4().hex, uuid4(), uuid4()
+    primary_pool = cloudflare_admission.PrimaryPool("external", scope=f"fixture-{primary}", ceiling=1)
+    worker_contender = race.startswith(("claim-", "prepare-"))
+    shared_tenant = race.endswith("tenant")
+    seeded_seat = race in {"prewarm", "claim-installation", "prepare-installation"}
+    installation_slots = 2 if seeded_seat else 9
+    tenants = [uuid4() for _ in range(3)]
+    execution_ids = [uuid4() for _ in range(3)]
+    workflow_ids = [uuid4() for _ in range(3)]
+    paths = [f"workflows/{workflow}.py" for workflow in workflow_ids]
+    placement_tenants = [tenants[0]] * 3 if shared_tenant else tenants
+    monkeypatch.setattr(cloudflare_admission, "installed_workers_release_digest", lambda: "fixture-release")
+    async with async_session_factory() as db:
+        installation_id = await create_installation(db, account)
+        installation = await db.get(CloudflareInstallation, installation_id)
+        assert installation is not None
+        original = installation.policy["limits"]
+        installation.policy = {
+            **installation.policy, "limits": {
+                **original, "monthly_limit_usd": "500",
+                "workers": {
+                    **original["workers"], "installation_slots": installation_slots,
+                    "slots_per_tenant": 1 if shared_tenant else 4, "queue_prewarm_per_tenant": 1,
+                },
+            },
+        }
+        installation.desired_state = "enabled"
+        installation.admitted_revision = 1
+        installation.containers_ready_revision = 1
+        installation.containers_release_digest = release.digest
+        installation.containers_policy = container_policy().model_copy(update={"enabled": True}).model_dump(mode="json")
+        db.add(seal_credential(
+            CredentialRef(installation_id, account, "scope_bearer", "containers", 1),
+            SecretStr("synthetic-scope-bearer"), actor=str(OPERATOR_ID), now=now,
+        ))
+        db.add_all(Organization(id=tenant, name=str(tenant), created_by="fixture") for tenant in tenants)
+        db.add(ExecutionWorker(
+            id=primary, form=primary_pool.form, capacity_scope=primary_pool.scope,
+            state="ready", heartbeat_at=now,
+            memory_budget_bytes=128, memory_reserved_bytes=128,
+        ))
+        await db.flush()
+        db.add(CloudflareCapacityScope(
+            installation_id=installation_id, scope="containers", endpoint="https://capacity.example.test",
+            deployment_revision=1, bearer_version=1,
+        ))
+        if seeded_seat or worker_contender:
+            db.add(ExecutionWorker(
+                id=warmer, form="external", state="ready", runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+                capacity_scope="workers", memory_limit_bytes=128 * 2**20, version="fixture-release",
+                remote_owner_lease_expires_at=now + timedelta(minutes=5),
+            ))
+            await db.flush()
+        if worker_contender:
+            db.add(seal_credential(
+                CredentialRef(installation_id, account, "scope_bearer", "workers", 1),
+                SecretStr("synthetic-workers-bearer"), actor=str(OPERATOR_ID), now=now,
+            ))
+            await db.flush()
+            db.add(CloudflareCapacityScope(
+                installation_id=installation_id, scope="workers", endpoint="https://workers.example.test",
+                deployment_revision=1, bearer_version=1,
+            ))
+            db.add(ManagedCloudflareScope(installation_id, "workers", 1).pin(warmer, 1))
+        for workflow_id, path, tenant in zip(workflow_ids, paths, placement_tenants, strict=True):
+            db.add(Workflow(
+                id=workflow_id, name=f"native-{workflow_id}", function_name="run", path=path,
+                organization_id=None if workflow_id == workflow_ids[0] else tenant,
+            ))
+            db.add(FileIndex(path=path, content_hash="a" * 64))
+        await db.flush()
+        for index, (workflow_id, path, tenant, run) in enumerate(zip(
+            workflow_ids, paths, placement_tenants, execution_ids, strict=True,
+        )):
+            declaration = LinuxReview(
+                findings=frozenset({"CF_NATIVE"}), release_digest=release.digest, installation_id=installation_id,
+                deployment_revision=1, consent_version=installation.consent_version,
+                worker_ingress_origin=installation.worker_ingress_origin, egress="worker-ingress-only-v1",
+                path=path, function_name="run", source_pins={path: "a" * 64}, wheels={},
+                memory_bytes=128, timeout_seconds=60, ingress_bytes=100, outbound_bytes=100,
+            ).model_dump(mode="json")
+            owner = None if index == 0 else tenant
+            db.add(CloudflareApproval(
+                revision=linux_review_digest(workflow_id, owner, declaration), workflow_id=workflow_id,
+                organization_id=owner, policy_version=LINUX_REVIEW_VERSION, accepted_by="fixture",
+                declaration=declaration,
+            ))
+            db.add(Execution(
+                id=run, workflow_id=workflow_id, organization_id=tenant, workflow_name="native",
+                executed_by_name="fixture", status=ExecutionStatus.PENDING,
+            ))
+            dispatch = stage_dispatch(
+                db, family=WAKE_WORKFLOW, subject_id=run, handler="workflow.execute", handler_version=1,
+                payload={"execution_id": str(run)}, message={}, memory_request_bytes=128,
+                queued_at=now - timedelta(seconds=10 - index),
+            )
+            if worker_contender and index == 1:
+                dispatch.cloudflare_revision = "b" * 64
+            if seeded_seat and index == 2:
+                prewarming = race == "prewarm"
+                if prewarming:
+                    dispatch.cloudflare_revision = "b" * 64
+                await db.flush()
+                db.add(CloudflareWorkflowSlot(
+                    installation_id=installation_id, tenant=str(tenant), worker_id=warmer, ordinal=0,
+                    execution_id=run, dispatch_id=dispatch.id, fence=uuid4(), sent=not prewarming,
+                    prewarm_fence=uuid4() if prewarming else None,
+                    released_at=now if prewarming else None,
+                    warm_until=now + timedelta(minutes=2) if prewarming else None,
+                ))
+        await db.commit()
+
+    contender_pids: list[int] = []
+    both_connected = asyncio.Event()
+
+    async def record_connection(db):
+        pid = await db.scalar(select(func.pg_backend_pid()))
+        assert pid is not None
+        contender_pids.append(pid)
+        if len(contender_pids) == 2:
+            both_connected.set()
+        return pid
+
+    @asynccontextmanager
+    async def observe_claim_connection():
+        async with async_session_factory() as db:
+            await record_connection(db)
+            yield db
+            await db.commit()
+
+    async def compete() -> bool:
+        if race.startswith("claim-"):
+            return await claim_next(warmer, fits_bytes=128 * 2**20, budget_bytes=128 * 2**20) is not None
+        if race.startswith("prepare-"):
+            async with async_session_factory() as db:
+                await record_connection(db)
+                await db.scalar(select(CloudflareInstallation.id).where(
+                    CloudflareInstallation.id == installation_id,
+                ).with_for_update(key_share=True))
+                admission = await read_workflow_slot_admission(db, installation_id, workers_policy)
+                preparations = await stage_queue_preparations(
+                    db, admission, warmer, placement_tenants[1], launcher_slots=1, occupied_launcher_slots=0,
+                )
+                await db.commit()
+                return bool(preparations)
+        return await reserve(contender=True)
+
+    async def reserve(*, contender: bool = False) -> bool:
+        async with async_session_factory() as db:
+            if contender:
+                await record_connection(db)
+            result = await reserve_container(
+                db, installation_id=installation_id, controller_id=uuid4(),
+                primary=primary_pool, release=release, verified_egress_origin="https://workers.example.test",
+            )
+            if result is not None and (race != "installation" or not contender):
+                assert result.container_tenant == str(placement_tenants[0])
+            await db.commit()
+            return result is not None
+
+    try:
+        async with async_session_factory() as db:
+            saved = await db.get(CloudflareInstallation, installation_id)
+            assert saved is not None
+            workers_policy = CloudflareWorkersPolicy.model_validate(saved.policy["limits"]["workers"])
+            assert await db.scalar(select(cloudflare_admission.workers_release_matches()).where(
+                CloudflareInstallation.id == installation_id,
+            )) is True
+            assert await db.scalar(select(cloudflare_estimated_usage()).where(
+                CloudflareInstallation.id == installation_id,
+            )) is not None
+            assert await reserve_container(
+                db, installation_id=installation_id, controller_id=uuid4(),
+                primary=primary_pool, release=release, verified_egress_origin=None,
+            ) is None
+        if race == "installation":
+            assert await reserve()
+        monkeypatch.setattr(claim_service, "get_db_context", observe_claim_connection)
+        async with async_session_factory() as blocker:
+            await blocker.scalar(select(CloudflareInstallation.id).where(
+                CloudflareInstallation.id == installation_id,
+            ).with_for_update(key_share=True))
+            # Both claimers connect before the blocker releases the row.
+            first = asyncio.create_task(reserve(contender=True))
+            contenders = [first, asyncio.create_task(compete())]
+            try:
+                async with asyncio.timeout(5), async_session_factory() as observer:
+                    blocker_pid = await blocker.scalar(select(func.pg_backend_pid()))
+                    await both_connected.wait()
+                    while True:
+                        chains = [await observer.scalar(select(func.pg_blocking_pids(pid))) for pid in contender_pids]
+                        if any(blocker_pid in chain for chain in chains) and all(
+                            set(chain) & {*contender_pids, blocker_pid} for chain in chains
+                        ):
+                            break
+                        assert not any(task.done() for task in contenders), "reservation bypassed the lock"
+                        await asyncio.sleep(0.01)
+            finally:
+                await blocker.rollback()
+                results = await asyncio.gather(*contenders)
+        assert len(set(contender_pids)) == 2
+        assert sum(results) == 1
+        async with async_session_factory() as db:
+            saved = await db.get(CloudflareInstallation, installation_id)
+            assert saved is not None
+            slots = await read_workflow_slot_admission(
+                db, installation_id, CloudflareWorkersPolicy.model_validate(saved.policy["limits"]["workers"]),
+            )
+            assert slots.occupied.total() == (1 if shared_tenant else 2)
+            charge = await db.scalar(select(cloudflare_estimated_usage()).where(
+                CloudflareInstallation.id == installation_id,
+            ))
+            assert charge is not None
+            if results[0] or not worker_contender:
+                assert charge > 0
+                month_end = usage_period(now)[1]
+                current, end_of_month = (await db.execute(select(
+                    container_account_usage(literal(now)),
+                    container_account_usage(literal(month_end - timedelta(microseconds=1))),
+                ).where(CloudflareInstallation.id == installation_id))).one()
+                assert current == end_of_month > 0
+    finally:
+        async with async_session_factory() as db:
+            worker_ids = select(CloudflareWorkerReservation.worker_id).where(
+                CloudflareWorkerReservation.installation_id == installation_id,
+            )
+            await db.execute(delete(ExecutionWorker).where(
+                ExecutionWorker.id.in_(worker_ids) | ExecutionWorker.id.in_([primary, warmer]),
+            ))
+            await db.execute(delete(WorkDispatch).where(WorkDispatch.subject_id.in_(execution_ids)))
+            await db.execute(delete(Execution).where(Execution.id.in_(execution_ids)))
+            await db.execute(delete(Workflow).where(Workflow.id.in_(workflow_ids)))
+            await db.execute(delete(FileIndex).where(FileIndex.path.in_(paths)))
+            await db.execute(delete(Organization).where(Organization.id.in_(tenants)))
+            await db.execute(delete(CloudflareCapacityScope).where(CloudflareCapacityScope.installation_id == installation_id))
+            await db.execute(update(CloudflareInstallation).where(CloudflareInstallation.id == installation_id).values(
+                desired_state="disconnected", admitted_revision=None,
+            ))
+            await retire_cloudflare_installation(db, installation_id=installation_id, expected_revision=1)
+            await db.commit()
 
 
 @pytest.mark.asyncio

@@ -317,6 +317,8 @@ class Launcher:
         # This existing helper owns requirements IO and exits before ready.
         module = "src.services.execution.requirements_setup_helper"
         if self.containers:
+            if os.environ.get("BIFROST_BAKED_WHEELS_ONLY") == "1" and self.requirements_content:
+                raise RuntimeError("The Container release cannot install runtime requirements")
             result = await self.helper(module, "--bootstrap", input_payload={"content": self.requirements_content})
         else:
             result = await self.helper(module)
@@ -576,6 +578,8 @@ class Launcher:
                     await asyncio.to_thread(self.template.start)
             elif action == "package_tool":
                 if self.containers:
+                    if os.environ.get("BIFROST_BAKED_WHEELS_ONLY") == "1":
+                        raise ValueError("The Container release cannot run package tools")
                     if payload.get("operation") == "requirements" and "content" not in payload:
                         raise ValueError("Requirements operation needs explicit content")
                     response = await self.helper("src.worker.remote.package_helper", "--bootstrap", input_payload=payload)
@@ -916,6 +920,10 @@ async def _run_launcher(
     control_headers = load_control_headers(control_url)
     identity = load_launcher_identity()
     containers = identity.form == "external" and "BIFROST_WORKER_CONTROL_SECRET" in os.environ
+    if os.environ.get("BIFROST_BAKED_WHEELS_ONLY") == "1" and (
+        not containers or not api_url.startswith("https://")
+    ):
+        raise RuntimeError("The Container release requires explicit incarnation credentials and HTTPS worker ingress")
     secret = _load_containers_control_secret() if containers else os.environ["BIFROST_SECRET_KEY"]
     launcher: Launcher | None = None
     candidate: Launcher | None = None
