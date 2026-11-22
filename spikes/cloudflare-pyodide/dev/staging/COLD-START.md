@@ -357,3 +357,20 @@ then reported an IPv4 ingress TLS failure before the signed canary. No
 managed cold-first or warm-reuse latency was measured in the retry.
 
 See the [sanitized hosted retry receipt](../../results/cloudflare-scaleout-hosted-retry.json).
+
+## Managed Cold Workflow With Admission Boot
+
+The 2026-11-22 UTC combined run from `58029df89` passed the Existing HTTPS
+ingress and signed canary. With the primary held at 24 whole MiB free,
+the first approved workflow ran on a fresh Workers incarnation at slot 0.
+The durable queue timestamp and entry log give **10.178 s queue to entry**.
+The persisted completion gives **10.261 s queue to completion**. The
+workflow succeeded and released its sent slot fence.
+
+The execution detail API omitted the queue timestamp, so the measurement
+harness stopped while formatting the result. The run used the
+admission-boot bundle with 90-second linger. It produced no warm-reuse
+measurement. The latency values above come from post-stop PostgreSQL and
+execution-log readback.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-observable-gates.json).

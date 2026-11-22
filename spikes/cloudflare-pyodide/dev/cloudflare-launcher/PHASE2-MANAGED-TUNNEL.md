@@ -125,3 +125,13 @@ not exercised. The Existing HTTPS tunnel was independently verified
 deleted with zero live sessions.
 
 See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-connection-reuse.json).
+
+## Observable-Gate Hosted Run
+
+The 2026-11-22 UTC run passed Existing HTTPS Enable and stopped at the
+cold latency measurement before Managed Tunnel Connect. The warp-routing
+echo, route-list grant and old-session eviction were not exercised.
+The separately owned Existing HTTPS tunnel was verified deleted with
+zero live sessions.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-observable-gates.json).

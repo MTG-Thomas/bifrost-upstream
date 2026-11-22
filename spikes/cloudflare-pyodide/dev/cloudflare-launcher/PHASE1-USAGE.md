@@ -598,3 +598,21 @@ Cloudflare Analytics returned empty samples across the owned scripts and
 namespaces, so a provider cost proxy and spend ratio are unavailable.
 
 See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-connection-reuse.json).
+
+## Hosted Meter Readback With One Cold Workflow
+
+The 2026-11-22 UTC run from `58029df89` verified the qualified bundle
+`370246c011982ac686a1a6e5aab0d4cf09bf2cd88f6d6059861759001d0f0063`
+and both packaged release images. The exact Bifrost meter was zero
+after Connect and $0.000206461 after the signed Enable canary.
+After the cold workflow and before retirement, the live meter read
+$0.012355721. After verified deletion, the settled estimate was
+$0.007125132 for the run. The ledger reads combine the cold workflow
+and stop-path retirement, so their settled costs cannot be split by item.
+The cumulative settled estimate was about $0.007517685.
+
+Cloudflare Analytics returned empty Workers and Durable Object samples
+for the exact owned resources in the observation window. The provider
+cost proxy and the spend ratio are unavailable.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-observable-gates.json).

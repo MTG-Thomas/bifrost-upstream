@@ -182,3 +182,15 @@ overlap, reserved-slot admission, tenth-run waiting and isolated
 cancellation remain unmeasured in this run.
 
 See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-connection-reuse.json).
+
+## Observable-Gate Hosted Run
+
+The 2026-11-22 UTC run verified the durable primary hold and completed
+one cold Workers workflow on slot 0. The sent fence was released after
+Success. The execution detail API returned null for the queue timestamp
+and the measurement harness stopped after recording the cold workflow.
+Provider and Global overlap, the ninth reserved slot, the queued tenth
+run and isolated cancellation were not reached. Teardown showed zero
+held workflow slots.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-observable-gates.json).

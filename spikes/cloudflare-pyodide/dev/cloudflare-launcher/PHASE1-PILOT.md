@@ -695,7 +695,7 @@ deadline. Apply the following ordering:
 
 | Gate | Required readback before advancing |
 | --- | --- |
-| Cold and warm | After the cold run becomes terminal, wait for its ACK and the released slot fence. Submit the repeat while that slot is still within linger. Verify the repeat's claim and loader identity after entry. |
+| Cold and warm | Use `executions.created_at` in PostgreSQL as the queue timestamp for latency. The execution detail response can leave `created_at` null. After the cold run becomes terminal, wait for its ACK and the released slot fence. Submit the repeat while that slot is still within linger. Verify the repeat's claim and loader identity after entry. |
 | Eight and ninth executions | Wait for both workflow entry and a sent, unreleased slot for all eight in the same occupancy window. Then offer the ninth. Wait for its entry and slot while confirming the original eight fences are still held. |
 | Tenth waits | After its dispatch row appears, record the managed controller identified by `launched_by` on the held launchers. Its timestamp in Redis `bifrost:worker-pool:controllers` advances at pass start. Observe the first advance after enqueue and use the next two advances of that controller to mark two completed passes. Check the scope logs for reconciliation errors during both passes. At each completion, read the same nine active fences and the tenth's unassigned dispatch together, and verify the tenth has no claim, slot, or entry. Record the observations without controller IDs. |
 | Isolated cancel | Wait for the target's terminal cancellation and exact slot fence release. In the same slot read verify the other eight fences remain held. Compare the released fence timestamp with the tenth execution's claim and entry evidence, then release the remaining hold fixtures. |
@@ -871,3 +871,32 @@ live sessions. The connector process, project containers, networks,
 volumes, trial image tags and both scratch directories were removed.
 
 See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-connection-reuse.json).
+
+## Combined Hosted Run With Observable Gates
+
+The 2026-11-22 UTC run from `58029df89` verified both pinned release
+images, then ran Existing HTTPS from the first release.
+
+| Runbook item | Result |
+| --- | --- |
+| 1. Release verification | Both deployment digests matched the pinned manifests and the loader accepted both images. All 12 Workers packaging tests passed. |
+| 2. Connect, preflight, and Enable | Passed. Connect returned HTTP 200 with admission closed. The Compose worker passed 100 route checks. The signed Enable receipt reported `remote_launcher` and opened admission. Both receipts recorded 92 reused HTTP requests per IPv4 address. |
+| 3. Cold and warm latency | The primary hold gate observed 24 whole MiB free. The cold workflow succeeded on slot 0 and released its sent fence. The measurement harness stopped when the execution detail API returned a null `created_at`. Durable readback measured 10.178 s from queue to entry and 10.261 s from queue to completion. No warm run was submitted. |
+| 4. Slot burst and cancel | Not reached. |
+| 5. Reconcile, active Scale In, and Disconnect | Reconcile and active Scale In were not reached. The stop path submitted Disconnect once and succeeded. |
+| 6–8. Managed Tunnel, rotation, and Upgrade | Not reached. |
+| 9. Spend and teardown | Bifrost settled $0.007125132 incremental and about $0.007517685 cumulative. Cloudflare Analytics returned empty attributed samples. The ratio is unavailable. Teardown passed. |
+
+Both ingress receipts recorded eight TCP starts, eight started and
+completed TLS handshakes, and 92 reused requests on each of two IPv4
+addresses. Each of two IPv6 addresses recorded one TCP attempt and zero
+TLS starts.
+
+Provider inventories contained zero owned scripts and Durable Object
+namespaces. All three exact script reads and all four namespace reads
+returned 404. Exact DNS and token readback reported absence, both
+authoritative DNS checks agreed, and the tunnel tombstone showed zero
+live sessions. The connector process, Compose stack, trial image tags,
+scratch directories and secret files were removed and checked for absence.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-observable-gates.json).

@@ -127,3 +127,19 @@ after Enable at the local primary hold check, before any hosted workflow
 submissions.
 
 See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-connection-reuse.json).
+
+## Reuse Observed in the Enable Success Receipt
+
+The 2026-11-22 UTC run from `58029df89` recorded the same per-address
+counters in the complete worker preflight and the signed Enable success
+receipt. Both ran in the Compose worker as `remote_launcher`.
+
+| Address family | Addresses | TCP starts per address | TLS starts and completions per address | Reused requests per address |
+| --- | ---: | ---: | ---: | ---: |
+| IPv4 | 2 | 8 | 8 and 8 | 92 |
+| IPv6 | 2 | 1 | 0 and 0 | 0 |
+
+Both checks directly observed HTTP connection reuse through the
+Cloudflare edge. Enable succeeded 18.7 seconds after its job started.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-observable-gates.json).

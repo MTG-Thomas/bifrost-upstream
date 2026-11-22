@@ -111,3 +111,13 @@ replacement release was staged on the running stack. Upgrade drain and
 terminal replay were not exercised. Both trial image tags were removed.
 
 See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-connection-reuse.json).
+
+## Observable-Gate Hosted Run
+
+The 2026-11-22 UTC run verified both release images and their distinct
+deployment digests. The first release passed Existing HTTPS Enable and
+completed one cold workflow. The run stopped at the latency measurement
+before the replacement image was staged on the running stack. Upgrade
+drain and terminal replay were not exercised. Both image tags were removed.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-observable-gates.json).
