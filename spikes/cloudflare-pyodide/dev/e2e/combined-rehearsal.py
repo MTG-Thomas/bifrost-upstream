@@ -73,6 +73,7 @@ class Rehearsal:
 
     def login(self):
         address = self.verify_isolation()
+        self.api_container = subprocess.check_output(self.compose + ["ps", "-q", "api"], text=True, timeout=8).strip()
         self.origin = f"http://{address}:8000"
         self.provider("/local/ingress", "POST", {"host": address})
         credentials = dict(line.split("=", 1) for line in Path(".env").read_text().splitlines())
@@ -265,10 +266,26 @@ if any(row.split()[1] == "00000000" for row in Path("/proc/net/route").read_text
         self.runs[case] = str(UUID(response["execution_id"]))
         return self.runs[case]
 
-    def primary_hold(self):
-        current = self.sql("""SELECT coalesce(json_agg(memory_budget_bytes/1048576 ORDER BY memory_budget_bytes DESC),'[]')
-            FROM execution_workers WHERE form='static' AND state='ready' AND execution_lane='normal'
-              AND supported_handlers @> '["workflow.execute"]'::jsonb""")
+    def primary_hold(self, *, worker_hostname=None):
+        def primaries():
+            return self.sql("""SELECT coalesce(json_agg(json_build_object(
+                'current', hostname = '""" + (worker_hostname or "") + """',
+                'budget', memory_budget_bytes/1048576, 'reserved', memory_reserved_bytes/1048576,
+                'pressured', memory_pressured, 'lease_live', remote_owner_lease_expires_at > now()
+                ) ORDER BY memory_budget_bytes DESC), '[]')
+                FROM execution_workers WHERE form='static' AND state='ready' AND execution_lane='normal'
+                  AND supported_handlers @> '["workflow.execute"]'::jsonb""")
+
+        def replacement_ready():
+            rows = primaries()
+            if len(rows) == 1:
+                row = rows[0]
+                if row["current"] and row["lease_live"] and row["reserved"] == 0 and not row["pressured"]:
+                    return rows
+            return None
+
+        rows = wait("replacement primary is ready and idle", replacement_ready, 30) if worker_hostname else primaries()
+        current = [row["budget"] for row in rows]
         assert current and min(current) > 160
         for index, size in enumerate(current):
             name = f"primary_hold_{index}"
@@ -286,7 +303,17 @@ async def {name}():
                 "workflow_id": self.workflows[name], "org_id": "global", "sync": False,
             })["execution_id"]
             self.holds.append(location)
-            wait("local hold running", lambda: self.send(location, method="GET")["status"] == "Running", 14)
+            try:
+                wait("local hold running", lambda: self.send(location, method="GET")["status"] == "Running", 14)
+            except RuntimeError:
+                execution = str(UUID(location.rsplit("/", 1)[1]))
+                pending = self.sql(f"""SELECT coalesce((SELECT json_build_object(
+                    'requested_mib', memory_request_bytes/1048576, 'lane', execution_lane,
+                    'assigned', assigned_worker_id IS NOT NULL
+                    ) FROM work_dispatches WHERE subject_id='{execution}'), 'null')""")
+                evidence("primary_hold_failure", {"requested_mib": size - 24, "pending_dispatch": pending,
+                                                 "ready_primaries": primaries()})
+                raise
         subprocess.run([sys.executable, str(HERE / "wait-primary-hold.py"), str(len(current)), "--", *self.compose[2:]],
                        check=True)
 
@@ -553,6 +580,7 @@ async def {name}():
                 return False
 
         wait("replacement API ready", http_ready, 30)
+        self.api_container = successor
         subprocess.run(self.compose + ["up", "-d", "--no-deps", "--pull", "never", "worker"],
                        check=True, env=env, timeout=40, stdout=subprocess.DEVNULL)
         assert self.verify_isolation(successor=successor) == address
@@ -639,7 +667,9 @@ async def {name}():
             worker_info, = json.loads(subprocess.check_output(["docker", "inspect", worker], timeout=8))
             assert "BIFROST_API_URL=" + self.origin in worker_info["Config"]["Env"]
             assert self.verify_isolation(successor=successor) == address
-            self.primary_hold()
+            worker_hostname = worker_info["Config"]["Hostname"]
+            assert re.fullmatch("[a-f0-9]{12,64}", worker_hostname)
+            self.primary_hold(worker_hostname=worker_hostname)
             self.submit("replacement", "third")
             new = self.settle("replacement")
             assert new["revision"] == new_revision
@@ -675,7 +705,7 @@ async def {name}():
         rows = analytics["data"]["viewer"]["accounts"][0]["workersInvocationsAdaptive"]
         requests = sum(row["sum"]["requests"] for row in rows)
         cpu_us = sum(row["sum"]["cpuTimeUs"] for row in rows)
-        rates = json.loads(subprocess.check_output(self.compose + ["exec", "-T", "api", "python", "-c", """
+        rates = json.loads(subprocess.check_output(["docker", "exec", self.api_container, "python", "-c", """
 import json
 from src.services.worker_pool.cloudflare_spend import _WORKER_CPU_MS_USD, _WORKER_REQUEST_USD
 print(json.dumps([str(_WORKER_REQUEST_USD),str(_WORKER_CPU_MS_USD)]))
