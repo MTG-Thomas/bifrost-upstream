@@ -175,9 +175,5 @@ async function runLauncherWorkflow(getHost, queueWarm,
   }
   const success = output.status === 'Success';
   const {error_message, ...result} = output;
-  const timings = {};
-  if (Number.isSafeInteger(hosted.timings?.engine_ready_at)) timings.engine_ready_at = hosted.timings.engine_ready_at;
-  if (Number.isSafeInteger(hosted.timings?.child?.entry_at)) timings.entry_at = hosted.timings.child.entry_at;
-  return {attempt_state: 'completed', result: {...result, success, ...(success ? {} : {error: error_message})},
-    ...(Object.keys(timings).length ? {timings} : {})};
+  return {attempt_state: 'completed', result: {...result, success, ...(success ? {} : {error: error_message})}};
 }

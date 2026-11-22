@@ -685,12 +685,11 @@ export class LauncherCore {
     await this.#journalTerminal(index, route, outcome);
   }
 
-  async #journalTerminal(index, route, {attempt_state, result, invocations, timings}) {
+  async #journalTerminal(index, route, {attempt_state, result, invocations}) {
     const event = route.kind === 'workflow' ? 'result' : route.kind === 'agent_run' ? 'cloudflare_agent_result' : 'summary_result';
     if (this.meter?.log()) console.info('launcher_workload_terminal', route.kind, attempt_state);
     const terminal = {event, route_id: route.route_id, runtime_handle: route.runtime_handle,
       _event_id: this.newId(), attempt_state, result};
-    if (this.tenantSlots && route.kind === 'workflow' && timings) terminal.timings = timings;
     if (this.meter) terminal.usage = this.meter.snapshot();
     await this.#saveSlot(index, {route, state: 'terminal', terminal, ...(invocations ? {invocations} : {})});
     this.#emitCurrent(terminal);
