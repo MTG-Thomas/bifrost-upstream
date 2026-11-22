@@ -71,6 +71,13 @@ async def test_guest_stop_waits_for_reaping_after_a_forced_signal(guest_pipes, m
     sent.assert_called_once_with(signal.SIGKILL)
 
 
+@pytest.mark.asyncio
+async def test_guest_stop_reports_unconfirmed_process_evidence(guest_pipes, monkeypatch) -> None:
+    guest, _ = guest_pipes
+    monkeypatch.setattr(guest, "_signal_guest", Mock(side_effect=PermissionError("process evidence unavailable")))
+    assert not await guest.stop()
+
+
 def test_supervisor_refuses_capability_changes_with_multiple_threads(monkeypatch) -> None:
     jobs = Mock()
     jobs.iterdir.return_value = iter([Path("1"), Path("2")])

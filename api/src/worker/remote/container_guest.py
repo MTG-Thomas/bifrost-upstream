@@ -145,21 +145,29 @@ class ContainerGuest:
     async def stop(self, grace: float = 0) -> bool:
         """Return true only after the workflow process and all guest descendants are gone."""
         async with self._stop_lock:
-            if grace:
-                self._signal_guest(signal.SIGTERM)
-                deadline = asyncio.get_running_loop().time() + grace
-                while asyncio.get_running_loop().time() < deadline:
-                    if self._reap_guest():
-                        return True
-                    await asyncio.sleep(0.05)
-            deadline = asyncio.get_running_loop().time() + FORCED_STOP_SECONDS
-            while True:
+            try:
+                return await self._stop_and_reap(grace)
+            except OSError:
+                # Unavailable process evidence must stop the namespace and
+                # leave settlement to the provider.
+                return False
+
+    async def _stop_and_reap(self, grace: float) -> bool:
+        if grace:
+            self._signal_guest(signal.SIGTERM)
+            deadline = asyncio.get_running_loop().time() + grace
+            while asyncio.get_running_loop().time() < deadline:
                 if self._reap_guest():
                     return True
-                self._signal_guest(signal.SIGKILL)
-                if asyncio.get_running_loop().time() >= deadline:
-                    return False
                 await asyncio.sleep(0.05)
+        deadline = asyncio.get_running_loop().time() + FORCED_STOP_SECONDS
+        while True:
+            if self._reap_guest():
+                return True
+            self._signal_guest(signal.SIGKILL)
+            if asyncio.get_running_loop().time() >= deadline:
+                return False
+            await asyncio.sleep(0.05)
 
     def close(self) -> None:
         for pipe in (self.ready, self.work, self.result):
