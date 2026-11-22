@@ -63,3 +63,24 @@ test("unconfirmed instances retain the tenant seat and the last fleet seat is ex
     assert.deepEqual(results.map(({ status }) => status).sort(), ["full", "reserved"]);
     db.close();
 });
+
+test("a reset with a pending start cannot issue another start or close its fence", () => {
+    const { db, registry, pin } = fixture(1);
+    const request = pin();
+    const instance = "b".repeat(64);
+    const other = "c".repeat(64);
+    assert.equal(registry().reserve(request).status, "reserved");
+    assert.equal(registry().authorizeStart(request.uid, instance, 100, 101).status, "authorized");
+    assert.equal(registry().authorizeStart(request.uid, instance, 101, 200).status, "pending");
+    assert.equal(registry().authorizeStart(request.uid, other, 101, 200).status, "conflict");
+    assert.equal(registry().closeStart(request.uid, instance, 105).status, "pending");
+    assert.equal(registry().observeStart(request.uid, instance, 99).status, "conflict");
+    assert.equal(registry().observeStart(request.uid, instance, 104).status, "observed");
+    assert.equal(registry().observeStart(request.uid, instance, 105).status, "conflict");
+    const closed = { status: "closed", instance, authorizedAt: 100, closedAt: 106 };
+    assert.deepEqual(registry().closeStart(request.uid, instance, 106), closed);
+    assert.deepEqual(registry().closeStart(request.uid, instance, 180), closed);
+    assert.equal(registry().authorizeStart(request.uid, instance, 180, 200).status, "closed");
+    assert.equal(registry().reserve(pin(randomUUID())).status, "full");
+    db.close();
+});

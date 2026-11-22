@@ -1,5 +1,5 @@
-// SQLite-backed reservations. The owning launcher exchanges this durable
-// reservation for its own start intent in the next protocol phase.
+// SQLite-backed scope seats and start fences. The controller records a start
+// before calling the scheduler. A reset never grants that effect a second time.
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 
@@ -19,6 +19,10 @@ export class ScopeRegistry {
         this.sql.exec(`CREATE TABLE IF NOT EXISTS reservations (
             worker TEXT PRIMARY KEY, uid TEXT NOT NULL UNIQUE, tenant TEXT NOT NULL,
             binding TEXT NOT NULL, state TEXT NOT NULL
+        )`);
+        this.sql.exec(`CREATE TABLE IF NOT EXISTS start_fences (
+            uid TEXT PRIMARY KEY REFERENCES reservations(uid), instance TEXT NOT NULL,
+            authorized_at INTEGER NOT NULL, observed_at INTEGER, closed_at INTEGER
         )`);
     }
 
@@ -52,6 +56,56 @@ export class ScopeRegistry {
                 pin.worker, pin.uid, pin.tenant, binding,
             );
             return { status: "reserved" };
+        });
+    }
+
+    authorizeStart(uid, instance, now, deadline) {
+        if (!UUID.test(uid) || !/^[a-f0-9]{64}$/.test(instance)
+            || !Number.isSafeInteger(now) || !Number.isSafeInteger(deadline) || now < 0) {
+            return { status: "invalid" };
+        }
+        return this.storage.transactionSync(() => {
+            const slot = this.sql.exec("SELECT state FROM reservations WHERE uid = ?", uid).toArray()[0];
+            if (!slot || slot.state === "retired") return { status: "closed" };
+            const start = this.sql.exec("SELECT * FROM start_fences WHERE uid = ?", uid).toArray()[0];
+            if (start) {
+                if (start.instance !== instance) return { status: "conflict" };
+                if (start.closed_at !== null) return { status: "closed" };
+                return { status: start.observed_at === null ? "pending" : "observed" };
+            }
+            if (now >= deadline) return { status: "closed" };
+            this.sql.exec(
+                "INSERT INTO start_fences (uid, instance, authorized_at) VALUES (?, ?, ?)", uid, instance, now,
+            );
+            return { status: "authorized" };
+        });
+    }
+
+    // Caller has observed the named physical placement independently. A
+    // timeout or missing placement leaves the effect pending.
+    observeStart(uid, instance, startedAt) {
+        return this.storage.transactionSync(() => {
+            const start = this.sql.exec("SELECT * FROM start_fences WHERE uid = ?", uid).toArray()[0];
+            if (!start || start.instance !== instance || !Number.isSafeInteger(startedAt)
+                || startedAt < start.authorized_at) return { status: "conflict" };
+            if (start.observed_at !== null) {
+                return { status: start.observed_at === startedAt ? "observed" : "conflict" };
+            }
+            this.sql.exec("UPDATE start_fences SET observed_at = ? WHERE uid = ?", startedAt, uid);
+            return { status: "observed" };
+        });
+    }
+
+    closeStart(uid, instance, now) {
+        return this.storage.transactionSync(() => {
+            const start = this.sql.exec("SELECT * FROM start_fences WHERE uid = ?", uid).toArray()[0];
+            if (!start || start.instance !== instance || !Number.isSafeInteger(now)) return { status: "conflict" };
+            if (start.observed_at === null) return { status: "pending" };
+            if (now < start.observed_at) return { status: "conflict" };
+            if (start.closed_at === null) {
+                this.sql.exec("UPDATE start_fences SET closed_at = ? WHERE uid = ?", now, uid);
+            }
+            return { status: "closed", instance, authorizedAt: start.authorized_at, closedAt: start.closed_at ?? now };
         });
     }
 }

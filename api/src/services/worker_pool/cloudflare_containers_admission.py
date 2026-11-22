@@ -257,6 +257,7 @@ async def reserve_container(
             ExecutionWorker, ExecutionWorker.id == pin.worker_id,
         ).where(
             ExecutionWorker.capacity_resource_deleted_at.is_(None), ExecutionWorker.state.not_in(LIVE_STATES),
+            pin.container_stopped_at.is_(None),
         )) or 0) >= policy.shared_managed_worker_cap
     ):
         return None

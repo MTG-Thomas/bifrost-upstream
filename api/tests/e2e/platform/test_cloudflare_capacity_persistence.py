@@ -1980,10 +1980,10 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
         payload={"execution_id": str(run_id)}, message={}, memory_request_bytes=128, queued_at=now - timedelta(seconds=10),
     )
     await db.flush()
-    admission = dict(
-        installation_id=installation.id, controller_id=uuid4(), primary=primary,
-        release=release, verified_egress=await verified_egress(installation.id, 1, release.digest, origin),
-    )
+    admission = {
+        "installation_id": installation.id, "controller_id": uuid4(), "primary": primary,
+        "release": release, "verified_egress": await verified_egress(installation.id, 1, release.digest, origin),
+    }
     # Prove the baseline is admissible before changing only the evidence under test.
     async with db.begin_nested() as nested:
         assert await reserve_container(db, **admission) is not None
@@ -2011,25 +2011,88 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
 
 @pytest.mark.asyncio
 async def test_capacity_reports_overdue_unsettled_containers(db_session, installation) -> None:
+    from src.services.worker_pool.cloudflare_containers_rest import ContainersRest
+    from src.services.worker_pool.cloudflare_containers_settlement import (
+        ClosedContainerStart,
+        settle_container_stop,
+    )
+    from src.services.worker_pool.cloudflare_provisioning import (
+        ResourceIntent,
+        ResourceObservation,
+        ResourceTarget,
+    )
+
     now = datetime.now(UTC)
     workers = [uuid4() for _ in range(3)]
-    db_session.add_all(ExecutionWorker(id=worker, form="external", state="lost") for worker in workers)
+    uid, actor, app_id, namespace = str(uuid4()), "b" * 64, "c" * 32, "d" * 32
+    name = f"bifrost-{installation.id.hex}-r1"
+    image = f"registry.cloudflare.com/{installation.account_id}/{name}@sha256:{'a' * 64}"
+    release, effect = "a" * 64, uuid4()
+    target = ResourceTarget(installation.id, installation.account_id, "containers", "container_application", name)
+    app = ResourceObservation(ResourceIntent(target, effect, 1, release), app_id, namespace)
+    db_session.add(CloudflareOwnedResource(
+        id=uuid4(), installation_id=installation.id, account_id=installation.account_id, scope="containers",
+        kind=target.kind, target_name=name, desired_revision=1, artifact_digest=release, effect_id=effect,
+        provider_id=app_id, provider_version=namespace, state="present", observed_at=now,
+    ))
+    db_session.add_all(ExecutionWorker(
+        id=worker, form="external", state="lost", capacity_resource_uid=uid if i == 0 else str(uuid4()),
+        capacity_scope="containers",
+    ) for i, worker in enumerate(workers))
     await db_session.flush()
     for index, worker in enumerate(workers):
         reserved_at = now - timedelta(hours=1) if index < 2 else now
         db_session.add(CloudflareWorkerReservation(
             worker_id=worker, installation_id=installation.id, scope="containers",
             deployment_revision=1, control_root_version=1, container_tenant="platform",
-            container_release="a" * 64, container_reserved_at=reserved_at,
-            container_envelope={"seconds": 600, "fixed_usd": "0.01", "second_usd": "0.001"},
+            container_release=release, container_reserved_at=reserved_at,
+            container_envelope={
+                "seconds": 600, "fixed_usd": "0.01", "second_usd": "0.001", "control_usd": "0.001",
+                "outbound_gb_usd": "0.05", "provider_instance_id": actor, "prepared_image": image,
+            },
             container_stopped_at=reserved_at + timedelta(seconds=1) if index == 1 else None,
         ))
     await db_session.flush()
     status = await get_cloudflare_capacity_status(db_session, _platform_operator())
     assert status.installation is not None
-    assert status.installation.owned_resources_pending == 1
+    assert status.installation.owned_resources_pending == 2
     assert status.installation.spend is not None
     assert any("Unresolved cleanup for 1 Cloudflare Container" in note for note in status.installation.spend.coverage)
+    started_at = now - timedelta(minutes=59)
+    stopped_at = started_at + timedelta(seconds=2)
+    phase = "provisioning"
+
+    def management(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        if request.url.path.endswith(f"/instances/{actor}"):
+            result = {
+                "id": actor, "application_id": app_id, "image": image, "started_at": started_at.isoformat(),
+                "status": {"state": phase, "updated_at": stopped_at.isoformat()},
+            }
+        else:
+            assert request.url.path.endswith(f"/applications/{app_id}")
+            result = {
+                "id": app_id, "account_id": installation.account_id, "name": name,
+                "scheduling_policy": "durable_object", "durable_objects": {"namespace_id": namespace},
+            }
+        return httpx.Response(200, json={"success": True, "result": result})
+
+    closure = ClosedContainerStart(app, workers[0], uid, actor, image, started_at, 200)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(management)) as http:
+        adapter = ContainersRest(http)
+        token = SecretStr("synthetic-management-token")
+        with pytest.raises(ObservationPending):
+            await settle_container_stop(db_session, adapter, token=token, closure=closure)
+        phase = "inactive"
+        await settle_container_stop(db_session, adapter, token=token, closure=closure)
+        await settle_container_stop(db_session, adapter, token=token, closure=closure)
+    settled = await db_session.get(CloudflareWorkerReservation, workers[0])
+    assert settled is not None and settled.container_envelope is not None
+    assert settled.container_stopped_at == stopped_at
+    assert settled.container_envelope["measured_outbound_bytes"] == 200
+    assert Decimal(settled.container_envelope["settled_fixed_usd"]) == Decimal("0.00100001")
+    status = await get_cloudflare_capacity_status(db_session, _platform_operator())
+    assert status.installation is not None and status.installation.owned_resources_pending == 1
 
 
 @pytest.mark.asyncio

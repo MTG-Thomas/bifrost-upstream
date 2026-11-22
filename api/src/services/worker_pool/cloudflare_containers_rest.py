@@ -4,6 +4,8 @@ import base64
 import json
 import os
 import re
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -26,6 +28,12 @@ from src.services.worker_pool.cloudflare_workers_rest import WorkersRestCleanup
 REGISTRY = "registry.cloudflare.com"
 _HEX32 = re.compile(r"[a-f0-9]{32}")
 _APP_ID = re.compile(r"[a-f0-9]{32}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}")
+
+
+@dataclass(frozen=True, slots=True)
+class InstanceStop:
+    started_at: datetime
+    stopped_at: datetime
 
 
 def _name(intent: ResourceIntent, kind: str) -> str:
@@ -118,6 +126,46 @@ class ContainersRest(WorkersRestCleanup):
         if self._application(current["result"], account, name, namespace) != app_id:
             raise OwnershipConflict("Container application ID changed")
         return ResourceObservation(intent, app_id, namespace)
+
+    async def observe_instance_stop(
+        self, token: SecretStr, application: ResourceObservation, *, instance_id: str,
+        image: str, not_before: datetime,
+    ) -> InstanceStop:
+        """Read the exact application and actor without waking the Durable Object."""
+        name = _name(application.intent, "container_application")
+        account = application.intent.target.account_id
+        if (
+            not _APP_ID.fullmatch(application.provider_id) or not _HEX32.fullmatch(application.provider_version)
+            or not re.fullmatch(r"[a-f0-9]{64}", instance_id)
+        ):
+            raise OwnershipConflict("Invalid Container instance observation target")
+        path = f"containers/applications/{application.provider_id}"
+        app = await self._request(token, account, "GET", path)
+        assert app is not None
+        if self._application(app["result"], account, name, application.provider_version) != application.provider_id:
+            raise OwnershipConflict("Container application ID changed")
+        observed = await self._request(token, account, "GET", f"{path}/instances/{instance_id}", allow_missing=True)
+        row = observed["result"] if observed is not None else None
+        if row is None:
+            raise ObservationPending("Missing instance readback does not witness a stopped placement")
+        if (
+            not isinstance(row, dict) or row.get("id") != instance_id
+            or row.get("application_id") != application.provider_id
+            or row.get("image") != image
+        ):
+            raise OwnershipConflict("Container placement differs from its journal")
+        try:
+            status = row["status"]
+            if status["state"] not in ("stopped", "inactive"):
+                raise ValueError
+            started_at = datetime.fromisoformat(row["started_at"])
+            stopped_at = datetime.fromisoformat(status["updated_at"])
+            if not not_before <= started_at <= stopped_at <= datetime.now(UTC):
+                raise ValueError
+        except (KeyError, TypeError, ValueError):
+            raise ObservationPending("Provider has not witnessed a bounded stop for this placement") from None
+        return InstanceStop(started_at.astimezone(UTC), stopped_at.astimezone(UTC))
+
 
 class ContainerRegistry:
     """Use the qualified crane and cf paths with isolated credential files."""
