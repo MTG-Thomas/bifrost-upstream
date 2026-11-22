@@ -172,7 +172,7 @@ def solution_placement_query():
 
 async def approval_placement(db: AsyncSession, workflow: Workflow) -> SolutionApprovalScope | None:
     solution = None
-    if workflow.solution_id is not None:
+    if workflow.is_active and workflow.solution_id is not None:
         solution = await db.scalar(solution_placement_query().where(Solution.id == workflow.solution_id))
     return resolve_approval_placement(workflow, solution)
 

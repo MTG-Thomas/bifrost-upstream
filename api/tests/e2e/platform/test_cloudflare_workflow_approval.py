@@ -277,7 +277,8 @@ async def test_accept_rejects_a_republished_solution_generation(async_engine, e2
         solution_id = solution.id
         storage = SolutionStorage(solution_id)
         pin = await storage.write(path, f"def {workflow.function_name}(): return 1\n".encode())
-        endpoint = f"/api/workflows/{workflow.id}/cloudflare-approval"
+        workflow_id = workflow.id
+        endpoint = f"/api/workflows/{workflow_id}/cloudflare-approval"
         options = {"subrequest_allowance": 5, "cpu_budget_ms": 100}
         try:
             world.session.add(SolutionFileIndex(solution_id=solution.id, path=path, content_hash=pin))
@@ -302,6 +303,9 @@ async def test_accept_rejects_a_republished_solution_generation(async_engine, e2
             await world.session.rollback()
             await storage.delete(path)
             await world.session.execute(delete(SolutionFileIndex).where(SolutionFileIndex.solution_id == solution_id))
+            await world.session.execute(delete(AuditLog).where(
+                AuditLog.resource_id == workflow_id, AuditLog.action == "workflow.cloudflare_approval.propose",
+            ))
             await world.session.commit()
 
 
