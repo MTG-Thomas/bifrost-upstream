@@ -245,3 +245,16 @@ incarnations. Upgrade kept its original claim, reconnected and
 acknowledged the single dispatch. Disconnect verified both installations'
 resource absence. CT128 evidence is in the `verification` directory
 under `/opt/bifrost-tests/requal-1d48409c46996ae73003867a62d3851e1cf75d6e`.
+
+### Hosted readback at `e7c59788c`
+
+Preset B passed Existing HTTPS Enable, cold and warm latency, the
+nine-slot burst, isolated cancellation, Reconcile and active Scale In.
+Its peak observed increment was $2.02 versus the approved $3.60 target
+and $4.50 abort. Both installations were retired, settling the trial at
+$0.061801362912 incremental against the $0.15 target. Managed Enable
+stopped on the tunnel ingress ownership check. Rotation and Upgrade
+were unreached. The Workers-only Analytics proxy was $0.00006021396 and
+the Bifrost-to-proxy ratio was 1,026.36.
+
+See the [sanitized hosted receipt](cloudflare-scaleout-preset-b-hosted.json).
