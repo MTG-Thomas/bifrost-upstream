@@ -11,6 +11,8 @@ from typing import Any
 MAX_RESULT_BYTES = 8 * 1024 * 1024
 _HEADER = Struct("!I")
 _READ_BYTES = 64 * 1024
+_SUCCESS_STATES = ("Success", "CompletedWithErrors")
+_FAILURE_STATES = ("Failed", "Timeout", "Cancelled")
 
 
 class InvalidContainerResult(ValueError):
@@ -84,9 +86,13 @@ class ContainerResultReader:
         )):
             raise InvalidContainerResult("Container result has invalid execution metadata")
         if any(result.get(key) is not None and not isinstance(result[key], str) for key in (
-            "status", "error", "error_type",
+            "error", "error_type",
         )):
-            raise InvalidContainerResult("Container result has an invalid status or error")
+            raise InvalidContainerResult("Container result has an invalid error")
+        status = result.get("status")
+        allowed = _SUCCESS_STATES if result["success"] else _FAILURE_STATES
+        if status is not None and status not in allowed:
+            raise InvalidContainerResult("Container result is not a matching terminal status")
         # Process metrics used by the supervisor are measured locally.
         result.pop("metrics", None)
         return result

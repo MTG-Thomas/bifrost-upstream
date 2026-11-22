@@ -44,6 +44,15 @@ def test_guest_pipe_rejects_invalid_frames(data: bytes) -> None:
             reader.get_nowait()
 
 
+def test_guest_cannot_report_a_nonterminal_state_as_its_result() -> None:
+    received, sent = Pipe(duplex=False)
+    with received, sent:
+        reader = ContainerResultReader(received)
+        ContainerResultWriter(sent).send({"success": True, "duration_ms": 1, "status": "Running"})
+        with pytest.raises(InvalidContainerResult, match="terminal status"):
+            reader.get_nowait()
+
+
 def test_guest_writer_and_reader_preserve_json_values() -> None:
     received, sent = Pipe(duplex=False)
     with received, sent:
