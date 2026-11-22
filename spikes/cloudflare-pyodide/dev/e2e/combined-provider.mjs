@@ -13,10 +13,15 @@ const require = createRequire(new URL('../tenant-workers/package.json', import.m
 const {Miniflare} = createRequire(require.resolve('wrangler'))('miniflare');
 const {WebSocket, WebSocketServer} = require('ws');
 const config = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+const relayOnly = process.argv[3] === '--hosted-ingress-relay';
+if (relayOnly) {
+  assert.match(config.relayToken ?? '', /^[0-9a-f]{64}$/);
+  assert.ok(Number.isInteger(config.relayPort) && config.relayPort > 1023 && config.relayPort < 65536);
+}
 const initialTunnelVersion = config.initialTunnelConfig === 'default_404' ? 1 : 0;
 const account = 'a'.repeat(32);
 const zone = 'b'.repeat(32);
-const management = 'local-rehearsal-management-token';
+const management = relayOnly ? config.relayToken : 'local-rehearsal-management-token';
 const workers = new Map();
 const runtimes = new Map();
 const sockets = new Map();
@@ -104,12 +109,12 @@ function serveIngress(req, res) {
   const upstream = request({
     host: ingressHost, port: 8001, path: incoming.pathname + incoming.search,
     method: req.method, headers: {...relayHeaders(req.headers),
-      host: req.headers['x-rehearsal-host'] ?? req.headers.host},
+      host: relayOnly ? req.headers.host : req.headers['x-rehearsal-host'] ?? req.headers.host},
   }, (response) => {
     const call = sdkCalls.get(req.headers.authorization?.slice(7));
     if (call && incoming.pathname === '/api/sdk/tables/list' && response.statusCode === 200) {
       entered.add(call.execution);
-      if (++call.count === 2) {
+      if (++call.count === 2 && !relayOnly) {
         heldQueries.set(call.execution, () => {
           if (res.destroyed) return response.destroy();
           res.writeHead(response.statusCode, relayHeaders(response.headers));
@@ -129,7 +134,7 @@ function serveIngress(req, res) {
 
 function upgrade(req, socket, head) {
   if (!ingressHost || req.url !== '/api/worker-control') return socket.destroy();
-  const headers = {Host: req.headers['x-rehearsal-host'] ?? req.headers.host};
+  const headers = {Host: relayOnly ? req.headers.host : req.headers['x-rehearsal-host'] ?? req.headers.host};
   if (req.headers['x-bifrost-ingress-probe']) headers['x-bifrost-ingress-probe'] = req.headers['x-bifrost-ingress-probe'];
   const upstream = new WebSocket(`ws://${ingressHost}:8001${req.url}`, {headers});
   upstream.on('upgrade', (reply) => { req.ingressWitness = reply.headers; });
@@ -187,8 +192,9 @@ function upgrade(req, socket, head) {
 }
 
 const relay = createServer(serveIngress);
-const edge = tlsServer({key: readFileSync(config.key), cert: readFileSync(config.cert)}, serveIngress);
-for (const server of [relay, edge]) server.on('upgrade', upgrade);
+const edge = relayOnly ? null : tlsServer({key: readFileSync(config.key), cert: readFileSync(config.cert)}, serveIngress);
+relay.on('upgrade', upgrade);
+edge?.on('upgrade', upgrade);
 
 async function provider(req, res) {
   const url = new URL(req.url, 'http://local.test');
@@ -203,7 +209,7 @@ async function provider(req, res) {
   const json = async () => JSON.parse(await buffer(req));
 
   const capacity = path.match(/^\/edge-capacity\/([a-z0-9-]+)(\/.*)$/);
-  if (capacity) {
+  if (!relayOnly && capacity) {
     const item = workers.get(capacity[1]);
     if (!item?.endpoint.enabled) return missing();
     const {worker} = await runtime(item);
@@ -224,6 +230,7 @@ async function provider(req, res) {
     ingressHost = host;
     return ok({});
   }
+  if (relayOnly) return missing();
   if (path === '/local/interrupt' && method === 'POST') {
     const {worker} = await json();
     assert.ok(sockets.get(worker));
@@ -382,9 +389,9 @@ const api = createServer((req, res) => provider(req, res).catch((error) => {
   res.writeHead(500).end();
 }));
 await Promise.all([
-  new Promise((resolve) => relay.listen(0, '127.0.0.1', resolve)),
-  new Promise((resolve) => edge.listen(config.edgePort, config.address, resolve)),
-  new Promise((resolve) => api.listen(config.providerPort, config.address, resolve)),
+  new Promise((resolve) => relay.listen(relayOnly ? config.relayPort : 0, '127.0.0.1', resolve)),
+  edge && new Promise((resolve) => edge.listen(config.edgePort, config.address, resolve)),
+  new Promise((resolve) => api.listen(config.providerPort, relayOnly ? '127.0.0.1' : config.address, resolve)),
 ]);
 writeFileSync(config.ready, 'ready\n');
 

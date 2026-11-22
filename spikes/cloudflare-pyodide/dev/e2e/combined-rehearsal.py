@@ -4,6 +4,7 @@ import argparse
 import ipaddress
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -45,6 +46,10 @@ def wait(label, condition, seconds=30):
 def http(url, method, payload=None, token=None, *, content_type="application/json", timeout=12):
     if not ipaddress.ip_address(urlsplit(url).hostname).is_private:
         raise ValueError("The rehearsal client requires a private IP endpoint")
+    return request_json(url, method, payload, token, content_type=content_type, timeout=timeout)
+
+
+def request_json(url, method, payload=None, token=None, *, content_type="application/json", timeout=12):
     headers = {"Content-Type": content_type}
     if token:
         headers["Authorization"] = "Bearer " + token
@@ -63,6 +68,10 @@ class Rehearsal:
         self.compose = ["docker", "compose", "-p", self.cfg["project"],
                         "-f", "rehearsal-compose.yml", "-f", "rehearsal-overlay.yml"]
         self.boundary = f"http://{self.cfg['address']}:{self.cfg['providerPort']}"
+        self.account = "a" * 32
+        self.login()
+
+    def login(self):
         address = self.verify_isolation()
         self.origin = f"http://{address}:8000"
         self.provider("/local/ingress", "POST", {"host": address})
@@ -169,8 +178,8 @@ if any(row.split()[1] == "00000000" for row in Path("/proc/net/route").read_text
     def connect(self, mode):
         if self.origin != f"http://{self.verify_isolation()}:8000":
             raise RuntimeError("The rehearsal API changed addresses. Connect is blocked.")
-        self.host = f"{mode}.example.test"
-        account = "a" * 32
+        self.host = self.cfg.get("hostname", f"{mode}.example.test")
+        account = self.account
         base = "/api/capacity/cloudflare"
         status = self.send(base, method="GET")
         consent = status["consent_text_version"]
@@ -180,7 +189,7 @@ if any(row.split()[1] == "00000000" for row in Path("/proc/net/route").read_text
         assert (workers["launcher_cap"], workers["slots_per_launcher"], workers["installation_slots"],
                 workers["max_lifetime_seconds"]) == (3, 4, 9, 3600)
         staged = self.send(base + "/credential", {
-            "account_id": account, "api_token": MANAGEMENT, "purpose": "connect",
+            "account_id": account, "api_token": self.cfg.get("managementToken", MANAGEMENT), "purpose": "connect",
         })
         body = {"account_id": account, "worker_ingress_origin": "https://" + self.host,
                 "consent": True, "consent_version": consent, "action": "connect",
@@ -240,6 +249,15 @@ if any(row.split()[1] == "00000000" for row in Path("/proc/net/route").read_text
         self.tenants["solution"] = self.tenants["provider"]
         evidence("approvals", {"accepted_loose": len(self.tenants) - 1, "accepted_solution": len(ids)})
 
+    def seed_upgrade(self):
+        provider, = [org for org in self.send("/api/organizations", method="GET") if org["is_provider"]]
+        name = "qualification_upgrade"
+        source = WORKFLOW.format(name=name)
+        workflow = self.register(name, source, provider["id"], 110)
+        approve_workflow(self.send, self.admin, workflow, source.encode(), 12, 1000)
+        self.tenants["third"] = provider["id"]
+        self.workflows["third"] = workflow
+
     def submit(self, case, group, *, hold=0):
         assert self.install()["admission_open"]
         response = self.send("/api/workflows/execute", {"workflow_id": self.workflows[group],
@@ -283,6 +301,7 @@ async def {name}():
         rows = self.sql(f"""SELECT coalesce(json_agg(json_build_object(
             'id',s.execution_id,'ordinal',s.ordinal,'tenant',s.tenant,'worker',s.worker_id,'fence',s.fence,
             'sent',s.sent,'released',s.released_at,'controller',w.launched_by,
+            'revision',(SELECT r.deployment_revision FROM cloudflare_worker_reservations r WHERE r.worker_id=s.worker_id),
             'status',e.status,'queued',e.created_at,'completed',e.completed_at,
             'entry',(SELECT min(l.timestamp) FROM execution_logs l WHERE l.execution_id=e.id
                       AND l.message LIKE 'qualification entry %'),
@@ -415,7 +434,27 @@ async def {name}():
                            "last_dispatch_read_to_full_entry_ms": dispatch_to_full_entry_ms})
 
     def scripts(self):
-        return {row["id"] for row in self.provider("/client/v4/accounts/" + "a"*32 + "/workers/scripts")}
+        return {row["id"] for row in self.provider("/client/v4/accounts/" + self.account + "/workers/scripts")}
+
+    def worker_receipts(self):
+        return self.sql("""SELECT coalesce(json_agg(json_build_object(
+            'script', target_name, 'state', state, 'observed', observed_at,
+            'revision', desired_revision, 'namespaces', namespace_ids)), '[]')
+            FROM cloudflare_owned_resources WHERE kind='worker_script'""")
+
+    def verify_receipts_absent(self, receipts):
+        root = "/client/v4/accounts/" + self.account
+        scripts = {row["script"] for row in receipts}
+        namespaces = {value for row in receipts for value in row["namespaces"].values()}
+        assert scripts.isdisjoint(self.scripts())
+        inventory = self.provider(root + "/workers/durable_objects/namespaces")
+        assert namespaces.isdisjoint(row["id"] for row in inventory)
+        assert scripts.isdisjoint(row.get("script") for row in inventory)
+        for script in sorted(scripts):
+            self.provider(root + "/workers/scripts/" + script + "/settings", status=404)
+        for namespace in sorted(namespaces):
+            self.provider(root + "/workers/durable_objects/namespaces/" + namespace + "/objects", status=404)
+        return {"workers_404": len(scripts), "namespaces_404": len(namespaces)}
 
     def scale_in(self, *, active=False):
         scripts = self.scripts()
@@ -436,17 +475,10 @@ async def {name}():
         assert self.sql("SELECT count(*) FROM cloudflare_usage_incarnations WHERE deleted_at IS NULL") == 0
 
     def disconnect(self):
-        root = "/client/v4/accounts/" + "a"*32
-        scripts = self.scripts()
-        namespaces = self.provider(root + "/workers/durable_objects/namespaces")
-        assert len(scripts) == 3 and len(namespaces) == 4
+        receipts = self.worker_receipts()
         self.completed(self.job("disconnect"), "disconnected")
         assert self.install() is None
-        assert not self.scripts() and self.provider(root + "/workers/durable_objects/namespaces") == []
-        for script in scripts:
-            self.provider(root + "/workers/scripts/" + script + "/settings", status=404)
-        for namespace in namespaces:
-            self.provider(root + "/workers/durable_objects/namespaces/" + namespace["id"] + "/objects", status=404)
+        absent = self.verify_receipts_absent(receipts)
         expected = (0, 0, 0, 0)
         counts = self.sql("""SELECT json_build_array(
             (SELECT count(*) FROM cloudflare_usage_incarnations WHERE deleted_at IS NULL),
@@ -454,7 +486,7 @@ async def {name}():
             (SELECT count(*) FROM cloudflare_capacity_credentials WHERE ciphertext IS NOT NULL),
             (SELECT count(*) FROM cloudflare_owned_resources WHERE state<>'absent'))""")
         assert tuple(counts) == expected
-        evidence("disconnect", {"workers_404": len(scripts), "namespaces_404": len(namespaces), "live_ledger_rows": 0})
+        evidence("disconnect", {**absent, "live_ledger_rows": 0})
 
     def managed(self):
         self.connect("managed")
@@ -486,15 +518,14 @@ async def {name}():
                              "previous_sessions_evicted": len(old), "replacement_sessions": len(new)})
         return tunnel["id"], record["id"]
 
-    def upgrade(self):
+    def upgrade(self, *, replay=True):
         self.primary_hold()
         execution = self.submit("upgrade", "third", hold=65)
         old = wait("upgrade live original claim", lambda: self.held(["upgrade"]))["upgrade"]
         assert old["claim"]
         self.release_primary()
-        scripts = self.scripts()
-        root = "/client/v4/accounts/" + "a"*32
-        namespaces = self.provider(root + "/workers/durable_objects/namespaces")
+        receipts = [row for row in self.worker_receipts() if row["revision"] == old["revision"]]
+        assert len(receipts) == 3 and sum(len(row["namespaces"]) for row in receipts) == 4
         # Keep the old API's ingress alive until the new package installs its fence.
         env = {**os.environ, "TRIAL_RELEASE": "2"}
         image = self.cfg["image"] + ":release-2"
@@ -530,28 +561,63 @@ async def {name}():
         current = self.held(["upgrade"])["upgrade"]
         assert current["claim"] == old["claim"] and current["fence"] == old["fence"]
         self.provider("/local/ingress", "POST", {"host": address})
-        self.provider("/local/interrupt", "POST", {"worker": old["worker"]})
-        self.settle("upgrade", window=70)
+        if replay:
+            self.provider("/local/interrupt", "POST", {"worker": old["worker"]})
+        settled = self.settle("upgrade", window=70)
+        wait("original route terminal ACK", lambda: self.terminal_ack(settled), 10)
+        if not replay:
+            def checkpoint():
+                result = self.sql(f"""SELECT json_build_object(
+                    'drained',upgrade_drained_at,'admitted',admitted_revision,'desired',desired_revision
+                ) FROM cloudflare_installations WHERE id='{install_id}'""")
+                return result if result["drained"] is not None else None
+
+            checkpoint = wait("Upgrade verified retirement checkpoint", checkpoint, 35)
+            assert checkpoint["admitted"] is None
+            old_receipts = [row for row in self.worker_receipts() if row["revision"] == old["revision"]]
+            assert len(old_receipts) == 3 and all(row["state"] == "absent" and row["observed"] for row in old_receipts)
+            drained = datetime.fromisoformat(checkpoint["drained"])
+            assert max(datetime.fromisoformat(row["observed"]) for row in old_receipts) <= drained
         result = self.completed(job, "enabled")
         assert result["http_connections"] and self.install()["admission_open"]
-        for script in scripts:
-            self.provider(root + "/workers/scripts/" + script + "/settings", status=404)
-        for namespace in namespaces:
-            self.provider(root + "/workers/durable_objects/namespaces/" + namespace["id"] + "/objects", status=404)
+        absent = self.verify_receipts_absent(receipts)
         wire = self.provider("/local/evidence")
         dispatch, = [entry for entry in wire if entry["kind"] == "dispatch" and entry["execution"] == execution]
         replies = [entry for entry in wire if entry["kind"] == "result" and entry["route"] == dispatch["route"]]
         assert replies and any(entry["kind"] == "ack" and entry["id"] == replies[-1]["id"] for entry in wire)
-        cut = next(number for number, entry in enumerate(wire)
-                   if entry["kind"] == "interrupt" and entry["worker"] == old["worker"])
-        assert any(entry["kind"] == "hello" and entry["worker"] == old["worker"] for entry in wire[cut+1:])
-        assert wire.index(replies[-1]) > cut
-        latest_revision = max(item["revision"] for item in wire if item["kind"] == "upload")
-        first_upload = next(number for number, entry in enumerate(wire)
-                            if entry["kind"] == "upload" and entry["revision"] == latest_revision)
-        assert sum(entry["kind"] == "delete" for entry in wire[cut+1:first_upload]) == 3
-        evidence("upgrade", {"original_claim": True, "dispatch_count": 1, "reconnect": True,
-                             "terminal_ack": True, "old_workers_404": 3, "old_namespaces_404": 4})
+        evidence_fields = {"original_claim": True, "dispatch_count": 1, "terminal_ack": True,
+                           "old_workers_404": absent["workers_404"], "old_namespaces_404": absent["namespaces_404"]}
+        if replay:
+            cut = next(number for number, entry in enumerate(wire)
+                       if entry["kind"] == "interrupt" and entry["worker"] == old["worker"])
+            assert any(entry["kind"] == "hello" and entry["worker"] == old["worker"] for entry in wire[cut+1:])
+            assert wire.index(replies[-1]) > cut
+            latest_revision = max(item["revision"] for item in wire if item["kind"] == "upload")
+            first_upload = next(number for number, entry in enumerate(wire)
+                                if entry["kind"] == "upload" and entry["revision"] == latest_revision)
+            assert sum(entry["kind"] == "delete" for entry in wire[cut+1:first_upload]) == 3
+            evidence_fields["reconnect_replay"] = True
+        else:
+            new_revision = checkpoint["desired"]
+            replacement = [row for row in self.worker_receipts() if row["revision"] == new_revision]
+            assert len(replacement) == 3 and all(row["state"] == "present" and row["observed"] for row in replacement)
+            assert drained < min(datetime.fromisoformat(row["observed"]) for row in replacement)
+            assert new_revision > old["revision"]
+            if "managementToken" not in self.cfg:
+                first_upload = next(number for number, entry in enumerate(wire)
+                                    if entry["kind"] == "upload" and entry["revision"] == new_revision)
+                assert sum(entry["kind"] == "delete" for entry in wire[:first_upload]) == 3
+            self.primary_hold()
+            self.submit("replacement", "third")
+            new = self.settle("replacement")
+            assert new["revision"] == new_revision
+            wait("replacement route terminal ACK", lambda: self.terminal_ack(new), 10)
+            self.release_primary()
+            evidence_fields.update(admission_fenced=True, old_absence_checkpoint_before_replacement=True,
+                                   first_replacement_observation_after_checkpoint_ms=duration(
+                                       checkpoint["drained"], min(row["observed"] for row in replacement),
+                                   ), replacement_signed_canary=True, replacement_execution=True)
+        evidence("upgrade", evidence_fields)
 
     def meter(self):
         result = self.install()["spend"]
@@ -610,11 +676,141 @@ async def {name}(case: str, hold: int):
 """
 
 
+class HostedUpgrade(Rehearsal):
+    """Control a dedicated, already provisioned Existing HTTPS trial."""
+
+    def __init__(self, config):
+        if config.stat().st_mode & 0o077:
+            raise ValueError("The hosted configuration must be private")
+        self.cfg = json.loads(config.read_text())
+        self.account = self.cfg["account"]
+        assert re.fullmatch("[a-f0-9]{32}", self.account)
+        assert re.fullmatch("[a-z0-9-]+(?:\\.[a-z0-9-]+)+", self.cfg["hostname"])
+        project = self.cfg["project"]
+        assert re.fullmatch("bifrost-test-[a-z0-9-]+", project)
+        self.compose = ["docker", "compose", "-p", project, "-f", "trial-compose.yml"]
+        self.boundary = f"http://127.0.0.1:{int(self.cfg['providerPort'])}"
+        self.phase = "connect_enable"
+        self.spending = {}
+        self.last_spend_sample = 0
+        self.cleanup = False
+        self.login()
+
+    def verify_isolation(self, *, successor=None):
+        for service in ("api", "worker"):
+            container = successor if service == "api" and successor else subprocess.check_output(
+                self.compose + ["ps", "-q", service], text=True, timeout=8,
+            ).strip()
+            info, = json.loads(subprocess.check_output(["docker", "inspect", container], timeout=8))
+            assert info["Config"]["Labels"]["com.docker.compose.project"] == self.cfg["project"]
+            assert not info["HostConfig"]["PortBindings"]
+            address = info["NetworkSettings"]["Networks"][self.cfg["network"]]["IPAddress"]
+            assert ipaddress.ip_address(address).is_private
+            if service == "api":
+                api_address = address
+        return api_address
+
+    def provider(self, path, method="GET", payload=None, *, status=200):
+        if path.startswith("/local/"):
+            code, data = http(self.boundary + path, method, payload, self.cfg["relayToken"])
+            assert code == status
+            return data["result"]
+        assert path.startswith("/client/v4/accounts/" + self.account + "/") and method == "GET"
+        token = self.cfg["managementToken"]
+        if path.endswith("/workers/durable_objects/namespaces"):
+            inventory = []
+            for page in range(1, 101):
+                code, data = request_json("https://api.cloudflare.com" + path + f"?page={page}&per_page=100", "GET", token=token)
+                assert code == 200 and data["success"]
+                rows = data["result"]
+                inventory.extend(rows)
+                if len(rows) < 100:
+                    return inventory
+            raise RuntimeError("Namespace inventory did not settle")
+        code, data = request_json("https://api.cloudflare.com" + path, "GET", token=token)
+        if code != status:
+            raise RuntimeError(f"Expected provider read HTTP {status}, received {code}")
+        return data["result"] if status == 200 and data["success"] else None
+
+    def scripts(self):
+        known = {row["script"] for row in self.worker_receipts()}
+        return super().scripts() & known
+
+    def sample_spend(self, *, settled=False):
+        self.last_spend_sample = time.monotonic()
+        current = super().send("/api/capacity/cloudflare", method="GET")["installation"]
+        if not current:
+            return
+        value = current["spend"]
+        assert value and value["state"] == "ready" and value["estimated_usd"] is not None
+        cost = Decimal(value["estimated_usd"])
+        phase = self.spending.setdefault(self.phase, {"peak_live_usd": Decimal(0)})
+        phase["peak_live_usd"] = max(phase["peak_live_usd"], cost)
+        if settled:
+            phase["settled_api_usd"] = cost
+        if not self.cleanup and cost >= Decimal("4.50"):
+            raise RuntimeError("Live spend abort")
+
+    def send(self, path, payload=None, _admin=None, method="POST", *, content_type=None, timeout=12):
+        if not self.cleanup:
+            if time.time() - self.cfg["started"] >= 1500:
+                raise RuntimeError("Teardown reserve started")
+            if time.monotonic() - self.last_spend_sample >= 1:
+                self.sample_spend()
+        return super().send(path, payload, _admin, method, content_type=content_type, timeout=timeout)
+
+    def run(self):
+        try:
+            self.seed_upgrade()
+            self.connect("existing")
+            self.preflight()
+            self.enable()
+            self.sample_spend(settled=True)
+            if time.time() - self.cfg["started"] < 1200 and max(self.spending["connect_enable"].values()) < Decimal("3.60"):
+                self.phase = "upgrade"
+                self.upgrade(replay=False)
+                self.scale_in()
+                self.sample_spend(settled=True)
+            else:
+                evidence("upgrade", {"status": "dropped_for_headroom"})
+        finally:
+            self.cleanup = True
+            try:
+                self.release_primary()
+            finally:
+                if self.install() is not None:
+                    self.phase = "disconnect"
+                    try:
+                        self.sample_spend()
+                    finally:
+                        self.disconnect()
+                evidence("spend", {phase: {key: str(value) for key, value in readings.items()}
+                                   for phase, readings in self.spending.items()})
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--managed-only", action="store_true", help="Rehearse items 6–9 on a fresh stack")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--managed-only", action="store_true", help="Rehearse items 6–9 on a fresh stack")
+    modes.add_argument("--upgrade-only", action="store_true", help="Rehearse uninterrupted Upgrade with Existing HTTPS")
+    modes.add_argument("--hosted-upgrade-config", type=Path, help="Run the rehearsed Upgrade against a dedicated hosted ingress")
     args = parser.parse_args()
+    if args.hosted_upgrade_config:
+        HostedUpgrade(args.hosted_upgrade_config).run()
+        return
     trial = Rehearsal()
+    if args.upgrade_only:
+        trial.seed_upgrade()
+        trial.connect("existing")
+        trial.preflight()
+        trial.enable()
+        try:
+            trial.upgrade(replay=False)
+            trial.scale_in()
+            trial.meter()
+        finally:
+            trial.disconnect()
+        return
     trial.seed()
     if not args.managed_only:
         trial.connect("existing")

@@ -67,9 +67,9 @@ Record the image and manifest digests, job and claim identities, script and
 namespace receipts, and provider-side runtime retirement witnesses.
 
 1. Hold an approved no-effect workflow on the previous Workers release. Stage
-   the replacement and verify that no new claim or send is admitted. Break
-   the control connection, let the original attempt finish, and verify its
-   terminal replay and ACK under the original claim.
+   the replacement and verify that no new claim or send is admitted. Let
+   the original attempt finish on its existing connection. The deliberate
+   disconnect and terminal replay check runs only in the local fixture.
 2. Verify the old Workers runtime, scripts and namespaces are absent before
    any replacement upload. Once the managed Containers lifecycle is
    integrated, hold work in both runtimes and require independent Container
@@ -161,3 +161,43 @@ rotation and re-Enable passed. Upgrade was unrun because the exact
 control-socket interruption is available in the committed local fixture.
 The hosted run closed through Scale In and verified Disconnect.
 [Sanitized run receipt](../../results/cloudflare-scaleout-managed-hosted-8712.json)
+
+### Uninterrupted Existing HTTPS Upgrade
+
+Rehearse with the two pinned packages and the internal fixture:
+
+```sh
+python3 spikes/cloudflare-pyodide/dev/e2e/combined-rehearsal.py --upgrade-only
+```
+
+The hosted procedure uses the existing dedicated HTTPS lane. Start the
+same ingress relay in `--hosted-ingress-relay` mode on loopback with its
+separate authenticated control port. Point the trial connector at the
+relay. Restrict destinations to the owned Compose bridge. Switch new
+connections to the successor API after observing the persisted admission
+fence. Each established socket keeps its original upstream until close.
+Use the private operator configuration with `--hosted-upgrade-config`.
+
+1. Verify both pins. Connect and Enable with the worker preflight and
+   signed canary. Submit one approved, bounded no-effect workflow on
+   the old revision. Retain the sent fence, launcher and original claim.
+2. Stage the successor while the old API continues to serve its socket.
+   Trigger Upgrade and observe admission closed while the saved claim
+   and fence are still active. Let the workflow finish. Require one
+   dispatch and the ACK of its matching successful terminal result.
+3. Observe the durable `upgrade_drained_at` checkpoint with admission
+   closed. Require every old script receipt to be absent at or before
+   this checkpoint. The job verifies the old scripts and namespaces
+   before the checkpoint and journals replacements only after it.
+   Require the replacement observations to follow the checkpoint and
+   independently confirm the saved old script and namespace IDs are
+   absent.
+4. Require the replacement's signed canary and inventory readback in
+   the successful Upgrade job before admission reopens. Run a new
+   workflow pinned to the replacement revision and verify its terminal
+   ACK. Read spend, Disconnect, and verify all saved namespace IDs
+   from the journal map values for both revisions.
+
+Terminal replay after a deliberate socket interruption is a separate
+local-only check. Hosted evidence from this procedure covers uninterrupted
+drain and completion.
