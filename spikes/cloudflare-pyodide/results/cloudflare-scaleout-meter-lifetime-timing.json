@@ -1,0 +1,97 @@
+{
+  "source": "9b4067d9997f0581d5a8182ef4b6d10fa3e09e9e",
+  "environment": "CT128, Linux workerd 1.20261023.1, Node 26.13.1, network disabled",
+  "pyodide_bundle_sha256": "3c3fd5a4179230e21e018e28b0e735e7c4abd8fe8e4ff39d2fd6bb2ea3a2e260",
+  "runtime_build": {
+    "base_sha256": "fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5",
+    "compiler": "CPython 3.14.4",
+    "recompiled": [
+      "src/services/execution/engine.py",
+      "src/services/execution/worker.py"
+    ],
+    "baseline_sources_and_recompiled_bytecode_match": true
+  },
+  "queue_prewarm_per_tenant": 0,
+  "safety_margin": 10,
+  "cpu_run": "057233e7-7fb2-458d-b698-79dc5247ab07",
+  "cpu_samples": {
+    "capacity_prepare": {
+      "samples": 4,
+      "p99_us": 11152
+    },
+    "capacity_profile": {
+      "samples": 100,
+      "p99_us": 1927
+    },
+    "capacity_observe": {
+      "samples": 100,
+      "p99_us": 2230
+    },
+    "capacity_start": {
+      "samples": 4,
+      "p99_us": 3577
+    },
+    "capacity_delete": {
+      "samples": 4,
+      "p99_us": 9318
+    },
+    "boot": {
+      "samples": 4,
+      "p99_us": 5238208
+    },
+    "loose": {
+      "samples": 4,
+      "p99_us": 134002
+    },
+    "solution": {
+      "samples": 4,
+      "p99_us": 105041
+    },
+    "warm": {
+      "samples": 100,
+      "p99_us": 38858
+    },
+    "exercise": {
+      "samples": 100,
+      "p99_us": 71399
+    },
+    "cold_exercise": {
+      "samples": 4,
+      "p99_us": 3725395
+    }
+  },
+  "sha256": {
+    "runtime": "11ade0a1ea1b117d577803cff87d1c3c4074d793df5bcb17a9f473923e55f254",
+    "bundle": "e9097384c9dd6986a7289c937c81c5b4a019221f6761d37b10ccc60f262da9f8",
+    "launcher": "976cd2cf24c59978bbea2bcf8241522da1ff3ea4f3d079adf0425fb47903df66",
+    "gateway": "6fb1025b11b308d3a628bed063cb5aa5d11f141819eb3ddd1c0b8153621847d5",
+    "capacity": "0805f8fe9ff4dc7f5c6db03714924dd334b5383576a0e3be79ee79885ddbd138",
+    "meter_bounds": "7bcbd3aa5bf2444dc9856b3b077639061c20d4aa6d0076e8b1ccb9a29cd02b53"
+  },
+  "launcher_reference": {
+    "scheduled_observations": 170,
+    "spacing_seconds": 2,
+    "elapsed_seconds": 351.649,
+    "capacity_requests": 182,
+    "reconnect_observations": 0,
+    "counts": {
+      "sqlite_rows_written": 68,
+      "do_requests": 6,
+      "log_events": 2
+    },
+    "exhausted": false,
+    "sqlite_database_bytes": 20480,
+    "attempts": [
+      {
+        "cold_boot": true,
+        "workflow_cold": false,
+        "workflow_wall_ms": 163
+      },
+      {
+        "cold_boot": true,
+        "workflow_cold": false,
+        "workflow_wall_ms": 90
+      }
+    ]
+  }
+}

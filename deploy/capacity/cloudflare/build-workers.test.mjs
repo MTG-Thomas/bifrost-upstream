@@ -19,7 +19,7 @@ test('every input in the packaged Workers import graph has a reviewed billing cl
     const inputs = await bundleWorker(role, Buffer.from('export default {};'), {inventoryOnly: true});
     const embedded = 'bifrost-runtime:generated-runtime.mjs';
     // The production builder verifies this input from the real runtime artifact.
-    if (embedded in inputs) inputs[embedded] = 'fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5';
+    if (embedded in inputs) inputs[embedded] = '11ade0a1ea1b117d577803cff87d1c3c4074d793df5bcb17a9f473923e55f254';
     assertMeterInventory(role, inputs, meterInventory);
     assert.throws(() => assertMeterInventory(role, {...inputs, 'unreviewed.mjs': 'unknown'}, meterInventory),
       /Unclassified Cloudflare meter input/);
@@ -34,8 +34,8 @@ test('every input in the packaged Workers import graph has a reviewed billing cl
 
 test('build uses the pinned measured capacity CPU and request inputs with the reviewed margin', () => {
   assert.deepEqual(qualifiedMeterLimits(qualification()), {
-    capacityCpuMs: 104, launcherCpuMs: 2133, sdkRequests: 40, engineCpuMs: 30_000,
-    bootCpuMs: 30_000, warmCpuMs: 440, exerciseCpuMs: 672,
+    capacityCpuMs: 112, launcherCpuMs: 2133, sdkRequests: 40, engineCpuMs: 30_000,
+    bootCpuMs: 30_000, warmCpuMs: 440, exerciseCpuMs: 714,
     launcherMeters: Object.fromEntries(Object.entries(qualification().qualification.launcher_reference.observed)
       .map(([meter, count]) => [meter, count * 10])),
   });

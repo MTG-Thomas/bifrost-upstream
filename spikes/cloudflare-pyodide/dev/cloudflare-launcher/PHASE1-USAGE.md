@@ -535,6 +535,37 @@ those counters remain unattributed to individual isolates. The hosted pilot
 still needs a 3,600-second run with isolate memory and CPU measurements on
 the requalified bundle.
 
+### Lifetime and Runtime Timing Inventory Review
+
+The combined lifetime and timing release changes the following bundled inputs.
+The private gateway module and the remaining inventory inputs keep their existing
+classifications and digests.
+
+| Changed input | Charge-site review |
+| --- | --- |
+| `capacity-core.mjs` | Validates the absolute deadline and stores it in the existing reservation. Expired requests can exit before launcher RPCs or journal writes. Accepted requests keep their existing calls and row counts, with a larger stored row and additional validation CPU. |
+| `capacity.mjs` | Carries deadline, lifetime and drain grace on the existing preparation RPC. The request count stays the same. The payload grows and requires additional serialization CPU. |
+| `launcher-core.mjs` | The deadline can refuse preparation, dispatch and idle reconnect. The timing fields expand the existing terminal journal row and result frame. They add serialization CPU and stored bytes, with the same journal writes and log sites on the successful path. |
+| `launcher-do.mjs` | Scales the meter on enrollment and clamps existing alarm scheduling. The deadline or grace wake can run retirement cleanup earlier and can add an immediate alarm on a draining disconnect. Keep these DO requests, alarm storage operations and cleanup writes in launcher control and workload coverage. |
+| `launcher-meter.mjs` | Higher per-incarnation caps and up to 512 workflow plus 512 preparation entries allow additional existing route journal writes. Larger receipts increase storage and serialization CPU. Existing metered save and seal paths cover these operations. |
+| `generic-worker-code.mjs` | Full Python GC every 32 attempts adds CPU. The child reads the entry stamp from the result and returns it in the existing response. The route adds no storage access, subrequest or log site. |
+| `launcher-host.mjs` | Validates and forwards two timestamps on the existing terminal result. The extra work is CPU and a larger response payload. |
+| `tenant-api.mjs` | Records readiness in isolate memory and extends the existing child request and result. The generation write, Worker Loader calls, gateway subrequests and logging sites keep their existing call counts. |
+| Generated runtime | Recompiles the execution engine and worker modules with the optional workflow-entry callback. The callback reads the clock and returns one timestamp on the existing result. It adds CPU without a gateway request, storage access or log site. |
+
+The [CT128 measurement receipt](../../results/cloudflare-scaleout-meter-lifetime-timing.json)
+records the new bundle and the guarded local measurements. Across four
+CPU batches, the maximum capacity p99 rose from 10,367 to 11,152 μs and the
+exercise p99 rose from 67,154 to 71,399 μs. With the existing 10× margin and
+the higher p99 for each path, the capacity and exercise limits are 112 and
+714 ms. The aggregate launcher-second CPU bound is 62,245 ms.
+
+At 170 controller observations, the two-workflow seal recorded 68 SQLite
+writes, six DO requests and two log events. The legacy caps remain 680, 60
+and 20. The deadline-aware launcher uses the verified per-second binding
+multiplied by its admitted lifetime. The SDK limit continues to use the
+existing hosted SDK reference.
+
 #### Hosted SDK Measurement
 
 The hosted reference used manifest
