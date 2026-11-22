@@ -68,6 +68,8 @@ from src.worker.remote.protocol import (
     LINUX_RUNTIME_PROFILE,
 )
 
+QUALIFICATION_CANARY_TENANT = "qualification-canary"
+
 LINUX_REVIEW_VERSION = "containers-linux-v1"
 LIVE_STATES = ("reserved", "starting", "ready", "draining")
 
@@ -390,7 +392,7 @@ async def reserve_container_canary(
         return capacity
     if (
         job_revision != capacity.scope.deployment_revision
-        or "platform" in capacity.container_tenants or not capacity.seats.allows(None)
+        or QUALIFICATION_CANARY_TENANT in capacity.container_tenants
     ):
         return None
     if (await db.execute(current_container_application(
@@ -398,7 +400,8 @@ async def reserve_container_canary(
     ))).one_or_none() is None:
         return None
     return await _create_container_reservation(
-        db, capacity, release, controller_id=controller_id, tenant="platform", canary=(job_id, lease_token),
+        db, capacity, release, controller_id=controller_id, tenant=QUALIFICATION_CANARY_TENANT,
+        canary=(job_id, lease_token),
     )
 
 

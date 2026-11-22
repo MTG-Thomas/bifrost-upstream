@@ -7,7 +7,7 @@ import json
 import time
 from contextlib import asynccontextmanager
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 from uuid import UUID
@@ -528,13 +528,13 @@ async def test_managed_linux_hello_is_bound_to_its_incarnation_key_and_release(m
 @pytest.mark.asyncio
 async def test_containers_bootstrap_round_trips_fragmented_requirements() -> None:
     api_socket = AsyncMock()
-    lease = replace(LEASE, container_release="a" * 64, expires_at=datetime.now(UTC) + timedelta(seconds=20))
+    lease = replace(LEASE, container_release="a" * 64, runtime_lease_ms=20_000)
     bridge = Bridge(
         api_socket, {"current": 1, "limit": 100, "requirements": {}, "hostname": "runner", "containers": True},
         lease,
     )
     content = "# " + "x" * MAX_FRAME_BYTES
-    await RemoteControlHost()._welcome(bridge, content)
+    await RemoteControlHost()._welcome(bridge, content, acquiring_at=time.monotonic())
 
     frames = [call.args[0] for call in api_socket.send_text.await_args_list]
     assert len(frames) > 2
@@ -561,29 +561,69 @@ async def test_containers_bootstrap_round_trips_fragmented_requirements() -> Non
 
 
 @pytest.mark.asyncio
-async def test_managed_container_renewal_sends_the_committed_deadline() -> None:
+@pytest.mark.parametrize("fails", [False, True], ids=["ttl-sent", "transport-detached"])
+async def test_managed_container_renewal_sends_a_bounded_ttl(fails) -> None:
     socket = AsyncMock()
+    if fails:
+        socket.send_text.side_effect = OSError("closed transport")
     lease = replace(LEASE, container_release="a" * 64)
     bridge = Bridge(
         socket, {"current": 1, "limit": 100, "hostname": "runner", "containers": True, "requirements": {}}, lease,
     )
     session = object.__new__(RemoteSession)
     session.bridge, session.lease, session.owned_until = bridge, lease, time.monotonic() + 20
-    deadline = datetime.now(UTC) + timedelta(seconds=20)
+    session.task = Mock()
+    session.lose_ownership = AsyncMock()
     with (
         patch("src.worker.remote.host.asyncio.sleep", new=AsyncMock(side_effect=[None, asyncio.CancelledError()])),
-        patch("src.worker.remote.host.renew_remote_owner", new=AsyncMock(return_value=deadline)) as renew,
-        pytest.raises(asyncio.CancelledError),
+        patch("src.worker.remote.host.renew_remote_owner", new=AsyncMock(return_value=20_000)) as renew,
     ):
-        await session._renew()
+        if fails:
+            await session._renew()
+        else:
+            with pytest.raises(asyncio.CancelledError):
+                await session._renew()
 
     renew.assert_awaited_once_with(lease)
     socket.send_text.assert_awaited_once()
     frame = ControlEnvelope.from_json(socket.send_text.await_args.args[0])
-    assert frame == ControlEnvelope(
-        session_generation=lease.session_generation, sequence=1, kind="runtime_lease",
-        payload={"expires_at_ms": int(deadline.timestamp() * 1000)},
+    assert (frame.session_generation, frame.sequence, frame.kind) == (lease.session_generation, 1, "runtime_lease")
+    assert 0 < frame.payload["ttl_ms"] <= 19_000
+    assert bridge.connected is (not fails)
+    assert bridge.handoff is fails
+    assert session.task.cancel.call_count == int(fails)
+    session.lose_ownership.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_idle_drain_race_reaches_the_host_as_a_workflow_handback() -> None:
+    socket = AsyncMock()
+    identity = LauncherIdentity(
+        launcher_id=LEASE.launcher_id, incarnation_id=LEASE.worker_id, job_uid=None, pod_uid=None,
+        hostname="runner", form="external", resource_uid="resource-1",
     )
+    bridge = Bridge(
+        socket, {"current": 1, "limit": 100, "requirements": {}, "hostname": "runner", "containers": True}, LEASE,
+    )
+    launcher = Launcher(
+        AsyncMock(), identity=identity, secret="derived-key", containers=True, container_idle_seconds=120,
+    )
+    launcher.session_generation = LEASE.session_generation
+
+    async def send(text):
+        # The API selected a runner, then its physical idle timer won the race.
+        launcher._idle_since -= 121
+        await launcher.monitor()
+        await launcher.command(ControlEnvelope.from_json(text).payload, generation=LEASE.session_generation)
+
+    async def receive(text):
+        await bridge.receive(ControlEnvelope.from_json(text).payload)
+
+    launcher.socket.send.side_effect = receive
+    socket.send_text.side_effect = send
+    with pytest.raises(MemoryError, match="idle deadline"):
+        await bridge.request("workflow", {})
+    assert not launcher.children
 
 
 @pytest.mark.asyncio

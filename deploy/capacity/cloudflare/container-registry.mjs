@@ -9,6 +9,10 @@ const MAX_CONTROL_FRAME_BYTES = 2 ** 20;
 // requires hosted measurement before this meter can settle spend.
 const HTTP_RELAY_MULTIPLIER = 2;
 const HTTP_REQUEST_BODY_FLOOR = 256;
+// Independent inventory must postdate the last start window plus this boot
+// observation bound. Hosted qualification owns validation of that bound.
+const BOOT_OBSERVATION_MS = 60_000;
+const LAUNCHER_DRAIN_GRACE_MS = 300_000;
 
 export class ScopeRegistry {
     constructor(ctx, env) {
@@ -65,7 +69,7 @@ export class ScopeRegistry {
         if (pin.installation !== this.installation || pin.revision !== this.revision
             || pin.image !== this.image || pin.instance !== "standard-1"
             || !UUID.test(pin.worker) || !UID.test(pin.uid)
-            || (pin.tenant !== "platform" && !UUID.test(pin.tenant))
+            || (!["platform", "qualification-canary"].includes(pin.tenant) && !UUID.test(pin.tenant))
             || !Number.isSafeInteger(pin.credentialVersion) || pin.credentialVersion < 1
             || ![reservedAt, startDeadline, deadline, seconds, ingressBytes, outboundBytes].every(Number.isSafeInteger)
             || reservedAt < 0 || startDeadline <= reservedAt || startDeadline - reservedAt > 3_600_000
@@ -155,7 +159,8 @@ export class ScopeRegistry {
         return this.storage.transactionSync(() => {
             const start = this.sql.exec("SELECT * FROM start_fences WHERE uid = ?", uid).toArray()[0];
             if (!start || start.instance !== instance || !Number.isSafeInteger(startedAt)
-                || startedAt < start.authorized_at) return { status: "conflict" };
+                || startedAt < start.authorized_at
+                || (start.closed_at !== null && start.observed_at === null)) return { status: "conflict" };
             if (start.observed_at !== null) {
                 return { status: start.observed_at === startedAt ? "observed" : "conflict" };
             }
@@ -176,6 +181,26 @@ export class ScopeRegistry {
             return {
                 status: "closed", instance, authorizedAt: start.authorized_at, closedAt: start.closed_at ?? now,
                 startedAt: start.observed_at, outboundBytes: start.outbound, meterComplete: false,
+            };
+        });
+    }
+
+    // The instance actor serializes this with start and supplies the time of
+    // an exact, empty management inventory for this actor.
+    closeAbsent(uid, instance, now, observedAbsentAt) {
+        return this.storage.transactionSync(() => {
+            const start = this.sql.exec("SELECT * FROM start_fences WHERE uid = ?", uid).toArray()[0];
+            if (!start || start.instance !== instance || start.observed_at !== null) return { status: "conflict" };
+            if (![now, observedAbsentAt].every(Number.isSafeInteger) || observedAbsentAt > now) {
+                return { status: "invalid" };
+            }
+            if (observedAbsentAt < start.start_deadline + BOOT_OBSERVATION_MS) return { status: "pending" };
+            if (start.closed_at === null) {
+                this.sql.exec("UPDATE start_fences SET closed_at = ? WHERE uid = ?", now, uid);
+            }
+            return {
+                status: "absent", uid, instance, authorizedAt: start.authorized_at,
+                startDeadline: start.start_deadline, closedAt: start.closed_at ?? now,
             };
         });
     }
@@ -253,7 +278,7 @@ export class ContainerInstanceLifecycle {
             const ticket = await this.ctx.storage.get("start-ticket");
             if (!ticket || !this.ctx.container.running) return;
             if (Date.now() >= ticket.deadline) await this.#destroy(ticket);
-            else await this.ctx.container.setInactivityTimeout(this.idleMs);
+            else await this.#armProviderInactivity(ticket.deadline);
         });
     }
 
@@ -271,14 +296,16 @@ export class ContainerInstanceLifecycle {
             if (ticket?.destroyed) return { status: "closed" };
             if (!ticket && this.ctx.container.running) return { status: "conflict" };
             if (!ticket) {
+                if (Date.now() >= pin.startDeadline) return { status: "closed" };
                 // Install the exact HTTPS intercept before crossing the launch fence.
                 await this.ctx.container.interceptOutboundHttps(new URL(this.origin).hostname, this.intercept);
                 await this.ctx.storage.setAlarm(pin.deadline);
                 await this.ctx.storage.put("start-ticket", { uid: pin.uid, deadline: pin.deadline });
             }
-            const authority = await this.registry.authorizeStart(pin.uid, this.instance, Date.now(), pin.deadline);
+            const now = Date.now();
+            if (now >= pin.startDeadline) return { status: "pending" };
+            const authority = await this.registry.authorizeStart(pin.uid, this.instance, now, pin.deadline);
             if (authority.status !== "authorized") return authority;
-            if (Date.now() >= pin.startDeadline) return { status: "pending" };
             const env = {
                 BIFROST_WORKER_FORM: "external", BIFROST_WORKER_INCARNATION_ID: pin.worker,
                 BIFROST_WORKER_RESOURCE_UID: pin.uid, BIFROST_WORKER_CONTROL_SECRET: controlKey,
@@ -287,9 +314,30 @@ export class ContainerInstanceLifecycle {
                 BIFROST_CONTAINER_IDLE_SECONDS: String(this.idleMs / 1000),
             };
             if (probeNonce !== null) env.BIFROST_CONTAINER_PROBE_NONCE = probeNonce;
-            this.ctx.container.start({ image: this.image, env, enableInternet: false });
-            await this.ctx.container.setInactivityTimeout(this.idleMs);
+            try {
+                this.ctx.container.start({ image: this.image, env, enableInternet: false });
+            } catch {
+                // A throw does not prove absence. Reconcile the durable fence.
+                return { status: "pending" };
+            }
+            await this.#armProviderInactivity(pin.deadline);
             return { status: "pending" };
+        });
+    }
+
+    async #armProviderInactivity(deadline) {
+        // Local idle/drain decides graceful stop. This backup cannot preempt
+        // a busy workflow before the independently armed absolute alarm.
+        const delay = Math.max(this.idleMs + LAUNCHER_DRAIN_GRACE_MS, deadline - Date.now()) + 1000;
+        await this.ctx.container.setInactivityTimeout(delay);
+    }
+
+    async closeAbsent(uid, observedAbsentAt) {
+        return this.ctx.blockConcurrencyWhile(async () => {
+            const ticket = await this.ctx.storage.get("start-ticket");
+            if (!ticket || ticket.uid !== uid) return { status: "conflict" };
+            if (this.ctx.container.running) return { status: "pending" };
+            return this.registry.closeAbsent(uid, this.instance, Date.now(), observedAbsentAt);
         });
     }
 
@@ -304,13 +352,17 @@ export class ContainerInstanceLifecycle {
 
     async #destroy(ticket) {
         if (ticket.destroyed) return;
-        await this.ctx.container.destroy();
+        if (this.ctx.container.running) await this.ctx.container.destroy();
         await this.ctx.storage.put("start-ticket", { ...ticket, destroyed: true });
     }
 
     async alarm() {
-        const ticket = await this.ctx.storage.get("start-ticket");
-        if (ticket && Date.now() >= ticket.deadline) await this.stop(ticket.uid);
+        return this.ctx.blockConcurrencyWhile(async () => {
+            const ticket = await this.ctx.storage.get("start-ticket");
+            if (!ticket || ticket.destroyed) return;
+            if (Date.now() < ticket.deadline) await this.ctx.storage.setAlarm(ticket.deadline);
+            else await this.#destroy(ticket);
+        });
     }
 }
 
@@ -331,7 +383,7 @@ export function relayControlSockets(registry, uid, instance, guest, ingress) {
         }
     };
     const now = Date.now();
-    if (deadline === null || deadline <= now) {
+    if (!Number.isSafeInteger(deadline) || deadline <= now) {
         close(1008, "Container relay unavailable");
         return;
     }
@@ -346,7 +398,8 @@ export function relayControlSockets(registry, uid, instance, guest, ingress) {
                 // Bound allocations during UTF-8 sizing, then count actual bytes.
                 const bytes = typeof data === "string" && data.length <= MAX_CONTROL_FRAME_BYTES
                     ? new TextEncoder().encode(data).byteLength : Infinity;
-                if (bytes > MAX_CONTROL_FRAME_BYTES || !registry.chargeRelay(uid, instance, direction, bytes, Date.now())) {
+                if (bytes > MAX_CONTROL_FRAME_BYTES
+                    || registry.chargeRelay(uid, instance, direction, bytes, Date.now()) !== true) {
                     close(1008, "Container relay limit");
                 } else {
                     destination.send(data);
@@ -445,20 +498,20 @@ export async function forwardContainerHttp(registry, uid, instance, request, ori
             Date.now(), true);
         return new Response(null, { status });
     };
-    if (!registry.chargeRelay(uid, instance, "outbound", arrival, now, true)) return local(429);
+    if (registry.chargeRelay(uid, instance, "outbound", arrival, now, true) !== true) return local(429);
     if (url.protocol !== "https:" || url.origin !== origin || url.username || url.password || url.hash
         || request.headers.get("host") !== url.host || request.headers.has("upgrade")
         || policy.version !== 1 || !allowsIngressRoute(policy, request, url)) {
         return local(403);
     }
     const deadline = registry.relayDeadline(uid, instance);
-    const remaining = deadline === null ? 0 : deadline - Date.now();
+    const remaining = Number.isSafeInteger(deadline) ? deadline - Date.now() : 0;
     const charge = (direction, bytes) =>
-        registry.chargeRelay(uid, instance, direction, bytes * HTTP_RELAY_MULTIPLIER, Date.now(), true);
+        registry.chargeRelay(uid, instance, direction, bytes * HTTP_RELAY_MULTIPLIER, Date.now(), true) === true;
     let unspent = prepaid;
     const sendBody = (bytes) => {
         const activeUntil = registry.relayDeadline(uid, instance);
-        if (activeUntil === null || Date.now() >= activeUntil) return false;
+        if (!Number.isSafeInteger(activeUntil) || Date.now() >= activeUntil) return false;
         const covered = Math.min(unspent, bytes);
         unspent -= covered;
         return covered === bytes || charge("outbound", bytes - covered);

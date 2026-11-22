@@ -52,6 +52,8 @@ from src.worker.remote.protocol import (
 
 logger = logging.getLogger(__name__)
 LAUNCHER_DRAIN_GRACE_SECONDS = 300.0
+CONTAINER_FIRST_GRANT_SECONDS = 15
+CONTAINER_MAX_RUNTIME_GRANT_MS = 20_000
 PR_SET_DUMPABLE = 4
 
 
@@ -147,7 +149,7 @@ async def _receive_control_commands(
                 launcher.pending_terminal_inventory.pop(event_id, None)
             continue
         if command.kind == "runtime_lease":
-            launcher.grant_runtime_lease(command.payload.get("expires_at_ms"))
+            launcher.grant_runtime_lease(command.payload.get("ttl_ms"))
             continue
         if command.kind != "command":
             raise RuntimeError("unexpected API control message")
@@ -378,18 +380,17 @@ class Launcher:
             self.socket = socket
             await self._hello(requirements)
 
-    def grant_runtime_lease(self, expires_at_ms: object) -> None:
+    def grant_runtime_lease(self, ttl_ms: object) -> None:
         """Arm hard expiry from a fenced API grant without extending the pinned lifetime."""
-        if self.container_release is None or self.container_deadline is None or type(expires_at_ms) is not int:
+        if (
+            self.container_release is None or self.container_deadline is None
+            or type(ttl_ms) is not int or not 0 < ttl_ms <= CONTAINER_MAX_RUNTIME_GRANT_MS
+        ):
             raise RuntimeError("Invalid managed Container runtime lease")
         now = time.monotonic()
         if self._container_lease_until is not None and now >= self._container_lease_until:
             raise RuntimeError("Managed Container runtime lease already expired")
-        try:
-            granted_until = now + (expires_at_ms / 1000 - time.time())
-        except OverflowError:
-            raise RuntimeError("Invalid managed Container runtime lease") from None
-        deadline = min(self.container_deadline, granted_until)
+        deadline = min(self.container_deadline, now + ttl_ms / 1000)
         if deadline <= now:
             raise RuntimeError("Managed Container runtime lease is expired")
         signal.setitimer(signal.ITIMER_REAL, deadline - now)
@@ -454,7 +455,7 @@ class Launcher:
                 if content is not None and not isinstance(content, str):
                     raise RuntimeError("Invalid worker requirements content")
                 if self.container_release is not None:
-                    self.grant_runtime_lease(startup.payload.get("expires_at_ms"))
+                    self.grant_runtime_lease(startup.payload.get("ttl_ms"))
                 self.requirements_content = content
                 break
 
@@ -538,7 +539,7 @@ class Launcher:
                     response = self.platform_stages.status(binding)
             elif action in ("workflow", "service"):
                 if self._idle_draining:
-                    raise ValueError("Container is draining after its idle deadline")
+                    raise MemoryError("Container is draining after its idle deadline")
                 self._idle_since = time.monotonic()
                 self.check_fork_pressure()
                 route_id = payload["route_id"]
@@ -1019,7 +1020,7 @@ async def _run_launcher(
     # The provider alarm also enforces the absolute bound independently.
     if remaining is not None:
         signal.signal(signal.SIGALRM, _exit_at_container_deadline)
-        signal.setitimer(signal.ITIMER_REAL, remaining)
+        signal.setitimer(signal.ITIMER_REAL, min(remaining, CONTAINER_FIRST_GRANT_SECONDS))
     try:
         drain_task: asyncio.Task[None] | None = None
         while launcher is None or (not launcher.retired.is_set() and not launcher.failed):

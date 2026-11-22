@@ -222,6 +222,13 @@ async def authorize_operation(
 ) -> Caller:
     """Load the caller and ``require_operation``; returns the caller for any
     further row-level decisions."""
+    if operation.startswith("workspace.files."):
+        from shared.file_access import FileServiceError, reject_container_workspace_access
+
+        try:
+            await reject_container_workspace_access(db, principal)
+        except FileServiceError as exc:
+            raise HTTPException(exc.status_code, exc.detail) from exc
     caller = await load_caller(db, principal)
     require_operation(caller, operation, target, permission=permission)
     return caller

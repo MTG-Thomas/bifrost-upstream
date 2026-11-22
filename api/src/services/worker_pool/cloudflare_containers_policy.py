@@ -105,7 +105,11 @@ def container_account_usage(now):
     end = func.timezone("UTC", func.timezone("UTC", period) + literal("1 month").cast(Interval))
     envelope = reservation.container_envelope
     reserve_end = container_deadline_sql()
-    charged_end = func.coalesce(reservation.container_stopped_at, reserve_end)
+    charged_end = case(
+        # A closed fence without placement evidence cannot prove zero usage.
+        (envelope["settled_absent"].as_boolean().is_(True), reserve_end),
+        else_=func.coalesce(reservation.container_stopped_at, reserve_end),
+    )
     charged_start = func.coalesce(
         cast(envelope["observed_started_at"].as_string(), DateTime(timezone=True)), reservation.container_reserved_at,
     )

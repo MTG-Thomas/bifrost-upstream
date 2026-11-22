@@ -124,6 +124,7 @@ from src.worker.remote.protocol import (
 )
 
 RENEW_RETRY_SECONDS = 2.0
+CONTAINER_LEASE_TRANSIT_MARGIN_MS = 1000
 # API-owned capacity for the dev build. Provider enrollment will own this
 # policy when multiple Cloudflare capacity profiles are supported.
 ADMISSION_FRESHNESS_SECONDS = 3
@@ -153,6 +154,11 @@ def _reply_timeout(action: str) -> float:
     if action == "prepare_workflow":
         return PREPARE_SECONDS
     return COMMAND_REPLY_SECONDS
+
+
+def _container_lease_grant(remaining_ms: int, began_at: float) -> int:
+    # Subtract work elapsed before send and allow for one bounded transit delay.
+    return remaining_ms - int((time.monotonic() - began_at) * 1000) - CONTAINER_LEASE_TRANSIT_MARGIN_MS
 
 
 class RemoteProcess:
@@ -1701,21 +1707,30 @@ class RemoteSession:
                     return
                 self.owned_until = renewing_at + DEFAULT_OWNER_LEASE_SECONDS
                 if lease.container_release is not None:
+                    socket = self.bridge.socket
                     try:
                         async with asyncio.timeout_at(self.owned_until):
                             async with self.bridge.lock:
-                                if self.bridge.connected and self.bridge.lease == lease:
+                                if self.bridge.connected and self.bridge.lease == lease and self.bridge.socket is socket:
+                                    ttl_ms = _container_lease_grant(renewed, renewing_at)
+                                    if ttl_ms <= 0:
+                                        raise TimeoutError("Container runtime grant expired before delivery")
                                     frame = ControlEnvelope(
                                         session_generation=lease.session_generation,
                                         sequence=self.bridge._sequence + 1,
                                         kind="runtime_lease",
-                                        payload={"expires_at_ms": int(renewed.timestamp() * 1000)},
+                                        payload={"ttl_ms": ttl_ms},
                                     )
-                                    await self.bridge.socket.send_text(frame.to_json())
+                                    await socket.send_text(frame.to_json())
                                     self.bridge._sequence = frame.sequence
                     except (TimeoutError, WebSocketDisconnect, OSError, RuntimeError):
-                        if self.lease == lease:
-                            raise
+                        if self.lease == lease and self.bridge.socket is socket:
+                            self.bridge.disconnect(socket)
+                            # Abort the local executor through session cleanup
+                            # without retiring the physical launcher or its runs.
+                            self.bridge.handoff = True
+                            self.task.cancel()
+                            return
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -1812,16 +1827,19 @@ class RemoteControlHost:
             for session in self.sessions.values()
         ), return_exceptions=True)
 
-    async def _welcome(self, bridge: Bridge, requirements_content: str | None) -> None:
+    async def _welcome(self, bridge: Bridge, requirements_content: str | None, *, acquiring_at: float) -> None:
         """Send Containers startup inputs before any ordinary launcher commands."""
         startup = None
         if bridge.containers:
             payload: dict[str, Any] = {"requirements_content": requirements_content}
             if bridge.lease.container_release is not None:
-                expires_at = bridge.lease.expires_at
-                if expires_at is None:
+                remaining_ms = bridge.lease.runtime_lease_ms
+                if remaining_ms is None:
                     raise AuthenticationError("Managed Container has no runtime lease")
-                payload["expires_at_ms"] = int(expires_at.timestamp() * 1000)
+                ttl_ms = _container_lease_grant(remaining_ms, acquiring_at)
+                if ttl_ms <= 0:
+                    raise AuthenticationError("Managed Container runtime lease expired before bootstrap")
+                payload["ttl_ms"] = ttl_ms
             startup = ControlEnvelope(
                 session_generation=bridge.lease.session_generation,
                 sequence=bridge._sequence + 1,
@@ -2177,7 +2195,7 @@ class RemoteControlHost:
             await socket.close(code=1008)
             raise AuthenticationError("launcher ownership was refused")
         existing = self.sessions.get(lease.worker_id)
-        if existing is not None:
+        if existing is not None and not existing.bridge.handoff:
             existing.lease = lease
             existing.lease_ref.lease = lease
             existing.owned_until = acquiring_at + DEFAULT_OWNER_LEASE_SECONDS
@@ -2185,16 +2203,16 @@ class RemoteControlHost:
             if existing.bridge.containers:
                 async with existing.bridge.lock:
                     existing.bridge.replace_socket(socket, lease)
-                    await self._welcome(existing.bridge, requirements_content)
+                    await self._welcome(existing.bridge, requirements_content, acquiring_at=acquiring_at)
             else:
                 existing.bridge.replace_socket(socket, lease)
-                await self._welcome(existing.bridge, requirements_content)
+                await self._welcome(existing.bridge, requirements_content, acquiring_at=acquiring_at)
             if capacity_canary:
                 self._start_capacity_canary(existing)
             return existing, FragmentAssembler()
         bridge = Bridge(socket, bootstrap, lease)
         worker = ApiExecutor(bridge, lease.worker_id, remote_static=hello.form == "static")
-        await self._welcome(bridge, requirements_content)
+        await self._welcome(bridge, requirements_content, acquiring_at=acquiring_at)
         session = RemoteSession(
             bridge, worker, lease, owned_until=acquiring_at + DEFAULT_OWNER_LEASE_SECONDS
         )
@@ -2222,7 +2240,7 @@ class RemoteControlHost:
                 reconciliation.cancel()
             await asyncio.gather(*session.reconciliation_tasks, return_exceptions=True)
             await session.release_lease()
-            if session.bridge.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
+            if session.bridge.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE or session.lease.container_release is not None:
                 socket = session.bridge.socket
                 session.bridge.disconnect(socket)
                 if socket.application_state is not WebSocketState.DISCONNECTED:

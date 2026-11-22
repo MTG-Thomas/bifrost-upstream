@@ -190,6 +190,10 @@ class CloudflareWorkerReservation(Base):
             "ix_cf_container_reservations", "installation_id", "container_reserved_at",
             postgresql_where=text("container_reserved_at IS NOT NULL"),
         ),
+        Index(
+            "ix_cf_container_execution", text("(container_envelope ->> 'execution_id')"),
+            postgresql_where=text("container_reserved_at IS NOT NULL"),
+        ),
         CheckConstraint(
             "num_nonnulls(container_tenant, container_release, container_envelope, container_reserved_at) IN (0, 4) "
             "AND (container_stopped_at IS NULL OR "

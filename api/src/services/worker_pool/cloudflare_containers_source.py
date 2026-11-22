@@ -8,7 +8,7 @@ from shared.sdk_modules import (
     ModuleSourceScope,
     validate_module_path,
 )
-from sqlalchemy import func, select
+from sqlalchemy import Text, func, literal_column, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.orm.cloudflare_approvals import CloudflareApproval
@@ -32,11 +32,16 @@ from src.services.worker_pool.cloudflare_slots import tenant_key
 
 
 def container_execution_reservations(execution_id):
-    """Identify managed executions even when their claim has already gone."""
+    """Use the latest assignment and fail closed when it has disappeared."""
     pin = CloudflareWorkerReservation
+    claim = ExecutionWorkerClaim
+    assigned_worker = select(claim.worker_id).where(
+        claim.family == WAKE_WORKFLOW, claim.subject_id == execution_id,
+    ).order_by(claim.claimed_at.desc(), claim.id.desc()).limit(1).scalar_subquery()
     return select(pin).where(
         pin.scope == CONTAINERS_SCOPE, pin.container_reserved_at.is_not(None),
-        pin.container_envelope["execution_id"].as_string() == str(execution_id),
+        pin.container_envelope.op("->>", return_type=Text)(literal_column("'execution_id'")) == str(execution_id),
+        or_(assigned_worker.is_(None), assigned_worker == pin.worker_id),
         pin.container_envelope["voided_unstarted"].as_boolean().is_not(True),
     )
 

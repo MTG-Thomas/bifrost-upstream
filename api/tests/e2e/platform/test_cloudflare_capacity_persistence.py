@@ -2041,6 +2041,7 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
         assert await reserve_container_canary(db, **canary_args, job_id=job_id, lease_token=uuid4()) is None
         canary = await reserve_container_canary(db, **canary_args, job_id=job_id, lease_token=lease_token)
         assert isinstance(canary, CloudflareWorkerReservation) and canary.canary_job_id == job_id
+        assert canary.container_tenant == "qualification-canary"
         worker = await db.get(ExecutionWorker, canary.worker_id)
         assert worker is not None and worker.state == "starting" and worker.reserved_for_dispatch_id is None
         assert await reserve_container_canary(db, **canary_args, job_id=job_id, lease_token=lease_token) is None
@@ -2239,12 +2240,13 @@ async def test_capacity_reports_overdue_unsettled_containers(db_session, install
 
 @pytest.mark.asyncio
 async def test_container_source_authority_follows_the_durable_workflow_claim(db_session, installation) -> None:
-    from shared.file_access import FileCaller, FileServiceError
+    from shared.file_access import FileCaller, FileServiceError, reject_container_workspace_access
     from shared.sdk_files import sdk_read_file, sdk_write_file
     from shared.sdk_modules import ModuleSourceError, ModuleSourceScope
     from src.models.orm.cloudflare_approvals import CloudflareApproval
     from src.models.orm.execution_workers import ExecutionWorkerClaim
     from src.models.orm.workflows import Workflow
+    from src.services.authorization.enforce import GLOBAL, authorize_operation
     from src.services.worker_pool.cloudflare_containers_admission import (
         LINUX_REVIEW_VERSION,
         LinuxReview,
@@ -2297,6 +2299,13 @@ async def test_container_source_authority_follows_the_durable_workflow_claim(db_
     with pytest.raises(FileServiceError, match="Workspace files are unavailable") as write:
         await sdk_write_file(caller, path=path, content="fixture", binary=False, location="workspace", scope=None)
     assert write.value.status_code == 403
+    for editor_operation in (
+        "workspace.files.editor.read", "workspace.files.editor.write",
+        "workspace.files.pull", "workspace.files.manifest",
+    ):
+        with pytest.raises(HTTPException, match="Workspace files are unavailable") as denied:
+            await authorize_operation(db_session, principal, editor_operation, GLOBAL)
+        assert denied.value.status_code == 403
     with pytest.raises(ModuleSourceError, match="authority has expired or changed"):
         await scoped_container_source(db_session, runtime, None, scope)
     approval.is_current = False
@@ -2306,6 +2315,13 @@ async def test_container_source_authority_follows_the_durable_workflow_claim(db_
     await db_session.execute(delete(ExecutionWorkerClaim).where(ExecutionWorkerClaim.worker_id == worker))
     with pytest.raises(ModuleSourceError, match="authority has expired or changed"):
         await scoped_container_source(db_session, runtime, workflow, scope)
+    primary = uuid4()
+    db_session.add(ExecutionWorker(id=primary, form="external", state="ready"))
+    await db_session.flush()
+    db_session.add(ExecutionWorkerClaim(worker_id=primary, subject_id=subject, family=WAKE_WORKFLOW))
+    await db_session.flush()
+    assert await scoped_container_source(db_session, runtime, workflow, scope) == scope
+    await reject_container_workspace_access(db_session, principal)
 
 
 @pytest.mark.asyncio
@@ -2359,7 +2375,8 @@ async def test_managed_container_ownership_fences_live_sessions(db_session, inst
 
 
 @pytest.mark.asyncio
-async def test_disconnect_preserves_unresolved_container_cleanup(db_session, installation) -> None:
+@pytest.mark.parametrize("fenced", [False, True], ids=["void", "fenced-absent"])
+async def test_disconnect_preserves_unresolved_container_cleanup(db_session, installation, fenced) -> None:
     from src.services.worker_pool.cloudflare_containers_admission import (
         ContainerAdmissionRefused,
         reserve_container,
@@ -2369,6 +2386,7 @@ async def test_disconnect_preserves_unresolved_container_cleanup(db_session, ins
     )
     from src.services.worker_pool.cloudflare_containers_rest import ContainersRest
     from src.services.worker_pool.cloudflare_containers_settlement import (
+        AbsentContainerStart,
         VoidContainerStart,
         settle_container_stop,
     )
@@ -2408,11 +2426,12 @@ async def test_disconnect_preserves_unresolved_container_cleanup(db_session, ins
         deployment_revision=1, bearer_version=1,
     )
     db_session.add(scope)
-    deadline = now - timedelta(minutes=9)
+    reserved_at = (now - timedelta(days=1)).replace(hour=12)
+    deadline = reserved_at + timedelta(minutes=1)
     pin = CloudflareWorkerReservation(
         worker_id=worker, installation_id=installation.id, scope="containers", deployment_revision=1,
         control_root_version=1, container_tenant="platform", container_release=release.digest,
-        container_reserved_at=now - timedelta(minutes=10),
+        container_reserved_at=reserved_at,
         container_envelope={
             "seconds": 300, "fixed_usd": "0.01", "second_usd": "0.001", "start_deadline": deadline.isoformat(),
         },
@@ -2443,7 +2462,10 @@ async def test_disconnect_preserves_unresolved_container_cleanup(db_session, ins
         ResourceIntent(target, journal.effect_id, 1, release.digest), journal.provider_id, journal.provider_version,
     )
     when = int(deadline.timestamp() * 1000)
-    receipt = VoidContainerStart(app, worker, uid, actor, when, when + 1000)
+    receipt = (
+        AbsentContainerStart(app, worker, uid, actor, when, when - 1000, when + 60_000)
+        if fenced else VoidContainerStart(app, worker, uid, actor, when, when + 1000)
+    )
     placements = [{"id": actor}]
     available = True
 
@@ -2462,6 +2484,10 @@ async def test_disconnect_preserves_unresolved_container_cleanup(db_session, ins
     async with httpx.AsyncClient(transport=httpx.MockTransport(management)) as http:
         rest = ContainersRest(http)
         token = SecretStr("synthetic-management-token")
+        if fenced:
+            early = AbsentContainerStart(app, worker, uid, actor, when, when - 1000, when + 59_999)
+            with pytest.raises(ObservationPending, match="expired start deadline"):
+                await settle_container_stop(db_session, rest, token=token, closure=early)
         with pytest.raises(ObservationPending, match="still has a provider placement"):
             await settle_container_stop(db_session, rest, token=token, closure=receipt)
         placements.clear()
@@ -2471,7 +2497,7 @@ async def test_disconnect_preserves_unresolved_container_cleanup(db_session, ins
     assert not await cloudflare_workers_remain(db_session, installation.id)
     assert await db_session.scalar(select(container_account_usage(literal(deadline))).where(
         CloudflareInstallation.id == installation.id,
-    )) == Decimal("0.01")
+    )) == Decimal("0.31" if fenced else "0.01")
     installation.desired_state = "enabled"
     installation.admitted_revision = 1
     await db_session.flush()

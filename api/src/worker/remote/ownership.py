@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import case, func, or_, select, text, update
+from sqlalchemy import Integer, case, cast, extract, func, or_, select, text, update
 from sqlalchemy.sql.elements import ColumnElement
 
 from src.core.database import get_liveness_db_context
@@ -35,7 +34,7 @@ class RemoteOwnerLease:
     credential_protocol: int = 1
     declared_slots: int = 0
     container_release: str | None = None
-    expires_at: datetime | None = None
+    runtime_lease_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -43,6 +42,12 @@ class CloudflareEnrollment:
     resource_uid: str
     version: str
     hostname: str
+
+
+def _remaining_lease_ms() -> ColumnElement[int]:
+    return cast(func.floor(1000 * extract(
+        "epoch", ExecutionWorker.remote_owner_lease_expires_at - func.clock_timestamp(),
+    )), Integer)
 
 
 def remote_enrollment_is_live(container_release: str | None = None) -> ColumnElement[bool]:
@@ -161,22 +166,22 @@ async def acquire_remote_owner(
             )
             .returning(
                 ExecutionWorker.remote_session_generation, ExecutionWorker.remote_credential_protocol,
-                ExecutionWorker.remote_owner_lease_expires_at,
+                _remaining_lease_ms(),
             )
         )
         acquired = row.one_or_none()
     if acquired is None:
         return None
-    generation, protocol, expires_at = acquired
+    generation, protocol, remaining_ms = acquired
     return RemoteOwnerLease(
-        worker_id, owner_id, launcher_id, generation, protocol, declared_slots, container_release, expires_at,
+        worker_id, owner_id, launcher_id, generation, protocol, declared_slots, container_release, remaining_ms,
     )
 
 
 async def renew_remote_owner(
     lease: RemoteOwnerLease, *, lease_seconds: int = DEFAULT_OWNER_LEASE_SECONDS
-) -> datetime | None:
-    """Return the committed DB deadline for the still-current owner generation."""
+) -> int | None:
+    """Return the remaining DB-clock lease in milliseconds for the current owner."""
     if lease_seconds <= 0:
         raise ValueError("remote owner lease must be positive")
     interval = f"{lease_seconds} seconds"
@@ -192,7 +197,7 @@ async def renew_remote_owner(
                 remote_enrollment_is_live(lease.container_release),
             )
             .values(remote_owner_lease_expires_at=func.now() + text(f"INTERVAL '{interval}'"))
-            .returning(ExecutionWorker.remote_owner_lease_expires_at)
+            .returning(_remaining_lease_ms())
         )
     return renewed
 

@@ -185,7 +185,8 @@ test("the instance lifecycle pins the intercept and launch options, then stops a
             events.push("start");
         },
         async setInactivityTimeout(ms) {
-            assert.equal(ms, 120_000);
+            assert.ok(ms > 420_000);
+            assert.ok(Date.now() + ms > slot.deadline);
             events.push("idle");
         },
         async destroy() {
@@ -209,11 +210,79 @@ test("the instance lifecycle pins the intercept and launch options, then stops a
     assert.equal(JSON.stringify([...stored]).includes("f".repeat(64)), false);
     assert.deepEqual(await controller().stop(pin().uid), { status: "conflict" });
     await controller().restore();
+    stored.delete("deadline");
+    await controller().alarm();
+    assert.equal(stored.get("deadline"), slot.deadline);
     t.mock.timers.setTime(slot.deadline);
     await controller().alarm();
     assert.deepEqual(await controller().stop(slot.uid), { status: "pending" });
     assert.deepEqual(events, ["intercept", "start", "idle", "idle", "destroy"]);
     assert.equal(registry().closeStart(slot.uid, actor, Date.now()).status, "pending");
+});
+
+test("a registry authorization survives a local deadline advance; a throwing start can close absent", async (t) => {
+    const { db, registry, pin } = fixture(1);
+    t.after(() => db.close());
+    t.mock.timers.enable({ apis: ["Date"], now: 100 });
+    const slot = pin();
+    const actor = "b".repeat(64);
+    const stored = new Map();
+    let starts = 0;
+    const scope = registry();
+    const controller = () => new ContainerInstanceLifecycle({
+        id: actor,
+        blockConcurrencyWhile: async (action) => action(),
+        storage: {
+            get: async (key) => stored.get(key), put: async (key, value) => stored.set(key, value),
+            setAlarm: async () => {},
+        },
+        container: {
+            running: false,
+            interceptOutboundHttps() {},
+            start() { starts++; throw new Error("injected allocation error"); },
+            destroy() { assert.fail("No running placement to destroy"); },
+        },
+    }, {
+        reserve: (binding) => scope.reserve(binding),
+        async authorizeStart(...args) {
+            const result = scope.authorizeStart(...args);
+            t.mock.timers.setTime(slot.startDeadline + 1);
+            return result;
+        },
+        closeAbsent: (...args) => scope.closeAbsent(...args),
+    }, {
+        origin: "https://ingress.example.test", intercept: {}, release: "c".repeat(64),
+        image: `registry.cloudflare.com/${"a".repeat(32)}/bifrost-${slot.installation.replaceAll("-", "")}-r2@${slot.image}`,
+    });
+    assert.equal((await controller().start(slot, "f".repeat(64))).status, "pending");
+    assert.equal((await controller().start(slot, "f".repeat(64))).status, "pending");
+    assert.equal(starts, 1);
+    assert.equal((await controller().closeAbsent(slot.uid, Date.now())).status, "pending");
+    t.mock.timers.setTime(slot.startDeadline + 60_000);
+    const receipt = await controller().closeAbsent(slot.uid, Date.now());
+    assert.deepEqual(receipt, {
+        status: "absent", uid: slot.uid, instance: actor, authorizedAt: 100,
+        startDeadline: slot.startDeadline, closedAt: Date.now(),
+    });
+    assert.equal(scope.observeStart(slot.uid, actor, 101).status, "conflict");
+    assert.equal(scope.reserve(pin()).status, "full");
+    assert.equal(scope.retire(slot.uid, actor, receipt.closedAt).status, "retired");
+    assert.equal(scope.reserve(pin()).status, "reserved");
+});
+
+test("interceptors refuse asynchronous registry proofs", async () => {
+    const guest = new Socket();
+    const upstream = new Socket();
+    const registry = { relayDeadline: async () => Date.now() + 1000, chargeRelay: async () => true };
+    relayControlSockets(registry, "uid", "instance", guest, upstream);
+    guest.frame("no relay");
+    assert.deepEqual(guest.closed, [1008]);
+    assert.deepEqual(upstream.sent, []);
+    const response = await forwardContainerHttp(
+        registry, "uid", "instance", new Request("https://ingress.example.test/api/sdk/config/get"),
+        "https://ingress.example.test", {}, () => assert.fail("Asynchronous charges cannot authorize egress"),
+    );
+    assert.equal(response.status, 429);
 });
 
 test("the control relay preserves fragments and fences both directions across reconnects", (t) => {

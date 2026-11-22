@@ -56,23 +56,23 @@ def test_managed_container_lease_renews_only_up_to_the_absolute_deadline(monkeyp
         launcher_id=uuid4(), incarnation_id=uuid4(), job_uid=None, pod_uid=None,
         hostname="runner", form="external", resource_uid="fixture",
     )
-    now, wall_now = 100.0, 1000.0
+    now = 100.0
     monkeypatch.setattr("src.worker.remote.launcher.time.monotonic", lambda: now)
-    monkeypatch.setattr("src.worker.remote.launcher.time.time", lambda: wall_now)
+    monkeypatch.setattr("src.worker.remote.launcher.time.time", lambda: 1)
     set_timer = Mock()
     monkeypatch.setattr("src.worker.remote.launcher.signal.setitimer", set_timer)
     launcher = Launcher(
         AsyncMock(), identity=identity, secret="derived", containers=True,
         container_release="a" * 64, container_deadline=125.0,
     )
-    launcher.grant_runtime_lease(1020000)
+    launcher.grant_runtime_lease(20_000)
     set_timer.assert_called_once_with(signal.ITIMER_REAL, 20.0)
-    now, wall_now = 110.0, 1010.0
-    launcher.grant_runtime_lease(1030000)
+    now = 110.0
+    launcher.grant_runtime_lease(20_000)
     set_timer.assert_called_with(signal.ITIMER_REAL, 15.0)
-    now, wall_now = 125.0, 1025.0
+    now = 125.0
     with pytest.raises(RuntimeError, match="already expired"):
-        launcher.grant_runtime_lease(1045000)
+        launcher.grant_runtime_lease(20_000)
     assert set_timer.call_count == 2
 
 
@@ -99,7 +99,8 @@ async def test_managed_container_drains_after_idle_and_fences_new_work() -> None
     assert launcher.retired.is_set()
     assert ControlEnvelope.from_json(socket.send.await_args_list[0].args[0]).payload == {"event": "draining"}
     await launcher.command({"id": "dispatch", "action": "workflow", "payload": {}}, generation=1)
-    assert "idle deadline" in ControlEnvelope.from_json(socket.send.await_args.args[0]).payload["error"]
+    refusal = ControlEnvelope.from_json(socket.send.await_args.args[0]).payload
+    assert refusal["error_type"] == "MemoryError" and "idle deadline" in refusal["error"]
 
 
 @pytest.mark.asyncio

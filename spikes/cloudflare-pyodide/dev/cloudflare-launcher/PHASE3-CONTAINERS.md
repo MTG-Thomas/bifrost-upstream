@@ -262,8 +262,10 @@ inventory installation-local and outside portable manifests.
    signal/destroy when needed. Bifrost
    provides a renewable runtime lease and an absolute deadline. The
    supervisor exits when authority expires, and the provider enforces a
-   one-shot hard-stop deadline. Arm provider inactivity timeout after
-   start and on DO reinitialization for a still-running instance.
+   one-shot hard-stop deadline. Arm the provider inactivity backup after
+   start and on DO reinitialization for a still-running instance. Its
+   deadline follows both the absolute alarm and the full local idle and
+   drain window. The launcher owns graceful idle stop.
    Completion of a bounded startup/exit monitor, lack of traffic and
    reset have distinct meanings. At idle, stop DO pings and long-lived
    monitoring that holds the DO active. Observe provider instances via
@@ -417,7 +419,9 @@ blindly retry allocation. Reserve cleanup time before starting an instance.
    independently through application-wide instance readback.
    Exercise post-send cancellation and exact process retirement.
 4. Prove explicit idle stop and natural expiry on separate fresh
-   incarnations. For expiry require prior running and signed ready,
+   incarnations. Keep a workflow busy past the local idle window and
+   verify that the provider inactivity timeout does not interrupt it.
+   For expiry require prior running and signed ready,
    quiesce the owning DO and the supervisor's activity, and observe
    inactive with no destroy, alarm-driven stop or supervisor deadline
    beforehand. An allocation failure cannot pass this check.
@@ -510,6 +514,12 @@ For an expired reservation without a start fence, the registry first
 records a permanent void tombstone. This also covers a lost prepare.
 Bifrost then requires empty inventory for the fenced actor before it
 settles zero instance runtime and leaves the fixed control hold intact.
+A recorded start fence without an observed placement can close after a
+60-second boot observation window following the start deadline. The
+controller must obtain exact empty inventory and serialize closure with
+the instance actor. Bifrost independently repeats the inventory check
+before settlement and retains the full reserved charge. Hosted
+qualification must establish the observation window.
 A committed settlement can replay after provider inventory is collected.
 
 Egress readiness expires after five minutes. The authenticated scope
@@ -519,15 +529,18 @@ proof binds the exact application ID and provider version from inventory.
 An overdue unresolved placement blocks Container admission for its
 account with `CF_CONTAINERS_CLEANUP_PENDING`. Disconnect keeps cleanup
 and its credentials available until the stop is settled.
-The qualification canary holds a real account budget and platform seat
+The qualification canary holds a real account budget and installation seat
 under the Enable or reconcile job lease. It uses a short start window,
-no dispatch, and can obtain the first egress proof before admission opens.
+its own tenant key, and no dispatch. It can obtain the first egress proof
+before admission opens.
 
-The API sends its committed database ownership deadline in the signed-hello
-session's bootstrap and renews it in that session's ordered control stream.
-The supervisor's watchdog uses the earlier of that deadline and the
-incarnation's pinned absolute deadline. A reconnect cannot revive an
-expired process.
+The API sends a relative lease derived from the database clock, subtracting
+the elapsed send preparation time and a one-second transit margin. A
+supervisor needs its first grant within 15 seconds. It uses its own
+monotonic clock for later grants and keeps the pinned absolute deadline.
+An API crash ends any in-flight Container workflows at lease expiry unless
+a fenced API owner reconnects and renews first. A reconnect cannot revive
+an expired process.
 
 HTTP arrival accounting reserves the request line, all headers exposed by
 the Fetch API, and the announced body length or a 256-byte floor. It
