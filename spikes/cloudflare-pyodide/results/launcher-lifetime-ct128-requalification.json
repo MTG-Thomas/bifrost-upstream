@@ -1186,7 +1186,29 @@
       "command": "npm exec -- vitest run --pool=threads src/pages/settings/CloudflareCapacity.test.tsx",
       "location": "client",
       "passed": 18
+    },
+    {
+      "command": "./test.sh quality api",
+      "ruff": "passed",
+      "pyright": "passed",
+      "initial_failure": "Ruff found the merged combined-stack.py fixture's unused os import.",
+      "fix_source": "834759e8c474e150c19ab88f85bfe530f4b99de3"
+    },
+    {
+      "command": "npm --prefix client run tsc",
+      "passed": true
+    },
+    {
+      "command": "npm exec -- eslint src/pages/settings/CloudflareCapacity.tsx src/pages/settings/CloudflareCapacity.test.tsx",
+      "location": "client",
+      "passed": true
     }
   ],
-  "fleet_policy": "Preset B is the new-installation activation suggestion in this branch. Release requires meter requalification. The policy-save fleet-fit check still applies."
+  "fleet_policy": "Preset B is the new-installation activation suggestion in this branch. Release requires meter requalification. The policy-save fleet-fit check still applies.",
+  "cleanup": "Verified absence of the owned CT128 Docker containers, volumes, network and build image tag. Removed the superseded archive and duplicate harness staging folder.",
+  "not_run": [
+    "Hosted Workers validation",
+    "Meter or bundle pin requalification",
+    "Broader backend or browser suites"
+  ]
 }
