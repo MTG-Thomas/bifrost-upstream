@@ -2160,6 +2160,60 @@ async def test_capacity_reports_overdue_unsettled_containers(db_session, install
 
 
 @pytest.mark.asyncio
+async def test_container_source_authority_follows_the_durable_workflow_claim(db_session, installation) -> None:
+    from shared.sdk_modules import ModuleSourceError, ModuleSourceScope
+    from src.models.orm.cloudflare_approvals import CloudflareApproval
+    from src.models.orm.execution_workers import ExecutionWorkerClaim
+    from src.models.orm.workflows import Workflow
+    from src.services.worker_pool.cloudflare_containers_admission import (
+        LINUX_REVIEW_VERSION,
+        LinuxReview,
+        linux_review_digest,
+    )
+    from src.services.worker_pool.cloudflare_containers_source import (
+        scoped_container_source,
+    )
+
+    release, _, _ = make_release()
+    worker, workflow_id, subject = uuid4(), uuid4(), uuid4()
+    now = datetime.now(UTC)
+    path = "workflows/native.py"
+    workflow = Workflow(id=workflow_id, name="fixture", function_name="run", path=path)
+    db_session.add_all([workflow, ExecutionWorker(id=worker, form="external", state="ready", capacity_scope="containers")])
+    await db_session.flush()
+    review = LinuxReview(
+        findings=frozenset({"CF_NATIVE"}), release_digest=release.digest, installation_id=installation.id,
+        deployment_revision=1, consent_version=installation.consent_version,
+        worker_ingress_origin=installation.worker_ingress_origin, egress="worker-ingress-only-v1",
+        path=path, function_name="run", source_pins={path: "a" * 64}, wheels={},
+        memory_bytes=128, timeout_seconds=60, ingress_bytes=100, outbound_bytes=100,
+        previous_revision=None, inactive_history_count=0,
+    ).model_dump(mode="json")
+    revision = linux_review_digest(workflow_id, None, review)
+    approval = CloudflareApproval(
+        revision=revision, workflow_id=workflow_id, policy_version=LINUX_REVIEW_VERSION,
+        accepted_by="fixture", declaration=review,
+    )
+    db_session.add_all([
+        approval,
+        ExecutionWorkerClaim(worker_id=worker, subject_id=subject, family=WAKE_WORKFLOW),
+        CloudflareWorkerReservation(
+            worker_id=worker, installation_id=installation.id, scope="containers", deployment_revision=1,
+            control_root_version=1, container_tenant="platform", container_release=release.digest,
+            container_reserved_at=now, container_envelope={"seconds": 300, "approval": revision},
+        ),
+    ])
+    await db_session.flush()
+    runtime = SimpleNamespace(credential_id=subject, workflow_id=workflow_id, organization_id=None)
+    scope = ModuleSourceScope(solution_id=None, global_repo_access=True)
+    assert (await scoped_container_source(db_session, runtime, workflow, scope)).source_hashes == {path: "a" * 64}
+    approval.is_current = False
+    await db_session.flush()
+    with pytest.raises(ModuleSourceError, match="approval is unavailable"):
+        await scoped_container_source(db_session, runtime, workflow, scope)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["deadline", "settled", "release"])
 async def test_managed_container_ownership_fences_live_sessions(db_session, installation, monkeypatch, change) -> None:
     from src.worker.remote import ownership

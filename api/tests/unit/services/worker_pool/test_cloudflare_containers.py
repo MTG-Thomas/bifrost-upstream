@@ -7,7 +7,7 @@ from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
 import httpx
@@ -212,24 +212,36 @@ async def test_owned_egress_probe_challenges_scope_and_requires_api_witness(case
     now, origin, digest = datetime.now(UTC), "https://worker.example.test", "a" * 64
     endpoint = "https://scope.example.test"
     token = SecretStr("fixture-scope-authentication-token")
+    reservation = SimpleNamespace(
+        installation_id=installation, deployment_revision=1, worker_id=worker,
+        container_tenant="platform", container_reserved_at=now,
+        container_envelope={
+            "seconds": 500, "start_deadline": (now + timedelta(seconds=20)).isoformat(),
+            "image_digest": "sha256:" + "e" * 64, "instance_type": "standard-1",
+            "credential_version": 1, "ingress_bytes": 100, "outbound_bytes": 100,
+        },
+    )
     db = AsyncMock()
     db.get.side_effect = [
         SimpleNamespace(id=installation, account_id="e" * 32, retired_at=None,
                         desired_state="enabled", desired_revision=1, worker_ingress_origin=origin),
         SimpleNamespace(endpoint=endpoint, bearer_version=1), object(),
     ]
-    from unittest.mock import Mock
-
-    db.execute.return_value = Mock(one_or_none=Mock(return_value=SimpleNamespace(
-        provider_id=APP_ID, provider_version=APP_VERSION,
-    )))
-    db.scalar.side_effect = [worker, now, None if case == "no-ingress-witness" else worker]
+    db.execute.side_effect = [
+        Mock(one_or_none=Mock(return_value=SimpleNamespace(provider_id=APP_ID, provider_version=APP_VERSION))),
+        Mock(one_or_none=Mock(return_value=(reservation, "e" * 32))),
+    ]
+    db.scalar.side_effect = [now, None if case == "no-ingress-witness" else worker]
 
     def probe(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST" and str(request.url) == endpoint + "/v1/egress-probe"
         assert request.headers["authorization"] == f"Bearer {token.get_secret_value()}"
         body = json.loads(request.content)
-        assert body["worker_id"] == str(worker) and len(body["nonce"]) == 43
+        pin = body["pin"]
+        assert pin["worker"] == str(worker) and len(body["nonce"]) == 43
+        assert pin["deadline"] - pin["reservedAt"] == 500_000
+        assert pin["startDeadline"] - pin["reservedAt"] == 20_000
+        assert body["control_key"] == "f" * 64
         if case == "redirect":
             return httpx.Response(307, headers={"location": "https://unrelated.example.test"})
         return httpx.Response(200, json={
@@ -240,7 +252,11 @@ async def test_owned_egress_probe_challenges_scope_and_requires_api_witness(case
         })
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(probe), follow_redirects=True) as client:
-        with patch("src.services.worker_pool.cloudflare_containers_egress.open_credential", return_value=token):
+        with (
+            patch("src.services.worker_pool.cloudflare_containers_egress.open_credential", return_value=token),
+            patch("src.services.worker_pool.cloudflare_containers_egress.load_managed_control_key",
+                  new=AsyncMock(return_value="f" * 64)),
+        ):
             proof = await verify_container_egress(
                 db, client, installation_id=installation, revision=1, release_digest=digest,
                 origin=origin, probe_worker_id=worker,

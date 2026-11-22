@@ -21,9 +21,11 @@ from src.models.orm.platform_jobs import PlatformJob
 from src.services.worker_pool.cloudflare_containers_policy import (
     CONTAINERS_SCOPE,
     container_identity_matches,
+    container_provider_pin,
 )
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
+    load_managed_control_key,
     open_credential,
 )
 from src.services.worker_pool.cloudflare_tunnel_rest import dedicated_hostname
@@ -122,11 +124,15 @@ async def _probe_container_egress(
     if app is None or app.provider_id is None or app.provider_version is None:
         return None
     pin = CloudflareWorkerReservation
-    binding = await db.scalar(select(pin.worker_id).join(PlatformJob, _active_probe_job()).where(
+    worker = ExecutionWorker
+    binding = (await db.execute(select(pin, worker.capacity_resource_uid).join(
+        worker, worker.id == pin.worker_id,
+    ).join(PlatformJob, _active_probe_job()).where(
         pin.worker_id == probe_worker_id, pin.installation_id == installation_id,
         pin.deployment_revision == revision, pin.canary_job_id.is_not(None),
+        worker.state == "starting",
         container_identity_matches(probe_worker_id, release_digest),
-    ))
+    ))).one_or_none()
     if binding is None:
         return None
     ref = CredentialRef(installation_id, installation.account_id, "scope_bearer", CONTAINERS_SCOPE, scope.bearer_version)
@@ -137,12 +143,23 @@ async def _probe_container_egress(
     assert observed_at is not None
     nonce = new_nonce()
     try:
+        reservation, resource_uid = binding
+        if resource_uid is None:
+            return None
         token = open_credential(ref, credential).get_secret_value()
         endpoint = ExternalCapacityClient.check_configuration(scope.endpoint, token)
+        provider_pin = container_provider_pin(reservation, resource_uid)
+        if provider_pin["credentialVersion"] != scope.bearer_version:
+            return None
+        control_key = await load_managed_control_key(db, reservation, resource_uid)
         async with http.stream(
             "POST", f"{endpoint}/v1/egress-probe",
             headers={"Authorization": f"Bearer {token}", "X-Bifrost-Capacity-Scope": CONTAINERS_SCOPE},
-            json={"worker_id": str(probe_worker_id), "nonce": nonce},
+            json={
+                "pin": provider_pin, "nonce": nonce, "control_key": control_key, "origin": origin,
+                "release_digest": release_digest, "application_id": app.provider_id,
+                "provider_version": app.provider_version,
+            },
             timeout=CAPACITY_REQUEST_SECONDS, follow_redirects=False,
         ) as response:
             response.raise_for_status()
@@ -159,7 +176,6 @@ async def _probe_container_egress(
 
     # The scope's report alone cannot witness signed control. Only the API
     # accepts this nonce, over the dedicated ingress, on the reserved canary.
-    worker = ExecutionWorker
     signed = await db.scalar(select(worker.id).join(pin, pin.worker_id == worker.id).join(
         PlatformJob, _active_probe_job(),
     ).where(

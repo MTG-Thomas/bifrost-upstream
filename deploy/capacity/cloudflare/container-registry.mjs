@@ -227,3 +227,112 @@ export function relayControlSockets(registry, uid, instance, guest, ingress) {
         source.addEventListener("error", () => close(1011, "Container relay failed"));
     }
 }
+
+// Operate on the exact ingress route matrix shipped with the Worker. This
+// is an outer allowlist: Bifrost still authorizes the run credential and
+// verifies the matched handler and route parameters on every request.
+function allowsIngressRoute(policy, request, url) {
+    let decoded;
+    try {
+        decoded = decodeURIComponent(url.pathname);
+    } catch {
+        return false;
+    }
+    if (url.pathname.length > 4096 || /[\\%?#\u0000-\u001f\u007f\ufffd]/.test(decoded)
+        || decoded.slice(1).split("/").some(segment => !segment || segment === "." || segment === "..")) {
+        return false;
+    }
+    if (/%2f/i.test(url.pathname)) {
+        const prefix = "/api/sdk/modules/";
+        if (!url.pathname.startsWith(prefix)
+            || url.pathname.slice(prefix.length) !== encodeURIComponent(decoded.slice(prefix.length))) return false;
+    } else if (Array.from(url.pathname.matchAll(/%([a-f0-9]{2})/gi)).some(([, code]) =>
+        /[A-Za-z0-9._~-]/.test(String.fromCharCode(Number.parseInt(code, 16))))) {
+        return false;
+    }
+    if (decoded.startsWith("/api/sdk/modules/") && !decoded.endsWith(".py")) return false;
+    return Object.entries(policy.routes).some(([path, methods]) => {
+        if (!methods.includes(request.method)) return false;
+        const parts = path.split("/");
+        const actual = decoded.split("/");
+        return parts.length <= actual.length && parts.every((part, i) => {
+            if (part === "{path:path}") return i < actual.length;
+            if (i >= actual.length) return false;
+            return part.startsWith("{") || part === actual[i];
+        }) && (parts.at(-1) === "{path:path}" || actual.length === parts.length);
+    });
+}
+
+function outboundHeaders(headers, names) {
+    return new Headers(names.flatMap(name => {
+        const value = headers.get(name);
+        return value === null ? [] : [[name, value]];
+    }));
+}
+
+function byteSize(headers, line) {
+    const encoded = new TextEncoder();
+    let bytes = encoded.encode(line).byteLength;
+    for (const [name, value] of headers) bytes += encoded.encode(name + ": " + value + "\r\n").byteLength;
+    return bytes + 2;
+}
+
+function meterBody(body, charge, signal) {
+    if (!body) return null;
+    const source = body.getReader();
+    return new ReadableStream({
+        async pull(controller) {
+            try {
+                signal.throwIfAborted();
+                const { done, value } = await source.read();
+                if (done) controller.close();
+                else if (value.byteLength && !charge(value.byteLength)) {
+                    await source.cancel();
+                    controller.error(new Error("Container relay budget exhausted"));
+                } else {
+                    controller.enqueue(value);
+                }
+            } catch (error) {
+                controller.error(error);
+            }
+        },
+        cancel(reason) { return source.cancel(reason); },
+    });
+}
+
+export async function forwardContainerHttp(registry, uid, instance, request, origin, policy, fetchUpstream = fetch) {
+    const url = new URL(request.url);
+    if (url.protocol !== "https:" || url.origin !== origin || url.username || url.password || url.hash
+        || request.headers.get("host") !== url.host || request.headers.has("upgrade")
+        || policy.version !== 1 || !allowsIngressRoute(policy, request, url)) {
+        return new Response(null, { status: 403 });
+    }
+    const deadline = registry.relayDeadline(uid, instance);
+    const remaining = deadline === null ? 0 : deadline - Date.now();
+    const charge = (direction) => (bytes) => registry.chargeRelay(uid, instance, direction, bytes, Date.now());
+    const sent = charge("outbound");
+    const received = charge("ingress");
+    const headers = outboundHeaders(request.headers, ["accept", "authorization", "content-type"]);
+    if (remaining <= 0 || !sent(byteSize(headers, `${request.method} ${url.pathname}${url.search}\r\n`))) {
+        return new Response(null, { status: 429 });
+    }
+    const signal = AbortSignal.timeout(remaining);
+    try {
+        const response = await fetchUpstream(url, {
+            method: request.method, headers, body: meterBody(request.body, sent, signal),
+            redirect: "manual", signal, duplex: "half",
+        });
+        if (response.status >= 300 && response.status < 400) {
+            await response.body?.cancel();
+            return new Response(null, { status: 403 });
+        }
+        const reply = outboundHeaders(response.headers, ["content-type", "content-disposition", "retry-after"]);
+        if (!received(byteSize(reply, `${response.status}\r\n`))) {
+            await response.body?.cancel();
+            return new Response(null, { status: 429 });
+        }
+        return new Response(meterBody(response.body, received, signal), { status: response.status, headers: reply });
+    } catch {
+        return new Response(null, { status: 502 });
+    }
+}

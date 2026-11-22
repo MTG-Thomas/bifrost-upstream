@@ -1,11 +1,11 @@
 import asyncio
+from hashlib import sha256
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi import HTTPException
-
 from shared.sdk_modules import ModuleSourceError, ModuleSourceScope
 from src.core.principal import UserPrincipal
 from src.models.contracts.workflow_permissions import WorkflowPermissionMode
@@ -81,6 +81,9 @@ class _ScopeDb:
 
     async def get(self, model, _identity, **_kwargs):
         return self.workflow if model.__name__ == "Workflow" else self.solution
+
+    async def execute(self, _query):
+        return SimpleNamespace(all=lambda: [])
 
 
 async def test_requirements_http_contract_is_retained():
@@ -199,6 +202,26 @@ async def test_direct_module_source_preserves_supported_python_paths(path):
     assert result == module
     lookup.assert_awaited_once_with(path)
 
+
+async def test_container_module_lookup_never_probes_outside_approved_solution_closure():
+    from shared.sdk_modules import fetch_module_source, resolve_module_name
+
+    content = "VALUE = 1"
+    digest = sha256(content.encode()).hexdigest()
+    path = f"_solutions/{SOLUTION_A}/pkg/helper.py"
+    module = {"content": content, "path": path, "hash": digest}
+    scope = ModuleSourceScope(SOLUTION_A, False, {path: digest})
+    with patch(f"{SERVICE}.get_module", new=AsyncMock(return_value=module)) as lookup:
+        assert (await resolve_module_name("pkg", scope=scope))["kind"] == "namespace"
+        assert (await resolve_module_name("pkg.unreviewed", scope=scope))["kind"] == "not_found"
+        with pytest.raises(ModuleSourceError, match="outside the approved source closure"):
+            await fetch_module_source(f"_solutions/{SOLUTION_A}/pkg/unreviewed.py", scope=scope)
+        lookup.assert_not_awaited()
+        assert (await resolve_module_name("pkg.helper", scope=scope))["content"] == content
+        lookup.assert_awaited_once_with(path)
+        lookup.return_value = {**module, "content": "VALUE = 2"}
+        with pytest.raises(ModuleSourceError, match="differs from the approved source"):
+            await fetch_module_source(path, scope=scope)
 
 async def test_workflow_module_route_rejects_git_metadata_without_repo_permission():
     from src.routers.sdk_modules import fetch_module

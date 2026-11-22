@@ -135,6 +135,34 @@ def container_deadline_sql():
     )
 
 
+def container_provider_pin(
+    reservation: CloudflareWorkerReservation, resource_uid: str,
+) -> dict[str, str | int]:
+    """Serialize one durable reservation to the Containers prepare/start wire."""
+    envelope = reservation.container_envelope
+    reserved_at = reservation.container_reserved_at
+    if envelope is None or reserved_at is None or reservation.container_tenant is None:
+        raise ValueError("Container start lacks its durable budget and deadline")
+    try:
+        seconds = envelope["seconds"]
+        start_deadline = datetime.fromisoformat(envelope["start_deadline"])
+        if type(seconds) is not int or not reserved_at < start_deadline < reserved_at + timedelta(seconds=seconds):
+            raise ValueError
+        reserved_ms = int(reserved_at.timestamp() * 1000)
+        return {
+            "installation": str(reservation.installation_id), "revision": reservation.deployment_revision,
+            "worker": str(reservation.worker_id), "uid": resource_uid, "tenant": reservation.container_tenant,
+            "image": envelope["image_digest"], "instance": envelope["instance_type"],
+            "credentialVersion": envelope["credential_version"],
+            "reservedAt": reserved_ms, "seconds": seconds,
+            "startDeadline": int(start_deadline.timestamp() * 1000),
+            "deadline": reserved_ms + seconds * 1000,
+            "ingressBytes": envelope["ingress_bytes"], "outboundBytes": envelope["outbound_bytes"],
+        }
+    except (KeyError, TypeError, ValueError, OverflowError):
+        raise ValueError("Container start has a malformed durable budget or deadline") from None
+
+
 def container_reserve_cost(
     envelope: dict[str, str | int], now: datetime, start: datetime, end: datetime,
 ) -> Decimal:

@@ -11,6 +11,7 @@ import ctypes
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import time
@@ -22,6 +23,7 @@ from uuid import UUID, uuid4
 
 from shared.solution_git_stage import SOLUTION_GIT_CAPABILITY
 from shared.version import get_version
+
 from src.jobs.platform.policy import PlatformJobExecutor
 from src.services.execution.cpu_sampler import CPUSampler, get_clock_ticks
 from src.services.execution.memory_monitor import (
@@ -211,6 +213,7 @@ class Launcher:
         authenticated_control: bool = False,
         containers: bool = False,
         container_release: str | None = None,
+        container_probe_nonce: str | None = None,
     ) -> None:
         self.socket = socket
         self.identity = identity
@@ -218,6 +221,7 @@ class Launcher:
         self._authenticated_control = authenticated_control
         self.containers = containers
         self.container_release = container_release
+        self.container_probe_nonce = container_probe_nonce
         self.platform_stages = (
             PlatformStages(
                 {SOLUTION_GIT_CAPABILITY: StageProgram("src.worker.remote.solution_git_stage", 45)},
@@ -349,6 +353,8 @@ class Launcher:
     async def _hello(self, requirements: dict[str, Any]) -> None:
         current, limit = effective_memory_sample()
         self._hello_sequence += 1
+        nonce = self.container_probe_nonce or new_nonce()
+        self.container_probe_nonce = None
         hello = Hello(
             launcher_id=self.identity.launcher_id,
             incarnation_id=self.identity.incarnation_id,
@@ -358,7 +364,7 @@ class Launcher:
             form=self.identity.form,
             resource_uid=self.identity.resource_uid,
             issued_at=int(time.time()),
-            nonce=new_nonce(),
+            nonce=nonce,
             hello_sequence=self._hello_sequence,
             execution_lane=os.environ.get("BIFROST_POOL_WORKER_EXECUTION_LANE", "normal"),
             runtime_profile=LINUX_RUNTIME_PROFILE if self.containers else None,
@@ -925,10 +931,14 @@ async def _run_launcher(
     identity = load_launcher_identity()
     containers = identity.form == "external" and "BIFROST_WORKER_CONTROL_SECRET" in os.environ
     container_release = None
+    probe_nonce = None
     if os.environ.get("BIFROST_BAKED_WHEELS_ONLY") == "1":
         container_release = os.environ.pop("BIFROST_CONTAINER_RELEASE", "")
+        probe_nonce = os.environ.pop("BIFROST_CONTAINER_PROBE_NONCE", None)
         if not containers or not api_url.startswith("https://") or not container_release:
             raise RuntimeError("The Container release requires explicit incarnation, release and HTTPS ingress pins")
+        if probe_nonce is not None and re.fullmatch(r"[A-Za-z0-9_-]{43}", probe_nonce) is None:
+            raise RuntimeError("Invalid Container qualification challenge")
     secret = _load_containers_control_secret() if containers else os.environ["BIFROST_SECRET_KEY"]
     launcher: Launcher | None = None
     candidate: Launcher | None = None
@@ -953,6 +963,7 @@ async def _run_launcher(
                                 authenticated_control=bool(control_headers),
                                 containers=containers,
                                 container_release=container_release,
+                                container_probe_nonce=probe_nonce,
                             )
                         else:
                             # A lost welcome may follow a committed enrollment.

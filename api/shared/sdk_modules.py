@@ -28,7 +28,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import PureWindowsPath
 from uuid import UUID
 from weakref import WeakValueDictionary
@@ -56,6 +58,7 @@ class ModuleSourceScope:
 
     solution_id: str | None
     global_repo_access: bool
+    source_hashes: Mapping[str, str] | None = None
 
 
 class ModuleSourceError(Exception):
@@ -74,7 +77,11 @@ class ModuleSourceError(Exception):
 async def module_scope_for_principal(db, user, *, solution_id=None, global_repo_access=False) -> ModuleSourceScope:
     """Derive runtime source scope from its durable workflow; authorize human diagnostics."""
     from src.models.orm.workflows import Workflow
-    from src.services.authorization.enforce import allows_permission, load_caller, user_reach
+    from src.services.authorization.enforce import (
+        allows_permission,
+        load_caller,
+        user_reach,
+    )
     from src.services.solution_scope import get_active_solution
 
     runtime = user.runtime_authority
@@ -100,9 +107,16 @@ async def module_scope_for_principal(db, user, *, solution_id=None, global_repo_
             raise ModuleSourceError(403, "Solution source scope is unavailable")
         if runtime is not None:
             global_repo_access = solution.allow_outbound_access
-    return ModuleSourceScope(
+    scope = ModuleSourceScope(
         solution_id=None if solution_id is None else str(solution_id), global_repo_access=global_repo_access,
     )
+    if runtime is not None and runtime.kind == "workflow_execution":
+        from src.services.worker_pool.cloudflare_containers_source import (
+            scoped_container_source,
+        )
+
+        return await scoped_container_source(db, runtime, workflow, scope)
+    return scope
 
 
 def _resolution_lock(cache_key: str) -> asyncio.Lock:
@@ -192,6 +206,18 @@ async def resolve_module_name(
     global_repo_access = scope.global_repo_access
     validate_solution_id(solution_id)
     base_path = logical_name_to_base_path(name)
+    if scope.source_hashes is not None:
+        # Resolve only within the approved closure. Never probe another
+        # storage path or share cached import resolutions with other runs.
+        prefix = f"{SOLUTIONS_ROOT}/{solution_id}/" if solution_id else ""
+        for path, kind in ((f"{base_path}.py", "module"), (f"{base_path}/__init__.py", "package")):
+            storage_path = prefix + path
+            if storage_path in scope.source_hashes:
+                module = await fetch_module_source(storage_path, scope=scope)
+                return {**module, "kind": kind, "path": path, "storage_path": storage_path}
+        if any(path.startswith(f"{prefix}{base_path}/") for path in scope.source_hashes):
+            return {"kind": "namespace", "path": base_path}
+        return {"kind": "not_found", "path": base_path}
     scope_prefixes = [f"{SOLUTIONS_ROOT}/{solution_id}/"] if solution_id else [""]
     if not solution_id or global_repo_access:
         scope_prefixes.append("")
@@ -293,8 +319,18 @@ async def fetch_module_source(
         raise ModuleSourceError(400, "Invalid Python module source path")
     if scope is not None:
         validate_engine_storage_path(path, scope)
+        if scope.source_hashes is not None and path not in scope.source_hashes:
+            raise ModuleSourceError(403, "Module path is outside the approved source closure")
 
     module = await get_module(path)
     if module is None:
         raise ModuleSourceError(404, f"Module not found: {path}")
+    if scope is not None and scope.source_hashes is not None:
+        content = module.get("content")
+        expected = scope.source_hashes[path]
+        if (
+            not isinstance(content, str) or module.get("hash") != expected
+            or sha256(content.encode("utf-8")).hexdigest() != expected
+        ):
+            raise ModuleSourceError(403, "Module content differs from the approved source")
     return dict(module)

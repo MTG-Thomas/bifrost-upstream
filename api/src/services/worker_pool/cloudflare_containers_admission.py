@@ -362,6 +362,7 @@ async def reserve_container(
             **envelope, "approval": approval.revision, "instance_type": containers.instance_type,
             "credential_version": scope.bearer_version,
             "ingress_bytes": containers.ingress_bytes,
+            "image_digest": release.manifest.image_digest,
             "start_deadline": (now + timedelta(seconds=containers.start_timeout_seconds)).isoformat(),
         },
     )

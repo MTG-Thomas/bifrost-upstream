@@ -543,8 +543,14 @@ async def test_containers_bootstrap_round_trips_fragmented_requirements() -> Non
         launcher_id=LEASE.launcher_id, incarnation_id=LEASE.worker_id, job_uid=None, pod_uid=None,
         hostname="runner", form="external", resource_uid="resource-1",
     )
-    launcher = Launcher(launcher_socket, identity=identity, secret="derived-key", containers=True)
+    nonce = "n" * 43
+    launcher = Launcher(
+        launcher_socket, identity=identity, secret="derived-key", containers=True,
+        container_release="a" * 64, container_probe_nonce=nonce,
+    )
     await launcher.hello({})
+    assert json.loads(launcher_socket.send.await_args_list[0].args[0])["hello"]["nonce"] == nonce
+    assert launcher.container_probe_nonce is None
     assert launcher.requirements_content == content
     assert launcher._last_command_sequence == bridge._sequence == len(frames) - 1
     assert launcher.agent_template is None
