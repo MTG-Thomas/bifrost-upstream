@@ -1392,3 +1392,32 @@ absence, the revoked scoped token returned 404, and all disposable
 local resources were removed.
 
 See the [sanitized run receipt](../../results/cloudflare-scaleout-managed-hosted-8712.json).
+
+### Existing HTTPS Hosted Upgrade Run 2 at `6f021e7b9`
+
+The uninterrupted Upgrade procedure passed on CT128 with both pinned
+packages. The [Upgrade record](PHASE4-UPGRADE.md#existing-https-rehearsal-and-hosted-run-2-at-6f021e7b9)
+records the original ACK, provider retirement order, replacement canary
+and new execution.
+
+The hosted run on November 22, 2026 UTC verified both pins and the
+prior trial zone. Preset B Connect left admission closed. The worker
+preflight passed 100 routes, with eight handshakes and 92 reused requests
+on each IPv4 address. The two IPv6 addresses reached no TLS handshakes.
+Enable returned Action Required with `CF_DEPLOYMENT_UNVERIFIED` and
+execution class `remote_launcher`. No signed canary or launcher started.
+Upgrade was unrun and the trial proceeded to Disconnect.
+
+The opening cumulative estimate was $0.077550640967. The live API estimate
+read $0.00 through Connect, Enable and Disconnect. The final Bifrost
+ledger settled at $0.000000001707 incremental, bringing the cumulative
+estimate to $0.077550642674.
+
+Disconnect retired the installation. Independent listing and exact
+reads verified three script and two saved namespace 404s, the revoked
+token and DNS record 404s, and the tunnel tombstone with zero sessions.
+Both DNS authorities confirmed absence. No live ledger rows, held slots
+or retained credentials remained. The trial stack, relay, connector
+and private scratch were removed.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-hosted-upgrade-run2.json).

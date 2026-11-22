@@ -197,10 +197,34 @@ Use the private operator configuration with `--hosted-upgrade-config`.
    original ACK, retire the original API and give the successor up to
    40 seconds to take the scheduler lease. Recreate the trial worker
    with the exact successor API URL and wait for it to become ready.
-   Run a new workflow pinned to the replacement revision and
-   verify its terminal ACK. Read spend, Disconnect, and verify all
+   Give that exact worker up to 30 seconds to report a live lease, no
+   memory pressure and zero reservations. The successor's startup jobs
+   may reserve memory before it can claim the hold. Size the hold from
+   its current budget and verify 24 MiB remains free. Run a new workflow
+   pinned to the replacement revision and verify its terminal ACK.
+   Read spend, Disconnect, and verify all
    saved namespace IDs from the journal map values for both revisions.
 
 Terminal replay after a deliberate socket interruption is a separate
 local-only check. Hosted evidence from this procedure covers uninterrupted
 drain and completion.
+
+### Existing HTTPS Rehearsal and Hosted Run 2 at `6f021e7b9`
+
+CT128 passed the uninterrupted flow with `0.1.0-requal.1` and
+`0.1.0-requal.2`. Admission closed while the original claim was active.
+The original execution completed with one dispatch and a terminal ACK
+on the same connection. Before the first replacement upload, the
+fixture saw all three original script deletes and a namespace inventory
+without the four original namespace IDs. The original absence checkpoint
+preceded the first replacement readback by 136 ms. The replacement
+passed the signed canary and inventory readback, reopened admission,
+and finished a new execution with a terminal ACK. Final Disconnect
+verified six script and eight namespace 404s.
+
+Hosted Connect and worker preflight passed. The first Enable stopped
+before the canary at `CF_DEPLOYMENT_UNVERIFIED` in `remote_launcher`.
+The job and service logs did not identify the specific provider readback
+check. Upgrade was unrun. Disconnect verified all three owned script
+targets and both recorded namespaces absent.
+[Sanitized rehearsal and hosted receipt](../../results/cloudflare-scaleout-hosted-upgrade-run2.json)
