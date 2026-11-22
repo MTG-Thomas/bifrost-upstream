@@ -2553,6 +2553,19 @@ async def test_disconnect_preserves_unresolved_container_cleanup(db_session, ins
         trial.remote_hello_sequence = 1
         await db_session.flush()
         assert await _container_scope_cooldown(db_session, recovered) is None
+        another = ExecutionWorker(id=uuid4(), form="external", state="starting", capacity_scope="containers")
+        another_pin = CloudflareWorkerReservation(
+            worker_id=another.id, installation_id=installation.id, scope="containers", deployment_revision=1,
+            control_root_version=1, container_tenant=str(uuid4()), container_release=release.digest,
+            container_reserved_at=verdict.retry_at + timedelta(microseconds=1), container_envelope={"seconds": 300},
+        )
+        db_session.add(another)
+        await db_session.flush()
+        db_session.add(another_pin)
+        await db_session.flush()
+        assert await _container_scope_cooldown(db_session, recovered) is None
+        await db_session.delete(another_pin)
+        await db_session.delete(another)
         await db_session.delete(trial_pin)
         await db_session.delete(trial)
     else:

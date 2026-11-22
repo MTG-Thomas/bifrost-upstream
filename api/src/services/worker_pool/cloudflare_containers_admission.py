@@ -250,13 +250,12 @@ async def _container_scope_cooldown(
     retry_at = closed_at + CONTAINERS_PLACEMENT_COOLDOWN
     if capacity.now < retry_at:
         return ContainerAdmissionRefused("CF_CONTAINERS_COOLDOWN", retry_at)
-    trial = (await db.execute(select(worker.remote_hello_sequence).select_from(pin).join(
-        worker, worker.id == pin.worker_id,
-    ).where(
+    enrolled, pending = (await db.execute(select(
+        func.bool_or(worker.remote_hello_sequence > 0), func.bool_or(pin.container_stopped_at.is_(None)),
+    ).select_from(pin).join(worker, worker.id == pin.worker_id).where(
         *scope, pin.container_reserved_at > closed_at,
-        or_(pin.container_stopped_at.is_(None), worker.remote_hello_sequence > 0),
-    ).order_by(pin.container_reserved_at.desc()).limit(1))).one_or_none()
-    if trial is not None and trial.remote_hello_sequence == 0:
+    ))).one()
+    if pending and not enrolled:
         return ContainerAdmissionRefused("CF_CONTAINERS_COOLDOWN")
     return None
 
