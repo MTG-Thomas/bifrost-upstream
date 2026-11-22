@@ -337,7 +337,11 @@ async def _settle_enable(
         label = "Worker Ingress Probe Failed" if failure.stage.startswith("ingress_") else "Cloudflare Canary Failed"
         raise PlatformJobRequiresAction(
             f"{label} ({stage}, {reason})",
-            {"code": "CF_WORKER_INGRESS_UNVERIFIED", "canary_failure": failure.as_result()},
+            {
+                "code": "CF_WORKER_INGRESS_UNVERIFIED",
+                "canary_failure": failure.as_result(),
+                "http_connections": ingress.http_connections_as_result(),
+            },
         )
     await context.report("Checking Cloudflare Spend")
     async with get_db_context() as db:

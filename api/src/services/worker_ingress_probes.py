@@ -9,6 +9,7 @@ import secrets
 import socket
 import ssl
 from collections.abc import Awaitable, Callable
+from contextlib import aclosing
 from dataclasses import asdict, dataclass, field, replace
 from typing import TYPE_CHECKING, Literal, cast
 from urllib.parse import urlsplit
@@ -125,7 +126,7 @@ class _ProbeProgress:
     inflight: dict[object, CanaryFailure] = field(default_factory=dict)
     deadline_failure: CanaryFailure | None = None
     tls_verified: bool = False
-    fresh_connections: int = 0
+    tcp_connects_started: int = 0
     tls_handshakes_started: int = 0
     tls_handshakes_completed: int = 0
     reused_requests: int = 0
@@ -151,7 +152,7 @@ class RuntimeCanary:
 @dataclass(frozen=True, slots=True)
 class ProbeHttpConnections:
     address_family: str
-    fresh_connections: int
+    tcp_connects_started: int
     tls_handshakes_started: int
     tls_handshakes_completed: int
     reused_requests: int
@@ -291,7 +292,7 @@ async def _check_route(
         if event == "connection.connect_tcp.started":
             phase = "tcp_connect"
             if progress is not None:
-                progress.fresh_connections += 1
+                progress.tcp_connects_started += 1
         elif event == "connection.connect_tcp.complete":
             raw_stream = cast("AsyncNetworkStream", info["return_value"])
         elif event == "connection.start_tls.started":
@@ -347,12 +348,13 @@ async def _check_route(
                 # Consume HTTP framing to release the socket. Count raw bytes
                 # without retaining chunks or invoking content decompression.
                 size = 0
-                async for chunk in response.aiter_raw():
-                    size += len(chunk)
-                    if size > _MAX_PROBE_BODY_BYTES:
-                        break
-                else:
-                    return RouteProbe(method, route, status, True)
+                async with aclosing(response.aiter_raw()) as chunks:
+                    async for chunk in chunks:
+                        size += len(chunk)
+                        if size > _MAX_PROBE_BODY_BYTES:
+                            break
+                    else:
+                        return RouteProbe(method, route, status, True)
                 kind = "response_body_too_large"
             failure = describe(CanaryFailure("ingress_http", kind, status, address_family=family))
             return RouteProbe(method, route, status, False, error_class=kind, failure=failure)
@@ -509,7 +511,7 @@ async def probe_public_worker_ingress(origin: str) -> WorkerIngressProbeResult:
     result = await _probe_public_addresses(origin, host, attempts)
     return replace(result, http_connections=tuple(
         ProbeHttpConnections(
-            f"ipv{family}", progress.fresh_connections, progress.tls_handshakes_started,
+            f"ipv{family}", progress.tcp_connects_started, progress.tls_handshakes_started,
             progress.tls_handshakes_completed, progress.reused_requests,
         )
         for family, progress in attempts
