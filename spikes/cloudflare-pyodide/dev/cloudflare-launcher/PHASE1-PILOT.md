@@ -1026,3 +1026,29 @@ Removing the fixture hooks blocked Connect before the first API request.
 The rehearsal project, fixture process, networks, volumes and image tags
 were removed and checked for absence. Cloudflare billing remains
 hosted-only.
+
+### Disconnect replay and mixed test isolation
+
+The job regression also covers DNS and tunnel intents in `creating`
+with old observations and no provider receipt. It runs Disconnect
+twice using fresh autoflush-disabled sessions. The first call commits
+both absence records and retires the installation. The replay returns
+`disconnected` after checking the lease and revision, without needing the
+erased management credential. Before the replay fix, both the recorded
+and unrecorded tunnel cases returned `CF_MANAGEMENT_CREDENTIAL` on the
+second call.
+
+Two worker-pool tests originally failed with
+`ValueError: not enough values to unpack (expected 1, got 0)` when
+`launch_for_demand()` returned an empty list.
+
+- `test_managed_prepare_uses_the_uid_committed_before_provider_io`
+- `test_cloudflare_reserves_only_approved_fitting_dispatches_before_hello`
+
+Both tests wrongly assumed there was no live claimer. A controlled
+mixed run traced each synthetic dispatch through insert, assignment to a
+live static Linux executor, and deletion before the fixture controller
+could reserve a worker. The worker-pool fixtures now use a private clone
+of the migrated PostgreSQL template and a separate Redis database for
+controller telemetry. API, worker and scheduler services stay live for
+the persistence E2E tests in the same invocation.

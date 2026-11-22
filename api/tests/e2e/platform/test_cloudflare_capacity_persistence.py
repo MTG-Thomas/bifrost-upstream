@@ -30,8 +30,7 @@ from shared.models import (
 from sqlalchemy import delete, func, insert, literal, select, text, update
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import DBAPIError, IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from src.config import Settings
 from src.core.principal import UserPrincipal
 from src.jobs.platform import cloudflare_capacity as lifecycle_job
@@ -163,6 +162,7 @@ from tests.helpers.cloudflare_containers import (
     verified_egress,
 )
 from tests.helpers.cloudflare_containers import policy as container_policy
+from tests.helpers.isolation import isolated_test_database
 
 OPERATOR_ID = UUID("20cb7fe5-78e2-48d7-8f1e-8edcac69ffab")
 TEST_ORDER = WorkersReleaseOrder("1.0.0", 1)
@@ -630,24 +630,30 @@ def refuse_hosted_cloudflare(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("with_receipt", [True, False], ids=["recorded-tunnel", "unrecorded-tunnel"])
 async def test_managed_tunnel_disconnect_commits_absence_before_retirement(
-    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch, lifecycle_audit_actor,
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch, lifecycle_audit_actor, with_receipt,
 ) -> None:
     installation.reachability_mode = "managed_tunnel"
     installation.zone_id = _TunnelAPI.zone
     monkeypatch.setattr(cloudflare_tunnel, "get_settings", lambda: SimpleNamespace(cloudflare_tunnel_channel="compose"))
     provider = _TunnelAPI()
-    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
-        client = cloudflare_tunnel.adapter(http, installation, SecretStr("synthetic-cloudflare-management-token"))
-        await cloudflare_tunnel.prepare(db_session, installation, actor=str(OPERATOR_ID))
-        await db_session.flush()
-        with pytest.raises(CloudflareRestUnavailable):
+    await cloudflare_tunnel.prepare(db_session, installation, actor=str(OPERATOR_ID))
+    await db_session.flush()
+    dns = await cloudflare_tunnel.resource(db_session, installation, cloudflare_tunnel.DNS)
+    tunnel = await cloudflare_tunnel.resource(db_session, installation, cloudflare_tunnel.TUNNEL)
+    assert dns is not None and tunnel is not None
+    if with_receipt:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+            client = cloudflare_tunnel.adapter(http, installation, SecretStr("synthetic-cloudflare-management-token"))
+            with pytest.raises(CloudflareRestUnavailable):
+                await cloudflare_tunnel.provision_tunnel(db_session, installation, client)
             await cloudflare_tunnel.provision_tunnel(db_session, installation, client)
-        await cloudflare_tunnel.provision_tunnel(db_session, installation, client)
-    record = await cloudflare_tunnel.resource(db_session, installation, cloudflare_tunnel.DNS)
-    assert record is not None
-    record.state = "absent"
-    record.observed_at = datetime.now(UTC)
+        dns.state = "absent"
+        dns.observed_at = datetime.now(UTC)
+    else:
+        assert all(record.state == "creating" and record.provider_id is None for record in (dns, tunnel))
+        dns.observed_at = tunnel.observed_at = datetime.now(UTC) - timedelta(minutes=2)
     await db_session.flush()
 
     admin = _platform_operator()
@@ -671,12 +677,27 @@ async def test_managed_tunnel_disconnect_commits_absence_before_retirement(
     payload = lifecycle_job.CloudflareDisablePayload.model_validate(job.payload)
 
     assert await lifecycle_job.CLOUDFLARE_DISABLE_DEFINITION.handler(running, payload) == {"outcome": "disconnected"}
-    assert provider.tunnel and provider.tunnel["deleted_at"]
+    if with_receipt:
+        assert provider.tunnel and provider.tunnel["deleted_at"]
+    else:
+        assert provider.tunnel is None and provider.tunnel_creates == 0
     await db_session.refresh(installation)
     assert installation.retired_at is not None
     assert set(await db_session.scalars(select(CloudflareOwnedResource.state).where(
         CloudflareOwnedResource.installation_id == installation.id,
     ))) == {"absent"}
+    assert installation.api_token_version is None
+    retired_at = installation.retired_at
+    monkeypatch.setattr(lifecycle_job, "httpx", SimpleNamespace(
+        AsyncClient=lambda **_: httpx.AsyncClient(transport=httpx.MockTransport(_unexpected_retirement_request)),
+    ))
+    assert await lifecycle_job.CLOUDFLARE_DISABLE_DEFINITION.handler(running, payload) == {"outcome": "disconnected"}
+    await db_session.refresh(installation)
+    assert installation.retired_at == retired_at
+
+
+def _unexpected_retirement_request(_request: httpx.Request) -> httpx.Response:
+    pytest.fail("Disconnect replay contacted the provider after retirement")
 
 
 @pytest.fixture
@@ -2550,28 +2571,13 @@ async def isolated_capacity_session_factory(async_engine, monkeypatch):
     """Keep committed synthetic dispatches private to the test's claimers."""
     from src.core import database
 
-    url = async_engine.url
-    if url.host == "pgbouncer":
-        # The transaction pool exposes the application database only.
-        url = url.set(host="postgres")
-    name = f"capacity_test_{uuid4().hex}"
-    admin = create_async_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT", poolclass=NullPool)
-    race_engine = create_async_engine(url.set(database=name), poolclass=NullPool)
-    try:
-        async with admin.connect() as connection:
-            await connection.execute(text(f"CREATE DATABASE {name} TEMPLATE bifrost_test_template"))
-            try:
-                contexts = async_sessionmaker(race_engine, expire_on_commit=False, autoflush=False)
-                with monkeypatch.context() as patch:
-                    patch.setattr(database, "_async_session_factory", contexts)
-                    patch.setattr(database, "_dispatch_session_factory", contexts)
-                    patch.setattr(database, "_liveness_session_factory", contexts)
-                    yield async_sessionmaker(race_engine, expire_on_commit=False)
-            finally:
-                await race_engine.dispose()
-                await connection.execute(text(f"DROP DATABASE {name} WITH (FORCE)"))
-    finally:
-        await admin.dispose()
+    async with isolated_test_database(async_engine.url) as engine:
+        contexts = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+        with monkeypatch.context() as patch:
+            patch.setattr(database, "_async_session_factory", contexts)
+            patch.setattr(database, "_dispatch_session_factory", contexts)
+            patch.setattr(database, "_liveness_session_factory", contexts)
+            yield async_sessionmaker(engine, expire_on_commit=False)
 
 
 @pytest.mark.asyncio

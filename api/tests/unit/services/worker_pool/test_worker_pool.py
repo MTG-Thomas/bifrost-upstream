@@ -215,9 +215,7 @@ async def _clear_pool_state(sessions) -> None:  # type: ignore[no-untyped-def]
     async with sessions() as session:
         await session.execute(delete(WorkDispatch))
         await session.execute(delete(ExecutionWorker))
-        # The isolated unit harness stops executors after startup. Clear both
-        # queued demand and active jobs whose concurrency slots survived that
-        # stop, so each case owns the complete platform-job admission state.
+        # Each test owns platform-job admission state in the private database.
         await session.execute(delete(PlatformJob))
         await session.commit()
     # What a worker controller last published it can launch, and which
@@ -228,9 +226,6 @@ async def _clear_pool_state(sessions) -> None:  # type: ignore[no-untyped-def]
 
 @pytest.fixture(autouse=True)
 async def _clean(async_session_factory):
-    # Before too: the stack's executors register (with a measured budget)
-    # during the state reset and are stopped for unit runs; a row a killed
-    # one left "ready" would count as capacity.
     await _clear_pool_state(async_session_factory)
     yield
     await _clear_pool_state(async_session_factory)
