@@ -207,6 +207,8 @@ async def cloudflare_supervisor_loop(
         listener = asyncio.create_task(listen_for_pool_wake(
             settings.redis_url, {WAKE_CLOUDFLARE_CAPACITY: wake, WAKE_WORKFLOW: wake},
         ))
+        age_deadline = None
+        age_wake = None
         try:
             while not stop_event.is_set() and lease.holds_lease():
                 started = time.monotonic()
@@ -245,21 +247,24 @@ async def cloudflare_supervisor_loop(
                                 await prune_spend_receipt_keys(db)
                         except Exception:
                             logger.warning("Could not prune Cloudflare spend history", exc_info=True)
-                age_wake = None
+                deadline = None
                 try:
                     if lease.holds_lease() and any(c.burst_launch_allowed for c in controllers.values()):
-                        try:
-                            async with asyncio.timeout(lease.seconds_remaining()):
-                                deadline = await _next_launch_age(pass_started_at)
-                            if deadline is not None:
-                                age_wake = _schedule_launch_wake(wake, deadline)
-                        except Exception:
-                            logger.warning("Could not schedule Cloudflare launch-age wake", exc_info=True)
-                    await wait_for_next_pass(stop_event, wake, since=started, spacing=RECONCILE_SECONDS, sweep=SWEEP_SECONDS)
-                finally:
-                    if age_wake is not None:
-                        age_wake.cancel()
+                        async with asyncio.timeout(lease.seconds_remaining()):
+                            deadline = await _next_launch_age(pass_started_at)
+                    # An ordinary wake can run a pass before the deadline.
+                    # Keep the existing timer armed when the same row is due.
+                    if deadline != age_deadline:
+                        if age_wake is not None:
+                            age_wake.cancel()
+                        age_wake = _schedule_launch_wake(wake, deadline) if deadline is not None else None
+                        age_deadline = deadline
+                except Exception:
+                    logger.warning("Could not schedule Cloudflare launch-age wake", exc_info=True)
+                await wait_for_next_pass(stop_event, wake, since=started, spacing=RECONCILE_SECONDS, sweep=SWEEP_SECONDS)
         finally:
+            if age_wake is not None:
+                age_wake.cancel()
             listener.cancel()
             with suppress(asyncio.CancelledError):
                 await listener
