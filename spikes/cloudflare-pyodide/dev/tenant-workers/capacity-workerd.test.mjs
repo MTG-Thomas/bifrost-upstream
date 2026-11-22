@@ -78,6 +78,7 @@ let capacityCalls = 0;
 const hellos = new Map();
 const sockets = new Map();
 const canaries = new Map();
+let plannedReconnect;
 const upgrades = new WebSocketServer({noServer: true});
 const measuredBundle = process.env.BIFROST_QUALIFIED_CAPACITY_BUNDLE;
 const measuredLauncher = process.env.BIFROST_QUALIFIED_LAUNCHER_BUNDLE;
@@ -217,6 +218,7 @@ async function next(predicate) {
 
 const server = createServer(async (req, res) => {
   try {
+    const requestedAt = Date.now();
     const canary = canaries.get(req.url);
     if (canary) {
       assert.equal(req.method, 'GET');
@@ -269,7 +271,12 @@ const server = createServer(async (req, res) => {
     if (req.url.startsWith('/v1/')) capacityCalls++;
     const body = req.method === 'GET' ? undefined : await buffer(req);
     const response = await provider.fetch(base + req.url, {method: req.method, headers: req.headers, body});
-    res.writeHead(response.status, Object.fromEntries(response.headers));
+    const headers = Object.fromEntries(response.headers);
+    if (req.method === 'GET' && plannedReconnect?.path === req.url &&
+        requestedAt <= plannedReconnect.finished && Date.now() >= plannedReconnect.started) {
+      headers['X-Fixture-Planned-Reconnect'] = 'true';
+    }
+    res.writeHead(response.status, headers);
     res.end(Buffer.from(await response.arrayBuffer()));
   } catch {
     res.writeHead(502).end();
@@ -443,8 +450,13 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
     const verifySession = async () => {
       const records = hellos.get(id);
       const previous = record.hello.hello;
-      sockets.get(id).close(1012);
-      record = await next(() => records.find(item => item !== seen && item.inventory));
+      plannedReconnect = {path: `/v1/${path}`, started: Date.now(), finished: Infinity};
+      try {
+        sockets.get(id).close(1012);
+        record = await next(() => records.find(item => item !== seen && item.inventory));
+      } finally {
+        plannedReconnect.finished = Date.now();
+      }
       const {proof, ...hello} = record.hello.hello;
       assert.equal((await signHello(key, hello)).proof, proof);
       assert.equal(hello.incarnation_id, previous.incarnation_id);
