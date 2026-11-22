@@ -18,6 +18,7 @@ from bifrost.cloudflare_analysis import (
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import lazyload, load_only
 
 from src.core.database import get_db_context
 from src.core.storage.contracts import StorageError
@@ -159,8 +160,20 @@ def resolve_approval_placement(workflow: Workflow, solution: Solution | None) ->
     )
 
 
+def solution_placement_query():
+    return select(Solution).options(
+        load_only(
+            Solution.id, Solution.status, Solution.organization_id, Solution.version,
+            Solution.runtime_source_generation, Solution.allow_outbound_access,
+        ),
+        lazyload("*"),
+    ).execution_options(populate_existing=True)
+
+
 async def approval_placement(db: AsyncSession, workflow: Workflow) -> SolutionApprovalScope | None:
-    solution = await db.get(Solution, workflow.solution_id, populate_existing=True) if workflow.solution_id else None
+    solution = None
+    if workflow.solution_id is not None:
+        solution = await db.scalar(solution_placement_query().where(Solution.id == workflow.solution_id))
     return resolve_approval_placement(workflow, solution)
 
 

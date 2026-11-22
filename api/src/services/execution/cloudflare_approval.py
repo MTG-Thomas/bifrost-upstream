@@ -50,6 +50,7 @@ from src.services.execution.cloudflare_eligibility import (
     read_pinned_sources,
     resolve_approval_placement,
     revoke_approval,
+    solution_placement_query,
     workflow_review_scope,
 )
 
@@ -169,7 +170,7 @@ async def _states(
 
     solutions = {}
     if install_ids:
-        solutions = {row.id: row for row in await db.scalars(select(Solution).where(Solution.id.in_(install_ids)))}
+        solutions = {row.id: row for row in await db.scalars(solution_placement_query().where(Solution.id.in_(install_ids)))}
     pins: dict[UUID | None, dict[str, str | None]] = defaultdict(dict)
     if loose_paths := paths.pop(None, None):
         pins[None] = await indexed_pins(db, loose_paths)
