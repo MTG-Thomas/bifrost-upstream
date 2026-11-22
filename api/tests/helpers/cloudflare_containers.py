@@ -1,12 +1,19 @@
 """Synthetic Linux image and policy fixtures shared by unit and database tests."""
 
 import json
+from datetime import UTC, datetime
 from hashlib import sha256
-from uuid import UUID
+from unittest.mock import AsyncMock, patch
+from uuid import UUID, uuid4
 
+from src.models.orm.cloudflare_capacity import (
+    CloudflareInstallation,
+    CloudflareOwnedResource,
+)
 from src.services.worker_pool.cloudflare_containers_egress import (
     REQUIRED_DENIALS,
     ContainerEgressObservation,
+    ProbeReport,
     VerifiedEgress,
     verify_container_egress,
 )
@@ -16,6 +23,9 @@ from src.services.worker_pool.cloudflare_containers_release import (
     ContainersManifest,
     VerifiedContainerRelease,
 )
+
+APP_ID = "c" * 32
+APP_VERSION = "d" * 32
 
 
 def json_bytes(value) -> bytes:
@@ -55,14 +65,40 @@ def policy() -> ContainersPolicy:
     )
 
 
-async def verified_egress(installation_id: UUID, revision: int, digest: str, origin: str) -> VerifiedEgress:
-    async def probe() -> ContainerEgressObservation:
-        return ContainerEgressObservation(
-            installation_id, revision, digest, origin, False, frozenset({origin}), True, True, REQUIRED_DENIALS,
-        )
-
-    proof = await verify_container_egress(
-        probe, installation_id=installation_id, revision=revision, release_digest=digest, origin=origin,
+def app_journal(installation: CloudflareInstallation, digest: str, now: datetime) -> CloudflareOwnedResource:
+    return CloudflareOwnedResource(
+        id=uuid4(), installation_id=installation.id, account_id=installation.account_id, scope="containers",
+        kind="container_application", target_name=f"bifrost-{installation.id.hex}-r1",
+        desired_revision=1, artifact_digest=digest, effect_id=uuid4(),
+        provider_id=APP_ID, provider_version=APP_VERSION, state="present", observed_at=now,
     )
+
+
+def successful_probe(
+    installation_id: UUID, revision: int, digest: str, origin: str, *, observed_at: datetime | None = None,
+) -> ContainerEgressObservation:
+    return ContainerEgressObservation(
+        installation_id, revision, digest, origin, APP_ID, APP_VERSION, observed_at or datetime.now(UTC),
+        ProbeReport(
+            nonce="fixture", worker_id=uuid4(), application_id=APP_ID, provider_version=APP_VERSION,
+            origin=origin, internet_enabled=False, intercepted_origins=frozenset({origin}),
+            bounded_relay=True, denied=REQUIRED_DENIALS,
+        ),
+        True,
+    )
+
+
+async def verified_egress(
+    installation_id: UUID, revision: int, digest: str, origin: str, *, observed_at: datetime | None = None,
+) -> VerifiedEgress:
+    observation = successful_probe(installation_id, revision, digest, origin, observed_at=observed_at)
+    with patch(
+        "src.services.worker_pool.cloudflare_containers_egress._probe_container_egress",
+        new=AsyncMock(return_value=observation),
+    ):
+        proof = await verify_container_egress(
+            None, None, installation_id=installation_id, revision=revision,
+            release_digest=digest, origin=origin, probe_worker_id=observation.report.worker_id,
+        )
     assert proof is not None
     return proof

@@ -74,7 +74,7 @@ async def fence_remote_owner(db: AsyncSession, *, for_update: bool = False) -> b
             ExecutionWorker.remote_launcher_id == lease.launcher_id,
             ExecutionWorker.remote_session_generation == lease.session_generation,
             ExecutionWorker.remote_owner_lease_expires_at > func.now(),
-            remote_enrollment_is_live(),
+            remote_enrollment_is_live(lease.container_release),
         )
         .with_for_update(read=not for_update)
     )

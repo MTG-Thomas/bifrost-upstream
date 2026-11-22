@@ -33,13 +33,18 @@ from src.services.worker_pool.cloudflare_admission import (
     PrimaryPool,
     workers_release_matches,
 )
-from src.services.worker_pool.cloudflare_containers_egress import VerifiedEgress
+from src.services.worker_pool.cloudflare_containers_egress import (
+    EGRESS_PROOF_MAX_AGE,
+    VerifiedEgress,
+    current_container_application,
+)
 from src.services.worker_pool.cloudflare_containers_policy import (
     CONTAINERS_SCOPE,
     ContainersPolicy,
     container_envelope,
     container_reserve_cost,
     fleet_envelope,
+    overdue_container_reservations,
 )
 from src.services.worker_pool.cloudflare_containers_release import (
     Digest,
@@ -238,6 +243,13 @@ async def reserve_container(
         return None
     now = await db.scalar(select(func.clock_timestamp()))
     assert now is not None
+    if not now - EGRESS_PROOF_MAX_AGE <= verified_egress.observed_at <= now:
+        return None
+    application = (await db.execute(current_container_application(installation, revision, release.digest))).one_or_none()
+    if application != (verified_egress.provider_id, verified_egress.provider_version):
+        return None
+    if await db.scalar(overdue_container_reservations(installation.account_id, now).limit(1)) is not None:
+        return None
     # A month can contain 31 days. The current account balance is checked
     # separately, including a reservation that crosses the next boundary.
     if workers_envelope + fleet_envelope(containers, release.manifest.rates, 31 * 86400) > policy.monthly_limit_usd:
@@ -349,6 +361,7 @@ async def reserve_container(
         container_reserved_at=now, container_envelope={
             **envelope, "approval": approval.revision, "instance_type": containers.instance_type,
             "credential_version": scope.bearer_version,
+            "ingress_bytes": containers.ingress_bytes,
             "start_deadline": (now + timedelta(seconds=containers.start_timeout_seconds)).isoformat(),
         },
     )

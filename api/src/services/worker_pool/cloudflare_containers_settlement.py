@@ -35,7 +35,9 @@ class ClosedContainerStart:
     instance_id: str
     image: str
     last_start_effect_at: datetime
+    placement_started_at: datetime
     outbound_bytes: int | None
+    meter_complete: bool = False
 
 
 async def settle_container_stop(
@@ -84,11 +86,12 @@ async def settle_container_stop(
         or pin.container_envelope.get("provider_instance_id") != closure.instance_id
         or pin.container_envelope.get("prepared_image") != closure.image
         or stop.started_at < pin.container_reserved_at
+        or stop.started_at != closure.placement_started_at
     ):
         raise ObservationPending("Container stop does not match the durable reservation")
     if pin.container_stopped_at is not None:
-        if pin.container_stopped_at != stop.stopped_at:
-            raise ObservationPending("Container's settled stop witness changed")
+        if stop.stopped_at < pin.container_stopped_at:
+            raise ObservationPending("Container's settled stop witness moved backwards")
         return
     if await db.scalar(select(exists().where(
         ExecutionWorkerClaim.worker_id == worker.id, ExecutionWorkerClaim.subject_id == Execution.id,
@@ -97,7 +100,7 @@ async def settle_container_stop(
         raise ObservationPending("Container still owns a live execution claim")
     envelope = {**pin.container_envelope, "observed_started_at": stop.started_at.isoformat()}
     count = closure.outbound_bytes
-    if count is not None:
+    if closure.meter_complete is True:
         if type(count) is not int or count < 0:
             raise ObservationPending("Container egress receipt is invalid")
         envelope["measured_outbound_bytes"] = count

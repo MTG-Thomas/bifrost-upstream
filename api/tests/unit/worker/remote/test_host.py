@@ -517,6 +517,9 @@ async def test_managed_linux_hello_is_bound_to_its_incarnation_key_and_release(m
         await RemoteControlHost().connect(socket)
     requirements.assert_not_awaited()
     assert admit.await_count == int(mode == "bound")
+    if mode == "public-ingress":
+        load_key.assert_not_awaited()
+        db.scalar.assert_not_awaited()
     if mode == "bound":
         assert admit.await_args.kwargs["container_release"] == release
         load_key.assert_awaited_once_with(db, pin, "resource-1")

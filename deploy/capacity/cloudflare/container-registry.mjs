@@ -9,18 +9,28 @@ export class ScopeRegistry {
     constructor(ctx, env) {
         this.storage = ctx.storage;
         this.sql = this.storage.sql;
-        const { CONTAINERS_INSTALLATION, CONTAINERS_REVISION, CONTAINERS_CAP, CONTAINERS_IMAGE } = env;
+        const {
+            CONTAINERS_INSTALLATION, CONTAINERS_REVISION, CONTAINERS_CAP, CONTAINERS_IMAGE,
+            CONTAINERS_INGRESS_BYTES, CONTAINERS_OUTBOUND_BYTES,
+        } = env;
         this.cap = Number(CONTAINERS_CAP);
         this.revision = Number(CONTAINERS_REVISION);
         this.installation = CONTAINERS_INSTALLATION;
         this.image = CONTAINERS_IMAGE;
+        this.ingressCap = Number(CONTAINERS_INGRESS_BYTES);
+        this.outboundCap = Number(CONTAINERS_OUTBOUND_BYTES);
         if (!UUID.test(this.installation) || !Number.isSafeInteger(this.revision) || this.revision < 1
-            || ![1, 2].includes(this.cap) || !DIGEST.test(this.image)) {
+            || ![1, 2].includes(this.cap) || !DIGEST.test(this.image)
+            || ![this.ingressCap, this.outboundCap].every(
+                (bytes) => Number.isSafeInteger(bytes) && bytes > 0 && bytes <= 10 ** 9,
+            )) {
             throw new Error("Container reservation policy is invalid");
         }
         this.sql.exec(`CREATE TABLE IF NOT EXISTS reservations (
             worker TEXT PRIMARY KEY, uid TEXT NOT NULL UNIQUE, tenant TEXT NOT NULL,
-            binding TEXT NOT NULL, state TEXT NOT NULL
+            binding TEXT NOT NULL, state TEXT NOT NULL,
+            reserved_at INTEGER NOT NULL, start_deadline INTEGER NOT NULL, deadline INTEGER NOT NULL,
+            ingress_limit INTEGER NOT NULL, outbound_limit INTEGER NOT NULL
         )`);
         this.sql.exec(`CREATE TABLE IF NOT EXISTS start_fences (
             uid TEXT PRIMARY KEY REFERENCES reservations(uid), instance TEXT NOT NULL,
@@ -33,16 +43,24 @@ export class ScopeRegistry {
     }
 
     reserve(pin) {
+        const { reservedAt, startDeadline, deadline, seconds, ingressBytes, outboundBytes } = pin;
         if (pin.installation !== this.installation || pin.revision !== this.revision
             || pin.image !== this.image || pin.instance !== "standard-1"
             || !UUID.test(pin.worker) || !UID.test(pin.uid)
             || (pin.tenant !== "platform" && !UUID.test(pin.tenant))
-            || !Number.isSafeInteger(pin.credentialVersion) || pin.credentialVersion < 1) {
+            || !Number.isSafeInteger(pin.credentialVersion) || pin.credentialVersion < 1
+            || ![reservedAt, startDeadline, deadline, seconds, ingressBytes, outboundBytes].every(Number.isSafeInteger)
+            || reservedAt < 0 || startDeadline <= reservedAt || startDeadline - reservedAt > 3_600_000
+            || seconds < 123 || seconds > 93_600 || deadline !== reservedAt + seconds * 1000
+            || deadline <= startDeadline || deadline - startDeadline > 90_000_000
+            || ingressBytes <= 0 || ingressBytes > this.ingressCap
+            || outboundBytes <= 0 || outboundBytes > this.outboundCap) {
             return { status: "invalid" };
         }
         const binding = JSON.stringify([
             pin.installation, pin.revision, pin.worker, pin.uid, pin.tenant,
             pin.image, pin.instance, pin.credentialVersion,
+            reservedAt, startDeadline, deadline, seconds, ingressBytes, outboundBytes,
         ]);
         return this.storage.transactionSync(() => {
             const matching = this.sql.exec(
@@ -58,38 +76,36 @@ export class ScopeRegistry {
             ).one();
             if (total >= this.cap || tenant >= 1) return { status: "full" };
             this.sql.exec(
-                "INSERT INTO reservations (worker, uid, tenant, binding, state) VALUES (?, ?, ?, ?, 'reserved')",
+                "INSERT INTO reservations (worker, uid, tenant, binding, state, "
+                + "reserved_at, start_deadline, deadline, ingress_limit, outbound_limit) "
+                + "VALUES (?, ?, ?, ?, 'reserved', ?, ?, ?, ?, ?)",
                 pin.worker, pin.uid, pin.tenant, binding,
+                reservedAt, startDeadline, deadline, ingressBytes, outboundBytes,
             );
             return { status: "reserved" };
         });
     }
 
-    authorizeStart(uid, instance, now, { startDeadline, deadline, ingressBytes, outboundBytes }) {
+    authorizeStart(uid, instance, now, deadline) {
         if (!UID.test(uid) || !/^[a-f0-9]{64}$/.test(instance)
-            || ![now, startDeadline, deadline].every(Number.isSafeInteger) || now < 0
-            || deadline <= startDeadline || deadline - startDeadline > 86_400_000
-            || ![ingressBytes, outboundBytes].every((size) => Number.isSafeInteger(size) && size > 0 && size <= 10**9)) {
+            || ![now, deadline].every(Number.isSafeInteger) || now < 0) {
             return { status: "invalid" };
         }
         return this.storage.transactionSync(() => {
-            const slot = this.sql.exec("SELECT state FROM reservations WHERE uid = ?", uid).toArray()[0];
+            const slot = this.sql.exec("SELECT * FROM reservations WHERE uid = ?", uid).toArray()[0];
             if (!slot || slot.state === "retired") return { status: "closed" };
+            if (slot.deadline !== deadline || now < slot.reserved_at) return { status: "conflict" };
             const start = this.sql.exec("SELECT * FROM start_fences WHERE uid = ?", uid).toArray()[0];
             if (start) {
-                if (start.instance !== instance || start.start_deadline !== startDeadline || start.deadline !== deadline
-                    || start.ingress_limit !== ingressBytes || start.outbound_limit !== outboundBytes) {
-                    return { status: "conflict" };
-                }
-                if (start.closed_at !== null) return { status: "closed" };
+                if (start.instance !== instance) return { status: "conflict" };
+                if (start.closed_at !== null || now >= deadline) return { status: "closed" };
                 return { status: start.observed_at === null ? "pending" : "observed" };
             }
-            if (now >= startDeadline) return { status: "closed" };
-            if (startDeadline - now > 3_600_000) return { status: "invalid" };
+            if (now >= slot.start_deadline) return { status: "closed" };
             this.sql.exec(
                 "INSERT INTO start_fences (uid, instance, authorized_at, start_deadline, deadline, ingress_limit, "
                 + "outbound_limit) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                uid, instance, now, startDeadline, deadline, ingressBytes, outboundBytes,
+                uid, instance, now, slot.start_deadline, deadline, slot.ingress_limit, slot.outbound_limit,
             );
             return { status: "authorized" };
         });
@@ -121,8 +137,21 @@ export class ScopeRegistry {
             }
             return {
                 status: "closed", instance, authorizedAt: start.authorized_at, closedAt: start.closed_at ?? now,
-                outboundBytes: start.outbound,
+                startedAt: start.observed_at, outboundBytes: start.outbound, meterComplete: false,
             };
+        });
+    }
+
+    // The authenticated controller acknowledges a committed stop settlement.
+    // Keep the tombstone so neither prepare nor start can resurrect the UID.
+    retire(uid, instance, closedAt) {
+        return this.storage.transactionSync(() => {
+            const start = this.sql.exec("SELECT instance, closed_at FROM start_fences WHERE uid = ?", uid).toArray()[0];
+            if (!start || start.instance !== instance) return { status: "conflict" };
+            if (start.closed_at === null) return { status: "pending" };
+            if (start.closed_at !== closedAt) return { status: "conflict" };
+            this.sql.exec("UPDATE reservations SET state = 'retired' WHERE uid = ?", uid);
+            return { status: "retired" };
         });
     }
 

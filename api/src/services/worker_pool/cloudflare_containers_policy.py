@@ -25,6 +25,21 @@ from src.models.orm.cloudflare_capacity import (
 from src.services.worker_pool.cloudflare_containers_release import ContainerRates
 
 CONTAINERS_SCOPE = "containers"
+CONTAINERS_CLEANUP_PENDING = "CF_CONTAINERS_CLEANUP_PENDING"
+
+
+def unresolved_container_reservation():
+    pin = CloudflareWorkerReservation
+    return (pin.scope == CONTAINERS_SCOPE) & pin.container_reserved_at.is_not(None) & pin.container_stopped_at.is_(None)
+
+
+def overdue_container_reservations(account_id, now):
+    """An account-wide stop fence includes reservations on retired installations."""
+    owner = aliased(CloudflareInstallation)
+    pin = CloudflareWorkerReservation
+    return select(pin.worker_id).select_from(pin).join(owner, owner.id == pin.installation_id).where(
+        owner.account_id == account_id, unresolved_container_reservation(), container_deadline_sql() <= now,
+    )
 
 
 def container_identity_matches(worker_id, release: str | None):

@@ -10,14 +10,15 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from src.core.database import get_liveness_db_context
 from src.models.orm.execution_workers import ExecutionWorker
-from src.services.worker_pool.cloudflare_containers_policy import container_identity_matches
+from src.services.worker_pool.cloudflare_containers_policy import (
+    container_identity_matches,
+)
 from src.worker.remote.protocol import (
     CLOUDFLARE_CREDENTIAL_PROTOCOL,
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
     LINUX_RUNTIME_PROFILE,
     cloudflare_slots,
 )
-
 
 DEFAULT_OWNER_LEASE_SECONDS = 20
 
@@ -32,6 +33,7 @@ class RemoteOwnerLease:
     # session, persisted with the generation (1: legacy tokens only).
     credential_protocol: int = 1
     declared_slots: int = 0
+    container_release: str | None = None
 
 
 @dataclass(frozen=True)
@@ -41,12 +43,15 @@ class CloudflareEnrollment:
     hostname: str
 
 
-def remote_enrollment_is_live() -> ColumnElement[bool]:
+def remote_enrollment_is_live(container_release: str | None = None) -> ColumnElement[bool]:
     """A terminal Cloudflare row revokes the lease even before clock expiry."""
+    container_binding = container_identity_matches(ExecutionWorker.id, container_release)
+    if container_release is not None:
+        return container_binding & ExecutionWorker.state.in_(("ready", "draining"))
     return or_(
         ExecutionWorker.runtime_profile != CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
         ExecutionWorker.state.in_(("ready", "draining")),
-    )
+    ) & container_binding
 
 
 async def acquire_remote_owner(
@@ -158,7 +163,7 @@ async def acquire_remote_owner(
     if acquired is None:
         return None
     generation, protocol = acquired
-    return RemoteOwnerLease(worker_id, owner_id, launcher_id, generation, protocol, declared_slots)
+    return RemoteOwnerLease(worker_id, owner_id, launcher_id, generation, protocol, declared_slots, container_release)
 
 
 async def renew_remote_owner(
@@ -177,7 +182,7 @@ async def renew_remote_owner(
                 ExecutionWorker.remote_launcher_id == lease.launcher_id,
                 ExecutionWorker.remote_session_generation == lease.session_generation,
                 ExecutionWorker.remote_owner_lease_expires_at > func.now(),
-                remote_enrollment_is_live(),
+                remote_enrollment_is_live(lease.container_release),
             )
             .values(remote_owner_lease_expires_at=func.now() + text(f"INTERVAL '{interval}'"))
             .returning(ExecutionWorker.id)
@@ -195,7 +200,7 @@ async def owns_remote_session(lease: RemoteOwnerLease) -> bool:
                 ExecutionWorker.remote_launcher_id == lease.launcher_id,
                 ExecutionWorker.remote_session_generation == lease.session_generation,
                 ExecutionWorker.remote_owner_lease_expires_at > func.now(),
-                remote_enrollment_is_live(),
+                remote_enrollment_is_live(lease.container_release),
             )
         )
     return worker_id is not None
