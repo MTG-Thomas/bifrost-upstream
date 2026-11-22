@@ -32,10 +32,12 @@ def json_bytes(value) -> bytes:
     return json.dumps(value, sort_keys=True).encode()
 
 
-def make_release() -> tuple[VerifiedContainerRelease, bytes, bytes]:
+def make_release(
+    *, image_user: str = "0:0", options: tuple[str, ...] = ("BIFROST_BAKED_WHEELS_ONLY=1",),
+) -> tuple[VerifiedContainerRelease, bytes, bytes]:
     config = json_bytes({
         "os": "linux", "architecture": "amd64",
-        "config": {"Entrypoint": list(ENTRYPOINT), "User": "1000:1000", "Labels": {
+        "config": {"Entrypoint": list(ENTRYPOINT), "User": image_user, "Env": options, "Labels": {
             "org.opencontainers.image.revision": "1" * 40,
         }},
     })

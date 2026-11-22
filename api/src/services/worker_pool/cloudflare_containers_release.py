@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from src.services.worker_pool.cloudflare_release import Digest, WorkersRelease
 
 OCIDigest = Annotated[str, Field(pattern=r"^sha256:[a-f0-9]{64}$")]
-ENTRYPOINT = ("/usr/local/bin/python", "-m", "src.worker.remote.launcher")
+ENTRYPOINT = ("/usr/local/bin/python", "-m", "src.worker.remote.container_entrypoint")
 _OCI_MEDIA_TYPES = {
     "application/vnd.oci.image.manifest.v1+json",
     "application/vnd.docker.distribution.manifest.v2+json",
@@ -45,7 +45,7 @@ class ContainersManifest(BaseModel):
     image_digest: OCIDigest
     platform: Literal["linux/amd64"]
     instance_type: Literal["standard-1"]
-    entrypoint: tuple[Literal["/usr/local/bin/python"], Literal["-m"], Literal["src.worker.remote.launcher"]]
+    entrypoint: tuple[Literal["/usr/local/bin/python"], Literal["-m"], Literal["src.worker.remote.container_entrypoint"]]
     capacity_protocol: Literal[2]
     sdk_protocol: Literal[1]
     ingress_contract: Literal["worker-ingress-only-v1"]
@@ -106,11 +106,14 @@ class VerifiedContainerRelease:
                 or config["os"] != "linux"
                 or config["architecture"] != "amd64"
                 or tuple(runtime["Entrypoint"]) != ENTRYPOINT
-                or runtime["User"] != "1000:1000"
+                or runtime["User"] != "0:0"
+                or not isinstance(runtime["Env"], list)
+                or [entry for entry in runtime["Env"] if entry.startswith("BIFROST_BAKED_WHEELS_ONLY=")]
+                != ["BIFROST_BAKED_WHEELS_ONLY=1"]
                 or runtime["Labels"]["org.opencontainers.image.revision"] != self.manifest.source_revision
             ):
                 raise ValueError
-        except (ValueError, KeyError, TypeError):
+        except (AttributeError, ValueError, KeyError, TypeError):
             raise ContainersReleaseUnavailable("Container image differs from its signed Linux child") from None
 
 

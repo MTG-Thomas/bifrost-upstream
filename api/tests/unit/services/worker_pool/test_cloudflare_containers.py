@@ -68,6 +68,17 @@ def test_image_requires_both_exact_manifest_and_config() -> None:
         release.verify_image(image + b" ", config)
 
 
+@pytest.mark.parametrize(("image_user", "options"), [
+    ("1000:1000", ("BIFROST_BAKED_WHEELS_ONLY=1",)),
+    ("0:0", ()),
+    ("0:0", ("BIFROST_BAKED_WHEELS_ONLY=1", "BIFROST_BAKED_WHEELS_ONLY=0")),
+])
+def test_image_requires_the_privilege_split_and_baked_wheel_profile(image_user, options) -> None:
+    release, image, config = make_release(image_user=image_user, options=options)
+    with pytest.raises(ContainersReleaseUnavailable):
+        release.verify_image(image, config)
+
+
 @pytest.mark.asyncio
 async def test_descriptor_requires_release_signer_and_exact_source(tmp_path, monkeypatch) -> None:
     release, _, _ = make_release()

@@ -43,7 +43,7 @@ jq -e -nS --arg revision "$revision" --arg repo "$repository" --arg digest "$ima
     --argjson wheels "$wheel_digests" '{
   manifest_version: 1, source_revision: $revision, repository: $repo, image_digest: $digest,
   platform: "linux/amd64", instance_type: "standard-1",
-  entrypoint: ["/usr/local/bin/python", "-m", "src.worker.remote.launcher"],
+  entrypoint: ["/usr/local/bin/python", "-m", "src.worker.remote.container_entrypoint"],
   capacity_protocol: 2, sdk_protocol: 1, ingress_contract: "worker-ingress-only-v1",
   workers_release_digest: $workers, provider_modules: {"container-registry.mjs": $module},
   wheels: $wheels, rates: $rates

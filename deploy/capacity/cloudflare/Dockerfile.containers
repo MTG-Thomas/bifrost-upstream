@@ -4,7 +4,7 @@ FROM ${BIFROST_API_IMAGE}
 
 # Image init splits into separate non-root supervisor and workflow identities.
 # Application and baked package paths stay immutable to both.
-USER root
+USER 0:0
 COPY wheels/ /opt/bifrost-wheels/
 RUN --network=none python -m pip install --no-index --no-deps --require-hashes --only-binary=:all: \
     --force-reinstall --report /opt/bifrost-wheels/installed.json \
@@ -19,4 +19,4 @@ RUN chown -R root:root /app /usr/local/lib/python3.15/site-packages \
     && install -d -o 1001 -g 1001 -m 0700 /workspace/guest
 ENV BIFROST_BAKED_WHEELS_ONLY=1
 WORKDIR /app
-ENTRYPOINT ["/usr/local/bin/python", "-m", "src.worker.remote.launcher"]
+ENTRYPOINT ["/usr/local/bin/python", "-m", "src.worker.remote.container_entrypoint"]
