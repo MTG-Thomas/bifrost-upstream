@@ -169,3 +169,16 @@ Provider and Global overlap, ninth-slot admission, the queued tenth
 execution, and isolated cancellation were not measured.
 
 See the [sanitized re-run receipt](../../results/cloudflare-scaleout-combined-hosted-rerun.json).
+
+## Combined Hosted Run With HTTP Connection Reuse
+
+The 2026-11-22 UTC run passed the Existing HTTPS preflight and signed
+canary as `remote_launcher`. The primary hold check then failed after
+the local fixture reported Running. A subsequent teardown read found
+the intended 24 MiB of free primary capacity. The run stopped at the
+failed check with zero hosted workflow submissions and zero held
+workflow slots at teardown. Cold and warm latency, Provider and Global
+overlap, reserved-slot admission, tenth-run waiting and isolated
+cancellation remain unmeasured in this run.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-connection-reuse.json).

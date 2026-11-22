@@ -1,0 +1,199 @@
+{
+  "date_utc": "2026-11-22",
+  "spike_source_revision": "97ef3ae838c63322d593c7670c62b73ece9552a4",
+  "qualified_bundle_sha256": "370246c011982ac686a1a6e5aab0d4cf09bf2cd88f6d6059861759001d0f0063",
+  "local": {
+    "packaging_tests_passed": 12,
+    "available_gib_at_start": 8,
+    "other_bifrost_test_stacks_at_start": 0,
+    "prewarm_per_tenant": 0,
+    "api_worker_match_first_image": true
+  },
+  "release_inputs_sha256": {
+    "runtime": "fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5",
+    "capacity": "914baebf27bd2148eb1a86d9bdcae7e8a8f598507b6b02d13c2c042659d03c94",
+    "launcher": "027adc29f73b04142282b1677ad0185f5f668b58f6d660168df4c2cf1d9b6213",
+    "gateway": "6fb1025b11b308d3a628bed063cb5aa5d11f141819eb3ddd1c0b8153621847d5",
+    "meter_bounds": "5bd0c64824fb504b3161037385fd2e835d1c766d1d7682e388de02467b319bd0"
+  },
+  "releases": [
+    {
+      "sequence": 1,
+      "source_revision": "dd5481c43c599515a5f2dd10aff1c9cd753e380d",
+      "manifest_sha256": "5270d1d42525c7c8034f9523093080146193ba66bcb327a26d31ebf88ac14770",
+      "deployment_sha256": "1dca773e987a4fe002f4efc80748e4a8c8f209089f38bda570365eacade54ea4",
+      "image_loader_accepted": true,
+      "hosted": true
+    },
+    {
+      "sequence": 2,
+      "source_revision": "eb5399823821b2e640e6a7af555d914f8833259d",
+      "manifest_sha256": "3aaa19bbde06c227ebb55a8fa98cec9ce5cf405aa6d76689c39f0db9cd773140",
+      "deployment_sha256": "c51e92adda8959261e068cea36937065f58601f438c33ac882460c45e52e4669",
+      "image_loader_accepted": true,
+      "hosted": false
+    }
+  ],
+  "connect": {
+    "http_status": 200,
+    "at_utc": "2026-11-22T02:13:45.712254Z",
+    "admission_open": false,
+    "monthly_envelope_usd": 415.59
+  },
+  "worker_preflight": {
+    "execution_class": "remote_launcher",
+    "reachable": true,
+    "route_checks": 100,
+    "http_connections": [
+      {
+        "address_family": "ipv4",
+        "tcp_connects_started": 8,
+        "tls_handshakes_started": 8,
+        "tls_handshakes_completed": 8,
+        "reused_requests": 92
+      },
+      {
+        "address_family": "ipv4",
+        "tcp_connects_started": 8,
+        "tls_handshakes_started": 8,
+        "tls_handshakes_completed": 8,
+        "reused_requests": 92
+      },
+      {
+        "address_family": "ipv6",
+        "tcp_connects_started": 1,
+        "tls_handshakes_started": 0,
+        "tls_handshakes_completed": 0,
+        "reused_requests": 0
+      },
+      {
+        "address_family": "ipv6",
+        "tcp_connects_started": 1,
+        "tls_handshakes_started": 0,
+        "tls_handshakes_completed": 0,
+        "reused_requests": 0
+      }
+    ],
+    "reused_requests_positive": true,
+    "failure": null
+  },
+  "enable": {
+    "submitted": true,
+    "status": "succeeded",
+    "outcome": "enabled",
+    "execution_class": "remote_launcher",
+    "started_at_utc": "2026-11-22T02:13:53.961750Z",
+    "completed_at_utc": "2026-11-22T02:14:12.866257Z",
+    "signed_canary_passed": true,
+    "admission_open": true,
+    "http_connections": null,
+    "reused_requests_positive": null,
+    "counter_visibility": "ingress_failure_receipt_only"
+  },
+  "workload": {
+    "stopped_at": "local_primary_hold_capacity_assertion",
+    "primary_hold_reported_running": true,
+    "readback_after_stop": {
+      "budget_mib": 1432,
+      "reserved_mib": 1408,
+      "available_mib": 24
+    },
+    "hosted_workflows_submitted": 0,
+    "cold_latency_ms": null,
+    "warm_latency_ms": null,
+    "burst": "not_run",
+    "cancel": "not_run",
+    "reconcile": "not_run",
+    "active_scale_in": "not_run",
+    "managed_tunnel": "not_run",
+    "rotation": "not_run",
+    "upgrade": "not_run"
+  },
+  "spend": {
+    "prior_bifrost_estimated_usd": 0.0001907223,
+    "incremental_bifrost_estimated_usd": 0.0002018306978454315,
+    "cumulative_bifrost_estimated_usd": 0.0003925529978454315,
+    "live_estimate_displayed_usd": 0,
+    "target_usd": 0.5,
+    "hard_abort_usd": 1,
+    "item_1_usd": 0,
+    "items_2_and_9_combined_usd": 0.0002018306978454315,
+    "items_3_to_8_hosted_workload_usd": 0,
+    "provider_cost_proxy_usd": null,
+    "bifrost_to_cloudflare_ratio": null,
+    "analytics_window_start_utc": "2026-11-22T02:13:53.961750Z",
+    "analytics_samples": {
+      "gateway": {
+        "worker": {
+          "workersInvocationsAdaptive": []
+        },
+        "durable_objects": []
+      },
+      "launcher": {
+        "worker": {
+          "workersInvocationsAdaptive": []
+        },
+        "durable_objects": [
+          {
+            "durableObjectsInvocationsAdaptiveGroups": []
+          },
+          {
+            "durableObjectsInvocationsAdaptiveGroups": []
+          }
+        ]
+      },
+      "capacity": {
+        "worker": {
+          "workersInvocationsAdaptive": []
+        },
+        "durable_objects": [
+          {
+            "durableObjectsInvocationsAdaptiveGroups": []
+          },
+          {
+            "durableObjectsInvocationsAdaptiveGroups": []
+          }
+        ]
+      }
+    }
+  },
+  "teardown": {
+    "disconnect": "succeeded",
+    "disconnect_submissions": 1,
+    "completed_at_utc": "2026-11-22T02:14:51.142265Z",
+    "installation_absent": true,
+    "worker_script_http": {
+      "gateway": 404,
+      "launcher": 404,
+      "capacity": 404
+    },
+    "durable_object_namespace_http": [
+      404,
+      404,
+      404,
+      404
+    ],
+    "owned_scripts_in_provider_list": 0,
+    "owned_namespaces_in_provider_list": 0,
+    "historical_launcher_incarnations": 1,
+    "live_launcher_incarnations": 0,
+    "held_workflow_slots": 0,
+    "staged_credentials": 0,
+    "retained_ciphertexts": 0,
+    "retained_scopes": 0,
+    "present_journal_rows": 0,
+    "token_exact_absence": true,
+    "dns_exact_absence": true,
+    "authoritative_dns_absence_checks": 2,
+    "authoritative_dns_checks_total": 2,
+    "tunnel_deleted": true,
+    "live_connector_sessions": 0,
+    "external_connector_process_absent": true,
+    "trial_containers": 0,
+    "trial_networks": 0,
+    "trial_volumes": 0,
+    "trial_project_image_tags": 0,
+    "host_scratch_absent": true,
+    "workstation_scratch_absent": true
+  }
+}

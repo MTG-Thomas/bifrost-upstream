@@ -101,3 +101,13 @@ stopped before Enable. The replacement image remained offline, and
 Upgrade drain and terminal replay were not exercised.
 
 See the [sanitized re-run receipt](../../results/cloudflare-scaleout-combined-hosted-rerun.json).
+
+## Combined Hosted Run With HTTP Connection Reuse
+
+The 2026-11-22 UTC run built both release images and verified their
+distinct deployment digests. The first release completed Existing HTTPS
+Enable. The local primary hold gate stopped the workload before the
+replacement release was staged on the running stack. Upgrade drain and
+terminal replay were not exercised. Both trial image tags were removed.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-connection-reuse.json).
