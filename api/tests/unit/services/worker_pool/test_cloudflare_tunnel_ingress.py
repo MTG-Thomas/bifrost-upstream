@@ -17,46 +17,40 @@ DEFAULT_RULE = {"service": "http_status:404"}
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("creation", "config", "version", "matching_account", "allowed"),
+    ("config", "version", "mismatched_field", "allow_default", "allowed"),
     [
-        ("fresh", {"ingress": [DEFAULT_RULE]}, 0, True, True),
-        ("fresh", {"ingress": [DEFAULT_RULE], "warp-routing": {"enabled": False}}, 1, True, True),
-        ("fresh", {"ingress": [{**DEFAULT_RULE, "hostname": ""}], "warp-routing": {}}, 1, True, True),
-        ("adopted", {"ingress": [DEFAULT_RULE]}, 1, True, False),
-        ("different_receipt", {"ingress": [DEFAULT_RULE]}, 1, True, False),
-        ("fresh", {"ingress": [DEFAULT_RULE]}, 1, False, False),
-        ("fresh", {"ingress": [DEFAULT_RULE]}, 2, True, False),
-        ("fresh", {"ingress": [{**DEFAULT_RULE, "hostname": "other.example.test"}]}, 1, True, False),
-        ("fresh", {"ingress": [{"service": "http://origin.example.test"}]}, 1, True, False),
-        ("fresh", {"ingress": [DEFAULT_RULE, DEFAULT_RULE]}, 1, True, False),
-        ("fresh", {"ingress": [{**DEFAULT_RULE, "path": "/test"}]}, 1, True, False),
-        ("fresh", {"ingress": [{**DEFAULT_RULE, "originRequest": {"noTLSVerify": True}}]}, 1, True, False),
-        ("fresh", {"ingress": [DEFAULT_RULE], "warp-routing": {"enabled": True}}, 1, True, False),
-        ("fresh", {"ingress": [DEFAULT_RULE], "other": {}}, 1, True, False),
+        ({"ingress": [DEFAULT_RULE]}, 0, None, True, True),
+        ({"ingress": [DEFAULT_RULE], "warp-routing": {"enabled": False}}, 12, None, True, True),
+        ({"ingress": [{**DEFAULT_RULE, "hostname": ""}], "warp-routing": {}}, 1, None, True, True),
+        ({"ingress": [DEFAULT_RULE]}, 1, None, False, False),
+        ({"ingress": [DEFAULT_RULE]}, 1, "account_id", True, False),
+        ({"ingress": [DEFAULT_RULE]}, 1, "tunnel_id", True, False),
+        ({"ingress": [{**DEFAULT_RULE, "hostname": "other.example.test"}]}, 1, None, True, False),
+        ({"ingress": [{"service": "http://origin.example.test"}]}, 1, None, True, False),
+        ({"ingress": [DEFAULT_RULE, DEFAULT_RULE]}, 1, None, True, False),
+        ({"ingress": [{**DEFAULT_RULE, "path": "/test"}]}, 1, None, True, False),
+        ({"ingress": [{**DEFAULT_RULE, "originRequest": {"noTLSVerify": True}}]}, 1, None, True, False),
+        ({"ingress": [DEFAULT_RULE], "originRequest": {"noTLSVerify": True}}, 1, None, True, False),
+        ({"ingress": [DEFAULT_RULE], "warp-routing": {"enabled": True}}, 1, None, True, False),
+        ({"ingress": [DEFAULT_RULE], "warp-routing": {"enabled": False, "other": False}}, 1, None, True, False),
+        ({"ingress": [DEFAULT_RULE], "other": {}}, 1, None, True, False),
     ],
 )
-async def test_only_exact_fresh_tunnel_replaces_default_ingress(
-    monkeypatch, creation, config, version, matching_account, allowed,
+async def test_only_exact_creation_intent_replaces_default_ingress(
+    monkeypatch, config, version, mismatched_field, allow_default, allowed,
 ) -> None:
     account = "a" * 32
     intent = ResourceIntent(ResourceTarget(uuid4(), account, "reachability", "tunnel", "fixture"), uuid4(), 1, "digest")
-    observation = ResourceObservation(intent, str(uuid4()), "created")
-    response_id = str(uuid4()) if creation == "different_receipt" else observation.provider_id
+    receipt = ResourceObservation(intent, str(uuid4()), "created")
     origin = "http://api:8001"
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: pytest.fail("Unexpected network request"))) as http:
         client = TunnelRest(http, account_id=account, zone_id="b" * 32, hostname="managed.example.test", token=SecretStr("fixture"))
-        read_tunnel = AsyncMock(side_effect=[observation] if creation == "adopted" else [None, observation])
-        create = AsyncMock(return_value={"id": response_id})
-        monkeypatch.setattr(client, "tunnel", read_tunnel)
-        monkeypatch.setattr(client, "_result", create)
-        receipt, fresh = await client.create_tunnel(intent, SecretStr("fixture-secret"))
-        assert fresh == (creation == "fresh")
-        assert create.await_count == (creation != "adopted")
-
         current = {
-            "account_id": account if matching_account else "c" * 32, "tunnel_id": observation.provider_id,
+            "account_id": account, "tunnel_id": receipt.provider_id,
             "version": version, "config": config,
         }
+        if mismatched_field:
+            current[mismatched_field] = str(uuid4())
         read_config = AsyncMock(return_value=current)
         write = AsyncMock()
         verify = AsyncMock()
@@ -66,11 +60,71 @@ async def test_only_exact_fresh_tunnel_replaces_default_ingress(
         monkeypatch.setattr(client, "verify_ingress", verify)
         monkeypatch.setattr(client, "tunnel", exact_read)
         if allowed:
-            await client.configure_ingress(receipt, origin, freshly_created=fresh)
+            await client.configure_ingress(receipt, origin, allow_default=allow_default)
             exact_read.assert_awaited_once_with(intent, receipt)
             write.assert_awaited_once()
             verify.assert_awaited_once_with(receipt, origin)
         else:
             with pytest.raises(OwnershipConflict, match="different ingress configuration"):
-                await client.configure_ingress(receipt, origin, freshly_created=fresh)
+                await client.configure_ingress(receipt, origin, allow_default=allow_default)
             write.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_tunnel_without_post_id_uses_secret_verified_readback(monkeypatch) -> None:
+    account = "a" * 32
+    intent = ResourceIntent(ResourceTarget(uuid4(), account, "reachability", "tunnel", "fixture"), uuid4(), 1, "digest")
+    receipt = ResourceObservation(intent, str(uuid4()), "created")
+    secret = SecretStr("fixture-secret")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: pytest.fail("Unexpected network request"))) as http:
+        client = TunnelRest(http, account_id=account, zone_id="b" * 32, hostname="managed.example.test", token=SecretStr("fixture"))
+        read_tunnel = AsyncMock(side_effect=[None, receipt])
+        create = AsyncMock(return_value={"status": "inactive"})
+        monkeypatch.setattr(client, "tunnel", read_tunnel)
+        monkeypatch.setattr(client, "_result", create)
+
+        assert await client.create_tunnel(intent, secret) == receipt
+        create.assert_awaited_once()
+        assert read_tunnel.await_count == 2
+        read_tunnel.assert_awaited_with(intent, None, secret=secret)
+
+
+@pytest.mark.asyncio
+async def test_ingress_conflict_reports_only_sanitized_shape(monkeypatch) -> None:
+    account = "a" * 32
+    intent = ResourceIntent(ResourceTarget(uuid4(), account, "reachability", "tunnel", "fixture"), uuid4(), 1, "digest")
+    receipt = ResourceObservation(intent, str(uuid4()), "created")
+    current = {
+        "account_id": account, "tunnel_id": receipt.provider_id, "version": 17, "secret-response-key": "secret-value",
+        "config": {
+            "ingress": [
+                {"service": "https://private.example.test", "hostname": "test.example.test", "secret-rule-key": "secret"},
+                DEFAULT_RULE,
+            ],
+            "warp-routing": {"enabled": False, "secret-warp-key": True},
+            "secret-config-key": "secret",
+        },
+    }
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: pytest.fail("Unexpected network request"))) as http:
+        client = TunnelRest(http, account_id=account, zone_id="b" * 32, hostname="managed.example.test", token=SecretStr("fixture"))
+        monkeypatch.setattr(client, "_result", AsyncMock(return_value=current))
+        with pytest.raises(OwnershipConflict) as failure:
+            await client.configure_ingress(receipt, "http://api:8001", allow_default=True)
+
+    assert failure.value.as_result() == {
+        "resource_class": "tunnel_ingress",
+        "check": "ingress_occupied",
+        "observed_category": "already_configured",
+        "expected_category": "empty_or_matching",
+        "ingress_shape": {
+            "version": 17,
+            "response_keys": ["account_id", "config", "tunnel_id", "version", "other"],
+            "config_keys": ["ingress", "warp-routing", "other"],
+            "warp_routing_keys": ["enabled", "other"],
+            "rule_count": 2,
+            "rules": [
+                {"keys": ["hostname", "service", "other"], "service_kind": "https_origin"},
+                {"keys": ["service"], "service_kind": "http_status_404"},
+            ],
+        },
+    }

@@ -104,7 +104,7 @@ class OwnershipConflict(Exception):
         self.resource = resource
         self.check = check
 
-    def as_result(self) -> dict[str, str]:
+    def as_result(self) -> dict[str, object]:
         check, observed, expected = self.check.value
         return {
             "resource_class": self.resource.value,
