@@ -315,6 +315,8 @@ class Default(WorkerEntrypoint):
         from bifrost.client import _install_cached_access_token
 
         context = body["context"]
+        if body.get("record_workflow_timing") is True:
+            context["_record_workflow_entry"] = True
         token = context.get("engine_token")
         if token:
             _install_cached_access_token(body["api_url"], token)
@@ -323,6 +325,7 @@ class Default(WorkerEntrypoint):
         result = await run_authorized_attempt(
             body["execution_id"], context, body["api_url"],
             public_url=body.get("public_url", "https://staging.invalid"))
+        entry_at = result.pop("workflow_entry_at", None)
         done = time.perf_counter()
         # Import trace: packaged modules this attempt loaded for the first time
         # in this child. The host keeps the union and primes the next child.
@@ -333,6 +336,7 @@ class Default(WorkerEntrypoint):
         return Response(json.dumps({"upstream_result": result, "child": {
             "first_request": first_request, "served": _SERVED,
             "engine_ms": int((done - engine_started) * 1000),
+            "entry_at": entry_at,
             "imported": imported}}, default=str),
             headers={"content-type": "application/json"})
 `;
