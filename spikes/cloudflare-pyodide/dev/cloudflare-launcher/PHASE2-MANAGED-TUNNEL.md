@@ -106,3 +106,12 @@ warp-routing echo, private-route list, and connector rotation with
 old-session eviction remain unqualified on Cloudflare.
 
 See the [sanitized combined hosted receipt](../../results/cloudflare-scaleout-combined-hosted.json).
+
+## Combined Hosted Re-run Disposition
+
+The Existing HTTPS worker preflight stopped on an IPv4 TLS handshake
+timeout. The re-run ended before Managed Tunnel Connect. The warp-routing
+echo, route-list grant and connector rotation with old-session eviction
+remain unqualified on Cloudflare.
+
+See the [sanitized re-run receipt](../../results/cloudflare-scaleout-combined-hosted-rerun.json).

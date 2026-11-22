@@ -571,3 +571,13 @@ Worker and Durable Object analytics rows during the query window.
 The comparative ratio and hosted workload calibration remain open.
 
 See the [sanitized combined hosted receipt](../../results/cloudflare-scaleout-combined-hosted.json).
+
+### Combined Hosted Re-run Meter Disposition
+
+The two production image loader checks passed. The worker preflight
+stopped on an IPv4 TLS handshake timeout before Enable. Bifrost displayed
+$0.00 for this re-run and provisioned no Worker or Durable Object resources.
+The modeled cumulative carry-in remained about $0.000191. Hosted workload
+meter samples, billed provider usage and the spend ratio remain unavailable.
+
+See the [sanitized re-run receipt](../../results/cloudflare-scaleout-combined-hosted-rerun.json).
