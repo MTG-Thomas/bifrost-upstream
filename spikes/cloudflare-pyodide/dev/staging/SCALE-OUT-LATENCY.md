@@ -215,27 +215,28 @@ is no provider cost or reconciliation ratio for this workflow.
 ## Next hosted receipt
 
 Read `executions.cloudflare_timing` for `queued_at`, `gate_eligible_at`,
-`claim_at`, `prepare_sent_at`, `dispatch_sent_at`, `engine_ready_at`, and
-`entry_at`. Join via the existing workflow claim to
+`claim_at`, `session_ready_at`, `prepare_sent_at`, and `dispatch_sent_at`.
+Join via the existing workflow claim to
 `cloudflare_worker_reservations.launch_timing` for `controller_decision_at`,
 `launcher_reserved_at`, `launcher_start_sent_at`,
-`launcher_start_accepted_at`, and `session_ready_at`. The existing
+`launcher_start_accepted_at`. The existing
 `execution_workers.ready_at` records initial owner admission after hello.
 The launcher timestamps describe the incarnation's initial launch and
 should be attributed to the cold sample only when it uses the new
 incarnation. A ready launcher can claim before the launch-age threshold.
 
 These are UTC observations. Queue time comes from the dispatch row.
-Reservation and claim stamps are inside their transactions. The prepare
-and dispatch stamps record completion of the API socket sends. Engine
-readiness records the TenantHost's confirmed ping for the generation it
-selected, which can predate a warm run. Entry records the engine's
-invocation of the loaded workflow and is returned with the terminal
-receipt. Rebuild the Workers runtime from the updated engine sources to
-collect it. Missing keys indicate a stage that did not occur or report a
-timestamp, for example when a prepare hint was skipped, a terminal
-receipt was lost, or an older bundle ran the workflow. Keep the fixture's
-entry log as an independent observation.
+The reservation stamp is taken in its transaction. Provider start stamps
+are persisted after the admission transaction commits. The committed
+claim time, queue and eligibility times, session readiness, and the two
+completed API socket sends are retained on the route and written after
+fenced settlement. A skipped prepare or lost
+route can leave these keys absent. The qualified Workers bundle ships
+with the two-second gate and wake. The separate local
+`t3/cloudflare-runtime-timing` branch adds the TenantHost's confirmed
+engine-ready stamp and the loaded workflow invocation's `entry_at`.
+Those stamps require a runtime rebuild and meter requalification.
+Until then, use the fixture's entry log for queue-to-entry.
 
 Repair the measurement harness to use durable dispatch timing even if the
 detail API omits `created_at`. Measure paired runs under the same primary

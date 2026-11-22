@@ -84,6 +84,10 @@ class ThinRemoteTransport(Protocol):
         """Return the canonical reservation for a running route."""
         raise NotImplementedError
 
+    def take_workflow_timing(self, route_id: str) -> dict[str, datetime]:
+        """Return and forget the best-effort observations for a settled route."""
+        raise NotImplementedError
+
     async def wait_for_opaque_terminals(
         self, receipts: set[str], lease: RemoteOwnerLease,
     ) -> dict[str, dict[str, Any]]:
@@ -1418,9 +1422,8 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         if not getattr(self.transport, "managed_cloudflare", False):
             return
         from src.core.database import get_db_context
-        from src.models.orm.cloudflare_capacity import CloudflareWorkflowSlot
         from src.services.worker_pool.cloudflare_timing import (
-            record_execution_timing,
+            record_transport_timing,
             worker_terminal_timing,
         )
         from src.worker.remote.fencing import fence_remote_owner
@@ -1430,14 +1433,12 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         async with get_db_context() as db:
             if not await fence_remote_owner(db, for_update=state == "uncertain"):
                 raise ConnectionError("Remote API ownership was replaced before slot settlement")
-            if stages := worker_terminal_timing(timings):
-                slot = CloudflareWorkflowSlot
-                if await db.scalar(select(select(slot.fence).where(
-                    slot.worker_id == worker_id, slot.execution_id == subject_id,
-                    slot.fence == slot_fence, slot.sent,
-                ).exists())):
-                    await record_execution_timing(db, subject_id, **stages)
             await settle_workflow_slot(db, worker_id, subject_id, slot_fence, state)
+        stages = {**self.transport.take_workflow_timing(route_id), **worker_terminal_timing(timings)}
+        if stages:
+            await record_transport_timing(
+                execution_id=subject_id, worker_id=worker_id, slot_fence=slot_fence, **stages,
+            )
 
     @staticmethod
     def _valid_opaque_terminal_result(result: Any, state: str) -> TypeGuard[dict[str, Any]]:

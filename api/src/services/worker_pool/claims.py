@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
@@ -19,7 +19,6 @@ from src.models.orm.executions import Execution
 from src.models.orm.work_dispatches import WorkDispatch
 from src.services.kubernetes_execution import load_kubernetes_policy
 from src.services.execution.summary_dispatch import LINUX_ONLY_SUMMARY
-from src.services.pool_cadence import CLOUDFLARE_WORKERS_LAUNCH_AGE_SECONDS
 from src.services.worker_pool.cloudflare_admission import cloudflare_claim_allowed
 from src.services.worker_pool.cloudflare_containers_policy import container_identity_matches
 from src.services.worker_pool.cloudflare_slots import (
@@ -32,7 +31,6 @@ from src.services.worker_pool.cloudflare_slots import (
     stage_queue_preparations,
     tenant_key,
 )
-from src.services.worker_pool.cloudflare_timing import record_execution_timing
 from src.services.worker_pool.eligibility import cloudflare_active_claims, cloudflare_dispatch_sql, containers_dispatch_sql
 from src.worker.remote.fencing import current_remote_lease_ref, fence_remote_owner
 from src.worker.remote.protocol import (
@@ -76,6 +74,7 @@ class PoolClaim:
     tenant_id: UUID | None = None
     workflow_slot: WorkflowSlotTicket | None = None
     queue_preparations: tuple[QueuePreparation, ...] = ()
+    cloudflare_claim_committed_at: datetime | None = None
 
 
 def _now() -> datetime:
@@ -552,11 +551,6 @@ async def claim_next(
                 if reserve_claim is not None:
                     reserve_claim(claim)
                     reserved = True
-                if workflow_slot is not None:
-                    await record_execution_timing(
-                        db, row.subject, queued_at=row.queued_at, claim_at=_now(),
-                        gate_eligible_at=row.queued_at + timedelta(seconds=CLOUDFLARE_WORKERS_LAUNCH_AGE_SECONDS),
-                    )
                 # Keep commit inside the reservation's cleanup guard so a failed
                 # transaction cannot retain a local admission hold.
                 await db.commit()
@@ -565,6 +559,8 @@ async def claim_next(
         if reserved and claim is not None and release_reservation is not None:
             release_reservation(claim)
         raise
+    if claim is not None and claim.workflow_slot is not None:
+        claim = replace(claim, cloudflare_claim_committed_at=_now())
     return claim
 
 

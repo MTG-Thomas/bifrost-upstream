@@ -5,12 +5,11 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, literal, update
+from sqlalchemy import exists, func, literal, update
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import get_db_context
-from src.models.orm.cloudflare_capacity import CloudflareWorkerReservation
+from src.models.orm.cloudflare_capacity import CloudflareWorkerReservation, CloudflareWorkflowSlot
 from src.models.orm.executions import Execution
 
 logger = logging.getLogger(__name__)
@@ -22,19 +21,24 @@ def timing_values(column: Any, **stages: datetime) -> Any:
     return literal(stamps, JSONB).op("||")(func.coalesce(column, literal({}, JSONB)))
 
 
-async def record_execution_timing(db: AsyncSession, execution_id: UUID, **stages: datetime) -> None:
-    await db.execute(update(Execution).where(Execution.id == execution_id).values(
-        cloudflare_timing=timing_values(Execution.cloudflare_timing, **stages),
-    ))
-
-
 async def record_transport_timing(
-    *, execution_id: UUID | None = None, worker_id: UUID | None = None, **stages: datetime,
+    *, execution_id: UUID | None = None, worker_id: UUID | None = None, slot_fence: UUID | None = None,
+    **stages: datetime,
 ) -> None:
+    """Record timing after the authoritative operation commits."""
     try:
         async with get_db_context() as db:
             if execution_id is not None:
-                await record_execution_timing(db, execution_id, **stages)
+                statement = update(Execution).where(Execution.id == execution_id)
+                if slot_fence is not None:
+                    slot = CloudflareWorkflowSlot
+                    statement = statement.where(exists().where(
+                        slot.worker_id == worker_id, slot.execution_id == execution_id,
+                        slot.fence == slot_fence, slot.sent,
+                    ))
+                await db.execute(statement.values(
+                    cloudflare_timing=timing_values(Execution.cloudflare_timing, **stages),
+                ))
             else:
                 assert worker_id is not None
                 await db.execute(update(CloudflareWorkerReservation).where(

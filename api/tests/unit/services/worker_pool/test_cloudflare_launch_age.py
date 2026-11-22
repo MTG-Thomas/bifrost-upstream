@@ -21,24 +21,35 @@ def test_workers_launch_age_is_separate_from_reconciliation_cadence() -> None:
 
 
 def test_launch_age_schedules_existing_wake_without_setting_it_early(monkeypatch) -> None:
-    queued_at = datetime(2026, 11, 22, tzinfo=UTC)
-    deadline = queued_at + cloudflare_supervisor.LAUNCH_AGE
-    now = queued_at + timedelta(seconds=0.5)
     loop = Mock()
     wake = Mock()
     monkeypatch.setattr(cloudflare_supervisor, "asyncio", SimpleNamespace(get_running_loop=lambda: loop))
-    monkeypatch.setattr(cloudflare_supervisor, "datetime", SimpleNamespace(now=lambda _: now))
     monkeypatch.setattr(cloudflare_supervisor, "time", SimpleNamespace(
         get_clock_info=lambda _: SimpleNamespace(resolution=1e-9),
     ))
 
-    timer = cloudflare_supervisor._schedule_launch_wake(wake, deadline)
+    timer = cloudflare_supervisor._schedule_launch_wake(wake, 1.5)
 
     loop.call_later.assert_called_once_with(1.5 + 1e-9, wake.set)
     wake.set.assert_not_called()
     assert timer is loop.call_later.return_value
     loop.call_later.call_args.args[1]()
     wake.set.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_launch_wake_delay_is_relative_to_database_time(monkeypatch) -> None:
+    queued_at = datetime(2026, 11, 22, tzinfo=UTC)
+    result = Mock()
+    result.one.return_value = (queued_at + timedelta(milliseconds=500), queued_at)
+    db = SimpleNamespace(execute=AsyncMock(return_value=result))
+    context = MagicMock()
+    context.return_value.__aenter__.return_value = db
+    monkeypatch.setattr(cloudflare_supervisor, "get_db_context", context)
+
+    assert await cloudflare_supervisor._next_launch_age(cloudflare_supervisor.time.monotonic()) == (
+        queued_at + timedelta(seconds=2), 1.5,
+    )
 
 
 def test_terminal_timing_accepts_only_known_integer_stamps() -> None:
@@ -66,8 +77,8 @@ async def test_early_workflow_wake_keeps_the_launch_deadline(monkeypatch) -> Non
     async def listen(_redis_url, wakes):
         wakes[WAKE_WORKFLOW].set()
 
-    async def next_age(pass_started_at):
-        return deadline if pass_started_at < deadline else None
+    async def next_age(_since):
+        return (deadline, (deadline - now).total_seconds()) if now < deadline else None
 
     def schedule(wake, at):
         timer = Mock()
@@ -108,5 +119,5 @@ async def test_early_workflow_wake_keeps_the_launch_deadline(monkeypatch) -> Non
         lease=SimpleNamespace(holds_lease=lambda: True, seconds_remaining=lambda: 1),
     )
     assert passes == [queued_at, deadline - timedelta(milliseconds=1), deadline]
-    assert [at for _, at, _ in scheduled] == [deadline]
+    assert [delay for _, delay, _ in scheduled] == [2.0]
     scheduled[0][0].cancel.assert_called_once()

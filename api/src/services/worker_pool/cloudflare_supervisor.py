@@ -69,24 +69,28 @@ logger = logging.getLogger(__name__)
 LAUNCH_AGE = timedelta(seconds=CLOUDFLARE_WORKERS_LAUNCH_AGE_SECONDS)
 
 
-async def _next_launch_age(pass_started_at: datetime) -> datetime | None:
+async def _next_launch_age(since: float) -> tuple[datetime, float] | None:
     """Find the first compatible dispatch whose age could change this pass."""
+    elapsed = timedelta(seconds=max(0.0, time.monotonic() - since))
     async with get_db_context() as db:
-        queued_at = await db.scalar(select(func.min(WorkDispatch.created_at)).where(
+        queued = select(func.min(WorkDispatch.created_at)).where(
             cloudflare_dispatch_sql(),
             WorkDispatch.assigned_worker_id.is_(None),
-            WorkDispatch.created_at > pass_started_at - LAUNCH_AGE,
-        ))
-    return queued_at + LAUNCH_AGE if queued_at is not None else None
+            WorkDispatch.created_at > func.now() - (elapsed + LAUNCH_AGE),
+        ).scalar_subquery()
+        database_now, queued_at = (await db.execute(select(func.now(), queued))).one()
+    if queued_at is None:
+        return None
+    deadline = queued_at + LAUNCH_AGE
+    return deadline, (deadline - database_now).total_seconds()
 
 
-def _schedule_launch_wake(wake: asyncio.Event, deadline: datetime) -> asyncio.TimerHandle:
+def _schedule_launch_wake(wake: asyncio.Event, delay: float) -> asyncio.TimerHandle:
     # Feed the same coalescing event as the Redis workflow and capacity hints.
     # The next pass still observes spacing and rechecks admission and demand.
-    delay = max(0.0, (deadline - datetime.now(UTC)).total_seconds())
     loop = asyncio.get_running_loop()
     # asyncio timers may run up to one clock-resolution tick early.
-    return loop.call_later(delay + time.get_clock_info("monotonic").resolution, wake.set)
+    return loop.call_later(max(0.0, delay) + time.get_clock_info("monotonic").resolution, wake.set)
 
 
 async def _primary_pool(
@@ -212,7 +216,6 @@ async def cloudflare_supervisor_loop(
         try:
             while not stop_event.is_set() and lease.holds_lease():
                 started = time.monotonic()
-                pass_started_at = datetime.now(UTC)
                 try:
                     async with asyncio.timeout(lease.seconds_remaining()):
                         scopes = await _installations()
@@ -247,17 +250,18 @@ async def cloudflare_supervisor_loop(
                                 await prune_spend_receipt_keys(db)
                         except Exception:
                             logger.warning("Could not prune Cloudflare spend history", exc_info=True)
-                deadline = None
+                age = None
                 try:
                     if lease.holds_lease() and any(c.burst_launch_allowed for c in controllers.values()):
                         async with asyncio.timeout(lease.seconds_remaining()):
-                            deadline = await _next_launch_age(pass_started_at)
+                            age = await _next_launch_age(started)
                     # An ordinary wake can run a pass before the deadline.
                     # Keep the existing timer armed when the same row is due.
+                    deadline = age[0] if age is not None else None
                     if deadline != age_deadline:
                         if age_wake is not None:
                             age_wake.cancel()
-                        age_wake = _schedule_launch_wake(wake, deadline) if deadline is not None else None
+                        age_wake = _schedule_launch_wake(wake, age[1]) if age is not None else None
                         age_deadline = deadline
                 except Exception:
                     logger.warning("Could not schedule Cloudflare launch-age wake", exc_info=True)
