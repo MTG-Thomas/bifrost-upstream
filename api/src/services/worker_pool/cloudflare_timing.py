@@ -9,7 +9,10 @@ from sqlalchemy import exists, func, literal, update
 from sqlalchemy.dialects.postgresql import JSONB
 
 from src.core.database import get_db_context
-from src.models.orm.cloudflare_capacity import CloudflareWorkerReservation, CloudflareWorkflowSlot
+from src.models.orm.cloudflare_capacity import (
+    CloudflareWorkerReservation,
+    CloudflareWorkflowSlot,
+)
 from src.models.orm.executions import Execution
 
 logger = logging.getLogger(__name__)
