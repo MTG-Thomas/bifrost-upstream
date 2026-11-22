@@ -623,6 +623,12 @@ process when the rehearsal finishes or fails.
 
 ### Hosted Run
 
+Run only the steps and checks exercised by the committed local rehearsal.
+Rehearse any new check locally and commit it to the harness before using
+it on hosted. Record an unexpected finding outside the rehearsed checks
+as a sanitized observation and continue. Stop on a rehearsed stop
+condition or a real spend, ownership, isolation, or teardown violation.
+
 The run needs explicit owner approval for the exact two release manifests,
 existing Workers Paid account, active zone, two dedicated origins, temporary
 grants, and a single disposable Compose project. Cap each deployment at three
@@ -730,13 +736,16 @@ before the worker count when rehearsing on the test Compose stack.
 Use bounded read-only polling within each phase's deadline. Submit each
 operation once. Keep hold fixtures live until their required reads
 complete, and stop on a terminal failure, changed fence, or expired
-deadline. Apply the following ordering:
+rehearsed deadline. Managed Workers overflow uses a 2-second dispatch-age
+floor and a deadline wake. A similar hosted cold run is expected to enter
+in about 7–9 seconds under healthy conditions. Record the measured time
+to entry and treat that range as an expectation.
 
 | Gate | Required readback before advancing |
 | --- | --- |
-| Cold and warm | Use `executions.created_at` in PostgreSQL as the queue timestamp for latency. The execution detail response can leave `created_at` null. After the cold run becomes terminal, wait for its ACK and the released slot fence. Submit the repeat while that slot is still within linger. Verify the repeat's claim and loader identity after entry. |
-| Eight and ninth executions | Wait for a live gateway or launcher witness of entry and a sent, unreleased slot for all eight in the same occupancy window. Then offer the ninth. Wait for its entry and slot while confirming the original eight fences are still held. Read persisted entry logs after settlement because the runtime can batch them until the terminal receipt. |
-| Tenth waits | After its dispatch row appears, record the managed controller identified by `launched_by` on the held launchers. Its timestamp in Redis `bifrost:worker-pool:controllers` advances at pass start. Observe the first advance after enqueue and use the next two advances of that controller to mark two completed passes. Check the scope logs for reconciliation errors during both passes. At each completion, read the same nine active fences and the tenth's unassigned dispatch together, and verify the tenth has no claim, slot, or entry. Record the observations without controller IDs. |
+| Cold and warm | Use `executions.created_at` in PostgreSQL as the queue timestamp for latency. After each run settles, retain its released-slot snapshot before submitting another run. Match the terminal receipt and ACK to that execution's dispatch route and fence. Submit the warm repeat inside linger and use the two saved snapshots to verify reuse. |
+| Eight and ninth executions | Within 28 seconds of submitting the burst, capture eight sent, unreleased slots. From that read, allow up to 28 seconds for live gateway or launcher entry witnesses for those same eight fences. The latter window covers engine boot after dispatch, including serialized boots in one launcher. Then offer the ninth. Wait for its entry and slot while confirming the original eight fences are still held. Read persisted entry logs after settlement because the runtime can batch them until the terminal receipt. |
+| Tenth waits | After its dispatch row appears, use its PostgreSQL queue time plus 2 seconds as the first overflow-eligible instant. The timestamp in Redis `bifrost:worker-pool:controllers` advances when the controller identified by `launched_by` starts a pass. Observe its first advance at or after eligibility and use the next two advances to mark two completed eligible passes. Check the scope logs for reconciliation errors during both passes. At each completion, verify the same nine active fences and the tenth's unassigned dispatch, with no claim, slot, or entry. Record the observations without controller IDs. |
 | Isolated cancel | Use a fixture that can finish within the launcher's stop-confirmation window when the terminate command is observed. Wait for a confirmed `stopped` receipt, terminal cancellation, and exact slot fence release. A Cancelled run with an `uncertain` receipt still owns its fence. In the same slot read verify the other eight fences remain held. Compare the released fence timestamp with the tenth execution's claim and entry evidence. |
 | Active Scale In | Confirm the drain fixture has entered on Workers under a sent fence. Free the local primary if needed to run the platform job. After Scale In is accepted, wait for the admission and send fence while the original claim is still live. Then release the fixture or let its bounded hold finish. Verify its terminal ACK, the job result, retired launcher readback, and the three retained scripts. |
 | Managed Tunnel rotation | Capture live session identities before submission. After rotation, poll the exact tunnel until the pre-rotation set is absent and a replacement session is live. Check the old token and run the worker preflight only after that readback. |
@@ -761,7 +770,7 @@ report the ratio unavailable. Preserve both run windows outside the stack so
 read-only Analytics readback can finish after cleanup within the approved
 window.
 
-Stop workload and begin teardown on failed preflight or canary, class
+For the rehearsed gates, stop workload and begin teardown on failed preflight or canary, class
 mismatch, unexpectedly open admission, cross-tenant access or release,
 unproven stop or slot release, unexpected grant or route drift, duplicate
 resource, unresolved receipt, or loss of spend visibility. Stop optional
