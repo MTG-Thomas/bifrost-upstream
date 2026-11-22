@@ -20,6 +20,7 @@ from phase6 import seed_solution_workflows
 HERE = Path(__file__).resolve().parent
 MANAGEMENT = "local-rehearsal-management-token"
 ACTIVE_JOB = {"queued", "running", "waiting"}
+WORKERS_OVERFLOW_AGE_SECONDS = 2
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -76,10 +77,14 @@ class Rehearsal:
         self.runs = {}
         self.tenants = {}
 
-    def verify_isolation(self):
+    def verify_isolation(self, *, successor=None):
+        containers = {}
         api_address = None
         for service in ("api", "worker", "cloudflare-connector"):
-            container = subprocess.check_output(self.compose + ["ps", "-q", service], text=True).strip()
+            container = successor if service == "api" and successor else subprocess.check_output(
+                self.compose + ["ps", "-q", service], text=True,
+            ).strip()
+            containers[service] = container
             inspection, = json.loads(subprocess.check_output(["docker", "inspect", container]))
             networks = inspection["NetworkSettings"]["Networks"]
             if self.cfg["network"] not in networks:
@@ -93,7 +98,7 @@ class Rehearsal:
                 if name == self.cfg["network"] and network["IPAM"]["Config"][0]["Gateway"] != self.cfg["address"]:
                     raise RuntimeError("The provider address does not match the rehearsal bridge")
         for service in ("api", "worker"):
-            check = subprocess.run(self.compose + ["exec", "-T", "--user", "1000:1000", service, "python", "-c", """
+            check = subprocess.run(["docker", "exec", "--user", "1000:1000", containers[service], "python", "-c", """
 import asyncio
 import os
 from pathlib import Path
@@ -112,7 +117,7 @@ if any(row.split()[1] == "00000000" for row in Path("/proc/net/route").read_text
     raise SystemExit("The rehearsal container has a default route")
 """], check=False, timeout=15)
             if check.returncode:
-                raise RuntimeError(f"{service} failed local isolation verification. Connect is blocked.")
+                raise RuntimeError(f"{service} failed local isolation verification. Connect or Upgrade is blocked.")
         evidence("isolation", {"internal_networks": True, "api_worker_hooks_verified": True})
         if not api_address:
             raise RuntimeError("The API has no rehearsal bridge address")
@@ -230,6 +235,7 @@ if any(row.split()[1] == "00000000" for row in Path("/proc/net/route").read_text
             fixture.write_bytes(original)
         self.workflows["solution"] = ids["solution"]
         self.tenants["solution"] = self.tenants["provider"]
+        evidence("approvals", {"accepted_loose": len(self.tenants) - 1, "accepted_solution": len(ids)})
 
     def submit(self, case, group, *, hold=0):
         assert self.install()["admission_open"]
@@ -283,12 +289,16 @@ async def {name}():
             WHERE s.execution_id IN ({ids})""")
         return {alias[row["id"]]: row for row in rows}
 
-    def held(self, cases):
+    def sent_slots(self, cases):
         rows = self.slot_rows(cases)
+        if len(rows) == len(cases) and all(row["sent"] and not row["released"] for row in rows.values()):
+            return rows
+        return None
+
+    def held(self, cases):
+        rows = self.sent_slots(cases)
         entered = set(self.provider("/local/entered"))
-        if len(rows) == len(cases) and all(
-            row["sent"] and not row["released"] and row["id"] in entered for row in rows.values()
-        ):
+        if rows and all(row["id"] in entered for row in rows.values()):
             return rows
         return None
 
@@ -302,17 +312,33 @@ async def {name}():
         return wait(f"{case} terminal and released fence", terminal, window)
 
     def latency(self):
-        rows = []
+        receipts = {}
         for case in ("cold", "warm"):
             self.submit(case, "provider")
-            rows.append(self.settle(case))
-        cold, warm = rows
+            slot = self.settle(case)
+            wait(f"{case} terminal receipt ACK", lambda settled=slot: self.terminal_ack(settled), 10)
+            receipts[case] = slot
+        cold, warm = receipts["cold"], receipts["warm"]
         assert (cold["worker"], cold["ordinal"]) == (warm["worker"], warm["ordinal"])
-        evidence("latency", {label: {
+        timing = self.sql(f"""SELECT to_json(cloudflare_timing) FROM executions WHERE id='{cold['id']}'""") or {}
+        evidence("latency", {"cold_overflow_gate_ms": (
+            duration(timing["queued_at"], timing["gate_eligible_at"])
+            if {"queued_at", "gate_eligible_at"} <= timing.keys() else None
+        ), **{label: {
             "queue_to_entry_ms": duration(row["queued"], row["entry"]),
             "queue_to_completion_ms": duration(row["queued"], row["completed"]),
             "ordinal": row["ordinal"],
-        } for label, row in zip(("cold", "warm"), rows, strict=True)})
+            "terminal_ack": True,
+        } for label, row in receipts.items()}})
+
+    def terminal_ack(self, slot):
+        wire = self.provider("/local/evidence")
+        dispatch, = [entry for entry in wire if entry["kind"] == "dispatch" and entry["execution"] == slot["id"]]
+        assert dispatch["worker"] == slot["worker"] and dispatch["route"].endswith(":" + slot["fence"])
+        terminals = {entry["id"] for entry in wire if entry["kind"] == "result"
+                     and entry["route"] == dispatch["route"] and entry["attempt"] == "completed"}
+        return any(entry["kind"] == "ack" and entry["worker"] == slot["worker"]
+                   and entry["id"] in terminals for entry in wire)
 
     def burst(self):
         cases = [f"{group}-{idx}" for group in ("provider", "global") for idx in range(1, 5)]
@@ -320,7 +346,11 @@ async def {name}():
         for case in cases:
             group = "solution" if case == "provider-4" else case.split("-")[0]
             self.submit(case, group, hold=-1 if case == cancelled else 70)
-        eight = wait("eight entered burst slots", lambda: self.held(cases), 28)
+        sent = wait("eight sent burst slots", lambda: self.sent_slots(cases), 28)
+        sent_observed_at = time.monotonic()
+        eight = wait("eight entered burst slots after dispatch", lambda: self.held(cases), 28)
+        assert all(eight[case]["fence"] == sent[case]["fence"] for case in cases)
+        dispatch_to_full_entry_ms = round((time.monotonic() - sent_observed_at) * 1000)
         for group in ("provider", "global"):
             assert {row["ordinal"] for name, row in eight.items() if name.startswith(group)} == {0, 1, 2, 3}
         self.submit("ninth", "third", hold=62)
@@ -336,15 +366,19 @@ async def {name}():
             ], text=True, timeout=5))["at"]
 
         baseline = marker()
-        for observation in range(3):
-            baseline = wait("next managed controller pass", lambda: stamp if (stamp := marker()) > baseline else None, 8)
-            if observation:
-                held = self.held(nine)
-                assert held and all(held[case]["fence"] == cohort[case]["fence"] for case in nine)
-                assert self.sql(f"""SELECT to_json(coalesce((SELECT assigned_worker_id IS NULL FROM work_dispatches
-                    WHERE subject_id='{target}' AND family='workflow_execution'), false)
-                    AND NOT EXISTS(SELECT 1 FROM execution_worker_claims WHERE subject_id='{target}')
-                    AND NOT EXISTS(SELECT 1 FROM cloudflare_workflow_slots WHERE execution_id='{target}'))""")
+        queued_at = self.sql(f"""SELECT to_json(extract(epoch FROM created_at)) FROM work_dispatches
+            WHERE subject_id='{target}' AND family='workflow_execution'""")
+        eligible_at = queued_at + WORKERS_OVERFLOW_AGE_SECONDS
+        baseline = wait("first overflow-eligible controller pass",
+                        lambda previous=baseline: stamp if (stamp := marker()) > previous and stamp >= eligible_at else None, 8)
+        for _ in range(2):
+            baseline = wait("next managed controller pass", lambda previous=baseline: stamp if (stamp := marker()) > previous else None, 8)
+            held = self.held(nine)
+            assert held and all(held[case]["fence"] == cohort[case]["fence"] for case in nine)
+            assert self.sql(f"""SELECT to_json(coalesce((SELECT assigned_worker_id IS NULL FROM work_dispatches
+                WHERE subject_id='{target}' AND family='workflow_execution'), false)
+                AND NOT EXISTS(SELECT 1 FROM execution_worker_claims WHERE subject_id='{target}')
+                AND NOT EXISTS(SELECT 1 FROM cloudflare_workflow_slots WHERE execution_id='{target}'))""")
         assert self.runs[cancelled] in self.provider("/local/held-reads")
         self.send("/api/executions/" + self.runs[cancelled] + "/cancel")
         released = self.settle(cancelled, "Cancelled")
@@ -362,7 +396,8 @@ async def {name}():
         solution = self.send("/api/executions/" + self.runs["provider-4"], method="GET")
         assert solution["result"]["install_value"] == "solution"
         evidence("burst", {"provider": 4, "global": 4, "reserved": 1, "queued_observations": 2,
-                           "cancel_unchanged_fences": len(survivors), "scoped_solution": True})
+                           "cancel_unchanged_fences": len(survivors), "scoped_solution": True,
+                           "last_dispatch_read_to_full_entry_ms": dispatch_to_full_entry_ms})
 
     def scripts(self):
         return {row["id"] for row in self.provider("/client/v4/accounts/" + "a"*32 + "/workers/scripts")}
@@ -465,6 +500,7 @@ async def {name}():
         wait("replacement API ready", http_ready, 30)
         subprocess.run(self.compose + ["up", "-d", "--no-deps", "--pull", "never", "worker"],
                        check=True, env=env, timeout=40, stdout=subprocess.DEVNULL)
+        assert self.verify_isolation(successor=successor) == address
         job = self.job("upgrade")
         pinned = Path(".release-2.checked").read_text().split()[1]
         install_id = str(UUID(self.install()["installation_id"]))

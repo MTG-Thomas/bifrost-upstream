@@ -206,3 +206,12 @@ cancellation remain unqualified on hosted. Disconnect verified zero
 held slots.
 
 See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-latency-reuse.json).
+
+### Hosted Slot Qualification at `db39a3698`
+
+The worker preflight passed. Enable stopped on `CF_OWNERSHIP_CONFLICT`
+before admitting a workflow. The burst, reserved ninth slot, waiting
+tenth, and isolated cancellation remain unqualified on hosted.
+Disconnect verified zero held slots and live launcher incarnations.
+
+See the [sanitized ownership-stop receipt](../../results/cloudflare-scaleout-combined-hosted-ownership-stop.json).

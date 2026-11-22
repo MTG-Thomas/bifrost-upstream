@@ -392,3 +392,13 @@ post-reuse query tried to reread the cold execution from the slot row
 after the row had been reassigned, and the run stopped at that gate.
 
 See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-latency-reuse.json).
+
+### Hosted 2-Second Gate Attempt at `db39a3698`
+
+The policy configured the 2 s overflow gate. Enable stopped on
+`CF_OWNERSHIP_CONFLICT` before any launcher or workflow started. The
+configured age and prior local rehearsal provide context for this
+attempt. Hosted eligibility offset and cold and warm latency are
+unmeasured.
+
+See the [sanitized ownership-stop receipt](../../results/cloudflare-scaleout-combined-hosted-ownership-stop.json).
