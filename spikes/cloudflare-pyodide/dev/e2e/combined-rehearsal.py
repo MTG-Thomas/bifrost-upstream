@@ -279,6 +279,9 @@ from bifrost import workflow
 async def {name}():
     await asyncio.sleep(180)
 """, memory=size - 24, timeout=200)
+            else:
+                # A replacement primary can advertise a different memory budget.
+                self.send("/api/workflows/" + self.workflows[name], {"memory_request_mib": size - 24}, method="PATCH")
             location = "/api/executions/" + self.send("/api/workflows/execute", {
                 "workflow_id": self.workflows[name], "org_id": "global", "sync": False,
             })["execution_id"]
@@ -816,7 +819,10 @@ def main():
             trial.scale_in()
             trial.meter()
         finally:
-            trial.disconnect()
+            try:
+                trial.release_primary()
+            finally:
+                trial.disconnect()
         return
     trial.seed()
     if not args.managed_only:
