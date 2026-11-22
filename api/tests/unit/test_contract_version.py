@@ -468,7 +468,8 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Managed Tunnel fields and the connector rotation option are additive.
     # Omitted reachability still selects Existing HTTPS Endpoint.
     # Queue pre-warming is opt-in. Existing clients can omit the cap.
-    "4f991ce0be3f32b87f8620d1b256f8e0a4da5ace620558ad6d35c2f632880dd2"
+    # Optional Cloudflare Workers activation suggestion.
+    "b490392780964549153f69033b7cf286d0a1f2b5dc0031fb3906267d09259161"
 )
 
 
