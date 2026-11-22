@@ -598,6 +598,9 @@ async def {name}():
             assert sum(entry["kind"] == "delete" for entry in wire[cut+1:first_upload]) == 3
             evidence_fields["reconnect_replay"] = True
         else:
+            assert replies[-1]["connection"] == dispatch["connection"]
+            assert any(entry["kind"] == "ack" and entry["id"] == replies[-1]["id"]
+                       and entry["connection"] == dispatch["connection"] for entry in wire)
             new_revision = checkpoint["desired"]
             replacement = [row for row in self.worker_receipts() if row["revision"] == new_revision]
             assert len(replacement) == 3 and all(row["state"] == "present" and row["observed"] for row in replacement)
@@ -607,13 +610,17 @@ async def {name}():
                 first_upload = next(number for number, entry in enumerate(wire)
                                     if entry["kind"] == "upload" and entry["revision"] == new_revision)
                 assert sum(entry["kind"] == "delete" for entry in wire[:first_upload]) == 3
+                old_namespace_ids = {value for row in receipts for value in row["namespaces"].values()}
+                inventory_reads = [entry["ids"] for entry in wire[:first_upload] if entry["kind"] == "namespace-inventory"]
+                assert inventory_reads and old_namespace_ids.isdisjoint(inventory_reads[-1])
             self.primary_hold()
             self.submit("replacement", "third")
             new = self.settle("replacement")
             assert new["revision"] == new_revision
             wait("replacement route terminal ACK", lambda: self.terminal_ack(new), 10)
             self.release_primary()
-            evidence_fields.update(admission_fenced=True, old_absence_checkpoint_before_replacement=True,
+            evidence_fields.update(admission_fenced=True, same_control_connection=True,
+                                   old_absence_checkpoint_before_replacement=True,
                                    first_replacement_observation_after_checkpoint_ms=duration(
                                        checkpoint["drained"], min(row["observed"] for row in replacement),
                                    ), replacement_signed_canary=True, replacement_execution=True)

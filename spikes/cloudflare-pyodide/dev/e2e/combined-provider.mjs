@@ -29,6 +29,7 @@ const sdkCalls = new Map();
 const entered = new Set();
 const heldQueries = new Map();
 const executionByRoute = new Map();
+let connectionSequence = 0;
 const transport = new WebSocketServer({noServer: true});
 const witnessHeaders = ['x-bifrost-worker-ingress', 'x-bifrost-ingress-probe'];
 transport.on('headers', (headers, req) => {
@@ -47,6 +48,16 @@ let ingressHost;
 
 function event(kind, details = {}) {
   observations.push({kind, ...details});
+}
+
+function controlFrame(message) {
+  try {
+    return JSON.parse(message) ?? {};
+  } catch {
+    // The ingress owns protocol validation. A malformed client frame must
+    // never terminate the shared relay or expose its contents in trial logs.
+    return {};
+  }
 }
 
 function module(contents) {
@@ -141,15 +152,16 @@ function upgrade(req, socket, head) {
   upstream.on('error', () => socket.destroy());
   upstream.on('open', () => transport.handleUpgrade(req, socket, head, (worker) => {
     let identity;
+    const connection = ++connectionSequence;
     const terminate = new Map();
     worker.on('message', (message) => {
-      const frame = JSON.parse(message);
-      if (frame.event === 'hello') {
+      const frame = controlFrame(message);
+      if (frame.event === 'hello' && frame.hello?.incarnation_id) {
         identity = frame.hello.incarnation_id;
         if (identity) sockets.set(identity, worker);
-        event('hello', {worker: identity});
+        event('hello', {worker: identity, connection});
       } else if (frame.payload?.event === 'result') {
-        event('result', {worker: identity, id: frame.payload._event_id, route: frame.payload.route_id,
+        event('result', {worker: identity, connection, id: frame.payload._event_id, route: frame.payload.route_id,
           attempt: frame.payload.attempt_state});
       }
       const pending = terminate.get(frame.payload?.reply);
@@ -165,16 +177,18 @@ function upgrade(req, socket, head) {
       if (upstream.readyState === WebSocket.OPEN) upstream.send(message.toString());
     });
     upstream.on('message', (message) => {
-      const frame = JSON.parse(message);
-      if (frame.kind === 'ack') event('ack', {worker: identity, id: frame.payload.event_id});
-      if (frame.kind === 'command' && frame.payload.action === 'workflow') {
+      const frame = controlFrame(message);
+      if (frame.kind === 'ack' && frame.payload?.event_id) {
+        event('ack', {worker: identity, connection, id: frame.payload.event_id});
+      }
+      if (frame.kind === 'command' && frame.payload?.action === 'workflow') {
         const command = frame.payload.payload;
         sdkCalls.set(command.context.engine_token, {execution: command.execution_id, count: 0});
         executionByRoute.set(command.route_id, command.execution_id);
-        event('dispatch', {worker: identity, route: frame.payload.payload.route_id,
+        event('dispatch', {worker: identity, connection, route: frame.payload.payload.route_id,
           execution: frame.payload.payload.execution_id});
       }
-      if (frame.kind === 'command' && frame.payload.action === 'terminate') {
+      if (frame.kind === 'command' && frame.payload?.action === 'terminate') {
         const execution = executionByRoute.get(frame.payload.payload.route_id);
         if (heldQueries.has(execution)) terminate.set(frame.payload.id, execution);
       }
@@ -187,6 +201,7 @@ function upgrade(req, socket, head) {
       if (worker.readyState === WebSocket.OPEN) worker.close(valid);
     };
     worker.on('close', close);
+    worker.on('error', () => close(1012));
     upstream.on('close', close);
   }));
 }
@@ -268,7 +283,10 @@ async function provider(req, res) {
   if (relative === '/workers/subdomain') return ok({subdomain: 'rehearsal'});
   if (relative === '/workers/scripts') return ok([...workers.keys()].map((id) => ({id})));
   const namespaces = [...workers.values()].flatMap((item) => item.namespaces);
-  if (relative === '/workers/durable_objects/namespaces') return ok(namespaces);
+  if (relative === '/workers/durable_objects/namespaces') {
+    event('namespace-inventory', {ids: namespaces.map(({id}) => id)});
+    return ok(namespaces);
+  }
   const objects = relative.match(/^\/workers\/durable_objects\/namespaces\/([^/]+)\/objects$/);
   if (objects) return namespaces.some(({id}) => id === objects[1]) ? ok([]) : missing();
   const script = relative.match(/^\/workers\/scripts\/([a-z0-9-]+)(?:\/(settings|deployments|subdomain))?$/);
