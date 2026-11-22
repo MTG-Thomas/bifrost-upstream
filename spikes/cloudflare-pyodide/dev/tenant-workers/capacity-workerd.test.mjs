@@ -85,6 +85,12 @@ const measuredGateway = process.env.BIFROST_QUALIFIED_GATEWAY_BUNDLE;
 const slotQualification = process.env.BIFROST_LOCAL_TENANT_SLOTS === 'true';
 const lifetimeSoak = process.env.BIFROST_LIFETIME_SOAK_RESULT;
 const soakSeconds = Number(process.env.BIFROST_LIFETIME_SOAK_SECONDS ?? 900);
+const meterBounds = JSON.parse(readFileSync(new URL(
+  '../../../../api/src/services/worker_pool/cloudflare_meter_bounds.json', import.meta.url,
+), 'utf8'));
+const lifetimeRates = Object.fromEntries(['do_requests', 'log_events', 'sqlite_rows_written'].map(
+  name => [name, Number(meterBounds.per_launcher_second[name])],
+));
 const launcherSlots = slotQualification ? 4 : measuredLauncher ? 2 : 1;
 const controllerPolls = Number(process.env.BIFROST_QUALIFIED_CONTROLLER_POLLS ?? 0);
 const controllerSource = new URL('../../../../api/src/services/pool_cadence.py', import.meta.url);
@@ -341,6 +347,9 @@ async function start() {
         env: {API_ORIGIN: {type: 'text', value: 'https://test-api.invalid'},
           BIFROST_TENANT_LINGER_SECONDS: {type: 'text', value: '90'},
           BIFROST_CLOUDFLARE_MANAGED: {type: 'text', value: 'true'}, ...(measuredLauncher ? {
+            ...(lifetimeSoak ? {BIFROST_LAUNCHER_METERS_PER_SECOND: {
+              type: 'text', value: JSON.stringify(lifetimeRates),
+            }} : {}),
             LOADER: {type: 'worker-loader'},
             RUNTIME_SHA256: {type: 'text', value: 'fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5'},
             BIFROST_METER_ENGINE_CPU_MS: {type: 'text', value: '30000'},
@@ -396,11 +405,13 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
   const path = `workers/${id}`;
   const uid = randomBytes(16).toString('hex');
   const key = randomBytes(32).toString('hex');
+  const deadlineMs = lifetimeSoak ? Date.now() + soakSeconds * 1000 : undefined;
   const reservation = {worker_id: id, worker_version: settings.version,
     memory_limit_bytes: launcherSlots * 128 * 1024 ** 2,
     max_lifetime_seconds: lifetimeSoak ? soakSeconds :
       controllerPolls ? Math.ceil(controllerPolls * reconcileSeconds) + 120 : 60,
     drain_grace_seconds: 5,
+    ...(deadlineMs === undefined ? {} : {deadline_ms: deadlineMs}),
     resource_uid: uid, control_key: key};
   assert.equal((await request(path, 'PUT', reservation, {...auth, Authorization: `Bearer ${key}`})).status, 401);
   assert.equal((await request(path, 'PUT', reservation, {...auth, 'X-Bifrost-Capacity-Scope': 'foreign'})).status, 404);
@@ -455,7 +466,7 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
       }
     };
     await runLifetimeSoak({
-      result: lifetimeSoak, seconds: soakSeconds, storage, run, verifySession, launcher: measuredLauncher,
+      result: lifetimeSoak, seconds: soakSeconds, deadlineMs, storage, run, verifySession, launcher: measuredLauncher,
       cadence: controllerPolls ? () => observeAtControllerCadence(path) : undefined,
       observe: async () => (await (await request(path)).json()).state,
       settle: async () => {

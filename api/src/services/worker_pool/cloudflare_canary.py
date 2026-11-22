@@ -215,7 +215,16 @@ async def run_workers_canary(
             memory_limit_bytes=profile.memory_limit_bytes, remote_launcher_id=worker_id,
         ))
         await db.flush()
-        pin = ManagedCloudflareScope(installation_id, "workers", revision).pin(worker_id, row.control_root_version)
+        lifetime = min(deployment.policy.max_lifetime_seconds, 120)
+        reserved_at = await db.scalar(select(func.clock_timestamp()))
+        assert reserved_at is not None
+        pin = ManagedCloudflareScope(installation_id, "workers", revision).pin(
+            worker_id, row.control_root_version, reserved_at=reserved_at, lifetime=lifetime,
+            deadline_wire=any(
+                binding.name == "BIFROST_LAUNCHER_METERS_PER_SECOND" and binding.type == "plain_text"
+                for binding in deployment.release.manifest.workers["launcher"].bindings
+            ),
+        )
         pin.canary_job_id = context.job_id
         pin.canary_lease_token = context.lease_token
         db.add(pin)
@@ -226,9 +235,11 @@ async def run_workers_canary(
     try:
         await client.prepare(WorkerCapacityReservation(
             worker_id=worker_id, worker_version=profile.worker_version, memory_limit_bytes=profile.memory_limit_bytes,
-            max_lifetime_seconds=min(deployment.policy.max_lifetime_seconds, 120),
+            max_lifetime_seconds=lifetime,
             drain_grace_seconds=WORKER_DRAIN_GRACE_SECONDS,
-        ), "workers", managed_identity=(resource_uid, key))
+        ), "workers", managed_identity=(resource_uid, key),
+            **({"managed_deadline": pin.workers_deadline_at} if pin.workers_deadline_wire else {}),
+        )
         async with get_db_context() as db:
             try:
                 await hold_lease(db, context.job_id, context.lease_token)

@@ -235,6 +235,9 @@ export async function buildWorkers(runtimePath, outputPath, sourceRevision, mete
         plain("BIFROST_METER_WARM_CPU_MS", limits.warmCpuMs),
         plain("BIFROST_METER_EXERCISE_CPU_MS", limits.exerciseCpuMs),
         plain("BIFROST_LAUNCHER_METERS", JSON.stringify(limits.launcherMeters)),
+        plain("BIFROST_LAUNCHER_METERS_PER_SECOND", JSON.stringify(Object.fromEntries(
+          Object.keys(limits.launcherMeters).map(name => [name, Number(pinnedBounds.per_launcher_second[name])]),
+        ))),
       ] : bindings,
       cpu_ms: {capacity: limits.capacityCpuMs, gateway: limits.launcherCpuMs, launcher: theoreticalCpuMs}[role],
       preview_urls: false,

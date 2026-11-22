@@ -741,7 +741,9 @@ async def test_canary_proof_requires_current_lease_worker_generation_and_revisio
     )
     db_session.add(worker)
     await db_session.flush()
-    pin = ManagedCloudflareScope(installation.id, "workers", 1).pin(worker.id, 1)
+    pin = ManagedCloudflareScope(installation.id, "workers", 1).pin(
+        worker.id, 1, reserved_at=datetime.now(UTC), lifetime=120, deadline_wire=False,
+    )
     pin.canary_job_id, pin.canary_lease_token = job.id, job.lease_token
     db_session.add(pin)
     await db_session.flush()
@@ -1009,7 +1011,9 @@ async def test_upgrade_drains_before_replacement_and_resumes_after_lost_lease(
         SecretStr("synthetic-scope-bearer"), actor=str(OPERATOR_ID), now=now,
     ))
     await db_session.flush()
-    db_session.add(ManagedCloudflareScope(installation.id, "workers", 1).pin(worker.id, 1))
+    db_session.add(ManagedCloudflareScope(installation.id, "workers", 1).pin(
+        worker.id, 1, reserved_at=datetime.now(UTC), lifetime=3600, deadline_wire=False,
+    ))
     old_scope = CloudflareCapacityScope(
         installation_id=installation.id, scope="workers", deployment_revision=1,
         endpoint="https://old-capacity.example.test", bearer_version=1,
@@ -1878,6 +1882,66 @@ async def test_supervisor_reserves_and_retires_without_restarting(
         )) is None
 
 
+@pytest.mark.asyncio
+async def test_supervisor_retires_at_pinned_workers_lifetime(
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch,
+) -> None:
+    connection = await db_session.connection()
+
+    @asynccontextmanager
+    async def context():
+        async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as session:
+            yield session
+            await session.commit()
+
+    monkeypatch.setattr(external_controller, "get_db_context", context)
+    worker = ExecutionWorker(
+        id=uuid4(), form="external", state="ready", capacity_scope="workers",
+        runtime_profile="cloudflare-python-v1", memory_limit_bytes=256 * 2**20,
+        memory_reserved_bytes=64 * 2**20,
+    )
+    db_session.add(worker)
+    installation.desired_state = "enabled"
+    installation.admitted_revision = 1
+    scope = ManagedCloudflareScope(installation.id, "workers", 1)
+    db_session.add(seal_credential(
+        CredentialRef(installation.id, installation.account_id, "scope_bearer", "workers", 1),
+        SecretStr("synthetic-lifetime-test-bearer"), actor=str(OPERATOR_ID), now=datetime.now(UTC),
+    ))
+    await db_session.flush()
+    db_session.add(CloudflareCapacityScope(
+        installation_id=installation.id, scope="workers", endpoint="https://capacity.example.test",
+        deployment_revision=1, bearer_version=1,
+    ))
+    # Simulate a reservation made under a shorter policy before the current
+    # 3600-second policy. Database time has passed only the pinned deadline.
+    pinned = scope.pin(worker.id, 1, reserved_at=datetime.now(UTC) - timedelta(seconds=61),
+                       lifetime=60, deadline_wire=False)
+    db_session.add(pinned)
+    await db_session.flush()
+    assert await scope.lock_admission(db_session) == 1
+    assert not await cloudflare_claim_allowed(db_session, worker.id)
+    profile = external_controller.WorkerCapacityProfile.model_validate({
+        "protocol_version": 2, "scope": "workers", "worker_version": "test",
+        "runtime_profile": "cloudflare-python-v1", "memory_limit_bytes": 256 * 2**20,
+        "max_workers": 1, "max_lifetime_seconds": 3600,
+    })
+    async with httpx.AsyncClient() as http:
+        client = external_controller.ExternalCapacityClient("https://capacity.example.test", "t" * 40, http=http)
+        supervisor = external_controller.ExternalWorkerPoolController(
+            client, Settings(_env_file=None, secret_key="synthetic-lifetime-test-key-" + "x" * 32), profile,
+        )
+        supervisor.managed_cloudflare_scope = scope
+        await supervisor._retire_closed_worker(worker.id)
+        await db_session.refresh(worker)
+        assert (worker.state, worker.end_reason) == ("draining", "max_lifetime")
+        worker.memory_reserved_bytes = 0
+        await db_session.flush()
+        await supervisor._retire_closed_worker(worker.id)
+        await db_session.refresh(worker)
+        assert (worker.state, worker.end_reason) == ("retired", "max_lifetime")
+
+
 @pytest.fixture
 async def installation(db_session: AsyncSession) -> CloudflareInstallation:
     installation_id = await create_installation(db_session, "a" * 32)
@@ -2601,7 +2665,9 @@ async def test_container_reservation_serializes_shared_capacity(isolated_capacit
                 installation_id=installation_id, scope="workers", endpoint="https://workers.example.test",
                 deployment_revision=1, bearer_version=1,
             ))
-            db.add(ManagedCloudflareScope(installation_id, "workers", 1).pin(warmer, 1))
+            db.add(ManagedCloudflareScope(installation_id, "workers", 1).pin(
+                warmer, 1, reserved_at=datetime.now(UTC), lifetime=3600, deadline_wire=False,
+            ))
         for workflow_id, path, tenant in zip(workflow_ids, paths, placement_tenants, strict=True):
             db.add(Workflow(
                 id=workflow_id, name=f"native-{workflow_id}", function_name="run", path=path,

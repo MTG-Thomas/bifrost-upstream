@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 
 import httpx
 from shared.models import WorkerCapacityProfile, WorkerCapacityReservation
-from sqlalchemy import and_, func, select, update
+from sqlalchemy import and_, func, or_, select, update
 
 from src.config import Settings
 from src.core.database import get_db_context
@@ -77,7 +77,6 @@ class ExternalWorkerPoolController(WorkerCapacityController):
         self.cleanup_states = ("lost", "retired")
         self.runtime_profile = profile.runtime_profile
         self.burst_launch_allowed = True
-        self.managed_max_lifetime_seconds: int | None = None
 
     async def _reserve_managed_cleanup(self, worker_id: UUID) -> bool:
         async with get_db_context() as db:
@@ -191,7 +190,11 @@ class ExternalWorkerPoolController(WorkerCapacityController):
             await self.client.start(worker_id, self.profile.scope, uid)
             return
         async with get_db_context() as db:
-            if await scope.lock_admission(db):
+            pin = CloudflareWorkerReservation
+            if await scope.lock_admission(db) and await db.scalar(select(pin.worker_id).where(
+                pin.worker_id == worker_id,
+                or_(pin.workers_deadline_at.is_(None), pin.workers_deadline_at > func.clock_timestamp()),
+            )):
                 await self.client.start(worker_id, scope.name, uid)
 
     async def _retire_closed_worker(self, worker_id: UUID) -> None:
@@ -199,7 +202,12 @@ class ExternalWorkerPoolController(WorkerCapacityController):
         if scope is None:
             return
         async with get_db_context() as db:
-            if await scope.lock_admission(db, for_retirement=True):
+            root = await scope.lock_admission(db, for_retirement=True)
+            pin = CloudflareWorkerReservation
+            expired = await db.scalar(select(pin.worker_id).where(
+                pin.worker_id == worker_id, pin.workers_deadline_at <= func.clock_timestamp(),
+            ))
+            if root is not None and expired is None:
                 return
             worker = await db.scalar(select(ExecutionWorker).where(
                 ExecutionWorker.id == worker_id, self._managed_scope(),
@@ -212,7 +220,7 @@ class ExternalWorkerPoolController(WorkerCapacityController):
                     ExecutionWorkerClaim.worker_id == worker_id,
                 ).exists().select()
             )
-            worker.end_reason = "cloudflare_admission_closed"
+            worker.end_reason = "max_lifetime" if expired is not None else "cloudflare_admission_closed"
             if worker.active_runs or worker.memory_reserved_bytes or active:
                 worker.state = "draining"
             else:
@@ -324,7 +332,10 @@ class ExternalWorkerPoolController(WorkerCapacityController):
                 reservation = WorkerCapacityReservation(
                     worker_id=worker_id, worker_version=version,
                     memory_limit_bytes=limit,
-                    max_lifetime_seconds=self.managed_max_lifetime_seconds or self.settings.pool_max_lifetime_seconds,
+                    max_lifetime_seconds=(
+                        self.profile.max_lifetime_seconds if self.managed_cloudflare_scope is not None
+                        else self.settings.pool_max_lifetime_seconds
+                    ),
                     drain_grace_seconds=WORKER_DRAIN_GRACE_SECONDS,
                 )
                 if bounded_prepare:
@@ -348,8 +359,16 @@ class ExternalWorkerPoolController(WorkerCapacityController):
                                 pin = await db.get(CloudflareWorkerReservation, worker_id)
                                 if uid is None or pin is None or managed is None:
                                     raise CapacityProtocolError("Managed Cloudflare reservation lacks its control binding")
+                                if pin.workers_deadline_at is not None and pin.workers_deadline_at <= _now():
+                                    return
+                                reservation = reservation.model_copy(update={
+                                    "max_lifetime_seconds": pin.workers_lifetime_seconds or self.profile.max_lifetime_seconds,
+                                })
                                 key = await load_managed_control_key(db, pin, uid)
-                                resource = await self.client.prepare(reservation, self.profile.scope, managed_identity=(uid, key))
+                                resource = await self.client.prepare(
+                                    reservation, self.profile.scope, managed_identity=(uid, key),
+                                    **({"managed_deadline": pin.workers_deadline_at} if pin.workers_deadline_wire else {}),
+                                )
                             else:
                                 resource = await self.client.prepare(reservation, self.profile.scope)
                 else:

@@ -99,6 +99,7 @@ class WorkersReleaseMeterBounds:
     release_order: WorkersReleaseOrder
     expected_cpu_ms: Mapping[str, int] | None = None
     bounded_linger: bool = False
+    lifetime_meters: bool = False
 
 
 def release_meter_bounds(release: WorkersRelease) -> WorkersReleaseMeterBounds:
@@ -119,6 +120,10 @@ def release_meter_bounds(release: WorkersRelease) -> WorkersReleaseMeterBounds:
         expected_cpu_ms=expected,
         bounded_linger=any(
             binding.name == "BIFROST_TENANT_LINGER_SECONDS" and binding.source == "linger_seconds"
+            for binding in release.manifest.workers["launcher"].bindings
+        ),
+        lifetime_meters=any(
+            binding.name == "BIFROST_LAUNCHER_METERS_PER_SECOND" and binding.type == "plain_text"
             for binding in release.manifest.workers["launcher"].bindings
         ),
     )
@@ -299,6 +304,10 @@ def _price_policy(
         "startup_p99_us": bounds.startup_expected_us,
         "root_second_usd": str(root_rate),
     }
+    if bounds.lifetime_meters:
+        rates = {name: int(bounds.per_launcher_second[name]) for name in LAUNCHER_RECEIPT_METERS}
+        meter_launcher["per_second_caps"] = rates
+        meter_launcher["caps"] = {name: rate * policy.workers.max_lifetime_seconds for name, rate in rates.items()}
     if bounds.expected_cpu_ms is not None:
         meter_launcher["cpu_expected_ms"] = dict(bounds.expected_cpu_ms)
     if bounds.bounded_linger:

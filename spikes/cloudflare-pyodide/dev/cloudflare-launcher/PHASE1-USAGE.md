@@ -458,6 +458,14 @@ two log events, yielding caps of 680, 60 and 20. The expected CPU inputs used
 for fleet pricing are unchanged. The three-launcher, nine-slot, 120-second fleet envelope remains
 $415.59. This sample covers the default lane with queue pre-warming disabled.
 
+#### Lifetime-Scaled Launcher Meters
+
+The next Workers bundle pins the admitted lifetime at reservation and limits
+its metered writes, requests and logs to the qualified per-second rate times
+the reserved lifetime. The fleet envelope already prices those units over
+the lifetime and cleanup allowance. The new launcher and capacity bytes
+require meter requalification before preset B can take effect.
+
 #### Hosted SDK Measurement
 
 The hosted reference used manifest

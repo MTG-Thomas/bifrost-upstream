@@ -22,7 +22,7 @@ const RESERVATION_FIELDS = [
     "max_lifetime_seconds",
     "drain_grace_seconds",
 ];
-const PREPARE_FIELDS = [...RESERVATION_FIELDS, "resource_uid", "control_key"];
+const PREPARE_FIELDS = [...RESERVATION_FIELDS, "resource_uid", "control_key", "deadline_ms"];
 
 export class ProtocolError extends Error {
     constructor(status, message) {
@@ -113,6 +113,11 @@ export function createEngine({ profile, store, runtime, clock = { now: () => Dat
         if (reservation.max_lifetime_seconds > profile.max_lifetime_seconds) {
             throw new ProtocolError(409, "reservation lifetime exceeds advertised capacity");
         }
+        if (reservation.deadline_ms !== undefined &&
+            (!Number.isSafeInteger(reservation.deadline_ms) || reservation.deadline_ms <= 0 ||
+             reservation.deadline_ms > clock.now() + reservation.max_lifetime_seconds * 1000 + 1000)) {
+            throw new ProtocolError(400, "invalid reservation deadline");
+        }
     }
 
     async function finishPrepare(workerId, row, fresh = false) {
@@ -171,11 +176,15 @@ export function createEngine({ profile, store, runtime, clock = { now: () => Dat
                         throw new ProtocolError(409, "worker deletion is pending");
                     }
                     if (existing.resource_uid !== resource_uid || existing.control_key_digest !== digest ||
+                        existing.reservation.deadline_ms !== bounds.deadline_ms ||
                         RESERVATION_FIELDS.some((key) => existing.reservation[key] !== bounds[key])) {
                         throw new ProtocolError(409, "conflicting reservation for this worker");
                     }
                     if (existing.intent === "prepare") return finishPrepare(workerId, existing);
                     return resource(existing);
+                }
+                if (bounds.deadline_ms !== undefined && bounds.deadline_ms <= clock.now()) {
+                    throw new ProtocolError(409, "worker reservation expired");
                 }
                 // Commit the reservation before any provider work so an
                 // interrupted prepare converges on readback.
@@ -211,6 +220,9 @@ export function createEngine({ profile, store, runtime, clock = { now: () => Dat
                 }
                 if (row.intent === "delete") {
                     throw new ProtocolError(409, "worker lifecycle transition is pending");
+                }
+                if (row.reservation.deadline_ms !== undefined && row.reservation.deadline_ms <= clock.now()) {
+                    throw new ProtocolError(409, "worker reservation expired");
                 }
                 if (row.intent === "prepare") await finishPrepare(workerId, row);
                 if (row.state === STATE.STARTING || row.state === STATE.RUNNING) {

@@ -230,6 +230,9 @@ class CloudflareWorkerReservation(Base):
     control_root_scope: Mapped[str] = mapped_column(String(64), server_default="")
     control_root_version: Mapped[int | None]
     canary_job_id: Mapped[UUID | None]
+    workers_lifetime_seconds: Mapped[int | None] = mapped_column(Integer)
+    workers_deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    workers_deadline_wire: Mapped[bool] = mapped_column(Boolean, server_default="false")
     canary_lease_token: Mapped[UUID | None]
     canary_sdk_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     canary_sdk_generation: Mapped[int | None] = mapped_column(Integer)

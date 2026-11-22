@@ -151,7 +151,6 @@ async def _reconcile_scope(
     if controller.client.endpoint != client.endpoint:
         raise CapacityProtocolError("Managed Cloudflare endpoint changed within a deployment revision")
     controller.client = client
-    controller.managed_max_lifetime_seconds = policy.workers.max_lifetime_seconds
     controller.burst_launch_allowed = (
         controller.profile.max_workers == policy.workers.launcher_cap
         and cloudflare_slots(controller.profile.memory_limit_bytes) == policy.workers.slots_per_launcher

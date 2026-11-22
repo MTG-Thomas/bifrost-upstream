@@ -376,6 +376,8 @@ class WorkerCapacityController(ABC):
                 return []
             managed_scope = self.managed_cloudflare_scope
             control_root_version = None
+            workers_policy = None
+            deadline_wire = False
             workflow_slots = None
             if managed_scope is not None:
                 control_root_version = await managed_scope.lock_admission(db)
@@ -385,10 +387,9 @@ class WorkerCapacityController(ABC):
                     CloudflareInstallation.id == managed_scope.installation_id,
                 ))
                 assert policy_data is not None
-                workflow_slots = await read_workflow_slot_admission(
-                    db, managed_scope.installation_id,
-                    CloudflareWorkersPolicy.model_validate(policy_data["limits"]["workers"]),
-                )
+                workers_policy = CloudflareWorkersPolicy.model_validate(policy_data["limits"]["workers"])
+                deadline_wire = "per_second_caps" in policy_data.get("meter_launcher", {})
+                workflow_slots = await read_workflow_slot_admission(db, managed_scope.installation_id, workers_policy)
             platform_job_ids = await pending_local_platform_job_ids(db, policy, _now())
             waiting = (
                 await db.execute(
@@ -684,8 +685,15 @@ class WorkerCapacityController(ABC):
                 ]
                 if launched:
                     if managed_scope is not None and control_root_version is not None:
+                        assert workers_policy is not None
                         await db.flush()
-                        db.add_all(managed_scope.pin(worker_id, control_root_version) for worker_id in launched)
+                        reserved_at = await db.scalar(select(func.clock_timestamp()))
+                        assert reserved_at is not None
+                        db.add_all(managed_scope.pin(
+                            worker_id, control_root_version, reserved_at=reserved_at,
+                            lifetime=workers_policy.max_lifetime_seconds,
+                            deadline_wire=deadline_wire,
+                        ) for worker_id in launched)
                     await db.commit()
                 return launched
             # Fast Path capacity is a fixed exclusive reservation, not an

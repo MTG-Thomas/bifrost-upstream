@@ -275,6 +275,17 @@ def load_workers_release(path: Path = WORKERS_RELEASE_PATH) -> WorkersRelease:
         launcher = manifest.workers["launcher"]
         resource_limits = {binding.name: binding.text for binding in launcher.bindings if binding.type == "plain_text"}
         serialized_caps = json.dumps(qualifier.launcher_caps, sort_keys=True, separators=(",", ":"))
+        lifetime_binding = resource_limits.get("BIFROST_LAUNCHER_METERS_PER_SECOND")
+        if lifetime_binding is not None:
+            expected_rates = {
+                name: manifest.meter_bounds.per_launcher_second[name] for name in qualifier.launcher_caps
+            }
+            if any(rate < 1 or rate != rate.to_integral_value() for rate in expected_rates.values()):
+                raise WorkersReleaseUnavailable("Workers lifetime meters need whole positive rates")
+            if lifetime_binding != json.dumps(
+                {name: int(rate) for name, rate in expected_rates.items()}, sort_keys=True, separators=(",", ":"),
+            ):
+                raise WorkersReleaseUnavailable("Workers lifetime meter rates differ from the measured bounds")
         if (
             manifest.workers["capacity"].cpu_ms != cpu["capacity"]
             or launcher.cpu_ms != WORKFLOW_CPU_CEILING_MS

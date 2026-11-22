@@ -1,7 +1,18 @@
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {test} from 'node:test';
-import {launcherMeter, SQLITE_HEADROOM} from './launcher-meter.mjs';
+import {incarnationMeterBinding, launcherMeter, SQLITE_HEADROOM} from './launcher-meter.mjs';
+
+test('incarnation limits scale the priced launcher rates by the reserved lifetime', () => {
+  const rates = '{"sqlite_rows_written":128,"do_requests":64,"log_events":64}';
+  assert.deepEqual(JSON.parse(incarnationMeterBinding(rates, 900)), {
+    sqlite_rows_written: 115200, do_requests: 57600, log_events: 57600,
+  });
+  assert.deepEqual(JSON.parse(incarnationMeterBinding(rates, 120)), {
+    sqlite_rows_written: 15360, do_requests: 7680, log_events: 7680,
+  });
+  assert.throws(() => incarnationMeterBinding(rates, 0), /Invalid launcher lifetime meter bounds/);
+});
 
 test('the sealed route receipt stays bounded across meter reloads', (t) => {
   const db = new DatabaseSync(':memory:');

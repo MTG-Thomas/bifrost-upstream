@@ -1236,6 +1236,9 @@ class ApiExecutor(PoolWorker):
             or self.bridge.pressure_ratio >= self.settings.memory_pressure_threshold
         )
 
+    def _uses_process_lifetime(self) -> bool:
+        return not self.bridge.managed_cloudflare and super()._uses_process_lifetime()
+
     def _claims_open(self) -> bool:
         """Closed from a reconnect until that socket's inventory is
         reconciled. The launcher takes its inventory before it reads any

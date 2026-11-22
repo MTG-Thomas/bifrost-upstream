@@ -12,6 +12,17 @@ const MAX_RECEIPT_ROUTES = 128;
 const ROUTE_ENTRY_WRITES = 16;
 const ROUTE_ENTRY_REQUESTS = 6; // initial run, preparation recheck, up to 3 warm calls, confirmed run
 
+export function incarnationMeterBinding(binding, lifetimeSeconds) {
+  const rates = JSON.parse(binding);
+  if (!Number.isSafeInteger(lifetimeSeconds) || lifetimeSeconds < 60 || lifetimeSeconds > 604800 ||
+      Object.keys(rates).length !== METER_NAMES.length ||
+      METER_NAMES.some(name => !Number.isSafeInteger(rates[name]) || rates[name] < 1 ||
+        !Number.isSafeInteger(rates[name] * lifetimeSeconds))) {
+    throw new Error('Invalid launcher lifetime meter bounds');
+  }
+  return JSON.stringify(Object.fromEntries(METER_NAMES.map(name => [name, rates[name] * lifetimeSeconds])));
+}
+
 export function launcherMeter(sql, binding, {settle = false} = {}) {
   if (binding === undefined) return null;
   const caps = JSON.parse(binding);

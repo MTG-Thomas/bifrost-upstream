@@ -1,11 +1,11 @@
 """Serialize installation admission changes with managed Workers claims."""
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal
 from uuid import UUID
 
-from sqlalchemy import and_, exists, false, or_, select
+from sqlalchemy import and_, exists, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -56,10 +56,14 @@ class ManagedCloudflareScope:
                 CloudflareCapacityScope.deployment_revision == self.revision,
             ))
 
-    def pin(self, worker_id: UUID, control_root_version: int) -> CloudflareWorkerReservation:
+    def pin(
+        self, worker_id: UUID, control_root_version: int, *, reserved_at: datetime, lifetime: int, deadline_wire: bool,
+    ) -> CloudflareWorkerReservation:
         return CloudflareWorkerReservation(
             worker_id=worker_id, installation_id=self.installation_id, scope=self.name,
             deployment_revision=self.revision, control_root_version=control_root_version,
+            workers_lifetime_seconds=lifetime, workers_deadline_at=reserved_at + timedelta(seconds=lifetime),
+            workers_deadline_wire=deadline_wire,
         )
 
 
@@ -151,6 +155,7 @@ async def scoped_cloudflare_claim_allowed(
         workers_release_matches(),
         pin.canary_job_id.is_(None),
         pin.container_reserved_at.is_(None),
+        or_(pin.workers_deadline_at.is_(None), pin.workers_deadline_at > func.clock_timestamp()),
         pin.control_root_version.is_not(None),
         cloudflare_usage_within_limit(),
         installation.policy["limits"]["workers"]["work_kinds"].contains(["workflow"]),

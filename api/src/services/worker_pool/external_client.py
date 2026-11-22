@@ -1,6 +1,7 @@
 """Authenticated, idempotent physical-capacity protocol; never a job transport."""
 
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 from uuid import UUID
 
 import httpx
@@ -91,12 +92,15 @@ class ExternalCapacityClient:
     async def prepare(
         self, reservation: WorkerCapacityReservation, scope: str, *,
         managed_identity: tuple[str, str] | None = None,
+        managed_deadline: datetime | None = None,
     ) -> WorkerCapacityResource:
         body = reservation.model_dump(mode="json")
         uid = None
         if managed_identity is not None:
             uid, key = managed_identity
             body.update(resource_uid=uid, control_key=key)
+            if managed_deadline is not None:
+                body["deadline_ms"] = int(managed_deadline.timestamp() * 1000)
         response = await self._request(
             "PUT", f"workers/{reservation.worker_id}", scope=scope,
             body=body,

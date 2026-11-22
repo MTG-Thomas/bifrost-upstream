@@ -37,7 +37,7 @@ function readMeter(storage) {
   return null;
 }
 
-export async function runLifetimeSoak({result, seconds, storage, run, verifySession, launcher, observe, cadence, settle}) {
+export async function runLifetimeSoak({result, seconds, deadlineMs, storage, run, verifySession, launcher, observe, cadence, settle}) {
   const processMetrics = processSampler();
   const started = performance.now();
   const baseline = processMetrics().cpu_ms;
@@ -62,7 +62,7 @@ export async function runLifetimeSoak({result, seconds, storage, run, verifySess
   const routeIds = [];
   let state = await sample();
   assert.equal(state, 'running');
-  const controller = cadence?.().then(value => ({value}), error => ({error}));
+  let controller;
   const reconnectAt = seconds === 120 ? 90 : 450;
   for (let at = 0; at < seconds && state === 'running'; at += 30) {
     await delay(Math.max(0, at * 1000 - (performance.now() - started)));
@@ -77,9 +77,14 @@ export async function runLifetimeSoak({result, seconds, storage, run, verifySess
       receipt.workflows.push(sanitized);
     }
     state = await sample();
+    // Local workerd cold-starts all Python isolates in this same process.
+    // Start cadence sampling after the cold batch has settled.
+    if (at === 0 && state === 'running') {
+      controller = cadence?.().then(value => ({value}), error => ({error}));
+    }
   }
   if (state === 'running') {
-    await delay(Math.max(0, seconds * 1000 - (performance.now() - started)));
+    await delay(Math.max(0, deadlineMs - Date.now()));
     state = await sample();
   }
   const observation = await controller;
@@ -101,7 +106,8 @@ export async function runLifetimeSoak({result, seconds, storage, run, verifySess
     return totals;
   }, {});
   save();
-  assert.equal(state, 'running');
+  assert.ok(['stopped', 'deleted'].includes(state), 'Provider must stop the idle incarnation at its deadline');
+  assert.ok(Date.now() >= deadlineMs, 'Launcher stopped before its lifetime deadline');
   if (observation?.error) throw observation.error;
   assert.ok(receipt.workflows.every(({success, sdk}) => success && sdk), 'At least one scheduled workflow failed');
   assert.equal(seal.exhausted, false, 'Launcher exhausted its release meter during the soak');
