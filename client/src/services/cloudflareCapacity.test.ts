@@ -51,13 +51,14 @@ describe("Cloudflare capacity service", () => {
 	it("reports a changed installation rather than retrying an action", async () => {
 		mocks.post.mockResolvedValue({
 			error: { detail: "Cloudflare installation changed." },
+			response: { status: 409 },
 		});
 		await expect(
 			startCloudflareAction("scale-in", {
 				installation_id: "installation-id",
 				expected_revision: 1,
 			}),
-		).rejects.toThrow("Cloudflare installation changed.");
+		).rejects.toMatchObject({ message: "Cloudflare installation changed.", statusCode: 409 });
 		expect(mocks.post).toHaveBeenCalledTimes(1);
 	});
 
@@ -84,6 +85,17 @@ describe("Cloudflare capacity service", () => {
 			});
 		},
 	);
+
+	it("preserves structured validation details without using the submitted input as the message", async () => {
+		const issue = { loc: ["body", "connect", "api_token"], msg: "Invalid token format.", input: "synthetic-secret", type: "value_error" };
+		mocks.patch.mockResolvedValue({ error: { detail: [issue] }, response: { status: 422 } });
+		await expect(configureCloudflareCapacity({ action: "connect" } as never)).rejects.toMatchObject({
+			errorCode: "ValidationError",
+			statusCode: 422,
+			message: "connect.api_token: Invalid token format.",
+			details: { validation_errors: [issue] },
+		});
+	});
 
 	it("patches the observed revision and policy", async () => {
 		const body = {

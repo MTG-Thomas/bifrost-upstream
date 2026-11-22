@@ -1,6 +1,11 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+// @vitest-environment jsdom
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
+
+import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
+import { ApiError } from "@/lib/api-error";
 
 const mocks = vi.hoisted(() => ({
 	get: vi.fn(),
@@ -9,6 +14,8 @@ const mocks = vi.hoisted(() => ({
 	rotate: vi.fn(),
 	observe: vi.fn(),
 	subscribe: vi.fn(),
+	connection: vi.fn(),
+	canAt: vi.fn(),
 }));
 vi.mock("@/services/cloudflareCapacity", () => ({
 	configureCloudflareCapacity: mocks.configure,
@@ -17,16 +24,49 @@ vi.mock("@/services/cloudflareCapacity", () => ({
 	rotateCloudflareAccountToken: mocks.rotate,
 }));
 vi.mock("@/services/authorization", () => ({
-	useAuthorization: () => ({ canAt: () => true, isLoading: false }),
+	useAuthorization: () => ({ canAt: mocks.canAt, isLoading: false }),
 }));
 vi.mock("@/services/platformJobs", () => ({
 	observePlatformJob: mocks.observe,
 }));
 vi.mock("@/services/websocket", () => ({
-	webSocketService: { onPlatformJobUpdate: mocks.subscribe, onAnyPlatformJobUpdate: () => vi.fn() },
+	webSocketService: { onPlatformJobUpdate: mocks.subscribe, onAnyPlatformJobUpdate: () => vi.fn(), onConnectionStatusChange: mocks.connection },
 }));
 
 import { CloudflareCapacity } from "./CloudflareCapacity";
+
+beforeEach(() => {
+	vi.resetAllMocks();
+	mocks.canAt.mockReturnValue(true);
+	mocks.subscribe.mockReturnValue(vi.fn());
+	mocks.connection.mockReturnValue(vi.fn());
+	mocks.observe.mockReturnValue({ promise: Promise.resolve(), cancel: vi.fn() });
+});
+
+function renderCapacity() {
+	return render(
+		<MemoryRouter>
+			<QueryClientProvider client={new QueryClient()}>
+				<CloudflareCapacity />
+			</QueryClientProvider>
+		</MemoryRouter>,
+	);
+}
+
+const installation = {
+	installation_id: "installation-id",
+	desired_revision: 3,
+	desired_state: "scaled_in",
+	admission_open: false,
+	worker_ingress_origin: "https://workers.example.test",
+	policy: { monthly_limit_usd: "40.00", workers: { launcher_cap: 2, slots_per_launcher: 2, work_kinds: ["workflow"] } },
+	fleet_envelope_usd: "10.50",
+};
+
+function snapshot(id: string, status: string, phase: string, result?: Record<string, unknown>) {
+	return { id, status, revision: status === "running" ? 1 : 2, progress: { phase }, result };
+}
+
 
 it.each([
 	["Scale In", "scale-in", "scaled_in", "Scaled In"],
@@ -36,6 +76,7 @@ it.each([
 	const installation = {
 		installation_id: "installation-id",
 		desired_revision: 3,
+		deployed_revision: 3,
 		desired_state: "enabled",
 		admission_open: true,
 		upgrade_available: action === "upgrade",
@@ -73,19 +114,15 @@ it.each([
 		),
 		cancel: vi.fn(),
 	}));
-	render(
-		<QueryClientProvider client={new QueryClient()}>
-			<CloudflareCapacity />
-		</QueryClientProvider>,
-	);
+	renderCapacity();
 	const button = await screen.findByRole("button", { name: label });
 	if (action !== "upgrade") {
 		expect(screen.getByRole("button", { name: "Upgrade Cloudflare" })).toBeDisabled();
 	}
 	expect(screen.getByText("Estimated Bifrost Usage This UTC Month")).toBeVisible();
-	expect(screen.getByText("0.12 USD")).toBeVisible();
+	expect(screen.getByText("0.12 USD/month")).toBeVisible();
 	expect(screen.getByText("Workers Paid Subscription (Billed by Cloudflare)")).toBeVisible();
-	expect(screen.getByText("5.00 USD per Month")).toBeVisible();
+	expect(screen.getByText("5.00 USD/month")).toBeVisible();
 	expect(screen.getByText("Usage Estimate Coverage")).toBeVisible();
 	expect(screen.getByText("Current reservations")).toBeVisible();
 	expect(screen.getByText("Earlier rate coverage")).toBeVisible();
@@ -110,15 +147,15 @@ it.each([false, true])("submits the current consent and clears the token with Ma
 		consent_text_version: "existing-https-v1",
 		consent_text: "Current operator consent",
 	});
-	mocks.configure.mockResolvedValue({});
-	render(
-		<QueryClientProvider client={new QueryClient()}>
-			<CloudflareCapacity />
-		</QueryClientProvider>,
-	);
-	fireEvent.change(await screen.findByLabelText("Cloudflare Account ID"), { target: { value: "a".repeat(32) } });
+	mocks.configure.mockResolvedValue({ installation });
+	renderCapacity();
+	fireEvent.click(await screen.findByRole("button", { name: "Set Up Cloudflare" }));
+	const account = screen.getByLabelText("Cloudflare Account ID");
+	expect(account).toHaveFocus();
+	fireEvent.change(account, { target: { value: "a".repeat(32) } });
 	if (managed) {
 		fireEvent.change(screen.getByLabelText("Reachability"), { target: { value: "managed_tunnel" } });
+		expect(screen.getByLabelText("Cloudflare DNS Zone ID")).toHaveAccessibleDescription(/Grant Cloudflare Tunnel Write/);
 		fireEvent.change(screen.getByLabelText("Cloudflare DNS Zone ID"), { target: { value: "b".repeat(32) } });
 	}
 	fireEvent.change(screen.getByLabelText(managed ? "Dedicated Tunnel HTTPS Origin" : "Existing HTTPS Endpoint"), {
@@ -127,11 +164,11 @@ it.each([false, true])("submits the current consent and clears the token with Ma
 	const linger = screen.getByLabelText("Tenant Engine Linger in Seconds");
 	expect(linger).toHaveValue(90);
 	fireEvent.change(linger, { target: { value: "0" } });
-	const tenantSlots = screen.getByLabelText("Slots Per Tenant");
+	const tenantSlots = screen.getByLabelText("Slots per Tenant");
 	const installationSlots = screen.getByLabelText("Installation Slot Limit");
 	expect(tenantSlots).toHaveValue(4);
 	expect(installationSlots).toHaveValue(9);
-	const prewarm = screen.getByLabelText("Max Queue Pre-Warms Per Tenant");
+	const prewarm = screen.getByLabelText("Max Queue Pre-Warms per Tenant");
 	expect(prewarm).toHaveValue(0);
 	fireEvent.change(prewarm, { target: { value: "2" } });
 	fireEvent.change(tenantSlots, { target: { value: "3" } });
@@ -140,7 +177,7 @@ it.each([false, true])("submits the current consent and clears the token with Ma
 	expect(token).toHaveAttribute("type", "password");
 	fireEvent.change(token, { target: { value: "synthetic-management-token" } });
 	expect(screen.getByText("Current operator consent")).toBeVisible();
-	fireEvent.click(screen.getByRole("checkbox", { name: "I Accept the Cloudflare Terms Above" }));
+	fireEvent.click(screen.getByRole("checkbox", { name: "Accept Cloudflare Terms" }));
 	await act(async () => {
 		fireEvent.submit((screen.getByRole("button", { name: "Connect Cloudflare" }) as HTMLButtonElement).form!);
 	});
@@ -158,6 +195,8 @@ it.each([false, true])("submits the current consent and clears the token with Ma
 		}),
 	}));
 	expect(token).toHaveValue("");
+	expect(screen.getByText("Ready to Enable")).toBeVisible();
+	expect(screen.getByRole("button", { name: "Enable" })).toHaveFocus();
 });
 
 it("recovers Action Required from the last visible job on page load", async () => {
@@ -171,11 +210,7 @@ it("recovers Action Required from the last visible job on page load", async () =
 		})),
 		cancel: vi.fn(),
 	}));
-	render(
-		<QueryClientProvider client={new QueryClient()}>
-			<CloudflareCapacity />
-		</QueryClientProvider>,
-	);
+	renderCapacity();
 	expect(await screen.findByText("Reconnect Cloudflare")).toBeVisible();
 	expect(mocks.subscribe).toHaveBeenCalledWith("previous-job", expect.any(Function));
 });
@@ -193,11 +228,7 @@ it("confirms deployment deletion before rotating the scope bearer", async () => 
 		},
 	});
 	mocks.start.mockResolvedValue({ job_id: "job-id", status: "queued" });
-	render(
-		<QueryClientProvider client={new QueryClient()}>
-			<CloudflareCapacity />
-		</QueryClientProvider>,
-	);
+	renderCapacity();
 	fireEvent.click(await screen.findByRole("button", { name: "Rotate Scope Bearer" }));
 	const dialog = within(screen.getByRole("alertdialog", { name: "Rotate Cloudflare Scope Bearer" }));
 	expect(dialog.getByText(/delete the previous Workers deployment/)).toBeVisible();
@@ -209,4 +240,125 @@ it("confirms deployment deletion before rotating the scope bearer", async () => 
 		installation_id: "installation-id",
 		expected_revision: 4,
 	});
+});
+
+
+it("lets a read-only operator find the required permission and workflow review", async () => {
+	mocks.canAt.mockImplementation((permission) => permission === "platform.read");
+	mocks.get.mockResolvedValue({ installation: null });
+	renderCapacity();
+
+	expect(await screen.findByRole("heading", { name: "Cloudflare Connection" })).toBeVisible();
+	expect(screen.getByText(/Ask a Platform Admin/)).toBeVisible();
+	expect(screen.getByRole("link", { name: "Review Workflows" })).toHaveAttribute("href", "/workflows");
+	expect(screen.queryByRole("button", { name: "Set Up Cloudflare" })).toBeNull();
+});
+
+it("recovers a failed capacity load from the retry button", async () => {
+	const user = userEvent.setup();
+	mocks.get.mockRejectedValueOnce(new Error("Capacity is unavailable.")).mockResolvedValue({ installation: null });
+	renderCapacity();
+
+	expect(await screen.findByRole("alert")).toHaveTextContent("Capacity is unavailable.");
+	await user.click(screen.getByRole("button", { name: "Retry Loading" }));
+	expect(await screen.findByRole("button", { name: "Set Up Cloudflare" })).toBeEnabled();
+	expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("focuses the error summary and links a rejected field to its inline message", async () => {
+	const user = userEvent.setup();
+	mocks.get.mockResolvedValue({ installation });
+	mocks.configure.mockRejectedValue(new ApiError({
+		error: "validation_error",
+		message: "policy.policy.workers.slots_per_tenant: Choose a lower slot limit.",
+		details: {
+			code: "CAPACITY_POLICY",
+			reason: "The submitted slot limit is too high.",
+			remedy: "Enter a lower slot limit.",
+		},
+	}, 422));
+	renderCapacity();
+
+	await user.click(await screen.findByRole("button", { name: "Edit Policy" }));
+	await user.click(screen.getByRole("button", { name: "Save Policy" }));
+	const summary = await screen.findByRole("alert");
+	expect(summary).toHaveFocus();
+	expect(summary).toHaveTextContent("CAPACITY_POLICY");
+	expect(summary).toHaveTextContent("The submitted slot limit is too high.");
+	expect(summary).toHaveTextContent("Enter a lower slot limit.");
+	const slots = screen.getByRole("spinbutton", { name: "Slots per Tenant" });
+	expect(slots).toHaveAttribute("aria-invalid", "true");
+	expect(slots).toHaveAccessibleDescription("Choose a lower slot limit.");
+	await user.click(within(summary).getByRole("button", { name: "Choose a lower slot limit." }));
+	expect(slots).toHaveFocus();
+});
+
+it("explains a rejected spending envelope beside the editable limit", async () => {
+	const user = userEvent.setup();
+	mocks.get.mockResolvedValue({ installation });
+	mocks.configure.mockRejectedValue(new ApiError("The estimated fleet usage is USD 41", 422));
+	renderCapacity();
+
+	await user.click(await screen.findByRole("button", { name: "Edit Policy" }));
+	await user.click(screen.getByRole("button", { name: "Save Policy" }));
+	expect(await screen.findByRole("alert")).toHaveFocus();
+	const limit = screen.getByRole("spinbutton", { name: "Monthly Estimated Usage Limit" });
+	expect(limit).toHaveValue(40);
+	expect(limit).toHaveAccessibleDescription(/estimated fleet usage is USD 41.*submitted limit was 40.*Raise the limit/);
+});
+
+it("reads back a lost job snapshot on reconnect and focuses the refusal", async () => {
+	const user = userEvent.setup();
+	mocks.get.mockResolvedValue({ installation });
+	mocks.start.mockResolvedValue({ job_id: "enable-job" });
+	mocks.observe
+		.mockImplementationOnce(() => ({ promise: Promise.reject(new Error("Unavailable")), cancel: vi.fn() }))
+		.mockImplementationOnce((_id, update) => ({
+			promise: Promise.resolve().then(() => update(snapshot("enable-job", "requires_action", "Check the Workers release.", {
+				code: "CF_POLICY_RELEASE_CHANGED",
+				reason: "The provisioned release changed.",
+				instructions: ["Install the matching release."],
+			}))),
+			cancel: vi.fn(),
+		}));
+	renderCapacity();
+	await user.click(await screen.findByRole("button", { name: "Enable" }));
+	expect(await screen.findByText("Could not read the Cloudflare job status.")).toBeVisible();
+	expect(screen.getByRole("button", { name: "Enable" })).toBeDisabled();
+
+	act(() => mocks.connection.mock.lastCall?.[0](true));
+	expect(await screen.findByText("Install the matching release.")).toBeVisible();
+	expect(screen.getByText("CF_POLICY_RELEASE_CHANGED")).toBeVisible();
+	expect(screen.getByText("The provisioned release changed.")).toBeVisible();
+	expect(screen.getByRole("region", { name: "Cloudflare Job Status" })).toHaveFocus();
+	expect(screen.getByRole("button", { name: "Enable" })).toBeEnabled();
+	expect(mocks.observe).toHaveBeenCalledTimes(2);
+});
+
+it("recovers a missed notification on demand and announces verified disconnect", async () => {
+	const user = userEvent.setup();
+	mocks.get.mockResolvedValue({ installation });
+	mocks.start.mockResolvedValue({ job_id: "disconnect-job" });
+	mocks.observe.mockImplementation((_id, update) => ({
+		promise: Promise.resolve().then(() => update(snapshot("disconnect-job", "running", "Removing resources."))),
+		cancel: vi.fn(),
+	}));
+	renderCapacity();
+
+	await user.click(await screen.findByRole("button", { name: "Disconnect" }));
+	const dialog = screen.getByRole("alertdialog");
+	await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+	expect(screen.getByRole("button", { name: "Disconnect" })).toHaveFocus();
+
+	await user.click(screen.getByRole("button", { name: "Disconnect" }));
+	await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Disconnect" }));
+	expect(await screen.findByText("Removing resources.")).toBeVisible();
+	mocks.get.mockResolvedValue({ installation: null });
+	mocks.observe.mockImplementation((_id, update) => ({
+		promise: Promise.resolve().then(() => update(snapshot("disconnect-job", "succeeded", "Complete."))),
+		cancel: vi.fn(),
+	}));
+	await user.click(screen.getByRole("button", { name: "Check Job Status" }));
+	await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Cloudflare was disconnected."));
+	expect(screen.getByRole("button", { name: "Set Up Cloudflare" })).toHaveFocus();
 });

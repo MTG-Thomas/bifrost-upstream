@@ -5,13 +5,26 @@ test("a platform operator enables and reconciles Cloudflare capacity", async ({ 
 	const token = "browser-fixture-cloudflare-token";
 	await page.goto("/settings/ai");
 	await page.getByRole("button", { name: "Capacity", exact: true }).click();
-	await page.getByRole("button", { name: "Scale Out With Cloudflare", exact: true }).click();
-	await page.getByLabel("Cloudflare Account ID").fill("f".repeat(32));
+	await page.getByRole("button", { name: "Scale Out with Cloudflare", exact: true }).click();
+	await expect(page.getByRole("heading", { name: "Scale Out with Cloudflare" })).toBeVisible();
+	const setup = page.getByRole("button", { name: "Set Up Cloudflare" });
+	await setup.click();
+	const account = page.getByRole("textbox", { name: "Cloudflare Account ID" });
+	await expect(account).toBeFocused();
+	await expect(page.getByRole("group", { name: "Connection" })).toBeVisible();
+	await expect(page.getByRole("group", { name: "Spending" })).toBeVisible();
+	await expect(page.getByRole("group", { name: "Advanced Policy" })).toBeVisible();
+	await expect(page.getByRole("spinbutton", { name: "Monthly Estimated Usage Limit" })).toHaveAccessibleDescription("USD/month");
+	await page.getByRole("button", { name: "Connect Cloudflare" }).click();
+	const summary = page.getByRole("alert").filter({ has: page.getByRole("heading", { name: "Cloudflare Settings Error" }) });
+	await expect(summary).toBeFocused();
+	await expect(account).toHaveAttribute("aria-invalid", "true");
+	await account.fill("f".repeat(32));
 	await page.getByLabel("Existing HTTPS Endpoint").fill(origin);
 	const tokenField = page.getByLabel("Cloudflare API Token");
 	await expect(tokenField).toHaveAttribute("type", "password");
 	await tokenField.fill(token);
-	await page.getByRole("checkbox", { name: "I Accept the Cloudflare Terms Above" }).check();
+	await page.getByRole("checkbox", { name: "Accept Cloudflare Terms" }).check();
 
 	const connect = page.waitForResponse((response) =>
 		response.url().endsWith("/api/capacity/cloudflare") && response.request().method() === "PATCH",
@@ -21,6 +34,8 @@ test("a platform operator enables and reconciles Cloudflare capacity", async ({ 
 	expect(connected.status()).toBe(200);
 	expect(await connected.text()).not.toContain(token);
 	await expect(page.getByText(origin, { exact: true })).toBeVisible();
+	await expect(page.getByText("Ready to Enable", { exact: true })).toBeVisible();
+	await expect(page.getByRole("button", { name: "Enable", exact: true })).toBeFocused();
 	await expect(page.getByText("Estimated Fleet Usage")).toBeVisible();
 	await expect(page.getByText("Estimated Bifrost Usage This UTC Month")).toBeVisible();
 	await expect(page.getByText("Workers Paid Subscription (Billed by Cloudflare)")).toBeVisible();
@@ -54,5 +69,6 @@ test("a platform operator enables and reconciles Cloudflare capacity", async ({ 
 	await page.getByRole("button", { name: "Disconnect", exact: true }).click();
 	await page.getByRole("alertdialog").getByRole("button", { name: "Disconnect", exact: true }).click();
 	await retired;
-	await expect(page.getByRole("button", { name: "Connect Cloudflare" })).toBeVisible();
+	await expect(page.getByRole("status").filter({ hasText: "Cloudflare was disconnected." })).toBeVisible();
+	await expect(setup).toBeFocused();
 });

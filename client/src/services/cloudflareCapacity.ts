@@ -1,5 +1,5 @@
 import { apiClient } from "@/lib/api-client";
-import { getErrorMessage } from "@/lib/api-error";
+import { parseApiError } from "@/lib/api-error";
 import type { components } from "@/lib/v1";
 
 export type CloudflareCapacityStatus =
@@ -30,17 +30,15 @@ const credentials = {
 export async function getCloudflareCapacity(): Promise<CloudflareCapacityStatus> {
 	const { data, error } = await apiClient.GET("/api/capacity/cloudflare");
 	if (error) {
-		throw new Error(
-			getErrorMessage(error, "Could not load Cloudflare capacity."),
-		);
+		throw parseApiError(error);
 	}
 	return data;
 }
 
 export async function configureCloudflareCapacity(body: CloudflareConfiguration): Promise<CloudflareCapacityStatus> {
-	const { data, error } = await apiClient.PATCH("/api/capacity/cloudflare", { body });
+	const { data, error, response } = await apiClient.PATCH("/api/capacity/cloudflare", { body });
 	if (error) {
-		throw new Error(getErrorMessage(error, "Could not save Cloudflare capacity."));
+		throw parseApiError(error, response.status);
 	}
 	return data;
 }
@@ -49,15 +47,13 @@ export async function startCloudflareAction(
 	action: CloudflareAction,
 	body: CloudflareCapacityAction,
 ): Promise<components["schemas"]["PlatformJobAccepted"]> {
-	const { data, error } = action === "rotate-root" || action === "rotate-bearer" || action === "rotate-connector"
+	const { data, error, response } = action === "rotate-root" || action === "rotate-bearer" || action === "rotate-connector"
 		? await apiClient.POST("/api/capacity/cloudflare/rotate", { body: {
 			...body, credential: credentials[action],
 		} })
 		: await apiClient.POST(actionPaths[action], { body });
 	if (error) {
-		throw new Error(
-			getErrorMessage(error, "Could not start the Cloudflare job."),
-		);
+		throw parseApiError(error, response.status);
 	}
 	return data;
 }
@@ -65,9 +61,9 @@ export async function startCloudflareAction(
 export async function rotateCloudflareAccountToken(
 	body: CloudflareAccountTokenRotation,
 ): Promise<components["schemas"]["PlatformJobAccepted"]> {
-	const { data, error } = await apiClient.POST("/api/capacity/cloudflare/rotate", { body });
+	const { data, error, response } = await apiClient.POST("/api/capacity/cloudflare/rotate", { body });
 	if (error) {
-		throw new Error(getErrorMessage(error, "Could not queue Cloudflare API token rotation."));
+		throw parseApiError(error, response.status);
 	}
 	return data;
 }
