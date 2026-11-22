@@ -980,7 +980,7 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
         assert installation.admitted_revision is None
         assert await enable_job._settle_enable(
             running, payload, http, release,
-        ) == {"outcome": "enabled"}
+        ) == {"outcome": "enabled", "http_connections": http_connections}
     assert [name.rsplit("-", 1)[-1] for name in writes] == ["gateway", "launcher", "capacity"]
     assert canary.await_count == 2
     if aborted_rotation == 3:
@@ -1194,7 +1194,7 @@ async def test_upgrade_drains_before_replacement_and_resumes_after_lost_lease(
     assert readiness.value.result["code"] == "CF_WORKER_INGRESS_UNVERIFIED"
     await db_session.refresh(installation)
     assert installation.upgrade_drained_at is not None and installation.admitted_revision is None
-    assert await handler(recovered, payload) == {"outcome": "enabled"}
+    assert await handler(recovered, payload) == {"outcome": "enabled", "http_connections": []}
     await db_session.refresh(installation)
     assert installation.deployed_revision == installation.admitted_revision == 2
     assert installation.upgrade_release is installation.upgrade_drained_at is None

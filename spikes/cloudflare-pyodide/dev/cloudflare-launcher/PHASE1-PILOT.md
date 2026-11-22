@@ -630,6 +630,9 @@ returns the retryable connector-readiness result, observe its existing job
 until the connector is healthy or the phase deadline arrives. Preserve its
 effect identities and avoid a second provisioning submission.
 
+Retain the sanitized `http_connections` array from the worker preflight
+and the Enable result. Use each result's own counts to report reuse.
+
 | Order | Action and required evidence | Incremental budget |
 | --- | --- | ---: |
 | 1 | Requalify and build both releases offline. Verify the three module digests, bounds hash, deployment digests and image/manifest pairs. Bind each hosted job to the appropriate release. | $0.00 |
@@ -662,6 +665,43 @@ duration and storage, logging, and lifecycle operations. These are planning
 allocations. Confirm the carry-in for the approved trial series and
 recalculate before provisioning if it differs from the table. Record the
 high-water live estimate and settled usage by phase.
+
+### Observe Each Gate Before Advancing
+
+Reserve each ready, normal-lane primary worker's memory budget in whole
+MiB minus 24 MiB with a local hold fixture. Record the expected worker
+count before submitting the holds. After the fixtures report Running,
+wait for the durable reservations before submitting the cold workflow
+or a burst. From the Compose project directory, run:
+
+```sh
+python3 spikes/cloudflare-pyodide/dev/e2e/wait-primary-hold.py \
+  "$PRIMARY_WORKERS" -- -p "$PROJECT" -f "$COMPOSE_FILE"
+```
+
+The gate polls PostgreSQL every 250 ms between reads for up to 10
+seconds. It requires exactly the expected number of ready primary workers
+and 24 whole MiB free on each in one read. A timeout reports the last
+observed free memory and stops the phase. A Running execution status can
+precede the visible reservation. Run the same command before submitting
+a hold in the local rehearsal and require the timeout, then submit the
+actual hold and require the gate to pass. Use `--database bifrost_test`
+before the worker count when rehearsing on the test Compose stack.
+
+Use bounded read-only polling within each phase's deadline. Submit each
+operation once. Keep hold fixtures live until their required reads
+complete, and stop on a terminal failure, changed fence, or expired
+deadline. Apply the following ordering:
+
+| Gate | Required readback before advancing |
+| --- | --- |
+| Cold and warm | After the cold run becomes terminal, wait for its ACK and the released slot fence. Submit the repeat while that slot is still within linger. Verify the repeat's claim and loader identity after entry. |
+| Eight and ninth executions | Wait for both workflow entry and a sent, unreleased slot for all eight in the same occupancy window. Then offer the ninth. Wait for its entry and slot while confirming the original eight fences are still held. |
+| Tenth waits | After its dispatch row appears, record the managed controller identified by `launched_by` on the held launchers. Its timestamp in Redis `bifrost:worker-pool:controllers` advances at pass start. Observe the first advance after enqueue and use the next two advances of that controller to mark two completed passes. Check the scope logs for reconciliation errors during both passes. At each completion, read the same nine active fences and the tenth's unassigned dispatch together, and verify the tenth has no claim, slot, or entry. Record the observations without controller IDs. |
+| Isolated cancel | Wait for the target's terminal cancellation and exact slot fence release. In the same slot read verify the other eight fences remain held. Compare the released fence timestamp with the tenth execution's claim and entry evidence, then release the remaining hold fixtures. |
+| Active Scale In | Confirm the drain fixture has entered on Workers under a sent fence. Free the local primary if needed to run the platform job. After Scale In is accepted, wait for the admission and send fence while the original claim is still live. Then release the fixture and wait for its terminal ACK, the job result, and retired launcher readback. Verify the scripts still exist. |
+| Managed Tunnel rotation | Capture live session identities before submission. After rotation, poll the exact tunnel until the pre-rotation set is absent and a replacement session is live. Check the old token and run the worker preflight only after that readback. |
+| Upgrade | Wait for the held execution's original claim and sent fence, then stage the replacement. Wait for the persisted admission and send fence before interrupting the old control connection. Verify terminal replay and ACK under the original claim, old runtime retirement, and provider absence before the first replacement upload. Wait for the replacement's signed canary and admission. |
 
 Baseline pre-warm stays off. Drop the optional run first. Only add it if the
 original burst, rotation and upgrade have passed and the observed high-water
@@ -799,3 +839,35 @@ volumes, networks, trial image tags, scratch and secret files were
 removed and checked for absence.
 
 See the [sanitized re-run receipt](../../results/cloudflare-scaleout-combined-hosted-rerun.json).
+
+## Combined Hosted Run With HTTP Connection Reuse
+
+On 2026-11-22 UTC, spike revision `97ef3ae83` ran both prepared release
+loader checks on the disposable Compose host. The Workers module and
+meter-bounds digests matched the pinned evidence. Only the first release
+was used on the hosted path.
+
+| Runbook item | Observed result |
+| --- | --- |
+| 1. Release verification | Passed. Both image loaders accepted distinct deployment digests and all 12 Workers packaging tests passed. |
+| 2. Existing HTTPS | Passed. Connect returned HTTP 200 with admission closed. The same Compose worker passed all 100 ingress route checks and Enable completed the signed canary as `remote_launcher`, then opened admission. |
+| 3. Cold and warm latency | Stopped at the local primary hold gate. A subsequent read showed 1,408 of 1,432 MiB reserved, leaving the intended 24 MiB. Zero hosted workflow submissions were made. |
+| 4. Slot burst and cancel | Not run. |
+| 5. Reconcile, active Scale In and Disconnect | Reconcile and active Scale In were not run. The stop path submitted Disconnect once and succeeded. |
+| 6–8. Managed Tunnel, rotation and Upgrade | Not run. |
+| 9. Spend and teardown | Bifrost settled $0.000201831 incremental and about $0.000392553 cumulative. Cloudflare Analytics returned empty attributed Workers and Durable Object samples. The ratio is unavailable. Teardown passed. |
+
+Each of the two reachable IPv4 addresses recorded eight TCP starts, eight
+started and completed TLS handshakes, and 92 requests served over reused
+HTTP connections. The two IPv6 addresses each recorded one TCP attempt
+and zero TLS starts. Enable returned a successful receipt. At this
+revision its connection counters appear only on ingress failure.
+
+Independent readback found zero owned scripts and namespaces in provider
+listings. All three script endpoints and four namespace endpoints
+returned 404. Exact DNS and token readback reported absence, both
+authoritative DNS checks agreed, and the tunnel tombstone showed zero
+live sessions. The connector process, project containers, networks,
+volumes, trial image tags and both scratch directories were removed.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-connection-reuse.json).

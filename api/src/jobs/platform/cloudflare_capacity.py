@@ -4,7 +4,7 @@ import asyncio
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 import httpx
@@ -764,7 +764,7 @@ async def _settle_reconcile(
     return {"outcome": "verified"}
 
 
-async def _reconcile(context: PlatformJobContext, parsed: BaseModel) -> dict[str, str]:
+async def _reconcile(context: PlatformJobContext, parsed: BaseModel) -> dict[str, Any]:
     payload = CloudflareReconcilePayloadV2.model_validate(parsed.model_dump())
     async with get_db_context() as db:
         await _hold_installation_lease(db, context, payload.installation_id)
