@@ -3,6 +3,7 @@
 import asyncio
 import os
 import sys
+from base64 import b64encode
 from pathlib import Path
 from queue import Empty
 from uuid import uuid4
@@ -20,7 +21,7 @@ async def exercise(cancel: bool) -> None:
         execution = str(uuid4())
         script = Path(__file__).with_name("guest_workflow.py").read_text() + "\nreturn exercise(cancel)\n"
         work.put_nowait((execution, {
-            "code": script,
+            "code": b64encode(script.encode()).decode("ascii"),
             "name": "container-guest-conformance",
             "engine_token": "synthetic-run-credential",
             "caller": {"user_id": str(uuid4()), "email": "fixture@example.test", "name": "Fixture"},
@@ -31,6 +32,12 @@ async def exercise(cancel: bool) -> None:
         marker = Path("/tmp/container-fixture-descendant")
         async with asyncio.timeout(10):
             while not marker.is_file() or not marker.read_text():
+                if guest.exited:
+                    try:
+                        outcome = result.get_nowait()
+                    except (Empty, EOFError):
+                        outcome = None
+                    raise AssertionError(f"Guest exited before creating its detached descendant: {outcome!r}")
                 await asyncio.sleep(0.05)
             descendant = int(marker.read_text())
             assert os.getpgid(descendant) == descendant != pid
