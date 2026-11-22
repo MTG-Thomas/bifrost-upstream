@@ -281,7 +281,7 @@ async def overflow_status(
         WorkDispatch.assigned_worker_id.is_(None), Execution.status == ExecutionStatus.PENDING, visibility,
     )
     lanes: list[tuple[Literal["workers", "containers"], int, int]] = [
-        ("workers", CLOUDFLARE_WORKERS_LAUNCH_AGE_SECONDS, 1),
+        ("workers", int(CLOUDFLARE_WORKERS_LAUNCH_AGE_SECONDS), 1),
     ]
     containers = None
     if installation.containers_policy.get("enabled") is True:
