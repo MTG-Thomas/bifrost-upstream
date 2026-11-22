@@ -128,7 +128,8 @@ async function referenceAttempt(record, solution, slotCase) {
     Object.assign(sources, {[file_path]: source, 'phase6_support/values.py': 'INSTALL_VALUE = "solution"\n'});
   }
   if (slotCase?.soak && memoryProbe) {
-    sources[file_path] = source = source.replace('    return {', `${pythonMemoryProbe}    return {"memory": memory, `);
+    const probe = pythonMemoryProbe({collect: process.env.BIFROST_LIFETIME_MEMORY_COLLECT === 'true'});
+    sources[file_path] = source = source.replace('    return {', `${probe}    return {"memory": memory, `);
   }
   const org = slotCase?.org ?? randomUUID();
   const solution_id = solution ? randomUUID() : null;

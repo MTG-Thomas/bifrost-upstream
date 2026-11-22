@@ -1,10 +1,21 @@
 // Local-only diagnostics. Python reports live allocations and cache sizes from
 // inside the reused child. The inspector reports V8 memory by isolate.
-export const pythonMemoryProbe = `
+export function pythonMemoryProbe({collect}) {
+  return `
     import gc, linecache, sys
     import logging as probe_logging
     from src.core.module_cache_sync import _get_resolution_cache
     from runtime_runner import recorded_workspace_paths
+    from pyodide.ffi import create_proxy
+    probe_view = None
+    probe_proxy = create_proxy(memoryview(bytearray(1)))
+    try:
+        probe_view = probe_proxy.getBuffer("u8")
+        probe_wasm = probe_view.data.buffer.byteLength
+    finally:
+        if probe_view is not None:
+            probe_view.release()
+        probe_proxy.destroy()
     try:
         import tracemalloc
     except ImportError:
@@ -17,8 +28,21 @@ export const pythonMemoryProbe = `
               "tracked_objects": len(gc.get_objects()), "allocated_blocks": sys.getallocatedblocks(),
               "resolution_cache_entries": len(_get_resolution_cache()), "globals": len(globals()),
               "workspace_imports": len(recorded_workspace_paths),
-              "logging_handlers": len(probe_logging._handlerList), "traced_bytes": traced}
+              "logging_handlers": len(probe_logging._handlerList), "traced_bytes": traced,
+              "wasm_bytes": probe_wasm, "gc_enabled": gc.isenabled(),
+              "gc_collections": [item["collections"] for item in gc.get_stats()]}
+    sys._fixture_probe_attempts = getattr(sys, "_fixture_probe_attempts", 0) + 1
+    if ${collect ? 'True' : 'False'} and sys._fixture_probe_attempts % 32 == 0 and traced is not None:
+        memory["allocation_sites"] = [
+            {"source": "/".join(site.traceback[0].filename.rsplit("/", 2)[-2:]),
+             "line": site.traceback[0].lineno, "bytes": site.size, "count": site.count}
+            for site in tracemalloc.take_snapshot().statistics("lineno")[:12]
+        ]
+        memory["collected"] = gc.collect()
+        memory["traced_after_collect"] = tracemalloc.get_traced_memory()[0]
+        memory["objects_after_collect"] = len(gc.get_objects())
 `;
+}
 
 export function isolateSampler(inspector) {
   const identities = new Map();
