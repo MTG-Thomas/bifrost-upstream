@@ -97,3 +97,12 @@ layouts. Record only sanitized resource receipts and job outcomes.
    `teamnet/routes` for the owned tunnel. Confirm extra rules trigger admission
    closure and fenced repair. Qualify each account-token write probe and
    verify missing Tunnel Write or DNS Write preserves the incumbent token.
+
+## Combined Hosted Qualification Disposition
+
+The Existing HTTPS canary succeeded. The combined run stopped at the
+Enable execution-class gate before Managed Tunnel Connect. The disabled
+warp-routing echo, private-route list, and connector rotation with
+old-session eviction remain unqualified on Cloudflare.
+
+See the [sanitized combined hosted receipt](../../results/cloudflare-scaleout-combined-hosted.json).

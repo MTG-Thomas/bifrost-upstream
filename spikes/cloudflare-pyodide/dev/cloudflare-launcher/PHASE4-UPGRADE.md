@@ -83,3 +83,12 @@ namespace receipts, and provider-side runtime retirement witnesses.
    Repeat the credential case after retirement and before the first upload.
 5. Scale in, disconnect, and verify provider cleanup and retained usage
    evidence for the retired resources.
+
+## Combined Hosted Qualification Disposition
+
+The two prepared production images accepted their respective release
+manifests and reported distinct deployment digests. The combined run
+stopped at the Existing HTTPS Enable execution-class gate. It did not
+activate the replacement or exercise Upgrade drain and terminal replay.
+
+See the [sanitized combined hosted receipt](../../results/cloudflare-scaleout-combined-hosted.json).

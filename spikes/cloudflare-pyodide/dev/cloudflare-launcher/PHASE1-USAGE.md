@@ -558,3 +558,16 @@ analytics samples for the measured window. There is no settled workload
 sample or spend ratio. Hosted meter qualification remains open.
 
 See the [sanitized hosted retry receipt](../../results/cloudflare-scaleout-hosted-retry.json).
+
+### Combined Hosted Qualification Meter Result
+
+The rebuilt release pair matched the prepared qualified bundle. The
+Existing HTTPS canary succeeded after the worker-container preflight.
+The attempt stopped before workload admission testing because Enable
+recorded the physical remote launcher execution class. The retired
+ledger estimated $0.0001907223 for the executed provider lifecycle and
+canary. The public meter rounded to $0.00. Cloudflare returned zero
+Worker and Durable Object analytics rows during the query window.
+The comparative ratio and hosted workload calibration remain open.
+
+See the [sanitized combined hosted receipt](../../results/cloudflare-scaleout-combined-hosted.json).

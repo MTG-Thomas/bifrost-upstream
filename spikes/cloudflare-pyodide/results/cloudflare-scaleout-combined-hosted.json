@@ -1,0 +1,115 @@
+{
+  "run_start_date_utc": "2026-11-22",
+  "spike_source_revision": "eb5399823821b2e640e6a7af555d914f8833259d",
+  "qualified_bundle_sha256": "370246c011982ac686a1a6e5aab0d4cf09bf2cd88f6d6059861759001d0f0063",
+  "local": {
+    "packaging_tests_passed": 12,
+    "available_gib_at_start": 9,
+    "other_bifrost_test_stacks_at_start": 0,
+    "prewarm_per_tenant": 0
+  },
+  "releases": [
+    {
+      "sequence": 1,
+      "version": "0.0.0-hosted.1",
+      "source_revision": "dd5481c43c599515a5f2dd10aff1c9cd753e380d",
+      "manifest_sha256": "5270d1d42525c7c8034f9523093080146193ba66bcb327a26d31ebf88ac14770",
+      "deployment_sha256": "1dca773e987a4fe002f4efc80748e4a8c8f209089f38bda570365eacade54ea4",
+      "image_loader_accepted": true
+    },
+    {
+      "sequence": 2,
+      "version": "0.0.0-hosted.2",
+      "source_revision": "eb5399823821b2e640e6a7af555d914f8833259d",
+      "manifest_sha256": "3aaa19bbde06c227ebb55a8fa98cec9ce5cf405aa6d76689c39f0db9cd773140",
+      "deployment_sha256": "c51e92adda8959261e068cea36937065f58601f438c33ac882460c45e52e4669",
+      "image_loader_accepted": true
+    }
+  ],
+  "connect": {
+    "http_status": 200,
+    "at_utc": "2026-11-22T00:24:29.023131Z",
+    "admission_open": false,
+    "monthly_envelope_usd": 415.59
+  },
+  "worker_preflight": {
+    "execution_class": "worker_pool",
+    "reachable": true,
+    "route_checks": 100,
+    "failure": null
+  },
+  "enable": {
+    "status": "succeeded",
+    "execution_class": "remote_launcher",
+    "required_execution_class": "worker_pool",
+    "runtime_canary_satisfied_by_enable": true,
+    "admission_open": true,
+    "stop": "execution_class_mismatch",
+    "started_at_utc": "2026-11-22T00:24:52.158404Z",
+    "completed_at_utc": "2026-11-22T00:25:17.385983Z"
+  },
+  "workload": {
+    "submitted": 0,
+    "cold_latency_ms": null,
+    "warm_latency_ms": null,
+    "burst": "not_run",
+    "isolated_cancel": "not_run",
+    "reconcile": "not_run",
+    "active_scale_in": "not_run",
+    "managed_tunnel": "not_run",
+    "connector_rotation": "not_run",
+    "upgrade": "not_run"
+  },
+  "spend": {
+    "prior_bifrost_observed_usd": 0,
+    "public_bifrost_high_water_usd": 0,
+    "retired_bifrost_ledger_estimate_usd": "0.00019072229235228522962963033962240000000000",
+    "target_usd": 0.5,
+    "hard_abort_usd": 1,
+    "amount_attributed_per_item": null,
+    "workers_analytics_rows": {
+      "capacity": 0,
+      "launcher": 0,
+      "gateway": 0
+    },
+    "durable_object_analytics_rows": 0,
+    "bifrost_to_cloudflare_ratio": null
+  },
+  "teardown": {
+    "disconnect": "succeeded",
+    "disconnect_submissions": 1,
+    "completed_at_utc": "2026-11-22T00:25:38.065524Z",
+    "installation_absent": true,
+    "retired_launchers": 1,
+    "live_launchers": 0,
+    "held_workflow_slots": 0,
+    "staged_credentials": 0,
+    "retained_ciphertexts": 0,
+    "retained_scopes": 0,
+    "present_journal_rows": 0,
+    "worker_settings_http_status": [
+      404,
+      404,
+      404
+    ],
+    "namespace_objects_http_status": [
+      404,
+      404,
+      404,
+      404
+    ],
+    "independent_worker_matches": 0,
+    "independent_namespace_matches": 0,
+    "token_exact_absence": true,
+    "dns_exact_absence": true,
+    "authoritative_dns_absence_checks": 2,
+    "tunnel_deleted": true,
+    "live_connector_sessions": 0,
+    "external_connector_process_absent": true,
+    "trial_containers": 0,
+    "trial_networks": 0,
+    "trial_volumes": 0,
+    "trial_project_image_tags": 0,
+    "trial_scratch_absent": true
+  }
+}
