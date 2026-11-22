@@ -130,3 +130,12 @@ the replacement image started. Hosted Upgrade drain and terminal
 replay remain unqualified. Both local image tags were removed.
 
 See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-latency-reuse.json).
+
+### Combined Hosted Run at `db39a3698`
+
+Both pinned packages passed the production image loader. Enable stopped
+on the Existing HTTPS ownership gate, so the replacement never started
+and hosted Upgrade drain and replay remain unqualified. Teardown verified
+both trial image tags were gone.
+
+See the [sanitized ownership-stop receipt](../../results/cloudflare-scaleout-combined-hosted-ownership-stop.json).

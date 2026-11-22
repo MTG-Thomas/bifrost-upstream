@@ -635,3 +635,14 @@ exact-namespace Analytics samples. The provider cost proxy and ratio
 are unavailable.
 
 See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-latency-reuse.json).
+
+### Hosted Usage Check at `db39a3698`
+
+The two release digests and their pinned meter evidence verified. Enable
+stopped on `CF_OWNERSHIP_CONFLICT` before a launcher started. Bifrost
+settled $0.00 incremental, leaving the cumulative estimate at
+$0.015317311140185837. Exact-target Cloudflare Analytics returned no
+attributed Workers or Durable Object samples, so the provider cost proxy
+and spend ratio are unavailable.
+
+See the [sanitized ownership-stop receipt](../../results/cloudflare-scaleout-combined-hosted-ownership-stop.json).

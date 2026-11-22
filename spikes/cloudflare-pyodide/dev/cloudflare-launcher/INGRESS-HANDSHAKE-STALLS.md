@@ -153,3 +153,13 @@ Each of two IPv6 addresses recorded one TCP attempt and zero TLS
 starts. Enable ran as `remote_launcher` and completed in 19.117 s.
 
 See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-latency-reuse.json).
+
+### Hosted Preflight at `db39a3698`
+
+All 100 worker-container route checks passed. Each of two IPv4 addresses
+recorded eight completed TLS handshakes and 92 reused requests. Each of
+two IPv6 addresses recorded one TCP attempt and zero TLS starts. Enable
+ran as `remote_launcher` and stopped on `CF_OWNERSHIP_CONFLICT`, so this
+run has no successful Enable counters.
+
+See the [sanitized ownership-stop receipt](../../results/cloudflare-scaleout-combined-hosted-ownership-stop.json).

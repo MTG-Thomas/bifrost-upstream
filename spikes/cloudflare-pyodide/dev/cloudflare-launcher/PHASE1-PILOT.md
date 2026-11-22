@@ -1127,3 +1127,39 @@ separate dispatch and entry windows in the runbook exercised the same
 fences successfully. Four loose workflow proposals and one Solution
 proposal were reviewed and accepted in the full rehearsal. There were
 no Cloudflare calls or resource changes.
+
+## Combined Hosted Run Stopped at Enable Ownership
+
+**November 22, 2026 UTC · Spike source `db39a369874e71274244fdc85f5f4436db4ef9de`**
+
+| Item | Result |
+| --- | --- |
+| 1. Release and meter | Passed. Twelve offline tests passed. The pinned bundle and meter bounds matched both packages. Both exact-source images loaded their distinct deployment digests. |
+| 2. Connect, preflight and Enable | Connect left admission closed. The Compose worker preflight passed all 100 route checks. Enable ran as `remote_launcher` and returned `requires_action / CF_OWNERSHIP_CONFLICT` after 8.116 s. The job exposed the generic ownership code, with no successful canary receipt or Enable connection counters. |
+| 3. Hold and latency | Unreached. The policy used a 2 s overflow gate and a 120 s launcher lifetime. No workflow entered, and there was no measured eligibility offset or cold or warm latency. |
+| 4. Burst and cancel | Unreached. No ninth or tenth admission and no cancellation were submitted. |
+| 5. Reconcile and active Scale In | Unreached. Disconnect ran through the stop path. |
+| 6. Managed Tunnel | Unreached. No Managed Tunnel installation or credential was created. |
+| 7. Connector rotation | Unreached. |
+| 8. Upgrade | Unreached. |
+| 9. Spend and teardown | Bifrost settled $0.00 incremental and $0.015317311140185837 cumulative. No launchers started. Analytics returned no attributed rows, so the spend ratio is unavailable. Teardown passed. |
+
+The preflight recorded eight TCP starts, eight completed TLS handshakes,
+and 92 reused requests per IPv4 address. It resolved two IPv4 addresses.
+Each of two IPv6 addresses recorded one TCP attempt and no TLS start.
+At the ownership stop, the journal held one present script and two
+creating intents. Enable was submitted once. The result does not expose
+which ownership predicate failed.
+
+Disconnect retired the installation and marked all three script intents
+absent. Independent exact reads returned 404 for all three script
+targets. The provider inventories contained no matching scripts or
+Durable Object namespaces. There were no recorded namespace IDs for
+exact reads. The ledger showed zero live incarnations, held slots,
+staged credentials, pending resource rows, or retained ciphertext.
+The temporary token and DNS record returned 404, both authoritative DNS
+servers confirmed absence, and the Existing HTTPS tunnel tombstone had
+zero sessions. The owned Compose stack, image tags, processes, scratch
+and secret files were removed and verified absent.
+
+See the [sanitized ownership-stop receipt](../../results/cloudflare-scaleout-combined-hosted-ownership-stop.json).
