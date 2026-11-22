@@ -6,6 +6,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from uuid import UUID
 
+import httpx
 from sqlalchemy import select, text
 
 from src.config import get_settings
@@ -34,7 +35,7 @@ async def connector_channel_ready() -> bool:
                 await client.read_cloudflare_connector()
             finally:
                 await client.close()
-        except (KubernetesApiError, KubernetesConfigurationError):
+        except (KubernetesApiError, KubernetesConfigurationError, httpx.HTTPError):
             return False
         return True
     return False

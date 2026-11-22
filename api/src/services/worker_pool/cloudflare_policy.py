@@ -553,7 +553,8 @@ async def save_cloudflare_policy(
         raise CloudflarePolicyConflict(f"{code}. Use Reconcile with Reset Release Fence to accept this package.")
     if row.upgrade_release is not None and row.upgrade_release != bounds.release:
         raise CloudflarePolicyConflict("Edit policy from the matched Cloudflare release.")
-    if row.policy != desired:
+    current = {key: value for key, value in row.policy.items() if key != "activation_fingerprint"}
+    if current != desired:
         floor = workers_release_floor(row)
         if floor is None or bounds.release_order.key > floor.key:
             set_workers_release_floor(row, bounds.release, bounds.release_order)

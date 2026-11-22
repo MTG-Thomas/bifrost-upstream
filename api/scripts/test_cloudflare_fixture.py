@@ -288,7 +288,7 @@ def install_enable(job_module):
 
         async def profile(self):
             return WorkerCapacityProfile(
-                protocol_version=2, scope="workers", worker_version=_release().digest,
+                protocol_version=2, scope="workers", worker_version=_fixture_digest(),
                 runtime_profile="cloudflare-python-v1", memory_limit_bytes=256 * 2**20,
                 max_workers=1, max_lifetime_seconds=3600,
             )
