@@ -1419,7 +1419,10 @@ class ThinRemoteProcessPool(ProcessPoolManager):
             return
         from src.core.database import get_db_context
         from src.models.orm.cloudflare_capacity import CloudflareWorkflowSlot
-        from src.services.worker_pool.cloudflare_timing import record_execution_timing, worker_terminal_timing
+        from src.services.worker_pool.cloudflare_timing import (
+            record_execution_timing,
+            worker_terminal_timing,
+        )
         from src.worker.remote.fencing import fence_remote_owner
 
         _, execution_id, fence = route_id.split(":")

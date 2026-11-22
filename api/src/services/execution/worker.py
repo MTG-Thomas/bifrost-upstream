@@ -18,7 +18,7 @@ import hashlib
 import sys
 from abc import abstractmethod
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from typing import Any, Protocol
 
 # Install virtual import hook IMMEDIATELY at module load time.
@@ -305,7 +305,7 @@ async def run_execution(
 
         def record_workflow_entry() -> None:
             nonlocal workflow_entry_at
-            workflow_entry_at = int(datetime.now(timezone.utc).timestamp() * 1000)
+            workflow_entry_at = int(datetime.now(UTC).timestamp() * 1000)
 
         # Build execution request
         request = ExecutionRequest(

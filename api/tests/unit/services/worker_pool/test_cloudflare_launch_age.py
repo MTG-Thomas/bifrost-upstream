@@ -21,7 +21,9 @@ def test_launch_age_schedules_existing_wake_without_setting_it_early(monkeypatch
     wake = Mock()
     monkeypatch.setattr(cloudflare_supervisor, "asyncio", SimpleNamespace(get_running_loop=lambda: loop))
     monkeypatch.setattr(cloudflare_supervisor, "datetime", SimpleNamespace(now=lambda _: now))
-    monkeypatch.setattr(cloudflare_supervisor.time, "get_clock_info", lambda _: SimpleNamespace(resolution=1e-9))
+    monkeypatch.setattr(cloudflare_supervisor, "time", SimpleNamespace(
+        get_clock_info=lambda _: SimpleNamespace(resolution=1e-9),
+    ))
 
     timer = cloudflare_supervisor._schedule_launch_wake(wake, deadline)
 

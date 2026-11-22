@@ -1,8 +1,9 @@
 """Store sanitized stage timings for managed Workers overflow."""
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
+
+from alembic import op
 
 revision = "20261122_cf_overflow_timing"
 down_revision = "20261121_cf_containers"
