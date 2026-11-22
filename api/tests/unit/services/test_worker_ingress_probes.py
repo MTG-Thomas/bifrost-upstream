@@ -334,18 +334,23 @@ def controlled_deadline(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["complete", "oversized", "deadline"])
+@pytest.mark.parametrize("mode", ["complete", "connection_close", "oversized", "deadline"])
 async def test_probe_drains_accepted_responses_on_a_reused_tls_socket(
     tls_contexts, monkeypatch, controlled_deadline, mode,
 ) -> None:
     server_tls, trust = tls_contexts
     closed = asyncio.Event()
-    open_sockets = 0
+    connection_close = mode == "connection_close"
+    success = mode in {"complete", "connection_close"}
+    expected_requests = 3 if success else 2
+    expected_connections = expected_requests if connection_close else 1
+    opened_sockets = 0
+    closed_sockets = 0
     nonces: list[bytes] = []
 
     async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        nonlocal open_sockets
-        open_sockets += 1
+        nonlocal opened_sockets, closed_sockets
+        opened_sockets += 1
         try:
             while request := await reader.readline():
                 path = request.split()[1]
@@ -361,7 +366,9 @@ async def test_probe_drains_accepted_responses_on_a_reused_tls_socket(
                     b"HTTP/1.1 " + status + b"\r\n" + probes.INGRESS_HEADER + b": " + marker
                     + b"\r\n" + probes.PROBE_HEADER + b": " + nonce + b"\r\n"
                 )
-                if refused and mode != "complete":
+                if connection_close:
+                    writer.write(b"Connection: close\r\n")
+                if refused and not success:
                     # No terminating chunk. The client must reject the size
                     # or cancel the body read and close the live connection.
                     body = b"x" * (probes._MAX_PROBE_BODY_BYTES + 1 if mode == "oversized" else 1)
@@ -371,11 +378,14 @@ async def test_probe_drains_accepted_responses_on_a_reused_tls_socket(
                 else:
                     writer.write(b"Content-Length: 0\r\n\r\n")
                 await writer.drain()
+                if connection_close:
+                    return
         finally:
             writer.close()
             await writer.wait_closed()
-            open_sockets -= 1
-            closed.set()
+            closed_sockets += 1
+            if closed_sockets == expected_connections:
+                closed.set()
 
     if mode == "deadline":
         expire = controlled_deadline()
@@ -407,15 +417,16 @@ async def test_probe_drains_accepted_responses_on_a_reused_tls_socket(
         result = await probes.probe_public_worker_ingress(ORIGIN)
         await asyncio.wait_for(closed.wait(), 2)
 
-    expected_requests = 3 if mode == "complete" else 2
     assert len(nonces) == len(set(nonces)) == expected_requests
-    assert open_sockets == 0
+    assert opened_sockets == closed_sockets == expected_connections
     assert result.http_connections_as_result() == [{
-        "address_family": "ipv4", "fresh_connections": 1,
-        "tls_handshakes_started": 1, "tls_handshakes_completed": 1,
-        "reused_requests": expected_requests - 1,
+        "address_family": "ipv4", "tcp_connects_started": expected_connections,
+        "tls_handshakes_started": expected_connections, "tls_handshakes_completed": expected_connections,
+        "reused_requests": expected_requests - expected_connections,
     }]
-    if mode == "complete":
+    if success:
+        assert len(result.routes) == expected_requests
+        assert all(route.passed for route in result.routes)
         assert result.reachable
         control.assert_awaited_once()
     else:

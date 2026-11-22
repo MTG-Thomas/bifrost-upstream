@@ -886,7 +886,16 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
         installation.worker_ingress_origin, True, False, False,
         (ingress_probes.RouteProbe("GET", route, None, False, error_class="route_timeout", failure=failure),),
     )
-    monkeypatch.setattr(ingress_probes, "_probe_address", AsyncMock(side_effect=[refused, reachable, reachable]))
+    probe_results = iter((refused, reachable, reachable))
+
+    async def probe_address(_origin, _host, _address, *, progress):
+        progress.tcp_connects_started = 2
+        progress.tls_handshakes_started = 1
+        progress.tls_handshakes_completed = 1
+        progress.reused_requests = 12
+        return next(probe_results)
+
+    monkeypatch.setattr(ingress_probes, "_probe_address", probe_address)
     canary = AsyncMock(side_effect=[
         ingress_probes.RuntimeCanary(True, False, ingress_probes.CanaryFailure("sdk_response", "http_status", 404)),
         ingress_probes.RuntimeCanary(True, True),
@@ -938,6 +947,10 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
         paid_reads.clear()
         with pytest.raises(PlatformJobRequiresAction) as ingress_denied:
             await enable_job._settle_enable(running, payload, http, release)
+        http_connections = [{
+            "address_family": "ipv4", "tcp_connects_started": 2,
+            "tls_handshakes_started": 1, "tls_handshakes_completed": 1, "reused_requests": 12,
+        }]
         assert ingress_denied.value.result == {
             "code": "CF_WORKER_INGRESS_UNVERIFIED",
             "canary_failure": {
@@ -946,6 +959,7 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
                 "handshake_completed": True, "connection_reused": False, "exception_class": "ReadTimeout",
                 "phase": "response_headers",
             },
+            "http_connections": http_connections,
         }
         assert ingress_denied.value.phase == "Worker Ingress Probe Failed (Ingress HTTP, Route Timeout)"
         canary.assert_not_awaited()
@@ -954,6 +968,7 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
         assert denied.value.result == {
             "code": "CF_WORKER_INGRESS_UNVERIFIED",
             "canary_failure": {"stage": "sdk_response", "error_class": "http_status", "status": 404},
+            "http_connections": http_connections,
         }
         assert denied.value.phase == "Cloudflare Canary Failed (SDK Response, HTTP Status, HTTP 404)"
         await db_session.refresh(installation)
