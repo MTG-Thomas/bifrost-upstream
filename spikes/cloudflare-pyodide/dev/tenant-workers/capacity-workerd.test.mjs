@@ -13,6 +13,7 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {fileURLToPath} from 'node:url';
 import {envelope, fragment, FragmentAssembler, signHello} from '../cloudflare-launcher/protocol.mjs';
 import {capacityWorker} from '../e2e/capacity-miniflare.mjs';
+import {runLifetimeSoak} from './lifetime-soak.mjs';
 
 const {Miniflare} = createRequire(import.meta.resolve('wrangler'))('miniflare');
 const {WebSocketServer} = createRequire(import.meta.url)('ws');
@@ -82,6 +83,7 @@ const measuredBundle = process.env.BIFROST_QUALIFIED_CAPACITY_BUNDLE;
 const measuredLauncher = process.env.BIFROST_QUALIFIED_LAUNCHER_BUNDLE;
 const measuredGateway = process.env.BIFROST_QUALIFIED_GATEWAY_BUNDLE;
 const slotQualification = process.env.BIFROST_LOCAL_TENANT_SLOTS === 'true';
+const lifetimeSoak = process.env.BIFROST_LIFETIME_SOAK_RESULT;
 const launcherSlots = slotQualification ? 4 : measuredLauncher ? 2 : 1;
 const controllerPolls = Number(process.env.BIFROST_QUALIFIED_CONTROLLER_POLLS ?? 0);
 const controllerSource = new URL('../../../../api/src/services/pool_cadence.py', import.meta.url);
@@ -104,6 +106,10 @@ async function referenceAttempt(record, solution, slotCase) {
     source = source.replace('rows = await tables.list()', 'rows = await tables.list(app=case)')
       .replace('from js import fetch', 'from js import fetch, globalThis\n    globalThis.slotFixture = case')
       .replace('"table_count": len(rows)', '"table_count": len(rows), "isolated": globalThis.slotFixture == case');
+  }
+  if (slotCase?.soak) {
+    source = source.replace('import logging', 'import logging\nimport sys')
+      .replace('"table_count": len(rows)', '"table_count": len(rows), "module_count": len(sys.modules)');
   }
   const sources = {[file_path]: source};
   if (solution) {
@@ -138,7 +144,23 @@ async function referenceAttempt(record, solution, slotCase) {
         [file, sha256(value)])), sources, packages: [], https_hosts: ['phase5-fixture.invalid'],
         cpu_budget_ms: 1_000, subrequest_allowance: 12, solution_id}},
   }});
-  const terminal = await result.promise;
+  let terminal;
+  try {
+    terminal = await result.promise;
+  } catch (error) {
+    if (!slotCase?.soak) throw error;
+    const {error_type} = JSON.parse(error.message);
+    if (error_type !== 'CloudflareLauncherMeterLimitExceeded') throw error;
+    return {state: 'not_started', success: false, error_type};
+  } finally {
+    record.replies.delete(command);
+    record.terminals.delete(route_id);
+  }
+  if (slotCase?.soak) {
+    return {state: terminal.attempt_state, success: terminal.result?.success === true,
+      error_type: terminal.result?.error_type ?? null, route_id,
+      module_count: terminal.result?.result?.module_count};
+  }
   if (slotCase?.cancel) return terminal;
   assert.equal(terminal.attempt_state, 'completed', JSON.stringify(terminal));
   assert.equal(terminal.result.success, true, JSON.stringify(terminal));
@@ -158,7 +180,9 @@ async function observeAtControllerCadence(path) {
   });
   observer.stdin.end(JSON.stringify(auth));
   const [receipt] = await Promise.all([buffer(observer.stdout), completion]);
-  console.info('controller-cadence', receipt.toString('utf8').trim());
+  const cadence = JSON.parse(receipt.toString('utf8'));
+  console.info('controller-cadence', JSON.stringify(cadence));
+  return cadence;
 }
 
 function request(path, method = 'GET', body, headers = auth) {
@@ -364,7 +388,7 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
   const key = randomBytes(32).toString('hex');
   const reservation = {worker_id: id, worker_version: settings.version,
     memory_limit_bytes: launcherSlots * 128 * 1024 ** 2,
-    max_lifetime_seconds: controllerPolls ? Math.ceil(controllerPolls * reconcileSeconds) + 120 : 60,
+    max_lifetime_seconds: lifetimeSoak ? 900 : controllerPolls ? Math.ceil(controllerPolls * reconcileSeconds) + 120 : 60,
     drain_grace_seconds: 5,
     resource_uid: uid, control_key: key};
   assert.equal((await request(path, 'PUT', reservation, {...auth, Authorization: `Bearer ${key}`})).status, 401);
@@ -391,6 +415,52 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
   assert.equal(seen.inventory.payload.event, 'inventory');
   assert.equal((await (await request(path)).json()).state, 'running');
   let references = null;
+  if (lifetimeSoak) {
+    const tenant = randomUUID();
+    let record = seen;
+    const verifySession = async () => {
+      const records = hellos.get(id);
+      const previous = record.hello.hello;
+      sockets.get(id).close(4001);
+      record = await next(() => records.find(item => item !== seen && item.inventory));
+      const {proof, ...hello} = record.hello.hello;
+      assert.equal((await signHello(key, hello)).proof, proof);
+      assert.equal(hello.incarnation_id, previous.incarnation_id);
+      assert.equal(hello.hello_sequence, previous.hello_sequence + 1);
+      assert.notEqual(hello.nonce, previous.nonce);
+      assert.ok(Math.abs(Date.now() / 1000 - hello.issued_at) < 10);
+      return hello.hello_sequence;
+    };
+    const run = async (ordinal, solution) => {
+      const name = randomUUID();
+      const held = {entered: Promise.withResolvers(), release: Promise.withResolvers(), sdk: false};
+      held.release.resolve();
+      heldSlots.set(name, held);
+      try {
+        const result = await referenceAttempt(record, solution, {ordinal, name, org: tenant, soak: true});
+        return {...result, sdk: held.sdk};
+      } finally {
+        heldSlots.delete(name);
+      }
+    };
+    await runLifetimeSoak({
+      result: lifetimeSoak, storage, run, verifySession, launcher: measuredLauncher,
+      cadence: controllerPolls ? () => observeAtControllerCadence(path) : undefined,
+      observe: async () => (await (await request(path)).json()).state,
+      settle: async () => {
+        await next(() => record.heartbeat?.occupied_routes?.length === 0 &&
+          record.heartbeat.received_sequence >= record.terminalAckSequence);
+        const stopped = await (await request(path, 'DELETE', {resource_uid})).json();
+        assert.equal(stopped.state, 'deleted');
+        await next(() => sockets.get(id).readyState === 3);
+        const compacted = await (await request(path, 'DELETE', {resource_uid, receipt_ack: true})).json();
+        assert.equal(compacted.state, 'deleted');
+        assert.equal(compacted.usage, undefined);
+        return stopped.usage;
+      },
+    });
+    return;
+  }
   if (slotQualification) {
     assert.equal(seen.inventory.payload.inventory.tenant_slot_protocol, 1);
     const org = randomUUID();
