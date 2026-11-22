@@ -33,10 +33,8 @@ async def ${name}():
 		await expect(panel.getByRole("heading", { name: "Approval Proposal" })).toBeVisible();
 		await page.keyboard.press("Escape");
 		await expect(panel).toHaveCount(0);
-		await page.reload();
 		// Reload invalidates browser state, so review must come from the worktree API.
-		await page.getByRole("button", { name: "Capacity", exact: true }).click();
-		await page.getByRole("button", { name: "Scale Out With Cloudflare", exact: true }).click();
+		await page.reload();
 		await page.getByRole("button", { name: "Review Eligible Workflows" }).click();
 		await page.getByRole("button", { name: `Review Approval for ${name}`, exact: true }).click();
 		await panel.getByText("Review Full Source").click();

@@ -210,13 +210,13 @@ async def list_approvals(db: AsyncSession, user: UserPrincipal) -> CloudflareApp
 
 async def _save_review(
     db: AsyncSession, workflow: Workflow, state: CloudflareApprovalState, observed_pins: dict[str, str | None],
-) -> None:
+) -> bool:
     try:
         solution = await approval_placement(db, workflow)
     except ObservationChanged:
-        return  # Placement refusals are available directly from the workflow state.
+        return False
     if not await _observations_match(db, workflow, observed_pins):
-        return
+        return False
     review = StoredCloudflareReview(
         scope=workflow_review_scope(workflow), solution=solution, current_revision=state.current_revision,
         observed_pins=observed_pins, status=state.status, proposal=state.proposal,
@@ -235,6 +235,7 @@ async def _save_review(
             "policy_version": stmt.excluded.policy_version,
         },
     ))
+    return True
 
 
 async def _clear_review(db: AsyncSession, workflow_id: UUID) -> None:
@@ -332,7 +333,11 @@ async def review_approval(
     state.diagnostics = _url_diagnostics(candidate.declaration)
     if not accepting:
         state.proposal_sources = {path: sources[path].decode("utf-8") for path in candidate.declaration.manifest}
-        await _save_review(db, workflow, state, observed_pins)
+        if not await _save_review(db, workflow, state, observed_pins):
+            state.status = "revision_changed"
+            state.proposal = None
+            state.proposal_sources = None
+            state.diagnostics = [_diagnostic(AnalysisRejected("Workflow source changed during review"))]
     return state
 
 
