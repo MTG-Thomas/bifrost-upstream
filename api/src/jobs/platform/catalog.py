@@ -55,7 +55,10 @@ _METADATA = MappingProxyType(
                 "capacity.cloudflare_enable",
                 "src.jobs.platform.cloudflare_enable",
                 "CLOUDFLARE_ENABLE_DEFINITION",
-                PlatformJobPolicy(15 * 60, max_attempts=3, min_memory_headroom_mb=128, retry_on_failure=True),
+                PlatformJobPolicy(
+                    15 * 60, max_attempts=3, min_memory_headroom_mb=128, retry_on_failure=True,
+                    record_execution_class=True,
+                ),
             ),
             _metadata(
                 "capacity.cloudflare_disable",

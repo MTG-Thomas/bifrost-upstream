@@ -12,6 +12,7 @@ from uuid import UUID
 from sqlalchemy import select
 
 from src.core.database import close_db, get_db_context, init_db
+from src.jobs.platform.policy import PlatformJobExecutor
 from src.jobs.platform.registry import get_platform_job_definition
 from src.jobs.schedulers.platform_jobs import (
     LEASE_DURATION,
@@ -100,7 +101,7 @@ async def run_kubernetes_platform_job(job_id: UUID, lease_token: UUID) -> bool:
     if claim is None:
         return False
 
-    task = asyncio.create_task(run_claimed_platform_job(claim))
+    task = asyncio.create_task(run_claimed_platform_job(claim, executor=PlatformJobExecutor.KUBERNETES_PLATFORM_JOB))
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, task.cancel)

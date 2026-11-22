@@ -439,6 +439,25 @@ events. The 40-request SDK limit still uses the prior hosted SDK reference.
 The [local receipt](../../results/cloudflare-scaleout-meter-local.json)
 records the three module digests, the candidate fingerprint and the samples.
 
+### Managed Tunnel and Upgrade Candidate Requalification
+
+The [hosted-preparation receipt](../../results/cloudflare-scaleout-meter-hosted-prep.json)
+records the new launcher bytes, all four CPU lifecycle samples and the
+two-workflow launcher seal at the 170-observation controller cadence. The
+capacity and gateway module digests match the prior local qualification.
+The capacity observation and delete p99 samples raised their corresponding
+reference values. The maximum capacity p99 still comes from prepare. Each
+CPU limit uses the higher prior or current p99 with a 10× margin, rounded up
+to milliseconds and capped where the existing runtime ceiling applies.
+
+Capacity, gateway, boot, warm and exercise caps remain 104, 2,133, 30,000,
+440 and 672 ms. The uncapped startup reserve is 48,522 ms and the aggregate
+launcher-second CPU bound is 62,237 ms. The 40-request SDK cap still uses the
+hosted SDK reference. The seal again measured 68 writes, six requests and
+two log events, yielding caps of 680, 60 and 20. The expected CPU inputs used
+for fleet pricing are unchanged. The three-launcher, nine-slot, 120-second fleet envelope remains
+$415.59. This sample covers the default lane with queue pre-warming disabled.
+
 #### Hosted SDK Measurement
 
 The hosted reference used manifest

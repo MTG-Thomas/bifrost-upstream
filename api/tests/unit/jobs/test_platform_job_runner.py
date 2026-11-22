@@ -1,5 +1,7 @@
 """Audit identity propagation for durable platform jobs."""
 
+import asyncio
+import sys
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -8,7 +10,12 @@ from uuid import uuid4
 import pytest
 from pydantic import BaseModel
 
-from src.jobs.platform.base import PlatformJobDefinition, PlatformJobPolicy
+from src.jobs.platform.base import (
+    PlatformJobDefinition,
+    PlatformJobPolicy,
+    PlatformJobRequiresAction,
+)
+from src.jobs.platform.policy import PlatformJobExecutor
 from src.jobs.platform.runner import run_claimed_platform_job
 from src.models.orm.platform_jobs import PlatformJob
 from src.services.audit_context import current_actor
@@ -35,6 +42,121 @@ def _running_job(*, payload_version: int, payload: dict[str, object]) -> SimpleN
         impersonation_session_id=None,
         result=None,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("executor", list(PlatformJobExecutor))
+@pytest.mark.parametrize("status", ["succeeded", "requires_action"])
+async def test_enable_receipt_identifies_actual_executor(monkeypatch, executor, status) -> None:
+    from src.jobs.platform import runner
+    from src.jobs.platform.catalog import get_platform_job_metadata
+
+    job = _running_job(payload_version=1, payload={"value": "ok"})
+    job.job_type = "capacity.cloudflare_enable"
+    db = AsyncMock()
+    db.execute.return_value = MagicMock(scalar_one_or_none=lambda: job)
+
+    @asynccontextmanager
+    async def db_context():
+        yield db
+
+    async def handle(_context, _payload):
+        if status == "requires_action":
+            raise PlatformJobRequiresAction("Verify Ingress", {"code": "CF_WORKER_INGRESS_UNVERIFIED"})
+        return {"outcome": "enabled"}
+
+    definition = PlatformJobDefinition(
+        job_type=job.job_type, payload_version=1, payload_model=_Payload, handler=handle,
+        policy=get_platform_job_metadata(job.job_type).policy,
+    )
+    finish = AsyncMock(return_value=True)
+    monkeypatch.setattr(runner, "get_db_context", db_context)
+    monkeypatch.setattr(runner, "get_platform_job_definition", lambda _: definition)
+    monkeypatch.setattr(runner, "finish_platform_job", finish)
+
+    assert await run_claimed_platform_job(job.id, job.lease_token, executor=executor)
+    assert finish.await_args.kwargs["status"] == status
+    expected = {"outcome": "enabled"} if status == "succeeded" else {"code": "CF_WORKER_INGRESS_UNVERIFIED"}
+    assert finish.await_args.kwargs["result"] == {**expected, "execution_class": executor.value}
+
+
+@pytest.mark.asyncio
+async def test_local_platform_job_spawn_passes_worker_pool_executor(monkeypatch) -> None:
+    from src.jobs.schedulers import platform_jobs
+
+    claim = SimpleNamespace(id=uuid4(), lease_token=uuid4())
+    spawn = AsyncMock()
+    monkeypatch.setattr(platform_jobs.asyncio, "create_subprocess_exec", spawn)
+
+    backend = platform_jobs._LocalPlatformJobExecutionBackend(PlatformJobExecutor.WORKER_POOL)
+    await backend.spawn(claim)
+
+    spawn.assert_awaited_once_with(
+        sys.executable, "-m", "src.jobs.platform.runner", str(claim.id), str(claim.lease_token),
+        PlatformJobExecutor.WORKER_POOL.value, start_new_session=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_kubernetes_platform_job_passes_pod_executor(monkeypatch) -> None:
+    from src.jobs.platform import kubernetes_runner
+
+    claim = SimpleNamespace(id=uuid4(), lease_token=uuid4())
+    monkeypatch.setenv("BIFROST_KUBERNETES_JOB_UID", "test-job")
+    monkeypatch.setenv("BIFROST_KUBERNETES_POD_UID", "test-pod")
+    monkeypatch.setattr(kubernetes_runner, "admit_kubernetes_platform_job", AsyncMock(return_value=claim))
+    run = AsyncMock(return_value=True)
+    monkeypatch.setattr(kubernetes_runner, "run_claimed_platform_job", run)
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "add_signal_handler", MagicMock())
+    monkeypatch.setattr(loop, "remove_signal_handler", MagicMock())
+
+    assert await kubernetes_runner.run_kubernetes_platform_job(claim.id, claim.lease_token)
+    run.assert_awaited_once_with(claim, executor=PlatformJobExecutor.KUBERNETES_PLATFORM_JOB)
+
+
+@pytest.mark.asyncio
+async def test_remote_launcher_platform_job_passes_launcher_executor(monkeypatch) -> None:
+    from src.worker.remote import launcher as launcher_module
+    from src.worker.remote.identity import LauncherIdentity
+
+    job_id, lease_token = str(uuid4()), str(uuid4())
+    identity = LauncherIdentity(uuid4(), uuid4(), None, None, "test-launcher", "external")
+    launcher = launcher_module.Launcher(AsyncMock(), identity=identity, secret="test")
+    launcher.session_generation = 1
+    launcher.pressure_threshold = 0.9
+    monkeypatch.setattr(launcher_module, "memory_pressure_ratio", lambda: 0.0)
+    monkeypatch.setattr(launcher, "wait_job", AsyncMock())
+    spawn = AsyncMock()
+    monkeypatch.setattr(launcher_module.asyncio, "create_subprocess_exec", spawn)
+
+    await launcher.command({
+        "id": "test-command", "action": "platform_job",
+        "payload": {
+            "route_id": "test-route", "job_id": job_id, "lease_token": lease_token,
+            "memory_request_bytes": 1,
+        },
+    }, generation=1)
+    await asyncio.gather(*launcher._tasks)
+
+    spawn.assert_awaited_once_with(
+        sys.executable, "-m", "src.jobs.platform.runner", job_id, lease_token,
+        PlatformJobExecutor.REMOTE_LAUNCHER.value, start_new_session=True,
+    )
+
+
+def test_platform_runner_cli_parses_executor_from_argv(monkeypatch) -> None:
+    from src.jobs.platform import runner
+    from src.services.execution import oom_priority
+
+    job_id, lease_token = str(uuid4()), str(uuid4())
+    monkeypatch.setattr(sys, "argv", ["runner", job_id, lease_token, "remote_launcher"])
+    monkeypatch.setattr(oom_priority, "volunteer_for_oom_kill", MagicMock())
+    run = AsyncMock(return_value=0)
+    monkeypatch.setattr(runner, "_main", run)
+
+    assert runner._run_cli() == 0
+    run.assert_awaited_once_with(job_id, lease_token, PlatformJobExecutor.REMOTE_LAUNCHER)
 
 
 @pytest.mark.asyncio
@@ -96,7 +218,7 @@ async def test_runner_restores_requesting_actor_for_handler(monkeypatch) -> None
     )
     monkeypatch.setattr("src.jobs.platform.runner.finish_platform_job", finish)
 
-    assert await run_claimed_platform_job(job_id, lease_token)
+    assert await run_claimed_platform_job(job_id, lease_token, executor=PlatformJobExecutor.WORKER_POOL)
     assert current_actor() is None
     finish.assert_awaited_once_with(
         job_id, lease_token, status="succeeded", result={"ok": True}

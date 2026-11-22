@@ -16,7 +16,7 @@ from shared.models import CloudflareLauncherCounts, SEMVER_PATTERN
 WORKERS_RELEASE_PATH = Path("/app/artifacts/cloudflare/workers")
 MAX_WORKER_BYTES = 64 * 1024 * 1024
 QUALIFIED_RUNTIME_SHA256 = "fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5"
-QUALIFIED_METER_BOUNDS_SHA256 = "a6bc72650b5625be0cbcb449a11ce854b8ccc4167d8d7090f8b2ad26385d40b5"
+QUALIFIED_METER_BOUNDS_SHA256 = "5bd0c64824fb504b3161037385fd2e835d1c766d1d7682e388de02467b319bd0"
 WORKFLOW_CPU_CEILING_MS = 30_000
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 WorkerRole = Literal["launcher", "gateway", "capacity"]

@@ -45,7 +45,7 @@ outage leaves admission as observed before the failed reconcile. On ingress
 drift, Reconcile closes admission before reasserting the approved config on
 the exact owned tunnel. Private-network routes targeting the tunnel also close
 admission and require operator removal. After the connector returns, run
-Enable to verify ingress and the signed canary before reopening admission.
+Enable or Reconcile to verify ingress and the signed canary before reopening admission.
 Use Scale In before Rotate Connector Token. The supervisor restarts its
 cloudflared child when it receives the new token. Bifrost then evicts the
 previous connector sessions by ID and verifies a replacement connection.

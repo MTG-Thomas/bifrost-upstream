@@ -19,6 +19,7 @@ from sqlalchemy import func, or_, select, text
 from shared.app_build_errors import APP_BUILD_JOB_TYPES, app_build_memory_message
 from src.core.database import get_db_context
 from src.jobs.platform.catalog import get_platform_job_metadata
+from src.jobs.platform.policy import PlatformJobExecutor
 from src.models.orm.platform_jobs import PlatformJob
 from src.services.execution.memory_monitor import get_cgroup_memory
 from src.services.platform_job_memory_profiles import (
@@ -486,6 +487,9 @@ class _LocalPlatformJobProcess:
 class _LocalPlatformJobExecutionBackend:
     """The scheduler's existing local subprocess runner behavior."""
 
+    def __init__(self, executor: PlatformJobExecutor) -> None:
+        self.executor = executor
+
     async def spawn(self, claim: ClaimedPlatformJob) -> PlatformJobProcess:
         process = await asyncio.create_subprocess_exec(
             sys.executable,
@@ -493,6 +497,7 @@ class _LocalPlatformJobExecutionBackend:
             "src.jobs.platform.runner",
             str(claim.id),
             str(claim.lease_token),
+            self.executor.value,
             start_new_session=True,
         )
         return _LocalPlatformJobProcess(process)
@@ -573,11 +578,13 @@ async def _handle_runner_loss(
 async def run_claimed_platform_job(
     claim: ClaimedPlatformJob,
     backend: PlatformJobExecutionBackend | None = None,
+    *,
+    executor: PlatformJobExecutor = PlatformJobExecutor.WORKER_POOL,
 ) -> bool:
     """Run one handler in a killable child process while maintaining its lease."""
     uses_local_default = backend is None
     execution_backend = (
-        _LocalPlatformJobExecutionBackend() if backend is None else backend
+        _LocalPlatformJobExecutionBackend(executor) if backend is None else backend
     )
     process = await execution_backend.spawn(claim)
     last_memory_sample: tuple[int, int] | None = None

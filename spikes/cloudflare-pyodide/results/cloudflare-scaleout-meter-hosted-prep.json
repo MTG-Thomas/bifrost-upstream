@@ -1,0 +1,46 @@
+{
+  "source": "da185397c31552d8bce1a1e12f37a75edd6687b3",
+  "environment": "Linux workerd 1.20261023.1, Node.js 26.13.1, network disabled",
+  "queue_prewarm_per_tenant": 0,
+  "sha256": {
+    "runtime": "fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5",
+    "bundle": "370246c011982ac686a1a6e5aab0d4cf09bf2cd88f6d6059861759001d0f0063",
+    "capacity": "914baebf27bd2148eb1a86d9bdcae7e8a8f598507b6b02d13c2c042659d03c94",
+    "launcher": "027adc29f73b04142282b1677ad0185f5f668b58f6d660168df4c2cf1d9b6213",
+    "gateway": "6fb1025b11b308d3a628bed063cb5aa5d11f141819eb3ddd1c0b8153621847d5",
+    "meter_bounds": "5bd0c64824fb504b3161037385fd2e835d1c766d1d7682e388de02467b319bd0"
+  },
+  "cpu_run": "d3daa601-a781-4ee9-9305-6e361699f527",
+  "cpu_samples": {
+    "capacity_prepare": {"samples": 4, "p99_us": 8737},
+    "capacity_profile": {"samples": 100, "p99_us": 1374},
+    "capacity_observe": {"samples": 100, "p99_us": 2375},
+    "capacity_start": {"samples": 4, "p99_us": 2733},
+    "capacity_delete": {"samples": 4, "p99_us": 8812},
+    "boot": {"samples": 4, "p99_us": 5692993},
+    "loose": {"samples": 4, "p99_us": 113369},
+    "solution": {"samples": 4, "p99_us": 87906},
+    "warm": {"samples": 100, "p99_us": 36514},
+    "exercise": {"samples": 100, "p99_us": 62277},
+    "cold_exercise": {"samples": 4, "p99_us": 3674753}
+  },
+  "launcher_reference": {
+    "scheduled_observations": 170,
+    "elapsed_seconds": 349.701,
+    "capacity_requests": 182,
+    "counts": {"sqlite_rows_written": 68, "do_requests": 6, "log_events": 2},
+    "exhausted": false,
+    "attempts": [
+      {"cold_boot": true, "workflow_cold": false, "workflow_wall_ms": 91},
+      {"cold_boot": true, "workflow_cold": false, "workflow_wall_ms": 70}
+    ]
+  },
+  "fleet_envelope": {
+    "launcher_cap": 3,
+    "slots_per_launcher": 4,
+    "installation_slots": 9,
+    "max_lifetime_seconds": 120,
+    "prior_monthly_usd": "415.59",
+    "qualified_monthly_usd": "415.59"
+  }
+}
