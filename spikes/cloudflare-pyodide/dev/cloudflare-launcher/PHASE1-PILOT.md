@@ -1,16 +1,21 @@
 # Phase 1 Product Pilot
 
+**November 20, 2026 UTC · Base `510ff121e`**
+
 ## Hosted Follow-up Requiring Owner Approval
 
 - Run one managed launcher incarnation for 900 seconds under real approved
   Workers load. Mix cold and warm loose and Solution workflows with overlapping
   Provider and Global bursts. Record lifecycle timestamps, per-isolate memory,
   CPU, Durable Object requests, SQLite writes, logs, and the sealed receipt at
-  retirement. Verify the saved lifetime controls retirement, and confirm that
-  idle retirement and an explicit upgrade drain release capacity. Obtain
-  separate owner approval before starting this hosted run.
+  retirement. Before the trial, qualify enforcement of the saved lifetime
+  and verify the release's per-incarnation meter covers the trial workload.
+  Confirm that idle retirement and an explicit upgrade drain release
+  capacity. Obtain separate owner approval before starting this hosted run.
 
-**November 20, 2026 UTC · Base `510ff121e`**
+The CT128 run stopped after 180 seconds when the four-slot launcher exhausted
+its usable SQLite journal budget. Preset B remains gated. See the
+[local qualification receipt](../../results/launcher-lifetime-ct128.json).
 
 ## Usage-only limit
 

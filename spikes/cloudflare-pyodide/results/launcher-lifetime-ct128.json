@@ -1,0 +1,294 @@
+{
+  "product_source": "408fb997bea1595fc44f77e7a7e7231090697e2e",
+  "environment": {
+    "host": "CT128",
+    "runtime": "Linux workerd 1.20261023.1",
+    "wrangler": "4.156.0",
+    "node": "26.13.1",
+    "cloudflare_cf_fetch_enabled": false,
+    "cloudflare_hosted_resources": false,
+    "preflight_minimum_available_kib": 8388608
+  },
+  "release": {
+    "bundle_sha256": "370246c011982ac686a1a6e5aab0d4cf09bf2cd88f6d6059861759001d0f0063",
+    "runtime_sha256": "fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5",
+    "incarnation_meter_caps": {
+      "sqlite_rows_written": 680,
+      "do_requests": 60,
+      "log_events": 20
+    },
+    "per_launcher_second_bounds": {
+      "worker_cpu_ms": 62237,
+      "sqlite_rows_written": 128,
+      "do_requests": 64,
+      "log_events": 64
+    }
+  },
+  "workload": {
+    "launcher_slots": 4,
+    "tenant_engine_linger_seconds": 90,
+    "queue_prewarm_per_tenant": 0,
+    "pattern": "Alternating loose and Solution fixtures with a fresh credential on each attempt. Four concurrent submissions at each burst, otherwise one every 30 seconds."
+  },
+  "trial_900_seconds": {
+    "harness_source": "8fcbf5fc1dbbed0b6fd93ca6f33afacfe9d28697",
+    "preflight_available_kib": 8417950,
+    "planned_cadence_observations": 445,
+    "cadence_spacing_seconds": 2,
+    "cadence_outcome": "The existing 3-second HTTP request timeout expired during the initial cold burst. Periodic workload sampling continued.",
+    "verdict": "failed",
+    "stop_reason": "Provider reported stopped after all active routes acknowledged. 411 writes exceeded the four-slot effective admission threshold of 336 prior writes for a new route.",
+    "maximum_sqlite_writes_after_retirement_headroom": 352,
+    "sqlite_writes_required_to_open_route": 16,
+    "seal_captured": false,
+    "cleanup": "Early assertion left the synthetic provider reservation held for the following conformance test, which could not prepare a fresh reservation. The Miniflare fixture then disposed the local runtime and removed its temporary storage.",
+    "node": "v26.13.1",
+    "target_seconds": 900,
+    "launcher_sha256": "027adc29f73b04142282b1677ad0185f5f668b58f6d660168df4c2cf1d9b6213",
+    "process_memory_is_aggregate": true,
+    "samples": [
+      {
+        "at_seconds": 0.07,
+        "rss_kib": 213164,
+        "peak_rss_kib": 213164,
+        "cpu_ms": 0,
+        "meter": null,
+        "state": "running"
+      },
+      {
+        "at_seconds": 18.24,
+        "rss_kib": 757844,
+        "peak_rss_kib": 757844,
+        "cpu_ms": 21020,
+        "meter": {
+          "sqlite_rows_written": 126,
+          "do_requests": 12,
+          "log_events": 4,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 30.053,
+        "rss_kib": 752220,
+        "peak_rss_kib": 757524,
+        "cpu_ms": 21090,
+        "meter": {
+          "sqlite_rows_written": 158,
+          "do_requests": 15,
+          "log_events": 5,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 60.049,
+        "rss_kib": 747824,
+        "peak_rss_kib": 757524,
+        "cpu_ms": 21140,
+        "meter": {
+          "sqlite_rows_written": 190,
+          "do_requests": 18,
+          "log_events": 6,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 90.05,
+        "rss_kib": 747896,
+        "peak_rss_kib": 757524,
+        "cpu_ms": 21200,
+        "meter": {
+          "sqlite_rows_written": 222,
+          "do_requests": 21,
+          "log_events": 7,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 120.046,
+        "rss_kib": 748112,
+        "peak_rss_kib": 757524,
+        "cpu_ms": 21260,
+        "meter": {
+          "sqlite_rows_written": 254,
+          "do_requests": 24,
+          "log_events": 8,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 150.061,
+        "rss_kib": 748224,
+        "peak_rss_kib": 757524,
+        "cpu_ms": 21330,
+        "meter": {
+          "sqlite_rows_written": 286,
+          "do_requests": 27,
+          "log_events": 9,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 180.18,
+        "rss_kib": 749700,
+        "peak_rss_kib": 757524,
+        "cpu_ms": 21540,
+        "meter": {
+          "sqlite_rows_written": 411,
+          "do_requests": 39,
+          "log_events": 10,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "stopped"
+      }
+    ],
+    "workflows": [
+      {
+        "at_seconds": 18.213,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true
+      },
+      {
+        "at_seconds": 18.235,
+        "slot": 1,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true
+      },
+      {
+        "at_seconds": 18.222,
+        "slot": 2,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true
+      },
+      {
+        "at_seconds": 18.235,
+        "slot": 3,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true
+      },
+      {
+        "at_seconds": 30.048,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true
+      },
+      {
+        "at_seconds": 60.044,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true
+      },
+      {
+        "at_seconds": 90.046,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true
+      },
+      {
+        "at_seconds": 120.042,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true
+      },
+      {
+        "at_seconds": 150.056,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true
+      },
+      {
+        "at_seconds": 180.158,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true
+      },
+      {
+        "at_seconds": 180.169,
+        "slot": 1,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true
+      },
+      {
+        "at_seconds": 180.17,
+        "slot": 2,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true
+      },
+      {
+        "at_seconds": 180.176,
+        "slot": 3,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true
+      }
+    ],
+    "hello_sequences": [
+      1
+    ]
+  },
+  "pricing": {
+    "launcher_cap": 3,
+    "slots_per_launcher": 4,
+    "installation_slots": 9,
+    "recommended_limit_usd": "75.00",
+    "forecast_duty_percent": "0.077",
+    "save_time_projection_cpu_ms_per_launcher_second": "12392.122",
+    "save_time_projection_fixed_cpu_ms": 2200,
+    "rotation_usd_900_seconds": "54.126",
+    "envelope_usd_900_seconds": "68.50",
+    "rotation_usd_120_seconds": "402.318",
+    "envelope_usd_120_seconds": "415.59"
+  },
+  "source_findings": {
+    "lifetime_enforcement": "The managed capacity provider validates the requested lifetime against the profile. Launcher enrollment carries no lifetime or deadline. ApiExecutor inherits the process-wide PoolWorker lifetime clock, which defaults to 21600 seconds.",
+    "credentials": "Run credentials are per attempt. Managed control keys are derived by installation, root version, scope, incarnation and resource UID, without a timestamp expiry. The API validates hello freshness and increasing sequence and renews the 20-second owner lease. The local SDK and hello fixture uses synthetic credentials and does not run the API lease.",
+    "idle": "Ordinary terminal ACK releases occupancy. The 90-second linger gates readiness reuse without a scheduled idle ping. Physical idle drain is a separate PoolWorker policy. Local Miniflare does not run that API-side idle loop.",
+    "upgrade": "Closing revision admission initiates drain independently of nominal lifetime. Active attempts use a 300-second drain grace and the upgrade job retains its 600-second deadline.",
+    "memory": "RSS is aggregate workerd process memory. sys.modules counts cover the fixture child. Per-isolate JS and Wasm heap and hosted limit behavior require separate qualification."
+  },
+  "verdict": "Hold preset B. The 900-second value reached the provider reservation but the release's fixed four-slot journal budget stopped the workload at approximately 180 seconds."
+}
