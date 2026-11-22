@@ -150,7 +150,6 @@ class CloudflareCapacityStatus(BaseModel):
     consent_text: str
     installation: CloudflareInstallationStatus | None
     latest_job_id: UUID | None = None
-    managed_tunnel_available: bool = False
     suggested_policy: CloudflareCapacityPolicy | None = None
     observed_at: datetime | None = None
     approved_workflow_count: int | None = None
@@ -208,29 +207,6 @@ class CloudflareStagedCredential(BaseModel):
     expires_at: datetime
 
 
-class CloudflareConnectRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
-
-    action: Literal["connect"]
-    account_id: str = Field(pattern=r"^[a-f0-9]{32}$")
-    worker_ingress_origin: str = Field(max_length=255)
-    reachability_mode: CloudflareReachabilityMode = "existing_https_endpoint"
-    zone_id: str | None = Field(default=None, pattern=CLOUDFLARE_ID_PATTERN)
-    consent_version: str = Field(max_length=64)
-    consent: Literal[True]
-    api_token: SecretStr | None = Field(default=None, min_length=16, max_length=512, json_schema_extra={"writeOnly": True})
-    credential_ref: UUID | None = None
-    policy: CloudflareCapacityPolicy
-
-    @model_validator(mode="after")
-    def validate_connection(self) -> CloudflareConnectRequest:
-        if (self.api_token is None) == (self.credential_ref is None):
-            raise ValueError("Provide one Cloudflare credential")
-        if (self.reachability_mode == "managed_tunnel") != (self.zone_id is not None):
-            raise ValueError("Provide a DNS zone ID only for Managed Tunnel")
-        return self
-
-
 class CloudflarePolicyUpdate(CloudflareCapacityAction):
     action: Literal["policy"]
     policy: CloudflareCapacityPolicy
@@ -265,8 +241,8 @@ class CloudflareDiscoveryChoice(BaseModel):
 class CloudflareActivationPreview(BaseModel):
     policy: CloudflareCapacityPolicy
     fleet_envelope_usd: Decimal
-    estimated_usage_min_usd: Decimal
-    estimated_usage_max_usd: Decimal
+    estimated_usage_min_usd: Decimal | None = None
+    estimated_usage_max_usd: Decimal | None = None
     workers_paid_subscription_usd: Decimal
 
 
@@ -288,6 +264,7 @@ class CloudflarePreflight(BaseModel):
     consent_version: str
     consent_text: str
     preflight_receipt: str | None = None
+    expires_at: datetime | None = None
 
 
 class CloudflareActivateRequest(CloudflareCredentialInput):

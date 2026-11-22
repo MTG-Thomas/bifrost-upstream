@@ -36,7 +36,11 @@ from src.services.audit import emit_audit
 from src.services.authorization.enforce import Caller
 from src.services.kubernetes_control import may_manage_jobs
 from src.services.worker_pool.cloudflare_connector_channel import connector_channel_ready
-from src.services.worker_pool.cloudflare_credentials import consume_staged_token, read_staged_connect_token
+from src.services.worker_pool.cloudflare_credentials import (
+    StagedCloudflareCredentialUnavailable,
+    consume_staged_token,
+    read_staged_connect_token,
+)
 from src.services.worker_pool.cloudflare_policy import (
     CONSENT_TEXT,
     CONSENT_TEXT_VERSION,
@@ -48,7 +52,7 @@ from src.services.worker_pool.cloudflare_policy import (
     release_meter_bounds,
     suggested_cloudflare_policy,
 )
-from src.services.worker_pool.cloudflare_provisioning import OwnershipCheck, OwnershipConflict
+from src.services.worker_pool.cloudflare_provisioning import OwnershipConflict
 from src.services.worker_pool.cloudflare_release import WorkersReleaseUnavailable, load_workers_release
 from src.services.worker_pool.cloudflare_tunnel_rest import TunnelRest, dedicated_hostname
 from src.services.worker_pool.cloudflare_workers_rest import (
@@ -75,6 +79,17 @@ class _Receipt(TypedDict):
     policy: dict[str, Any]
 
 
+# SPEND-DEFAULTS.md, Moderate Workers-only forecast sensitivity for Preset B.
+PRESET_B_ESTIMATED_USAGE_MIN_USD = Decimal("2")
+PRESET_B_ESTIMATED_USAGE_MAX_USD = Decimal("7")
+
+
+class CloudflarePreflightFieldError(ValueError):
+    def __init__(self, field: str, message: str) -> None:
+        super().__init__(message)
+        self.field = field
+
+
 def _digest(value: str) -> str:
     return sha256(value.encode()).hexdigest()
 
@@ -86,11 +101,11 @@ async def _generation(db: AsyncSession) -> str | None:
 
 async def _credential(
     db: AsyncSession, actor_id: UUID, body: CloudflareCredentialInput,
-) -> tuple[str | None, SecretStr]:
+) -> tuple[str | None, SecretStr, datetime | None]:
     if body.credential_ref is not None:
         return await read_staged_connect_token(db, body.credential_ref, actor_id=actor_id)
     assert body.api_token is not None
-    return None, body.api_token
+    return None, body.api_token, None
 
 
 def _choices(entries: list[dict[str, Any]] | None) -> list[CloudflareDiscoveryChoice] | None:
@@ -104,12 +119,12 @@ def _choices(entries: list[dict[str, Any]] | None) -> list[CloudflareDiscoveryCh
     return sorted(choices.values(), key=lambda item: (item.name.casefold(), item.id))
 
 
-def _selection(choices: list[CloudflareDiscoveryChoice] | None, selected: str | None) -> str | None:
+def _selection(choices: list[CloudflareDiscoveryChoice] | None, selected: str | None, field: str) -> str | None:
     if choices is None:
         return selected
     if selected is not None:
         if not any(choice.id == selected for choice in choices):
-            raise ValueError("Select a Cloudflare account or zone from the discovered inventory")
+            raise CloudflarePreflightFieldError(field, "Select an item from the discovered Cloudflare inventory.")
         return selected
     return choices[0].id if len(choices) == 1 else None
 
@@ -128,7 +143,7 @@ async def preflight_cloudflare(
     db: AsyncSession, caller: Caller, body: CloudflarePreflightRequest,
 ) -> CloudflarePreflight:
     if await db.scalar(select(CloudflareInstallation.id).where(CloudflareInstallation.retired_at.is_(None))):
-        raise CloudflarePolicyConflict("A Cloudflare installation already exists.")
+        raise CloudflareInstallationExists("A Cloudflare installation already exists.")
     generation = await _generation(db)
     proposal = suggested_cloudflare_policy()
     if proposal is None:
@@ -137,9 +152,10 @@ async def preflight_cloudflare(
     bounds = release_meter_bounds(load_workers_release())
     priced = _price_policy(policy, bounds)
     actor = caller.principal.user_id
-    bound_account, token = await _credential(db, actor, body)
+    bound_account, token, credential_expiry = await _credential(db, actor, body)
+    preset_b = policy.model_dump(exclude={"monthly_limit_usd"}) == proposal.model_dump(exclude={"monthly_limit_usd"})
     if bound_account and body.account_id not in (bound_account, None):
-        raise ValueError("The staged credential is bound to a different Cloudflare account")
+        raise CloudflarePreflightFieldError("account_id", "The staged credential is bound to a different Cloudflare account.")
 
     settings = get_settings()
     primary: Literal["static", "job", "external", "unknown"] = "static"
@@ -158,7 +174,7 @@ async def preflight_cloudflare(
         accounts = _choices(await client.discovery_inventory(token))
         if bound_account and accounts is not None:
             accounts = [account for account in accounts if account.id == bound_account]
-        account_id = bound_account or _selection(accounts, body.account_id)
+        account_id = bound_account or _selection(accounts, body.account_id, "account_id")
         result = CloudflarePreflight(
             accounts=accounts, account_id=account_id, connector_channel=settings.cloudflare_tunnel_channel,
             connector_ready=ready,
@@ -166,7 +182,8 @@ async def preflight_cloudflare(
             recommended_reachability=recommended, reachability_mode=mode,
             preview=CloudflareActivationPreview(
                 policy=policy, fleet_envelope_usd=Decimal(str(priced["fleet_envelope_usd"])),
-                estimated_usage_min_usd=Decimal("2"), estimated_usage_max_usd=Decimal("7"),
+                estimated_usage_min_usd=PRESET_B_ESTIMATED_USAGE_MIN_USD if preset_b else None,
+                estimated_usage_max_usd=PRESET_B_ESTIMATED_USAGE_MAX_USD if preset_b else None,
                 workers_paid_subscription_usd=WORKERS_PAID_SUBSCRIPTION_USD,
             ),
             consent_version=CONSENT_TEXT_VERSION, consent_text=CONSENT_TEXT,
@@ -187,35 +204,48 @@ async def preflight_cloudflare(
             item for item in zones if item.get("status") == "active"
             and isinstance(item.get("account"), dict) and item["account"].get("id") == account_id
         ])
+        if result.zones:
+            selected_zone = next((item for item in result.zones if item.id == body.zone_id), None)
+            if selected_zone is None and len(result.zones) == 1:
+                selected_zone = result.zones[0]
+            if selected_zone is not None:
+                result.zone_name = selected_zone.name
         if mode == "managed_tunnel":
             if not ready:
                 return result
-            result.zone_id = _selection(result.zones, body.zone_id)
+            result.zone_id = _selection(result.zones, body.zone_id, "zone_id")
             if result.zone_id is None:
                 return result
             tunnel, result.zone_name = await _managed_hostname(http, token, account_id, result.zone_id)
             result.worker_ingress_origin = f"https://{tunnel.hostname}"
             try:
                 await tunnel.require_unused_hostname()
-            except OwnershipConflict as exc:
-                if exc.check is not OwnershipCheck.TARGET_OCCUPIED:
-                    raise
+            except OwnershipConflict:
                 result.hostname_collision = True
                 return result
         elif body.worker_ingress_origin:
-            result.worker_ingress_origin = f"https://{dedicated_hostname(body.worker_ingress_origin)}"
+            try:
+                result.worker_ingress_origin = f"https://{dedicated_hostname(body.worker_ingress_origin)}"
+            except ValueError as exc:
+                raise CloudflarePreflightFieldError("worker_ingress_origin", str(exc)) from None
         if result.worker_ingress_origin is None:
             return result
 
+    expires_at = datetime.now(UTC) + timedelta(minutes=10)
+    if credential_expiry is not None:
+        expires_at = min(expires_at, credential_expiry)
+        if expires_at <= datetime.now(UTC):
+            raise StagedCloudflareCredentialUnavailable("Invalid or expired Cloudflare credential reference")
     receipt = _Receipt(
         purpose="cloudflare-activation-v1", installation_id=str(uuid4()), actor=str(actor),
         credential_ref=str(body.credential_ref) if body.credential_ref else None,
         token_digest=_digest(token.get_secret_value()), generation=generation, release=bounds.release,
-        consent_version=CONSENT_TEXT_VERSION, expires_at=(datetime.now(UTC) + timedelta(minutes=10)).isoformat(),
+        consent_version=CONSENT_TEXT_VERSION, expires_at=expires_at.isoformat(),
         account_id=account_id, zone_id=result.zone_id, origin=result.worker_ingress_origin, mode=mode,
         policy=policy.model_dump(mode="json"),
     )
     result.preflight_receipt = encrypt_secret(json.dumps(receipt))
+    result.expires_at = expires_at
     return result
 
 
@@ -236,9 +266,9 @@ def _open_receipt(body: CloudflareActivateRequest, actor_id: UUID) -> _Receipt:
     raise CloudflarePolicyConflict("Run Cloudflare preflight and review consent again.")
 
 
-async def _activation_job(
-    db: AsyncSession, installation_id: UUID, fingerprint: str,
-) -> PlatformJob | None:
+async def _resume_activation(
+    db: AsyncSession, caller: Caller, installation_id: UUID, fingerprint: str,
+) -> tuple[PlatformJob, bool] | None:
     row = await db.get(CloudflareInstallation, installation_id, with_for_update=True, populate_existing=True)
     if row is None:
         return None
@@ -247,13 +277,7 @@ async def _activation_job(
         or row.policy.get("activation_fingerprint") != fingerprint
     ):
         raise CloudflarePolicyConflict("Cloudflare activation already changed. Review the current connection.")
-    job = await db.scalar(select(PlatformJob).where(
-        PlatformJob.job_type == "capacity.cloudflare_enable",
-        PlatformJob.dedupe_key == f"{installation_id}:1",
-    ).order_by(PlatformJob.created_at, PlatformJob.id).limit(1))
-    if job is None:
-        raise CloudflarePolicyConflict("Cloudflare activation job is unavailable. Review the current connection.")
-    return job
+    return await enqueue_cloudflare_enable(db, caller, installation_id=installation_id, expected_revision=1)
 
 
 async def activate_cloudflare(
@@ -263,10 +287,12 @@ async def activate_cloudflare(
     receipt = _open_receipt(body, actor_id)
     installation_id = UUID(receipt["installation_id"])
     fingerprint = _digest(f"{body.preflight_receipt}:{body.monthly_limit_usd.normalize()}")
-    existing = await _activation_job(db, installation_id, fingerprint)
+    existing = await _resume_activation(db, caller, installation_id, fingerprint)
     if existing is not None:
-        return existing, True
+        return existing
     if datetime.fromisoformat(receipt["expires_at"]) <= datetime.now(UTC):
+        if body.credential_ref is not None:
+            raise StagedCloudflareCredentialUnavailable("Invalid or expired Cloudflare credential reference")
         raise CloudflarePolicyConflict("Cloudflare preflight expired. Run preflight again.")
     bounds = release_meter_bounds(load_workers_release())
     if receipt["release"] != bounds.release or receipt["generation"] != await _generation(db):
@@ -275,7 +301,7 @@ async def activate_cloudflare(
     _price_policy(policy, bounds)
     account_id, zone_id = receipt["account_id"], receipt["zone_id"]
     try:
-        bound_account, token = await _credential(db, actor_id, body)
+        bound_account, token, _ = await _credential(db, actor_id, body)
         if bound_account not in (None, account_id) or not compare_digest(
             receipt["token_digest"], _digest(token.get_secret_value()),
         ):
@@ -292,9 +318,9 @@ async def activate_cloudflare(
     except (ValueError, OwnershipConflict):
         # A concurrent identical submission may have consumed the reference or
         # started provisioning after the first replay lookup.
-        existing = await _activation_job(db, installation_id, fingerprint)
+        existing = await _resume_activation(db, caller, installation_id, fingerprint)
         if existing is not None:
-            return existing, True
+            return existing
         raise
     try:
         await create_cloudflare_installation(
@@ -303,9 +329,9 @@ async def activate_cloudflare(
             bounds=bounds, reachability_mode=receipt["mode"], zone_id=zone_id, activation_fingerprint=fingerprint,
         )
     except CloudflareInstallationExists:
-        existing = await _activation_job(db, installation_id, fingerprint)
+        existing = await _resume_activation(db, caller, installation_id, fingerprint)
         if existing is not None:
-            return existing, True
+            return existing
         raise
     if receipt["generation"] != await _generation(db):
         raise CloudflarePolicyConflict("Cloudflare installation changed. Run preflight again.")

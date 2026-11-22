@@ -2,9 +2,9 @@
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Annotated, Literal
+from typing import Literal
 
-from fastapi import APIRouter, Body, HTTPException, Response, status
+from fastapi import APIRouter, HTTPException, Response, status
 from sqlalchemy import select
 from shared.models import (
     CloudflareAccountTokenRotation,
@@ -12,7 +12,6 @@ from shared.models import (
     CloudflareActivateRequest,
     CloudflareCapacityAction,
     CloudflareCapacityStatus,
-    CloudflareConnectRequest,
     CloudflarePolicyUpdate,
     CloudflarePreflight,
     CloudflarePreflightRequest,
@@ -25,6 +24,7 @@ from shared.models import (
 from src.core.auth import CurrentActiveUser
 from src.core.db_deps import DbSession
 from src.core.exceptions import StructuredRequestRefusal
+from src.core.rate_limit import RateLimiter
 from src.jobs.platform.cloudflare_capacity import (
     enqueue_cloudflare_account_token_rotation,
     enqueue_cloudflare_disable,
@@ -38,9 +38,9 @@ from src.services.audit import emit_audit
 from src.services.authorization.enforce import load_caller, require_operation
 from src.services.authorization.evaluator import GLOBAL
 from src.services.operation_catalog import operation_route
-from src.services.worker_pool.cloudflare_activation import activate_cloudflare, preflight_cloudflare
+from src.services.worker_pool.cloudflare_activation import CloudflarePreflightFieldError, activate_cloudflare, preflight_cloudflare
 from src.services.worker_pool.cloudflare_connection import configure_cloudflare
-from src.services.worker_pool.cloudflare_credentials import stage_account_token
+from src.services.worker_pool.cloudflare_credentials import StagedCloudflareCredentialUnavailable, stage_account_token
 from src.services.worker_pool.cloudflare_policy import (
     CloudflareBudgetTooLow,
     CloudflareInstallationExists,
@@ -56,12 +56,15 @@ from src.services.worker_pool.cloudflare_workers_rest import (
 )
 
 router = APIRouter(prefix="/api/capacity/cloudflare", tags=["Capacity"])
+preflight_limiter = RateLimiter(max_requests=10, window_seconds=60)
 
 
-def _configuration_refusal(code: str, message: str, field: str, remedy: str) -> StructuredRequestRefusal:
+def _configuration_refusal(
+    code: str, message: str, field: str, remedy: str, *, status_code: int = 422,
+) -> StructuredRequestRefusal:
     return StructuredRequestRefusal("cloudflare_configuration_refused", message, {
         "code": code, "fields": {field: message}, "remedy": remedy,
-    })
+    }, status_code=status_code)
 
 
 @router.get("", response_model=CloudflareCapacityStatus, **operation_route("capacity.cloudflare_status"))
@@ -104,7 +107,7 @@ async def stage_cloudflare_credential(
 
 @router.patch("", response_model=CloudflareCapacityStatus, **operation_route("capacity.cloudflare_configure"))
 async def configure_cloudflare_capacity(
-    body: Annotated[CloudflareConnectRequest | CloudflarePolicyUpdate, Body(discriminator="action")],
+    body: CloudflarePolicyUpdate,
     db: DbSession,
     user: CurrentActiveUser,
 ) -> CloudflareCapacityStatus:
@@ -115,7 +118,9 @@ async def configure_cloudflare_capacity(
 
 
 @contextmanager
-def _configuration_errors(monthly_limit: str | None) -> Iterator[None]:
+def _configuration_errors(
+    monthly_limit: str | None, *, limit_field: str = "policy.monthly_limit_usd",
+) -> Iterator[None]:
     try:
         yield
     except CloudflareBudgetTooLow as exc:
@@ -123,7 +128,7 @@ def _configuration_errors(monthly_limit: str | None) -> Iterator[None]:
         remedy = "Raise the limit or reduce the fleet size or lifetime."
         raise StructuredRequestRefusal("cloudflare_budget_refused", message, {
             "code": "CF_BUDGET_REFUSED",
-            "fields": {"policy.monthly_limit_usd": message},
+            "fields": {limit_field: message},
             "fleet_envelope_usd": str(exc.envelope),
             "monthly_limit_usd": monthly_limit,
             "remedy": remedy,
@@ -142,8 +147,32 @@ def _configuration_errors(monthly_limit: str | None) -> Iterator[None]:
         ) from None
     except (CloudflareRestUnavailable, ObservationPending):
         raise HTTPException(503, "Cloudflare account verification is temporarily unavailable.") from None
-    except (CloudflareInstallationExists, CloudflarePolicyConflict, OwnershipConflict) as exc:
-        raise HTTPException(409, str(exc)) from exc
+    except StagedCloudflareCredentialUnavailable as exc:
+        raise _configuration_refusal(
+            "CF_STAGED_CREDENTIAL_UNAVAILABLE", str(exc), "credential_ref",
+            "Stage the Cloudflare credential again, then run preflight.", status_code=409,
+        ) from None
+    except CloudflareInstallationExists as exc:
+        raise _configuration_refusal(
+            "CF_INSTALLATION_EXISTS", str(exc), "preflight_receipt",
+            "Refresh and review the current Cloudflare installation.", status_code=409,
+        ) from None
+    except CloudflarePolicyConflict as exc:
+        raise _configuration_refusal(
+            "CF_REVIEW_REQUIRED", str(exc), "preflight_receipt",
+            "Refresh capacity and review the current Cloudflare setup or policy.", status_code=409,
+        ) from None
+    except OwnershipConflict as exc:
+        raise _configuration_refusal(
+            "CF_HOSTNAME_OWNERSHIP_CONFLICT", str(exc), "zone_id",
+            "Review the selected zone and any leftover DNS record from a previous installation, or choose another route.",
+            status_code=409,
+        ) from None
+    except CloudflarePreflightFieldError as exc:
+        raise _configuration_refusal(
+            "CF_PREFLIGHT_FIELD_INVALID", str(exc), exc.field,
+            "Review the highlighted Cloudflare setup field.",
+        ) from None
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 
@@ -154,6 +183,7 @@ async def run_cloudflare_preflight(
 ) -> CloudflarePreflight:
     caller = await load_caller(db, user)
     require_operation(caller, "capacity.cloudflare_preflight", GLOBAL)
+    await preflight_limiter.check("capacity.cloudflare_preflight", str(caller.principal.user_id))
     with _configuration_errors(str(body.policy.monthly_limit_usd) if body.policy else None):
         return await preflight_cloudflare(db, caller, body)
 
@@ -167,7 +197,7 @@ async def activate_cloudflare_capacity(
 ) -> PlatformJobAccepted:
     caller = await load_caller(db, user)
     require_operation(caller, "capacity.cloudflare_activate", GLOBAL)
-    with _configuration_errors(str(body.monthly_limit_usd)):
+    with _configuration_errors(str(body.monthly_limit_usd), limit_field="monthly_limit_usd"):
         job, reused = await activate_cloudflare(db, caller, body)
     response.headers["Location"] = f"/api/platform-jobs/{job.id}"
     return PlatformJobAccepted(job_id=job.id, status=job.status, notification_id=job.notification_id, reused=reused)

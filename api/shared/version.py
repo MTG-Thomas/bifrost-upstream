@@ -11,7 +11,9 @@ from functools import lru_cache
 # 1.4.2 is the first release compatible with both changes. The API exposes
 # this floor at /api/version and compatible CLIs hard-block command
 # dispatch until they are upgraded.
-MIN_CLI_VERSION = "1.4.2"
+# 1.4.3 carries Cloudflare preflight and activate. Earlier CLI builds still
+# submit the removed connect variant to PATCH /api/capacity/cloudflare.
+MIN_CLI_VERSION = "1.4.3"
 
 
 @lru_cache(maxsize=1)

@@ -1856,7 +1856,7 @@
     "operation_id": "capacity.cloudflare_configure",
     "path": "/api/capacity/cloudflare",
     "permission": "platform.readwrite",
-    "reason": "Configures Cloudflare capacity with platform.readwrite at Global. The account credential is write-only."
+    "reason": "Updates Cloudflare capacity policy with platform.readwrite at Global."
   },
   {
     "access_class": "permission",
@@ -10865,20 +10865,6 @@
     "path": null,
     "permission": "platform.read",
     "reason": "Thin MCP wrapper over GET /api/capacity/cloudflare; inherits that route's entry."
-  },
-  {
-    "access_class": "permission",
-    "boundary": "platform",
-    "current_gate": "authenticated",
-    "inline_checks": [],
-    "inline_effect": null,
-    "intended_change": null,
-    "mcp_tool": "bifrost_cloudflare_connect_execute",
-    "method": null,
-    "operation_id": "capacity.cloudflare_configure",
-    "path": null,
-    "permission": "platform.readwrite",
-    "reason": "Connects through PATCH /api/capacity/cloudflare using an operator-bound reference."
   },
   {
     "access_class": "permission",

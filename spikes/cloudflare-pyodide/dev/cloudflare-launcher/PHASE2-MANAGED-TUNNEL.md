@@ -1,7 +1,8 @@
 # Phase 2 Managed Tunnel
 
 Managed Tunnel uses an exact hostname in an active DNS zone owned by the
-selected Cloudflare account. Supply the HTTPS origin and zone ID at Connect.
+selected Cloudflare account. Preflight proposes the hostname and discovers
+the zone. Review both before selecting **Scale Out with Cloudflare**.
 The account token needs Account Settings Read, Workers Scripts Write and
 Cloudflare Tunnel Write on that account. Grant Zone Read and DNS Write only
 for the selected zone. Leave the dedicated hostname unoccupied.

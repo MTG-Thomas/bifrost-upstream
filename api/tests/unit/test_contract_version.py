@@ -474,7 +474,9 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # and provider identifiers are redacted from the status response.
     # Compatible: old account-ID staging requests still work and new clients can
     # stage by installation ID. Gate seconds remain a JSON number for readers.
-    "e99001b906c4d8338610bbb5f3b2d113d7023b2dfc67468a2e758e0b83f62430"
+    # CLI-breaking: retiring Cloudflare PATCH connect removes a request sent by
+    # older CLIs. The replacement preflight and activate ship with 1.4.3.
+    "c66fffac3ac49f3abbd58e625c5a7399bc362d15440b1b892430a2845a68a286"
 )
 
 

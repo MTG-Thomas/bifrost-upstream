@@ -627,7 +627,7 @@ active boolean-true `containers.enabled` and `workers.enabled` allocations
 under a temporary token with **Account Settings Read alone**. For a Containers
 feature check, require `containers.enabled`, a boolean-true allocation and an
 empty deletion date. Cloudflare lists **Account Read** for this endpoint.
-`workers.enabled` establishes feature access. Connect and Enable require active boolean-true `containers.enabled` as evidence of Workers Paid. Account Settings Read alone is sufficient.
+`workers.enabled` establishes feature access. Preflight, activation and Enable require active boolean-true `containers.enabled` as evidence of Workers Paid. Account Settings Read alone is sufficient.
 [Account entitlements API](https://developers.cloudflare.com/api/resources/accounts/subresources/entitlements/methods/list/)
 
 The trial covered one Paid account with Containers access. Paid or Enterprise

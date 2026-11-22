@@ -10,8 +10,6 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 from cryptography.fernet import InvalidToken
-from pydantic import ValidationError
-from shared.models import CloudflareConnectRequest
 from src.jobs.platform.kubernetes_client import KubernetesApiError, KubernetesJobClient
 from src.services import worker_ingress
 from src.services.worker_pool.cloudflare_connector_channel import _publish_file
@@ -67,30 +65,6 @@ async def test_projection_logs_only_failure_transitions(monkeypatch, caplog):
     assert caplog.text.count("Could not project the Managed Tunnel connector credential") == 2
     assert caplog.text.count("Managed Tunnel connector credential projection recovered") == 1
     assert "private fixture value" not in caplog.text
-
-
-def connection(**fields):
-    return CloudflareConnectRequest.model_validate({
-        "action": "connect", "account_id": "a" * 32,
-        "worker_ingress_origin": "https://worker.example.test",
-        "api_token": "fixture-account-token", "consent": True, "consent_version": "test",
-        "policy": {
-            "workers": {"launcher_cap": 1, "slots_per_launcher": 2, "max_lifetime_seconds": 300, "work_kinds": ["workflow"]},
-            "monthly_limit_usd": "30.00",
-        },
-        **fields,
-    })
-
-
-def test_only_managed_tunnel_accepts_and_requires_a_zone():
-    assert connection().reachability_mode == "existing_https_endpoint"
-    assert connection(reachability_mode="managed_tunnel", zone_id="b" * 32).zone_id == "b" * 32
-    with pytest.raises(ValidationError, match="DNS zone"):
-        connection(zone_id="b" * 32)
-    with pytest.raises(ValidationError, match="DNS zone"):
-        connection(reachability_mode="managed_tunnel")
-    with pytest.raises(ValidationError, match="pattern"):
-        connection(reachability_mode="managed_tunnel", zone_id="../zone")
 
 
 def test_connector_token_is_bound_to_account_and_tunnel():

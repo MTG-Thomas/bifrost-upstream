@@ -64,6 +64,8 @@ def request_json(url, method, payload=None, token=None, *, content_type="applica
 
 
 class Rehearsal:
+    activation_request = None
+
     def __init__(self):
         self.cfg = json.loads(Path(".rehearsal/config.json").read_text())
         self.compose = ["docker", "compose", "-p", self.cfg["project"],
@@ -179,14 +181,12 @@ if any(row.split()[1] == "00000000" for row in Path("/proc/net/route").read_text
             raise RuntimeError(f"{outcome} job did not succeed")
         return result
 
-    def connect(self, mode):
+    def review_activation(self, mode):
         if self.origin != f"http://{self.verify_isolation()}:8000":
-            raise RuntimeError("The rehearsal API changed addresses. Connect is blocked.")
-        self.host = self.cfg.get("hostname", f"{mode}.example.test")
+            raise RuntimeError("The rehearsal API changed addresses. Activation is blocked.")
         account = self.account
         base = "/api/capacity/cloudflare"
         status = self.send(base, method="GET")
-        consent = status["consent_text_version"]
         policy = status["suggested_policy"]
         assert Decimal(policy["monthly_limit_usd"]) == Decimal("75")
         workers = policy["workers"]
@@ -195,15 +195,22 @@ if any(row.split()[1] == "00000000" for row in Path("/proc/net/route").read_text
         staged = self.send(base + "/credential", {
             "account_id": account, "api_token": self.cfg.get("managementToken", MANAGEMENT), "purpose": "connect",
         })
-        body = {"account_id": account, "worker_ingress_origin": "https://" + self.host,
-                "consent": True, "consent_version": consent, "action": "connect",
-                "credential_ref": staged["credential_ref"], "policy": policy}
+        body = {"account_id": account, "credential_ref": staged["credential_ref"], "policy": policy}
         if mode == "managed":
             body.update(reachability_mode="managed_tunnel", zone_id="b" * 32)
-        installed = self.send(base, body, method="PATCH")["installation"]
-        assert not installed["admission_open"] and installed["policy"]["workers"]["queue_prewarm_per_tenant"] == 0
+        else:
+            body.update(reachability_mode="existing_https_endpoint",
+                        worker_ingress_origin="https://" + self.cfg.get("hostname", "existing.example.test"))
+        plan = self.send(base + "/preflight", body)
+        assert plan["preflight_receipt"] and plan["account_id"] == account
+        assert plan["preview"]["policy"]["workers"]["queue_prewarm_per_tenant"] == 0
+        self.host = urlsplit(plan["worker_ingress_origin"]).hostname
+        self.activation_request = {
+            "credential_ref": staged["credential_ref"], "preflight_receipt": plan["preflight_receipt"],
+            "consent": True, "consent_version": plan["consent_version"], "monthly_limit_usd": policy["monthly_limit_usd"],
+        }
         evidence("policy", {"mode": mode, "lifetime_seconds": workers["max_lifetime_seconds"],
-                            "fleet_envelope_usd": installed["fleet_envelope_usd"]})
+                            "fleet_envelope_usd": plan["preview"]["fleet_envelope_usd"]})
 
     def preflight(self):
         completed = subprocess.run([
@@ -217,7 +224,12 @@ if any(row.split()[1] == "00000000" for row in Path("/proc/net/route").read_text
         assert result["route_checks"] == 100 and result["http_connections"]
 
     def enable(self):
-        job = self.job("enable")
+        if self.activation_request is not None:
+            accepted = self.send("/api/capacity/cloudflare/activate", self.activation_request)
+            job = str(UUID(accepted["job_id"]))
+            self.activation_request = None
+        else:
+            job = self.job("enable")
         result = self.completed(job, "enabled", window=ENABLE_RESULT_SECONDS)
         assert result["execution_class"] == "remote_launcher" and result["http_connections"]
         installation = self.install()
@@ -539,7 +551,7 @@ async def {name}():
         evidence("disconnect", {**absent, "live_ledger_rows": 0})
 
     def managed(self):
-        self.connect("managed")
+        self.review_activation("managed")
         self.enable()
         initial_shape = self.cfg["initialTunnelConfig"]
         assert {"kind": "initial-tunnel-config", "shape": initial_shape} in self.provider("/local/evidence")
@@ -848,7 +860,7 @@ class HostedUpgrade(Rehearsal):
     def run(self):
         try:
             self.seed_upgrade()
-            self.connect("existing")
+            self.review_activation("existing")
             self.preflight()
             self.enable()
             self.sample_spend(settled=True)
@@ -887,7 +899,7 @@ def main():
     trial = Rehearsal()
     if args.upgrade_only:
         trial.seed_upgrade()
-        trial.connect("existing")
+        trial.review_activation("existing")
         trial.preflight()
         trial.enable()
         try:
@@ -902,7 +914,7 @@ def main():
         return
     trial.seed()
     if not args.managed_only:
-        trial.connect("existing")
+        trial.review_activation("existing")
         trial.preflight()
         trial.enable()
         trial.primary_hold()

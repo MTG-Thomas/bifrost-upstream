@@ -655,8 +655,7 @@ Options:
   --help  Show this message and exit.
 
 Commands:
-  activate          Accept the reviewed preflight and provision...
-  connect           Validate an account token and connect Cloudflare.
+  activate          Run preflight, review the route, and provision...
   disconnect        Drain Cloudflare workers and remove verified owned...
   enable            Provision and verify Cloudflare Workers capacity.
   policy            Update the current Cloudflare capacity policy.
@@ -677,32 +676,19 @@ Commands:
 ```
 Usage: capacity cloudflare activate [OPTIONS]
 
-  Accept the reviewed preflight and provision Cloudflare Workers.
+  Run preflight, review the route, and provision Cloudflare Workers.
 
 Options:
-  --preflight-receipt TEXT  [required]
-  --credential-ref UUID
-  --monthly-limit-usd TEXT  Confirmed monthly estimated usage limit in USD.
-                            [required]
-  --wait                    Wait for completion through the platform job.
-  --json                    Emit JSON instead of human-readable output.
-  --help                    Show this message and exit.
-```
-
-#### `capacity cloudflare connect`
-
-```
-Usage: capacity cloudflare connect [OPTIONS]
-
-  Validate an account token and connect Cloudflare.
-
-Options:
-  --account-id TEXT               [required]
-  --worker-ingress-origin TEXT    [required]
+  --account-id TEXT
+  --zone-id TEXT
   --reachability-mode [existing_https_endpoint|managed_tunnel]
-  --zone-id TEXT                  Cloudflare DNS zone ID for Managed Tunnel.
-  --policy FILENAME               Cloudflare capacity policy JSON file.
-                                  [required]
+  --worker-ingress-origin TEXT
+  --credential-ref UUID
+  --policy FILENAME               Advanced capacity policy JSON file.
+  --monthly-limit-usd TEXT        Confirmed monthly estimated usage limit in
+                                  USD.  [required]
+  --wait                          Wait for completion through the platform
+                                  job.
   --json                          Emit JSON instead of human-readable output.
   --help                          Show this message and exit.
 ```

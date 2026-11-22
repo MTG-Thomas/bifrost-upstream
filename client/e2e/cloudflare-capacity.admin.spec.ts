@@ -12,6 +12,12 @@ test("a platform operator activates and reconciles Cloudflare capacity", async (
 	const form = page.getByRole("form", { name: "Cloudflare Setup" });
 	const tokenField = form.getByLabel("Cloudflare API Token");
 	await expect(tokenField).toBeFocused();
+	const summary = page.getByRole("region", { name: "Cloudflare Settings Error" });
+	await form.getByRole("button", { name: "Run Preflight" }).click();
+	await expect(summary).toBeFocused();
+	await expect(tokenField).toHaveAttribute("aria-invalid", "true");
+	await summary.getByRole("button", { name: /^Cloudflare API Token:/ }).click();
+	await expect(tokenField).toBeFocused();
 	await tokenField.fill(token);
 	await form.getByRole("button", { name: "Run Preflight" }).click();
 	await expect(form.getByText("Cloudflare Account: Browser Fixture Account")).toBeVisible();
@@ -23,7 +29,15 @@ test("a platform operator activates and reconciles Cloudflare capacity", async (
 	expect(await reviewed.text()).not.toContain(token);
 	await expect(form.getByText("About $2–$7/month")).toBeVisible();
 	await expect(form.getByText("32.13 USD/month")).toBeVisible();
-	await expect(form.getByLabel("Monthly Estimated Usage Limit")).toHaveValue("75.00");
+	const limit = form.getByLabel("Monthly Estimated Usage Limit");
+	await expect(limit).toHaveValue("75.00");
+	await limit.fill("32.12");
+	await form.getByRole("button", { name: "Scale Out with Cloudflare" }).click();
+	await expect(summary).toBeFocused();
+	await expect(limit).toHaveAttribute("aria-invalid", "true");
+	await summary.getByRole("button", { name: /^Monthly Estimated Usage Limit:/ }).click();
+	await expect(limit).toBeFocused();
+	await limit.fill("75.00");
 	await form.getByRole("checkbox", { name: "Confirm Monthly Usage Limit" }).check();
 	await form.getByRole("checkbox", { name: "Accept Cloudflare Terms" }).check();
 
@@ -43,6 +57,16 @@ test("a platform operator activates and reconciles Cloudflare capacity", async (
 	await expect(page.getByText("Enabled", { exact: true })).toBeVisible();
 	await expect(page.getByText("Observed Deployment Revision", { exact: true })).toBeVisible();
 	await expect(page.getByText("Workflow Review Required", { exact: true })).toBeVisible();
+
+	await page.getByRole("button", { name: "Rotate API Token", exact: true }).click();
+	const rotation = page.getByRole("dialog", { name: "Rotate Cloudflare API Token" });
+	await rotation.getByLabel("Replacement API Token").fill("browser-fixture-cloudflare-refused-token");
+	const rotated = page.waitForResponse((response) => response.url().endsWith("/api/capacity/cloudflare/rotate"));
+	await rotation.getByRole("button", { name: "Rotate API Token", exact: true }).click();
+	expect((await rotated).status()).toBe(202);
+	const jobStatus = page.getByRole("region", { name: "Cloudflare Job Status" });
+	await expect(jobStatus.getByText("CF_MANAGEMENT_CREDENTIAL")).toBeVisible();
+	await expect(jobStatus).toBeFocused();
 
 	await expect(page.getByRole("button", { name: "Upgrade Cloudflare" })).toBeDisabled();
 	const reconcile = page.waitForResponse((response) => response.url().endsWith("/api/capacity/cloudflare/reconcile"));

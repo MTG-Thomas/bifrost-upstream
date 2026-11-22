@@ -9,7 +9,6 @@ from shared.models import (
     CloudflareActivateRequest,
     CloudflareCapacityAction,
     CloudflareCapacityPolicy,
-    CloudflareConnectRequest,
     CloudflarePolicyUpdate,
     CloudflarePreflightRequest,
     CloudflareReachabilityMode,
@@ -117,22 +116,6 @@ async def bifrost_cloudflare_worker_credential_replace(
     return success_result("Cloudflare Job Queued", body)
 
 
-async def bifrost_cloudflare_connect_execute(
-    context: Any, account_id: str, worker_ingress_origin: str, consent_version: str,
-    consent: Literal[True], credential_ref: UUID, policy: CloudflareCapacityPolicy,
-    reachability_mode: CloudflareReachabilityMode = "existing_https_endpoint", zone_id: str | None = None,
-) -> ToolResult:
-    request = CloudflareConnectRequest(
-        action="connect", account_id=account_id, worker_ingress_origin=worker_ingress_origin,
-        consent_version=consent_version, consent=consent, credential_ref=credential_ref, policy=policy,
-        reachability_mode=reachability_mode, zone_id=zone_id,
-    )
-    status, body = await call_rest(
-        context, "PATCH", _PATH, json_body=request.model_dump(mode="json", exclude_none=True),
-    )
-    if status != 200:
-        return error_result(f"Cloudflare connect failed (HTTP {status})", {"body": body})
-    return success_result("Cloudflare Capacity", body)
 
 
 async def bifrost_cloudflare_account_token_replace(
@@ -169,7 +152,6 @@ _TOOLS = (
     (bifrost_cloudflare_reconcile_execute, "Reconcile Cloudflare", "Verify or repair the current Cloudflare Workers deployment."),
     (bifrost_cloudflare_upgrade_execute, "Upgrade Cloudflare", "Apply the Workers release packaged with Bifrost."),
     (bifrost_cloudflare_worker_credential_replace, "Rotate Cloudflare Worker Credential", "After Scale In, rotate the internal control root, Workers scope bearer, or Managed Tunnel connector token."),
-    (bifrost_cloudflare_connect_execute, "Connect Cloudflare", "Use a one-time reference from the operator's capacity cloudflare stage-credential command with purpose connect."),
     (bifrost_cloudflare_account_token_replace, "Rotate Cloudflare API Token", "Use a one-time reference from capacity cloudflare stage-credential --purpose rotate --installation-id."),
     (bifrost_cloudflare_policy_update, "Update Cloudflare Policy", "Update the current Cloudflare capacity policy."),
 )

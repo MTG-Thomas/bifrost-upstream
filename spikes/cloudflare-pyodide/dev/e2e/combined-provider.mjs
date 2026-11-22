@@ -277,6 +277,10 @@ async function provider(req, res) {
     return send(200, {data: {viewer: {accounts: [{workersInvocationsAdaptive: workerRows,
       durableObjectsInvocationsAdaptiveGroups: []}]}}});
   }
+  if (path === '/client/v4/accounts' && method === 'GET') return ok([{id: account, name: 'Rehearsal Account'}]);
+  if (path === '/client/v4/zones' && method === 'GET') return ok([
+    {id: zone, name: 'example.test', status: 'active', account: {id: account}},
+  ]);
   const relative = path.replace(`/client/v4/accounts/${account}`, '');
   if (relative === '') return ok({id: account});
   if (relative === '/entitlements') return ok(['workers.enabled', 'containers.enabled'].map((id) =>

@@ -34,6 +34,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from src.config import Settings
+from src.core.app_wiring import register_exception_handlers
 from src.core.auth import get_current_active_user
 from src.core.db_deps import get_db
 from src.core.exceptions import StructuredRequestRefusal
@@ -667,11 +668,11 @@ async def test_managed_tunnel_disconnect_preserves_foreign_dns(db_session, insta
     assert provider.dns == foreign and provider.tunnel and provider.tunnel["deleted_at"]
 
 
-def _platform_operator() -> Caller:
+def _platform_operator(user_id: UUID = OPERATOR_ID) -> Caller:
     role = RoleGrant(uuid4(), frozenset({"platform.readwrite"}), (Boundary(BoundaryKind.PLATFORM),))
     return Caller(
-        UserPrincipal(OPERATOR_ID, "operator@example.test", None),
-        AuthorizationContext(OPERATOR_ID, None, uuid4(), False, frozenset(), (role,)),
+        UserPrincipal(user_id, "operator@example.test", None),
+        AuthorizationContext(user_id, None, uuid4(), False, frozenset(), (role,)),
     )
 
 
@@ -816,42 +817,13 @@ async def test_staged_credential_is_encrypted_bound_expiring_and_single_use(db_s
         await consume_staged_token(db_session, expired, actor_id=OPERATOR_ID, account_id=account, purpose="rotate")
 
 
-@pytest.mark.asyncio
-async def test_connect_uses_opaque_credential_from_protected_rest_entry(e2e_client, platform_admin, async_session_factory) -> None:
-    path = "/api/capacity/cloudflare"
-    headers = platform_admin.headers
-    account = "f" * 32
-    token = "browser-fixture-cloudflare-token"
-    staged = e2e_client.post(f"{path}/credential", headers=headers, json={
-        "account_id": account, "purpose": "connect", "api_token": token,
+def test_legacy_connect_patch_is_retired(e2e_client, platform_admin) -> None:
+    rejected = e2e_client.patch("/api/capacity/cloudflare", headers=platform_admin.headers, json={
+        "action": "connect", "account_id": "f" * 32,
+        "api_token": "synthetic-management-token",
     })
-    assert staged.status_code == 201 and token not in staged.text
-    reference = staged.json()["credential_ref"]
-    request = {
-        "action": "connect", "account_id": account, "worker_ingress_origin": "https://workers.browser-fixture.test",
-        "consent_version": CONSENT_TEXT_VERSION, "consent": True, "credential_ref": reference,
-        "policy": {"workers": {
-            "launcher_cap": 10, "slots_per_launcher": 1, "max_lifetime_seconds": 3600, "work_kinds": ["workflow"],
-        }, "monthly_limit_usd": "50.00"},
-    }
-    installation_id = None
-    try:
-        connected = e2e_client.patch(path, headers=headers, json=request)
-        assert connected.status_code == 200, connected.text
-        installation = connected.json()["installation"]
-        installation_id = UUID(installation["installation_id"])
-        assert installation["fleet_envelope_usd"] == "45.26"
-        assert installation["spend"]["estimated_usd"] == "0.00"
-        assert installation["spend"]["workers_paid_subscription_usd"] == "5.00"
-        assert token not in connected.text and reference not in connected.text
-        assert e2e_client.patch(path, headers=headers, json=request).status_code == 422
-    finally:
-        async with async_session_factory() as db:
-            await db.execute(delete(CloudflareStagedToken).where(CloudflareStagedToken.id == UUID(reference)))
-            if installation_id is not None:
-                await db.execute(delete(CloudflareCredential).where(CloudflareCredential.installation_id == installation_id))
-                await db.execute(delete(CloudflareInstallation).where(CloudflareInstallation.id == installation_id))
-            await db.commit()
+    assert rejected.status_code == 422
+    assert "synthetic-management-token" not in rejected.text
 
 
 @pytest.mark.asyncio
@@ -5498,6 +5470,8 @@ async def test_preflight_and_activation_share_one_enable_job(db_session, monkeyp
     cloudflare_policy._qualified_workers_suggestion.cache_clear()
     caller = _platform_operator()
     monkeypatch.setattr(capacity_routes, "load_caller", AsyncMock(return_value=caller))
+    limit_preflight = AsyncMock()
+    monkeypatch.setattr(capacity_routes.preflight_limiter, "check", limit_preflight)
     account_id, token = "a" * 32, "synthetic-management-token"
     reads = []
 
@@ -5524,6 +5498,7 @@ async def test_preflight_and_activation_share_one_enable_job(db_session, monkeyp
         AsyncClient=lambda **kw: httpx.AsyncClient(transport=httpx.MockTransport(respond), **kw),
     ))
     app = FastAPI()
+    register_exception_handlers(app)
     app.include_router(capacity_routes.router)
     app.dependency_overrides[get_db] = lambda: db_session
     app.dependency_overrides[get_current_active_user] = lambda: caller.principal
@@ -5540,14 +5515,30 @@ async def test_preflight_and_activation_share_one_enable_job(db_session, monkeyp
                 "credential_ref": ref, "worker_ingress_origin": "https://workers.example.test",
             })
             assert preview.status_code == 200, preview.text
+            limit_preflight.assert_awaited_once_with("capacity.cloudflare_preflight", str(caller.principal.user_id))
             assert token not in preview.text and ref not in preview.text
             plan = preview.json()
+            assert datetime.fromisoformat(plan["expires_at"]) == datetime.fromisoformat(staged.json()["expires_at"])
             assert plan["preview"]["fleet_envelope_usd"] == "32.13"
             assert await db_session.scalar(select(CloudflareInstallation.id)) is None
             activation_body = {
                 "credential_ref": ref, "preflight_receipt": plan["preflight_receipt"],
                 "monthly_limit_usd": "75.00", "consent_version": plan["consent_version"], "consent": True,
             }
+            saved_reference = await db_session.get(CloudflareStagedToken, UUID(ref))
+            assert saved_reference is not None
+            expiry = saved_reference.expires_at
+            saved_reference.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            await db_session.flush()
+            expired = await http.post(f"{base}/activate", json=activation_body)
+            assert expired.status_code == 409, expired.text
+            assert expired.json()["details"]["code"] == "CF_STAGED_CREDENTIAL_UNAVAILABLE"
+            assert "Stage the Cloudflare credential again" in expired.json()["details"]["remedy"]
+            saved_reference.expires_at = expiry
+            await db_session.flush()
+            under_budget = await http.post(f"{base}/activate", json={**activation_body, "monthly_limit_usd": "32.12"})
+            assert under_budget.status_code == 422, under_budget.text
+            assert set(under_budget.json()["details"]["fields"]) == {"monthly_limit_usd"}
             accepted = await http.post(f"{base}/activate", json=activation_body)
             assert accepted.status_code == 202, accepted.text
             identity = accepted.json()
@@ -5563,12 +5554,100 @@ async def test_preflight_and_activation_share_one_enable_job(db_session, monkeyp
             assert replay.json() == {**identity, "reused": True}
             changed = await http.post(f"{base}/activate", json={**activation_body, "monthly_limit_usd": "76.00"})
             assert changed.status_code == 409, changed.text
-        saved = await db_session.scalar(select(CloudflareInstallation))
+            assert changed.json()["details"]["code"] == "CF_REVIEW_REQUIRED"
+            saved = await db_session.scalar(select(CloudflareInstallation))
+            assert saved is not None
+            first = await db_session.get(PlatformJob, UUID(identity["job_id"]))
+            first.status = "failed"
+            await db_session.flush()
+            enable = await http.post(f"{base}/enable", json={
+                "installation_id": str(saved.id), "expected_revision": 1,
+            })
+            assert enable.status_code == 202, enable.text
+            second = enable.json()
+            assert second["job_id"] != identity["job_id"]
+            resumed = await http.post(f"{base}/activate", json=activation_body)
+            assert resumed.json() == {**second, "reused": True}
+            second_job = await db_session.get(PlatformJob, UUID(second["job_id"]))
+            second_job.status = "failed"
+            await db_session.flush()
+            restarted = await http.post(f"{base}/activate", json=activation_body)
+            assert restarted.status_code == 202, restarted.text
+            assert restarted.json()["job_id"] not in {identity["job_id"], second["job_id"]}
+            assert not restarted.json()["reused"]
         assert saved.desired_state == "enabled" and saved.desired_revision == 1
         assert saved.policy["limits"]["monthly_limit_usd"] == "75.00"
         assert await db_session.scalar(select(func.count()).select_from(PlatformJob).where(
             PlatformJob.job_type == "capacity.cloudflare_enable", PlatformJob.resource_id == str(saved.id),
-        )) == 1
+        )) == 3
+    finally:
+        cloudflare_policy._qualified_workers_suggestion.cache_clear()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("same_operator", [True, False], ids=["same-receipt", "conflicting-operator"])
+async def test_concurrent_cloudflare_activation_keeps_one_installation_and_enable_job(
+    isolated_capacity_session_factory, monkeypatch, same_operator,
+):
+    from shared.models import CloudflareActivateRequest, CloudflarePreflightRequest
+    from src.services.worker_pool import cloudflare_activation
+    from src.services.worker_pool.cloudflare_policy import CloudflareInstallationExists
+
+    sessions = isolated_capacity_session_factory
+    release = _release(lifetime_meters=True)
+    monkeypatch.setattr(cloudflare_activation, "load_workers_release", lambda: release)
+    monkeypatch.setattr(cloudflare_policy, "load_workers_release", lambda: release)
+    monkeypatch.setattr(cloudflare_activation, "connector_channel_ready", AsyncMock(return_value=False))
+    account = "a" * 32
+    monkeypatch.setattr(cloudflare_activation, "WorkersRestCleanup", lambda _: SimpleNamespace(
+        discovery_inventory=AsyncMock(side_effect=[[{"id": account, "name": "Account"}], []]),
+        verify_workers_paid=AsyncMock(),
+    ))
+    first = _platform_operator()
+    second = first if same_operator else _platform_operator(uuid4())
+    preflight = CloudflarePreflightRequest(
+        api_token="synthetic-management-token", worker_ingress_origin="https://workers.example.test",
+    )
+
+    async def review(caller):
+        async with sessions() as db:
+            plan = await cloudflare_activation.preflight_cloudflare(db, caller, preflight)
+        return CloudflareActivateRequest(
+            api_token=preflight.api_token, preflight_receipt=plan.preflight_receipt,
+            monthly_limit_usd="75", consent=True, consent_version=plan.consent_version,
+        )
+
+    before_insert = asyncio.Barrier(2)
+    create = cloudflare_activation.create_cloudflare_installation
+
+    async def rendezvous(*args, **kwargs):
+        await before_insert.wait()
+        return await create(*args, **kwargs)
+
+    monkeypatch.setattr(cloudflare_activation, "create_cloudflare_installation", rendezvous)
+
+    async def activate(caller, submission):
+        async with sessions.begin() as db:
+            job, reused = await cloudflare_activation.activate_cloudflare(db, caller, submission)
+            return job.id, reused
+
+    cloudflare_policy._qualified_workers_suggestion.cache_clear()
+    try:
+        first_review = await review(first)
+        second_review = first_review if same_operator else await review(second)
+        outcomes = await asyncio.gather(
+            activate(first, first_review), activate(second, second_review), return_exceptions=True,
+        )
+        accepted = [outcome for outcome in outcomes if isinstance(outcome, tuple)]
+        assert sum(not reused for _, reused in accepted) == 1
+        if same_operator:
+            assert len(accepted) == 2 and accepted[0][0] == accepted[1][0]
+        else:
+            assert len(accepted) == 1
+            assert any(isinstance(outcome, CloudflareInstallationExists) for outcome in outcomes)
+        async with sessions() as db:
+            assert await db.scalar(select(func.count()).select_from(CloudflareInstallation)) == 1
+            assert await db.scalar(select(func.count()).select_from(PlatformJob)) == 1
     finally:
         cloudflare_policy._qualified_workers_suggestion.cache_clear()
 

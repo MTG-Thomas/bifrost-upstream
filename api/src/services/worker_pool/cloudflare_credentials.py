@@ -23,6 +23,10 @@ CredentialPurpose = Literal["account_token", "control_root", "scope_bearer", "tu
 StagePurpose = Literal["connect", "rotate"]
 
 
+class StagedCloudflareCredentialUnavailable(ValueError):
+    """A one-time credential was missing, expired, or bound to another request."""
+
+
 def _stage_binding(
     ref: UUID, actor_id: UUID, account_id: str, purpose: StagePurpose, installation_id: UUID | None,
 ) -> list[str]:
@@ -70,21 +74,21 @@ async def consume_staged_token(
         binding, value = json.loads(decrypt_secret(row))
         if binding == _stage_binding(ref, actor_id, account_id, purpose, installation_id) and isinstance(value, str):
             return SecretStr(value)
-    raise ValueError("Invalid or expired Cloudflare credential reference")
+    raise StagedCloudflareCredentialUnavailable("Invalid or expired Cloudflare credential reference")
 
 
-async def read_staged_connect_token(db: AsyncSession, ref: UUID, *, actor_id: UUID) -> tuple[str, SecretStr]:
+async def read_staged_connect_token(db: AsyncSession, ref: UUID, *, actor_id: UUID) -> tuple[str, SecretStr, datetime]:
     staged = CloudflareStagedToken
-    row = (await db.execute(select(staged.account_id, staged.ciphertext).where(
+    row = (await db.execute(select(staged.account_id, staged.ciphertext, staged.expires_at).where(
         staged.id == ref, staged.actor_id == actor_id, staged.purpose == "connect",
         staged.expires_at > func.statement_timestamp(),
     ))).one_or_none()
     if row is not None:
-        account_id, ciphertext = row
+        account_id, ciphertext, expires_at = row
         binding, value = json.loads(decrypt_secret(ciphertext))
         if binding == _stage_binding(ref, actor_id, account_id, "connect", None) and isinstance(value, str):
-            return account_id, SecretStr(value)
-    raise ValueError("Invalid or expired Cloudflare credential reference")
+            return account_id, SecretStr(value), expires_at
+    raise StagedCloudflareCredentialUnavailable("Invalid or expired Cloudflare credential reference")
 
 
 @dataclass(frozen=True, slots=True)

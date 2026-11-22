@@ -7,6 +7,7 @@ import re
 import secrets
 import socket
 import subprocess
+from hashlib import sha256
 from pathlib import Path
 
 
@@ -34,10 +35,12 @@ def prepare(root, project, image, *, initial_tunnel_config, lag_worker_namespace
     if not inspection["Internal"] or not ipaddress.IPv4Address(address).is_private:
         raise SystemExit("Expected a private Docker bridge address")
     edge, provider = ports(2)
+    public_url = "http://localhost:8000"
+    managed_host = f"bifrost-workers-{sha256(public_url.encode()).hexdigest()[:16]}.example.test"
     subprocess.run([
         "openssl", "req", "-x509", "-newkey", "rsa:2048", "-noenc", "-days", "1",
         "-subj", "/CN=Existing HTTPS rehearsal",
-        "-addext", "subjectAltName=DNS:existing.example.test,DNS:managed.example.test",
+        "-addext", f"subjectAltName=DNS:existing.example.test,DNS:{managed_host}",
         "-keyout", str(fixture / "edge.key"), "-out", str(fixture / "edge.pem"),
     ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     cfg = {
@@ -90,6 +93,8 @@ signal.pause()
     (root / "rehearsal-compose.yml").write_text(source)
     stub_env = f"""
       PYTHONPATH: /rehearsal-site:/app
+      BIFROST_PUBLIC_URL: "{public_url}"
+      REHEARSAL_MANAGED_HOST: "{managed_host}"
       REHEARSAL_ADDRESS: "{address}"
       REHEARSAL_PROVIDER_PORT: "{provider}"
       REHEARSAL_EDGE_PORT: "{edge}"

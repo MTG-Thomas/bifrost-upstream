@@ -156,7 +156,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(StructuredRequestRefusal)
     async def structured_refusal_handler(request: Request, exc: StructuredRequestRefusal) -> JSONResponse:
         return JSONResponse(
-            status_code=422,
+            status_code=exc.status_code,
             content=ErrorResponse(error=exc.code, message=str(exc), details=exc.details).model_dump(),
         )
 

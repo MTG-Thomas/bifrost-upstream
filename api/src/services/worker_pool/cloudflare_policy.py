@@ -26,7 +26,6 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.config import get_settings
 from src.models.orm.cloudflare_capacity import (
     CloudflareCapacityScope,
     CloudflareCredential,
@@ -239,7 +238,6 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
         ))).one()
         return CloudflareCapacityStatus(
             consent_text_version=CONSENT_TEXT_VERSION, consent_text=CONSENT_TEXT, installation=None,
-            managed_tunnel_available=get_settings().cloudflare_tunnel_channel is not None,
             suggested_policy=suggested_cloudflare_policy(),
             observed_at=observed_at,
             approved_workflow_count=approvals,
@@ -318,7 +316,6 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
     return CloudflareCapacityStatus(
         consent_text_version=CONSENT_TEXT_VERSION,
         consent_text=CONSENT_TEXT,
-        managed_tunnel_available=get_settings().cloudflare_tunnel_channel is not None,
         latest_job_id=latest_job.id if latest_job else None,
         observed_at=as_of,
         approved_workflow_count=approvals,

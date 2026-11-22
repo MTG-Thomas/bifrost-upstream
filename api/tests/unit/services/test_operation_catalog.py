@@ -1158,7 +1158,7 @@ CANONICAL_OPERATIONS = {
         "bifrost_cloudflare_activate_execute", False,
     ),
     "capacity.cloudflare_configure": (
-        "PATCH", "/api/capacity/cloudflare", ("capacity", "cloudflare", "connect"),
+        "PATCH", "/api/capacity/cloudflare", ("capacity", "cloudflare", "policy"),
         "bifrost_cloudflare_policy_update", False,
     ),
     "capacity.cloudflare_credential_stage": (

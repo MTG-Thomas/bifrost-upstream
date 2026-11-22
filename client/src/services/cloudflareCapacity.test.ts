@@ -116,12 +116,12 @@ describe("Cloudflare capacity service", () => {
 	);
 
 	it("preserves structured validation details without using the submitted input as the message", async () => {
-		const issue = { loc: ["body", "connect", "api_token"], msg: "Invalid token format.", input: "synthetic-secret", type: "value_error" };
-		mocks.patch.mockResolvedValue({ error: { detail: [issue] }, response: { status: 422 } });
-		await expect(configureCloudflareCapacity({ action: "connect" } as never)).rejects.toMatchObject({
+		const issue = { loc: ["body", "api_token"], msg: "Invalid token format.", input: "synthetic-secret", type: "value_error" };
+		mocks.post.mockResolvedValue({ error: { detail: [issue] }, response: { status: 422 } });
+		await expect(preflightCloudflareCapacity({ api_token: "synthetic-secret" })).rejects.toMatchObject({
 			errorCode: "ValidationError",
 			statusCode: 422,
-			message: "connect.api_token: Invalid token format.",
+			message: "api_token: Invalid token format.",
 			details: { validation_errors: [issue] },
 		});
 	});

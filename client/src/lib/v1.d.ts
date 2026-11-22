@@ -16513,9 +16513,9 @@ export interface components {
             /** Fleet Envelope Usd */
             fleet_envelope_usd: string;
             /** Estimated Usage Min Usd */
-            estimated_usage_min_usd: string;
+            estimated_usage_min_usd?: string | null;
             /** Estimated Usage Max Usd */
-            estimated_usage_max_usd: string;
+            estimated_usage_max_usd?: string | null;
             /** Workers Paid Subscription Usd */
             workers_paid_subscription_usd: string;
         };
@@ -16724,11 +16724,6 @@ export interface components {
             installation: components["schemas"]["CloudflareInstallationStatus"] | null;
             /** Latest Job Id */
             latest_job_id?: string | null;
-            /**
-             * Managed Tunnel Available
-             * @default false
-             */
-            managed_tunnel_available: boolean;
             suggested_policy?: components["schemas"]["CloudflareCapacityPolicy-Output"] | null;
             /** Observed At */
             observed_at?: string | null;
@@ -16742,38 +16737,6 @@ export interface components {
             recovery?: components["schemas"]["CloudflareRecoveryDetails"] | null;
             /** Disconnected At */
             disconnected_at?: string | null;
-        };
-        /** CloudflareConnectRequest */
-        CloudflareConnectRequest: {
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            action: "connect";
-            /** Account Id */
-            account_id: string;
-            /** Worker Ingress Origin */
-            worker_ingress_origin: string;
-            /**
-             * Reachability Mode
-             * @default existing_https_endpoint
-             * @enum {string}
-             */
-            reachability_mode: "existing_https_endpoint" | "managed_tunnel";
-            /** Zone Id */
-            zone_id?: string | null;
-            /** Consent Version */
-            consent_version: string;
-            /**
-             * Consent
-             * @constant
-             */
-            consent: true;
-            /** Api Token */
-            api_token?: string | null;
-            /** Credential Ref */
-            credential_ref?: string | null;
-            policy: components["schemas"]["CloudflareCapacityPolicy-Input"];
         };
         /** CloudflareDeploymentEvidence */
         CloudflareDeploymentEvidence: {
@@ -16900,8 +16863,8 @@ export interface components {
             /** Expected Revision */
             expected_revision: number;
             /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
+             * Action
+             * @constant
              */
             action: "policy";
             policy: components["schemas"]["CloudflareCapacityPolicy-Input"];
@@ -16953,6 +16916,8 @@ export interface components {
             consent_text: string;
             /** Preflight Receipt */
             preflight_receipt?: string | null;
+            /** Expires At */
+            expires_at?: string | null;
         };
         /** CloudflarePreflightRequest */
         CloudflarePreflightRequest: {
@@ -39474,7 +39439,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CloudflareConnectRequest"] | components["schemas"]["CloudflarePolicyUpdate"];
+                "application/json": components["schemas"]["CloudflarePolicyUpdate"];
             };
         };
         responses: {

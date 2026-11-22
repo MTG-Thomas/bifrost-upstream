@@ -89,7 +89,7 @@ PARITY_HANDLERS: dict[str, set[str]] = {
         "bifrost_cloudflare_preflight_validate", "bifrost_cloudflare_activate_execute",
         "bifrost_cloudflare_capacity_get", "_submit", "bifrost_cloudflare_policy_update",
         "bifrost_cloudflare_worker_credential_replace",
-        "bifrost_cloudflare_connect_execute", "bifrost_cloudflare_account_token_replace",
+        "bifrost_cloudflare_account_token_replace",
     },
     "agents": {
         "bifrost_agent_list",

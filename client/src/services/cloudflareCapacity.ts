@@ -8,9 +8,7 @@ export type CloudflareCapacityAction =
 	components["schemas"]["CloudflareCapacityAction"];
 export type CloudflareAccountTokenRotation =
 	components["schemas"]["CloudflareAccountTokenRotation"];
-export type CloudflareConfiguration =
-	| components["schemas"]["CloudflareConnectRequest"]
-	| components["schemas"]["CloudflarePolicyUpdate"];
+export type CloudflareConfiguration = components["schemas"]["CloudflarePolicyUpdate"];
 export type CloudflareAction = "enable" | "reconcile" | "upgrade" | "scale-in" | "disconnect" | "rotate-root" | "rotate-bearer" | "rotate-connector";
 export type CloudflarePreflight = components["schemas"]["CloudflarePreflight"];
 export type CloudflarePreflightRequest = components["schemas"]["CloudflarePreflightRequest"];

@@ -23,7 +23,6 @@ from src.services import worker_ingress_probes as probes
 from src.services.worker_ingress import ALLOW_MARKER, CONTROL_PATH, INGRESS_HEADER, PORT
 from src.services.worker_pool import (
     cloudflare_admission,
-    cloudflare_connection,
     cloudflare_policy,
     cloudflare_release,
 )
@@ -234,8 +233,6 @@ def install_api():
     from src.jobs.platform import cloudflare_capacity
 
     block_cloudflare_network()
-    cloudflare_connection.load_workers_release = _browser_release
-    cloudflare_connection.WorkersRestCleanup = _Cloudflare
     cloudflare_activation.load_workers_release = _browser_release
     cloudflare_activation.WorkersRestCleanup = _Cloudflare
     cloudflare_capacity.installed_workers_release_digest = _fixture_digest

@@ -185,14 +185,14 @@ OPERATION_CATALOG: tuple[OperationDefinition, ...] = (
     ),
     OperationDefinition(
         operation_id="capacity.cloudflare_configure",
-        summary="Connect and Configure Cloudflare Capacity",
+        summary="Update Cloudflare Capacity Policy",
         target_kind=OperationTargetKind.PLATFORM,
         rest=RestOperationBinding(
             method="PATCH", path="/api/capacity/cloudflare",
-            request_model="CloudflareConnectRequest | CloudflarePolicyUpdate", response_model="CloudflareCapacityStatus",
+            request_model="CloudflarePolicyUpdate", response_model="CloudflareCapacityStatus",
         ),
-        cli=CliOperationBinding(path=("capacity", "cloudflare", "connect"), aliases=(("capacity", "cloudflare", "policy"),)),
-        mcp=McpOperationBinding(name="bifrost_cloudflare_policy_update", aliases=("bifrost_cloudflare_connect_execute",)),
+        cli=CliOperationBinding(path=("capacity", "cloudflare", "policy")),
+        mcp=McpOperationBinding(name="bifrost_cloudflare_policy_update"),
         action_scopes=("platform.readwrite",),
         authorization_resolver="platform.readwrite at Global",
         exclusions={

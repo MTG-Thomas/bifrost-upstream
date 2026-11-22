@@ -35,6 +35,31 @@ def test_cli_rotation_keeps_rejected_prompt_out_of_output(monkeypatch) -> None:
     assert result.exc_info is not None and candidate not in str(result.exc_info[1])
 
 
+def test_activate_reviews_the_resolved_route_before_requesting_consent(monkeypatch) -> None:
+    token = "synthetic-management-token"
+    plan = Mock()
+    plan.json.return_value = {
+        "accounts": [{"id": "a" * 32, "name": "Fixture Account"}], "account_id": "a" * 32,
+        "zone_id": "b" * 32, "zone_name": "example.test", "reachability_mode": "managed_tunnel",
+        "worker_ingress_origin": "https://workers.example.test", "preview": {"fleet_envelope_usd": "32.13"},
+        "preflight_receipt": "opaque-receipt", "consent_version": "v1", "consent_text": "Review this consent.",
+    }
+    queued = Mock()
+    queued.json.return_value = {"job_id": str(UUID(int=2))}
+    post = AsyncMock(side_effect=[plan, queued])
+    monkeypatch.setattr(BifrostClient, "get_instance", lambda **_: Mock(post=post))
+    result = CliRunner().invoke(cloudflare_group, ["activate", "--monthly-limit-usd", "75"], input=f"{token}\ny\n")
+    assert result.exit_code == 0, result.exception
+    summary, _, _ = result.output.partition("Accept the reviewed Cloudflare route and scale out")
+    for value in ("Fixture Account", "example.test", "Managed Tunnel", "https://workers.example.test", "75.00 USD"):
+        assert value in summary
+    assert token not in result.output
+    assert "opaque-receipt" not in result.output
+    assert post.await_args_list[0].args == ("/api/capacity/cloudflare/preflight",)
+    assert post.await_args_list[1].args == ("/api/capacity/cloudflare/activate",)
+    assert post.await_args_list[1].kwargs["json"]["api_token"] == token
+
+
 @pytest.mark.parametrize("command", ["reconcile", "upgrade"])
 @pytest.mark.parametrize("reset", [False, True])
 def test_cli_workers_reconcile_submits_optional_reset(monkeypatch, command: str, reset: bool) -> None:

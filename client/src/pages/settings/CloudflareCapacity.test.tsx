@@ -242,6 +242,9 @@ it("reviews a discovered account and route, then queues exactly one activation",
 	expect(screen.getByRole("button", { name: "Scale Out with Cloudflare" })).toBeVisible();
 	await user.click(screen.getByRole("button", { name: "Scale Out with Cloudflare" }));
 	expect(mocks.activate).not.toHaveBeenCalled();
+	const required = screen.getByRole("region", { name: "Cloudflare Settings Error" });
+	expect(required).toHaveFocus();
+	expect(screen.getByRole("checkbox", { name: "Accept Cloudflare Terms" })).toHaveAttribute("aria-invalid", "true");
 
 	await user.click(screen.getByRole("checkbox", { name: "Confirm Monthly Usage Limit" }));
 	await user.click(screen.getByRole("checkbox", { name: "Accept Cloudflare Terms" }));
@@ -254,6 +257,45 @@ it("reviews a discovered account and route, then queues exactly one activation",
 	expect(mocks.configure).not.toHaveBeenCalled();
 	expect(mocks.start).not.toHaveBeenCalled();
 	expect(secret).toHaveValue("");
+});
+
+it("routes activation limit refusals and refreshes status when the review becomes stale", async () => {
+	const user = userEvent.setup();
+	mocks.get.mockResolvedValue({ installation: null, suggested_policy: suggestedPolicy });
+	mocks.preflight.mockResolvedValue({
+		accounts: [{ id: "a".repeat(32), name: "Example Account" }], account_id: "a".repeat(32),
+		zone_id: "b".repeat(32), zone_name: "example.test", zones: [{ id: "b".repeat(32), name: "example.test" }],
+		workers_paid: "verified", connector_ready: true, primary: "static", reachability_mode: "managed_tunnel",
+		worker_ingress_origin: "https://workers.example.test", preflight_receipt: "review",
+		consent_version: "v1", consent_text: "Review the account.",
+		preview: { policy: suggestedPolicy, fleet_envelope_usd: "32.13", workers_paid_subscription_usd: "5" },
+	});
+	mocks.activate
+		.mockRejectedValueOnce(new ApiError({
+			error: "cloudflare_budget_refused", message: "Raise the limit.",
+			details: { fields: { monthly_limit_usd: "Enter at least 32.13 USD." } },
+		}, 422))
+		.mockRejectedValueOnce(new ApiError({
+			error: "cloudflare_configuration_refused", message: "Cloudflare preflight expired.",
+			details: { code: "CF_REVIEW_REQUIRED", remedy: "Run preflight again." },
+		}, 409));
+	renderCapacity();
+	await user.click(await screen.findByRole("button", { name: "Set Up Cloudflare" }));
+	await user.type(screen.getByLabelText("Cloudflare API Token"), "synthetic-management-token");
+	await user.click(screen.getByRole("button", { name: "Run Preflight" }));
+	await user.click(await screen.findByRole("checkbox", { name: "Confirm Monthly Usage Limit" }));
+	await user.click(screen.getByRole("checkbox", { name: "Accept Cloudflare Terms" }));
+	await user.click(screen.getByRole("button", { name: "Scale Out with Cloudflare" }));
+	const summary = await screen.findByRole("region", { name: "Cloudflare Settings Error" });
+	const limit = screen.getByLabelText("Monthly Estimated Usage Limit");
+	expect(summary).toHaveFocus();
+	expect(limit).toHaveAccessibleDescription("Enter at least 32.13 USD.");
+	await user.click(within(summary).getByRole("button", { name: /Monthly Estimated Usage Limit:/ }));
+	expect(limit).toHaveFocus();
+	await user.click(screen.getByRole("button", { name: "Scale Out with Cloudflare" }));
+	expect(await screen.findByRole("button", { name: "Refresh and Review" })).toBeVisible();
+	expect(mocks.get).toHaveBeenCalledTimes(2);
+	expect(screen.queryByRole("button", { name: "Scale Out with Cloudflare" })).toBeNull();
 });
 
 it("recovers Action Required from the last visible job on page load", async () => {

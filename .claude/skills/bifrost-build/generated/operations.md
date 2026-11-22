@@ -7,7 +7,9 @@ caller's own items.
 
 | Intent | CLI | MCP | Scope |
 |---|---|---|---|
-| `capacity.cloudflare_configure` | `bifrost capacity cloudflare connect` | `bifrost_cloudflare_policy_update` | `platform.readwrite` |
+| `capacity.cloudflare_preflight` | `bifrost capacity cloudflare preflight` | `bifrost_cloudflare_preflight_validate` | `platform.readwrite` |
+| `capacity.cloudflare_activate` | `bifrost capacity cloudflare activate` | `bifrost_cloudflare_activate_execute` | `platform.readwrite` |
+| `capacity.cloudflare_configure` | `bifrost capacity cloudflare policy` | `bifrost_cloudflare_policy_update` | `platform.readwrite` |
 | `capacity.cloudflare_credential_stage` | `bifrost capacity cloudflare stage-credential` | — | `platform.readwrite` |
 | `capacity.cloudflare_status` | `bifrost capacity cloudflare status` | `bifrost_cloudflare_capacity_get` | `platform.read` |
 | `capacity.cloudflare_scale_in` | `bifrost capacity cloudflare scale-in` | `bifrost_cloudflare_scale_in_execute` | `platform.readwrite` |
