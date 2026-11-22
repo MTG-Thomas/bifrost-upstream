@@ -283,6 +283,8 @@ export class ContainerInstanceLifecycle {
                 BIFROST_WORKER_FORM: "external", BIFROST_WORKER_INCARNATION_ID: pin.worker,
                 BIFROST_WORKER_RESOURCE_UID: pin.uid, BIFROST_WORKER_CONTROL_SECRET: controlKey,
                 BIFROST_CONTAINER_RELEASE: this.release, BIFROST_API_URL: this.origin, HOSTNAME: `bifrost-${pin.uid}`,
+                BIFROST_CONTAINER_DEADLINE_MS: String(pin.deadline),
+                BIFROST_CONTAINER_IDLE_SECONDS: String(this.idleMs / 1000),
             };
             if (probeNonce !== null) env.BIFROST_CONTAINER_PROBE_NONCE = probeNonce;
             this.ctx.container.start({ image: this.image, env, enableInternet: false });

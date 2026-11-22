@@ -175,6 +175,8 @@ test("the instance lifecycle pins the intercept and launch options, then stops a
             assert.equal(options.env.BIFROST_WORKER_CONTROL_SECRET, "f".repeat(64));
             assert.equal(options.env.BIFROST_WORKER_RESOURCE_UID, slot.uid);
             assert.equal(options.env.BIFROST_CONTAINER_PROBE_NONCE, "n".repeat(43));
+            assert.equal(options.env.BIFROST_CONTAINER_DEADLINE_MS, String(slot.deadline));
+            assert.equal(options.env.BIFROST_CONTAINER_IDLE_SECONDS, "120");
             assert.equal(options.env.BIFROST_SECRET_KEY, undefined);
             assert.equal(options.env.BIFROST_DATABASE_URL, undefined);
             assert.equal(stored.get("deadline"), slot.deadline);

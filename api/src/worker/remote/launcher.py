@@ -74,6 +74,23 @@ def _load_containers_control_secret() -> str:
     return os.environ.pop("BIFROST_WORKER_CONTROL_SECRET")
 
 
+def _load_container_lifetime() -> tuple[float, int]:
+    """Read the two non-renewable timing pins before starting the supervisor."""
+    try:
+        deadline_ms = int(os.environ.pop("BIFROST_CONTAINER_DEADLINE_MS"))
+        idle_seconds = int(os.environ.pop("BIFROST_CONTAINER_IDLE_SECONDS"))
+        remaining = deadline_ms / 1000 - time.time()
+        if not 0 < remaining <= 93_600 or not 1 <= idle_seconds <= 120:
+            raise ValueError
+    except (KeyError, OverflowError, ValueError):
+        raise RuntimeError("Invalid managed Container lifetime") from None
+    return remaining, idle_seconds
+
+
+def _exit_at_container_deadline(_signal: int, _frame: Any) -> None:
+    os._exit(124)
+
+
 async def _next_control_frame(
     socket: Any,
     stopping: asyncio.Event,
@@ -214,6 +231,7 @@ class Launcher:
         containers: bool = False,
         container_release: str | None = None,
         container_probe_nonce: str | None = None,
+        container_idle_seconds: int | None = None,
     ) -> None:
         self.socket = socket
         self.identity = identity
@@ -222,6 +240,9 @@ class Launcher:
         self.containers = containers
         self.container_release = container_release
         self.container_probe_nonce = container_probe_nonce
+        self.container_idle_seconds = container_idle_seconds
+        self._idle_since = time.monotonic()
+        self._idle_draining = False
         self.platform_stages = (
             PlatformStages(
                 {SOLUTION_GIT_CAPABILITY: StageProgram("src.worker.remote.solution_git_stage", 45)},
@@ -337,6 +358,7 @@ class Launcher:
             )
         current, limit = effective_memory_sample()
         self.baseline_bytes = current
+        self._idle_since = time.monotonic()
         self._monitor_task = self.task(self.monitor())
 
     async def hello(self, requirements: dict[str, Any]) -> None:
@@ -490,6 +512,9 @@ class Launcher:
                 else:
                     response = self.platform_stages.status(binding)
             elif action in ("workflow", "service"):
+                if self._idle_draining:
+                    raise ValueError("Container is draining after its idle deadline")
+                self._idle_since = time.monotonic()
                 self.check_fork_pressure()
                 route_id = payload["route_id"]
                 if route_id in self.children or route_id in self.jobs:
@@ -797,9 +822,24 @@ class Launcher:
                 os.kill(child.pid, signal.SIGKILL)
             await self.finish(child, self.failure(child, error_type, error))
 
+    def _container_idle_is_due(self, now: float) -> bool:
+        if self.container_idle_seconds is None:
+            return False
+        if self.children or self.pending_terminal or any(
+            task is not self._monitor_task and not task.done() for task in self._tasks
+        ):
+            self._idle_since = now
+            return False
+        return now - self._idle_since >= self.container_idle_seconds
+
     async def monitor(self) -> None:
         tick = 0
         while True:
+            if self._container_idle_is_due(time.monotonic()):
+                self._idle_draining = True
+                await self.begin_drain()
+                self.retired.set()
+                return
             # A package recycle intentionally stops the template while holding
             # this lock. Observe liveness only outside that replacement window.
             async with self._template_lock:
@@ -932,6 +972,8 @@ async def _run_launcher(
     containers = identity.form == "external" and "BIFROST_WORKER_CONTROL_SECRET" in os.environ
     container_release = None
     probe_nonce = None
+    idle_seconds = None
+    remaining = None
     if os.environ.get("BIFROST_BAKED_WHEELS_ONLY") == "1":
         container_release = os.environ.pop("BIFROST_CONTAINER_RELEASE", "")
         probe_nonce = os.environ.pop("BIFROST_CONTAINER_PROBE_NONCE", None)
@@ -939,6 +981,7 @@ async def _run_launcher(
             raise RuntimeError("The Container release requires explicit incarnation, release and HTTPS ingress pins")
         if probe_nonce is not None and re.fullmatch(r"[A-Za-z0-9_-]{43}", probe_nonce) is None:
             raise RuntimeError("Invalid Container qualification challenge")
+        remaining, idle_seconds = _load_container_lifetime()
     secret = _load_containers_control_secret() if containers else os.environ["BIFROST_SECRET_KEY"]
     launcher: Launcher | None = None
     candidate: Launcher | None = None
@@ -946,6 +989,10 @@ async def _run_launcher(
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stopping.set)
+    # The provider alarm also enforces the absolute bound independently.
+    if remaining is not None:
+        signal.signal(signal.SIGALRM, _exit_at_container_deadline)
+        signal.setitimer(signal.ITIMER_REAL, remaining)
     try:
         drain_task: asyncio.Task[None] | None = None
         while launcher is None or (not launcher.retired.is_set() and not launcher.failed):
@@ -964,6 +1011,7 @@ async def _run_launcher(
                                 containers=containers,
                                 container_release=container_release,
                                 container_probe_nonce=probe_nonce,
+                                container_idle_seconds=idle_seconds,
                             )
                         else:
                             # A lost welcome may follow a committed enrollment.
@@ -1025,8 +1073,13 @@ async def _run_launcher(
                     break
                 await asyncio.sleep(1)
     finally:
-        if launcher is not None:
-            await _shutdown_launcher(launcher, drain_task, stopping)
+        try:
+            if launcher is not None:
+                await _shutdown_launcher(launcher, drain_task, stopping)
+        finally:
+            if remaining is not None:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+                signal.signal(signal.SIGALRM, signal.SIG_DFL)
     return 1 if launcher is not None and launcher.failed else 0
 
 
