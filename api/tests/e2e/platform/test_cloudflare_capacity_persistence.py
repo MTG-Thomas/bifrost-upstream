@@ -1825,11 +1825,21 @@ async def test_reconcile_dedupes_schedule_and_closes_admission_on_missing_deploy
     assert installation.admitted_revision is None
 
 
+@pytest.fixture
+async def supervisor_database(isolated_capacity_session_factory):
+    # The supervisor plans the whole queue. Give it only this test's demand
+    # and keep real test-stack executors from consuming the fixture.
+    async with isolated_capacity_session_factory() as db:
+        installation_id = await create_installation(db, uuid4().hex)
+        installation = await db.get(CloudflareInstallation, installation_id)
+        assert installation is not None
+        yield db, installation
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("primary", ["static", "job", "external"])
-async def test_supervisor_reserves_and_retires_without_restarting(
-    db_session: AsyncSession, installation: CloudflareInstallation, primary: str, monkeypatch,
-) -> None:
+async def test_supervisor_reserves_and_retires_without_restarting(supervisor_database, primary: str, monkeypatch) -> None:
+    db_session, installation = supervisor_database
     connection = await db_session.connection()
 
     @asynccontextmanager
@@ -1846,9 +1856,6 @@ async def test_supervisor_reserves_and_retires_without_restarting(
         ids=frozenset(), versions=frozenset({"test"}),
     )))
     await KubernetesExecutionService(db_session).update_policy({"max_workers": 1, "warm_workers": 0}, updated_by="test")
-    # Each case supplies the entire primary cohort. The test stack's own
-    # in-process workers would otherwise fill demand in the Job and VM cases.
-    await db_session.execute(update(ExecutionWorker).values(state="retired"))
     bearer = "test-scope-bearer-" + "a" * 30
     db_session.add(seal_credential(
         CredentialRef(installation.id, installation.account_id, "scope_bearer", "workers", 1),
