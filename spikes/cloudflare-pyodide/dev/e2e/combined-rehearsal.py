@@ -171,23 +171,25 @@ if any(row.split()[1] == "00000000" for row in Path("/proc/net/route").read_text
         self.host = f"{mode}.example.test"
         account = "a" * 32
         base = "/api/capacity/cloudflare"
-        consent = self.send(base, method="GET")["consent_text_version"]
+        status = self.send(base, method="GET")
+        consent = status["consent_text_version"]
+        policy = status["suggested_policy"]
+        assert Decimal(policy["monthly_limit_usd"]) == Decimal("75")
+        workers = policy["workers"]
+        assert (workers["launcher_cap"], workers["slots_per_launcher"], workers["installation_slots"],
+                workers["max_lifetime_seconds"]) == (3, 4, 9, 3600)
         staged = self.send(base + "/credential", {
             "account_id": account, "api_token": MANAGEMENT, "purpose": "connect",
         })
         body = {"account_id": account, "worker_ingress_origin": "https://" + self.host,
                 "consent": True, "consent_version": consent, "action": "connect",
-                "credential_ref": staged["credential_ref"], "policy": {
-                    "monthly_limit_usd": "450.00", "workers": {
-                        "launcher_cap": 3, "slots_per_launcher": 4, "slots_per_tenant": 4,
-                        "installation_slots": 9, "max_lifetime_seconds": 120, "linger_seconds": 90,
-                        "work_kinds": ["workflow"], "queue_prewarm_per_tenant": 0,
-                    },
-                }}
+                "credential_ref": staged["credential_ref"], "policy": policy}
         if mode == "managed":
             body.update(reachability_mode="managed_tunnel", zone_id="b" * 32)
         installed = self.send(base, body, method="PATCH")["installation"]
         assert not installed["admission_open"] and installed["policy"]["workers"]["queue_prewarm_per_tenant"] == 0
+        evidence("policy", {"mode": mode, "lifetime_seconds": workers["max_lifetime_seconds"],
+                            "fleet_envelope_usd": installed["fleet_envelope_usd"]})
 
     def preflight(self):
         completed = subprocess.run([
@@ -320,11 +322,23 @@ async def {name}():
             receipts[case] = slot
         cold, warm = receipts["cold"], receipts["warm"]
         assert (cold["worker"], cold["ordinal"]) == (warm["worker"], warm["ordinal"])
-        timing = self.sql(f"""SELECT to_json(cloudflare_timing) FROM executions WHERE id='{cold['id']}'""") or {}
-        evidence("latency", {"cold_overflow_gate_ms": (
-            duration(timing["queued_at"], timing["gate_eligible_at"])
-            if {"queued_at", "gate_eligible_at"} <= timing.keys() else None
-        ), **{label: {
+        execution_id, worker_id = UUID(cold["id"]), UUID(cold["worker"])
+        timing = self.sql(f"""
+            SELECT launch_timing || cloudflare_timing
+            FROM executions, cloudflare_worker_reservations
+            WHERE executions.id='{execution_id}' AND worker_id='{worker_id}'
+        """)
+        stages = {
+            "gate": "gate_eligible_at", "decision": "controller_decision_at",
+            "launcher_start": "launcher_start_sent_at", "launcher_accepted": "launcher_start_accepted_at",
+            "hello": "session_ready_at", "claim": "claim_at", "prepare": "prepare_sent_at",
+            "engine_ready": "engine_ready_at", "dispatch": "dispatch_sent_at", "entry": "entry_at",
+        }
+        assert timing is not None and set(stages.values()) <= timing.keys(), timing
+        elapsed = {stage: duration(timing["queued_at"], timing[field]) for stage, field in stages.items()}
+        assert elapsed["gate"] == WORKERS_OVERFLOW_AGE_SECONDS * 1000
+        assert elapsed["entry"] >= max(elapsed["dispatch"], elapsed["engine_ready"])
+        evidence("latency", {"cold_queue_to_stage_ms": elapsed, **{label: {
             "queue_to_entry_ms": duration(row["queued"], row["entry"]),
             "queue_to_completion_ms": duration(row["queued"], row["completed"]),
             "ordinal": row["ordinal"],

@@ -620,6 +620,11 @@ both images as in item 1 and save each loader's release version and
 deployment digest in `.release-1.checked` and `.release-2.checked`.
 Check the host start condition before launching the stack.
 
+Use the verified release's preset B suggestion for both connections. The
+driver checks the $75 policy, three four-slot launchers, nine installation
+slots and 3,600-second deadline before Connect. It records the fleet envelope
+and cold-path stage offsets from the persisted launcher and execution timings.
+
 ```sh
 python3 spikes/cloudflare-pyodide/dev/e2e/combined-stack.py "$PROJECT" "$IMAGE"
 node spikes/cloudflare-pyodide/dev/e2e/combined-provider.mjs .rehearsal/config.json &

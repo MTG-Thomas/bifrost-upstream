@@ -40,11 +40,10 @@ Each limit is a suggested USD amount per UTC month for the **shared Bifrost esti
 
 ### Preserve Fleet Validation
 
-Preset B requires requalification of the Workers bundle with enforced
-incarnation deadlines and lifetime-scaled meters. The checked-in release
-still uses its original meter inventory and qualified bundle pin. The API
-suggests Preset B for new installations only when the installed, verified
-release includes lifetime meters and $75 covers its computed envelope.
+Preset B is covered by the requalified Workers bundle with enforced
+incarnation deadlines and lifetime-scaled meters. The API suggests Preset B
+for new installations when the installed, verified release includes those
+meters and $75 covers its computed envelope. [CT128 qualification receipt](../../results/cloudflare-scaleout-meter-lifetime-timing.json)
 
 Workers save rejects a monthly limit below the selected release's computed envelope. The formula prices the bounded launcher fleet at `launcher cap × (max lifetime + cleanup margin)` plus fixed meter allowances, then adds `$0.002 × reachable slots × 31 × (ceil(86,400 / max lifetime) + 1)` for identity rotation. It uses the manifest's qualified CPU inputs for the fleet price and rounds the result up to cents. In Option C, rotation alone is `$402.318` and the other bounded meters add about `$13.267`. The protected Connect test passes with `$50` against a `$45.26` fixture envelope generated from different fixture bounds and geometry. The relevant floor for any option comes from the exact selected release and policy. [Policy pricing](../../../../api/src/services/worker_pool/cloudflare_policy.py) · [Fleet calculation](../../../../api/src/services/worker_pool/cloudflare_spend.py) · [Hosted preparation receipt](../../results/cloudflare-scaleout-meter-hosted-prep.json) · [Protected Connect fixture](../../../../api/tests/e2e/platform/test_cloudflare_capacity_persistence.py)
 

@@ -172,6 +172,7 @@ async function referenceAttempt(record, solution, slotCase) {
   }
   if (slotCase?.soak) {
     const value = terminal.result?.result;
+    let timing;
     if (terminal.result?.success === true) {
       const {module_count, memory, ...output} = value;
       assert.deepEqual(output, {
@@ -179,10 +180,14 @@ async function referenceAttempt(record, solution, slotCase) {
         ...(solution ? {install_value: 'solution'} : {}),
       });
       assert.ok(Number.isSafeInteger(module_count) && module_count > 0);
+      const {engine_ready_at, entry_at} = terminal.timings ?? {};
+      assert.ok(Number.isSafeInteger(engine_ready_at) && engine_ready_at > 0);
+      assert.ok(Number.isSafeInteger(entry_at) && entry_at >= Math.max(now, engine_ready_at));
+      timing = {engine_ready_to_entry_ms: entry_at - engine_ready_at, offer_to_entry_ms: entry_at - now};
     }
     return {state: terminal.attempt_state, success: terminal.result?.success === true,
       error_type: terminal.result?.error_type ?? null, route_id,
-      module_count: value?.module_count, ...(memoryProbe ? {memory: value?.memory} : {})};
+      module_count: value?.module_count, ...(timing ? {timing} : {}), ...(memoryProbe ? {memory: value?.memory} : {})};
   }
   if (slotCase?.cancel) return terminal;
   assert.equal(terminal.attempt_state, 'completed', JSON.stringify(terminal));
