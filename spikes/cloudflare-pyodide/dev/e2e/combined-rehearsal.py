@@ -1,5 +1,6 @@
 """Exercise the complete combined qualification using the local provider."""
 
+import argparse
 import ipaddress
 import json
 import os
@@ -458,6 +459,8 @@ async def {name}():
     def managed(self):
         self.connect("managed")
         self.enable()
+        initial_shape = "missing" if self.cfg.get("missingTunnelConfig") else "default_404"
+        assert {"kind": "initial-tunnel-config", "shape": initial_shape} in self.provider("/local/evidence")
         root = "/client/v4/accounts/" + "a"*32
         tunnel, = self.provider(root + "/cfd_tunnel")
         path = root + "/cfd_tunnel/" + tunnel["id"]
@@ -479,7 +482,7 @@ async def {name}():
         self.provider("/local/tunnel-connect", "POST", {"token": token}, status=403)
         self.preflight()
         self.enable()
-        evidence("managed", {"warp_routing_enabled": False, "route_list_http": 200,
+        evidence("managed", {"initial_config": initial_shape, "warp_routing_enabled": False, "route_list_http": 200,
                              "previous_sessions_evicted": len(old), "replacement_sessions": len(new)})
         return tunnel["id"], record["id"]
 
@@ -608,21 +611,25 @@ async def {name}(case: str, hold: int):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--managed-only", action="store_true", help="Rehearse items 6–9 on a fresh stack")
+    args = parser.parse_args()
     trial = Rehearsal()
     trial.seed()
-    trial.connect("existing")
-    trial.preflight()
-    trial.enable()
-    trial.primary_hold()
-    trial.latency()
-    trial.burst()
-    trial.release_primary()
-    scripts = trial.scripts()
-    trial.completed(trial.job("reconcile"), "verified")
-    assert trial.scripts() == scripts
-    trial.scale_in(active=True)
-    evidence("reconcile-and-scale-in", {"active_drain": True, "scripts_retained": 3})
-    trial.disconnect()
+    if not args.managed_only:
+        trial.connect("existing")
+        trial.preflight()
+        trial.enable()
+        trial.primary_hold()
+        trial.latency()
+        trial.burst()
+        trial.release_primary()
+        scripts = trial.scripts()
+        trial.completed(trial.job("reconcile"), "verified")
+        assert trial.scripts() == scripts
+        trial.scale_in(active=True)
+        evidence("reconcile-and-scale-in", {"active_drain": True, "scripts_retained": 3})
+        trial.disconnect()
     tunnel, dns = trial.managed()
     trial.upgrade()
     trial.scale_in()

@@ -168,7 +168,7 @@ verified its absence.
 
 See the [sanitized preset B receipt](../../results/cloudflare-scaleout-preset-b-hosted.json).
 
-### Version 0 or 1 catch-all at initial creation
+### Catch-all during initial provisioning
 
 Cloudflare documents `http_status:404` as a catch-all with no origin.
 Its remote tunnel setup guide creates a tunnel before installing ingress
@@ -178,13 +178,20 @@ unconfirmed. The single 404 rule is the narrow provider-default shape
 modeled by the local fixture.
 [Create a remote tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel-api/) · [Configuration API](https://developers.cloudflare.com/api/resources/zero_trust/subresources/tunnels/subresources/cloudflared/subresources/configurations/)
 
-Bifrost accepts that shape only when the current create response names
-the same tunnel as the exact secret-verified ownership read. The
-configuration must identify the same account and tunnel. Its single
-catch-all can have only blank matching fields, empty origin options,
-and default or disabled WARP routing. A replay that finds an existing
-tunnel lacks this fresh-create proof. The prior exact-match and empty
-configuration rules still apply to it.
+Bifrost accepts a single 404 catch-all regardless of version during
+initial provisioning, including a retry after a lost create response.
+The committed creation secret must prove the exact tunnel, and its
+configuration must identify the same account and tunnel. The rule can
+have only blank matching fields, empty origin options, and default or
+disabled WARP routing. Once a receipt is recorded, the catch-all alone
+is ingress drift and requires repair. A conflict reports the version,
+recognized keys, rule count, and service categories. Unknown keys are
+reported as `other`; provider IDs, hostnames and rule values are omitted.
+
+The local provider also supports a configuration-read 404 through
+`combined-stack.py --missing-tunnel-config`. Use `combined-rehearsal.py
+--managed-only` to exercise items 6–8 and final teardown on a fresh
+stack with either initial response.
 
 CT128 exercised combined items 6–8 at `a580a0b70` with both pinned
 release packages and internal-only fixtures. The Managed Tunnel stub
