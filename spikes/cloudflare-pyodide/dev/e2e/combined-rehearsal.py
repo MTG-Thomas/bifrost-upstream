@@ -157,6 +157,17 @@ if any(row.split()[1] == "00000000" for row in Path("/proc/net/route").read_text
     def install(self):
         return self.send("/api/capacity/cloudflare", method="GET")["installation"]
 
+    def observe_status(self, checkpoint):
+        status = self.send("/api/capacity/cloudflare", method="GET")
+        workers = next((lane for lane in status["lanes"] if lane["lane"] == "workers"), None)
+        evidence("capacity-status", {
+            "checkpoint": checkpoint,
+            "placement": sorted(item["code"] for item in status["placement_reasons"]),
+            "workers": sorted(item["code"] for item in workers["reasons"]) if workers else [],
+            "eligible_queued": workers["eligible_queued"] if workers else None,
+            "running": workers["running"] if workers else None,
+        })
+
     def job(self, action, extra=None):
         install = self.install()
         result = self.send("/api/capacity/cloudflare/" + action, {
@@ -204,6 +215,7 @@ if any(row.split()[1] == "00000000" for row in Path("/proc/net/route").read_text
         plan = self.send(base + "/preflight", body)
         assert plan["preflight_receipt"] and plan["account_id"] == account
         assert plan["preview"]["policy"]["workers"]["queue_prewarm_per_tenant"] == 0
+        assert status["installation"] is None and self.install() is None
         self.host = urlsplit(plan["worker_ingress_origin"]).hostname
         self.activation_request = {
             "credential_ref": staged["credential_ref"], "preflight_receipt": plan["preflight_receipt"],
@@ -439,9 +451,11 @@ async def {name}():
     def burst(self):
         cases = [f"{group}-{idx}" for group in ("provider", "global") for idx in range(1, 5)]
         cancelled = "global-4"
-        for case in cases:
+        for index, case in enumerate(cases):
             group = "solution" if case == "provider-4" else case.split("-")[0]
             self.submit(case, group, hold=-1 if case == cancelled else 70)
+            if index == 0:
+                self.observe_status("burst-first-dispatch")
         sent = wait("eight sent burst slots", lambda: self.sent_slots(cases), 28)
         sent_observed_at = time.monotonic()
         eight = wait("eight entered burst slots after dispatch", lambda: self.held(cases), 28)
@@ -467,6 +481,7 @@ async def {name}():
         eligible_at = queued_at + WORKERS_OVERFLOW_AGE_SECONDS
         baseline = wait("first overflow-eligible controller pass",
                         lambda previous=baseline: stamp if (stamp := marker()) > previous and stamp >= eligible_at else None, 8)
+        self.observe_status("tenth-dispatch-after-launch-gate")
         for _ in range(2):
             baseline = wait("next managed controller pass", lambda previous=baseline: stamp if (stamp := marker()) > previous else None, 8)
             held = self.held(nine)
@@ -538,7 +553,10 @@ async def {name}():
 
     def disconnect(self):
         receipts = self.worker_receipts()
-        self.completed(self.job("disconnect"), "disconnected")
+        job = self.job("disconnect")
+        if "managementToken" not in self.cfg:
+            self.observe_status("disconnect-requested")
+        self.completed(job, "disconnected")
         assert self.install() is None
         absent = self.verify_receipts_absent(receipts)
         expected = (0, 0, 0, 0)
@@ -928,7 +946,7 @@ def main():
         evidence("reconcile-and-scale-in", {"active_drain": True, "scripts_retained": 3})
         trial.disconnect()
     tunnel, dns = trial.managed()
-    trial.upgrade()
+    trial.upgrade(replay=False)
     trial.scale_in()
     try:
         trial.meter()
