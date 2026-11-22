@@ -60,6 +60,11 @@ Show the forecast, fee, fleet minimum and admission limit together before consen
 
 After activation, show month-to-date settled and reserved usage, remaining headroom and UTC reset. Keep the forecast approximate and display the limit and fleet minimum to cents so policy failures can be explained. Describe the fleet minimum and admission limit as Bifrost backstops. Provider retries and overages, charge adjustments, delayed cleanup and traffic elsewhere in the account can affect the Cloudflare bill. Where attributed Analytics are available, display them separately as advisory.
 
-## Recommendation for Owner Review
+## Selected Activation Preset
 
-Recommend **Option A** for the first Workers-only activation preset. The hosted cold trial supports a sub-cent planning cost for a small approved workflow, and two slots let an installation test burst overflow while authorizing $30/month of estimated exposure. The tradeoff is two physical slots shared across the target tenants. If nine slots and the existing 120 s lifetime are required on day one, **Option C** makes the applicable floor and larger exposure explicit. Consider **Option B** after verifying the longer lifetime against idle retirement, reserve behavior and latency. Keep **Option D** an explicit opt-in after validating signed release rates, byte bounds and the actual combined envelope. The monthly limit, forecast assumptions and capacity preset remain owner decisions.
+The owner selected **Option B** for new Workers installations once the
+deadline-aware bundle clears local validation and meter requalification.
+The $75 suggested limit covers the $68.50 modeled fleet envelope for three
+four-slot launchers, capped at nine installation slots. Existing
+installations keep their saved limits. Option D still requires explicit
+opt-in and verification of its signed release rates and byte bounds.
