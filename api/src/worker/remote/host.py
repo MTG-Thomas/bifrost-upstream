@@ -1700,6 +1700,22 @@ class RemoteSession:
                     await self.lose_ownership("Remote API owner lease expired")
                     return
                 self.owned_until = renewing_at + DEFAULT_OWNER_LEASE_SECONDS
+                if lease.container_release is not None:
+                    try:
+                        async with asyncio.timeout_at(self.owned_until):
+                            async with self.bridge.lock:
+                                if self.bridge.connected and self.bridge.lease == lease:
+                                    frame = ControlEnvelope(
+                                        session_generation=lease.session_generation,
+                                        sequence=self.bridge._sequence + 1,
+                                        kind="runtime_lease",
+                                        payload={"expires_at_ms": int(renewed.timestamp() * 1000)},
+                                    )
+                                    await self.bridge.socket.send_text(frame.to_json())
+                                    self.bridge._sequence = frame.sequence
+                    except (TimeoutError, WebSocketDisconnect, OSError, RuntimeError):
+                        if self.lease == lease:
+                            raise
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -1800,11 +1816,17 @@ class RemoteControlHost:
         """Send Containers startup inputs before any ordinary launcher commands."""
         startup = None
         if bridge.containers:
+            payload: dict[str, Any] = {"requirements_content": requirements_content}
+            if bridge.lease.container_release is not None:
+                expires_at = bridge.lease.expires_at
+                if expires_at is None:
+                    raise AuthenticationError("Managed Container has no runtime lease")
+                payload["expires_at_ms"] = int(expires_at.timestamp() * 1000)
             startup = ControlEnvelope(
                 session_generation=bridge.lease.session_generation,
                 sequence=bridge._sequence + 1,
                 kind="bootstrap",
-                payload={"requirements_content": requirements_content},
+                payload=payload,
             )
         await bridge.socket.send_text(json.dumps({
             "event": "welcome", "session_generation": bridge.lease.session_generation,

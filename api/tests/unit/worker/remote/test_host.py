@@ -7,7 +7,7 @@ import json
 import time
 from contextlib import asynccontextmanager
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 from uuid import UUID
@@ -528,9 +528,10 @@ async def test_managed_linux_hello_is_bound_to_its_incarnation_key_and_release(m
 @pytest.mark.asyncio
 async def test_containers_bootstrap_round_trips_fragmented_requirements() -> None:
     api_socket = AsyncMock()
+    lease = replace(LEASE, container_release="a" * 64, expires_at=datetime.now(UTC) + timedelta(seconds=20))
     bridge = Bridge(
         api_socket, {"current": 1, "limit": 100, "requirements": {}, "hostname": "runner", "containers": True},
-        LEASE,
+        lease,
     )
     content = "# " + "x" * MAX_FRAME_BYTES
     await RemoteControlHost()._welcome(bridge, content)
@@ -547,13 +548,42 @@ async def test_containers_bootstrap_round_trips_fragmented_requirements() -> Non
     launcher = Launcher(
         launcher_socket, identity=identity, secret="derived-key", containers=True,
         container_release="a" * 64, container_probe_nonce=nonce,
+        container_deadline=time.monotonic() + 30,
     )
-    await launcher.hello({})
+    with patch("src.worker.remote.launcher.signal.setitimer") as arm_watchdog:
+        await launcher.hello({})
+    arm_watchdog.assert_called_once()
     assert json.loads(launcher_socket.send.await_args_list[0].args[0])["hello"]["nonce"] == nonce
     assert launcher.container_probe_nonce is None
     assert launcher.requirements_content == content
     assert launcher._last_command_sequence == bridge._sequence == len(frames) - 1
     assert launcher.agent_template is None
+
+
+@pytest.mark.asyncio
+async def test_managed_container_renewal_sends_the_committed_deadline() -> None:
+    socket = AsyncMock()
+    lease = replace(LEASE, container_release="a" * 64)
+    bridge = Bridge(
+        socket, {"current": 1, "limit": 100, "hostname": "runner", "containers": True, "requirements": {}}, lease,
+    )
+    session = object.__new__(RemoteSession)
+    session.bridge, session.lease, session.owned_until = bridge, lease, time.monotonic() + 20
+    deadline = datetime.now(UTC) + timedelta(seconds=20)
+    with (
+        patch("src.worker.remote.host.asyncio.sleep", new=AsyncMock(side_effect=[None, asyncio.CancelledError()])),
+        patch("src.worker.remote.host.renew_remote_owner", new=AsyncMock(return_value=deadline)) as renew,
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await session._renew()
+
+    renew.assert_awaited_once_with(lease)
+    socket.send_text.assert_awaited_once()
+    frame = ControlEnvelope.from_json(socket.send_text.await_args.args[0])
+    assert frame == ControlEnvelope(
+        session_generation=lease.session_generation, sequence=1, kind="runtime_lease",
+        payload={"expires_at_ms": int(deadline.timestamp() * 1000)},
+    )
 
 
 @pytest.mark.asyncio

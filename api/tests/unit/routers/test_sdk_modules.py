@@ -141,7 +141,7 @@ async def test_inline_runtime_loads_workspace_source_only_with_global_repository
     from shared.sdk_modules import module_scope_for_principal
 
     scope = await module_scope_for_principal(
-        MagicMock(), _runtime_user(workflow_id=None, permissions=permissions),
+        _ScopeDb(None, None), _runtime_user(workflow_id=None, permissions=permissions),
         solution_id=SOLUTION_A, global_repo_access=False,
     )
 

@@ -132,29 +132,13 @@ class ContainersRest(WorkersRestCleanup):
         image: str, not_before: datetime,
     ) -> InstanceStop:
         """Read the exact application and actor without waking the Durable Object."""
-        name = _name(application.intent, "container_application")
-        account = application.intent.target.account_id
-        if (
-            not _APP_ID.fullmatch(application.provider_id) or not _HEX32.fullmatch(application.provider_version)
-            or not re.fullmatch(r"[a-f0-9]{64}", instance_id)
-        ):
-            raise OwnershipConflict("Invalid Container instance observation target")
-        path = f"containers/applications/{application.provider_id}"
-        app = await self._request(token, account, "GET", path)
-        assert app is not None
-        if self._application(app["result"], account, name, application.provider_version) != application.provider_id:
-            raise OwnershipConflict("Container application ID changed")
-        placements = await self._inventory(token, account, f"{path}/instances-v2", name_prefix=instance_id)
+        placements = await self._instance_inventory(token, application, instance_id)
         if not placements:
             raise ObservationPending("Missing instance readback does not witness a stopped placement")
         if len(placements) != 1:
             raise OwnershipConflict("Container readback has multiple placements for its start fence")
         row = placements[0]
-        if (
-            row.get("id") != instance_id
-            or row.get("application_id") != application.provider_id
-            or row.get("image") != image
-        ):
+        if row.get("id") != instance_id or row.get("application_id") != application.provider_id or row.get("image") != image:
             raise OwnershipConflict("Container placement differs from its journal")
         try:
             status = row["status"]
@@ -167,6 +151,27 @@ class ContainersRest(WorkersRestCleanup):
         except (KeyError, TypeError, ValueError):
             raise ObservationPending("Provider has not witnessed a bounded stop for this placement") from None
         return InstanceStop(started_at.astimezone(UTC), stopped_at.astimezone(UTC))
+
+    async def observe_no_placement(self, token: SecretStr, application: ResourceObservation, instance_id: str) -> None:
+        if await self._instance_inventory(token, application, instance_id):
+            raise ObservationPending("A void Container still has a provider placement")
+
+    async def _instance_inventory(
+        self, token: SecretStr, application: ResourceObservation, instance_id: str,
+    ) -> list[dict[str, Any]]:
+        name = _name(application.intent, "container_application")
+        account = application.intent.target.account_id
+        if (
+            not _APP_ID.fullmatch(application.provider_id) or not _HEX32.fullmatch(application.provider_version)
+            or not re.fullmatch(r"[a-f0-9]{64}", instance_id)
+        ):
+            raise OwnershipConflict("Invalid Container instance observation target")
+        path = f"containers/applications/{application.provider_id}"
+        app = await self._request(token, account, "GET", path)
+        assert app is not None
+        if self._application(app["result"], account, name, application.provider_version) != application.provider_id:
+            raise OwnershipConflict("Container application ID changed")
+        return await self._inventory(token, account, f"{path}/instances-v2", name_prefix=instance_id)
 
 
 class ContainerRegistry:

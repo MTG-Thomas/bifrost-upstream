@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
-import { forwardContainerHttp, relayControlSockets, ScopeRegistry } from "./container-registry.mjs";
+import { ContainerInstanceLifecycle, forwardContainerHttp, relayControlSockets, ScopeRegistry } from "./container-registry.mjs";
 
 const policy = JSON.parse(readFileSync(new URL("../../../api/src/services/worker_ingress_routes.json", import.meta.url)));
 
@@ -128,6 +128,94 @@ class Socket extends EventTarget {
     frame(data) { this.dispatchEvent(new MessageEvent("message", { data })); }
 }
 
+test("an expired unstarted seat is voided after a reset and can never start", (t) => {
+    const { db, registry, pin } = fixture(1);
+    t.after(() => db.close());
+    const first = pin();
+    const next = pin();
+    const missing = pin();
+    const instance = "b".repeat(64);
+    assert.equal(registry().reserve(first).status, "reserved");
+    assert.equal(registry().reserve(next).status, "full");
+    assert.equal(registry().voidUnstarted(first, instance, first.startDeadline - 1).status, "pending");
+    const receipt = { status: "void", uid: first.uid, instance, startDeadline: first.startDeadline, voidedAt: first.startDeadline };
+    assert.deepEqual(registry().voidUnstarted(first, instance, first.startDeadline), receipt);
+    assert.deepEqual(registry().voidUnstarted(first, instance, first.startDeadline + 1), receipt);
+    assert.equal(registry().voidUnstarted(first, "f".repeat(64), first.startDeadline + 1).status, "conflict");
+    assert.equal(registry().authorizeStart(first.uid, instance, first.reservedAt, first.deadline).status, "closed");
+    assert.equal(registry().reserve(next).status, "reserved");
+    assert.equal(registry().authorizeStart(next.uid, instance, next.reservedAt, next.deadline).status, "authorized");
+    assert.equal(registry().voidUnstarted(next, instance, next.startDeadline).status, "conflict");
+    assert.equal(registry().voidUnstarted(missing, "d".repeat(64), missing.startDeadline).status, "void");
+    assert.equal(registry().reserve(missing).status, "retired");
+});
+
+test("the instance lifecycle pins the intercept and launch options, then stops at the durable deadline", async (t) => {
+    const { db, registry, pin } = fixture(1);
+    t.after(() => db.close());
+    t.mock.timers.enable({ apis: ["Date"], now: 100 });
+    const slot = pin();
+    const actor = "b".repeat(64);
+    const stored = new Map();
+    const events = [];
+    const intercepted = {};
+    const origin = "https://ingress.example.test";
+    const image = `registry.cloudflare.com/${"a".repeat(32)}/bifrost-${slot.installation.replaceAll("-", "")}-r2@${slot.image}`;
+    const container = {
+        running: false,
+        async interceptOutboundHttps(host, binding) {
+            assert.equal(host, "ingress.example.test");
+            assert.equal(binding, intercepted);
+            events.push("intercept");
+        },
+        start(options) {
+            assert.equal(options.image, image);
+            assert.equal(options.enableInternet, false);
+            assert.equal(options.env.BIFROST_API_URL, origin);
+            assert.equal(options.env.BIFROST_WORKER_CONTROL_SECRET, "f".repeat(64));
+            assert.equal(options.env.BIFROST_WORKER_RESOURCE_UID, slot.uid);
+            assert.equal(options.env.BIFROST_CONTAINER_PROBE_NONCE, "n".repeat(43));
+            assert.equal(options.env.BIFROST_CONTAINER_DEADLINE_MS, String(slot.deadline));
+            assert.equal(options.env.BIFROST_CONTAINER_IDLE_SECONDS, "120");
+            assert.equal(options.env.BIFROST_SECRET_KEY, undefined);
+            assert.equal(options.env.BIFROST_DATABASE_URL, undefined);
+            assert.equal(stored.get("deadline"), slot.deadline);
+            assert.equal(db.prepare("SELECT instance FROM start_fences WHERE uid = ?").get(slot.uid).instance, actor);
+            this.running = true;
+            events.push("start");
+        },
+        async setInactivityTimeout(ms) {
+            assert.equal(ms, 120_000);
+            events.push("idle");
+        },
+        async destroy() {
+            assert.equal(this.running, true);
+            this.running = false;
+            events.push("destroy");
+        },
+    };
+    const ctx = {
+        container, id: actor, blockConcurrencyWhile: async (action) => action(),
+        storage: {
+            get: async (key) => stored.get(key), put: async (key, value) => stored.set(key, value),
+            setAlarm: async (when) => stored.set("deadline", when),
+        },
+    };
+    const controller = () => new ContainerInstanceLifecycle(ctx, registry(), {
+        origin, image, release: "c".repeat(64), intercept: intercepted,
+    });
+    assert.deepEqual(await controller().start(slot, "f".repeat(64), "n".repeat(43)), { status: "pending" });
+    assert.deepEqual(await controller().start(slot, "f".repeat(64), "n".repeat(43)), { status: "pending" });
+    assert.equal(JSON.stringify([...stored]).includes("f".repeat(64)), false);
+    assert.deepEqual(await controller().stop(pin().uid), { status: "conflict" });
+    await controller().restore();
+    t.mock.timers.setTime(slot.deadline);
+    await controller().alarm();
+    assert.deepEqual(await controller().stop(slot.uid), { status: "pending" });
+    assert.deepEqual(events, ["intercept", "start", "idle", "idle", "destroy"]);
+    assert.equal(registry().closeStart(slot.uid, actor, Date.now()).status, "pending");
+});
+
 test("the control relay preserves fragments and fences both directions across reconnects", (t) => {
     const { db, registry, pin } = fixture();
     t.after(() => db.close());
@@ -182,7 +270,7 @@ test("a silent relay closes at the pinned deadline", (t) => {
 });
 
 test("HTTP interception forwards only the exact ingress and shares the bidirectional meter", async (t) => {
-    const { db, registry, pin } = fixture(1, 256);
+    const { db, registry, pin } = fixture(1, 4096);
     t.after(() => db.close());
     const reservedAt = Date.now();
     const slot = { ...pin(), reservedAt, startDeadline: reservedAt + 1000, deadline: reservedAt + 123_000 };
@@ -202,22 +290,32 @@ test("HTTP interception forwards only the exact ingress and shares the bidirecti
         return new Response("fixture response");
     };
     const visit = (target, host) => forwardContainerHttp(scope, slot.uid, instance, new Request(target, {
-        method: "POST", headers: { host, authorization: "Bearer fixture", "x-forwarded-host": "unsafe" }, body: "{}",
+        method: "POST", headers: {
+            host, authorization: "Bearer fixture", "x-forwarded-host": "unsafe",
+            "x-fixture-extra": "x".repeat(128), "content-length": "2",
+        }, body: "{}",
     }), origin, policy, upstream);
     assert.equal((await visit("https://elsewhere.example.test" + path, "ingress.example.test")).status, 403);
     assert.equal((await visit(origin + path, "elsewhere.example.test")).status, 403);
     assert.equal((await visit(origin + "/api/users/me/permissions", "ingress.example.test")).status, 403);
     assert.equal((await visit(origin + "/api/sdk/%63onfig/get", "ingress.example.test")).status, 403);
     assert.deepEqual(calls, []);
+    const pending = db.prepare("SELECT outbound, ingress FROM start_fences WHERE uid = ?").get(slot.uid);
+    assert.ok(pending.outbound >= 4 * 2 * (128 + 2));
+    assert.ok(pending.ingress > 0);
     const reply = await visit(origin + path, "ingress.example.test");
     assert.equal(await reply.text(), "fixture response");
     assert.deepEqual(calls, [origin + path]);
-    assert.equal(scope.chargeRelay(slot.uid, instance, "outbound", 256, Date.now()), false);
+    const tooLarge = await forwardContainerHttp(scope, slot.uid, instance, new Request(origin + path, {
+        method: "POST", headers: { host: "ingress.example.test", "content-length": "4096" }, body: "{}",
+    }), origin, policy, upstream);
+    assert.equal(tooLarge.status, 429);
+    assert.ok(db.prepare("SELECT outbound FROM start_fences WHERE uid = ?").get(slot.uid).outbound >= 2 * 4096);
     assert.equal(scope.chargeRelay(slot.uid, instance, "ingress", 1, Date.now()), false);
 });
 
 test("HTTP interception refuses redirects and stops streaming an oversized response", async (t) => {
-    const { db, registry, pin } = fixture(1, 256);
+    const { db, registry, pin } = fixture(1, 4096);
     t.after(() => db.close());
     const reservedAt = Date.now();
     const slot = { ...pin(), reservedAt, startDeadline: reservedAt + 1000, deadline: reservedAt + 123_000 };
@@ -232,7 +330,7 @@ test("HTTP interception refuses redirects and stops streaming an oversized respo
     const redirect = await visit(async () => Response.redirect("https://elsewhere.example.test/"));
     assert.equal(redirect.status, 403);
     assert.equal(redirect.headers.get("location"), null);
-    const large = await visit(async () => new Response("x".repeat(257)));
+    const large = await visit(async () => new Response("x".repeat(4097)));
     await assert.rejects(large.text(), /budget exhausted/);
     assert.equal(scope.relayDeadline(slot.uid, instance), null);
 });

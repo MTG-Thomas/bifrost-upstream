@@ -1,12 +1,12 @@
 """Settle a managed incarnation only after two independent stop observations."""
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
 from pydantic import SecretStr
-from sqlalchemy import exists, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.enums import ExecutionStatus
@@ -40,8 +40,20 @@ class ClosedContainerStart:
     meter_complete: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class VoidContainerStart:
+    """Authenticated registry tombstone for a UID that never crossed the start fence."""
+
+    application: ResourceObservation
+    worker_id: UUID
+    resource_uid: str
+    instance_id: str
+    start_deadline_ms: int
+    voided_at_ms: int
+
+
 async def settle_container_stop(
-    db: AsyncSession, rest: ContainersRest, *, token: SecretStr, closure: ClosedContainerStart,
+    db: AsyncSession, rest: ContainersRest, *, token: SecretStr, closure: ClosedContainerStart | VoidContainerStart,
 ) -> None:
     """Pair a closed start fence with independent authenticated management readback.
 
@@ -50,10 +62,6 @@ async def settle_container_stop(
     alone cannot authorize release.
     """
     intent = closure.application.intent
-    stop = await rest.observe_instance_stop(
-        token, closure.application, instance_id=closure.instance_id,
-        image=closure.image, not_before=closure.last_start_effect_at,
-    )
     installation = await db.get(
         CloudflareInstallation, intent.target.installation_id,
         with_for_update={"key_share": True}, populate_existing=True,
@@ -62,6 +70,22 @@ async def settle_container_stop(
         raise ObservationPending("Container stop belongs to a different installation")
     worker = await db.get(ExecutionWorker, closure.worker_id, with_for_update=True, populate_existing=True)
     pin = await db.get(CloudflareWorkerReservation, closure.worker_id, populate_existing=True)
+    if (
+        worker is None or pin is None
+        or pin.installation_id != installation.id or pin.scope != CONTAINERS_SCOPE
+        or pin.deployment_revision != intent.desired_revision or pin.container_release != intent.artifact_digest
+        or worker.form != "external" or worker.capacity_scope != CONTAINERS_SCOPE
+        or worker.capacity_resource_uid != closure.resource_uid
+        or pin.container_reserved_at is None or pin.container_envelope is None
+    ):
+        raise ObservationPending("Container stop does not match the durable reservation")
+    envelope = dict(pin.container_envelope)
+    instance = envelope.get("provider_instance_id")
+    void = isinstance(closure, VoidContainerStart)
+    if pin.container_stopped_at is not None:
+        if instance != closure.instance_id or bool(envelope.get("voided_unstarted")) != void:
+            raise ObservationPending("Container stop replay does not match the settled reservation")
+        return
     journal = await db.scalar(select(CloudflareOwnedResource.id).where(
         CloudflareOwnedResource.installation_id == installation.id,
         CloudflareOwnedResource.account_id == installation.account_id,
@@ -75,30 +99,52 @@ async def settle_container_stop(
         CloudflareOwnedResource.provider_version == closure.application.provider_version,
         CloudflareOwnedResource.state == "present",
     ))
-    if (
-        worker is None or pin is None or journal is None
-        or pin.installation_id != installation.id or pin.scope != CONTAINERS_SCOPE
-        or pin.deployment_revision != intent.desired_revision or pin.container_release != intent.artifact_digest
-        or worker.form != "external" or worker.capacity_scope != CONTAINERS_SCOPE
-        or worker.capacity_resource_uid != closure.resource_uid
-        or worker.state not in ("draining", "lost", "retired")
-        or pin.container_reserved_at is None or pin.container_envelope is None
-        or pin.container_envelope.get("provider_instance_id") != closure.instance_id
-        or pin.container_envelope.get("prepared_image") != closure.image
-        or stop.started_at < pin.container_reserved_at
-        or stop.started_at != closure.placement_started_at
-    ):
-        raise ObservationPending("Container stop does not match the durable reservation")
-    if pin.container_stopped_at is not None:
-        if stop.stopped_at < pin.container_stopped_at:
-            raise ObservationPending("Container's settled stop witness moved backwards")
+    if journal is None:
+        raise ObservationPending("Container application ownership is unavailable")
+    if isinstance(closure, VoidContainerStart):
+        if worker.state not in ("reserved", "starting", "draining", "lost", "retired") or instance not in (
+            None, closure.instance_id,
+        ):
+            raise ObservationPending("Container void does not match the unstarted reservation")
+        try:
+            deadline = datetime.fromisoformat(envelope["start_deadline"])
+            when = datetime.fromtimestamp(closure.voided_at_ms / 1000, UTC)
+            now = await db.scalar(select(func.clock_timestamp()))
+            if (
+                now is None or deadline.tzinfo is None or not pin.container_reserved_at < deadline <= now
+                or type(closure.start_deadline_ms) is not int or type(closure.voided_at_ms) is not int
+                or closure.start_deadline_ms != int(deadline.timestamp() * 1000)
+                or closure.voided_at_ms < closure.start_deadline_ms or when > now
+            ):
+                raise ValueError
+        except (KeyError, OSError, TypeError, ValueError, OverflowError):
+            raise ObservationPending("Container void does not witness its expired start deadline") from None
+        if await db.scalar(select(exists().where(ExecutionWorkerClaim.worker_id == worker.id))):
+            raise ObservationPending("An unstarted Container cannot own a claim")
+        await rest.observe_no_placement(token, closure.application, closure.instance_id)
+        pin.container_envelope = {**envelope, "provider_instance_id": closure.instance_id, "voided_unstarted": True}
+        pin.container_stopped_at = when
+        worker.state = "retired"
+        worker.ended_at = worker.capacity_resource_deleted_at = when
+        await db.flush()
         return
+    if (
+        worker.state not in ("draining", "lost", "retired")
+        or instance != closure.instance_id or envelope.get("prepared_image") != closure.image
+    ):
+        raise ObservationPending("Container stop does not match the prepared placement")
     if await db.scalar(select(exists().where(
         ExecutionWorkerClaim.worker_id == worker.id, ExecutionWorkerClaim.subject_id == Execution.id,
         Execution.status.in_((ExecutionStatus.RUNNING, ExecutionStatus.CANCELLING)),
     ))):
         raise ObservationPending("Container still owns a live execution claim")
-    envelope = {**pin.container_envelope, "observed_started_at": stop.started_at.isoformat()}
+    stop = await rest.observe_instance_stop(
+        token, closure.application, instance_id=closure.instance_id,
+        image=closure.image, not_before=closure.last_start_effect_at,
+    )
+    if stop.started_at < pin.container_reserved_at or stop.started_at != closure.placement_started_at:
+        raise ObservationPending("Container stop does not match the witnessed start")
+    envelope["observed_started_at"] = stop.started_at.isoformat()
     count = closure.outbound_bytes
     if closure.meter_complete is True:
         if type(count) is not int or count < 0:

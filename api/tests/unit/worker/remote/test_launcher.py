@@ -5,13 +5,17 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from unittest.mock import AsyncMock
+import signal
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
-
 from src.worker.remote.identity import LauncherIdentity
-from src.worker.remote.launcher import Launcher, _load_containers_control_secret
+from src.worker.remote.launcher import (
+    Launcher,
+    _load_container_lifetime,
+    _load_containers_control_secret,
+)
 from src.worker.remote.protocol import ControlEnvelope
 
 
@@ -31,6 +35,71 @@ def test_containers_refuse_root_before_reading_the_key(monkeypatch) -> None:
     monkeypatch.setattr(os, "geteuid", lambda: 0)
     with pytest.raises(RuntimeError, match="non-root"):
         _load_containers_control_secret()
+
+
+@pytest.mark.parametrize(("deadline_ms", "idle", "valid"), [
+    ("103000", "120", True), ("100000", "120", False), ("103000", "121", False),
+])
+def test_managed_container_requires_a_bounded_lifetime(monkeypatch, deadline_ms, idle, valid) -> None:
+    monkeypatch.setattr("src.worker.remote.launcher.time.time", lambda: 100)
+    monkeypatch.setenv("BIFROST_CONTAINER_DEADLINE_MS", deadline_ms)
+    monkeypatch.setenv("BIFROST_CONTAINER_IDLE_SECONDS", idle)
+    if valid:
+        assert _load_container_lifetime() == (3, 120)
+    else:
+        with pytest.raises(RuntimeError, match="Invalid managed Container lifetime"):
+            _load_container_lifetime()
+
+
+def test_managed_container_lease_renews_only_up_to_the_absolute_deadline(monkeypatch) -> None:
+    identity = LauncherIdentity(
+        launcher_id=uuid4(), incarnation_id=uuid4(), job_uid=None, pod_uid=None,
+        hostname="runner", form="external", resource_uid="fixture",
+    )
+    now, wall_now = 100.0, 1000.0
+    monkeypatch.setattr("src.worker.remote.launcher.time.monotonic", lambda: now)
+    monkeypatch.setattr("src.worker.remote.launcher.time.time", lambda: wall_now)
+    set_timer = Mock()
+    monkeypatch.setattr("src.worker.remote.launcher.signal.setitimer", set_timer)
+    launcher = Launcher(
+        AsyncMock(), identity=identity, secret="derived", containers=True,
+        container_release="a" * 64, container_deadline=125.0,
+    )
+    launcher.grant_runtime_lease(1020000)
+    set_timer.assert_called_once_with(signal.ITIMER_REAL, 20.0)
+    now, wall_now = 110.0, 1010.0
+    launcher.grant_runtime_lease(1030000)
+    set_timer.assert_called_with(signal.ITIMER_REAL, 15.0)
+    now, wall_now = 125.0, 1025.0
+    with pytest.raises(RuntimeError, match="already expired"):
+        launcher.grant_runtime_lease(1045000)
+    assert set_timer.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_managed_container_drains_after_idle_and_fences_new_work() -> None:
+    identity = LauncherIdentity(
+        launcher_id=uuid4(), incarnation_id=uuid4(), job_uid=None, pod_uid=None,
+        hostname="runner", form="external", resource_uid="fixture",
+    )
+    socket = AsyncMock()
+    launcher = Launcher(
+        socket, identity=identity, secret="derived", containers=True,
+        container_release="a" * 64, container_idle_seconds=120,
+    )
+    launcher.session_generation = 1
+    launcher.pending_terminal["unacknowledged"] = {}
+    now = launcher._idle_since + 120
+    assert not launcher._container_idle_is_due(now)
+    launcher.pending_terminal.clear()
+    assert not launcher._container_idle_is_due(now + 119)
+    assert launcher._container_idle_is_due(now + 120)
+    launcher._idle_since -= 240
+    await launcher.monitor()
+    assert launcher.retired.is_set()
+    assert ControlEnvelope.from_json(socket.send.await_args_list[0].args[0]).payload == {"event": "draining"}
+    await launcher.command({"id": "dispatch", "action": "workflow", "payload": {}}, generation=1)
+    assert "idle deadline" in ControlEnvelope.from_json(socket.send.await_args.args[0]).payload["error"]
 
 
 @pytest.mark.asyncio

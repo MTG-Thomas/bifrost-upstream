@@ -506,6 +506,11 @@ the fenced actor and exact placement start. The assumed
 Missing or ambiguous evidence keeps the seat unresolved. The controller
 acknowledges the exact closed fence after the stop transaction commits.
 Only that acknowledgement retires the provider seat.
+For an expired reservation without a start fence, the registry first
+records a permanent void tombstone. This also covers a lost prepare.
+Bifrost then requires empty inventory for the fenced actor before it
+settles zero instance runtime and leaves the fixed control hold intact.
+A committed settlement can replay after provider inventory is collected.
 
 Egress readiness expires after five minutes. The authenticated scope
 challenge reports the network observations. The API independently verifies
@@ -514,6 +519,23 @@ proof binds the exact application ID and provider version from inventory.
 An overdue unresolved placement blocks Container admission for its
 account with `CF_CONTAINERS_CLEANUP_PENDING`. Disconnect keeps cleanup
 and its credentials available until the stop is settled.
+The qualification canary holds a real account budget and platform seat
+under the Enable or reconcile job lease. It uses a short start window,
+no dispatch, and can obtain the first egress proof before admission opens.
+
+The API sends its committed database ownership deadline in the signed-hello
+session's bootstrap and renews it in that session's ordered control stream.
+The supervisor's watchdog uses the earlier of that deadline and the
+incarnation's pinned absolute deadline. A reconnect cannot revive an
+expired process.
+
+HTTP arrival accounting reserves the request line, all headers exposed by
+the Fetch API, and the announced body length or a 256-byte floor. It
+includes rejected requests, failed attempts, and repeated transfers.
+The provisional two-times multiplier reserves both relay legs. Fetch's
+normalized headers, transport framing, and Cloudflare's intercepted
+traffic billing still require hosted measurement. Stop receipts keep
+`meterComplete` false until that qualification.
 
 The future Linux review writer must require platform-level permission to
 accept a Global Linux approval because the approval can authorize runs for

@@ -9,6 +9,7 @@ from sqlalchemy import (
     DateTime,
     Interval,
     Numeric,
+    case,
     cast,
     exists,
     extract,
@@ -45,7 +46,7 @@ def overdue_container_reservations(account_id, now):
 def container_identity_matches(worker_id, release: str | None):
     """Keep the legacy Linux control credential away from managed incarnations."""
     pin = CloudflareWorkerReservation
-    managed = exists().where(pin.worker_id == worker_id, pin.container_reserved_at.is_not(None))
+    managed = exists().where(pin.worker_id == worker_id, pin.container_reserved_at.is_not(None)).correlate_except(pin)
     if release is None:
         return ~managed
     return managed.where(
@@ -112,7 +113,8 @@ def container_account_usage(now):
         "epoch", func.least(end, charged_end) - func.greatest(period, charged_start),
     ))
     return select(func.coalesce(func.sum(
-        seconds * envelope["second_usd"].as_string().cast(Numeric(30, 12))
+        case((envelope["voided_unstarted"].as_boolean().is_(True), 0), else_=seconds)
+        * envelope["second_usd"].as_string().cast(Numeric(30, 12))
         + func.coalesce(
             envelope["settled_fixed_usd"].as_string().cast(Numeric(30, 12)),
             envelope["fixed_usd"].as_string().cast(Numeric(30, 12)),

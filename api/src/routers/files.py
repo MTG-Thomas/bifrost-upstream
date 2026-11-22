@@ -1839,9 +1839,13 @@ async def search_file_contents(
     Follow ``next_cursor`` (or the ``guidance`` sentence) for more results.
     """
     await authorize_operation(db, user, "workspace.files.search", GLOBAL)
+    from shared.file_access import reject_container_workspace_access
     from src.services.source_search import InvalidSearchRequest, search_source
 
     try:
+        await reject_container_workspace_access(db, user)
         return await search_source(db, request)
+    except FileServiceError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail) from e
     except InvalidSearchRequest as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))

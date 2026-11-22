@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import case, func, or_, select, text, update
@@ -34,6 +35,7 @@ class RemoteOwnerLease:
     credential_protocol: int = 1
     declared_slots: int = 0
     container_release: str | None = None
+    expires_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -157,19 +159,24 @@ async def acquire_remote_owner(
                 runtime_profile=runtime_profile,
                 **enrollment_values,
             )
-            .returning(ExecutionWorker.remote_session_generation, ExecutionWorker.remote_credential_protocol)
+            .returning(
+                ExecutionWorker.remote_session_generation, ExecutionWorker.remote_credential_protocol,
+                ExecutionWorker.remote_owner_lease_expires_at,
+            )
         )
         acquired = row.one_or_none()
     if acquired is None:
         return None
-    generation, protocol = acquired
-    return RemoteOwnerLease(worker_id, owner_id, launcher_id, generation, protocol, declared_slots, container_release)
+    generation, protocol, expires_at = acquired
+    return RemoteOwnerLease(
+        worker_id, owner_id, launcher_id, generation, protocol, declared_slots, container_release, expires_at,
+    )
 
 
 async def renew_remote_owner(
     lease: RemoteOwnerLease, *, lease_seconds: int = DEFAULT_OWNER_LEASE_SECONDS
-) -> bool:
-    """Renew only the still-current owner generation using the DB clock."""
+) -> datetime | None:
+    """Return the committed DB deadline for the still-current owner generation."""
     if lease_seconds <= 0:
         raise ValueError("remote owner lease must be positive")
     interval = f"{lease_seconds} seconds"
@@ -185,9 +192,9 @@ async def renew_remote_owner(
                 remote_enrollment_is_live(lease.container_release),
             )
             .values(remote_owner_lease_expires_at=func.now() + text(f"INTERVAL '{interval}'"))
-            .returning(ExecutionWorker.id)
+            .returning(ExecutionWorker.remote_owner_lease_expires_at)
         )
-    return renewed is not None
+    return renewed
 
 
 async def owns_remote_session(lease: RemoteOwnerLease) -> bool:
