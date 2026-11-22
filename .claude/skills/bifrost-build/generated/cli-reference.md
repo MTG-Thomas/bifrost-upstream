@@ -3662,6 +3662,7 @@ Options:
 
 Commands:
   accept   Accept only the supplied reviewed digest.
+  list     List workflow approval states and counts in your authorized...
   propose  Generate a review with source pins, budgets and diagnostics.
   revoke   Revoke the current approval.
   status   Read approval status for a workflow.
@@ -3683,6 +3684,18 @@ Options:
   --help                          Show this message and exit.
 ```
 
+#### `workflows cloudflare-approval list`
+
+```
+Usage: workflows cloudflare-approval list [OPTIONS]
+
+  List workflow approval states and counts in your authorized scope.
+
+Options:
+  --json  Emit JSON instead of human-readable output.
+  --help  Show this message and exit.
+```
+
 #### `workflows cloudflare-approval propose`
 
 ```
@@ -3691,8 +3704,8 @@ Usage: workflows cloudflare-approval propose [OPTIONS] REF
   Generate a review with source pins, budgets and diagnostics.
 
 Options:
-  --subrequest-allowance INTEGER  subrequest_allowance  [required]
-  --cpu-budget-ms INTEGER         cpu_budget_ms  [required]
+  --subrequest-allowance INTEGER  subrequest_allowance
+  --cpu-budget-ms INTEGER         cpu_budget_ms
   --https-hosts TEXT              https_hosts (repeat for multiple).
   --json                          Emit JSON instead of human-readable output.
   --help                          Show this message and exit.

@@ -51,6 +51,12 @@ if "src.jobs.platform.runner" in sys.orig_argv:
 
         module.http_client = fixture_client
 
+    def install_network_guard(_module):
+        # Wait for normal runner imports, as with the provider substitutes.
+        from test_cloudflare_fixture import block_cloudflare_network
+
+        block_cloudflare_network()
+
     def install_enable(module):
         from test_cloudflare_fixture import install_enable as install
 
@@ -62,6 +68,7 @@ if "src.jobs.platform.runner" in sys.orig_argv:
         install(module)
 
     installers = {
+        "src.jobs.platform.registry": install_network_guard,
         "shared.github_git_app": install_transport,
         "src.jobs.platform.cloudflare_enable": install_enable,
         "src.jobs.platform.cloudflare_capacity": install_lifecycle,

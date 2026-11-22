@@ -627,3 +627,22 @@ for the exact owned resources in the observation window. The provider
 cost proxy and the spend ratio are unavailable.
 
 See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-observable-gates.json).
+
+## Hosted Meter Readback With Cold and Warm Reuse
+
+Source `788ffc641` matched the qualified bundle, bounds and both release
+manifests. The meter was $0 after Connect and $0.000202200 after Enable.
+At the post-latency stop it read $0.018559959 live for the run. Verified
+deletion settled the run at $0.007799626. The carry-in was $0.007517685,
+giving $0.015317311 settled cumulative and $0.026077645 at the largest
+observed cumulative read. The settled $0.007597426 after Enable combines
+the latency runs and stop-path teardown. The remaining workload items
+were unreached.
+
+The canary incarnation lasted 1.864 s and the workflow incarnation
+lasted 54.074 s. The run used the 120-second lifetime policy and
+90-second linger. Cloudflare returned empty exact-script and
+exact-namespace Analytics samples. The provider cost proxy and ratio
+are unavailable.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-latency-reuse.json).

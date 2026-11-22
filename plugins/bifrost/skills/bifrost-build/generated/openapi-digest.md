@@ -129,6 +129,15 @@
 | DELETE | `/api/branding/logo/{logo_type}` |
 | GET | `/api/branding/logo/{logo_type}` |
 | POST | `/api/branding/logo/{logo_type}` |
+| GET | `/api/capacity/cloudflare` |
+| PATCH | `/api/capacity/cloudflare` |
+| POST | `/api/capacity/cloudflare/credential` |
+| POST | `/api/capacity/cloudflare/disconnect` |
+| POST | `/api/capacity/cloudflare/enable` |
+| POST | `/api/capacity/cloudflare/reconcile` |
+| POST | `/api/capacity/cloudflare/rotate` |
+| POST | `/api/capacity/cloudflare/scale-in` |
+| POST | `/api/capacity/cloudflare/upgrade` |
 | GET | `/api/chat/artifacts` |
 | DELETE | `/api/chat/artifacts/{attachment_id}` |
 | PATCH | `/api/chat/artifacts/{attachment_id}` |
@@ -637,6 +646,7 @@
 | POST | `/api/workflow-keys` |
 | DELETE | `/api/workflow-keys/{workflow_id}` |
 | GET | `/api/workflows` |
+| GET | `/api/workflows/cloudflare-approvals` |
 | POST | `/api/workflows/execute` |
 | POST | `/api/workflows/executions/{execution_id}/cancel` |
 | GET | `/api/workflows/orphaned` |
@@ -646,6 +656,10 @@
 | DELETE | `/api/workflows/{workflow_id}` |
 | GET | `/api/workflows/{workflow_id}` |
 | PATCH | `/api/workflows/{workflow_id}` |
+| DELETE | `/api/workflows/{workflow_id}/cloudflare-approval` |
+| GET | `/api/workflows/{workflow_id}/cloudflare-approval` |
+| POST | `/api/workflows/{workflow_id}/cloudflare-approval/accept` |
+| POST | `/api/workflows/{workflow_id}/cloudflare-approval/propose` |
 | GET | `/api/workflows/{workflow_id}/compatible-replacements` |
 | POST | `/api/workflows/{workflow_id}/deactivate` |
 | GET | `/api/workflows/{workflow_id}/parameters` |

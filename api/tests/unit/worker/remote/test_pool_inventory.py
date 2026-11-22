@@ -148,7 +148,7 @@ async def test_managed_inventory_settles_slot_without_replaying_closed_results(
             assert snapshot is None
             transport.acknowledge.assert_awaited_once_with("terminal", reconciliation_lease=lease)
             callback.assert_not_awaited()
-            settle.assert_awaited_once_with(route_id, "stopped")
+            settle.assert_awaited_once_with(route_id, "stopped", None)
         else:
             assert snapshot == {"workflow_requests": {}, "opaque_live_workflows": {}}
             assert callback.await_args.args[0]["error_type"] == "WorkflowAttemptUncertain"

@@ -10,7 +10,7 @@ from decimal import Decimal
 from pathlib import Path
 from time import perf_counter
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import UUID, uuid4
 
 import httpx
@@ -20,6 +20,7 @@ from alembic.operations import Operations
 from alembic.script import ScriptDirectory
 from fastapi import HTTPException, Response
 from pydantic import SecretStr
+from scripts.test_cloudflare_fixture import block_cloudflare_network
 from shared.models import (
     CloudflareCapacityPolicy,
     CloudflareLauncherUsage,
@@ -29,8 +30,7 @@ from shared.models import (
 from sqlalchemy import delete, func, insert, literal, select, text, update
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import DBAPIError, IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from src.config import Settings
 from src.core.principal import UserPrincipal
 from src.jobs.platform import cloudflare_capacity as lifecycle_job
@@ -162,6 +162,7 @@ from tests.helpers.cloudflare_containers import (
     verified_egress,
 )
 from tests.helpers.cloudflare_containers import policy as container_policy
+from tests.helpers.isolation import isolated_test_database
 
 OPERATOR_ID = UUID("20cb7fe5-78e2-48d7-8f1e-8edcac69ffab")
 TEST_ORDER = WorkersReleaseOrder("1.0.0", 1)
@@ -567,10 +568,12 @@ async def test_managed_tunnel_lifecycle_resumes_and_rolls_connector(
             await cloudflare_connector_channel.project_connector(key)
             assert delivered() == ""
             assert not await change(cloudflare_tunnel.cleanup, client)  # DNS delete intent
+            assert not await change(cloudflare_tunnel.cleanup, client)  # DNS verified absent
             assert not await change(cloudflare_tunnel.cleanup, client)  # Tunnel delete intent
             with pytest.raises(DeletionSettling, match="remain attached"):
                 await change(cloudflare_tunnel.cleanup, client)
             provider.connectors = []
+            assert not await change(cloudflare_tunnel.cleanup, client)  # Tunnel verified absent
             assert await change(cloudflare_tunnel.cleanup, client)
             assert provider.dns is None
             assert provider.tunnel and provider.tunnel["deleted_at"]
@@ -606,7 +609,9 @@ async def test_managed_tunnel_disconnect_preserves_foreign_dns(db_session, insta
             with pytest.raises(DeletionSettling, match="late Managed Tunnel write"):
                 await cloudflare_tunnel.cleanup(db_session, installation, client)
             record.observed_at = datetime.now(UTC) - timedelta(minutes=2)
-            assert not await cloudflare_tunnel.cleanup(db_session, installation, client)
+            assert not await cloudflare_tunnel.cleanup(db_session, installation, client)  # DNS verified absent
+        assert not await cloudflare_tunnel.cleanup(db_session, installation, client)  # Tunnel delete intent
+        assert not await cloudflare_tunnel.cleanup(db_session, installation, client)  # Tunnel verified absent
         assert await cloudflare_tunnel.cleanup(db_session, installation, client)
     assert provider.dns == foreign and provider.tunnel and provider.tunnel["deleted_at"]
 
@@ -617,6 +622,82 @@ def _platform_operator() -> Caller:
         UserPrincipal(OPERATOR_ID, "operator@example.test", None),
         AuthorizationContext(OPERATOR_ID, None, uuid4(), False, frozenset(), (role,)),
     )
+
+
+@pytest.fixture(autouse=True)
+def refuse_hosted_cloudflare(monkeypatch):
+    block_cloudflare_network(monkeypatch.setattr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_receipt", [True, False], ids=["recorded-tunnel", "unrecorded-tunnel"])
+async def test_managed_tunnel_disconnect_commits_absence_before_retirement(
+    db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch, lifecycle_audit_actor, with_receipt,
+) -> None:
+    installation.reachability_mode = "managed_tunnel"
+    installation.zone_id = _TunnelAPI.zone
+    monkeypatch.setattr(cloudflare_tunnel, "get_settings", lambda: SimpleNamespace(cloudflare_tunnel_channel="compose"))
+    provider = _TunnelAPI()
+    await cloudflare_tunnel.prepare(db_session, installation, actor=str(OPERATOR_ID))
+    await db_session.flush()
+    dns = await cloudflare_tunnel.resource(db_session, installation, cloudflare_tunnel.DNS)
+    tunnel = await cloudflare_tunnel.resource(db_session, installation, cloudflare_tunnel.TUNNEL)
+    assert dns is not None and tunnel is not None
+    if with_receipt:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+            client = cloudflare_tunnel.adapter(http, installation, SecretStr("synthetic-cloudflare-management-token"))
+            with pytest.raises(CloudflareRestUnavailable):
+                await cloudflare_tunnel.provision_tunnel(db_session, installation, client)
+            await cloudflare_tunnel.provision_tunnel(db_session, installation, client)
+        dns.state = "absent"
+        dns.observed_at = datetime.now(UTC)
+    else:
+        assert all(record.state == "creating" and record.provider_id is None for record in (dns, tunnel))
+        dns.observed_at = tunnel.observed_at = datetime.now(UTC) - timedelta(minutes=2)
+    await db_session.flush()
+
+    admin = _platform_operator()
+    job, _ = await lifecycle_job.enqueue_cloudflare_disable(
+        db_session, admin, installation_id=installation.id, expected_revision=1, action="disconnect",
+    )
+    lease = uuid4()
+    job.lease_token = lease
+    job.status = "running"
+    await db_session.flush()
+    connection = await db_session.connection()
+    sessions = async_sessionmaker(
+        connection, autoflush=False, expire_on_commit=False, join_transaction_mode="create_savepoint",
+    )
+    monkeypatch.setattr(lifecycle_job, "get_db_context", sessions.begin)
+    monkeypatch.setattr(lifecycle_job, "httpx", SimpleNamespace(
+        AsyncClient=lambda **_: httpx.AsyncClient(transport=httpx.MockTransport(provider)),
+    ))
+    monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
+    running = PlatformJobContext(job.id, lease, None, str(OPERATOR_ID), admin.principal.email, "")
+    payload = lifecycle_job.CloudflareDisablePayload.model_validate(job.payload)
+
+    assert await lifecycle_job.CLOUDFLARE_DISABLE_DEFINITION.handler(running, payload) == {"outcome": "disconnected"}
+    if with_receipt:
+        assert provider.tunnel and provider.tunnel["deleted_at"]
+    else:
+        assert provider.tunnel is None and provider.tunnel_creates == 0
+    await db_session.refresh(installation)
+    assert installation.retired_at is not None
+    assert set(await db_session.scalars(select(CloudflareOwnedResource.state).where(
+        CloudflareOwnedResource.installation_id == installation.id,
+    ))) == {"absent"}
+    assert installation.api_token_version is None
+    retired_at = installation.retired_at
+    monkeypatch.setattr(lifecycle_job, "httpx", SimpleNamespace(
+        AsyncClient=lambda **_: httpx.AsyncClient(transport=httpx.MockTransport(_unexpected_retirement_request)),
+    ))
+    assert await lifecycle_job.CLOUDFLARE_DISABLE_DEFINITION.handler(running, payload) == {"outcome": "disconnected"}
+    await db_session.refresh(installation)
+    assert installation.retired_at == retired_at
+
+
+def _unexpected_retirement_request(_request: httpx.Request) -> httpx.Response:
+    pytest.fail("Disconnect replay contacted the provider after retirement")
 
 
 @pytest.fixture
@@ -1755,7 +1836,9 @@ async def test_supervisor_reserves_and_retires_without_restarting(
             yield session
             await session.commit()
 
-    for module in (controller, external_controller, cloudflare_supervisor, cloudflare_spend):
+    from src.services.worker_pool import cloudflare_timing
+
+    for module in (controller, external_controller, cloudflare_supervisor, cloudflare_spend, cloudflare_timing):
         monkeypatch.setattr(module, "get_db_context", context)
     monkeypatch.setattr(controller, "_publish_live", AsyncMock(return_value=controller.LiveControllers(
         ids=frozenset(), versions=frozenset({"test"}),
@@ -1776,11 +1859,12 @@ async def test_supervisor_reserves_and_retires_without_restarting(
         memory_budget_bytes=128 * 2**20, memory_reserved_bytes=128 * 2**20,
     )
     db_session.add(primary_worker)
-    db_session.add(WorkDispatch(
+    dispatch = WorkDispatch(
         family="workflow", handler="workflow.execute", handler_version=1, subject_id=uuid4(),
         message={}, payload={}, cloudflare_revision="c" * 64, memory_request_bytes=64 * 2**20,
         created_at=datetime.now(UTC) - timedelta(minutes=1),
-    ))
+    )
+    db_session.add(dispatch)
     await db_session.flush()
     db_session.add(CloudflareCapacityScope(
         installation_id=installation.id, scope="workers", endpoint="https://capacity.example.test",
@@ -1790,6 +1874,8 @@ async def test_supervisor_reserves_and_retires_without_restarting(
 
     resources = {}
     writes = []
+    start_ages = []
+    stop = asyncio.Event()
 
     async def remote(request: httpx.Request) -> httpx.Response:
         if request.url.host == "vm.example.test":
@@ -1820,6 +1906,11 @@ async def test_supervisor_reserves_and_retires_without_restarting(
         else:
             assert body["resource_uid"] == resources[worker_id]["resource_uid"]
             resources[worker_id]["state"] = "starting" if request.method == "POST" else "deleted"
+            if request.method == "POST":
+                started_at = await db_session.scalar(select(func.clock_timestamp()))
+                assert started_at is not None
+                start_ages.append((started_at - dispatch.created_at).total_seconds())
+                stop.set()
         return httpx.Response(200, json=resources[worker_id])
 
     settings = Settings(
@@ -1850,11 +1941,41 @@ async def test_supervisor_reserves_and_retires_without_restarting(
             await sweep()
             assert not writes
             primary_worker.memory_reserved_bytes = 128 * 2**20
-            await db_session.flush()
-        await sweep()
+        queued_at = await db_session.scalar(select(func.clock_timestamp()))
+        assert queued_at is not None
+        dispatch.created_at = queued_at
+        await db_session.flush()
+        # Exercise the real supervisor without Redis hints for each primary form.
+        reconcile_scope = cloudflare_supervisor._reconcile_scope
+
+        async def reconcile(binding, settings, _http, controllers, *, kubernetes):
+            await reconcile_scope(binding, settings, http, controllers, kubernetes=kubernetes)
+
+        with monkeypatch.context() as supervisor_stubs:
+            supervisor_stubs.setattr(cloudflare_supervisor, "_reconcile_scope", reconcile)
+            supervisor_stubs.setattr(cloudflare_supervisor, "listen_for_pool_wake", AsyncMock())
+            supervisor_stubs.setattr(cloudflare_supervisor, "may_manage_jobs", AsyncMock(return_value=primary == "job"))
+            supervisor_stubs.setattr(cloudflare_supervisor, "schedule_cloudflare_reconcile", AsyncMock())
+            supervisor_stubs.setattr(cloudflare_supervisor, "prune_spend_receipt_keys", AsyncMock())
+            supervisor_stubs.setattr(cloudflare_supervisor, "_withdraw_live", AsyncMock())
+            await asyncio.wait_for(cloudflare_supervisor.cloudflare_supervisor_loop(
+                stop, settings, lease=SimpleNamespace(holds_lease=lambda: True, seconds_remaining=lambda: 5),
+            ), timeout=5)
+        assert len(start_ages) == 1
+        assert 2 <= start_ages[0] < 5
         assert writes == ["PUT", "POST"]
         owned = tuple(controllers.values())
         worker_id = UUID(next(iter(resources)))
+        reservation = await db_session.get(CloudflareWorkerReservation, worker_id)
+        assert reservation is not None
+        await db_session.refresh(reservation)
+        timing = reservation.launch_timing
+        assert timing is not None
+        assert dispatch.created_at + timedelta(seconds=2) <= datetime.fromisoformat(timing["controller_decision_at"])
+        assert (
+            timing["controller_decision_at"] <= timing["launcher_reserved_at"] <=
+            timing["launcher_start_sent_at"] <= timing["launcher_start_accepted_at"]
+        )
         db_session.add(CloudflareWorkflowSlot(
             installation_id=installation.id, tenant="platform", ordinal=0, worker_id=worker_id,
             execution_id=uuid4(), dispatch_id=uuid4(), fence=uuid4(), sent=True,
@@ -2554,28 +2675,13 @@ async def isolated_capacity_session_factory(async_engine, monkeypatch):
     """Keep committed synthetic dispatches private to the test's claimers."""
     from src.core import database
 
-    url = async_engine.url
-    if url.host == "pgbouncer":
-        # The transaction pool exposes the application database only.
-        url = url.set(host="postgres")
-    name = f"capacity_test_{uuid4().hex}"
-    admin = create_async_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT", poolclass=NullPool)
-    race_engine = create_async_engine(url.set(database=name), poolclass=NullPool)
-    try:
-        async with admin.connect() as connection:
-            await connection.execute(text(f"CREATE DATABASE {name} TEMPLATE bifrost_test_template"))
-            try:
-                contexts = async_sessionmaker(race_engine, expire_on_commit=False, autoflush=False)
-                with monkeypatch.context() as patch:
-                    patch.setattr(database, "_async_session_factory", contexts)
-                    patch.setattr(database, "_dispatch_session_factory", contexts)
-                    patch.setattr(database, "_liveness_session_factory", contexts)
-                    yield async_sessionmaker(race_engine, expire_on_commit=False)
-            finally:
-                await race_engine.dispose()
-                await connection.execute(text(f"DROP DATABASE {name} WITH (FORCE)"))
-    finally:
-        await admin.dispose()
+    async with isolated_test_database(async_engine.url) as engine:
+        contexts = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+        with monkeypatch.context() as patch:
+            patch.setattr(database, "_async_session_factory", contexts)
+            patch.setattr(database, "_dispatch_session_factory", contexts)
+            patch.setattr(database, "_liveness_session_factory", contexts)
+            yield async_sessionmaker(engine, expire_on_commit=False)
 
 
 @pytest.mark.asyncio
@@ -3210,7 +3316,7 @@ async def test_workflow_slots_hold_headroom_and_serialize_different_tenants(isol
         # tickets. A stale fence and an uncertain stop leave theirs held.
         first, second, third, fourth = tickets
         assert first is not None and second is not None and third is not None and fourth is not None
-        for index, ticket in enumerate((first, second, third)):
+        for index, ticket in enumerate((second, third), start=1):
             worker = initial_workers[index]
             assert await fence_workflow_slot_send(db, worker, runs[index], ticket, tenant_id=None, preparation=False)
         await confirm_workflow_slot_release(db, workers[0], runs[0], uuid4())
@@ -3221,19 +3327,39 @@ async def test_workflow_slots_hold_headroom_and_serialize_different_tenants(isol
         ))
         await db.commit()
     callback = AsyncMock()
+    route_id = first.workflow_route(runs[0])
+    sent_at = now.isoformat()
+    entry_ms = int(now.timestamp() * 1000)
+    take_timing = Mock(side_effect=[{}, {"dispatch_sent_at": now}, {}])
     pool = ThinRemoteProcessPool(
-        SimpleNamespace(managed_cloudflare=True), worker_id=str(workers[0]),
+        SimpleNamespace(managed_cloudflare=True, take_workflow_timing=take_timing), worker_id=str(workers[0]),
         runtime_profile="cloudflare-python-v1", on_result=callback,
     )
     with monkeypatch.context() as patch:
         patch.setattr(pool, "_owns_session", AsyncMock(return_value=True))
-        await pool.handle_event({
+        terminal = {
             "event": "result", "_event_id": str(uuid4()), "runtime_handle": "confirmed-stop",
-            "route_id": first.workflow_route(runs[0]), "attempt_state": "stopped",
+            "route_id": route_id, "attempt_state": "stopped",
             "result": {"success": False, "error_type": "CancelledError"},
-        })
+            "timings": {"entry_at": entry_ms},
+        }
+        # Even a matching route cannot contribute telemetry until the send fence is durable.
+        await pool.handle_event({**terminal, "attempt_state": "uncertain"})
+        async with isolated_capacity_session_factory() as db:
+            unseen = await db.scalar(select(Execution.cloudflare_timing).where(Execution.id == runs[0]))
+            assert "entry_at" not in (unseen or {})
+            assert await fence_workflow_slot_send(
+                db, workers[0], runs[0], first, tenant_id=None, preparation=False,
+            )
+            await db.commit()
+        await pool.handle_event(terminal)
+        await pool.handle_event({**terminal, "timings": {"entry_at": entry_ms + 1}})
     callback.assert_not_awaited()
     async with isolated_capacity_session_factory() as db:
+        timing = await db.scalar(select(Execution.cloudflare_timing).where(Execution.id == runs[0]))
+        assert timing is not None
+        assert timing["dispatch_sent_at"] == sent_at
+        assert datetime.fromisoformat(timing["entry_at"]) == datetime.fromtimestamp(entry_ms / 1000, UTC)
         assert await db.scalar(select(CloudflareWorkflowSlot.released_at).where(
             CloudflareWorkflowSlot.fence == first.fence,
         )) is not None
@@ -3449,6 +3575,8 @@ async def test_queue_depth_prepares_four_workflows_and_settles_their_usage(
 
     try:
         first = await claim()
+        assert first.cloudflare_claim_committed_at is not None
+        assert first.cloudflare_claim_committed_at >= first.queued_at
         assert len(first.queue_preparations) == 3
         if limited_budget:
             async with isolated_capacity_session_factory() as db:

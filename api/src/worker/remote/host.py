@@ -41,6 +41,7 @@ from src.models.orm.cloudflare_capacity import (
 from src.models.orm.execution_workers import ExecutionWorker
 from src.services.execution.template_process import TEMPLATE_START_TIMEOUT_SECONDS
 from src.services.memory_requests import AGENT_RUN_REQUEST_BYTES, MemoryBudget
+from src.services.pool_cadence import CLOUDFLARE_WORKERS_LAUNCH_AGE_SECONDS
 from src.services.worker_pool.claims import (
     PoolClaim,
     admit_external_worker,
@@ -207,6 +208,8 @@ class Bridge:
         self._reset_freshness()
         self.pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._preparations: dict[str, tuple[int, datetime]] = {}
+        self._workflow_timings: dict[str, dict[str, datetime]] = {}
+        self._session_ready_at: datetime | None = None
         self.jobs: dict[str, RemoteProcess] = {}
         self.platform_routes: dict[tuple[str, str], str] = {}
         self.pool: Any = None
@@ -359,6 +362,20 @@ class Bridge:
         if self.freshness_age() > ADMISSION_FRESHNESS_SECONDS or self.meter_exhausted:
             raise CredentialRouteChanged("Cloudflare preparation admission is no longer open")
 
+    def _stamp_workflow(self, route_id: str, **observations: datetime) -> None:
+        stages = self._workflow_timings.setdefault(route_id, {})
+        if self._session_ready_at is not None:
+            stages.setdefault("session_ready_at", self._session_ready_at)
+        for stage, at in observations.items():
+            stages.setdefault(stage, at)
+        # Refused dispatches can leave a preparation with no terminal to
+        # consume it. Bound these samples independently of route authority.
+        if len(self._workflow_timings) > 2 * max(1, self.declared_slots):
+            self._workflow_timings.pop(next(iter(self._workflow_timings)))
+
+    def take_workflow_timing(self, route_id: str) -> dict[str, datetime]:
+        return self._workflow_timings.pop(route_id, {})
+
     async def _send_preparation(
         self, request_id: str, payload: dict[str, Any], expected_generation: int | None,
     ) -> bool:
@@ -415,6 +432,12 @@ class Bridge:
                         frame = frames[0].to_json()
                         send_started = True
                         await socket.send_text(frame)
+                        execution_id = payload.get("execution_id")
+                        if prepare_by is None and isinstance(execution_id, str):
+                            self._stamp_workflow(
+                                f"workflow:{execution_id}:{route_id.removeprefix('prepare:')}",
+                                prepare_sent_at=datetime.now(UTC),
+                            )
                 except (WebSocketDisconnect, OSError, RuntimeError):
                     return False
         except TimeoutError:
@@ -532,6 +555,8 @@ class Bridge:
                                     raise OpaqueDispatchInterrupted("Opaque launcher socket was replaced during dispatch")
                             sent += 1
                         self._sequence += sent
+                        if action == "workflow" and self.managed_cloudflare:
+                            self._stamp_workflow(payload["route_id"], dispatch_sent_at=datetime.now(UTC))
             except OpaqueDispatchInterrupted:
                 raise
             except (WebSocketDisconnect, OSError, RuntimeError) as exc:
@@ -845,6 +870,8 @@ class Bridge:
 
     async def reconciliation_complete(self) -> None:
         """Permit terminal replay only after canonical routes were restored."""
+        if self.managed_cloudflare:
+            self._session_ready_at = datetime.now(UTC)
         self.reconciliation_ready.set()
         deferred, self._deferred_terminal = self._deferred_terminal, []
         for event in deferred:
@@ -971,6 +998,7 @@ class Bridge:
         self.lease = lease
         self.connected = True
         self._reset_freshness()
+        self._session_ready_at = None
         self.inventory = None
         self.inventory_ready.clear()
         self.reconciliation_ready.clear()
@@ -1149,6 +1177,13 @@ class ApiExecutor(PoolWorker):
 
     def _start(self, claim: PoolClaim) -> None:
         bridge = self.bridge
+        if claim.workflow_slot is not None and claim.cloudflare_claim_committed_at is not None:
+            bridge._stamp_workflow(
+                claim.workflow_slot.workflow_route(claim.subject_id),
+                queued_at=claim.queued_at,
+                gate_eligible_at=claim.queued_at + timedelta(seconds=CLOUDFLARE_WORKERS_LAUNCH_AGE_SECONDS),
+                claim_at=claim.cloudflare_claim_committed_at,
+            )
         preparations = []
         org_id = str(claim.tenant_id) if claim.tenant_id is not None else None
         if (

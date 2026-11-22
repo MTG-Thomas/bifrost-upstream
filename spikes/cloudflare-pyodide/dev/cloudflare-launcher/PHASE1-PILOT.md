@@ -995,3 +995,115 @@ releases its held read after the launcher accepts terminate. An earlier
 long sleep returned an uncertain stop and correctly retained its fence.
 The harness also corrected the Compose image pull option and made the
 connector stub detach its last session on projection withdrawal.
+
+### Managed Disconnect retirement fix
+
+The cleanup helper and retirement query used the same worker session and
+transaction. Cleanup set the tunnel row to `absent` in memory. With
+autoflush disabled, retirement still saw `deleting` in PostgreSQL and
+raised before the transaction could commit. The rollback left the same
+row to be retried even after the provider had deleted the tunnel.
+
+DNS and tunnel cleanup now report progress when they observe absence.
+The job commits each journal update before taking the next step and
+rechecks the job lease and installation revision before retirement. A
+runner lost after provider deletion can resume from the committed delete
+intent and verify the provider tombstone again. A successor after the
+absence commit can retire from the durable journal. Connector token
+withdrawal already waits for the projection receipt. Workers scripts
+already commit progress after verifying script and namespace absence.
+
+The original Phase 2 lifecycle test used autoflush and committed between
+direct cleanup helper calls. It never ran retirement in the transaction
+that marked the tunnel absent. The new regression runs the Disconnect
+job with fresh autoflush-disabled PostgreSQL sessions and checks both the
+provider tombstone and the retired installation. It returned
+`CF_CLEANUP_PENDING` on `0bbaa403e` and passed with this fix.
+
+The local rehearsal checks that the API, worker and connector are on
+internal IPv4 networks before each Connect. The API and worker must also
+load the fixture hooks under the service user. The persistence and
+browser fixtures block real Cloudflare endpoints at HTTPX's network
+transport and continue to accept in-process mock responses.
+
+The CT128 rerun passed all nine items with Miniflare/workerd, the Bifrost
+Compose services, and both pinned packages loaded in offline images.
+Removing the fixture hooks blocked Connect before the first API request.
+
+| Item | Verified on the rerun |
+| --- | --- |
+| 1. Releases | The Bifrost loader accepted both pinned packages with distinct deployment digests. |
+| 2. Existing HTTPS | Worker preflight passed 100 routes. Preflight and signed `remote_launcher` Enable each recorded eight completed TLS handshakes and 92 reused requests. |
+| 3. Hold and latency | The primary hold left 24 MiB free. Queue-to-entry was 10.454 s cold and 0.321 s warm. Queue-to-completion was 10.507 s and 0.335 s. Both runs used slot 0. |
+| 4. Burst and cancel | Four Provider and four Global runs overlapped. The third tenant used the ninth slot. The tenth waited across two controller passes and entered after a cancel released one fence while preserving eight sibling fences. |
+| 5. Reconcile, Scale In and first Disconnect | Reconcile preserved the deployment. Active Scale In drained the workflow. The first Disconnect retired the installation with three script and four namespace 404s. |
+| 6–7. Managed Tunnel and rotation | The route-list request returned HTTP 200 and `warp-routing.enabled` was `false`. Rotation evicted one old session. One replacement session connected and signed re-Enable passed. |
+| 8. Upgrade | The original claim drained, reconnected and received a terminal ACK after one dispatch. Three old scripts and four old namespaces returned 404. |
+| 9. Spend and final Disconnect | Spend readback was `ready` and parsed one synthetic Analytics sample. Disconnect retired the installation and cleared the live ledger, occupied slots and credential ciphertext. The final three script reads, four namespace reads and DNS read returned 404. The tunnel tombstone had zero live sessions. |
+
+The rehearsal project, fixture process, networks, volumes and image tags
+were removed and checked for absence. Cloudflare billing remains
+hosted-only.
+
+### Disconnect replay and mixed test isolation
+
+The job regression also covers DNS and tunnel intents in `creating`
+with old observations and no provider receipt. It runs Disconnect
+twice using fresh autoflush-disabled sessions. The first call commits
+both absence records and retires the installation. The replay returns
+`disconnected` after checking the lease and revision, without needing the
+erased management credential. Before the replay fix, both the recorded
+and unrecorded tunnel cases returned `CF_MANAGEMENT_CREDENTIAL` on the
+second call.
+
+Two worker-pool tests originally failed with
+`ValueError: not enough values to unpack (expected 1, got 0)` when
+`launch_for_demand()` returned an empty list.
+
+- `test_managed_prepare_uses_the_uid_committed_before_provider_io`
+- `test_cloudflare_reserves_only_approved_fitting_dispatches_before_hello`
+
+Both tests wrongly assumed there was no live claimer. A controlled
+mixed run traced each synthetic dispatch through insert, assignment to a
+live static Linux executor, and deletion before the fixture controller
+could reserve a worker. The worker-pool fixtures now use a private clone
+of the migrated PostgreSQL template and a separate Redis database for
+controller telemetry. API, worker and scheduler services stay live for
+the persistence E2E tests in the same invocation.
+
+## Hosted Cold and Warm Reuse Run
+
+The 2026-11-22 UTC run used spike `788ffc641`, the two pinned releases,
+and the 120-second launcher policy. CT128 started with 8 GiB available
+and no other running test stack.
+
+| Item | Result |
+| --- | --- |
+| 1. Releases | Passed. Both image loaders accepted the pinned manifests and distinct deployment digests. All 12 packaging tests passed. |
+| 2. Connect, preflight and Enable | Passed. Connect returned HTTP 200 with admission closed. The Compose worker passed 100 routes. Signed Enable reported `remote_launcher` and opened admission. Both checks recorded eight completed TLS handshakes and 92 reused requests per IPv4 address. Each of two IPv6 addresses recorded one TCP attempt and zero TLS starts. |
+| 3. Hold, cold and warm latency | The primary hold left 24 MiB free. Queue-to-entry was 9.959 s cold and 0.582 s warm. Queue-to-completion was 10.032 s and 0.650 s. Both used slot 0 on the same launcher. A post-latency harness gate then failed. |
+| 4. Burst and cancel | Unreached. This run did not qualify Provider and Global overlap, ninth-slot admission, tenth-run waiting, or isolated cancellation. |
+| 5. Reconcile and active Scale In | Unreached. The stop path submitted one Disconnect and verified retirement. |
+| 6–8. Managed Tunnel, rotation and Upgrade | Unreached. No Managed Tunnel token was created and the replacement image was never started. |
+| 9. Spend and teardown | The settled estimate was $0.007799626 for the run and $0.015317311 cumulative. The largest observed cumulative estimate was $0.026077645. Exact Analytics samples were empty. Teardown passed. |
+
+The hosted wrapper added a post-latency query for both execution IDs.
+The durable slot row tracks its current holder. Warm reuse had already
+replaced the cold execution ID, so the added lookup raised `KeyError:
+'cold'`. The rehearsed gate reads each released row before submitting
+the next execution. Preserve that per-run snapshot and join each terminal
+receipt and ACK by its route. The relay confirmed one dispatch and a
+terminal ACK for each execution, generation 0 booked for cold, and no
+new generation booking for warm. The run stopped at the failed gate.
+
+The canary incarnation lived 1.864 s. The shared cold and warm workflow
+incarnation lived 54.074 s. Disconnect returned three exact script and
+four exact namespace 404s, with no owned entries in either inventory.
+Product readback showed no current installation, live incarnation, held
+slot, staged credential, retained ciphertext or pending resource row.
+DNS and token exact reads returned 404. Both authoritative servers
+confirmed DNS absence and the tunnel tombstone had zero sessions.
+The owned Compose resources, processes, image tags, scratch and secret
+files were removed and checked for absence.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-latency-reuse.json).

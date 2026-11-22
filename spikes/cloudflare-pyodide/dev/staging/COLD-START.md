@@ -374,3 +374,21 @@ measurement. The latency values above come from post-stop PostgreSQL and
 execution-log readback.
 
 See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-observable-gates.json).
+
+## Hosted Cold and Warm Workflows With Admission Boot
+
+Source `788ffc641` passed signed Enable and ran both workflows with
+24 MiB free on the primary. PostgreSQL supplied the queue timestamp.
+
+| Run | Queue to entry | Queue to completion |
+| --- | ---: | ---: |
+| Cold | 9.959 s | 10.032 s |
+| Warm | 0.582 s | 0.650 s |
+
+Both runs used slot 0 on the same launcher, with one dispatch and a
+terminal ACK per execution. Cold booked generation 0 and warm booked
+no new generation. The 90-second linger stayed enabled. A separate
+post-reuse query tried to reread the cold execution from the slot row
+after the row had been reassigned, and the run stopped at that gate.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-latency-reuse.json).

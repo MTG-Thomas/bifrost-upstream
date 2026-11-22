@@ -18,6 +18,7 @@ from bifrost.cloudflare_analysis import (
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import lazyload, load_only
 
 from src.core.database import get_db_context
 from src.core.storage.contracts import StorageError
@@ -79,18 +80,20 @@ async def current_approval(db: AsyncSession, workflow_id: UUID) -> CloudflareApp
 
 async def _history_count(db: AsyncSession, workflow_id: UUID) -> int:
     return await db.scalar(
-        select(func.count()).select_from(CloudflareApproval).where(CloudflareApproval.workflow_id == workflow_id)
+        select(func.count()).select_from(CloudflareApproval).where(
+            CloudflareApproval.workflow_id == workflow_id, ~CloudflareApproval.is_review,
+        )
     ) or 0
 
 
-async def _lock_workflow(db: AsyncSession, workflow_id: UUID) -> Workflow | None:
+async def lock_workflow(db: AsyncSession, workflow_id: UUID) -> Workflow | None:
     # PostgreSQL FOR NO KEY UPDATE serializes review writers without
     # conflicting with foreign-key checks on the workflow row.
     return await db.get(Workflow, workflow_id, with_for_update={"key_share": True}, populate_existing=True)
 
 
 async def revoke_approval(db: AsyncSession, workflow_id: UUID) -> str | None:
-    if await _lock_workflow(db, workflow_id) is None:
+    if await lock_workflow(db, workflow_id) is None:
         raise AnalysisRejected("Workflow does not exist")
     current = await current_approval(db, workflow_id)
     if current is None:
@@ -136,8 +139,7 @@ class ObservationChanged(AnalysisRejected):
     """Storage has moved beyond the source digests used to schedule the job."""
 
 
-async def approval_placement(db: AsyncSession, workflow: Workflow) -> SolutionApprovalScope | None:
-    """Resolve the source boundary before analysis or status reporting."""
+def resolve_approval_placement(workflow: Workflow, solution: Solution | None) -> SolutionApprovalScope | None:
     if not workflow.is_active:
         raise ObservationChanged("Expected an active workflow")
     if workflow.type != "workflow":
@@ -146,13 +148,60 @@ async def approval_placement(db: AsyncSession, workflow: Workflow) -> SolutionAp
         raise ObservationChanged("Cloudflare supplies Normal capacity only", "CF_FAST_PATH")
     if workflow.solution_id is None:
         return None
-    solution = await solution_approval_scope(db, workflow.solution_id, workflow.organization_id)
-    if solution is None:
-        outbound = await db.scalar(select(Solution.allow_outbound_access).where(Solution.id == workflow.solution_id))
-        if outbound:
-            raise ObservationChanged("The Solution install allows outbound access", "CF_OUTBOUND")
+    if solution is not None and solution.allow_outbound_access:
+        raise ObservationChanged("The Solution install allows outbound access", "CF_OUTBOUND")
+    if (
+        solution is None or solution.status != "active" or solution.organization_id != workflow.organization_id
+        or solution.runtime_source_generation is None
+    ):
         raise ObservationChanged("Expected an active Solution with published install-local source")
-    return solution
+    return SolutionApprovalScope(
+        install_id=solution.id, version=solution.version, source_generation=solution.runtime_source_generation,
+    )
+
+
+def solution_placement_query():
+    return select(Solution).options(
+        load_only(
+            Solution.id, Solution.status, Solution.organization_id, Solution.version,
+            Solution.runtime_source_generation, Solution.allow_outbound_access,
+        ),
+        lazyload("*"),
+    ).execution_options(populate_existing=True)
+
+
+async def approval_placement(db: AsyncSession, workflow: Workflow) -> SolutionApprovalScope | None:
+    solution = None
+    if workflow.is_active and workflow.solution_id is not None:
+        solution = await db.scalar(solution_placement_query().where(Solution.id == workflow.solution_id))
+    return resolve_approval_placement(workflow, solution)
+
+
+async def read_pinned_sources(declaration: ApprovalDeclaration) -> dict[str, str]:
+    """Read an exact reviewed bundle without retaining a second copy."""
+    manifest = declaration.manifest
+    if digest(manifest) != declaration.manifest_sha256:
+        raise ObservationChanged("Reviewed source changed")
+    install_id = declaration.solution.install_id if declaration.solution else None
+    storage = _source_storage(install_id)
+    sources: dict[str, str] = {}
+    remaining = MAX_BUNDLE_BYTES
+    try:
+        for path, sha256 in manifest.items():
+            content = await storage.read(path, max_bytes=min(remaining, MAX_SOURCE_BYTES))
+            if hashlib.sha256(content).hexdigest() != sha256:
+                raise ObservationChanged("Reviewed source changed")
+            sources[path] = content.decode("utf-8")
+            remaining -= len(content)
+    except ObservationChanged:
+        raise
+    except ValueError as exc:
+        raise ObservationChanged("Reviewed source changed") from exc
+    except StorageError as exc:
+        if exc.kind == "not_found":
+            raise ObservationChanged("Reviewed source changed") from exc
+        raise
+    return sources
 
 
 async def propose_approval(
@@ -160,6 +209,7 @@ async def propose_approval(
     expected_pins: dict[str, str | None] | None = None,
     analysed_pins: dict[str, str | None] | None = None,
     https_hosts: list[str] | None = None,
+    sources: dict[str, bytes] | None = None,
     expected_scope: tuple[UUID | None, UUID | None, str, str] | None = None,
 ) -> ApprovalProposal:
     async with get_db_context() as db:
@@ -192,6 +242,8 @@ async def propose_approval(
             content = None
         if analysed_pins is not None:
             await check_pin(path, hashlib.sha256(content).hexdigest() if content is not None else None)
+        if sources is not None and content is not None:
+            sources[path] = content
         return content
 
     async def check_pin(path: str, pin: str | None) -> None:
@@ -219,7 +271,7 @@ async def accept_proposal(
     db: AsyncSession, proposal: ApprovalProposal, *, accepted_by: str,
 ) -> CloudflareApproval:
     """Serialize acceptance and revocation with a PostgreSQL FOR NO KEY UPDATE lock."""
-    workflow = await _lock_workflow(db, proposal.workflow_id)
+    workflow = await lock_workflow(db, proposal.workflow_id)
     declaration = proposal.declaration
     current = await current_approval(db, proposal.workflow_id)
     solution = declaration.solution
@@ -294,21 +346,11 @@ async def prepare_approved_workspace(
     ):
         return None
 
-    sources: dict[str, str] = {}
-    remaining = MAX_BUNDLE_BYTES
-    storage = _source_storage(install_id)
     manifest = declaration.manifest
-    if digest(manifest) != declaration.manifest_sha256:
-        return None
     try:
         async with asyncio.timeout(20):
-            for path, sha256 in manifest.items():
-                content = await storage.read(path, max_bytes=min(remaining, MAX_SOURCE_BYTES))
-                if hashlib.sha256(content).hexdigest() != sha256:
-                    return None
-                sources[path] = content.decode("utf-8")
-                remaining -= len(content)
-    except (StorageError, TimeoutError, ValueError):
+            sources = await read_pinned_sources(declaration)
+    except (StorageError, TimeoutError, ObservationChanged):
         return None
 
     # A review or scope change can race the storage reads.

@@ -5,6 +5,7 @@ import json
 import ssl
 import tempfile
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from functools import cache
 from hashlib import sha256
@@ -20,7 +21,12 @@ from pydantic import SecretStr
 from shared.models import WorkerCapacityProfile, WorkerCapacityResource
 from src.services import worker_ingress_probes as probes
 from src.services.worker_ingress import ALLOW_MARKER, CONTROL_PATH, INGRESS_HEADER, PORT
-from src.services.worker_pool import cloudflare_admission, cloudflare_connection, cloudflare_policy, cloudflare_release
+from src.services.worker_pool import (
+    cloudflare_admission,
+    cloudflare_connection,
+    cloudflare_policy,
+    cloudflare_release,
+)
 from src.services.worker_pool.cloudflare_provisioning import ResourceObservation
 from src.services.worker_pool.cloudflare_release import (
     QUALIFIED_RUNTIME_SHA256,
@@ -41,6 +47,29 @@ HOST = "workers.browser-fixture.test"
 ROOT = Path("/tmp/bifrost/solution-repo-fixtures/cloudflare")
 CAPACITY = "https://capacity.browser-fixture.test"
 EXPORTS = cloudflare_release.WORKER_EXPORTS
+
+
+def block_cloudflare_network(set_attribute: Callable[..., None] = setattr) -> None:
+    """Refuse hosted endpoints at HTTPX's socket transport, even without a provider stub."""
+    domains = ("cloudflare.com", "workers.dev", "cfargotunnel.com", "trycloudflare.com")
+    send = httpx.HTTPTransport.handle_request
+    send_async = httpx.AsyncHTTPTransport.handle_async_request
+
+    def check(request: httpx.Request) -> None:
+        host = request.url.host.rstrip(".").lower()
+        if any(host == domain or host.endswith("." + domain) for domain in domains):
+            raise RuntimeError("Hosted Cloudflare requests are blocked in the test fixture")
+
+    def local_request(transport: httpx.HTTPTransport, request: httpx.Request) -> httpx.Response:
+        check(request)
+        return send(transport, request)
+
+    async def local_async_request(transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        check(request)
+        return await send_async(transport, request)
+
+    set_attribute(httpx.HTTPTransport, "handle_request", local_request)
+    set_attribute(httpx.AsyncHTTPTransport, "handle_async_request", local_async_request)
 
 
 @cache
@@ -115,7 +144,6 @@ class _Cloudflare(WorkersRestCleanup):
 
     async def advisory_workers_requests(self, account_id, api_token, scripts, start, end):
         assert (account_id, api_token) == (ACCOUNT, TOKEN)
-        return None
 
     async def observe(self, *, api_token, intent):
         assert (intent.target.account_id, api_token) == (ACCOUNT, TOKEN)
@@ -193,6 +221,7 @@ async def _forward(reader, writer):
 def install_api():
     from src.jobs.platform import cloudflare_capacity
 
+    block_cloudflare_network()
     cloudflare_connection.load_workers_release = _release
     cloudflare_connection.WorkersRestCleanup = _Cloudflare
     cloudflare_capacity.installed_workers_release_digest = _fixture_digest

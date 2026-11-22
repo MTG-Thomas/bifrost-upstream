@@ -1,6 +1,8 @@
 import { ApiError, apiClient, handleApiError } from "@/lib/api-client";
 import type { components } from "@/lib/v1";
 
+export type ApprovalList = components["schemas"]["CloudflareApprovalList"];
+
 export type ApprovalState = components["schemas"]["CloudflareApprovalState"];
 export type ApprovalOptions = components["schemas"]["CloudflareApprovalOptions"];
 export type ApprovalAccept = components["schemas"]["CloudflareApprovalAccept"];
@@ -33,6 +35,12 @@ function result({ data, error, response }: { data?: ApprovalState; error?: unkno
 			response.status,
 		);
 	}
+	handleApiError(error);
+}
+
+export async function listCloudflareApprovals(): Promise<ApprovalList> {
+	const { data, error } = await apiClient.GET("/api/workflows/cloudflare-approvals");
+	if (data) return data;
 	handleApiError(error);
 }
 

@@ -646,6 +646,7 @@
 | POST | `/api/workflow-keys` |
 | DELETE | `/api/workflow-keys/{workflow_id}` |
 | GET | `/api/workflows` |
+| GET | `/api/workflows/cloudflare-approvals` |
 | POST | `/api/workflows/execute` |
 | POST | `/api/workflows/executions/{execution_id}/cancel` |
 | GET | `/api/workflows/orphaned` |

@@ -43,7 +43,7 @@ work. It cannot time claim commit, transport send, or child entry.
 
 | Stage | Bound or estimate | What is on the path |
 | --- | --- | --- |
-| Overflow detection | **Code-derived:** 5 s minimum dispatch age for a managed launch. Nominally another 0–5 s until an eligible pass on a healthy, promptly executing controller. In this sample, cadence, launcher setup, claim, and early consumer work share roughly **1.56 s** above the age gate if the queue timestamps nearly coincide. | The supervisor listens for workflow and Cloudflare capacity wakes. Passes start at least 2 s apart on a wake and sweep at 5 s from the last pass start without one. A wake that arrives too early is cleared after the pass and does not schedule a wake at the age cutoff. Slow passes or unavailable capacity can exceed the nominal band. |
+| Overflow detection | **Code-derived for the observed revision:** 5 s minimum dispatch age for a managed launch. Nominally another 0–5 s until an eligible pass on a healthy, promptly executing controller. In this sample, cadence, launcher setup, claim, and early consumer work share roughly **1.56 s** above the age gate if the queue timestamps nearly coincide. | The supervisor listens for workflow and Cloudflare capacity wakes. Passes start at least 2 s apart on a wake and sweep at 5 s from the last pass start without one. The observed revision cleared an early wake after the pass and relied on the next event or sweep. Slow passes or unavailable capacity can exceed the nominal band. |
 | Launcher incarnation | **Unmeasured:** shares the roughly 1.56 s pre-stamp remainder with cadence and claim work under that same clock assumption. No independent lower bound beyond zero at receipt precision. | Bifrost commits a worker reservation and revision/control-root pin. The controller includes new rows in the same pass, observes the resource, prepares and binds it, then sends start. The capacity Worker delegates to its ledger/registry and Launcher DO. The Launcher DO durably accepts start and schedules an immediate alarm to dial the API. The WebSocket upgrade, signed hello, owner lease, welcome, and reconciled inventory open the claim gate. There is no required second supervisor sweep to make that gate open. |
 | Claim and slot assignment | **Unmeasured:** shares the same pre-stamp remainder. The ready executor checks immediately on its first claim loop. Existing launchers check on a wake, with a 1 s busy or admission-blocked poll and a 15 s idle fallback sweep. | PostgreSQL rechecks scope and spend, fences the owner, locks the selected dispatch and serializes slot admission for the installation. The canonical claim and slot ordinal/fence commit together. The 30 s head-of-line guard applies to an older request that is temporarily too large to fit. It is not a minimum age to claim an eligible workflow. |
 | Admission prepare and engine boot | **Estimated from separate hosted data:** about **2 s** for first-workflow engine startup, with synthetic candidate samples spanning 1.485–4.028 s. The share exposed on this managed path is unknown. | After the claim commit, the API schedules the best-effort `prepare_workflow` task and starts the normal consumer alongside it. The prepare rechecks the fence, books usage and sends a hint. TenantHost confirms readiness, reserves the generation through the API if required, and uses `LOADER.get` to launch or reuse the Dynamic Worker. The initial ping/prime brings up Pyodide. This load is on the tenant-slot path after claim, separate from the Launcher DO handshake. |
@@ -135,10 +135,18 @@ time the workflow's launcher dial.
 
 For the first overflow on a fresh launcher with the primary held full,
 **about 10 s to entry** is the observed reference from one run, not a
-percentile or an upper bound. On a healthy idle controller, the age gate
-and tick phase alone can take roughly 5–10 s from the dispatch clock.
-Unavailable capacity, contention, or a long controller pass can extend
-the wait.
+percentile or an upper bound. The new managed Workers launch-age gate is
+**2 s** from the dispatch clock. The supervisor arms a one-shot wake for
+the next compatible dispatch to reach that age. It uses the same event as
+the existing workflow and capacity hints, with the same 2 s minimum pass
+spacing and 5 s recovery sweep. An intervening pass can therefore add up
+to roughly 2 s of spacing under healthy conditions.
+
+**Budget about 7–9 s to entry** for a similar cold run on a healthy
+controller. Replacing the observed run's 5 s age floor with 2 s gives
+roughly 7.2 s if the rest of the path takes the same time, with up to
+roughly 2 s of spacing allowance. This is a planning estimate. Contention,
+admission limits, a missed wake, or a long pass can extend the wait.
 
 A subsequent admissible workflow can use the same launcher and warm ordinal
 within the **90 s linger**. It avoids the launch-age gate, launch/hello and
@@ -157,25 +165,14 @@ no idle engine pings during linger.
 
 ## Ranked reductions
 
-1. **Config/policy · needs owner decision** — Separate the managed launch
-   age from the reconciliation sweep and evaluate a 1–2 s threshold for
-   already-saturated healthy primaries. That removes 3–4 s from the policy
-   floor. Real savings depend on the next pass. Pair with option 2 to make
-   the earlier eligibility visible. With the same other spans and a
-   3–4 s realized saving, this sample would land around 6–7 s to entry.
-   Treat that as a trial target. Shorter patience can start a launcher
+1. **Implemented** — Separate the managed Workers launch age from
+   reconciliation and set it to 2 s. Shorter patience can start a launcher
    for work the primary would have absorbed, adding creations and DO
-   residency. The two timings are source constants at this revision, so
-   exposing an operator setting would require a **product change**.
-2. **Product change** — Schedule a coalesced, scope-level wake for the
-   oldest compatible dispatch's age deadline, retaining the 5 s recovery
-   sweep and 2 s minimum spacing initially. This targets up to roughly one
-   idle sweep of phase delay without polling every installation faster.
-   Recheck the queue, fit, admission and spend at wake time. If the spacing
-   still dominates the target, test a shorter spacing only on active
-   overflow. A blanket 5 s → 1 s sweep could multiply idle provider and
-   database polling by about five. The ledger prices control polling, so
-   cadence changes must carry the corresponding meter bound.
+   residency.
+2. **Implemented** — Wake the supervisor as the next compatible dispatch
+   crosses its age threshold. Each pass evaluates queue fit, primary
+   saturation, installation admission and spend. Keep-warm and queue
+   pre-warming remain off by default.
 3. **Product change** — Measure the post-claim branches before shortening
    them. If API prep dominates, reuse a digest-keyed immutable workspace
    bundle or parallelize independent reads while rechecking the current
@@ -216,6 +213,30 @@ is no provider cost or reconciliation ratio for this workflow.
 [Bifrost meter readback and pricing model](../cloudflare-launcher/PHASE1-USAGE.md)
 
 ## Next hosted receipt
+
+Read `executions.cloudflare_timing` for `queued_at`, `gate_eligible_at`,
+`claim_at`, `session_ready_at`, `prepare_sent_at`, and `dispatch_sent_at`.
+Join via the existing workflow claim to
+`cloudflare_worker_reservations.launch_timing` for `controller_decision_at`,
+`launcher_reserved_at`, `launcher_start_sent_at`,
+`launcher_start_accepted_at`. The existing
+`execution_workers.ready_at` records initial owner admission after hello.
+The launcher timestamps describe the incarnation's initial launch and
+should be attributed to the cold sample only when it uses the new
+incarnation. A ready launcher can claim before the launch-age threshold.
+
+These are UTC observations. Queue time comes from the dispatch row.
+The reservation stamp is taken in its transaction. Provider start stamps
+are persisted after the admission transaction commits. The committed
+claim time, queue and eligibility times, session readiness, and the two
+completed API socket sends are retained on the route and written after
+fenced settlement. A skipped prepare or lost
+route can leave these keys absent. The qualified Workers bundle ships
+with the two-second gate and wake. The separate local
+`t3/cloudflare-runtime-timing` branch adds the TenantHost's confirmed
+engine-ready stamp and the loaded workflow invocation's `entry_at`.
+Those stamps require a runtime rebuild and meter requalification.
+Until then, use the fixture's entry log for queue-to-entry.
 
 Repair the measurement harness to use durable dispatch timing even if the
 detail API omits `created_at`. Measure paired runs under the same primary

@@ -4,7 +4,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "20261122_cf_workers_deadline"
-down_revision = "20261121_cf_containers"
+down_revision = "20261122_cf_overflow_timing"
 branch_labels = None
 depends_on = None
 

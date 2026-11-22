@@ -34,6 +34,7 @@ from src.services.worker_pool.cloudflare_spend import (
     record_capacity_cleanup_do_requests,
     seal_launcher_meter,
 )
+from src.services.worker_pool.cloudflare_timing import record_transport_timing
 from src.services.worker_pool.controller import (
     RECONCILE_SECONDS,
     SWEEP_SECONDS,
@@ -191,11 +192,18 @@ class ExternalWorkerPoolController(WorkerCapacityController):
             return
         async with get_db_context() as db:
             pin = CloudflareWorkerReservation
-            if await scope.lock_admission(db) and await db.scalar(select(pin.worker_id).where(
+            if not await scope.lock_admission(db) or not await db.scalar(select(pin.worker_id).where(
                 pin.worker_id == worker_id,
-                or_(pin.workers_deadline_at.is_(None), pin.workers_deadline_at > func.clock_timestamp()),
+                pin.workers_deadline_at > func.clock_timestamp(),
+                pin.workers_lifetime_seconds.is_not(None),
             )):
-                await self.client.start(worker_id, scope.name, uid)
+                return
+            start_sent_at = _now()
+            await self.client.start(worker_id, scope.name, uid)
+            start_accepted_at = _now()
+        await record_transport_timing(
+            worker_id=worker_id, launcher_start_sent_at=start_sent_at, launcher_start_accepted_at=start_accepted_at,
+        )
 
     async def _retire_closed_worker(self, worker_id: UUID) -> None:
         scope = self.managed_cloudflare_scope

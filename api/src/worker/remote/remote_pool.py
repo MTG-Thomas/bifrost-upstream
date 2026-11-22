@@ -84,6 +84,10 @@ class ThinRemoteTransport(Protocol):
         """Return the canonical reservation for a running route."""
         raise NotImplementedError
 
+    def take_workflow_timing(self, route_id: str) -> dict[str, datetime]:
+        """Return and forget the best-effort observations for a settled route."""
+        raise NotImplementedError
+
     async def wait_for_opaque_terminals(
         self, receipts: set[str], lease: RemoteOwnerLease,
     ) -> dict[str, dict[str, Any]]:
@@ -507,7 +511,7 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                             await self._attach_opaque_inventory_route(route_id, entry, execution, reservation, receipt)
                             await self._handle_opaque_terminal(event)
                         else:
-                            await self._settle_workflow_slot(route_id, receipt[1])
+                            await self._settle_workflow_slot(route_id, receipt[1], event.get("timings"))
                         await self.transport.acknowledge(receipt[0], reconciliation_lease=lease)
                     except Exception as exc:  # noqa: BLE001 - report all failed receipts after the batch
                         exc.add_note(f"Opaque terminal replay for {route_id}")
@@ -1389,7 +1393,7 @@ class ThinRemoteProcessPool(ProcessPoolManager):
             raise ValueError("Invalid opaque workflow terminal")
         handle = self._routes.get(route_id)
         if handle is None:
-            await self._settle_workflow_slot(route_id, state)
+            await self._settle_workflow_slot(route_id, state, event.get("timings"))
             return  # The fenced result may have already committed before ACK.
         previous = handle.process.terminal_receipt
         if previous is not None and previous != receipt:
@@ -1412,19 +1416,29 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                 "error": f"Workflow may already have taken effect. {result.get('error') or ''}".strip(),
             }
         await self._handle_result(handle, result)
-        await self._settle_workflow_slot(route_id, state)
+        await self._settle_workflow_slot(route_id, state, event.get("timings"))
 
-    async def _settle_workflow_slot(self, route_id: str, state: str) -> None:
+    async def _settle_workflow_slot(self, route_id: str, state: str, timings: object = None) -> None:
         if not getattr(self.transport, "managed_cloudflare", False):
             return
         from src.core.database import get_db_context
+        from src.services.worker_pool.cloudflare_timing import (
+            record_transport_timing,
+            worker_terminal_timing,
+        )
         from src.worker.remote.fencing import fence_remote_owner
 
         _, execution_id, fence = route_id.split(":")
+        worker_id, subject_id, slot_fence = UUID(self.worker_id), UUID(execution_id), UUID(fence)
         async with get_db_context() as db:
             if not await fence_remote_owner(db, for_update=state == "uncertain"):
                 raise ConnectionError("Remote API ownership was replaced before slot settlement")
-            await settle_workflow_slot(db, UUID(self.worker_id), UUID(execution_id), UUID(fence), state)
+            await settle_workflow_slot(db, worker_id, subject_id, slot_fence, state)
+        stages = {**self.transport.take_workflow_timing(route_id), **worker_terminal_timing(timings)}
+        if stages:
+            await record_transport_timing(
+                execution_id=subject_id, worker_id=worker_id, slot_fence=slot_fence, **stages,
+            )
 
     @staticmethod
     def _valid_opaque_terminal_result(result: Any, state: str) -> TypeGuard[dict[str, Any]]:

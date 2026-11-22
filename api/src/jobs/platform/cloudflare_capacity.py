@@ -413,6 +413,9 @@ async def _settle_disable(
             row = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
             if row is None or row.desired_revision != payload.revision or row.desired_state != payload.desired_state:
                 return {"outcome": "superseded"}
+            if row.retired_at is not None:
+                # Retirement already verified cleanup and removed the management token.
+                return {"outcome": "disconnected"}
             workers_remain = await cloudflare_workers_remain(db, row.id)
             if workers_remain:
                 await _require_legacy_cleanup(db)

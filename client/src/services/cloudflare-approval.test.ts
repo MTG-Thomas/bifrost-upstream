@@ -3,6 +3,7 @@ import {
 	ApprovalReviewError,
 	acceptCloudflareApproval,
 	getCloudflareApproval,
+	listCloudflareApprovals,
 	proposeCloudflareApproval,
 	revokeCloudflareApproval,
 } from "./cloudflare-approval";
@@ -30,6 +31,13 @@ describe("Cloudflare workflow approval API", () => {
 		for (const method of [get, post, remove]) {
 			method.mockResolvedValue({ data: state, response: new Response() });
 		}
+	});
+
+	it("lists approval states through the collection endpoint", async () => {
+		const entries = { counts: { pending_review: 1 }, workflows: [], can_propose: true };
+		get.mockResolvedValue({ data: entries });
+		await expect(listCloudflareApprovals()).resolves.toEqual(entries);
+		expect(get).toHaveBeenCalledWith("/api/workflows/cloudflare-approvals");
 	});
 
 	it("uses the workflow-scoped read and revoke endpoints", async () => {

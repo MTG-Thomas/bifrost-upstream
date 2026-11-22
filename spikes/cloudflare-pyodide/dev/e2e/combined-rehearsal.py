@@ -82,28 +82,40 @@ class Rehearsal:
             container = subprocess.check_output(self.compose + ["ps", "-q", service], text=True).strip()
             inspection, = json.loads(subprocess.check_output(["docker", "inspect", container]))
             networks = inspection["NetworkSettings"]["Networks"]
-            assert networks
+            if self.cfg["network"] not in networks:
+                raise RuntimeError(f"{service} is missing the rehearsal bridge")
             if service == "api":
                 api_address = networks[self.cfg["network"]]["IPAddress"]
             for name in networks:
                 network, = json.loads(subprocess.check_output(["docker", "network", "inspect", name]))
-                assert network["Internal"], "The rehearsal requires internal-only container networks"
+                if not network["Internal"] or network["EnableIPv6"]:
+                    raise RuntimeError(f"{service} requires internal IPv4-only rehearsal networks")
+                if name == self.cfg["network"] and network["IPAM"]["Config"][0]["Gateway"] != self.cfg["address"]:
+                    raise RuntimeError("The provider address does not match the rehearsal bridge")
         for service in ("api", "worker"):
-            subprocess.run(self.compose + ["exec", "-T", "--user", "1000:1000", service, "python", "-c", """
+            check = subprocess.run(self.compose + ["exec", "-T", "--user", "1000:1000", service, "python", "-c", """
 import asyncio
 import os
 from pathlib import Path
 import httpx
-from src.services.worker_ingress_probes import _public_addresses
+from src.services.worker_ingress_probes import _probe_address, _public_addresses
 from src.services.worker_pool.cloudflare_workers_rest import API
 address = os.environ["REHEARSAL_ADDRESS"]
-assert API == f"http://{address}:{os.environ['REHEARSAL_PROVIDER_PORT']}/client/v4"
-assert httpx.AsyncClient.send.__name__ == "send_local"
-assert asyncio.run(_public_addresses("existing.example.test")) == (address,)
-assert not any(row.split()[1] == "00000000" for row in Path("/proc/net/route").read_text().splitlines()[1:])
-"""], check=True, timeout=15)
+if (API != f"http://{address}:{os.environ['REHEARSAL_PROVIDER_PORT']}/client/v4"
+        or httpx.AsyncClient.send.__name__ != "send_local"
+        or _public_addresses.__name__ != "local_addresses"
+        or _probe_address.__name__ != "local_probe"):
+    raise SystemExit("Local Cloudflare fixture hooks are missing")
+if asyncio.run(_public_addresses("existing.example.test")) != (address,):
+    raise SystemExit("Ingress probe is outside the local fixture")
+if any(row.split()[1] == "00000000" for row in Path("/proc/net/route").read_text().splitlines()[1:]):
+    raise SystemExit("The rehearsal container has a default route")
+"""], check=False, timeout=15)
+            if check.returncode:
+                raise RuntimeError(f"{service} failed local isolation verification. Connect is blocked.")
         evidence("isolation", {"internal_networks": True, "api_worker_hooks_verified": True})
-        assert api_address
+        if not api_address:
+            raise RuntimeError("The API has no rehearsal bridge address")
         return api_address
 
     def send(self, path, payload=None, _admin=None, method="POST", *, content_type=None, timeout=12):
@@ -149,6 +161,8 @@ assert not any(row.split()[1] == "00000000" for row in Path("/proc/net/route").r
         return result
 
     def connect(self, mode):
+        if self.origin != f"http://{self.verify_isolation()}:8000":
+            raise RuntimeError("The rehearsal API changed addresses. Connect is blocked.")
         self.host = f"{mode}.example.test"
         account = "a" * 32
         base = "/api/capacity/cloudflare"
