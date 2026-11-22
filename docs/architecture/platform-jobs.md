@@ -277,6 +277,11 @@ against the physical launcher's cgroup-v2 working set and memory limit before
 and during execution. Deployments therefore need a real physical-launcher
 memory limit; without one, memory admission is unavailable.
 
+For retryable handler failures, `retry_delay` sets when each subsequent
+attempt becomes eligible. An empty schedule makes retries eligible immediately.
+The last configured delay applies to any later retry. The attempt limit and
+the separate runner-loss policy still apply.
+
 Size a physical launcher for its host plus the heaviest safe combination of
 workflow, service, and PlatformJob work it may admit. Establish a new job's
 initial policy from representative data volume: record peak cgroup working set

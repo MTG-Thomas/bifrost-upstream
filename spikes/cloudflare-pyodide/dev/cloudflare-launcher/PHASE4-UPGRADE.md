@@ -231,40 +231,52 @@ targets and both recorded namespaces absent.
 
 ### Enable Readback Classification
 
-Run 2's result identified the deployment gate. The available evidence
-does not distinguish a stale namespace list from an endpoint, inventory,
-or response-contract failure. Operators can now read `result.details`
-for the failing resource class, check, and observed and expected
-categories. The job result contains fixed categories only.
+Run 2's result identified the deployment gate. Its cause is unknown.
+A stale namespace list and a 404 from the replacement capacity
+`/v1/capabilities` endpoint during `workers.dev` propagation are both
+plausible. The capabilities 404 stays terminal as `PROFILE_HTTP`.
+This change classifies failures and adds enum-only `result.details`
+for the resource class, check, and observed and expected categories.
+Use those details to identify any failure in hosted run 3.
 
 | Enable path | Retryable provider lag | Requires Action |
 | --- | --- | --- |
 | REST transport and account verification | Existing provider-unavailable path for transport, 408, 429 and 5xx | Other HTTP rejection, invalid JSON or unconfirmed response envelope for the named operation. Entitlement and credential failures retain their own codes. |
-| Worker upload and settings | Acknowledged upload absent from exact readback, empty deployment history for an exactly owned script, or script disappearing between exact checks | Unconfirmed upload acknowledgement, malformed binding inventory, or previously recorded script absent at the first read. A conflicting owner, version, or receipt retains its ownership code. |
+| Worker upload and settings | Acknowledged upload absent from exact readback before an exact version was recorded, empty deployment history for an exactly owned script, or script disappearing between exact checks | Unconfirmed upload acknowledgement, malformed binding inventory, or previously recorded script absent at the first read. A conflicting owner, version, or receipt retains its ownership code. |
 | Durable Object namespace listing | Missing expected exports with no unexpected exports, or a snapshot whose IDs or page totals shift during enumeration | Malformed page or ID, unassigned namespace without a receipt, pagination bound exhausted, or unexpected exports. Ambiguous bindings and changed recorded IDs retain their ownership code. |
 | Endpoint, persisted scope and Upgrade inventory | Exact script readback lag follows the Worker rules above | Endpoint update did not confirm the requested settings, invalid account subdomain, missing confirmed public endpoint, scope missing its absence receipt, or an owned script absent from final Upgrade inventory. |
 | Managed Tunnel, DNS and connector | Existing connector-not-ready result is retryable | Malformed exact-target inventory, missing identities or revisions, missing recorded tunnel or DNS, unconfirmed post-create observation, invalid connector credentials or session inventory, and unconfirmed private-route inventory. A post-create list miss without a committed write witness may conceal an accepted create. Those paths require operator verification before another write. |
 | Capacity capabilities and signed canary | Existing provider-unavailable path for transport and retryable HTTP status | Different canary origin or capabilities contract, invalid capabilities/resource shapes, reservation identity mismatch, wrong prepare or start receipt, non-retryable HTTP refusal, or no verified canary deletion receipt. Receipt compaction stays with the supervisor after verified deletion. |
 | Ingress and retirement | Existing prior-revision deletion settling remains bounded by the drain procedure | DNS, TLS, routes, WebSocket and hello/SDK/ACK proof failures retain the ingress result. Scope and revision ownership fences remain exact. |
 
-Enable and Upgrade use the existing PlatformJob policy of three
-attempts, including the first, with a 15-minute per-attempt timeout.
-An unsettled observation releases its lease and requeues the same job.
-The current runner makes that retry eligible immediately. A third
-unsettled attempt fails with the last sanitized details. This adds
-no polling or sleep. Worker upload acknowledgement commits before
-readback and prevents another upload on a retry, even while settings
-remain absent. An exact version observed before namespace lag is
-committed under the installation lease and fences retry and cleanup.
+An empty deployment history for an exactly owned Worker previously
+raised `OwnershipConflict`. It now raises a settling observation.
+Disconnect and Reconcile see it as `ObservationPending`.
+
+Enable and Reconcile (including Upgrade) use three PlatformJob attempts
+with a 15-minute per-attempt timeout. A retryable handler failure releases
+the lease and requeues the same job, eligible 15 seconds after the first
+failure and 45 seconds after the second. With an idle pool and available
+capacity, the 15-second sweep can make pickup approximately 15–30 seconds
+and 45–60 seconds after the respective failures. The three attempts are
+shared with other retryable handler errors. The third unsettled attempt
+fails with the last sanitized details. The procedure waits up to 180
+seconds for the Enable or Upgrade result, allowing for the scheduled
+delays, idle sweeps, and readback work.
+
+Worker upload acknowledgement commits before readback and prevents
+another upload on a retry, even while settings remain absent. An exact
+version observed before namespace lag is committed under the installation
+lease and fences retry and cleanup.
 
 Rehearse with `combined-stack.py --lag-worker-namespace` and
 `combined-rehearsal.py --upgrade-only`. The local fixture omits one
-expected capacity namespace from the first read after upload. The
-harness requires Enable to succeed on attempt two with one capacity
-upload, then runs the uninterrupted Upgrade and Disconnect checks.
+expected capacity namespace for ten seconds after each upload. The
+harness requires Enable and Upgrade each to succeed on attempt two,
+with one capacity upload per revision, and verifies Disconnect.
 
-CT128 reproduced the hosted error code at baseline `10b450f95` with
-that single omission. At `2fc7e9ae4` the signed Enable passed on
+In the earlier single-read fixture, CT128 reproduced the hosted error
+code at baseline `10b450f95`. At `2fc7e9ae4` the signed Enable passed on
 attempt two with one capacity upload. Upgrade completed with the
 original claim and one dispatch and ACK on the original connection.
 The replacement inventory readback followed the old absence checkpoint

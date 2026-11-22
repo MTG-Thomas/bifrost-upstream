@@ -23,6 +23,7 @@ HERE = Path(__file__).resolve().parent
 MANAGEMENT = "local-rehearsal-management-token"
 ACTIVE_JOB = {"queued", "running", "waiting"}
 WORKERS_OVERFLOW_AGE_SECONDS = 2
+ENABLE_RESULT_SECONDS = 180
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -217,18 +218,26 @@ if any(row.split()[1] == "00000000" for row in Path("/proc/net/route").read_text
 
     def enable(self):
         job = self.job("enable")
-        result = self.completed(job, "enabled")
+        result = self.completed(job, "enabled", window=ENABLE_RESULT_SECONDS)
         assert result["execution_class"] == "remote_launcher" and result["http_connections"]
-        assert self.install()["admission_open"]
-        if self.cfg.get("lagWorkerNamespace"):
-            wire = self.provider("/local/evidence")
-            assert sum(item["kind"] == "namespace-lag" for item in wire) == 1
-            assert sum(item["kind"] == "upload" and item["revision"] == 1 and item["role"] == "capacity"
-                       for item in wire) == 1
-            attempts = self.sql(f"SELECT attempt FROM platform_jobs WHERE id='{job}'")
-            assert attempts == 2
-            evidence("enable_namespace_lag", {"attempts": attempts, "capacity_uploads": 1})
+        installation = self.install()
+        assert installation["admission_open"]
+        self.verify_namespace_lag(job, installation["desired_revision"], "enable")
         evidence("enable", {"class": result["execution_class"], "connections": result["http_connections"]})
+
+    def verify_namespace_lag(self, job, revision, stage):
+        lag_ms = self.cfg.get("workerNamespaceLagMs", 0)
+        if not lag_ms:
+            return
+        wire = [item for item in self.provider("/local/evidence") if item.get("revision") == revision]
+        assert any(item["kind"] == "namespace-lag" for item in wire)
+        settled, = [item for item in wire if item["kind"] == "namespace-lag-cleared"]
+        assert settled["elapsedMs"] >= lag_ms
+        assert sum(item["kind"] == "upload" and item["role"] == "capacity" for item in wire) == 1
+        attempts = self.sql(f"SELECT attempt FROM platform_jobs WHERE id='{job}'")
+        assert attempts == 2
+        evidence(stage + "_namespace_lag", {"attempts": attempts, "capacity_uploads": 1,
+                                           "fixture_lag_ms": lag_ms, "settled_read_ms": settled["elapsedMs"]})
 
     def register(self, name, source, org=None, memory=None, *, timeout=110):
         path = "workflows/" + name + ".py"
@@ -624,8 +633,10 @@ async def {name}():
             assert len(old_receipts) == 3 and all(row["state"] == "absent" and row["observed"] for row in old_receipts)
             drained = datetime.fromisoformat(checkpoint["drained"])
             assert max(datetime.fromisoformat(row["observed"]) for row in old_receipts) <= drained
-        result = self.completed(job, "enabled")
-        assert result["http_connections"] and self.install()["admission_open"]
+        result = self.completed(job, "enabled", window=ENABLE_RESULT_SECONDS)
+        installation = self.install()
+        assert result["http_connections"] and installation["admission_open"]
+        self.verify_namespace_lag(job, installation["desired_revision"], "upgrade")
         absent = self.verify_receipts_absent(receipts)
         wire = self.provider("/local/evidence")
         dispatch, = [entry for entry in wire if entry["kind"] == "dispatch" and entry["execution"] == execution]

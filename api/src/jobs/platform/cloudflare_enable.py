@@ -176,7 +176,7 @@ async def _install_script(
         )
     observed = await observe_owned(adapter, api_token=token, intent=intent, recorded=recorded)
     if observed is None:
-        if resource.state == "creating":
+        if recorded is None:
             raise ObservationSettling(
                 "The acknowledged Worker upload is not yet visible",
                 OwnershipResource.WORKER_SCRIPT, ObservationCheck.SCRIPT_UPLOAD_PENDING,
@@ -512,8 +512,10 @@ async def _enable(
             check = CapacityProtocolCheck.PROFILE_HTTP
         elif exc.request.url.path.endswith("/start"):
             check = CapacityProtocolCheck.START_HTTP
-        else:
+        elif exc.request.url.path.endswith("/prepare"):
             check = CapacityProtocolCheck.PREPARE_HTTP
+        else:
+            check = CapacityProtocolCheck.UNCLASSIFIED
         raise PlatformJobRequiresAction("Verify Cloudflare Deployment", {
             "code": "CF_DEPLOYMENT_UNVERIFIED",
             "details": CapacityProtocolError("Capacity endpoint rejected the request", check).as_result(),

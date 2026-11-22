@@ -286,11 +286,16 @@ async function provider(req, res) {
   const namespaces = [...workers.values()].flatMap((item) => item.namespaces);
   if (relative === '/workers/durable_objects/namespaces') {
     if (lagNamespace) {
-      const stale = namespaces.filter(({id}) => id !== lagNamespace);
+      const elapsedMs = Math.floor(performance.now() - lagNamespace.uploadedAt);
+      const revision = lagNamespace.revision;
+      if (elapsedMs < config.workerNamespaceLagMs) {
+        const stale = namespaces.filter(({id}) => id !== lagNamespace.id);
+        event('namespace-lag', {revision});
+        event('namespace-inventory', {ids: stale.map(({id}) => id)});
+        return ok(stale);
+      }
       lagNamespace = undefined;
-      event('namespace-lag');
-      event('namespace-inventory', {ids: stale.map(({id}) => id)});
-      return ok(stale);
+      event('namespace-lag-cleared', {revision, elapsedMs});
     }
     event('namespace-inventory', {ids: namespaces.map(({id}) => id)});
     return ok(namespaces);
@@ -314,8 +319,8 @@ async function provider(req, res) {
           ({id: randomBytes(16).toString('hex'), script: name, class: exported}))});
       const revision = Number(owner.split(':')[2]);
       const role = name.split('-').at(-1);
-      if (config.lagWorkerNamespace && revision === 1 && role === 'capacity') {
-        lagNamespace = workers.get(name).namespaces[0].id;
+      if (config.workerNamespaceLagMs && role === 'capacity') {
+        lagNamespace = {id: workers.get(name).namespaces[0].id, revision, uploadedAt: performance.now()};
       }
       event('upload', {revision, role});
       return ok({id: name});

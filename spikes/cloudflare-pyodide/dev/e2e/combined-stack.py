@@ -44,7 +44,8 @@ def prepare(root, project, image, *, initial_tunnel_config, lag_worker_namespace
         "address": address, "subnet": inspection["IPAM"]["Config"][0]["Subnet"],
         "edgePort": edge, "providerPort": provider, "cert": str(fixture / "edge.pem"), "key": str(fixture / "edge.key"),
         "ready": str(fixture / "ready"), "project": project, "image": image, "network": network,
-        "initialTunnelConfig": initial_tunnel_config, "lagWorkerNamespace": lag_worker_namespace,
+        "initialTunnelConfig": initial_tunnel_config,
+        "workerNamespaceLagMs": 10_000 if lag_worker_namespace else 0,
     }
     (fixture / "config.json").write_text(json.dumps(cfg))
     (fixture / "connector.json").write_text(json.dumps({"base": f"http://{address}:{provider}/local/tunnel-"}))

@@ -113,7 +113,9 @@ from src.services.worker_pool.cloudflare_policy import (
 )
 from src.services.worker_pool.cloudflare_provisioning import (
     DeletionSettling,
+    ObservationCheck,
     ObservationPending,
+    ObservationSettling,
     OwnershipCheck,
     OwnershipConflict,
     ResourceIntent,
@@ -1139,6 +1141,8 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
     monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
     observed = {}
     writes = []
+    provider_seconds = 0
+    capacity_namespaces_visible_at = None
 
     class Provider:
         async def observe(self, *, api_token, intent):
@@ -1146,12 +1150,23 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
             return observed.get(intent.target.name)
 
         async def create(self, *, api_token, intent, scope_bearer):
+            nonlocal capacity_namespaces_visible_at
             assert (scope_bearer is not None) == intent.target.name.endswith("-capacity")
             writes.append(intent.target.name)
             observed[intent.target.name] = ResourceObservation(intent, str(uuid4()), str(uuid4()))
+            if scope_bearer is not None and not aborted_rotation:
+                capacity_namespaces_visible_at = provider_seconds + 10
 
         async def configure_endpoint(self, *, api_token, expected):
             name = expected.intent.target.name
+            if (
+                name.endswith("-capacity") and capacity_namespaces_visible_at is not None
+                and provider_seconds < capacity_namespaces_visible_at
+            ):
+                raise ObservationSettling(
+                    "Fixture namespace is not yet visible",
+                    OwnershipResource.DURABLE_OBJECT_NAMESPACE, ObservationCheck.NAMESPACE_EXPORTS_PENDING,
+                )
             return ConfiguredWorkersScript(
                 "https://capacity.example.test" if name.endswith("-capacity") else None,
                 {} if name.endswith("-gateway") else {"OwnedNamespace": "a" * 32},
@@ -1230,6 +1245,14 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
                 await enable_job._settle_enable(running, payload, http, release)
             assert settling.value.code == "CF_CLEANUP_SETTLING" and settling.value.retryable
             recovering.assert_awaited_once()
+        if not aborted_rotation:
+            with pytest.raises(ObservationSettling) as lag:
+                await enable_job._settle_enable(running, payload, http, release)
+            assert lag.value.check is ObservationCheck.NAMESPACE_EXPORTS_PENDING
+            assert sum(name.endswith("-capacity") for name in writes) == 1
+            await db_session.refresh(installation)
+            assert installation.admitted_revision is None
+            provider_seconds += int(enable_job.CLOUDFLARE_ENABLE_DEFINITION.policy.retry_delay[0].total_seconds())
         paid_reads.clear()
         with pytest.raises(PlatformJobRequiresAction) as ingress_denied:
             await enable_job._settle_enable(running, payload, http, release)

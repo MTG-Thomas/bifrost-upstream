@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from enum import StrEnum
 from typing import Literal
 
@@ -25,3 +26,6 @@ class PlatformJobPolicy:
     allow_running_cancellation: bool = False
     execution_class: Literal["default", "build"] = "default"
     record_execution_class: bool = False
+    # Delays after retryable handler failures, indexed by the completed attempt.
+    # An empty tuple preserves immediate eligibility; the last delay is reused.
+    retry_delay: tuple[timedelta, ...] = ()

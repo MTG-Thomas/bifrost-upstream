@@ -26,10 +26,12 @@ from src.services.worker_pool.cloudflare_release import (
     load_workers_release,
 )
 from src.services.worker_pool.cloudflare_workers_rest import (
+    OWNER_BINDING,
     WorkersDeployment,
     WorkersPaidUnverified,
     WorkersRestCleanup,
     WorkersRestProvisioner,
+    worker_owner_value,
 )
 
 
@@ -310,6 +312,46 @@ async def test_paid_check_identifies_the_missing_entitlement() -> None:
     async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as http:
         with pytest.raises(WorkersPaidUnverified, match="active containers.enabled entitlement"):
             await WorkersRestCleanup(http).verify_workers_paid(account, SecretStr("synthetic-account-token"))
+
+
+@pytest.mark.asyncio
+async def test_empty_deployment_history_for_exactly_owned_worker_is_settling() -> None:
+    target = ResourceTarget(uuid4(), "a" * 32, "workers", "worker_script", "bifrost-test")
+    intent = ResourceIntent(target, uuid4(), 1, "b" * 64)
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/settings"):
+            result = {"bindings": [{"type": "plain_text", "name": OWNER_BINDING, "text": worker_owner_value(intent)}]}
+        else:
+            assert request.url.path.endswith("/deployments")
+            result = {"deployments": []}
+        return httpx.Response(200, json={"success": True, "result": result})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+        with pytest.raises(ObservationSettling) as failure:
+            await WorkersRestCleanup(http).observe(api_token=SecretStr("fixture-token"), intent=intent)
+    assert failure.value.check is ObservationCheck.SCRIPT_DEPLOYMENT_PENDING
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("second_page", ["repeated_id", "short_total"])
+async def test_namespace_pagination_cannot_verify_absence_while_settling(second_page: str) -> None:
+    target = ResourceTarget(uuid4(), "a" * 32, "workers", "worker_script", "bifrost-test")
+    row = {"id": "1" * 32, "script": "another-fixture-script"}
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET" and request.url.path.endswith("/namespaces")
+        page = int(request.url.params["page"])
+        assert page in (1, 2)
+        rows = [row] if page == 1 or second_page == "repeated_id" else []
+        return httpx.Response(200, json={"success": True, "result": rows, "result_info": {
+            "page": page, "total_pages": 2, "total_count": 2, "count": len(rows),
+        }})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+        with pytest.raises(ObservationSettling) as failure:
+            await WorkersRestCleanup(http).verify_absent(api_token=SecretStr("fixture-token"), target=target)
+    assert failure.value.check is ObservationCheck.NAMESPACE_PAGINATION
 
 
 @pytest.mark.parametrize("readback", ["confirmed", "endpoint_mismatch", "missing_namespace", "unexpected_namespace"])

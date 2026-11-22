@@ -33,6 +33,8 @@ class CapacityProtocolCheck(Enum):
 
 
 class CapacityProtocolError(RuntimeError):
+    """Provider response cannot be bound to the requested worker resource."""
+
     def __init__(self, message: str, check: CapacityProtocolCheck = CapacityProtocolCheck.UNCLASSIFIED) -> None:
         super().__init__(message)
         self.check = check
@@ -45,7 +47,6 @@ class CapacityProtocolError(RuntimeError):
             "observed_category": observed,
             "expected_category": expected,
         }
-    """Provider response cannot be bound to the requested worker resource."""
 
 
 class CapacityProviderUnavailable(RuntimeError):
