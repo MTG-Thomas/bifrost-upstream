@@ -195,8 +195,9 @@ Use the private operator configuration with `--hosted-upgrade-config`.
 4. Require the replacement's signed canary and inventory readback in
    the successful Upgrade job before admission reopens. After the
    original ACK, retire the original API and give the successor up to
-   40 seconds to take the scheduler lease. It retains the Compose API
-   alias. Run a new workflow pinned to the replacement revision and
+   40 seconds to take the scheduler lease. Recreate the trial worker
+   with the exact successor API URL and wait for it to become ready.
+   Run a new workflow pinned to the replacement revision and
    verify its terminal ACK. Read spend, Disconnect, and verify all
    saved namespace IDs from the journal map values for both revisions.
 

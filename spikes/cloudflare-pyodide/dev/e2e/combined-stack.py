@@ -84,6 +84,8 @@ signal.pause()
     source = re.sub(r"^    container_name:.*\n", "", source, flags=re.M)
     source = re.sub(r"^    ports:\n(?:      - .*\n)+", "", source, flags=re.M)
     source = source.replace("ghcr.io/gobifrost/bifrost-api:${BIFROST_VERSION:-latest}", image + ":release-${TRIAL_RELEASE:-1}")
+    source = source.replace("BIFROST_API_URL: http://api:8000",
+                            "BIFROST_API_URL: ${TRIAL_CONTROL_API_URL:-http://api:8000}")
     (root / "rehearsal-compose.yml").write_text(source)
     stub_env = f"""
       PYTHONPATH: /rehearsal-site:/app

@@ -631,6 +631,14 @@ async def {name}():
                 SELECT to_json(coalesce((SELECT split_part(owner_id, ':', 1) = '{successor_hostname}'
                   AND lease_expires_at > now() FROM scheduler_leases WHERE name='scheduler-triggers'), false))
             """), 40)
+            subprocess.run(self.compose + ["up", "-d", "--no-deps", "--force-recreate", "--wait",
+                                           "--wait-timeout", "35", "--pull", "never", "worker"],
+                           check=True, env={**env, "TRIAL_CONTROL_API_URL": self.origin},
+                           timeout=45, stdout=subprocess.DEVNULL)
+            worker = subprocess.check_output(self.compose + ["ps", "-q", "worker"], text=True, timeout=8).strip()
+            worker_info, = json.loads(subprocess.check_output(["docker", "inspect", worker], timeout=8))
+            assert "BIFROST_API_URL=" + self.origin in worker_info["Config"]["Env"]
+            assert self.verify_isolation(successor=successor) == address
             self.primary_hold()
             self.submit("replacement", "third")
             new = self.settle("replacement")
@@ -638,6 +646,7 @@ async def {name}():
             wait("replacement route terminal ACK", lambda: self.terminal_ack(new), 10)
             self.release_primary()
             evidence_fields.update(admission_fenced=True, same_control_connection=True, successor_scheduler_lease=True,
+                                   worker_rebound_to_successor=True,
                                    old_absence_checkpoint_before_replacement=True,
                                    first_replacement_observation_after_checkpoint_ms=duration(
                                        checkpoint["drained"], min(row["observed"] for row in replacement),
