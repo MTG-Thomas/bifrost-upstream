@@ -44,6 +44,10 @@ export function CloudflareApprovalPanel({ workflowId, onChange }: {
 	const declaration = proposal ?? state?.current_declaration;
 	const needsBudget = state?.diagnostics?.some(({ rule_id }) => rule_id === "CF_CPU" || rule_id === "CF_SUBREQUESTS");
 
+	const statusLabel = needsBudget && state?.status === "pending_review" ? "Needs Larger Budget"
+		: state ? approvalStatuses[state.status]
+		: status.isPending ? "Loading" : "Temporarily Unavailable";
+
 	async function request(action: () => Promise<void>) {
 		setBusy(true);
 		setError("");
@@ -71,7 +75,7 @@ export function CloudflareApprovalPanel({ workflowId, onChange }: {
 	return (
 		<section aria-label="Cloudflare Approval" className="space-y-4">
 			<Badge variant="outline" role="status">
-				{accessDenied ? "Unavailable" : state ? needsBudget ? "Needs Larger Budget" : approvalStatuses[state.status] : status.isPending ? "Loading" : "Temporarily Unavailable"}
+				{accessDenied ? "Unavailable" : statusLabel}
 			</Badge>
 			{(error || status.isError) && (
 				<p className="text-sm text-destructive" role="alert">

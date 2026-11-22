@@ -2510,7 +2510,7 @@
         ],
         "async_policy": "synchronous",
         "audit_event": null,
-        "authorization_resolver": "Workflow read or human Global platform.readwrite, constrained to workflow reach",
+        "authorization_resolver": "Workflow read or human Global platform.readwrite, constrained to workflow reach. Full proposal source requires Global repository.read",
         "cli": {
           "path": [
             "workflows",
@@ -2572,8 +2572,8 @@
           "platform.readwrite"
         ],
         "async_policy": "synchronous",
-        "audit_event": null,
-        "authorization_resolver": "Human Global platform.readwrite and workflow reach",
+        "audit_event": "workflow.cloudflare_approval.propose",
+        "authorization_resolver": "Human Global platform.readwrite and workflow reach. Full proposal source requires Global repository.read",
         "cli": {
           "path": [
             "workflows",

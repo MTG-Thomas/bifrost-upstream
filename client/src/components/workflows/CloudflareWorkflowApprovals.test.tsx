@@ -16,7 +16,7 @@ it("lists scoped counts and generates a proposal with the default budgets", asyn
 	const state = { status: "pending_review", can_manage: true } as const;
 	vi.mocked(listCloudflareApprovals).mockResolvedValue({
 		counts: { pending_review: 1, approved: 0, ineligible: 0, revision_changed: 0, temporarily_unavailable: 0 },
-		workflows: [{ workflow_id: "workflow", organization_id: null, scope: "global", name: "Global Workflow", status: "pending_review", has_proposal: false }],
+		workflows: [{ workflow_id: "workflow", organization_id: null, scope: "global", name: "Global Workflow", status: "pending_review", has_proposal: false, needs_larger_budget: false }],
 		can_propose: true,
 	});
 	vi.mocked(proposeCloudflareApproval).mockResolvedValue(state);

@@ -14,7 +14,7 @@ from src.models.contracts.cloudflare_approval import (
     CloudflareApprovalOptions,
     CloudflareApprovalState,
 )
-from src.models.orm import CloudflareApproval, Workflow
+from src.models.orm import CloudflareApproval, Organization, Workflow
 from src.services.authorization.context import AuthorizationContext, Boundary, BoundaryKind, RoleGrant
 from src.services.authorization.enforce import Caller
 from src.services.execution import cloudflare_approval
@@ -94,7 +94,9 @@ async def test_observation_checks_pinned_modules_and_missing_paths(monkeypatch):
 
 
 async def test_list_batches_workflow_reviews_and_pins(db_session):
-    user_id, owner = uuid4(), PROVIDER_ORG_ID
+    user_id, owner = uuid4(), uuid4()
+    db_session.add(Organization(id=owner, name=f"Review batching {owner}", created_by="test"))
+    await db_session.flush()
     grant = RoleGrant(uuid4(), frozenset({"platform.readwrite"}), (Boundary(BoundaryKind.PLATFORM),))
     user = UserPrincipal(
         user_id, "operator@example.com", owner,

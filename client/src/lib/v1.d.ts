@@ -16520,19 +16520,18 @@ export interface components {
             status: "approved" | "pending_review" | "revision_changed" | "ineligible" | "temporarily_unavailable";
             /** Has Proposal */
             has_proposal: boolean;
+            /**
+             * Needs Larger Budget
+             * @default false
+             */
+            needs_larger_budget: boolean;
         };
         /** CloudflareApprovalOptions */
         CloudflareApprovalOptions: {
-            /**
-             * Subrequest Allowance
-             * @default 10
-             */
-            subrequest_allowance: number;
-            /**
-             * Cpu Budget Ms
-             * @default 1000
-             */
-            cpu_budget_ms: number;
+            /** Subrequest Allowance */
+            subrequest_allowance?: number;
+            /** Cpu Budget Ms */
+            cpu_budget_ms?: number;
             /** Https Hosts */
             https_hosts?: string[];
         };

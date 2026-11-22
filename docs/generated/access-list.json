@@ -9425,7 +9425,7 @@
     "operation_id": "workflows.cloudflare_approval.status",
     "path": "/api/workflows/{workflow_id}/cloudflare-approval",
     "permission": "workflows.read",
-    "reason": "Workflow read or Global platform.readwrite, constrained to authorized workflow scope."
+    "reason": "Workflow read or Global platform.readwrite, constrained to authorized workflow scope. Full proposal source requires Global repository.read."
   },
   {
     "access_class": "permission",
@@ -9453,7 +9453,7 @@
     "operation_id": "workflows.cloudflare_approval.propose",
     "path": "/api/workflows/{workflow_id}/cloudflare-approval/propose",
     "permission": "platform.readwrite",
-    "reason": "Human Global platform.readwrite and reach at the workflow owner scope."
+    "reason": "Human Global platform.readwrite and reach at the workflow owner scope. Full proposal source requires Global repository.read."
   },
   {
     "access_class": "permission",
@@ -11790,7 +11790,7 @@
     "operation_id": "workflows.cloudflare_approval.propose",
     "path": null,
     "permission": "platform.readwrite",
-    "reason": "Human Global platform.readwrite and reach at the workflow owner scope."
+    "reason": "Human Global platform.readwrite and reach at the workflow owner scope. Full proposal source requires Global repository.read."
   },
   {
     "access_class": "permission",
@@ -11818,7 +11818,7 @@
     "operation_id": "workflows.cloudflare_approval.status",
     "path": null,
     "permission": "workflows.read",
-    "reason": "Workflow read or Global platform.readwrite, constrained to authorized workflow scope."
+    "reason": "Workflow read or Global platform.readwrite, constrained to authorized workflow scope. Full proposal source requires Global repository.read."
   },
   {
     "access_class": "permission",
