@@ -1969,6 +1969,7 @@ async def test_container_reservation_serializes_shared_capacity(async_session_fa
                 CredentialRef(installation_id, account, "scope_bearer", "workers", 1),
                 SecretStr("synthetic-workers-bearer"), actor=str(OPERATOR_ID), now=now,
             ))
+            await db.flush()
             db.add(CloudflareCapacityScope(
                 installation_id=installation_id, scope="workers", endpoint="https://workers.example.test",
                 deployment_revision=1, bearer_version=1,
