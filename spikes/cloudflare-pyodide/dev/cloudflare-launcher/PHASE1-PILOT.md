@@ -584,6 +584,45 @@ hosted run's outcome uncertain.
 
 ## Combined Hosted Qualification Plan
 
+### Local Rehearsal
+
+Rehearse the combined gates in a private `combined-local-*` Git archive
+on the Compose host. Use Node 26, the installed Phase 6 Wrangler and
+Miniflare dependencies, and the same two pinned release packages. Build
+both images as in item 1 and save each loader's release version and
+deployment digest in `.release-1.checked` and `.release-2.checked`.
+Check the host start condition before launching the stack.
+
+```sh
+python3 spikes/cloudflare-pyodide/dev/e2e/combined-stack.py "$PROJECT" "$IMAGE"
+node spikes/cloudflare-pyodide/dev/e2e/combined-provider.mjs .rehearsal/config.json &
+provider_pid=$!
+# Wait for .rehearsal/ready before starting Compose.
+docker compose -p "$PROJECT" -f rehearsal-compose.yml -f rehearsal-overlay.yml \
+  up -d --pull never api worker cloudflare-connector
+# Wait for the API and worker health checks.
+python3 spikes/cloudflare-pyodide/dev/e2e/combined-rehearsal.py
+```
+
+The driver checks the internal-only Docker networks and loaded fixture
+hooks as the service user before submitting a job. Bifrost runs the API,
+worker, scheduler, and connector supervisor. Miniflare runs the uploaded
+Workers modules. The fixture serves the Cloudflare REST response shapes
+and tracks exact script, namespace, tunnel, DNS, and session identities.
+The local edge relays the actual HTTP and WebSocket probes to Bifrost.
+An observed successful SDK read confirms entry before the fixture's
+bounded sleep. Retain the persisted entry log after settlement.
+
+**Hosted-only checks** include public DNS and IPv6 routing, live edge
+certificates and connection reuse, real provider entitlements and grant
+enforcement, live cloudflared sessions, authoritative DNS cleanup, and
+Analytics attribution or billing. Local reads verify the corresponding
+gate and parser against fixture responses. Always remove the project
+containers, volumes, and internal network, and stop the local provider
+process when the rehearsal finishes or fails.
+
+### Hosted Run
+
 The run needs explicit owner approval for the exact two release manifests,
 existing Workers Paid account, active zone, two dedicated origins, temporary
 grants, and a single disposable Compose project. Cap each deployment at three
@@ -696,10 +735,10 @@ deadline. Apply the following ordering:
 | Gate | Required readback before advancing |
 | --- | --- |
 | Cold and warm | Use `executions.created_at` in PostgreSQL as the queue timestamp for latency. The execution detail response can leave `created_at` null. After the cold run becomes terminal, wait for its ACK and the released slot fence. Submit the repeat while that slot is still within linger. Verify the repeat's claim and loader identity after entry. |
-| Eight and ninth executions | Wait for both workflow entry and a sent, unreleased slot for all eight in the same occupancy window. Then offer the ninth. Wait for its entry and slot while confirming the original eight fences are still held. |
+| Eight and ninth executions | Wait for a live gateway or launcher witness of entry and a sent, unreleased slot for all eight in the same occupancy window. Then offer the ninth. Wait for its entry and slot while confirming the original eight fences are still held. Read persisted entry logs after settlement because the runtime can batch them until the terminal receipt. |
 | Tenth waits | After its dispatch row appears, record the managed controller identified by `launched_by` on the held launchers. Its timestamp in Redis `bifrost:worker-pool:controllers` advances at pass start. Observe the first advance after enqueue and use the next two advances of that controller to mark two completed passes. Check the scope logs for reconciliation errors during both passes. At each completion, read the same nine active fences and the tenth's unassigned dispatch together, and verify the tenth has no claim, slot, or entry. Record the observations without controller IDs. |
-| Isolated cancel | Wait for the target's terminal cancellation and exact slot fence release. In the same slot read verify the other eight fences remain held. Compare the released fence timestamp with the tenth execution's claim and entry evidence, then release the remaining hold fixtures. |
-| Active Scale In | Confirm the drain fixture has entered on Workers under a sent fence. Free the local primary if needed to run the platform job. After Scale In is accepted, wait for the admission and send fence while the original claim is still live. Then release the fixture and wait for its terminal ACK, the job result, and retired launcher readback. Verify the scripts still exist. |
+| Isolated cancel | Use a fixture that can finish within the launcher's stop-confirmation window when the terminate command is observed. Wait for a confirmed `stopped` receipt, terminal cancellation, and exact slot fence release. A Cancelled run with an `uncertain` receipt still owns its fence. In the same slot read verify the other eight fences remain held. Compare the released fence timestamp with the tenth execution's claim and entry evidence. |
+| Active Scale In | Confirm the drain fixture has entered on Workers under a sent fence. Free the local primary if needed to run the platform job. After Scale In is accepted, wait for the admission and send fence while the original claim is still live. Then release the fixture or let its bounded hold finish. Verify its terminal ACK, the job result, retired launcher readback, and the three retained scripts. |
 | Managed Tunnel rotation | Capture live session identities before submission. After rotation, poll the exact tunnel until the pre-rotation set is absent and a replacement session is live. Check the old token and run the worker preflight only after that readback. |
 | Upgrade | Wait for the held execution's original claim and sent fence, then stage the replacement. Wait for the persisted admission and send fence before interrupting the old control connection. Verify terminal replay and ACK under the original claim, old runtime retirement, and provider absence before the first replacement upload. Wait for the replacement's signed canary and admission. |
 
@@ -900,3 +939,41 @@ live sessions. The connector process, Compose stack, trial image tags,
 scratch directories and secret files were removed and checked for absence.
 
 See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-observable-gates.json).
+
+## Combined Local Rehearsal
+
+On 2026-11-22 UTC the disposable Compose stack exercised items 1–9 from
+spike source `5716151b0` with both pinned releases, real workerd, and the
+local provider fixture. The clean run reached the final Disconnect and
+exposed a product retirement block.
+
+| Item | Result | Observation |
+| --- | --- | --- |
+| 1. Releases | Rehearsed-pass | The production image loader accepted both packages with distinct deployment digests. All 12 packaging tests passed. |
+| 2. Connect, preflight, Enable | Rehearsed-pass | The worker passed 100 routes. Preflight and signed Enable both reported eight completed TLS handshakes and 92 reused requests on the local IPv4 address. Enable ran as `remote_launcher`. |
+| 3. Primary hold and latency | Rehearsed-pass | The durable hold showed 24 MiB free. PostgreSQL queue-to-entry was 12.092 s cold and 0.295 s warm. Queue-to-completion was 12.128 s and 0.313 s. Both used slot 0 on the same launcher. |
+| 4. Burst and cancel | Rehearsed-pass | Four Provider and four Global executions overlapped. The third tenant took the ninth slot and the tenth waited through two observed controller passes. A controlled stop released one fence, preserved eight sibling fences, and admitted the waiting run. The Solution fixture returned its scoped value. |
+| 5. Reconcile, active Scale In, first Disconnect | Rehearsed-pass | Reconcile retained the deployment, Scale In fenced admission while the held claim was live, and the first Disconnect returned three script and four namespace 404s. |
+| 6. Managed Tunnel | Rehearsed-pass | The fixture echoed `warp-routing.enabled = false`, accepted the route-list request, and reported the exact proxied CNAME. The signed Enable passed. |
+| 7. Connector rotation | Rehearsed-pass | The actual supervisor rolled its token projection. The stub showed one previous session evicted and one replacement session alive. The old token was refused. Worker preflight and signed re-Enable passed. |
+| 8. Upgrade | Rehearsed-pass | The replacement fenced the original live claim. The launcher reconnected after the targeted cut, delivered its terminal receipt, and received its ACK after exactly one dispatch. All three old scripts and four old namespaces were absent before replacement upload. |
+| 9. Spend and final teardown | Partial. Product block | Final Scale In and spend parsing passed against a synthetic Analytics sample. All nine Managed scripts and twelve namespaces across the three revisions returned 404. The tunnel was deleted with zero connections and DNS returned 404. Final Disconnect returned `CF_CLEANUP_PENDING` and left the Bifrost installation unretired. The test project and provider fixture were removed. |
+
+**Product defect.** Managed Tunnel cleanup sets the tunnel intent to
+`absent` in the session and returns completion. The retirement query uses
+a session with autoflush disabled and still reads `deleting` from
+PostgreSQL. A rolled-back diagnostic replay reproduced the rejection.
+Flushing the session before calling the same retirement code made it
+succeed. Product code was unchanged.
+
+**Fixed harness defects.** The fixture now uses internal-only networks
+and checks deferred Python hooks under the service user. One preliminary
+account verification GET escaped before isolation with synthetic
+credentials and returned HTTP 400. It created no resources. The HTTP
+and WebSocket relay now preserves the origin, probe witness, and close
+code. Queue timing uses PostgreSQL, and burst entry uses a live SDK
+witness because entry logs can be buffered. The controlled cancel
+releases its held read after the launcher accepts terminate. An earlier
+long sleep returned an uncertain stop and correctly retained its fence.
+The harness also corrected the Compose image pull option and made the
+connector stub detach its last session on projection withdrawal.
