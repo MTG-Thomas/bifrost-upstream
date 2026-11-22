@@ -2571,12 +2571,15 @@ async def test_disconnect_preserves_unresolved_container_cleanup(db_session, ins
     else:
         assert not isinstance(verdict, ContainerAdmissionRefused)
 
+    connection = await db_session.connection()
+
     @asynccontextmanager
-    async def same_transaction():
-        yield db_session
+    async def claim_transaction():
+        async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as session:
+            yield session
 
     assert runner.reserved_for_dispatch_id is None and dispatch.assigned_worker_id is None
-    monkeypatch.setattr(claim_service, "get_db_context", same_transaction)
+    monkeypatch.setattr(claim_service, "get_db_context", claim_transaction)
     handed_back = await claim_next(primary, fits_bytes=1 << 20, budget_bytes=1 << 20)
     assert handed_back is not None and handed_back.subject_id == subject
     assert await claim_next(primary, fits_bytes=1 << 20, budget_bytes=1 << 20) is None
