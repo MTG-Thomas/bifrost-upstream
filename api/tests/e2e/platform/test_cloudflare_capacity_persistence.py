@@ -1244,7 +1244,13 @@ async def test_enable_requires_signed_sdk_evidence_and_resumes_owned_uploads(
             await db_session.flush()
             with pytest.raises(PlatformJobRequiresAction) as budget:
                 await enable_job._settle_enable(running, payload, http, release)
-            assert budget.value.result == {"code": "CF_BUDGET_REACHED"}
+            assert budget.value.result == {
+                "code": "CF_BUDGET_REACHED",
+                "details": {
+                    "resource_class": "spend_guard", "check": "monthly_usage",
+                    "observed_category": "limit_reached", "expected_category": "under_limit",
+                },
+            }
             recovering.assert_not_awaited()
             await db_session.delete(blocked)
             await db_session.flush()
@@ -5504,9 +5510,13 @@ async def test_preset_b_policy_api_uses_the_qualified_fleet_price(
     "connector_unavailable", "eligible_for_overflow",
 ])
 async def test_status_explains_placement_over_rest(
-    db_session, installation, lifecycle_audit_actor, monkeypatch, code,
+    db_session, installation, monkeypatch, code,
 ):
-    caller = _platform_operator()
+    role = RoleGrant(uuid4(), frozenset({"platform.read", "executions.read.all"}), (Boundary(BoundaryKind.PLATFORM),))
+    caller = Caller(
+        UserPrincipal(OPERATOR_ID, "operator@example.test", None),
+        AuthorizationContext(OPERATOR_ID, None, uuid4(), False, frozenset(), (role,)),
+    )
     monkeypatch.setattr(capacity_routes, "load_caller", AsyncMock(return_value=caller))
     monkeypatch.setattr(cloudflare_approval, "current_visible_approval_count", AsyncMock(
         return_value=0 if code == "workflow_review_required" else 1,
@@ -5536,7 +5546,7 @@ async def test_status_explains_placement_over_rest(
         "tenant_limit_reached", "installation_slots_full", "eligible_for_overflow",
     }
     if code in queue_codes:
-        run = Execution(workflow_name="fixture", executed_by_name="fixture", executed_by=OPERATOR_ID)
+        run = Execution(workflow_name="fixture", executed_by_name="fixture")
         primary_worker = ExecutionWorker(
             form="static", state="ready", heartbeat_at=as_of, supported_handlers=["workflow.execute"],
             memory_budget_bytes=2**28, memory_reserved_bytes=0 if code == "primary_has_capacity" else 2**28,
@@ -5561,7 +5571,7 @@ async def test_status_explains_placement_over_rest(
     app.dependency_overrides[get_current_active_user] = lambda: caller.principal
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as http:
         response = await http.get("/api/capacity/cloudflare")
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     snapshot = response.json()
     assert installation.account_id not in response.text
     assert installation.worker_ingress_origin not in response.text
