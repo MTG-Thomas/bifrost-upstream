@@ -222,8 +222,8 @@ def install_enable(job_module):
                     assert host == HOST
                     return ("127.0.0.1",)
 
-                async def address(origin, host, address):
-                    return await real_address_probe(origin, host, address, port, trust=trust)
+                async def address(origin, host, address, *, progress=None):
+                    return await real_address_probe(origin, host, address, port, trust=trust, progress=progress)
 
                 with patch.object(probes, "_public_addresses", addresses), patch.object(probes, "_probe_address", address):
                     return await probes.probe_worker_ingress(installation, runtime_canary=runtime_canary)
