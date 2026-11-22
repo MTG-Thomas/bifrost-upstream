@@ -1193,6 +1193,12 @@ CANONICAL_OPERATIONS = {
         "PUT", "/api/base-role-defaults", ("users", "defaults", "set"),
         "bifrost_base_role_default_update", False,
     ),
+    "workflows.cloudflare_approval.list": (
+        "GET",
+        "/api/workflows/cloudflare-approvals",
+        ("workflows", "cloudflare-approval", "list"),
+        "bifrost_workflow_cloudflare_approval_list",
+    ),
     "workflows.cloudflare_approval.status": (
         "GET",
         "/api/workflows/{workflow_id}/cloudflare-approval",

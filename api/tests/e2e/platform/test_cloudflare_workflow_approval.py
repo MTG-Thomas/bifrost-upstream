@@ -84,12 +84,29 @@ async def test_workflow_approval_rest_enforces_global_operator_and_audits_revisi
         admin = await world.person(org)
         operator_role = await world.role("platform.readwrite")
         await world.assign(admin, operator_role.id, ("platform", None))
+        source_operator = await world.person(org)
+        repository_role = await world.role("repository.read")
+        await world.assign(source_operator, operator_role.id, ("platform", None))
+        await world.assign(source_operator, repository_role.id, ("platform", None))
         reader = await world.person(org)
         role = await world.role("workflows.read")
         await world.assign(reader, role.id, ("organization", org.id))
         outsider = await world.person(await world.organization())
-        provider = await world.person(await world.organization(provider=True))
+        provider_org = await world.organization(provider=True)
+        provider = await world.person(provider_org)
+        provider_workflow = await world.workflow(provider_org)
+        await world.assign(admin, role.id, ("organization", provider_org.id))
         workflow = await world.workflow(org)
+        foreign = await world.workflow(await world.organization())
+        global_workflow = await world.workflow(org)
+        global_workflow.organization_id = None
+        fast_path = await world.workflow(org, execution_lane="fast_path")
+        foreign_id, global_id, fast_path_id, provider_id = map(
+            str, (foreign.id, global_workflow.id, fast_path.id, provider_workflow.id),
+        )
+        global_uuid = global_workflow.id
+        global_path = global_workflow.path
+        global_source = f"def {global_workflow.function_name}(): return 42\n"
         workflow.path = f"workflows/wildcard_{workflow.id.hex}.py"
         workflow.function_name = "run"
         path = workflow.path
@@ -111,19 +128,82 @@ async def test_workflow_approval_rest_enforces_global_operator_and_audits_revisi
             await world.session.commit()
 
         try:
+            await index.write(global_path, global_source.encode())
             await write_source("original")
             async with httpx.AsyncClient(base_url=e2e_api_url, timeout=30) as client:
                 admin_headers, reader_headers = await headers(admin), await headers(reader)
                 provider_headers = await headers(provider)
-                assert (await client.get(endpoint, headers=await headers(outsider))).status_code == 404
+                source_headers, outsider_headers = await headers(source_operator), await headers(outsider)
+                list_url = "/api/workflows/cloudflare-approvals"
+                listing = await client.get(list_url, headers=admin_headers)
+                listing.raise_for_status()
+                listed = listing.json()
+                ids = [item["workflow_id"] for item in listed["workflows"]]
+                assert ids.index(provider_id) < ids.index(global_id) < ids.index(str(workflow_id))
+                assert foreign_id not in ids
+                assert next(item for item in listed["workflows"] if item["workflow_id"] == fast_path_id)["status"] == "ineligible"
+                assert sum(listed["counts"].values()) == len(ids)
+                scoped = (await client.get(list_url, headers=reader_headers)).json()
+                assert {item["workflow_id"] for item in scoped["workflows"]} == {str(workflow_id), fast_path_id}
+                assert not scoped["can_propose"]
+                foreign_endpoint = f"/api/workflows/{foreign_id}/cloudflare-approval"
+                assert (await client.post(f"{foreign_endpoint}/propose", json={}, headers=admin_headers)).status_code == 404
+                assert (await client.get(foreign_endpoint, headers=admin_headers)).status_code == 404
+                assert (await client.delete(foreign_endpoint, headers=admin_headers)).status_code == 404
+                assert (await client.get(endpoint, headers=outsider_headers)).status_code == 404
+                invisible = (await client.get(list_url, headers=outsider_headers)).json()
+                assert invisible["workflows"] == []
+                assert not invisible["can_propose"] and sum(invisible["counts"].values()) == 0
                 read = await client.get(endpoint, headers=reader_headers)
                 assert read.status_code == 200 and not read.json()["can_manage"]
                 assert (await client.get(endpoint, headers=provider_headers)).status_code == 404
                 for actor in (reader_headers, provider_headers):
                     assert (await client.post(f"{endpoint}/propose", json=options, headers=actor)).status_code == 403
                 assert (await client.post(f"{endpoint}/propose", json=wildcard, headers=provider_headers)).status_code == 403
-                review = await client.post(f"{endpoint}/propose", json=options, headers=admin_headers)
+                global_endpoint = f"/api/workflows/{global_id}/cloudflare-approval"
+                global_review = await client.post(f"{global_endpoint}/propose", json=options, headers=source_headers)
+                global_review.raise_for_status()
+                global_sha = global_review.json()["proposal"]["review_sha256"]
+                assert global_review.json()["proposal_sources"][global_path] == global_source
+                global_accept = {**options, "review_sha256": global_sha}
+                for denied in (reader_headers, provider_headers):
+                    assert (await client.post(f"{global_endpoint}/accept", json=global_accept, headers=denied)).status_code == 403
+                assert (await client.post(
+                    f"{foreign_endpoint}/accept", json=global_accept, headers=admin_headers,
+                )).status_code == 404
+                accepted_global = await client.post(
+                    f"{global_endpoint}/accept", json=global_accept, headers=admin_headers,
+                )
+                accepted_global.raise_for_status()
+                assert accepted_global.json()["status"] == "approved"
+                review = await client.post(f"{endpoint}/propose", json={}, headers=admin_headers)
                 review.raise_for_status()
+                persisted = (await client.get(endpoint, headers=admin_headers)).json()
+                assert persisted["proposal"] == review.json()["proposal"]
+                assert "proposal_sources" not in review.json()
+                assert "proposal_sources" not in persisted
+                assert "proposal_sources" not in (await client.get(endpoint, headers=reader_headers)).json()
+                saved = (await client.get(endpoint, headers=source_headers)).json()
+                assert "halopsa.com/original" in saved["proposal_sources"][path]
+                staged = await world.session.scalar(select(CloudflareApproval).where(
+                    CloudflareApproval.workflow_id == workflow_id, CloudflareApproval.is_review,
+                ))
+                assert staged is not None and "sources" not in staged.declaration
+                timestamp = staged.accepted_at
+                await RepoStorage().write(path, b"def run(): return 'unindexed change'")
+                stale_source = (await client.get(endpoint, headers=source_headers)).json()
+                assert stale_source["status"] == "revision_changed" and "proposal_sources" not in stale_source
+                await write_source("original")
+                repeated = (await client.post(f"{endpoint}/propose", json={}, headers=admin_headers)).json()
+                assert repeated["proposal"]["review_sha256"] == persisted["proposal"]["review_sha256"]
+                await world.session.refresh(staged)
+                assert staged.accepted_at > timestamp
+                proposal_event = await world.session.scalar(select(AuditLog).where(
+                    AuditLog.resource_id == workflow_id, AuditLog.action == "workflow.cloudflare_approval.propose",
+                ).order_by(AuditLog.created_at.desc()).limit(1))
+                assert proposal_event is not None and proposal_event.user_id == admin.id
+                assert proposal_event.details["revision"] == repeated["proposal"]["review_sha256"]
+                assert await current_approval(world.session, workflow_id) is None
                 assert review.json()["proposal"]["https_hosts"] == []
                 assert review.json()["diagnostics"][0]["rule_id"] == "CF_URL_REVIEW"
                 private_root = await client.post(
@@ -140,6 +220,9 @@ async def test_workflow_approval_rest_enforces_global_operator_and_audits_revisi
 
                 stale = await proposal()
                 await write_source("changed")
+                changed_state = (await client.get(endpoint, headers=admin_headers)).json()
+                assert changed_state["status"] == "revision_changed"
+                assert changed_state["proposal"] is None
                 latest = await proposal()
 
                 async def accept(body, actor):
@@ -175,7 +258,8 @@ async def test_workflow_approval_rest_enforces_global_operator_and_audits_revisi
         finally:
             await world.session.rollback()
             await index.delete(path)
-            await world.session.execute(delete(AuditLog).where(AuditLog.resource_id == workflow_id))
+            await index.delete(global_path)
+            await world.session.execute(delete(AuditLog).where(AuditLog.resource_id.in_((workflow_id, global_uuid))))
             await world.session.commit()
 
 
@@ -193,7 +277,8 @@ async def test_accept_rejects_a_republished_solution_generation(async_engine, e2
         solution_id = solution.id
         storage = SolutionStorage(solution_id)
         pin = await storage.write(path, f"def {workflow.function_name}(): return 1\n".encode())
-        endpoint = f"/api/workflows/{workflow.id}/cloudflare-approval"
+        workflow_id = workflow.id
+        endpoint = f"/api/workflows/{workflow_id}/cloudflare-approval"
         options = {"subrequest_allowance": 5, "cpu_budget_ms": 100}
         try:
             world.session.add(SolutionFileIndex(solution_id=solution.id, path=path, content_hash=pin))
@@ -218,6 +303,9 @@ async def test_accept_rejects_a_republished_solution_generation(async_engine, e2
             await world.session.rollback()
             await storage.delete(path)
             await world.session.execute(delete(SolutionFileIndex).where(SolutionFileIndex.solution_id == solution_id))
+            await world.session.execute(delete(AuditLog).where(
+                AuditLog.resource_id == workflow_id, AuditLog.action == "workflow.cloudflare_approval.propose",
+            ))
             await world.session.commit()
 
 

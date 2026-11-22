@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { CloudflareWorkflowApprovals } from "@/components/workflows/CloudflareWorkflowApprovals";
 import { ApiError, getErrorMessage } from "@/lib/api-error";
 import { GLOBAL_TARGET } from "@/lib/authorization";
 import { useAuthorization } from "@/services/authorization";
@@ -567,6 +568,7 @@ export function CloudflareCapacity() {
 				<h2 className="text-base font-medium">Scale Out with Cloudflare</h2>
 			</CardHeader>
 			<CardContent className="space-y-4">
+				{canRead && <CloudflareWorkflowApprovals />}
 				{(authorization.isLoading || isLoading) && (
 					<p role="status">Loading Cloudflare capacity…</p>
 				)}

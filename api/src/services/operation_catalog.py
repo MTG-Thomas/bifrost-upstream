@@ -128,6 +128,7 @@ _MCP_VERBS = frozenset(
 
 # Preserve the public names of the existing approval tools when cataloging them.
 _EXISTING_APPROVAL_MCP_NAMES = frozenset({
+    "bifrost_workflow_cloudflare_approval_list",
     "bifrost_workflow_cloudflare_approval_status",
     "bifrost_workflow_cloudflare_approval_propose",
     "bifrost_workflow_cloudflare_approval_accept",
@@ -929,6 +930,24 @@ OPERATION_CATALOG: tuple[OperationDefinition, ...] = (
         },
     ),
     OperationDefinition(
+        operation_id="workflows.cloudflare_approval.list",
+        summary="List workflow Cloudflare approval states and counts",
+        target_kind=OperationTargetKind.COLLECTION,
+        rest=RestOperationBinding(
+            method="GET", path="/api/workflows/cloudflare-approvals",
+            response_model="CloudflareApprovalList",
+        ),
+        cli=CliOperationBinding(path=("workflows", "cloudflare-approval", "list")),
+        mcp=McpOperationBinding(name="bifrost_workflow_cloudflare_approval_list"),
+        action_scopes=("workflows.read", "platform.readwrite"),
+        authorization_resolver="Workflow read or human Global platform.readwrite, constrained to workflow reach",
+        exclusions={
+            "manifest": "Cloudflare approval binds source and operator authority in the current environment.",
+            "sdk": "Cloudflare approval review is an interactive workflow operation.",
+            "native_builder": "Cloudflare approval review is an interactive workflow operation.",
+        },
+    ),
+    OperationDefinition(
         operation_id="workflows.cloudflare_approval.status",
         summary="Read Cloudflare approval status for a workflow",
         target_kind=OperationTargetKind.RESOURCE,
@@ -939,7 +958,7 @@ OPERATION_CATALOG: tuple[OperationDefinition, ...] = (
         cli=CliOperationBinding(path=("workflows", "cloudflare-approval", "status")),
         mcp=McpOperationBinding(name="bifrost_workflow_cloudflare_approval_status"),
         action_scopes=("workflows.read", "platform.readwrite"),
-        authorization_resolver="Workflow read permission at the owning scope or human Global platform.readwrite",
+        authorization_resolver="Workflow read or human Global platform.readwrite, constrained to workflow reach. Full proposal source requires Global repository.read",
         exclusions={
             "manifest": "Cloudflare approval binds source and operator authority in the current environment.",
             "sdk": "Cloudflare approval review is an interactive workflow operation.",
@@ -958,7 +977,9 @@ OPERATION_CATALOG: tuple[OperationDefinition, ...] = (
         cli=CliOperationBinding(path=("workflows", "cloudflare-approval", "propose")),
         mcp=McpOperationBinding(name="bifrost_workflow_cloudflare_approval_propose"),
         action_scopes=("platform.readwrite",),
-        authorization_resolver="Human Global platform.readwrite",
+        authorization_resolver="Human Global platform.readwrite and workflow reach. Full proposal source requires Global repository.read",
+        audit_event="workflow.cloudflare_approval.propose",
+        side_effects=("store a non-executable workflow proposal",),
         exclusions={
             "manifest": "Cloudflare approval binds source and operator authority in the current environment.",
             "sdk": "Cloudflare approval review is an interactive workflow operation.",
@@ -977,7 +998,7 @@ OPERATION_CATALOG: tuple[OperationDefinition, ...] = (
         cli=CliOperationBinding(path=("workflows", "cloudflare-approval", "accept")),
         mcp=McpOperationBinding(name="bifrost_workflow_cloudflare_approval_accept"),
         action_scopes=("platform.readwrite",),
-        authorization_resolver="Human Global platform.readwrite and a current reviewed digest",
+        authorization_resolver="Human Global platform.readwrite, workflow reach, and a current reviewed digest",
         audit_event="workflow.cloudflare_approval.accept",
         side_effects=("activate the reviewed approval revision",),
         exclusions={
@@ -997,7 +1018,7 @@ OPERATION_CATALOG: tuple[OperationDefinition, ...] = (
         cli=CliOperationBinding(path=("workflows", "cloudflare-approval", "revoke")),
         mcp=McpOperationBinding(name="bifrost_workflow_cloudflare_approval_revoke"),
         action_scopes=("platform.readwrite",),
-        authorization_resolver="Human Global platform.readwrite",
+        authorization_resolver="Human Global platform.readwrite and workflow reach",
         audit_event="workflow.cloudflare_approval.revoke",
         side_effects=("deactivate the current approval revision",),
         exclusions={

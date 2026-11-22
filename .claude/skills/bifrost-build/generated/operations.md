@@ -45,6 +45,7 @@ caller's own items.
 | `apps.validate` | `bifrost apps validate` | `bifrost_app_validate` | `apps.readbasic` |
 | `apps.publish` | `bifrost apps publish` | `bifrost_app_publish` | `apps.publish` |
 | `platform.jobs.get` | `bifrost platform-jobs get` | `bifrost_platform_job_get` | `platformjobs.read.all` (only for other people's items) |
+| `workflows.cloudflare_approval.list` | `bifrost workflows cloudflare-approval list` | `bifrost_workflow_cloudflare_approval_list` | `workflows.read`, `platform.readwrite` |
 | `workflows.cloudflare_approval.status` | `bifrost workflows cloudflare-approval status` | `bifrost_workflow_cloudflare_approval_status` | `workflows.read`, `platform.readwrite` |
 | `workflows.cloudflare_approval.propose` | `bifrost workflows cloudflare-approval propose` | `bifrost_workflow_cloudflare_approval_propose` | `platform.readwrite` |
 | `workflows.cloudflare_approval.accept` | `bifrost workflows cloudflare-approval accept` | `bifrost_workflow_cloudflare_approval_accept` | `platform.readwrite` |

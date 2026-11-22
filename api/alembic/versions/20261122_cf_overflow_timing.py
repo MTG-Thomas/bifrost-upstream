@@ -6,7 +6,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from alembic import op
 
 revision = "20261122_cf_overflow_timing"
-down_revision = "20261121_cf_containers"
+down_revision = "20261121_cf_review_source_scrub"
 branch_labels = None
 depends_on = None
 

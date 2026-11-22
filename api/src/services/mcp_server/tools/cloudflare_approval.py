@@ -3,6 +3,8 @@
 from typing import Any
 from uuid import UUID
 
+from bifrost.contracts.cloudflare_approval import DEFAULT_CPU_BUDGET_MS, DEFAULT_SUBREQUEST_ALLOWANCE
+
 from src.services.mcp_server.tool_result import ToolResult, error_result, success_result
 from src.services.mcp_server.tools._http_bridge import call_rest
 
@@ -13,12 +15,17 @@ def _result(code: int, result: Any) -> ToolResult:
     return success_result("Cloudflare workflow approval", result)
 
 
+async def bifrost_workflow_cloudflare_approval_list(context: Any) -> ToolResult:
+    return _result(*await call_rest(context, "GET", "/api/workflows/cloudflare-approvals"))
+
+
 async def bifrost_workflow_cloudflare_approval_status(context: Any, workflow_id: UUID) -> ToolResult:
     return _result(*await call_rest(context, "GET", f"/api/workflows/{workflow_id}/cloudflare-approval"))
 
 
 async def bifrost_workflow_cloudflare_approval_propose(
-    context: Any, workflow_id: UUID, subrequest_allowance: int, cpu_budget_ms: int,
+    context: Any, workflow_id: UUID,
+    subrequest_allowance: int = DEFAULT_SUBREQUEST_ALLOWANCE, cpu_budget_ms: int = DEFAULT_CPU_BUDGET_MS,
     https_hosts: list[str] | None = None,
 ) -> ToolResult:
     return _result(*await call_rest(
@@ -48,6 +55,7 @@ async def bifrost_workflow_cloudflare_approval_revoke(context: Any, workflow_id:
 
 
 TOOLS = [
+    ("bifrost_workflow_cloudflare_approval_list", "List Cloudflare Approvals", "List workflow approval states and counts in your authorized scope."),
     ("bifrost_workflow_cloudflare_approval_status", "Cloudflare Approval Status", "Read a workflow's Cloudflare approval status by workflow UUID."),
     ("bifrost_workflow_cloudflare_approval_propose", "Propose Cloudflare Approval", "Generate an approval proposal and diagnostics by workflow UUID."),
     ("bifrost_workflow_cloudflare_approval_accept", "Accept Cloudflare Approval", "Accept the reviewed digest and its options as a Global operator."),
@@ -61,6 +69,7 @@ def register_tools(mcp: Any, get_context_fn: Any) -> None:
     )
 
     functions = {
+        "bifrost_workflow_cloudflare_approval_list": bifrost_workflow_cloudflare_approval_list,
         "bifrost_workflow_cloudflare_approval_status": bifrost_workflow_cloudflare_approval_status,
         "bifrost_workflow_cloudflare_approval_propose": bifrost_workflow_cloudflare_approval_propose,
         "bifrost_workflow_cloudflare_approval_accept": bifrost_workflow_cloudflare_approval_accept,
