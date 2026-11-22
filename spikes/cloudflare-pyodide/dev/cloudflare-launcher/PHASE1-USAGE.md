@@ -470,17 +470,21 @@ The 300-second cleanup allowance includes 285 seconds for drain, 10 seconds
 for the provider delete request, and five seconds for clock skew. The release
 loader checks that those allowances fit the qualified margin.
 
-The deletion receipt keeps up to one workflow route per launcher-second,
-with a minimum of 128 and a maximum of 512. The same cap applies separately
-to preparation routes. Routes beyond the cap retain their usage reservations.
+The deletion receipt uses the priced rate of one workflow per launcher-second
+to size its route cap, with a minimum of 128 and a maximum of 512. The same
+cap applies separately to preparation routes. Routes beyond the cap retain
+their usage reservations.
 
 Preset B uses a 3,600-second lifetime and keeps the 90-second TenantHost linger.
 Physical launchers still retire under the worker pool's independent idle policy.
 Managed Workers compare the workflow timeout against the pinned deadline plus
 280 seconds on the database clock. This leaves room for an early launcher
-clock within the five-second allowance. A fresh launcher can accept a workflow
-with the default 1,800-second timeout for about 2,080 seconds. Longer work that
-no longer fits and unbounded work stay available to the primary.
+clock within the five-second allowance. Dispatch stops five seconds before
+the deadline and uses the database instant from the dispatch check as the
+workflow start. A launcher retirement reply closes new claims on that bridge.
+A fresh launcher can accept a workflow with the default 1,800-second timeout
+for about 2,080 seconds. Longer work that no longer fits and unbounded work
+stay available to the primary.
 
 Scale In and Upgrade close new admission immediately. An idle launcher can
 retire on the next reconciliation pass. An already running workflow can
@@ -499,6 +503,37 @@ records the hour-long soak and 120 s control, including cumulative CPU,
 process RSS, meter samples, and both seals. The
 [900 s CT128 receipt](../../results/launcher-lifetime-ct128-requalification.json)
 records the prior validation and the change in the meter inventory.
+
+The [CT128 isolate comparison](../../results/launcher-isolate-memory-ct128.json)
+reused one child for 210 of 219 workflows over 420 seconds. The original
+child reached 4.80 MB of live traced Python allocations, growing by about
+22.5 KB per attempt after warm-up. Module cache size, linecache and the
+logging handler count stayed flat after the workspace loaded. Collecting the
+oldest Python generation reclaimed more than 4,000 cyclic objects per sample.
+The allocations included compiled workspace code, HTTPX objects and
+attempt-local logging classes.
+
+The launcher now collects that generation every 32 real attempts per child.
+Over the same workload, live traced Python allocations stayed below 1.04 MB,
+and the hot child's WASM buffer stayed at 54.46 MB after warm-up. The largest
+engine sample reported 41.92 MB across the V8 heap, embedder and backing
+stores. Adding that peak to the WASM measurement gives a conservative
+96.38 MB local estimate because the counters can overlap. Extrapolating the
+original Python slope from its conservative peak would take about 1,400 more
+hot attempts to reach 128 MB.
+
+Both fixed runs completed without meter exhaustion. The 420-second run
+retired 5 ms after its pinned deadline and the seven-workflow 120-second
+control retired 22 ms after its deadline. Workerd used 30.23 CPU seconds in
+the instrumented fixed run, against 27.35 in the instrumented baseline.
+
+The shared workerd process still grew from 777 to 829 MiB in the fixed run.
+Its aggregate V8 heap capacity grew by about 23 MiB. SQLite stayed under
+0.28 MB for databases and 6.15 MB for WAL files. The profiler measures
+individual isolate counters and process RSS separately. Native pages outside
+those counters remain unattributed to individual isolates. The hosted pilot
+still needs a 3,600-second run with isolate memory and CPU measurements on
+the requalified bundle.
 
 #### Hosted SDK Measurement
 

@@ -23,8 +23,11 @@ remaining. Preset B requires meter requalification before release.
 The CT128 hour-long run completed 192 workflows with one signed reconnect
 and retired 350 ms after its pinned deadline. All launcher meters had
 headroom. The 120 s control also passed. Workerd RSS peaked at 823 MiB across
-the local process. The hosted run will measure individual isolates.
+the local process. A separate CT128 comparison isolated Python cycle
+retention and verified collection over 210 hot attempts. The hosted run
+will measure isolate peaks and CPU over the full hour.
 [3,600 s CT128 receipt](../../results/launcher-lifetime-3600-ct128.json)
+· [CT128 isolate comparison](../../results/launcher-isolate-memory-ct128.json)
 
 ## Usage-only limit
 
