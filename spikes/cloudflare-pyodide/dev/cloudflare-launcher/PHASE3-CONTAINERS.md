@@ -542,6 +542,18 @@ An API crash ends any in-flight Container workflows at lease expiry unless
 a fenced API owner reconnects and renews first. A reconnect cannot revive
 an expired process.
 
+The signed Linux recipe uses its private PID namespace's init to preopen
+the one-workflow guest's pipes. Init starts the guest as UID 1001 with no
+capabilities and then runs the supervisor as UID 1000 with only the signal
+capability needed to stop and reap the dedicated guest. Both drop privilege
+escalation. The return pipe is bounded JSON and cannot carry Python objects.
+The supervisor reaps all adopted guest descendants before a terminal result.
+If it cannot prove they exited, it stops the whole namespace and leaves
+settlement to independent provider observation. The Docker fixture exercises
+the real guest launch, native package import, subprocess, UID denial and
+detached-descendant cleanup. Hosted qualification must confirm the private
+PID namespace and capability behavior with the signed release.
+
 HTTP arrival accounting reserves the request line, all headers exposed by
 the Fetch API, and the announced body length or a 256-byte floor. It
 includes rejected requests, failed attempts, and repeated transfers.

@@ -35,6 +35,8 @@ from contextlib import suppress
 from multiprocessing.connection import Connection
 from typing import Any, Literal, get_args
 
+from src.services.execution.container_result import ContainerResultWriter
+
 logger = logging.getLogger(__name__)
 
 # How long a template may take to import and warm before it reports ready.
@@ -559,7 +561,7 @@ def _handle_fork_request(
 
 def _run_forked_child(
     work_recv: Connection,
-    result_send: Connection,
+    result_send: Connection | ContainerResultWriter,
     worker_id: str,
     persistent: bool,
     sdk_socket_path: str | None = None,

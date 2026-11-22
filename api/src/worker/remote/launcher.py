@@ -18,6 +18,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from queue import Empty
 from typing import Any, NamedTuple
 from uuid import UUID, uuid4
 
@@ -25,12 +26,14 @@ from shared.solution_git_stage import SOLUTION_GIT_CAPABILITY
 from shared.version import get_version
 
 from src.jobs.platform.policy import PlatformJobExecutor
+from src.services.execution.container_result import InvalidContainerResult
 from src.services.execution.cpu_sampler import CPUSampler, get_clock_ticks
 from src.services.execution.memory_monitor import (
     effective_memory_sample,
     memory_pressure_ratio,
 )
 from src.services.execution.template_process import TemplateProcess
+from src.worker.remote.container_guest import ContainerGuest
 from src.worker.remote.control_connection import connect_control, load_control_headers
 from src.worker.remote.identity import LauncherIdentity, load_launcher_identity
 from src.worker.remote.platform_stage_protocol import StageBinding
@@ -238,6 +241,7 @@ class Launcher:
         container_probe_nonce: str | None = None,
         container_idle_seconds: int | None = None,
         container_deadline: float | None = None,
+        container_guest: ContainerGuest | None = None,
     ) -> None:
         self.socket = socket
         self.identity = identity
@@ -248,6 +252,7 @@ class Launcher:
         self.container_probe_nonce = container_probe_nonce
         self.container_idle_seconds = container_idle_seconds
         self.container_deadline = container_deadline
+        self.container_guest = container_guest
         self._container_lease_until: float | None = None
         self._idle_since = time.monotonic()
         self._idle_draining = False
@@ -358,7 +363,9 @@ class Launcher:
         else:
             result = await self.helper(module)
         self.requirements = result
-        if self.agent_template is None:
+        if self.container_guest is not None:
+            await asyncio.to_thread(self.container_guest.wait_ready)
+        elif self.agent_template is None:
             await asyncio.to_thread(self.template.start)
         else:
             await asyncio.gather(
@@ -550,9 +557,14 @@ class Launcher:
                 async with self._template_lock:
                     if generation != self.session_generation:
                         return
-                    pid, work, result = await asyncio.to_thread(
-                        self.template.fork, worker_id=route_id, sdk_socket_path=None,
-                    )
+                    if self.container_release is not None:
+                        if self.container_guest is None:
+                            raise MemoryError("Container workflow isolation is unavailable")
+                        pid, work, result = self.container_guest.take()
+                    else:
+                        pid, work, result = await asyncio.to_thread(
+                            self.template.fork, worker_id=route_id, sdk_socket_path=None,
+                        )
                 context = payload["context"]
                 timeout = context.get("timeout_seconds", 300) if action == "workflow" else 0
                 child = Child(route_id, payload["execution_id"], pid, work, result,
@@ -629,6 +641,8 @@ class Launcher:
                 await self.terminate(payload["route_id"], payload.get("error_type", "CancelledError"),
                                      payload.get("error", "Cancelled"), payload.get("grace_seconds"))
             elif action == "recycle":
+                if self.container_release is not None:
+                    raise ValueError("The Container release cannot recycle its workflow guest")
                 # Recycling picks up newly installed workflow packages. Agent
                 # children never import customer packages, so the agent
                 # template and its children are left alone.
@@ -756,11 +770,17 @@ class Launcher:
         child = self.children.get(route_id)
         if child is None:
             return
-        asyncio.get_running_loop().remove_reader(child.result.fileno())
         try:
             result = child.result.get_nowait()
+            if self.container_release is not None and result.get("execution_id") != child.execution_id:
+                raise InvalidContainerResult("Container result does not match the active execution")
+        except Empty:
+            return
+        except InvalidContainerResult:
+            result = self.failure(child, "ProcessCrashError", "Child sent an invalid Container result")
         except (EOFError, OSError):
             result = self.failure(child, "ProcessCrashError", "Child exited without a result")
+        asyncio.get_running_loop().remove_reader(child.result.fileno())
         self.task(self.finish(child, result))
 
     @staticmethod
@@ -771,6 +791,12 @@ class Launcher:
 
     async def finish(self, child: Child, result: dict[str, Any]) -> None:
         if self.children.pop(child.route_id, None) is None:
+            return
+        if self.container_guest is not None and not await self.container_guest.stop():
+            # PID 1 exits the whole namespace. The API must resolve the
+            # terminal outcome from independently witnessed provider stop.
+            self.failed = True
+            self.retired.set()
             return
         if child.terminal_reason is not None:
             result = self.failure(child, *child.terminal_reason)
@@ -833,6 +859,13 @@ class Launcher:
         child.stopping = True
         if child.service is None or error_type == "MemoryLimitExceeded":
             child.terminal_reason = (error_type, error)
+        if self.container_guest is not None:
+            if not await self.container_guest.stop(grace=child.grace if grace is None else grace):
+                self.failed = True
+                self.retired.set()
+                return
+            await self.finish(child, self.failure(child, error_type, error))
+            return
         with contextlib.suppress(ProcessLookupError):
             os.kill(child.pid, signal.SIGTERM)
         deadline = time.monotonic() + (child.grace if grace is None else grace)
@@ -869,7 +902,7 @@ class Launcher:
             # A package recycle intentionally stops the template while holding
             # this lock. Observe liveness only outside that replacement window.
             async with self._template_lock:
-                if not self.template.is_alive():
+                if self.container_guest is None and not self.template.is_alive():
                     # Preserve the canonical pool's template-crash recovery;
                     # live children retain their existing pipes and identities.
                     logger.warning("Execution template died; replacing it")
@@ -911,7 +944,8 @@ class Launcher:
             self.reap_exited_agent_children()
             if tick % 4 == 0:
                 async with self._template_lock:
-                    await asyncio.to_thread(self.template.collect_child_exit_statuses)
+                    if self.container_guest is None:
+                        await asyncio.to_thread(self.template.collect_child_exit_statuses)
                 async with self._agent_template_lock:
                     if self.agent_template is not None:
                         await asyncio.to_thread(self.agent_template.collect_child_exit_statuses)
@@ -943,16 +977,22 @@ class Launcher:
         for task in list(self._tasks):
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
+        if self.container_guest is not None:
+            if not await self.container_guest.stop():
+                self.failed = True
+            self.container_guest.close()
         for child in self.children.values():
-            with contextlib.suppress(ProcessLookupError):
-                os.kill(child.pid, signal.SIGKILL)
+            if self.container_guest is None:
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(child.pid, signal.SIGKILL)
             child.work.close()
             child.result.close()
         self.children.clear()
         await asyncio.gather(*(self.kill_process(p) for p in self.jobs.values()))
         if self.platform_stages is not None:
             await self.platform_stages.close()
-        await asyncio.to_thread(self.template.shutdown)
+        if self.container_guest is None:
+            await asyncio.to_thread(self.template.shutdown)
         if self.agent_template is not None:
             await asyncio.to_thread(self.agent_template.shutdown)
 
@@ -1001,6 +1041,7 @@ async def _run_launcher(
     idle_seconds = None
     remaining = None
     container_deadline = None
+    container_guest = None
     if os.environ.get("BIFROST_BAKED_WHEELS_ONLY") == "1":
         container_release = os.environ.pop("BIFROST_CONTAINER_RELEASE", "")
         probe_nonce = os.environ.pop("BIFROST_CONTAINER_PROBE_NONCE", None)
@@ -1010,6 +1051,7 @@ async def _run_launcher(
             raise RuntimeError("Invalid Container qualification challenge")
         remaining, idle_seconds = _load_container_lifetime()
         container_deadline = time.monotonic() + remaining
+        container_guest = ContainerGuest.start_image(api_url)
     secret = _load_containers_control_secret() if containers else os.environ["BIFROST_SECRET_KEY"]
     launcher: Launcher | None = None
     candidate: Launcher | None = None
@@ -1041,6 +1083,7 @@ async def _run_launcher(
                                 container_probe_nonce=probe_nonce,
                                 container_idle_seconds=idle_seconds,
                                 container_deadline=container_deadline,
+                                container_guest=container_guest,
                             )
                         else:
                             # A lost welcome may follow a committed enrollment.
@@ -1105,6 +1148,9 @@ async def _run_launcher(
         try:
             if launcher is not None:
                 await _shutdown_launcher(launcher, drain_task, stopping)
+            elif container_guest is not None:
+                await container_guest.stop()
+                container_guest.close()
         finally:
             if remaining is not None:
                 signal.setitimer(signal.ITIMER_REAL, 0)
