@@ -57,6 +57,7 @@ export class TenantHost extends DurableObject {
   // an attempt (see run()), and a late answer from a retired generation can
   // never vouch for its replacement.
   #readyGeneration = null;
+  #engineReadyAt;
   #readyUntil = 0;
   #readyFor;
   #reservedDailyIdentity = null;
@@ -114,6 +115,7 @@ export class TenantHost extends DurableObject {
     this.#generation = (await this.#currentGeneration()) + 1;
     await this.ctx.storage.put('generation', this.#generation, UNGATED);
     this.#readyGeneration = null;
+    this.#engineReadyAt = undefined;
   }
 
   async #primeList() {
@@ -390,6 +392,7 @@ export class TenantHost extends DurableObject {
       release();
       return {needsWarm: true, attempt_state: 'not_started'};
     }
+    const engineReadyAt = this.#engineReadyAt;
     // The child carries only an opaque handle. Neither run token (access or
     // refresh) enters it, and the handle dies with the attempt's deadline.
     const handle = `run_${crypto.randomUUID()}`;
@@ -443,6 +446,7 @@ export class TenantHost extends DurableObject {
         method: 'POST',
         body: JSON.stringify({execution_id: executionId,
           context: {...childContext, engine_token: handle},
+          record_workflow_timing: Boolean(routeId) && this.env.BIFROST_CLOUDFLARE_MANAGED === 'true',
           api_url: 'https://test-api.invalid',
           public_url: publicUrl ?? 'https://staging.invalid'}),
       });
@@ -506,6 +510,7 @@ export class TenantHost extends DurableObject {
       if (trace.invocation) trace.invocation.wall_ms = childMs;
       return {output: output.upstream_result, queueWaitMs, attempt_state: 'completed', ...trace,
         timings: {child_ms: childMs,
+          engine_ready_at: engineReadyAt,
           child: output.child ? {...child, imported: Array.isArray(imported) ? imported.length : 0} : null,
           api_calls: this.#calls.get(handle)}};
     } catch (error) {
@@ -602,6 +607,7 @@ export class TenantHost extends DurableObject {
       // this ping was in flight, its answer vouches for nothing.
       if (generation === this.#generation) {
         this.#readyGeneration = generation;
+        this.#engineReadyAt = Date.now();
         // At zero linger the ping still has a bounded handoff to the exact
         // incoming execution. A completed attempt clears that window.
         this.#readyUntil = Math.min(warmUntil, Date.now() + (lingerMs || ENGINE_BOOT_TIMEOUT_MS));
