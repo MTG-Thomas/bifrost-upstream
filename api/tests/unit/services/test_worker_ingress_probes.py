@@ -48,7 +48,7 @@ def ingress(monkeypatch):
             return httpx.Response(401 if allowed else 404, headers={
                 probes.INGRESS_HEADER.decode(): (probes.ALLOW_MARKER if allowed else probes.DENY_MARKER).decode(),
                 probes.PROBE_HEADER.decode(): request.headers[probes.PROBE_HEADER.decode()],
-            })
+            }, stream=httpx.ByteStream(b""))
 
         client = httpx.AsyncClient
         monkeypatch.setattr(
@@ -331,6 +331,100 @@ def controlled_deadline(monkeypatch):
         return lambda: deadline.reschedule(asyncio.get_running_loop().time())
 
     return arm
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["complete", "oversized", "deadline"])
+async def test_probe_drains_accepted_responses_on_a_reused_tls_socket(
+    tls_contexts, monkeypatch, controlled_deadline, mode,
+) -> None:
+    server_tls, trust = tls_contexts
+    closed = asyncio.Event()
+    open_sockets = 0
+    nonces: list[bytes] = []
+
+    async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        nonlocal open_sockets
+        open_sockets += 1
+        try:
+            while request := await reader.readline():
+                path = request.split()[1]
+                headers = await reader.readuntil(b"\r\n\r\n")
+                match = re.search(rb"(?im)^" + probes.PROBE_HEADER + rb": ([0-9a-f]+)\r$", headers)
+                assert match
+                nonce = match[1]
+                nonces.append(nonce)
+                refused = path == b"/refuse"
+                status = b"404 Not Found" if refused else b"401 Unauthorized"
+                marker = probes.DENY_MARKER if refused else probes.ALLOW_MARKER
+                writer.write(
+                    b"HTTP/1.1 " + status + b"\r\n" + probes.INGRESS_HEADER + b": " + marker
+                    + b"\r\n" + probes.PROBE_HEADER + b": " + nonce + b"\r\n"
+                )
+                if refused and mode != "complete":
+                    # No terminating chunk. The client must reject the size
+                    # or cancel the body read and close the live connection.
+                    body = b"x" * (probes._MAX_PROBE_BODY_BYTES + 1 if mode == "oversized" else 1)
+                    writer.write(b"Transfer-Encoding: chunked\r\n\r\n%X\r\n" % len(body) + body + b"\r\n")
+                elif refused:
+                    writer.write(b"Content-Length: 1\r\n\r\nx")
+                else:
+                    writer.write(b"Content-Length: 0\r\n\r\n")
+                await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            open_sockets -= 1
+            closed.set()
+
+    if mode == "deadline":
+        expire = controlled_deadline()
+        client_class = httpx.AsyncClient
+
+        async def expire_on_refusal(response: httpx.Response) -> None:
+            if response.status_code == 404:
+                # The next I/O waits for the missing end of the body.
+                asyncio.get_running_loop().call_soon(expire)
+
+        monkeypatch.setattr(
+            probes.httpx, "AsyncClient",
+            lambda **kwargs: client_class(event_hooks={"response": [expire_on_refusal]}, **kwargs),
+        )
+
+    async with await asyncio.start_server(serve, "127.0.0.1", 0, ssl=server_tls) as server:
+        port = server.sockets[0].getsockname()[1]
+        probe_address = probes._probe_address
+
+        async def loopback(origin, host, address, *, progress):
+            return await probe_address(origin, host, address, port, trust=trust, progress=progress)
+
+        monkeypatch.setattr(probes, "_probe_address", loopback)
+        monkeypatch.setattr(probes, "_public_addresses", AsyncMock(return_value=("127.0.0.1",)))
+        monkeypatch.setattr(probes, "_REFUSALS", (("GET", "/refuse"),))
+        monkeypatch.setattr(probes, "ROUTES", set())
+        control = AsyncMock(return_value=(True, None))
+        monkeypatch.setattr(probes, "_check_control", control)
+        result = await probes.probe_public_worker_ingress(ORIGIN)
+        await asyncio.wait_for(closed.wait(), 2)
+
+    expected_requests = 3 if mode == "complete" else 2
+    assert len(nonces) == len(set(nonces)) == expected_requests
+    assert open_sockets == 0
+    assert result.http_connections_as_result() == [{
+        "address_family": "ipv4", "fresh_connections": 1,
+        "tls_handshakes_started": 1, "tls_handshakes_completed": 1,
+        "reused_requests": expected_requests - 1,
+    }]
+    if mode == "complete":
+        assert result.reachable
+        control.assert_awaited_once()
+    else:
+        assert not result.reachable
+        assert result.failure.error_class == ("response_body_too_large" if mode == "oversized" else "probe_deadline")
+        assert result.failure.phase == "response_body"
+        assert result.failure.route_template == "/refuse"
+        assert result.failure.connection_reused is True
+        control.assert_not_awaited()
 
 
 @pytest.mark.asyncio
