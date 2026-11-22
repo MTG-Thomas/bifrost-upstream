@@ -4919,9 +4919,9 @@ async def test_launcher_storage_separates_live_bytes_from_retained_residue(
     )
     event = {"sqlite_rows_written": 1, "do_requests": 1, "log_events": 1, "exhausted": False}
     await cloudflare_spend.record_launcher_terminal_meter(
-        db_session, worker_id, {**event, "sqlite_database_bytes": 2_000_000}, uncertain=False,
+        db_session, worker_id, {**event, "sqlite_database_bytes": 2_000_000},
     )
-    await cloudflare_spend.record_launcher_terminal_meter(db_session, worker_id, event, uncertain=False)
+    await cloudflare_spend.record_launcher_terminal_meter(db_session, worker_id, event)
     assert row.meter_terminal is not None and row.meter_terminal["sqlite_database_bytes"] == 2_000_000
     row.deleted_at = retired
     await db_session.flush()
