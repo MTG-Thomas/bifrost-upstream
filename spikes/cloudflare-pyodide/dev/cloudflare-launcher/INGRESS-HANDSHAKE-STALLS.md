@@ -107,3 +107,23 @@ Directly, the resolver observed `0/200` four-second phase timeouts. Under indepe
 5. **Product-behaviour change — raise only the connect-phase timeout if a measured tail justifies it.** A measured recovery just after four seconds could justify a six- to eight-second connect limit while keeping the read/write/pool budgets and overall deadline. The pinned HTTP stack uses its connect setting for both TCP and TLS, so changing only one of those phases would need an explicit transport design. Longer waits preserve the same route acceptance checks but consume the global budget and can turn an actionable per-route error into an overall deadline. The current data shows neither a recoverable tail beyond four seconds nor enough budget margin to choose a value.
 
 **Recommendation.** Add successful-connection telemetry in the next authorized qualification and pursue bounded response completion for HTTP/1.1 reuse first. It addresses a source-verified reason for fresh handshakes while preserving all live route checks and the current admission contract. Keep the current timeout and fail-closed behavior while qualifying reuse. Escalate to targeted infrastructure diagnosis if TLS still stalls on the much smaller set of connections.
+
+## Hosted Connection Reuse Verified
+
+The 2026-11-22 UTC run from `97ef3ae83` passed the complete 100-route
+preflight from the production Compose worker with the bounded response
+drain. The counters show HTTP connection reuse through the Cloudflare
+edge on both reachable addresses.
+
+| Address family | Addresses | TCP starts per address | TLS starts and completions per address | Reused requests per address |
+| --- | ---: | ---: | ---: | ---: |
+| IPv4 | 2 | 8 | 8 and 8 | 92 |
+| IPv6 | 2 | 1 | 0 and 0 | 0 |
+
+Enable then passed the signed canary as `remote_launcher` and opened
+admission. Its successful receipt does not expose connection counters,
+so reuse was directly observed for the preflight only. The run stopped
+after Enable at the local primary hold check, before any hosted workflow
+submissions.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-connection-reuse.json).

@@ -581,3 +581,20 @@ The modeled cumulative carry-in remained about $0.000191. Hosted workload
 meter samples, billed provider usage and the spend ratio remain unavailable.
 
 See the [sanitized re-run receipt](../../results/cloudflare-scaleout-combined-hosted-rerun.json).
+
+## Hosted Readback With HTTP Connection Reuse
+
+The 2026-11-22 UTC run from `97ef3ae83` verified the prepared Workers
+module, runtime and meter-bounds digests in both release images. The
+qualified bundle was
+`370246c011982ac686a1a6e5aab0d4cf09bf2cd88f6d6059861759001d0f0063`.
+
+Existing HTTPS Connect and the signed Enable canary passed. The live
+estimate displayed $0.00 before retirement. The precise Bifrost estimate
+after Disconnect was $0.000201831 for this run and about $0.000392553
+cumulative. The ledger readback combines Enable and cleanup. The local
+primary hold gate stopped the run before any hosted workflow submission.
+Cloudflare Analytics returned empty samples across the owned scripts and
+namespaces, so a provider cost proxy and spend ratio are unavailable.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-connection-reuse.json).

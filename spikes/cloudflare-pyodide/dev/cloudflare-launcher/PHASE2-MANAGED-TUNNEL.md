@@ -115,3 +115,13 @@ echo, route-list grant and connector rotation with old-session eviction
 remain unqualified on Cloudflare.
 
 See the [sanitized re-run receipt](../../results/cloudflare-scaleout-combined-hosted-rerun.json).
+
+## Combined Hosted Run With HTTP Connection Reuse
+
+The 2026-11-22 UTC run passed Existing HTTPS Enable and stopped at the
+local primary hold gate before Managed Tunnel Connect. The managed
+`warp-routing` echo, route-list grant and live old-session eviction were
+not exercised. The Existing HTTPS tunnel was independently verified
+deleted with zero live sessions.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-connection-reuse.json).

@@ -799,3 +799,35 @@ volumes, networks, trial image tags, scratch and secret files were
 removed and checked for absence.
 
 See the [sanitized re-run receipt](../../results/cloudflare-scaleout-combined-hosted-rerun.json).
+
+## Combined Hosted Run With HTTP Connection Reuse
+
+On 2026-11-22 UTC, spike revision `97ef3ae83` ran both prepared release
+loader checks on the disposable Compose host. The Workers module and
+meter-bounds digests matched the pinned evidence. Only the first release
+was used on the hosted path.
+
+| Runbook item | Observed result |
+| --- | --- |
+| 1. Release verification | Passed. Both image loaders accepted distinct deployment digests and all 12 Workers packaging tests passed. |
+| 2. Existing HTTPS | Passed. Connect returned HTTP 200 with admission closed. The same Compose worker passed all 100 ingress route checks and Enable completed the signed canary as `remote_launcher`, then opened admission. |
+| 3. Cold and warm latency | Stopped at the local primary hold gate. A subsequent read showed 1,408 of 1,432 MiB reserved, leaving the intended 24 MiB. Zero hosted workflow submissions were made. |
+| 4. Slot burst and cancel | Not run. |
+| 5. Reconcile, active Scale In and Disconnect | Reconcile and active Scale In were not run. The stop path submitted Disconnect once and succeeded. |
+| 6–8. Managed Tunnel, rotation and Upgrade | Not run. |
+| 9. Spend and teardown | Bifrost settled $0.000201831 incremental and about $0.000392553 cumulative. Cloudflare Analytics returned empty attributed Workers and Durable Object samples. The ratio is unavailable. Teardown passed. |
+
+Each of the two reachable IPv4 addresses recorded eight TCP starts, eight
+started and completed TLS handshakes, and 92 requests served over reused
+HTTP connections. The two IPv6 addresses each recorded one TCP attempt
+and zero TLS starts. Enable returned a successful receipt. At this
+revision its connection counters appear only on ingress failure.
+
+Independent readback found zero owned scripts and namespaces in provider
+listings. All three script endpoints and four namespace endpoints
+returned 404. Exact DNS and token readback reported absence, both
+authoritative DNS checks agreed, and the tunnel tombstone showed zero
+live sessions. The connector process, project containers, networks,
+volumes, trial image tags and both scratch directories were removed.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-connection-reuse.json).
