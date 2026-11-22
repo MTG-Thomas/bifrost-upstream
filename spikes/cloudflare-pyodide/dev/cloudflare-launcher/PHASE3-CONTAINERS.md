@@ -520,6 +520,11 @@ controller must obtain exact empty inventory and serialize closure with
 the instance actor. Bifrost independently repeats the inventory check
 before settlement and retains the full reserved charge. Hosted
 qualification must establish the observation window.
+A witnessed absent ordinary launch drops its placement pointer. The
+original queued dispatch can be claimed by the primary without creating
+a second dispatch. The scope waits one minute before permitting one
+demand-driven placement. Further launches wait for its signed enrollment
+or a new settlement.
 A committed settlement can replay after provider inventory is collected.
 
 Egress readiness expires after five minutes. The authenticated scope

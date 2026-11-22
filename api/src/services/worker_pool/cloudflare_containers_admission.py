@@ -69,6 +69,7 @@ from src.worker.remote.protocol import (
 )
 
 QUALIFICATION_CANARY_TENANT = "qualification-canary"
+CONTAINERS_PLACEMENT_COOLDOWN = timedelta(minutes=1)
 
 LINUX_REVIEW_VERSION = "containers-linux-v1"
 LIVE_STATES = ("reserved", "starting", "ready", "draining")
@@ -213,7 +214,8 @@ def primary_has_no_fit(
 
 @dataclass(frozen=True, slots=True)
 class ContainerAdmissionRefused:
-    code: Literal["CF_CONTAINERS_CLEANUP_PENDING"] = CONTAINERS_CLEANUP_PENDING
+    code: Literal["CF_CONTAINERS_CLEANUP_PENDING", "CF_CONTAINERS_COOLDOWN"] = CONTAINERS_CLEANUP_PENDING
+    retry_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,6 +228,37 @@ class _ContainerCapacity:
     workers: list[ExecutionWorker]
     seats: WorkflowSlotAdmission
     container_tenants: frozenset[str | None]
+
+
+async def _container_scope_cooldown(
+    db: AsyncSession, capacity: _ContainerCapacity,
+) -> ContainerAdmissionRefused | None:
+    """After witnessed absence, allow one new attempt until signed enrollment."""
+    pin = CloudflareWorkerReservation
+    worker = ExecutionWorker
+    scope = (
+        pin.installation_id == capacity.installation.id, pin.scope == CONTAINERS_SCOPE,
+        pin.deployment_revision == capacity.scope.deployment_revision,
+        pin.container_reserved_at.is_not(None), pin.canary_job_id.is_(None),
+    )
+    closed_at = await db.scalar(select(pin.container_stopped_at).where(
+        *scope, pin.container_stopped_at.is_not(None),
+        pin.container_envelope["settled_absent"].as_boolean().is_(True),
+    ).order_by(pin.container_stopped_at.desc()).limit(1))
+    if closed_at is None:
+        return None
+    retry_at = closed_at + CONTAINERS_PLACEMENT_COOLDOWN
+    if capacity.now < retry_at:
+        return ContainerAdmissionRefused("CF_CONTAINERS_COOLDOWN", retry_at)
+    trial = (await db.execute(select(worker.remote_hello_sequence).select_from(pin).join(
+        worker, worker.id == pin.worker_id,
+    ).where(
+        *scope, pin.container_reserved_at > closed_at,
+        or_(pin.container_stopped_at.is_(None), worker.remote_hello_sequence > 0),
+    ).order_by(pin.container_reserved_at.desc()).limit(1))).one_or_none()
+    if trial is not None and trial.remote_hello_sequence == 0:
+        return ContainerAdmissionRefused("CF_CONTAINERS_COOLDOWN")
+    return None
 
 
 async def _lock_container_capacity(
@@ -309,6 +342,9 @@ async def reserve_container(
     application = (await db.execute(current_container_application(installation, revision, release.digest))).one_or_none()
     if application != (verified_egress.provider_id, verified_egress.provider_version):
         return None
+    cooldown = await _container_scope_cooldown(db, capacity)
+    if cooldown is not None:
+        return cooldown
     linux_workers = [worker for worker in workers if worker.runtime_profile == LINUX_RUNTIME_PROFILE]
     covered = {row.reserved_for_dispatch_id for row in workers if row.reserved_for_dispatch_id is not None}
     blocked_tenants = seats.blocked_tenants | capacity.container_tenants

@@ -2388,9 +2388,10 @@ async def test_managed_container_ownership_fences_live_sessions(db_session, inst
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fenced", [False, True], ids=["void", "fenced-absent"])
-async def test_disconnect_preserves_unresolved_container_cleanup(db_session, installation, fenced) -> None:
+async def test_disconnect_preserves_unresolved_container_cleanup(db_session, installation, monkeypatch, fenced) -> None:
     from src.services.worker_pool.cloudflare_containers_admission import (
         ContainerAdmissionRefused,
+        _container_scope_cooldown,
         reserve_container,
     )
     from src.services.worker_pool.cloudflare_containers_policy import (
@@ -2421,18 +2422,34 @@ async def test_disconnect_preserves_unresolved_container_cleanup(db_session, ins
     installation.admitted_revision = installation.containers_ready_revision = 1
     installation.containers_release_digest = release.digest
     installation.containers_policy = container_policy().model_copy(update={"enabled": True}).model_dump(mode="json")
-    installation.policy = {**installation.policy, "limits": {**installation.policy["limits"], "monthly_limit_usd": "500"}}
+    workers_release = "fixture-workers-release"
+    monkeypatch.setattr(cloudflare_admission, "installed_workers_release_digest", lambda: workers_release)
+    installation.policy = {
+        **installation.policy, "bounds_release": workers_release,
+        "limits": {**installation.policy["limits"], "monthly_limit_usd": "500"},
+    }
     journal = app_journal(installation, release.digest, now)
     db_session.add(journal)
     db_session.add(seal_credential(
         CredentialRef(installation.id, installation.account_id, "scope_bearer", "containers", 1),
         SecretStr("synthetic-container-scope-bearer-key"), actor=str(OPERATOR_ID), now=now,
     ))
-    db_session.add(ExecutionWorker(
+    runner = ExecutionWorker(
         id=worker, form="external", state="lost", capacity_scope="containers",
         capacity_resource_uid=uid, capacity_resource_deleted_at=now,
-    ))
+    )
+    subject, primary = uuid4(), uuid4()
+    db_session.add_all([
+        runner,
+        ExecutionWorker(id=primary, form="static", state="ready", supported_handlers=["workflow.execute"]),
+        Execution(id=subject, status=ExecutionStatus.PENDING, workflow_name="fixture", executed_by_name="fixture"),
+    ])
+    dispatch = stage_dispatch(
+        db_session, family=WAKE_WORKFLOW, subject_id=subject, handler="workflow.execute", handler_version=1,
+        payload={"execution_id": str(subject)}, message={}, memory_request_bytes=1, queued_at=now,
+    )
     await db_session.flush()
+    runner.reserved_for_dispatch_id = dispatch.id
     scope = CloudflareCapacityScope(
         installation_id=installation.id, scope="containers", endpoint="https://capacity.example.test",
         deployment_revision=1, bearer_version=1,
@@ -2446,6 +2463,7 @@ async def test_disconnect_preserves_unresolved_container_cleanup(db_session, ins
         container_reserved_at=reserved_at,
         container_envelope={
             "seconds": 300, "fixed_usd": "0.01", "second_usd": "0.001", "start_deadline": deadline.isoformat(),
+            "execution_id": str(subject),
         },
     )
     db_session.add(pin)
@@ -2475,7 +2493,7 @@ async def test_disconnect_preserves_unresolved_container_cleanup(db_session, ins
     )
     when = int(deadline.timestamp() * 1000)
     receipt = (
-        AbsentContainerStart(app, worker, uid, actor, when, when - 1000, when + 60_000)
+        AbsentContainerStart(app, worker, uid, actor, when, when - 1000, int((now - timedelta(seconds=1)).timestamp() * 1000))
         if fenced else VoidContainerStart(app, worker, uid, actor, when, when + 1000)
     )
     placements = [{"id": actor}]
@@ -2513,7 +2531,42 @@ async def test_disconnect_preserves_unresolved_container_cleanup(db_session, ins
     installation.desired_state = "enabled"
     installation.admitted_revision = 1
     await db_session.flush()
-    assert not isinstance(await reserve_container(db_session, **admission), ContainerAdmissionRefused)
+    verdict = await reserve_container(db_session, **admission)
+    if fenced:
+        assert isinstance(verdict, ContainerAdmissionRefused)
+        assert verdict.code == "CF_CONTAINERS_COOLDOWN" and verdict.retry_at is not None
+        assert verdict.retry_at > now
+        recovered = SimpleNamespace(installation=installation, scope=scope, now=verdict.retry_at)
+        assert await _container_scope_cooldown(db_session, recovered) is None
+        trial = ExecutionWorker(id=uuid4(), form="external", state="starting", capacity_scope="containers")
+        trial_pin = CloudflareWorkerReservation(
+            worker_id=trial.id, installation_id=installation.id, scope="containers", deployment_revision=1,
+            control_root_version=1, container_tenant="platform", container_release=release.digest,
+            container_reserved_at=verdict.retry_at, container_envelope={"seconds": 300},
+        )
+        db_session.add(trial)
+        await db_session.flush()
+        db_session.add(trial_pin)
+        await db_session.flush()
+        pending = await _container_scope_cooldown(db_session, recovered)
+        assert pending is not None and pending.code == "CF_CONTAINERS_COOLDOWN" and pending.retry_at is None
+        trial.remote_hello_sequence = 1
+        await db_session.flush()
+        assert await _container_scope_cooldown(db_session, recovered) is None
+        await db_session.delete(trial_pin)
+        await db_session.delete(trial)
+    else:
+        assert not isinstance(verdict, ContainerAdmissionRefused)
+
+    @asynccontextmanager
+    async def same_transaction():
+        yield db_session
+
+    assert runner.reserved_for_dispatch_id is None and dispatch.assigned_worker_id is None
+    monkeypatch.setattr(claim_service, "get_db_context", same_transaction)
+    handed_back = await claim_next(primary, fits_bytes=1 << 20, budget_bytes=1 << 20)
+    assert handed_back is not None and handed_back.subject_id == subject
+    assert await claim_next(primary, fits_bytes=1 << 20, budget_bytes=1 << 20) is None
     installation.desired_state = "disconnected"
     installation.admitted_revision = None
     journal.state = "absent"

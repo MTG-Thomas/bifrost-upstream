@@ -159,6 +159,9 @@ async def settle_container_stop(
         }
         pin.container_stopped_at = when
         worker.state = "retired"
+        # Without a start or a claim the original dispatch still belongs to the
+        # canonical pending queue. Dropping the placement pointer is sufficient.
+        worker.reserved_for_dispatch_id = None
         worker.ended_at = worker.capacity_resource_deleted_at = when
         await db.flush()
         return
