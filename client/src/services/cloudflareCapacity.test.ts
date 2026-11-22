@@ -24,9 +24,20 @@ describe("Cloudflare capacity service", () => {
 			consent_text_version: "existing-https-v1",
 			installation: null,
 		};
-		mocks.get.mockResolvedValue({ data: status });
+		mocks.get.mockResolvedValue({ data: status, response: { ok: true, status: 200 } });
 		await expect(getCloudflareCapacity()).resolves.toBe(status);
 		expect(mocks.get).toHaveBeenCalledWith("/api/capacity/cloudflare");
+	});
+
+	it("preserves the response status on a failed capacity read", async () => {
+		mocks.get.mockResolvedValue({
+			error: { detail: "Platform access is required." },
+			response: { ok: false, status: 403 },
+		});
+		await expect(getCloudflareCapacity()).rejects.toMatchObject({
+			message: "Platform access is required.",
+			statusCode: 403,
+		});
 	});
 
 	it.each(["enable", "reconcile", "upgrade", "scale-in", "disconnect"] as const)(

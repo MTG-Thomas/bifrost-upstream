@@ -28,9 +28,9 @@ const credentials = {
 } as const;
 
 export async function getCloudflareCapacity(): Promise<CloudflareCapacityStatus> {
-	const { data, error } = await apiClient.GET("/api/capacity/cloudflare");
-	if (error) {
-		throw parseApiError(error);
+	const { data, error, response } = await apiClient.GET("/api/capacity/cloudflare");
+	if (!response.ok) {
+		throw parseApiError(error, response.status);
 	}
 	return data;
 }
