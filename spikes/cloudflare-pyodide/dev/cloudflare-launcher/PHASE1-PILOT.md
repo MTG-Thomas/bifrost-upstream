@@ -1360,3 +1360,35 @@ incarnations, slots or credentials. The connector projection and all
 disposable local resources were removed.
 
 See the [sanitized Managed-only receipt](../../results/cloudflare-scaleout-managed-hosted-a922.json).
+
+### Managed Hosted Run 1 at `8712eb4c6`
+
+Both pinned release images and all 13 offline packaging checks passed.
+The same trial zone was verified from the prior operator record.
+Preset B Connect left admission closed. Both Enable jobs passed their
+signed canaries on `remote_launcher`. Cloudflare echoed disabled WARP
+routing, and the scoped route list returned HTTP 200 with zero private
+routes. The first successful Enable read back the approved configuration
+at version 1. The success result does not retain the initial shape.
+
+Rotation evicted one old session, explicitly refused its old token, and
+left one replacement session. Worker preflight passed 100 route checks.
+Preflight and both Enable receipts showed eight TLS handshakes and 92
+reused requests per IPv4 address. The two canaries lasted 2.189 s and
+1.793 s. Both meters sealed. Hosted Upgrade remains unqualified because
+the rehearsed exact control-socket interruption is a local fixture.
+
+Against the $0.077118674 opening estimate, live spend peaked at $0.02
+during initial Enable and again during rotation and re-Enable. The
+settled API readbacks rounded to $0.00. The ledger at final retirement
+settled at $0.000431967 incremental, with $0.077550641 cumulative.
+
+Disconnect succeeded. Independent readback confirmed six script and
+eight namespace 404s, exact DNS absence, a tunnel tombstone with zero
+sessions, an empty connector projection, and no live ledger rows or
+retained credentials. Namespace receipts map class names to provider
+IDs. Use the map values for exact reads. Both DNS authorities confirmed
+absence, the revoked scoped token returned 404, and all disposable
+local resources were removed.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-managed-hosted-8712.json).
