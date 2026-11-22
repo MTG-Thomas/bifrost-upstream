@@ -470,6 +470,10 @@ The 300-second cleanup allowance includes 285 seconds for drain, 10 seconds
 for the provider delete request, and five seconds for clock skew. The release
 loader checks that those allowances fit the qualified margin.
 
+The deletion receipt keeps up to one workflow route per launcher-second,
+with a minimum of 128 and a maximum of 512. The same cap applies separately
+to preparation routes. Routes beyond the cap retain their usage reservations.
+
 Preset B uses a 3,600-second lifetime and keeps the 90-second TenantHost linger.
 Physical launchers still retire under the worker pool's independent idle policy.
 Managed Workers compare the workflow timeout against the pinned deadline plus
@@ -484,12 +488,11 @@ outlast a 10-minute upgrade drain attempt. The job reports `CF_DRAIN_TIMEOUT`
 and leaves admission closed pending verified retirement.
 
 During a rolling API deployment, a Workers pin missing its deadline is
-ineligible for new claims, prepares, and starts. The existing executor clock
-can still retire a legacy in-flight session. After every writer supplies
-deadlines and owners have drained or backfilled legacy Workers pins, add a
+ineligible for new claims, prepares, and starts. The supervisor drains these
+pins, and old launchers retain their independent idle retirement. After every
+writer supplies deadlines and owners have drained or backfilled legacy Workers pins, add a
 validated conditional NOT NULL constraint for Workers deadline and lifetime
 columns. Containers share the reservation table and use their own timestamps.
-Remove the legacy executor clock for managed Workers in that follow-up.
 
 The [3,600 s CT128 receipt](../../results/launcher-lifetime-3600-ct128.json)
 records the hour-long soak and 120 s control, including cumulative CPU,

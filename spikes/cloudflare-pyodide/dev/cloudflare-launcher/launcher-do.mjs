@@ -149,6 +149,7 @@ export class CloudflareLauncher extends DurableObject {
       incarnationMeterBinding(this.env.BIFROST_LAUNCHER_METERS_PER_SECOND, lifetime);
     this.#meter = launcherMeter(this.ctx.storage.sql, binding, {
       settle: this.env.BIFROST_METER_RECEIPTS === 'true',
+      lifetimeSeconds: lifetime,
     });
   }
 

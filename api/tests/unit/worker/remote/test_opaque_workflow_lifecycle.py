@@ -552,7 +552,7 @@ async def test_definitively_unsent_workflow_is_handed_back(
         await worker._run_claim(claim)
 
     assert socket.send_text.await_count == int(refusal in {"explicit-memory-refusal", "launcher-retired"})
-    assert worker._claims_open()
+    assert worker._claims_open() == (refusal != "launcher-retired")
     assert list(pool.processes) == [sibling["route_id"]]
     assert worker.admission.request_bytes(str(subject)) is None
     workflow_execution.update_execution.assert_not_awaited()

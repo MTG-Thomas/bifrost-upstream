@@ -513,7 +513,8 @@ class CloudflareEngineInvocation(BaseModel):
     wall_ms: int | None = Field(default=None, strict=True, ge=0, le=2**53 - 1, exclude_if=lambda value: value is None)
 
 
-CLOUDFLARE_MAX_RECEIPT_ROUTES = 128
+CLOUDFLARE_LEGACY_RECEIPT_ROUTES = 128
+CLOUDFLARE_MAX_RECEIPT_ROUTES = 512
 
 
 class CloudflareLauncherUsage(CloudflareLauncherCounts):

@@ -1,7 +1,8 @@
 // Local-only diagnostics. Python reports live allocations and cache sizes from
 // inside the reused child. The inspector reports V8 memory by isolate.
 export const pythonMemoryProbe = `
-    import gc, linecache, sys, logging
+    import gc, linecache, sys
+    import logging as probe_logging
     from src.core.module_cache_sync import _get_resolution_cache
     from runtime_runner import recorded_workspace_paths
     try:
@@ -16,7 +17,7 @@ export const pythonMemoryProbe = `
               "tracked_objects": len(gc.get_objects()), "allocated_blocks": sys.getallocatedblocks(),
               "resolution_cache_entries": len(_get_resolution_cache()), "globals": len(globals()),
               "workspace_imports": len(recorded_workspace_paths),
-              "logging_handlers": len(logging._handlerList), "traced_bytes": traced}
+              "logging_handlers": len(probe_logging._handlerList), "traced_bytes": traced}
 `;
 
 export function isolateSampler(inspector) {
@@ -43,7 +44,9 @@ export function isolateSampler(inspector) {
             if (result.id === 1) resolve(result);
           });
         });
-        return {isolate: identities.get(target.id), ...reply.result, ...(reply.error ? {error: reply.error.code} : {})};
+        const engine = [target.id, target.title, target.url].some(value => value?.includes('tenant-eng-'));
+        return {isolate: identities.get(target.id), engine, ...reply.result,
+          ...(reply.error ? {error: reply.error.code} : {})};
       } finally {
         socket.close();
       }

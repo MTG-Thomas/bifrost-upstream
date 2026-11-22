@@ -102,11 +102,11 @@ def test_release_loads_the_verified_bytes(release: Path) -> None:
 def test_suggested_policy_requires_verified_lifetime_meters(monkeypatch, lifetime_meters: bool) -> None:
     loaded = _release(lifetime_meters=lifetime_meters)
     monkeypatch.setattr(cloudflare_policy, "load_workers_release", lambda: loaded)
-    cloudflare_policy.suggested_cloudflare_policy.cache_clear()
+    cloudflare_policy._qualified_workers_suggestion.cache_clear()
     try:
         suggestion = cloudflare_policy.suggested_cloudflare_policy()
     finally:
-        cloudflare_policy.suggested_cloudflare_policy.cache_clear()
+        cloudflare_policy._qualified_workers_suggestion.cache_clear()
     if not lifetime_meters:
         assert suggestion is None
     else:
@@ -115,6 +115,27 @@ def test_suggested_policy_requires_verified_lifetime_meters(monkeypatch, lifetim
         workers = suggestion.workers
         assert (workers.launcher_cap, workers.slots_per_launcher, workers.installation_slots) == (3, 4, 9)
         assert (workers.max_lifetime_seconds, workers.linger_seconds) == (3600, 90)
+
+
+def test_unreadable_activation_release_does_not_cache_an_empty_suggestion(monkeypatch) -> None:
+    release = _release(lifetime_meters=True)
+    attempts = iter((None, release))
+
+    def load():
+        artifact = next(attempts)
+        if artifact is None:
+            raise WorkersReleaseUnavailable("manifest missing")
+        return artifact
+
+    monkeypatch.setattr(cloudflare_policy, "load_workers_release", load)
+    cloudflare_policy._qualified_workers_suggestion.cache_clear()
+    try:
+        assert cloudflare_policy.suggested_cloudflare_policy() is None
+        suggestion = cloudflare_policy.suggested_cloudflare_policy()
+        assert suggestion is not None
+        assert cloudflare_policy.suggested_cloudflare_policy() is suggestion
+    finally:
+        cloudflare_policy._qualified_workers_suggestion.cache_clear()
 
 
 def test_workers_cleanup_margin_must_cover_every_allowance() -> None:

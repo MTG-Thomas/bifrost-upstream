@@ -8,7 +8,8 @@ export const STORAGE_CHUNK = 1 << 20;
 const TERMINAL_ROWS = Math.ceil(CLOUDFLARE_MAX_LOGICAL_BYTES / STORAGE_CHUNK) + 1;
 const sqliteHeadroom = slots => slots * (4 * TERMINAL_ROWS + 12) + 8;
 export const SQLITE_HEADROOM = sqliteHeadroom(MAX_WORKFLOW_SLOTS);
-const MAX_RECEIPT_ROUTES = 128;
+const LEGACY_RECEIPT_ROUTES = 128;
+const MAX_RECEIPT_ROUTES = 512;
 const ROUTE_ENTRY_WRITES = 16;
 const ROUTE_ENTRY_REQUESTS = 6; // initial run, preparation recheck, up to 3 warm calls, confirmed run
 
@@ -23,7 +24,7 @@ export function incarnationMeterBinding(binding, lifetimeSeconds) {
   return JSON.stringify(Object.fromEntries(METER_NAMES.map(name => [name, rates[name] * lifetimeSeconds])));
 }
 
-export function launcherMeter(sql, binding, {settle = false} = {}) {
+export function launcherMeter(sql, binding, {settle = false, lifetimeSeconds} = {}) {
   if (binding === undefined) return null;
   const caps = JSON.parse(binding);
   if (Object.keys(caps).length !== METER_NAMES.length ||
@@ -35,6 +36,10 @@ export function launcherMeter(sql, binding, {settle = false} = {}) {
   let state = JSON.parse(sql.exec('SELECT value FROM meter WHERE id = 1').toArray()[0]?.value ??
     '{"counts":{"sqlite_rows_written":0,"do_requests":0,"log_events":0}}');
   let slots = MAX_WORKFLOW_SLOTS;
+  // Fleet pricing models one workflow per launcher-second. Bound the
+  // serialized journal and deletion receipt even for multi-day policies.
+  const receiptRoutes = Math.max(LEGACY_RECEIPT_ROUTES, Math.min(MAX_RECEIPT_ROUTES,
+    lifetimeSeconds ?? LEGACY_RECEIPT_ROUTES));
 
   function admissionLimit() {
     if (state.exhausted) return state.exhausted;
@@ -92,7 +97,7 @@ export function launcherMeter(sql, binding, {settle = false} = {}) {
       if (preparation && state.counts.sqlite_rows_written + 1 > caps.sqlite_rows_written - sqliteHeadroom(slots)) return;
       if (settle && !state.final && !Object.hasOwn(state.routes ?? {}, routeId) &&
           Object.keys(state.routes ?? {}).filter(id => id.startsWith('prepare:') === preparation).length <
-            MAX_RECEIPT_ROUTES) {
+            receiptRoutes) {
         save({...state, routes: {...state.routes, [routeId]: invocations}});
       }
     },

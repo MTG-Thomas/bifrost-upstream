@@ -178,14 +178,18 @@ class CloudflareInstallationExists(ValueError):
     """A current installation must finish disconnecting before another is created."""
 
 
-@cache
 def suggested_cloudflare_policy() -> CloudflareCapacityPolicy | None:
     try:
-        bounds = release_meter_bounds(load_workers_release())
-    except WorkersReleaseUnavailable:
+        return _qualified_workers_suggestion()
+    except (WorkersReleaseUnavailable, CloudflareBudgetTooLow):
         return None
+
+
+@cache
+def _qualified_workers_suggestion() -> CloudflareCapacityPolicy:
+    bounds = release_meter_bounds(load_workers_release())
     if not bounds.lifetime_meters:
-        return None
+        raise WorkersReleaseUnavailable("Workers activation suggestion requires lifetime meters")
     proposal = CloudflareCapacityPolicy(
         workers=CloudflareWorkersPolicy(
             launcher_cap=3, slots_per_launcher=4, installation_slots=9, max_lifetime_seconds=3600,
@@ -193,10 +197,7 @@ def suggested_cloudflare_policy() -> CloudflareCapacityPolicy | None:
         ),
         monthly_limit_usd=Decimal("75.00"),
     )
-    try:
-        _price_policy(proposal, bounds)
-    except CloudflareBudgetTooLow:
-        return None
+    _price_policy(proposal, bounds)
     return proposal
 
 

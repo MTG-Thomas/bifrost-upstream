@@ -91,6 +91,7 @@ from src.services.worker_pool.claims import claim_next
 from src.services.worker_pool.cloudflare_admission import (
     ManagedCloudflareScope,
     cloudflare_claim_allowed,
+    cloudflare_dispatch_started_at,
 )
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
@@ -4948,6 +4949,8 @@ async def test_canary_cannot_seal_without_a_matching_delete_receipt_and_row(
 async def test_workers_claim_uses_remaining_lifetime_and_leaves_unbounded_work_on_primary(
     db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch,
 ) -> None:
+    from src.models.orm.workflows import Workflow
+
     now = await db_session.scalar(select(func.clock_timestamp()))
     assert now is not None
     scope = ManagedCloudflareScope(installation.id, "workers", 1)
@@ -4971,12 +4974,16 @@ async def test_workers_claim_uses_remaining_lifetime_and_leaves_unbounded_work_o
     ))
     db_session.add(scope.pin(fresh, 1, reserved_at=now, lifetime=3600, deadline_wire=True))
     db_session.add(scope.pin(old, 1, reserved_at=now - timedelta(seconds=2200), lifetime=3600, deadline_wire=True))
+    workflow = Workflow(id=uuid4(), name="bounded fixture", function_name="run", path="workflows/bounded.py",
+                        timeout_seconds=1800)
+    db_session.add(workflow)
+    await db_session.flush()
     unbounded, default = uuid4(), uuid4()
     for subject, timeout in ((unbounded, 0), (default, 1800)):
-        db_session.add(Execution(id=subject, workflow_name="bounded fixture", executed_by_name="fixture"))
+        db_session.add(Execution(id=subject, workflow_id=workflow.id, workflow_name="bounded fixture", executed_by_name="fixture"))
         stage_dispatch(
             db_session, family=WAKE_WORKFLOW, subject_id=subject, handler="workflow.execute", handler_version=1,
-            payload={"execution_id": str(subject)}, message={"dispatch_metadata": {"timeout_seconds": timeout}},
+            payload={"execution_id": str(subject)}, message={"dispatch_metadata": {"timeout_seconds": 0}} if timeout == 0 else {},
             memory_request_bytes=1, cloudflare_revision="a" * 64,
             queued_at=now - timedelta(seconds=1 if timeout == 0 else 0),
         )
@@ -5037,12 +5044,13 @@ async def test_claim_gate_tracks_scale_in_and_deployment_changes_without_restart
     pin.workers_deadline_at = database_now + timedelta(hours=1)
     await db_session.flush()
     assert await cloudflare_claim_allowed(db_session, worker_id)
-    assert await cloudflare_claim_allowed(db_session, worker_id, timeout_seconds=1800)
-    assert not await cloudflare_claim_allowed(db_session, worker_id, timeout_seconds=0)
+    began = await cloudflare_dispatch_started_at(db_session, worker_id, timeout_seconds=1800)
+    assert began is not None and database_now <= began <= await db_session.scalar(select(func.clock_timestamp()))
+    assert await cloudflare_dispatch_started_at(db_session, worker_id, timeout_seconds=0) is None
     pin.workers_deadline_at = database_now + timedelta(seconds=1500)
     await db_session.flush()
-    assert await cloudflare_claim_allowed(db_session, worker_id, timeout_seconds=1700)
-    assert not await cloudflare_claim_allowed(db_session, worker_id, timeout_seconds=1800)
+    assert await cloudflare_dispatch_started_at(db_session, worker_id, timeout_seconds=1700) is not None
+    assert await cloudflare_dispatch_started_at(db_session, worker_id, timeout_seconds=1800) is None
     pin.workers_deadline_at = database_now + timedelta(hours=1)
     db_session.add(ExecutionWorkerClaim(worker_id=worker_id, family=WAKE_WORKFLOW, subject_id=uuid4()))
     await db_session.flush()

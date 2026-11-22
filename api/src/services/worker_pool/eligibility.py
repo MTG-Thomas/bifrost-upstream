@@ -1,6 +1,6 @@
 """Runtime eligibility for dispatch claims and capacity planning."""
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import cast
 from uuid import UUID
 
@@ -39,11 +39,13 @@ def dispatch_timeout_seconds() -> ColumnElement[int]:
     return func.coalesce(WorkDispatch.message["dispatch_metadata"]["timeout_seconds"].as_integer(), workflow_timeout)
 
 
-def timeout_fits_workers_deadline(timeout_seconds: ColumnElement[int] | int) -> ColumnElement[bool]:
+def timeout_fits_workers_deadline(
+    timeout_seconds: ColumnElement[int] | int, *, now: ColumnElement[datetime] | None = None,
+) -> ColumnElement[bool]:
     # Allow for a launcher clock that reaches its stop time before the DB clock.
     return and_(
         timeout_seconds > 0,
-        func.clock_timestamp() + func.make_interval(0, 0, 0, 0, 0, 0, timeout_seconds)
+        (func.clock_timestamp() if now is None else now) + func.make_interval(0, 0, 0, 0, 0, 0, timeout_seconds)
         <= CloudflareWorkerReservation.workers_deadline_at + timedelta(seconds=WORKERS_CLAIM_DRAIN_SECONDS),
     )
 

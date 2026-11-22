@@ -163,14 +163,23 @@ async def test_managed_workflow_retains_send_and_session_stamps_on_its_route() -
         "hostname": "opaque", "runtime_profile": CLOUDFLARE_PYTHON_RUNTIME_PROFILE, "managed_cloudflare": True,
     }, lease)
 
+    database_started = datetime.now(UTC) - timedelta(seconds=30)
+    started = Mock()
+
     async def send(frame):
         command = json.loads(frame)["payload"]
+        if command["action"] == "workflow":
+            started.assert_called_once_with(database_started)
+            payload = command["payload"]
+            assert payload["started_at"] == database_started.isoformat(timespec="milliseconds")
+            deadline = (database_started + timedelta(seconds=1800)).isoformat(timespec="milliseconds")
+            assert payload["workflow_deadline"] == payload["context"]["workflow_deadline"] == deadline
         await bridge.receive({"reply": command["id"], "result": {}})
 
     socket.send_text = send
     execution_id = str(lease.worker_id)
     route_id = f"workflow:{execution_id}:{lease.launcher_id}"
-    with patch.object(bridge, "_reserve_cloudflare_usage", AsyncMock()) as reserve:
+    with patch.object(bridge, "_reserve_cloudflare_usage", AsyncMock(return_value=database_started)) as reserve:
         await bridge.reconciliation_complete()
         await bridge.request("prepare_workflow", {
             "route_id": f"prepare:{lease.launcher_id}", "execution_id": execution_id, "org_id": None,
@@ -179,7 +188,7 @@ async def test_managed_workflow_retains_send_and_session_stamps_on_its_route() -
             "route_id": route_id, "execution_id": execution_id, "engine_slot": 0, "active_execution": {},
             "timeout_seconds": 1800,
             "context": {"cloudflare_workspace": {"cpu_budget_ms": 1, "subrequest_allowance": 1}},
-        })
+        }, workflow_started=started)
 
     assert reserve.call_args.kwargs["timeout_seconds"] == 1800
     stages = bridge.take_workflow_timing(route_id)
