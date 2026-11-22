@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from functools import cache
 from hashlib import sha256
 from typing import Literal
 from uuid import UUID, uuid4
@@ -19,6 +20,7 @@ from shared.models import (
     CloudflareReachabilityMode,
     CloudflareSpendStatus,
     CloudflareUsageAdvisory,
+    CloudflareWorkersPolicy,
 )
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -52,8 +54,11 @@ from src.services.worker_pool.cloudflare_credentials import (
 from src.services.worker_pool.cloudflare_release import (
     WorkersRelease,
     WorkersReleaseOrder,
+    WorkersReleaseUnavailable,
     installed_workers_release_digest,
     installed_workers_release_order,
+    load_workers_release,
+    validate_workers_cleanup_margin,
 )
 from src.services.worker_pool.cloudflare_spend import (
     LAUNCHER_RECEIPT_METERS,
@@ -99,6 +104,7 @@ class WorkersReleaseMeterBounds:
     release_order: WorkersReleaseOrder
     expected_cpu_ms: Mapping[str, int] | None = None
     bounded_linger: bool = False
+    lifetime_meters: bool = False
 
 
 def release_meter_bounds(release: WorkersRelease) -> WorkersReleaseMeterBounds:
@@ -119,6 +125,10 @@ def release_meter_bounds(release: WorkersRelease) -> WorkersReleaseMeterBounds:
         expected_cpu_ms=expected,
         bounded_linger=any(
             binding.name == "BIFROST_TENANT_LINGER_SECONDS" and binding.source == "linger_seconds"
+            for binding in release.manifest.workers["launcher"].bindings
+        ),
+        lifetime_meters=any(
+            binding.name == "BIFROST_LAUNCHER_METERS_PER_SECOND" and binding.type == "plain_text"
             for binding in release.manifest.workers["launcher"].bindings
         ),
     )
@@ -168,6 +178,29 @@ class CloudflareInstallationExists(ValueError):
     """A current installation must finish disconnecting before another is created."""
 
 
+def suggested_cloudflare_policy() -> CloudflareCapacityPolicy | None:
+    try:
+        return _qualified_workers_suggestion()
+    except (WorkersReleaseUnavailable, CloudflareBudgetTooLow):
+        return None
+
+
+@cache
+def _qualified_workers_suggestion() -> CloudflareCapacityPolicy:
+    bounds = release_meter_bounds(load_workers_release())
+    if not bounds.lifetime_meters:
+        raise WorkersReleaseUnavailable("Workers activation suggestion requires lifetime meters")
+    proposal = CloudflareCapacityPolicy(
+        workers=CloudflareWorkersPolicy(
+            launcher_cap=3, slots_per_launcher=4, installation_slots=9, max_lifetime_seconds=3600,
+            work_kinds=frozenset({"workflow"}),
+        ),
+        monthly_limit_usd=Decimal("75.00"),
+    )
+    _price_policy(proposal, bounds)
+    return proposal
+
+
 async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> CloudflareCapacityStatus:
     row = (await db.execute(
         select(
@@ -187,6 +220,7 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
         return CloudflareCapacityStatus(
             consent_text_version=CONSENT_TEXT_VERSION, consent_text=CONSENT_TEXT, installation=None,
             managed_tunnel_available=get_settings().cloudflare_tunnel_channel is not None,
+            suggested_policy=suggested_cloudflare_policy(),
         )
     installation, estimate, as_of, owned_resources_pending, overdue_containers = row
     policy = CloudflareCapacityPolicy.model_validate(installation.policy["limits"])
@@ -299,6 +333,11 @@ def _price_policy(
         "startup_p99_us": bounds.startup_expected_us,
         "root_second_usd": str(root_rate),
     }
+    if bounds.lifetime_meters:
+        validate_workers_cleanup_margin(bounds.cleanup_margin_seconds)
+        rates = {name: int(bounds.per_launcher_second[name]) for name in LAUNCHER_RECEIPT_METERS}
+        meter_launcher["per_second_caps"] = rates
+        meter_launcher["caps"] = {name: rate * policy.workers.max_lifetime_seconds for name, rate in rates.items()}
     if bounds.expected_cpu_ms is not None:
         meter_launcher["cpu_expected_ms"] = dict(bounds.expected_cpu_ms)
     if bounds.bounded_linger:

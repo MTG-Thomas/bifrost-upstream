@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {test} from 'node:test';
-import {createEngine, STATE} from './capacity-core.mjs';
+import {createEngine, STATE, WORKERS_DEADLINE_SKEW_MS} from './capacity-core.mjs';
 
 const id = 'afe91459-38bd-4c34-8ae5-13e67af6b649';
 const profile = {scope: 'test', worker_version: 'test', max_workers: 1,
@@ -9,7 +10,7 @@ const reservation = {worker_id: id, worker_version: 'test', memory_limit_bytes: 
   max_lifetime_seconds: 60, drain_grace_seconds: 0,
   resource_uid: 'a'.repeat(32), control_key: 'b'.repeat(64)};
 
-function fixture() {
+function fixture(clock) {
   let row;
   const slots = new Set();
   const store = {
@@ -35,9 +36,21 @@ function fixture() {
     destroy: async () => ({state: STATE.DELETED}),
     clearStorage: async () => {},
   };
-  const restart = () => createEngine({profile, store, runtime});
+  const restart = () => createEngine({profile, store, runtime, clock});
   return {restart, runtime, facts, slots, store};
 }
+
+test('prepare accepts the clock skew budgeted by the API', async () => {
+  const protocol = readFileSync(new URL('../../../../api/src/worker/remote/protocol.py', import.meta.url), 'utf8');
+  const allowance = Number(protocol.match(/^WORKERS_DEADLINE_SKEW_SECONDS = (\d+)$/m)?.[1]);
+  assert.equal(1000 * allowance, WORKERS_DEADLINE_SKEW_MS);
+
+  const now = 1_000_000;
+  const {restart} = fixture({now: () => now});
+  const deadline_ms = now + reservation.max_lifetime_seconds * 1000 + WORKERS_DEADLINE_SKEW_MS;
+  await assert.rejects(restart().prepare(id, {...reservation, deadline_ms: deadline_ms + 1}), /invalid reservation deadline/);
+  assert.equal((await restart().prepare(id, {...reservation, deadline_ms})).state, STATE.PREPARED);
+});
 
 test('a lost storage-clear reply preserves the final receipt and the retirement fence', async () => {
   const {restart, runtime, slots} = fixture();

@@ -2,6 +2,33 @@
 
 **November 20, 2026 UTC · Base `510ff121e`**
 
+## Hosted Follow-up Requiring Owner Approval
+
+- Run one managed launcher incarnation for 3,600 seconds under real approved
+  Workers load. Mix cold and warm loose and Solution workflows with overlapping
+  Provider and Global bursts. Record lifecycle timestamps, per-isolate memory,
+  CPU, Durable Object requests, SQLite writes, logs, and the sealed receipt at
+  retirement. Before the trial, qualify enforcement of the saved lifetime
+  and verify the release's per-incarnation meter covers the trial workload.
+  Confirm that idle retirement and an explicit upgrade drain release
+  capacity. Obtain separate owner approval before starting this hosted run.
+
+The original CT128 run stopped after 180 seconds when the four-slot launcher
+exhausted its usable SQLite journal budget. The deadline-aware local bundle
+completed 48 workflows and retired at the 900-second deadline with budget
+remaining. Preset B requires meter requalification before release.
+[Original result](../../results/launcher-lifetime-ct128.json) ·
+[Deadline-aware result](../../results/launcher-lifetime-ct128-requalification.json)
+
+The CT128 hour-long run completed 192 workflows with one signed reconnect
+and retired 350 ms after its pinned deadline. All launcher meters had
+headroom. The 120 s control also passed. Workerd RSS peaked at 823 MiB across
+the local process. A separate CT128 comparison isolated Python cycle
+retention and verified collection over 210 hot attempts. The hosted run
+will measure isolate peaks and CPU over the full hour.
+[3,600 s CT128 receipt](../../results/launcher-lifetime-3600-ct128.json)
+· [CT128 isolate comparison](../../results/launcher-isolate-memory-ct128.json)
+
 ## Usage-only limit
 
 The pilot used a previous conservative fleet projection. The monthly

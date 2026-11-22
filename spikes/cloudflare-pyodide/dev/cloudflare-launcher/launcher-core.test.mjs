@@ -30,7 +30,7 @@ function workflow(suffix = '1') {
   };
 }
 
-function peer({data = new Map(), runHost, prepareHost, runSummary, runAgent, beforePut, onSend, meter, slots = 1,
+function peer({data = new Map(), runHost, prepareHost, runSummary, runAgent, beforePut, onSend, meter, slots = 1, deadlineMs,
   stopHost, tenantSlots = false} = {}) {
   let now = START;
   let order = 0;
@@ -44,7 +44,7 @@ function peer({data = new Map(), runHost, prepareHost, runSummary, runAgent, bef
   const entered = deferred();
   const assembler = new FragmentAssembler();
   const core = new LauncherCore({
-    identity: IDENTITY, secret: SECRET, clock: () => now, meter, slots, tenantSlots,
+    identity: IDENTITY, secret: SECRET, clock: () => now, deadlineMs, meter, slots, tenantSlots,
     newId: () => `id-${String(++order).padStart(24, '0')}`,
     storage: {
       get: async (key) => structuredClone(data.get(key)),
@@ -657,6 +657,28 @@ test('launcher exhaustion preserves success and allows redial until the terminal
   assert.equal(await api.ack(terminal._event_id), 'terminal_ack');
   assert.equal(await api.core.canReconnect(), false);
   assert.equal(await api.core.isStopped(), true);
+});
+
+test('an incarnation deadline drains the accepted workflow and stops after its ACK', async () => {
+  const running = deferred();
+  const api = peer({deadlineMs: START + 1000, slots: 2, runHost: () => running.promise});
+  await connect(api);
+  await api.command('workflow', workflow());
+  await api.entered;
+  api.setClock(START + 1000);
+  await api.command('workflow', workflow('2'));
+  assert.equal(api.frames().at(-1).error_type, 'LauncherRetired');
+  api.setClock(START + 1001);
+  await api.command('workflow', workflow('3'));
+  assert.equal(api.frames().at(-1).error_type, 'LauncherRetired');
+  assert.equal(api.data.has(`seen:${workflow('2').route_id}`), false);
+  assert.equal(api.data.has(`seen:${workflow('3').route_id}`), false);
+  assert.equal(await api.core.isStopped(), false);
+  running.resolve(COMPLETED);
+  await api.finish();
+  await api.ack(api.frames().at(-1)._event_id);
+  assert.equal(await api.core.isStopped(), true);
+  assert.equal(await api.core.canReconnect(), false);
 });
 
 test('release completes while a stop RPC is still stalled', async () => {

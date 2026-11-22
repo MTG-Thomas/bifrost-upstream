@@ -11,7 +11,14 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from shared.models import CloudflareLauncherCounts, SEMVER_PATTERN
+from shared.models import SEMVER_PATTERN, CloudflareLauncherCounts
+
+from src.services.worker_pool.external_client import CAPACITY_REQUEST_SECONDS
+from src.worker.remote.protocol import (
+    WORKERS_DEADLINE_DELETE_SECONDS,
+    WORKERS_DEADLINE_DRAIN_SECONDS,
+    WORKERS_DEADLINE_SKEW_SECONDS,
+)
 
 WORKERS_RELEASE_PATH = Path("/app/artifacts/cloudflare/workers")
 MAX_WORKER_BYTES = 64 * 1024 * 1024
@@ -259,6 +266,13 @@ def installed_workers_release_order() -> WorkersReleaseOrder | None:
         return None
 
 
+def validate_workers_cleanup_margin(cleanup_margin_seconds: int) -> None:
+    if (CAPACITY_REQUEST_SECONDS > WORKERS_DEADLINE_DELETE_SECONDS
+            or WORKERS_DEADLINE_DRAIN_SECONDS + WORKERS_DEADLINE_DELETE_SECONDS
+            + WORKERS_DEADLINE_SKEW_SECONDS > cleanup_margin_seconds):
+        raise WorkersReleaseUnavailable("Workers cleanup margin does not cover drain, delete and clock skew")
+
+
 def load_workers_release(path: Path = WORKERS_RELEASE_PATH) -> WorkersRelease:
     """Read all module bytes once and retain the verified snapshot for upload."""
     try:
@@ -275,6 +289,23 @@ def load_workers_release(path: Path = WORKERS_RELEASE_PATH) -> WorkersRelease:
         launcher = manifest.workers["launcher"]
         resource_limits = {binding.name: binding.text for binding in launcher.bindings if binding.type == "plain_text"}
         serialized_caps = json.dumps(qualifier.launcher_caps, sort_keys=True, separators=(",", ":"))
+        lifetime_bindings = [
+            binding for binding in launcher.bindings if binding.name == "BIFROST_LAUNCHER_METERS_PER_SECOND"
+        ]
+        if lifetime_bindings:
+            binding = lifetime_bindings[0]
+            if len(lifetime_bindings) != 1 or binding.type != "plain_text" or binding.source is not None:
+                raise WorkersReleaseUnavailable("Workers lifetime meters need a single literal binding")
+            validate_workers_cleanup_margin(manifest.meter_bounds.cleanup_margin_seconds)
+            expected_rates = {
+                name: manifest.meter_bounds.per_launcher_second[name] for name in qualifier.launcher_caps
+            }
+            if any(rate < 1 or rate != rate.to_integral_value() for rate in expected_rates.values()):
+                raise WorkersReleaseUnavailable("Workers lifetime meters need whole positive rates")
+            if binding.text != json.dumps(
+                {name: int(rate) for name, rate in expected_rates.items()}, sort_keys=True, separators=(",", ":"),
+            ):
+                raise WorkersReleaseUnavailable("Workers lifetime meter rates differ from the measured bounds")
         if (
             manifest.workers["capacity"].cpu_ms != cpu["capacity"]
             or launcher.cpu_ms != WORKFLOW_CPU_CEILING_MS

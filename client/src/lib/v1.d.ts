@@ -16665,6 +16665,7 @@ export interface components {
              * @default false
              */
             managed_tunnel_available: boolean;
+            suggested_policy?: components["schemas"]["CloudflareCapacityPolicy"] | null;
         };
         /** CloudflareConnectRequest */
         CloudflareConnectRequest: {

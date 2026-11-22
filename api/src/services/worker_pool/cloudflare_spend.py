@@ -12,7 +12,7 @@ from uuid import UUID
 
 from pydantic import ValidationError
 from shared.models import (
-    CLOUDFLARE_MAX_RECEIPT_ROUTES,
+    CLOUDFLARE_LEGACY_RECEIPT_ROUTES,
     CloudflareEngineInvocation,
     CloudflareLauncherUsage,
 )
@@ -547,9 +547,11 @@ async def seal_launcher_meter(db: AsyncSession, worker_id: UUID, receipt: Cloudf
         preparation = meter.route_id.startswith("prepare:")
         drift = False
         for route_kind, reported in ((~preparation, workflows), (preparation, len(receipt.routes) - workflows)):
+            # Receipts cap the routes they can witness. Sample at least the
+            # legacy cap, and cover every reported route on longer lifetimes.
             booked_routes = select(meter.route_id).where(
                 meter.worker_id == worker_id, route_kind,
-            ).limit(CLOUDFLARE_MAX_RECEIPT_ROUTES)
+            ).limit(max(CLOUDFLARE_LEGACY_RECEIPT_ROUTES, reported))
             booked = await db.scalar(select(func.count()).select_from(booked_routes.subquery()))
             assert booked is not None
             drift |= max(booked, reported) > 4 * max(2, min(booked, reported))

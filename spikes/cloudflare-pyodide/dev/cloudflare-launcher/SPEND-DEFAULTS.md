@@ -34,11 +34,17 @@ Each limit is a suggested USD amount per UTC month for the **shared Bifrost esti
 | Option | Suggested Limit and Forecast | Save-Time Fit | Availability and Spend Tradeoffs |
 | --- | --- | --- | --- |
 | A | **$30**, Light, **0.012%** Workers duty. Workers only. | One launcher × two slots, 3,600 s lifetime, nine installation slots configured and two physically reachable. **$17.61** envelope using the checked-in release inputs. | Two slots may leave a concentrated burst on the primary before spend is material. Cold churn and unsettled usage can close admission later in the month. $30 is still much larger than the light forecast, but limits the authorized Bifrost exposure compared with the nine-slot options. |
-| B | **$75**, Moderate, **0.077%** Workers duty. Workers only. | Three launchers × four slots capped at nine total, **900 s** lifetime. **$68.50** modeled envelope with the same inputs. The longer lifetime is a candidate policy and needs targeted validation before use as a preset. | Provides the nine-slot geometry with a lower limit by reducing forced engine recreation. Longer lifetime can retain idle capacity or reservations longer. High demand can exhaust $75 during a month, and even ordinary churn can bring forward a stop. A light user would authorize much more than their forecast. |
+| B | **$75**, Moderate, **0.077%** Workers duty. Workers only. | Three launchers × four slots capped at nine total, **3,600 s** lifetime. **$32.13** modeled envelope with the same inputs. This preset requires the requalified Workers bundle. | A fresh launcher can admit workflows with the default 1,800 s timeout. The claim window narrows as the launcher ages. TenantHost linger remains 90 s, and idle launchers retire under the worker pool's idle policy. High demand or churn can exhaust $75 during a month. |
 | C | **$425**, Heavy, **1.93%** Workers duty. Workers only. | Three launchers × four slots capped at nine total, **120 s** lifetime. **$415.59** qualified envelope. | Preserves the existing pilot geometry and lifetime. Short incarnations can reduce warm reuse, and $425 can still close admission if usage and reserves exceed the modeled workload. It authorizes hundreds of dollars of estimated usage even if expected spend is much lower. |
 | D | **$600 conditional**, Containers-inclusive, **0.077%** Workers duty and **9.6%** Containers duty. | Option C's Workers geometry plus up to two `standard-1` instances. Present $600 only where a verified Containers release and its actual policy produce a combined envelope ≤ $600. Illustrative combined floor **$557.95** with the assumptions below. | Both lanes draw against the same limit. Repeated starts, slow settlement or tight byte caps can leave Linux work on the primary and can consume headroom for Workers. Larger outbound caps or control reserves can make $600 invalid. The suggested limit exposes a much larger Bifrost allowance than the forecast and needs explicit approval. |
 
 ### Preserve Fleet Validation
+
+Preset B requires requalification of the Workers bundle with enforced
+incarnation deadlines and lifetime-scaled meters. The checked-in release
+still uses its original meter inventory and qualified bundle pin. The API
+suggests Preset B for new installations only when the installed, verified
+release includes lifetime meters and $75 covers its computed envelope.
 
 Workers save rejects a monthly limit below the selected release's computed envelope. The formula prices the bounded launcher fleet at `launcher cap × (max lifetime + cleanup margin)` plus fixed meter allowances, then adds `$0.002 × reachable slots × 31 × (ceil(86,400 / max lifetime) + 1)` for identity rotation. It uses the manifest's qualified CPU inputs for the fleet price and rounds the result up to cents. In Option C, rotation alone is `$402.318` and the other bounded meters add about `$13.267`. The protected Connect test passes with `$50` against a `$45.26` fixture envelope generated from different fixture bounds and geometry. The relevant floor for any option comes from the exact selected release and policy. [Policy pricing](../../../../api/src/services/worker_pool/cloudflare_policy.py) · [Fleet calculation](../../../../api/src/services/worker_pool/cloudflare_spend.py) · [Hosted preparation receipt](../../results/cloudflare-scaleout-meter-hosted-prep.json) · [Protected Connect fixture](../../../../api/tests/e2e/platform/test_cloudflare_capacity_persistence.py)
 
@@ -46,15 +52,21 @@ For Containers, apply the same fleet-fit check to the combined envelope before p
 
 ## Activation Preview
 
-Show the forecast, fee, fleet minimum and admission limit together before consent. Example for Option A:
+Show the forecast, fee, fleet minimum and admission limit together before consent. Example for Option B after meter requalification:
 
-- **Estimated Overflow Usage** — Under $1/month at about 40 workflows/month across four events, mostly cold starts. Show the assumptions and a range when useful. With Containers enabled, show billed instance duty, expected outbound traffic and the lane subtotals.
+- **Estimated Overflow Usage** — About $3.72/month at 40 workflows/day in clustered bursts, with 35% cold starts and 0.077% Workers duty. For Containers, show billed instance duty, expected outbound traffic and the lane subtotals.
 - **Workers Paid Subscription** — $5/month billed separately by Cloudflare.
-- **Minimum Limit for This Fleet** — $17.61/month for one launcher and two physical slots with this release. Recalculate when the release, capacity or spend-relevant bounds change.
-- **Monthly Estimated Usage Limit** — $30/month. “At the limit, new work stays on the primary. Bifrost can pause overflow earlier if the next start cannot be reserved or usage cannot be verified.”
+- **Minimum Limit for This Fleet** — $32.13/month for three four-slot launchers, nine installation slots, and a 3,600 s lifetime with the checked-in rates. Recalculate when the release, capacity or spend-relevant bounds change.
+- **Monthly Estimated Usage Limit** — $75/month. “At the limit, new work stays on the primary. Bifrost can pause overflow earlier if the next start cannot be reserved or usage cannot be verified.”
 
 After activation, show month-to-date settled and reserved usage, remaining headroom and UTC reset. Keep the forecast approximate and display the limit and fleet minimum to cents so policy failures can be explained. Describe the fleet minimum and admission limit as Bifrost backstops. Provider retries and overages, charge adjustments, delayed cleanup and traffic elsewhere in the account can affect the Cloudflare bill. Where attributed Analytics are available, display them separately as advisory.
 
-## Recommendation for Owner Review
+## Selected Activation Preset
 
-Recommend **Option A** for the first Workers-only activation preset. The hosted cold trial supports a sub-cent planning cost for a small approved workflow, and two slots let an installation test burst overflow while authorizing $30/month of estimated exposure. The tradeoff is two physical slots shared across the target tenants. If nine slots and the existing 120 s lifetime are required on day one, **Option C** makes the applicable floor and larger exposure explicit. Consider **Option B** after verifying the longer lifetime against idle retirement, reserve behavior and latency. Keep **Option D** an explicit opt-in after validating signed release rates, byte bounds and the actual combined envelope. The monthly limit, forecast assumptions and capacity preset remain owner decisions.
+The owner selected **Option B** for new Workers installations once the
+deadline-aware bundle clears local validation and meter requalification.
+The $75 suggested limit covers the $32.13 modeled fleet envelope for three
+four-slot launchers, capped at nine installation slots. Existing
+installations keep their saved limits and can choose the new values in Edit
+Policy after the requalified release is installed. Option D still requires explicit
+opt-in and verification of its signed release rates and byte bounds.

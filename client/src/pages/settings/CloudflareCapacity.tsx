@@ -151,7 +151,7 @@ function CloudflareConfigurationForm({ status, onSaved, onCancel, onRefresh, bus
 	busy: boolean;
 }) {
 	const installation = status.installation;
-	const settings = installation?.policy;
+	const settings = installation ? installation.policy : status.suggested_policy;
 	const [saving, setSaving] = useState(false);
 	const [failure, setFailure] = useState<{
 		message: string;

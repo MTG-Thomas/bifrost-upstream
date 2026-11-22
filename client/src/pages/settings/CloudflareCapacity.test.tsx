@@ -63,7 +63,13 @@ const installation = {
 	desired_state: "scaled_in",
 	admission_open: false,
 	worker_ingress_origin: "https://workers.example.test",
-	policy: { monthly_limit_usd: "40.00", workers: { launcher_cap: 2, slots_per_launcher: 2, work_kinds: ["workflow"] } },
+	policy: {
+		monthly_limit_usd: "40.00",
+		workers: {
+			launcher_cap: 2, slots_per_launcher: 2, max_lifetime_seconds: 120,
+			installation_slots: 8, work_kinds: ["workflow"],
+		},
+	},
 	fleet_envelope_usd: "10.50",
 };
 
@@ -150,6 +156,13 @@ it.each([false, true])("submits the current consent and clears the token with Ma
 	mocks.get.mockResolvedValue({
 		installation: null,
 		managed_tunnel_available: true,
+		suggested_policy: managed ? null : {
+			monthly_limit_usd: "75.00",
+			workers: {
+				launcher_cap: 3, slots_per_launcher: 4, max_lifetime_seconds: 3600,
+				installation_slots: 9, work_kinds: ["workflow"],
+			},
+		},
 		consent_text_version: "existing-https-v1",
 		consent_text: "Current operator consent",
 	});
@@ -172,6 +185,10 @@ it.each([false, true])("submits the current consent and clears the token with Ma
 	fireEvent.change(linger, { target: { value: "0" } });
 	const tenantSlots = screen.getByLabelText("Slots per Tenant");
 	const installationSlots = screen.getByLabelText("Installation Slot Limit");
+	expect(screen.getByLabelText("Workers Launcher Limit")).toHaveValue(managed ? 1 : 3);
+	expect(screen.getByLabelText("Slots per Launcher")).toHaveValue(managed ? 2 : 4);
+	expect(screen.getByLabelText("Maximum Lifetime in Seconds")).toHaveValue(3600);
+	expect(screen.getByLabelText("Monthly Estimated Usage Limit")).toHaveValue(managed ? 30 : 75);
 	expect(tenantSlots).toHaveValue(4);
 	expect(installationSlots).toHaveValue(9);
 	const prewarm = screen.getByLabelText("Max Queue Pre-Warms per Tenant");
@@ -197,7 +214,12 @@ it.each([false, true])("submits the current consent and clears the token with Ma
 		consent_version: "existing-https-v1",
 		api_token: "synthetic-management-token",
 		policy: expect.objectContaining({
-			workers: expect.objectContaining({ linger_seconds: 0, slots_per_tenant: 3, installation_slots: 8, queue_prewarm_per_tenant: 2 }),
+			monthly_limit_usd: managed ? "30.00" : "75.00",
+			workers: expect.objectContaining({
+				launcher_cap: managed ? 1 : 3, slots_per_launcher: managed ? 2 : 4,
+				max_lifetime_seconds: 3600,
+				linger_seconds: 0, slots_per_tenant: 3, installation_slots: 8, queue_prewarm_per_tenant: 2,
+			}),
 		}),
 	}));
 	expect(token).toHaveValue("");
@@ -307,6 +329,10 @@ it("explains a rejected spending envelope beside the editable limit", async () =
 	renderCapacity();
 
 	await user.click(await screen.findByRole("button", { name: "Edit Policy" }));
+	expect(screen.getByLabelText("Workers Launcher Limit")).toHaveValue(2);
+	expect(screen.getByLabelText("Slots per Launcher")).toHaveValue(2);
+	expect(screen.getByLabelText("Maximum Lifetime in Seconds")).toHaveValue(120);
+	expect(screen.getByLabelText("Installation Slot Limit")).toHaveValue(8);
 	await user.click(screen.getByRole("button", { name: "Save Policy" }));
 	expect(await screen.findByRole("region", { name: "Cloudflare Settings Error" })).toHaveFocus();
 	const limit = screen.getByRole("spinbutton", { name: "Monthly Estimated Usage Limit" });

@@ -1,11 +1,11 @@
 """Serialize installation admission changes with managed Workers claims."""
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal
 from uuid import UUID
 
-from sqlalchemy import and_, exists, false, or_, select
+from sqlalchemy import and_, exists, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -17,8 +17,12 @@ from src.models.orm.cloudflare_capacity import (
 from src.models.orm.execution_workers import ExecutionWorker
 from src.services.worker_pool.cloudflare_release import installed_workers_release_digest
 from src.services.worker_pool.cloudflare_spend import cloudflare_usage_within_limit
+from src.services.worker_pool.eligibility import timeout_fits_workers_deadline
 from src.services.worker_pool.liveness import HEARTBEAT_LOST_AFTER
-from src.worker.remote.protocol import CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+from src.worker.remote.protocol import (
+    CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
+    WORKERS_DEADLINE_DISPATCH_SECONDS,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,10 +60,14 @@ class ManagedCloudflareScope:
                 CloudflareCapacityScope.deployment_revision == self.revision,
             ))
 
-    def pin(self, worker_id: UUID, control_root_version: int) -> CloudflareWorkerReservation:
+    def pin(
+        self, worker_id: UUID, control_root_version: int, *, reserved_at: datetime, lifetime: int, deadline_wire: bool,
+    ) -> CloudflareWorkerReservation:
         return CloudflareWorkerReservation(
             worker_id=worker_id, installation_id=self.installation_id, scope=self.name,
             deployment_revision=self.revision, control_root_version=control_root_version,
+            workers_lifetime_seconds=lifetime, workers_deadline_at=reserved_at + timedelta(seconds=lifetime),
+            workers_deadline_wire=deadline_wire,
         )
 
 
@@ -106,6 +114,14 @@ class PrimaryPool:
         return self.ceiling is not None and len(cohort) >= self.ceiling
 
 
+async def _lock_worker_installation(db: AsyncSession, worker_id: UUID) -> UUID | None:
+    pin = CloudflareWorkerReservation
+    installation = CloudflareInstallation
+    return await db.scalar(select(installation.id).join(
+        pin, pin.installation_id == installation.id,
+    ).where(pin.worker_id == worker_id).with_for_update(key_share=True, of=installation))
+
+
 async def cloudflare_claim_allowed(db: AsyncSession, worker_id: UUID) -> bool:
     """Serialize scoped assignments through the installation before locking the worker.
 
@@ -113,11 +129,7 @@ async def cloudflare_claim_allowed(db: AsyncSession, worker_id: UUID) -> bool:
     therefore closes this worker's claims while its terminal work can settle.
     Writers take the installation lock before changing its scope binding.
     """
-    pin = CloudflareWorkerReservation
-    installation = CloudflareInstallation
-    installation_id = await db.scalar(select(installation.id).join(
-        pin, pin.installation_id == installation.id,
-    ).where(pin.worker_id == worker_id).with_for_update(key_share=True, of=installation))
+    installation_id = await _lock_worker_installation(db, worker_id)
     if installation_id is None:
         unpinned_scoped = await db.scalar(select(exists().where(
             ExecutionWorker.id == worker_id,
@@ -135,9 +147,27 @@ async def scoped_cloudflare_claim_allowed(
     db: AsyncSession, worker_id: UUID, installation_id: UUID | None = None,
 ) -> bool:
     """Read a managed worker's scoped admission and spend without taking the installation lock."""
+    return await db.scalar(_scoped_cloudflare_admission(worker_id, installation_id)) is not None
+
+
+async def cloudflare_dispatch_started_at(db: AsyncSession, worker_id: UUID, *, timeout_seconds: int) -> datetime | None:
+    """Fence the send and return the exact database instant used to price its timeout."""
+    if timeout_seconds <= 0:
+        return None
+    installation_id = await _lock_worker_installation(db, worker_id)
+    if installation_id is None:
+        return None
+    return await db.scalar(_scoped_cloudflare_admission(worker_id, installation_id, timeout_seconds))
+
+
+def _scoped_cloudflare_admission(worker_id: UUID, installation_id: UUID | None, timeout_seconds: int | None = None):
     pin = CloudflareWorkerReservation
     installation = CloudflareInstallation
     scope = CloudflareCapacityScope
+    # Materialize the volatile clock once so both predicates and the returned
+    # workflow start observe the same instant after taking the lock.
+    clock = select(func.clock_timestamp().label("started_at")).cte().prefix_with("MATERIALIZED")
+    now = clock.c.started_at
     matches_scope = exists().where(
         scope.installation_id == pin.installation_id,
         scope.scope == pin.scope,
@@ -151,6 +181,9 @@ async def scoped_cloudflare_claim_allowed(
         workers_release_matches(),
         pin.canary_job_id.is_(None),
         pin.container_reserved_at.is_(None),
+        pin.workers_deadline_at > now + timedelta(seconds=WORKERS_DEADLINE_DISPATCH_SECONDS),
+        pin.workers_lifetime_seconds.is_not(None),
+        *(() if timeout_seconds is None else (timeout_fits_workers_deadline(timeout_seconds, now=now),)),
         pin.control_root_version.is_not(None),
         cloudflare_usage_within_limit(),
         installation.policy["limits"]["workers"]["work_kinds"].contains(["workflow"]),
@@ -159,12 +192,13 @@ async def scoped_cloudflare_claim_allowed(
         matches_scope,
     )
     query = (
-        select(allowed)
-        .select_from(pin)
+        select(now)
+        .select_from(clock)
+        .join(pin, pin.worker_id == worker_id)
         .join(installation, installation.id == pin.installation_id)
         .join(ExecutionWorker, ExecutionWorker.id == pin.worker_id)
-        .where(pin.worker_id == worker_id)
+        .where(allowed)
     )
     if installation_id is not None:
         query = query.where(pin.installation_id == installation_id)
-    return await db.scalar(query) is True
+    return query

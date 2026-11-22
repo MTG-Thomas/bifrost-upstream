@@ -200,6 +200,7 @@ export function mergePrimeList(stored, engine, imported) {
 }
 
 export const ENGINE_PYTHON = `
+import gc
 import importlib
 import importlib.machinery
 import zipimport
@@ -214,6 +215,10 @@ from runtime_runner import run_authorized_attempt
 # and import cost cannot be timed in here: Workers clocks only advance across
 # I/O, so it shows up as the host's child_ms minus engine_ms.
 _SERVED = 0
+# Automatic collection can leave attempt-local cycles in the oldest
+# generation for the lifetime of a reused Pyodide child.
+_ATTEMPTS_UNTIL_COLLECTION = 32
+_attempts_until_collection = _ATTEMPTS_UNTIL_COLLECTION
 _MODULE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$")
 _FILE_LOADERS = (importlib.machinery.SourceFileLoader,
                  importlib.machinery.SourcelessFileLoader,
@@ -286,7 +291,7 @@ def _prime(names):
 
 class Default(WorkerEntrypoint):
     async def fetch(self, request):
-        global _SERVED
+        global _SERVED, _attempts_until_collection
         first_request = _SERVED == 0
         _SERVED += 1
         body = json.loads(await request.text())
@@ -320,9 +325,15 @@ class Default(WorkerEntrypoint):
             _install_cached_access_token(body["api_url"], token)
         loaded_before = set(sys.modules)
         engine_started = time.perf_counter()
-        result = await run_authorized_attempt(
-            body["execution_id"], context, body["api_url"],
-            public_url=body.get("public_url", "https://staging.invalid"))
+        try:
+            result = await run_authorized_attempt(
+                body["execution_id"], context, body["api_url"],
+                public_url=body.get("public_url", "https://staging.invalid"))
+        finally:
+            _attempts_until_collection -= 1
+            if _attempts_until_collection == 0:
+                _attempts_until_collection = _ATTEMPTS_UNTIL_COLLECTION
+                gc.collect()
         done = time.perf_counter()
         # Import trace: packaged modules this attempt loaded for the first time
         # in this child. The host keeps the union and primes the next child.
