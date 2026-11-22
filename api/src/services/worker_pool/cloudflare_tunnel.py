@@ -261,7 +261,7 @@ async def connector_ready(db: AsyncSession, row: CloudflareInstallation, client:
 
 
 async def cleanup(db: AsyncSession, row: CloudflareInstallation, client: TunnelRest) -> bool:
-    """Advance one durable cleanup step. Return true only after verified absence."""
+    """Advance one cleanup step. Return true only when no absence write is pending."""
     if row.tunnel_token_version is not None:
         row.tunnel_token_version = None
         return False
@@ -299,28 +299,29 @@ async def cleanup(db: AsyncSession, row: CloudflareInstallation, client: TunnelR
                     record.state = "deleting"
                     return False
                 await client.remove_dns(dns, receipt.provider_id)
-        if not _settle_absence(record):
-            return False
+        _settle_absence(record)
+        return False
     if receipt is not None:
         if tunnel.state != "deleting":
             tunnel.state = "deleting"
             return False
         await client.remove_tunnel(receipt)
     tunnel.provider_details = {"connectors": []}
-    return _settle_absence(tunnel)
+    _settle_absence(tunnel)
+    # Let the caller commit the verified absence before retirement queries the journal.
+    return False
 
 
-def _settle_absence(item: CloudflareOwnedResource) -> bool:
+def _settle_absence(item: CloudflareOwnedResource) -> None:
     now = datetime.now(UTC)
     if item.state == "creating":
         if item.observed_at is None:
             item.observed_at = now
-            return False
+            return
         if now - item.observed_at < timedelta(minutes=1):
             raise DeletionSettling("Waiting for a possible late Managed Tunnel write")
     item.state = "absent"
     item.observed_at = now
-    return True
 
 
 async def stage_rotation(db: AsyncSession, row: CloudflareInstallation, *, version: int, actor: str) -> None:
