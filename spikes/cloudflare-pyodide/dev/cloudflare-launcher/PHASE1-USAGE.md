@@ -470,12 +470,18 @@ The 300-second cleanup allowance includes 285 seconds for drain, 10 seconds
 for the provider delete request, and five seconds for clock skew. The release
 loader checks that those allowances fit the qualified margin.
 
-Preset B uses a 3,600-second lifetime and keeps the 90-second idle linger.
+Preset B uses a 3,600-second lifetime and keeps the 90-second TenantHost linger.
+Physical launchers still retire under the worker pool's independent idle policy.
 Managed Workers compare the workflow timeout against the pinned deadline plus
 280 seconds on the database clock. This leaves room for an early launcher
 clock within the five-second allowance. A fresh launcher can accept a workflow
 with the default 1,800-second timeout for about 2,080 seconds. Longer work that
 no longer fits and unbounded work stay available to the primary.
+
+Scale In and Upgrade close new admission immediately. An idle launcher can
+retire on the next reconciliation pass. An already running workflow can
+outlast a 10-minute upgrade drain attempt. The job reports `CF_DRAIN_TIMEOUT`
+and leaves admission closed pending verified retirement.
 
 During a rolling API deployment, a Workers pin missing its deadline is
 ineligible for new claims, prepares, and starts. The existing executor clock

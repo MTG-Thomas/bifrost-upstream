@@ -5214,6 +5214,8 @@ async def test_preset_b_policy_api_uses_the_qualified_fleet_price(
     db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch, lifecycle_audit_actor,
 ) -> None:
     release = _release(lifetime_meters=True)
+    installation.workers_release_digest = release.digest
+    await db_session.flush()
     monkeypatch.setattr(cloudflare_connection, "load_workers_release", lambda: release)
     monkeypatch.setattr(capacity_routes, "load_caller", AsyncMock(return_value=_platform_operator()))
     workers = CloudflareWorkersPolicy(

@@ -123,6 +123,17 @@ def test_workers_cleanup_margin_must_cover_every_allowance() -> None:
         cloudflare_release.validate_workers_cleanup_margin(299)
 
 
+def test_workers_release_rejects_a_lifetime_meter_without_qualified_rates(release: Path) -> None:
+    manifest = release / "manifest.json"
+    data = json.loads(manifest.read_bytes())
+    data["workers"]["launcher"]["bindings"].append({
+        "name": "BIFROST_LAUNCHER_METERS_PER_SECOND", "type": "plain_text", "source": "max_lifetime_seconds",
+    })
+    manifest.write_text(json.dumps(data))
+    with pytest.raises(WorkersReleaseUnavailable, match="single literal binding"):
+        load_workers_release(release)
+
+
 def test_missing_manifest_read_is_not_cached(release: Path, monkeypatch) -> None:
     missing = release / "missing"
     monkeypatch.setattr(cloudflare_release, "WORKERS_RELEASE_PATH", missing)
