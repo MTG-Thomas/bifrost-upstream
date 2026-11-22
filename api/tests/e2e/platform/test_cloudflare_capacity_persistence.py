@@ -29,7 +29,8 @@ from shared.models import (
 from sqlalchemy import delete, func, insert, literal, select, text, update
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import DBAPIError, IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 from src.config import Settings
 from src.core.principal import UserPrincipal
 from src.jobs.platform import cloudflare_capacity as lifecycle_job
@@ -155,7 +156,11 @@ from src.worker.remote.protocol import (
 )
 from src.worker.remote.remote_pool import ThinRemoteProcessPool
 
-from tests.helpers.cloudflare_containers import make_release, verified_egress
+from tests.helpers.cloudflare_containers import (
+    app_journal,
+    make_release,
+    verified_egress,
+)
 from tests.helpers.cloudflare_containers import policy as container_policy
 
 OPERATOR_ID = UUID("20cb7fe5-78e2-48d7-8f1e-8edcac69ffab")
@@ -1910,6 +1915,7 @@ async def create_installation(
 @pytest.mark.parametrize("reason", [
     "stale-hash", "missing-pin", "solution-generation", "solution-version", "solution-outbound",
     "cross-org", "wrong-approval-owner", "tenant-owned-global-approval",
+    "stale-egress", "different-provider-version", "overdue-account", "overdue-other-account",
 ])
 async def test_container_reservation_rejects_unreviewed_source_and_scope(
     db_session, installation, reason,
@@ -1953,6 +1959,8 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
         installation_id=installation.id, scope="containers", endpoint="https://capacity.example.test",
         deployment_revision=1, bearer_version=1,
     ))
+    application = app_journal(installation, release.digest, now)
+    db.add(application)
     path, digest = f"workflows/{workflow_id}.py", "a" * 64
     solution = None
     solution_scope = None
@@ -2013,6 +2021,33 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
         await db.execute(delete(FileIndex).where(FileIndex.path == path))
     elif reason == "cross-org":
         execution.organization_id = other
+    elif reason == "stale-egress":
+        admission["verified_egress"] = await verified_egress(
+            installation.id, 1, release.digest, origin, observed_at=now - timedelta(minutes=6),
+        )
+    elif reason == "different-provider-version":
+        application.provider_version = "f" * 32
+    elif reason.startswith("overdue-"):
+        prior_id, prior_worker = uuid4(), uuid4()
+        account = installation.account_id if reason == "overdue-account" else "b" * 32
+        db.add(CloudflareInstallation(
+            id=prior_id, account_id=account, worker_ingress_origin=origin,
+            consent_version=installation.consent_version, consent_actor="fixture", consent_at=now,
+            desired_state="disconnected", desired_revision=1, retired_at=now, policy=installation.policy,
+        ))
+        db.add(ExecutionWorker(id=prior_worker, form="external", state="lost", capacity_scope="containers"))
+        await db.flush()
+        db.add(seal_credential(
+            CredentialRef(prior_id, account, "control_root", "", 1),
+            SecretStr("fixture-control-root"), actor="fixture", now=now,
+        ))
+        await db.flush()
+        db.add(CloudflareWorkerReservation(
+            worker_id=prior_worker, installation_id=prior_id, scope="containers",
+            deployment_revision=1, control_root_version=1, container_tenant="platform",
+            container_release=release.digest, container_reserved_at=now - timedelta(hours=1),
+            container_envelope={"seconds": 600, "fixed_usd": "0.01", "second_usd": "0.001"},
+        ))
     elif reason.endswith("approval-owner") or reason == "tenant-owned-global-approval":
         approval.organization_id = owner if owner_id is None else other
         approval.revision = linux_review_digest(workflow_id, approval.organization_id, review)
@@ -2025,17 +2060,25 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
         else:
             solution.allow_outbound_access = True
     await db.flush()
-    assert await reserve_container(db, **admission) is None
+    assert (await reserve_container(db, **admission) is not None) == (reason == "overdue-other-account")
+    if reason.startswith("overdue-"):
+        status = await get_cloudflare_capacity_status(db, _platform_operator())
+        assert status.installation is not None and status.installation.spend is not None
+        assert any(
+            "CF_CONTAINERS_CLEANUP_PENDING" in note for note in status.installation.spend.coverage
+        ) == (reason == "overdue-account")
 
 
 @pytest.mark.asyncio
-async def test_capacity_reports_overdue_unsettled_containers(db_session, installation) -> None:
+@pytest.mark.parametrize("meter_complete", [False, True])
+async def test_capacity_reports_overdue_unsettled_containers(db_session, installation, meter_complete) -> None:
     from src.services.worker_pool.cloudflare_containers_rest import ContainersRest
     from src.services.worker_pool.cloudflare_containers_settlement import (
         ClosedContainerStart,
         settle_container_stop,
     )
     from src.services.worker_pool.cloudflare_provisioning import (
+        OwnershipConflict,
         ResourceIntent,
         ResourceObservation,
         ResourceTarget,
@@ -2077,17 +2120,19 @@ async def test_capacity_reports_overdue_unsettled_containers(db_session, install
     assert status.installation.owned_resources_pending == 2
     assert status.installation.spend is not None
     assert any("Unresolved cleanup for 1 Cloudflare Container" in note for note in status.installation.spend.coverage)
-    started_at = now - timedelta(minutes=59)
-    stopped_at = started_at + timedelta(seconds=2)
+    started_at = (now - timedelta(minutes=55)).replace(second=0, microsecond=0)
+    stopped_at = reported_stop = started_at + timedelta(seconds=2)
     phase = "provisioning"
+    placement_ids = [actor]
 
     def management(request: httpx.Request) -> httpx.Response:
         assert request.method == "GET"
-        if request.url.path.endswith(f"/instances/{actor}"):
-            result = {
-                "id": actor, "application_id": app_id, "image": image, "started_at": started_at.isoformat(),
-                "status": {"state": phase, "updated_at": stopped_at.isoformat()},
-            }
+        if request.url.path.endswith("/instances-v2"):
+            assert request.url.params["name_prefix"] == actor
+            result = [{
+                "id": placement, "application_id": app_id, "image": image, "started_at": started_at.isoformat(),
+                "status": {"state": phase, "updated_at": reported_stop.isoformat()},
+            } for placement in placement_ids]
         else:
             assert request.url.path.endswith(f"/applications/{app_id}")
             result = {
@@ -2096,22 +2141,198 @@ async def test_capacity_reports_overdue_unsettled_containers(db_session, install
             }
         return httpx.Response(200, json={"success": True, "result": result})
 
-    closure = ClosedContainerStart(app, workers[0], uid, actor, image, started_at, 200)
+    closure = ClosedContainerStart(
+        app, workers[0], uid, actor, image, started_at, started_at, 200, meter_complete=meter_complete,
+    )
     async with httpx.AsyncClient(transport=httpx.MockTransport(management)) as http:
         adapter = ContainersRest(http)
         token = SecretStr("synthetic-management-token")
         with pytest.raises(ObservationPending):
             await settle_container_stop(db_session, adapter, token=token, closure=closure)
         phase = "inactive"
+        placement_ids = [actor, "e" * 64]
+        with pytest.raises(OwnershipConflict, match="multiple placements"):
+            await settle_container_stop(db_session, adapter, token=token, closure=closure)
+        placement_ids = ["e" * 64]
+        with pytest.raises(OwnershipConflict, match="differs"):
+            await settle_container_stop(db_session, adapter, token=token, closure=closure)
+        placement_ids = [actor]
+        installation.desired_state = "disconnected"
+        await db_session.flush()
         await settle_container_stop(db_session, adapter, token=token, closure=closure)
+        reported_stop = stopped_at + timedelta(seconds=1)
         await settle_container_stop(db_session, adapter, token=token, closure=closure)
     settled = await db_session.get(CloudflareWorkerReservation, workers[0])
     assert settled is not None and settled.container_envelope is not None
     assert settled.container_stopped_at == stopped_at
-    assert settled.container_envelope["measured_outbound_bytes"] == 200
-    assert Decimal(settled.container_envelope["settled_fixed_usd"]) == Decimal("0.00100001")
+    if meter_complete:
+        assert settled.container_envelope["measured_outbound_bytes"] == 200
+        assert Decimal(settled.container_envelope["settled_fixed_usd"]) == Decimal("0.00100001")
+    else:
+        assert "settled_fixed_usd" not in settled.container_envelope
+        assert settled.container_envelope["fixed_usd"] == "0.01"
     status = await get_cloudflare_capacity_status(db_session, _platform_operator())
     assert status.installation is not None and status.installation.owned_resources_pending == 1
+
+
+@pytest.mark.asyncio
+async def test_container_source_authority_follows_the_durable_workflow_claim(db_session, installation) -> None:
+    from shared.sdk_modules import ModuleSourceError, ModuleSourceScope
+    from src.models.orm.cloudflare_approvals import CloudflareApproval
+    from src.models.orm.execution_workers import ExecutionWorkerClaim
+    from src.models.orm.workflows import Workflow
+    from src.services.worker_pool.cloudflare_containers_admission import (
+        LINUX_REVIEW_VERSION,
+        LinuxReview,
+        linux_review_digest,
+    )
+    from src.services.worker_pool.cloudflare_containers_source import (
+        scoped_container_source,
+    )
+
+    release, _, _ = make_release()
+    worker, workflow_id, subject = uuid4(), uuid4(), uuid4()
+    now = datetime.now(UTC)
+    path = "workflows/native.py"
+    workflow = Workflow(id=workflow_id, name="fixture", function_name="run", path=path)
+    db_session.add_all([workflow, ExecutionWorker(id=worker, form="external", state="ready", capacity_scope="containers")])
+    await db_session.flush()
+    review = LinuxReview(
+        findings=frozenset({"CF_NATIVE"}), release_digest=release.digest, installation_id=installation.id,
+        deployment_revision=1, consent_version=installation.consent_version,
+        worker_ingress_origin=installation.worker_ingress_origin, egress="worker-ingress-only-v1",
+        path=path, function_name="run", source_pins={path: "a" * 64}, wheels={},
+        memory_bytes=128, timeout_seconds=60, ingress_bytes=100, outbound_bytes=100,
+        previous_revision=None, inactive_history_count=0,
+    ).model_dump(mode="json")
+    revision = linux_review_digest(workflow_id, None, review)
+    approval = CloudflareApproval(
+        revision=revision, workflow_id=workflow_id, policy_version=LINUX_REVIEW_VERSION,
+        accepted_by="fixture", declaration=review,
+    )
+    db_session.add_all([
+        approval,
+        ExecutionWorkerClaim(worker_id=worker, subject_id=subject, family=WAKE_WORKFLOW),
+        CloudflareWorkerReservation(
+            worker_id=worker, installation_id=installation.id, scope="containers", deployment_revision=1,
+            control_root_version=1, container_tenant="platform", container_release=release.digest,
+            container_reserved_at=now, container_envelope={"seconds": 300, "approval": revision},
+        ),
+    ])
+    await db_session.flush()
+    runtime = SimpleNamespace(credential_id=subject, workflow_id=workflow_id, organization_id=None)
+    scope = ModuleSourceScope(solution_id=None, global_repo_access=True)
+    assert (await scoped_container_source(db_session, runtime, workflow, scope)).source_hashes == {path: "a" * 64}
+    approval.is_current = False
+    await db_session.flush()
+    with pytest.raises(ModuleSourceError, match="approval is unavailable"):
+        await scoped_container_source(db_session, runtime, workflow, scope)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["deadline", "settled", "release"])
+async def test_managed_container_ownership_fences_live_sessions(db_session, installation, monkeypatch, change) -> None:
+    from src.worker.remote import ownership
+    from src.worker.remote.fencing import (
+        LeaseRef,
+        fence_remote_owner,
+        remote_owner_context,
+    )
+
+    now = datetime.now(UTC)
+    worker, owner, launcher = uuid4(), uuid4(), uuid4()
+    digest = "a" * 64
+    db_session.add(ExecutionWorker(
+        id=worker, form="external", state="ready", capacity_scope="containers", capacity_resource_uid=uuid4().hex,
+    ))
+    await db_session.flush()
+    pin = CloudflareWorkerReservation(
+        worker_id=worker, installation_id=installation.id, scope="containers", deployment_revision=1,
+        control_root_version=1, container_tenant="platform", container_release=digest,
+        container_reserved_at=now - timedelta(minutes=2), container_envelope={"seconds": 600},
+    )
+    db_session.add(pin)
+    await db_session.flush()
+
+    @asynccontextmanager
+    async def database():
+        yield db_session
+
+    monkeypatch.setattr(ownership, "get_liveness_db_context", database)
+    lease = await ownership.acquire_remote_owner(
+        worker_id=worker, owner_id=owner, launcher_id=launcher, nonce_digest="a" * 64,
+        hello_sequence=1, container_release=digest,
+    )
+    assert lease is not None
+    assert await ownership.renew_remote_owner(lease)
+    assert await ownership.owns_remote_session(lease)
+    if change == "deadline":
+        pin.container_envelope = {"seconds": 60}
+    elif change == "settled":
+        pin.container_stopped_at = now
+    else:
+        pin.container_release = "b" * 64
+    await db_session.flush()
+    assert not await ownership.renew_remote_owner(lease)
+    assert not await ownership.owns_remote_session(lease)
+    with remote_owner_context(LeaseRef(lease)):
+        assert not await fence_remote_owner(db_session)
+
+
+@pytest.mark.asyncio
+async def test_disconnect_preserves_unresolved_container_cleanup(db_session, installation) -> None:
+    from src.services.worker_pool.cloudflare_policy import (
+        CloudflarePolicyConflict,
+        retire_cloudflare_installation,
+    )
+
+    now = datetime.now(UTC)
+    worker = uuid4()
+    installation.desired_state = "disconnected"
+    db_session.add(ExecutionWorker(
+        id=worker, form="external", state="lost", capacity_scope="containers",
+        capacity_resource_deleted_at=now,
+    ))
+    await db_session.flush()
+    pin = CloudflareWorkerReservation(
+        worker_id=worker, installation_id=installation.id, scope="containers", deployment_revision=1,
+        control_root_version=1, container_tenant="platform", container_release="a" * 64,
+        container_reserved_at=now - timedelta(minutes=10),
+        container_envelope={"seconds": 300, "fixed_usd": "0.01", "second_usd": "0.001"},
+    )
+    db_session.add(pin)
+    await db_session.flush()
+    with pytest.raises(CloudflarePolicyConflict, match="cleanup is pending"):
+        await retire_cloudflare_installation(db_session, installation_id=installation.id, expected_revision=1)
+    assert installation.api_token_version is not None
+    status = await get_cloudflare_capacity_status(db_session, _platform_operator())
+    assert status.installation is not None and status.installation.owned_resources_pending == 1
+    pin.container_stopped_at = now
+    await db_session.flush()
+    await retire_cloudflare_installation(db_session, installation_id=installation.id, expected_revision=1)
+    assert installation.retired_at is not None
+
+
+@pytest.fixture
+async def container_race_session_factory(async_engine):
+    """Use a migrated DB visible to the race's connections only."""
+    url = async_engine.url
+    if url.host == "pgbouncer":
+        # The transaction pool exposes the application database only.
+        url = url.set(host="postgres")
+    name = f"container_race_{uuid4().hex}"
+    admin = create_async_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT", poolclass=NullPool)
+    race_engine = create_async_engine(url.set(database=name), poolclass=NullPool)
+    try:
+        async with admin.connect() as connection:
+            await connection.execute(text(f"CREATE DATABASE {name} TEMPLATE bifrost_test_template"))
+            try:
+                yield async_sessionmaker(race_engine, expire_on_commit=False)
+            finally:
+                await race_engine.dispose()
+                await connection.execute(text(f"DROP DATABASE {name}"))
+    finally:
+        await admin.dispose()
 
 
 @pytest.mark.asyncio
@@ -2119,7 +2340,7 @@ async def test_capacity_reports_overdue_unsettled_containers(db_session, install
     "installation", "tenant", "prewarm",
     "claim-installation", "claim-tenant", "prepare-installation", "prepare-tenant",
 ])
-async def test_container_reservation_serializes_shared_capacity(async_session_factory, monkeypatch, race) -> None:
+async def test_container_reservation_serializes_shared_capacity(container_race_session_factory, monkeypatch, race) -> None:
     from src.models.orm.cloudflare_approvals import CloudflareApproval
     from src.models.orm.file_index import FileIndex
     from src.models.orm.workflows import Workflow
@@ -2134,7 +2355,7 @@ async def test_container_reservation_serializes_shared_capacity(async_session_fa
     )
 
     release, _, _ = make_release()
-    now = datetime.now(UTC)
+    sessions = container_race_session_factory
     account, primary, warmer = uuid4().hex, uuid4(), uuid4()
     primary_pool = cloudflare_admission.PrimaryPool("external", scope=f"fixture-{primary}", ceiling=1)
     worker_contender = race.startswith(("claim-", "prepare-"))
@@ -2147,7 +2368,9 @@ async def test_container_reservation_serializes_shared_capacity(async_session_fa
     paths = [f"workflows/{workflow}.py" for workflow in workflow_ids]
     placement_tenants = [tenants[0]] * 3 if shared_tenant else tenants
     monkeypatch.setattr(cloudflare_admission, "installed_workers_release_digest", lambda: "fixture-release")
-    async with async_session_factory() as db:
+    async with sessions() as db:
+        now = await db.scalar(select(func.clock_timestamp()))
+        assert now is not None
         installation_id = await create_installation(db, account)
         installation = await db.get(CloudflareInstallation, installation_id)
         assert installation is not None
@@ -2181,6 +2404,7 @@ async def test_container_reservation_serializes_shared_capacity(async_session_fa
             installation_id=installation_id, scope="containers", endpoint="https://capacity.example.test",
             deployment_revision=1, bearer_version=1,
         ))
+        db.add(app_journal(installation, release.digest, now))
         if seeded_seat or worker_contender:
             db.add(ExecutionWorker(
                 id=warmer, form="external", state="ready", runtime_profile=CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
@@ -2262,7 +2486,7 @@ async def test_container_reservation_serializes_shared_capacity(async_session_fa
 
     @asynccontextmanager
     async def observe_claim_connection():
-        async with async_session_factory() as db:
+        async with sessions() as db:
             await record_connection(db)
             yield db
             await db.commit()
@@ -2271,7 +2495,7 @@ async def test_container_reservation_serializes_shared_capacity(async_session_fa
         if race.startswith("claim-"):
             return await claim_next(warmer, fits_bytes=128 * 2**20, budget_bytes=128 * 2**20) is not None
         if race.startswith("prepare-"):
-            async with async_session_factory() as db:
+            async with sessions() as db:
                 await record_connection(db)
                 await db.scalar(select(CloudflareInstallation.id).where(
                     CloudflareInstallation.id == installation_id,
@@ -2285,7 +2509,7 @@ async def test_container_reservation_serializes_shared_capacity(async_session_fa
         return await reserve(contender=True)
 
     async def reserve(*, contender: bool = False) -> bool:
-        async with async_session_factory() as db:
+        async with sessions() as db:
             if contender:
                 await record_connection(db)
             result = await reserve_container(
@@ -2297,86 +2521,66 @@ async def test_container_reservation_serializes_shared_capacity(async_session_fa
             await db.commit()
             return result is not None
 
-    try:
-        async with async_session_factory() as db:
-            saved = await db.get(CloudflareInstallation, installation_id)
-            assert saved is not None
-            workers_policy = CloudflareWorkersPolicy.model_validate(saved.policy["limits"]["workers"])
-            assert await db.scalar(select(cloudflare_admission.workers_release_matches()).where(
-                CloudflareInstallation.id == installation_id,
-            )) is True
-            assert await db.scalar(select(cloudflare_estimated_usage()).where(
-                CloudflareInstallation.id == installation_id,
-            )) is not None
-            assert await reserve_container(
-                db, installation_id=installation_id, controller_id=uuid4(),
-                primary=primary_pool, release=release, verified_egress=None,
-            ) is None
-        if race == "installation":
-            assert await reserve()
-        monkeypatch.setattr(claim_service, "get_db_context", observe_claim_connection)
-        async with async_session_factory() as blocker:
-            await blocker.scalar(select(CloudflareInstallation.id).where(
-                CloudflareInstallation.id == installation_id,
-            ).with_for_update(key_share=True))
-            # Both claimers connect before the blocker releases the row.
-            first = asyncio.create_task(reserve(contender=True))
-            contenders = [first, asyncio.create_task(compete())]
-            try:
-                async with asyncio.timeout(5), async_session_factory() as observer:
-                    blocker_pid = await blocker.scalar(select(func.pg_backend_pid()))
-                    await both_connected.wait()
-                    while True:
-                        chains = [await observer.scalar(select(func.pg_blocking_pids(pid))) for pid in contender_pids]
-                        if any(blocker_pid in chain for chain in chains) and all(
-                            set(chain) & {*contender_pids, blocker_pid} for chain in chains
-                        ):
-                            break
-                        assert not any(task.done() for task in contenders), "reservation bypassed the lock"
-                        await asyncio.sleep(0.01)
-            finally:
-                await blocker.rollback()
-                results = await asyncio.gather(*contenders)
-        assert len(set(contender_pids)) == 2
-        assert sum(results) == 1
-        async with async_session_factory() as db:
-            saved = await db.get(CloudflareInstallation, installation_id)
-            assert saved is not None
-            slots = await read_workflow_slot_admission(
-                db, installation_id, CloudflareWorkersPolicy.model_validate(saved.policy["limits"]["workers"]),
-            )
-            assert slots.occupied.total() == (1 if shared_tenant else 2)
-            charge = await db.scalar(select(cloudflare_estimated_usage()).where(
-                CloudflareInstallation.id == installation_id,
-            ))
-            assert charge is not None
-            if results[0] or not worker_contender:
-                assert charge > 0
-                month_end = usage_period(now)[1]
-                current, end_of_month = (await db.execute(select(
-                    container_account_usage(literal(now)),
-                    container_account_usage(literal(month_end - timedelta(microseconds=1))),
-                ).where(CloudflareInstallation.id == installation_id))).one()
-                assert current == end_of_month > 0
-    finally:
-        async with async_session_factory() as db:
-            worker_ids = select(CloudflareWorkerReservation.worker_id).where(
-                CloudflareWorkerReservation.installation_id == installation_id,
-            )
-            await db.execute(delete(ExecutionWorker).where(
-                ExecutionWorker.id.in_(worker_ids) | ExecutionWorker.id.in_([primary, warmer]),
-            ))
-            await db.execute(delete(WorkDispatch).where(WorkDispatch.subject_id.in_(execution_ids)))
-            await db.execute(delete(Execution).where(Execution.id.in_(execution_ids)))
-            await db.execute(delete(Workflow).where(Workflow.id.in_(workflow_ids)))
-            await db.execute(delete(FileIndex).where(FileIndex.path.in_(paths)))
-            await db.execute(delete(Organization).where(Organization.id.in_(tenants)))
-            await db.execute(delete(CloudflareCapacityScope).where(CloudflareCapacityScope.installation_id == installation_id))
-            await db.execute(update(CloudflareInstallation).where(CloudflareInstallation.id == installation_id).values(
-                desired_state="disconnected", admitted_revision=None,
-            ))
-            await retire_cloudflare_installation(db, installation_id=installation_id, expected_revision=1)
-            await db.commit()
+    async with sessions() as db:
+        saved = await db.get(CloudflareInstallation, installation_id)
+        assert saved is not None
+        workers_policy = CloudflareWorkersPolicy.model_validate(saved.policy["limits"]["workers"])
+        assert await db.scalar(select(cloudflare_admission.workers_release_matches()).where(
+            CloudflareInstallation.id == installation_id,
+        )) is True
+        assert await db.scalar(select(cloudflare_estimated_usage()).where(
+            CloudflareInstallation.id == installation_id,
+        )) is not None
+        assert await reserve_container(
+            db, installation_id=installation_id, controller_id=uuid4(),
+            primary=primary_pool, release=release, verified_egress=None,
+        ) is None
+    if race == "installation":
+        assert await reserve()
+    monkeypatch.setattr(claim_service, "get_db_context", observe_claim_connection)
+    async with sessions() as blocker:
+        await blocker.scalar(select(CloudflareInstallation.id).where(
+            CloudflareInstallation.id == installation_id,
+        ).with_for_update(key_share=True))
+        # Both claimers connect before the blocker releases the row.
+        first = asyncio.create_task(reserve(contender=True))
+        contenders = [first, asyncio.create_task(compete())]
+        try:
+            async with asyncio.timeout(5), sessions() as observer:
+                blocker_pid = await blocker.scalar(select(func.pg_backend_pid()))
+                await both_connected.wait()
+                while True:
+                    chains = [await observer.scalar(select(func.pg_blocking_pids(pid))) for pid in contender_pids]
+                    if any(blocker_pid in chain for chain in chains) and all(
+                        set(chain) & {*contender_pids, blocker_pid} for chain in chains
+                    ):
+                        break
+                    assert not any(task.done() for task in contenders), "reservation bypassed the lock"
+                    await asyncio.sleep(0.01)
+        finally:
+            await blocker.rollback()
+            results = await asyncio.gather(*contenders)
+    assert len(set(contender_pids)) == 2
+    assert sum(results) == 1
+    async with sessions() as db:
+        saved = await db.get(CloudflareInstallation, installation_id)
+        assert saved is not None
+        slots = await read_workflow_slot_admission(
+            db, installation_id, CloudflareWorkersPolicy.model_validate(saved.policy["limits"]["workers"]),
+        )
+        assert slots.occupied.total() == (1 if shared_tenant else 2)
+        charge = await db.scalar(select(cloudflare_estimated_usage()).where(
+            CloudflareInstallation.id == installation_id,
+        ))
+        assert charge is not None
+        if results[0] or not worker_contender:
+            assert charge > 0
+            month_end = usage_period(now)[1]
+            current, end_of_month = (await db.execute(select(
+                container_account_usage(literal(now)),
+                container_account_usage(literal(month_end - timedelta(microseconds=1))),
+            ).where(CloudflareInstallation.id == installation_id))).one()
+            assert current == end_of_month > 0
 
 
 @pytest.mark.asyncio

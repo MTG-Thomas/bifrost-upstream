@@ -52,8 +52,11 @@ from src.services.worker_pool.cloudflare_admission import (
     cloudflare_claim_allowed,
     scoped_cloudflare_claim_allowed,
 )
+from src.services.worker_pool.cloudflare_containers_policy import (
+    CONTAINERS_SCOPE,
+    container_identity_matches,
+)
 from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
-from src.services.worker_pool.cloudflare_containers_policy import CONTAINERS_SCOPE, container_identity_matches
 from src.services.worker_pool.cloudflare_slots import (
     PREPARE_SECONDS,
     WorkflowSlotTicket,
@@ -1856,6 +1859,9 @@ class RemoteControlHost:
             if not isinstance(initial, dict) or initial.get("event") != "hello":
                 raise AuthenticationError("expected signed hello")
             signed = SignedHello.from_dict(initial.get("hello", {}))
+            admit_ingress = socket.scope.get("worker_ingress_authenticate")
+            if signed.container_release is not None and admit_ingress is None:
+                raise AuthenticationError("Managed Container control requires dedicated worker ingress")
             settings = get_settings()
             cloudflare = signed.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
             containers = False
@@ -1956,9 +1962,6 @@ class RemoteControlHost:
                             token.get_secret_value(), signed.incarnation_id, signed.resource_uid,
                         )
             hello = verify_hello(control_key, signed)
-            admit_ingress = socket.scope.get("worker_ingress_authenticate")
-            if hello.container_release is not None and admit_ingress is None:
-                raise AuthenticationError("Managed Container control requires dedicated worker ingress")
             if admit_ingress is not None and not admit_ingress(hello.incarnation_id):
                 raise AuthenticationError("Worker ingress incarnation quota exceeded")
             if "runtime_profile" in initial:

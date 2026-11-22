@@ -144,12 +144,14 @@ class ContainersRest(WorkersRestCleanup):
         assert app is not None
         if self._application(app["result"], account, name, application.provider_version) != application.provider_id:
             raise OwnershipConflict("Container application ID changed")
-        observed = await self._request(token, account, "GET", f"{path}/instances/{instance_id}", allow_missing=True)
-        row = observed["result"] if observed is not None else None
-        if row is None:
+        placements = await self._inventory(token, account, f"{path}/instances-v2", name_prefix=instance_id)
+        if not placements:
             raise ObservationPending("Missing instance readback does not witness a stopped placement")
+        if len(placements) != 1:
+            raise OwnershipConflict("Container readback has multiple placements for its start fence")
+        row = placements[0]
         if (
-            not isinstance(row, dict) or row.get("id") != instance_id
+            row.get("id") != instance_id
             or row.get("application_id") != application.provider_id
             or row.get("image") != image
         ):

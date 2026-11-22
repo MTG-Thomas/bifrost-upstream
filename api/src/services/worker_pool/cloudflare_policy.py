@@ -40,7 +40,11 @@ from src.services.work_dispatch import (
     WAKE_CLOUDFLARE_CAPACITY,
     wake_pool_workers_after_commit,
 )
-from src.services.worker_pool.cloudflare_containers_policy import container_deadline_sql
+from src.services.worker_pool.cloudflare_containers_policy import (
+    CONTAINERS_CLEANUP_PENDING,
+    overdue_container_reservations,
+    unresolved_container_reservation,
+)
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
     seal_credential,
@@ -174,12 +178,9 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
                 CloudflareOwnedResource.installation_id == CloudflareInstallation.id,
                 or_(CloudflareOwnedResource.state != "absent", CloudflareOwnedResource.observed_at.is_(None)),
             ).correlate(CloudflareInstallation).scalar_subquery().label("owned_resources_pending"),
-            select(func.count()).select_from(CloudflareWorkerReservation).where(
-                CloudflareWorkerReservation.installation_id == CloudflareInstallation.id,
-                CloudflareWorkerReservation.container_reserved_at.is_not(None),
-                CloudflareWorkerReservation.container_stopped_at.is_(None),
-                container_deadline_sql() <= func.statement_timestamp(),
-            ).correlate(CloudflareInstallation).scalar_subquery().label("overdue_containers"),
+            overdue_container_reservations(CloudflareInstallation.account_id, func.statement_timestamp())
+            .with_only_columns(func.count()).correlate(CloudflareInstallation)
+            .scalar_subquery().label("overdue_containers"),
         ).where(CloudflareInstallation.retired_at.is_(None)).execution_options(populate_existing=True)
     )).tuples().one_or_none()
     if row is None:
@@ -208,7 +209,7 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
     if overdue_containers:
         coverage.append(
             f"Unresolved cleanup for {overdue_containers} Cloudflare Container reservation(s) past their deadline. "
-            "Their capacity remains reserved until the provider confirms stop."
+            f"[{CONTAINERS_CLEANUP_PENDING}] Container admission is paused for this account until stop is verified."
         )
     spend = CloudflareSpendStatus(
         state="ledger_unavailable" if estimate is None else (
@@ -435,6 +436,7 @@ async def cloudflare_workers_remain(db: AsyncSession, installation_id: UUID, *, 
             or_(
                 ExecutionWorker.state.not_in(("lost", "retired")),
                 ExecutionWorker.capacity_resource_deleted_at.is_(None),
+                unresolved_container_reservation(),
             ),
         )
         .limit(1)

@@ -25,6 +25,21 @@ from src.models.orm.cloudflare_capacity import (
 from src.services.worker_pool.cloudflare_containers_release import ContainerRates
 
 CONTAINERS_SCOPE = "containers"
+CONTAINERS_CLEANUP_PENDING = "CF_CONTAINERS_CLEANUP_PENDING"
+
+
+def unresolved_container_reservation():
+    pin = CloudflareWorkerReservation
+    return (pin.scope == CONTAINERS_SCOPE) & pin.container_reserved_at.is_not(None) & pin.container_stopped_at.is_(None)
+
+
+def overdue_container_reservations(account_id, now):
+    """An account-wide stop fence includes reservations on retired installations."""
+    owner = aliased(CloudflareInstallation)
+    pin = CloudflareWorkerReservation
+    return select(pin.worker_id).select_from(pin).join(owner, owner.id == pin.installation_id).where(
+        owner.account_id == account_id, unresolved_container_reservation(), container_deadline_sql() <= now,
+    )
 
 
 def container_identity_matches(worker_id, release: str | None):
@@ -118,6 +133,34 @@ def container_deadline_sql():
     return reservation.container_reserved_at + func.make_interval(
         0, 0, 0, 0, 0, 0, reservation.container_envelope["seconds"].as_integer(),
     )
+
+
+def container_provider_pin(
+    reservation: CloudflareWorkerReservation, resource_uid: str,
+) -> dict[str, str | int]:
+    """Serialize one durable reservation to the Containers prepare/start wire."""
+    envelope = reservation.container_envelope
+    reserved_at = reservation.container_reserved_at
+    if envelope is None or reserved_at is None or reservation.container_tenant is None:
+        raise ValueError("Container start lacks its durable budget and deadline")
+    try:
+        seconds = envelope["seconds"]
+        start_deadline = datetime.fromisoformat(envelope["start_deadline"])
+        if type(seconds) is not int or not reserved_at < start_deadline < reserved_at + timedelta(seconds=seconds):
+            raise ValueError
+        reserved_ms = int(reserved_at.timestamp() * 1000)
+        return {
+            "installation": str(reservation.installation_id), "revision": reservation.deployment_revision,
+            "worker": str(reservation.worker_id), "uid": resource_uid, "tenant": reservation.container_tenant,
+            "image": envelope["image_digest"], "instance": envelope["instance_type"],
+            "credentialVersion": envelope["credential_version"],
+            "reservedAt": reserved_ms, "seconds": seconds,
+            "startDeadline": int(start_deadline.timestamp() * 1000),
+            "deadline": reserved_ms + seconds * 1000,
+            "ingressBytes": envelope["ingress_bytes"], "outboundBytes": envelope["outbound_bytes"],
+        }
+    except (KeyError, TypeError, ValueError, OverflowError):
+        raise ValueError("Container start has a malformed durable budget or deadline") from None
 
 
 def container_reserve_cost(

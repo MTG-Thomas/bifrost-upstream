@@ -7,6 +7,7 @@ from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
 import httpx
@@ -21,7 +22,6 @@ from src.services.worker_pool.cloudflare_containers_admission import (
 )
 from src.services.worker_pool.cloudflare_containers_egress import (
     REQUIRED_DENIALS,
-    ContainerEgressObservation,
     VerifiedEgress,
     verify_container_egress,
 )
@@ -44,7 +44,14 @@ from src.services.worker_pool.cloudflare_provisioning import (
     ResourceIntent,
     ResourceTarget,
 )
-from tests.helpers.cloudflare_containers import json_bytes, make_release, policy
+from tests.helpers.cloudflare_containers import (
+    APP_ID,
+    APP_VERSION,
+    json_bytes,
+    make_release,
+    policy,
+    successful_probe,
+)
 
 ACCOUNT = "a" * 32
 NAMESPACE = "b" * 32
@@ -175,24 +182,89 @@ def test_linux_review_digest_distinguishes_replacement_and_reacceptance() -> Non
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("change", [
-    {"revision": 2}, {"internet_enabled": True}, {"signed_control_round_trip": False},
+    {"provider_version": "f" * 32}, {"internet_enabled": True}, {"signed_control_round_trip": False},
     {"bounded_relay": False}, {"denied": frozenset()}, {"intercepted_origins": frozenset()},
 ])
 async def test_egress_proof_requires_exact_release_and_observed_network_controls(change) -> None:
     origin = "https://worker.example.test"
     installation_id = uuid4()
-    observation = ContainerEgressObservation(
-        installation_id, 1, "a" * 64, origin, False, frozenset({origin}), True, True, REQUIRED_DENIALS,
-    )
-
-    async def probe():
-        return replace(observation, **change)
-
-    assert await verify_container_egress(
-        probe, installation_id=installation_id, revision=1, release_digest="a" * 64, origin=origin,
-    ) is None
+    observation = successful_probe(installation_id, 1, "a" * 64, origin)
+    if "signed_control_round_trip" in change:
+        observation = replace(observation, **change)
+    else:
+        observation = replace(observation, report=observation.report.model_copy(update=change))
+    with patch(
+        "src.services.worker_pool.cloudflare_containers_egress._probe_container_egress",
+        new=AsyncMock(return_value=observation),
+    ):
+        assert await verify_container_egress(
+            None, None, installation_id=installation_id, revision=1, release_digest="a" * 64, origin=origin,
+            probe_worker_id=observation.report.worker_id,
+        ) is None
     with pytest.raises(TypeError, match="must be verified"):
         VerifiedEgress(observation, _mint=object())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["verified", "wrong-nonce", "no-ingress-witness", "redirect"])
+async def test_owned_egress_probe_challenges_scope_and_requires_api_witness(case) -> None:
+    installation, worker = uuid4(), uuid4()
+    now, origin, digest = datetime.now(UTC), "https://worker.example.test", "a" * 64
+    endpoint = "https://scope.example.test"
+    token = SecretStr("fixture-scope-authentication-token")
+    reservation = SimpleNamespace(
+        installation_id=installation, deployment_revision=1, worker_id=worker,
+        container_tenant="platform", container_reserved_at=now,
+        container_envelope={
+            "seconds": 500, "start_deadline": (now + timedelta(seconds=20)).isoformat(),
+            "image_digest": "sha256:" + "e" * 64, "instance_type": "standard-1",
+            "credential_version": 1, "ingress_bytes": 100, "outbound_bytes": 100,
+        },
+    )
+    db = AsyncMock()
+    db.get.side_effect = [
+        SimpleNamespace(id=installation, account_id="e" * 32, retired_at=None,
+                        desired_state="enabled", desired_revision=1, worker_ingress_origin=origin),
+        SimpleNamespace(endpoint=endpoint, bearer_version=1), object(),
+    ]
+    db.execute.side_effect = [
+        Mock(one_or_none=Mock(return_value=SimpleNamespace(provider_id=APP_ID, provider_version=APP_VERSION))),
+        Mock(one_or_none=Mock(return_value=(reservation, "e" * 32))),
+    ]
+    db.scalar.side_effect = [now, None if case == "no-ingress-witness" else worker]
+
+    def probe(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST" and str(request.url) == endpoint + "/v1/egress-probe"
+        assert request.headers["authorization"] == f"Bearer {token.get_secret_value()}"
+        body = json.loads(request.content)
+        pin = body["pin"]
+        assert pin["worker"] == str(worker) and len(body["nonce"]) == 43
+        assert pin["deadline"] - pin["reservedAt"] == 500_000
+        assert pin["startDeadline"] - pin["reservedAt"] == 20_000
+        assert body["control_key"] == "f" * 64
+        if case == "redirect":
+            return httpx.Response(307, headers={"location": "https://unrelated.example.test"})
+        return httpx.Response(200, json={
+            "nonce": "stale" if case == "wrong-nonce" else body["nonce"], "worker_id": str(worker),
+            "application_id": APP_ID, "provider_version": APP_VERSION, "origin": origin,
+            "internet_enabled": False, "intercepted_origins": [origin],
+            "bounded_relay": True, "denied": sorted(REQUIRED_DENIALS),
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(probe), follow_redirects=True) as client:
+        with (
+            patch("src.services.worker_pool.cloudflare_containers_egress.open_credential", return_value=token),
+            patch("src.services.worker_pool.cloudflare_containers_egress.load_managed_control_key",
+                  new=AsyncMock(return_value="f" * 64)),
+        ):
+            proof = await verify_container_egress(
+                db, client, installation_id=installation, revision=1, release_digest=digest,
+                origin=origin, probe_worker_id=worker,
+            )
+    if case == "verified":
+        assert proof is not None and proof.observed_at == now and proof.provider_version == APP_VERSION
+    else:
+        assert proof is None
 
 
 def test_baked_wheel_closure_is_required_for_package_finding() -> None:

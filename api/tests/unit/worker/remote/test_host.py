@@ -517,6 +517,9 @@ async def test_managed_linux_hello_is_bound_to_its_incarnation_key_and_release(m
         await RemoteControlHost().connect(socket)
     requirements.assert_not_awaited()
     assert admit.await_count == int(mode == "bound")
+    if mode == "public-ingress":
+        load_key.assert_not_awaited()
+        db.scalar.assert_not_awaited()
     if mode == "bound":
         assert admit.await_args.kwargs["container_release"] == release
         load_key.assert_awaited_once_with(db, pin, "resource-1")
@@ -540,8 +543,14 @@ async def test_containers_bootstrap_round_trips_fragmented_requirements() -> Non
         launcher_id=LEASE.launcher_id, incarnation_id=LEASE.worker_id, job_uid=None, pod_uid=None,
         hostname="runner", form="external", resource_uid="resource-1",
     )
-    launcher = Launcher(launcher_socket, identity=identity, secret="derived-key", containers=True)
+    nonce = "n" * 43
+    launcher = Launcher(
+        launcher_socket, identity=identity, secret="derived-key", containers=True,
+        container_release="a" * 64, container_probe_nonce=nonce,
+    )
     await launcher.hello({})
+    assert json.loads(launcher_socket.send.await_args_list[0].args[0])["hello"]["nonce"] == nonce
+    assert launcher.container_probe_nonce is None
     assert launcher.requirements_content == content
     assert launcher._last_command_sequence == bridge._sequence == len(frames) - 1
     assert launcher.agent_template is None

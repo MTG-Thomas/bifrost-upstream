@@ -496,10 +496,24 @@ and supply its closure to settlement. Pending effects keep their seats
 across controller resets. The control relay charges each fragment in the
 original direction against the incarnation's durable byte budget. Before
 using those bytes for settlement, charge the scoped HTTP paths to the same
-budget and verify that the scope has fenced all relays. Pair the scope's
-closure with a read of the named management API instance. If Cloudflare
-omits placement timestamps, keep the seat unresolved until exact stop and
-time evidence is available.
+budget and verify that the scope has fenced all relays. The closure must
+explicitly attest complete metering before settlement can reduce the fixed
+hold. Pair the closure with a singleton management inventory result for
+the fenced actor and exact placement start. The assumed
+`instances-v2` endpoint, `name_prefix` filter and placement fields
+(`id`, `application_id`, `image`, `started_at`, `status.state`,
+`status.updated_at`) are unverified pending hosted qualification.
+Missing or ambiguous evidence keeps the seat unresolved. The controller
+acknowledges the exact closed fence after the stop transaction commits.
+Only that acknowledgement retires the provider seat.
+
+Egress readiness expires after five minutes. The authenticated scope
+challenge reports the network observations. The API independently verifies
+that it accepted the fresh, signed canary nonce via worker ingress. The
+proof binds the exact application ID and provider version from inventory.
+An overdue unresolved placement blocks Container admission for its
+account with `CF_CONTAINERS_CLEANUP_PENDING`. Disconnect keeps cleanup
+and its credentials available until the stop is settled.
 
 The future Linux review writer must require platform-level permission to
 accept a Global Linux approval because the approval can authorize runs for
