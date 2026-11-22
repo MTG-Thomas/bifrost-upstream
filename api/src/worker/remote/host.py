@@ -70,6 +70,7 @@ from src.services.worker_pool.cloudflare_spend import (
     reserve_tenant_host_usage,
     settle_unsent_preparation,
 )
+from src.services.worker_pool.cloudflare_timing import record_transport_timing
 from src.worker.admission import Admission
 from src.worker.pool_main import PoolWorker
 from src.worker.remote.agent_route import AgentRoute, RemoteAgentConsumer
@@ -359,6 +360,15 @@ class Bridge:
         if self.freshness_age() > ADMISSION_FRESHNESS_SECONDS or self.meter_exhausted:
             raise CredentialRouteChanged("Cloudflare preparation admission is no longer open")
 
+    def _record_cloudflare_timing(self, execution_id: str | None = None, **stages: datetime) -> None:
+        task = asyncio.create_task(record_transport_timing(
+            execution_id=UUID(execution_id) if execution_id is not None else None,
+            worker_id=self.lease.worker_id,
+            **stages,
+        ))
+        self.results.add(task)
+        task.add_done_callback(self.results.discard)
+
     async def _send_preparation(
         self, request_id: str, payload: dict[str, Any], expected_generation: int | None,
     ) -> bool:
@@ -423,6 +433,8 @@ class Bridge:
             if bookings and not send_started:
                 async with get_db_context() as db:
                     await settle_unsent_preparation(db, worker_id, route_id, bookings[0])
+        if prepare_by is None and isinstance(payload.get("execution_id"), str):
+            self._record_cloudflare_timing(payload["execution_id"], prepare_sent_at=datetime.now(UTC))
         return True
 
     async def request(
@@ -532,6 +544,8 @@ class Bridge:
                                     raise OpaqueDispatchInterrupted("Opaque launcher socket was replaced during dispatch")
                             sent += 1
                         self._sequence += sent
+                        if action == "workflow" and self.managed_cloudflare:
+                            self._record_cloudflare_timing(payload["execution_id"], dispatch_sent_at=datetime.now(UTC))
             except OpaqueDispatchInterrupted:
                 raise
             except (WebSocketDisconnect, OSError, RuntimeError) as exc:
@@ -845,6 +859,8 @@ class Bridge:
 
     async def reconciliation_complete(self) -> None:
         """Permit terminal replay only after canonical routes were restored."""
+        if self.managed_cloudflare:
+            self._record_cloudflare_timing(session_ready_at=datetime.now(UTC))
         self.reconciliation_ready.set()
         deferred, self._deferred_terminal = self._deferred_terminal, []
         for event in deferred:

@@ -309,6 +309,7 @@ class ExecutionRequest:
 
     # Real-time updates
     broadcaster: Any = None              # WebPubSubBroadcaster for streaming logs
+    on_workflow_entry: Callable[[], None] | None = None
 
     # Event context (set when triggered by an event subscription)
     event: Any = None                    # EventContext | None
@@ -633,7 +634,8 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
                 context,
                 request.parameters,
                 execution_id=request.execution_id,
-                broadcaster=request.broadcaster
+                broadcaster=request.broadcaster,
+                on_entry=request.on_workflow_entry,
             )
 
             if is_data_provider and not request.no_cache:
@@ -1422,7 +1424,8 @@ async def _execute_workflow_with_trace(
     context: ExecutionContext,
     parameters: dict[str, Any],
     execution_id: str | None = None,
-    broadcaster: Any = None
+    broadcaster: Any = None,
+    on_entry: Callable[[], None] | None = None,
 ) -> tuple[Any, dict[str, Any], list[str]]:
     """
     Execute a workflow function, capturing its local variables.
@@ -1669,9 +1672,12 @@ async def _execute_workflow_with_trace(
         # Define the workflow execution function
         async def _run_workflow_async():
             if first_param_is_context:
-                return await func(context, **accepted_params)
+                attempt = func(context, **accepted_params)
             else:
-                return await func(**accepted_params)
+                attempt = func(**accepted_params)
+            if on_entry is not None:
+                on_entry()
+            return await attempt
 
         # Set up execution context for SDK support
         if BIFROST_CONTEXT_AVAILABLE:

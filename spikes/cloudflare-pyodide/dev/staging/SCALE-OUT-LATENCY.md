@@ -135,10 +135,18 @@ time the workflow's launcher dial.
 
 For the first overflow on a fresh launcher with the primary held full,
 **about 10 s to entry** is the observed reference from one run, not a
-percentile or an upper bound. On a healthy idle controller, the age gate
-and tick phase alone can take roughly 5–10 s from the dispatch clock.
-Unavailable capacity, contention, or a long controller pass can extend
-the wait.
+percentile or an upper bound. The new managed Workers launch-age gate is
+**2 s** from the dispatch clock. The supervisor arms a one-shot wake for
+the next compatible dispatch to reach that age. It uses the same event as
+the existing workflow and capacity hints, with the same 2 s minimum pass
+spacing and 5 s recovery sweep. An intervening pass can therefore add up
+to roughly 2 s of spacing under healthy conditions.
+
+**Budget about 7–9 s to entry** for a similar cold run on a healthy
+controller. Replacing the observed run's 5 s age floor with 2 s gives
+roughly 7.2 s if the rest of the path takes the same time, with up to
+roughly 2 s of spacing allowance. This is a planning estimate. Contention,
+admission limits, a missed wake, or a long pass can extend the wait.
 
 A subsequent admissible workflow can use the same launcher and warm ordinal
 within the **90 s linger**. It avoids the launch-age gate, launch/hello and
@@ -157,25 +165,14 @@ no idle engine pings during linger.
 
 ## Ranked reductions
 
-1. **Config/policy · needs owner decision** — Separate the managed launch
-   age from the reconciliation sweep and evaluate a 1–2 s threshold for
-   already-saturated healthy primaries. That removes 3–4 s from the policy
-   floor. Real savings depend on the next pass. Pair with option 2 to make
-   the earlier eligibility visible. With the same other spans and a
-   3–4 s realized saving, this sample would land around 6–7 s to entry.
-   Treat that as a trial target. Shorter patience can start a launcher
+1. **Implemented** — Separate the managed Workers launch age from
+   reconciliation and set it to 2 s. Shorter patience can start a launcher
    for work the primary would have absorbed, adding creations and DO
-   residency. The two timings are source constants at this revision, so
-   exposing an operator setting would require a **product change**.
-2. **Product change** — Schedule a coalesced, scope-level wake for the
-   oldest compatible dispatch's age deadline, retaining the 5 s recovery
-   sweep and 2 s minimum spacing initially. This targets up to roughly one
-   idle sweep of phase delay without polling every installation faster.
-   Recheck the queue, fit, admission and spend at wake time. If the spacing
-   still dominates the target, test a shorter spacing only on active
-   overflow. A blanket 5 s → 1 s sweep could multiply idle provider and
-   database polling by about five. The ledger prices control polling, so
-   cadence changes must carry the corresponding meter bound.
+   residency.
+2. **Implemented** — Wake the supervisor as the next compatible dispatch
+   crosses its age threshold. Each pass evaluates queue fit, primary
+   saturation, installation admission and spend. Keep-warm and queue
+   pre-warming remain off by default.
 3. **Product change** — Measure the post-claim branches before shortening
    them. If API prep dominates, reuse a digest-keyed immutable workspace
    bundle or parallelize independent reads while rechecking the current
@@ -216,6 +213,29 @@ is no provider cost or reconciliation ratio for this workflow.
 [Bifrost meter readback and pricing model](../cloudflare-launcher/PHASE1-USAGE.md)
 
 ## Next hosted receipt
+
+Read `executions.cloudflare_timing` for `queued_at`, `gate_eligible_at`,
+`claim_at`, `prepare_sent_at`, `dispatch_sent_at`, `engine_ready_at`, and
+`entry_at`. Join via the existing workflow claim to
+`cloudflare_worker_reservations.launch_timing` for `controller_decision_at`,
+`launcher_reserved_at`, `launcher_start_sent_at`,
+`launcher_start_accepted_at`, and `session_ready_at`. The existing
+`execution_workers.ready_at` records initial owner admission after hello.
+The launcher timestamps describe the incarnation's initial launch and
+should be attributed to the cold sample only when it uses the new
+incarnation. A ready launcher can claim before the launch-age threshold.
+
+These are UTC observations. Queue time comes from the dispatch row.
+Reservation and claim stamps are inside their transactions. The prepare
+and dispatch stamps record completion of the API socket sends. Engine
+readiness records the TenantHost's confirmed ping for the generation it
+selected, which can predate a warm run. Entry records the engine's
+invocation of the loaded workflow and is returned with the terminal
+receipt. Rebuild the Workers runtime from the updated engine sources to
+collect it. Missing keys indicate a stage that did not occur or report a
+timestamp, for example when a prepare hint was skipped, a terminal
+receipt was lost, or an older bundle ran the workflow. Keep the fixture's
+entry log as an independent observation.
 
 Repair the measurement harness to use durable dispatch timing even if the
 detail API omits `created_at`. Measure paired runs under the same primary

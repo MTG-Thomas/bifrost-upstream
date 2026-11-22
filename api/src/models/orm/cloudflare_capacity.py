@@ -237,6 +237,7 @@ class CloudflareWorkerReservation(Base):
     cleanup_attempts: Mapped[int] = mapped_column(SmallInteger, server_default="0")
     cleanup_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cleanup_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    launch_timing: Mapped[dict[str, str] | None] = mapped_column(JSONB(none_as_null=True))
     container_tenant: Mapped[str | None] = mapped_column(String(36))
     container_release: Mapped[str | None] = mapped_column(String(64))
     container_envelope: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))

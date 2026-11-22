@@ -1772,11 +1772,12 @@ async def test_supervisor_reserves_and_retires_without_restarting(
         memory_budget_bytes=128 * 2**20, memory_reserved_bytes=128 * 2**20,
     )
     db_session.add(primary_worker)
-    db_session.add(WorkDispatch(
+    dispatch = WorkDispatch(
         family="workflow", handler="workflow.execute", handler_version=1, subject_id=uuid4(),
         message={}, payload={}, cloudflare_revision="c" * 64, memory_request_bytes=64 * 2**20,
         created_at=datetime.now(UTC) - timedelta(minutes=1),
-    ))
+    )
+    db_session.add(dispatch)
     await db_session.flush()
     db_session.add(CloudflareCapacityScope(
         installation_id=installation.id, scope="workers", endpoint="https://capacity.example.test",
@@ -1786,6 +1787,8 @@ async def test_supervisor_reserves_and_retires_without_restarting(
 
     resources = {}
     writes = []
+    start_ages = []
+    stop = asyncio.Event()
 
     async def remote(request: httpx.Request) -> httpx.Response:
         if request.url.host == "vm.example.test":
@@ -1816,6 +1819,9 @@ async def test_supervisor_reserves_and_retires_without_restarting(
         else:
             assert body["resource_uid"] == resources[worker_id]["resource_uid"]
             resources[worker_id]["state"] = "starting" if request.method == "POST" else "deleted"
+            if request.method == "POST":
+                start_ages.append((datetime.now(UTC) - dispatch.created_at).total_seconds())
+                stop.set()
         return httpx.Response(200, json=resources[worker_id])
 
     settings = Settings(
@@ -1846,11 +1852,43 @@ async def test_supervisor_reserves_and_retires_without_restarting(
             await sweep()
             assert not writes
             primary_worker.memory_reserved_bytes = 128 * 2**20
+            dispatch.created_at = datetime.now(UTC)
             await db_session.flush()
-        await sweep()
+            # Run the real supervisor against the same deterministic provider.
+            # A fresh queue has no Redis hints here, so only the age timer
+            # can cause another pass before the old sweep.
+            reconcile_scope = cloudflare_supervisor._reconcile_scope
+
+            async def reconcile(binding, settings, _http, controllers, *, kubernetes):
+                await reconcile_scope(binding, settings, http, controllers, kubernetes=kubernetes)
+
+            async with monkeypatch.context() as supervisor_stubs:
+                supervisor_stubs.setattr(cloudflare_supervisor, "_reconcile_scope", reconcile)
+                supervisor_stubs.setattr(cloudflare_supervisor, "listen_for_pool_wake", AsyncMock())
+                supervisor_stubs.setattr(cloudflare_supervisor, "may_manage_jobs", AsyncMock(return_value=False))
+                supervisor_stubs.setattr(cloudflare_supervisor, "schedule_cloudflare_reconcile", AsyncMock())
+                supervisor_stubs.setattr(cloudflare_supervisor, "prune_spend_receipt_keys", AsyncMock())
+                supervisor_stubs.setattr(cloudflare_supervisor, "_withdraw_live", AsyncMock())
+                await asyncio.wait_for(cloudflare_supervisor.cloudflare_supervisor_loop(
+                    stop, settings, lease=SimpleNamespace(holds_lease=lambda: True, seconds_remaining=lambda: 5),
+                ), timeout=5)
+            assert len(start_ages) == 1
+            assert 2 <= start_ages[0] < 5
+        else:
+            await sweep()
         assert writes == ["PUT", "POST"]
         owned = tuple(controllers.values())
         worker_id = UUID(next(iter(resources)))
+        reservation = await db_session.get(CloudflareWorkerReservation, worker_id)
+        assert reservation is not None
+        await db_session.refresh(reservation)
+        timing = reservation.launch_timing
+        assert timing is not None
+        assert dispatch.created_at + timedelta(seconds=2) <= datetime.fromisoformat(timing["controller_decision_at"])
+        assert (
+            timing["controller_decision_at"] <= timing["launcher_reserved_at"] <=
+            timing["launcher_start_sent_at"] <= timing["launcher_start_accepted_at"]
+        )
         db_session.add(CloudflareWorkflowSlot(
             installation_id=installation.id, tenant="platform", ordinal=0, worker_id=worker_id,
             execution_id=uuid4(), dispatch_id=uuid4(), fence=uuid4(), sent=True,
@@ -3383,6 +3421,12 @@ async def test_queue_depth_prepares_four_workflows_and_settles_their_usage(
 
     try:
         first = await claim()
+        async with isolated_capacity_session_factory() as db:
+            timing = await db.scalar(select(Execution.cloudflare_timing).where(Execution.id == first.subject_id))
+        assert timing is not None
+        assert datetime.fromisoformat(timing["queued_at"]) == first.queued_at
+        assert datetime.fromisoformat(timing["gate_eligible_at"]) == first.queued_at + timedelta(seconds=2)
+        assert datetime.fromisoformat(timing["claim_at"]) >= first.queued_at
         assert len(first.queue_preparations) == 3
         if limited_budget:
             async with isolated_capacity_session_factory() as db:
