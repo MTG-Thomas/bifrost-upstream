@@ -83,8 +83,8 @@ class LinuxReview(BaseModel):
     timeout_seconds: int = Field(gt=0)
     ingress_bytes: int = Field(gt=0)
     outbound_bytes: int = Field(gt=0)
-    previous_revision: Digest | None = None
-    inactive_history_count: int = Field(default=0, ge=0)
+    previous_revision: Digest | None
+    inactive_history_count: int = Field(ge=0)
 
     def matches_release(self, release: VerifiedContainerRelease) -> bool:
         return (

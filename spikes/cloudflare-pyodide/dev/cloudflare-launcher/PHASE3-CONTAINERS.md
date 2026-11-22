@@ -490,6 +490,10 @@ the exact worker ingress is allowed and every other egress destination is
 denied. Pass the verified origin to the reservation seam. Provider readiness
 and successful image preparation alone cannot satisfy that precondition.
 
+The future Linux review writer must require platform-level permission to
+accept a Global Linux approval because the approval can authorize runs for
+every tenant. Provider-organization membership grants no such permission.
+
 ## Owner decisions
 
 Decided on 2026-11-21

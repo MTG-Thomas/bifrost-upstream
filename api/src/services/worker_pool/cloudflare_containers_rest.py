@@ -143,7 +143,7 @@ class ContainerRegistry:
             raise ObservationPending("Registry tag inventory is malformed") from None
         if not isinstance(rows, list) or len(rows) > 1 or any(
             not isinstance(row, dict) or row.get("name") not in {name, f"{account}/{name}"}
-            or not isinstance(row.get("tags"), list) or not row["tags"]
+            or not isinstance(row.get("tags"), list)
             or any(not isinstance(tag, str) or not re.fullmatch(r"[\w][\w.-]{0,127}", tag, re.ASCII)
                    for tag in row["tags"])
             or len(set(row["tags"])) != len(row["tags"])
@@ -168,7 +168,7 @@ class ContainerRegistry:
             await self._verify_image(release.manifest.image, release, cwd)
             tags = await self._tags(token, account, name, cwd)
             visible = "release" in tags
-            if tags and (not previously_sent or not visible):
+            if tags and (not previously_sent or tags != {"release"}):
                 raise OwnershipConflict("Container registry repository is occupied")
             credentials = await self.rest._request(
                 token, account, "POST", f"containers/registries/{REGISTRY}/credentials",
