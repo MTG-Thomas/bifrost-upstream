@@ -469,7 +469,8 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Omitted reachability still selects Existing HTTPS Endpoint.
     # Queue pre-warming is opt-in. Existing clients can omit the cap.
     # Optional Cloudflare Workers activation suggestion.
-    "b490392780964549153f69033b7cf286d0a1f2b5dc0031fb3906267d09259161"
+    # Long-lived launcher receipts can include more routes.
+    "524f4ed1e1e55b49b33b91125fa2e13051dfa9ce792717b5104f2ef8f83abce1"
 )
 
 
