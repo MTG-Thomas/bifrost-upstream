@@ -704,3 +704,51 @@ connector processes, scratch files and secrets. Retain only sanitized
 digests, dispositions, counts, durations and aggregate costs. Escalate any
 unverified teardown with its remaining cleanup witness before the approved
 window closes.
+
+## Combined Hosted Qualification Result
+
+**November 22, 2026 UTC · Spike source `eb5399823`**
+
+The two prepared manifests were rebuilt byte for byte from the qualified
+bundle. Twelve packaging tests passed. Both production images accepted
+their packaged release and the two deployment digests differed. The
+temporary Compose project started with 9 GiB available and no test stack
+running on the shared host.
+
+| Item | Result | Evidence |
+| --- | --- | --- |
+| 1. Offline bundle and images | Pass | Both manifests matched the prepared artifacts. Image loader and qualified bundle checks passed for both release sequences. |
+| 2. Connect, worker preflight, Enable and canary | Stopped at the execution-class gate | Connect returned HTTP 200 with admission closed. The sole Compose worker passed all 100 preflight route checks. Enable succeeded and opened admission after its runtime canary. Its receipt recorded `remote_launcher`. The plan required `worker_pool`. |
+| 3. Cold and warm latency | Not run | The trial stopped before any workflow submission. |
+| 4. Slot burst and isolated cancel | Not run | No workflow ran and no workflow slot was held. |
+| 5. Reconcile, active Scale In and first Disconnect | Disconnect passed | The earlier actions were skipped under the stop rule. Disconnect succeeded on its first submission and status returned no installation. |
+| 6–7. Managed Tunnel and connector rotation | Not run | The Existing HTTPS leg stopped at its execution-class gate. |
+| 8. Upgrade and terminal replay | Not run | Both packages qualified offline. The trial did not activate the replacement. |
+| 9. Spend and teardown | Teardown verified. Ratio unavailable. | The settled Bifrost ledger estimated $0.0001907223 for the run. Cloudflare returned zero attributable Worker or Durable Object analytics rows. |
+
+The preflight command runs inside the Compose worker container. That
+container's standard entry point invokes the physical remote launcher.
+Its platform-job command records `remote_launcher`. This accounts for
+the difference between the preflight label and the Enable receipt. The
+receipt provides evidence of a successful ingress and canary path and
+does not meet this run's execution-class requirement.
+
+The two previous attempts carried $0.00 of observed Bifrost spend. The
+public meter displayed $0.00 during this trial. The retired ledger's
+sub-cent estimate covers the executed provider lifecycle and canary.
+A per-item cost split and final provider billing were unavailable.
+The estimated cumulative spend was below the $0.50 target and $1.00
+hard stop.
+
+Product and independent readback found all three trial Workers and four
+namespaces absent, with HTTP 404 on their exact provider interfaces.
+The sole launcher incarnation was retired. No live launcher, held slot,
+present resource journal row, staged credential, retained credential
+ciphertext, or active capacity scope remained. The temporary account
+token and DNS record were absent on exact readback. Both authoritative
+DNS servers confirmed the origin was absent. The external tunnel's
+deletion record had zero live sessions. Local processes, Compose services,
+volumes, networks, trial image tags, scratch and secret files were removed
+and checked for absence.
+
+See the [sanitized combined hosted receipt](../../results/cloudflare-scaleout-combined-hosted.json).

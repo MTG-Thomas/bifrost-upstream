@@ -148,3 +148,14 @@ Provider plus four Global overlap, ninth admission, tenth wait, and
 single-slot cancellation are still unverified on Cloudflare.
 
 See the [sanitized hosted retry receipt](../../results/cloudflare-scaleout-hosted-retry.json).
+
+## Combined Hosted Qualification Slot Result
+
+The disposable Compose stack staged scoped loose and Solution workflow
+fixtures. The worker preflight and Enable's runtime canary succeeded.
+Enable reported `remote_launcher`, so the run stopped at the required
+execution-class gate. Provider and Global overlap, reserved ninth
+admission, the queued tenth execution, and isolated cancellation were
+not exercised. Teardown confirmed zero held slots.
+
+See the [sanitized combined hosted receipt](../../results/cloudflare-scaleout-combined-hosted.json).
