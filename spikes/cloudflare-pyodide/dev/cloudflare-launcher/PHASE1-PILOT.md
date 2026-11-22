@@ -1334,3 +1334,29 @@ retained credentials. Owned containers, networks, volumes, image tags,
 processes, scratch and secret files were removed.
 
 See the [sanitized preset B receipt](../../results/cloudflare-scaleout-preset-b-hosted.json).
+
+### Managed-only Hosted Run at `a9226cb62`
+
+The November 22, 2026 UTC run reused the earlier trial zone and verified
+both pinned releases and the cloudflared checksum before Connect.
+All 13 offline packaging tests passed. Preset B Connect succeeded with
+admission closed. Enable stopped at the ingress ownership check before
+programming DNS or running the signed canary. The initial configuration
+response had version 0, no `account_id` field, and a non-object `config`
+value. The diagnostic retained keys and categories only.
+
+The opening Bifrost estimate from the previous closing receipt was
+$0.077118674. Connect, Enable and Disconnect added $0.00 to both the
+observed live and settled estimates. Rotation, the worker preflight,
+WARP and route-grant readback, and Upgrade did not run. No launcher
+started.
+
+Disconnect retired the installation. Independent checks found one
+deleted tunnel with zero sessions, no DNS record by exact inventory or
+either authoritative server, and no matching Worker script or namespace.
+The token returned 404 after revocation and was absent from inventory.
+The journal had zero pending effects and the ledger held no live
+incarnations, slots or credentials. The connector projection and all
+disposable local resources were removed.
+
+See the [sanitized Managed-only receipt](../../results/cloudflare-scaleout-managed-hosted-a922.json).

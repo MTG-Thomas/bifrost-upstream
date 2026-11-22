@@ -147,3 +147,9 @@ ingress ownership stop occurred before Upgrade submission. Hosted drain
 and terminal replay remain unqualified. Both image tags were removed.
 
 See the [sanitized preset B receipt](../../results/cloudflare-scaleout-preset-b-hosted.json).
+
+The Managed-only run at `a9226cb62` verified both pinned packages offline.
+The first Enable stopped at the version-zero tunnel configuration fence,
+before any Worker upload. Hosted Upgrade remained unqualified.
+Both local image tags were removed.
+[Sanitized Managed-only receipt](../../results/cloudflare-scaleout-managed-hosted-a922.json)
