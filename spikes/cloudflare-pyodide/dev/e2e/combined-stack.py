@@ -3,7 +3,6 @@
 import argparse
 import ipaddress
 import json
-import os
 import re
 import secrets
 import socket

@@ -83,7 +83,10 @@ class _ScopeDb:
         return self.workflow if model.__name__ == "Workflow" else self.solution
 
     async def execute(self, _query):
-        return SimpleNamespace(all=lambda: [])
+        return SimpleNamespace(all=lambda: [], one_or_none=lambda: None)
+
+    async def scalar(self, _query):
+        return None
 
 
 async def test_requirements_http_contract_is_retained():

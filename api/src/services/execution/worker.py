@@ -18,7 +18,7 @@ import hashlib
 import sys
 from abc import abstractmethod
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from time import monotonic
 from typing import Any, Protocol
 

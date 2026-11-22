@@ -525,6 +525,10 @@ class WorkerCapacityController(ABC):
                     held, held_handler = reservation.bytes, reservation.handler
                     if held_handler in handler_slots:
                         handler_slots[held_handler] = max(0, handler_slots[held_handler] - 1)
+                if containers:
+                    # The pinned dispatch is already covered. Remaining
+                    # budget cannot be used for another workflow.
+                    handler_slots[CLOUDFLARE_WORKFLOW_HANDLER[0]] = 0
                 # A Job admitted but still starting its pool has not measured
                 # its budget yet; until it reports, count the one expected.
                 # A static executor counts only once ready and measured.
@@ -740,6 +744,7 @@ class WorkerCapacityController(ABC):
                 standard=0 if sizing.standard_limit_bytes in blocked_limits else plan.standard,
                 sized=[(identity, request) for identity, request in plan.sized
                        if (sizing.pod_limit_bytes(request) or sizing.largest_limit_bytes) not in blocked_limits],
+                container_dispatches=plan.container_dispatches,
             )
             if sizing.standard_limit_bytes in blocked_limits:
                 warm = 0
@@ -820,7 +825,7 @@ class WorkerCapacityController(ABC):
                 await db.commit()
                 return []
             launched: list[UUID] = []
-            for _dispatch_id, request in plan.sized:
+            for dispatch_id, request in plan.sized:
                 if len(launched) >= normal_room:
                     break
                 limit = sizing.pod_limit_bytes(request) or sizing.largest_limit_bytes
@@ -828,6 +833,9 @@ class WorkerCapacityController(ABC):
                     continue
                 if limit not in known_limits:
                     probing_limits.add(limit)
+                reserved_dispatch = dispatch_id if self.containers_mode and requests[dispatch_id].handler else None
+                if reserved_dispatch is not None and not await _lock_available_dispatch(db, reserved_dispatch):
+                    continue
                 launched.append(
                     self._reserve(
                         db,
@@ -836,20 +844,25 @@ class WorkerCapacityController(ABC):
                         # New workers claim through measured fit, including
                         # sized workers whose actual overhead differs.
                         environment=environment,
+                        reserved_for_dispatch_id=reserved_dispatch,
                     )
                 )
             standard_launches = plan.standard + warm
             if sizing.standard_limit_bytes not in known_limits:
                 standard_launches = min(1, standard_launches)
-            for _ in range(standard_launches):
+            for index in range(standard_launches):
                 if len(launched) >= normal_room:
                     break
+                reserved_dispatch = plan.container_dispatches[index] if plan.container_dispatches else None
+                if reserved_dispatch is not None and not await _lock_available_dispatch(db, reserved_dispatch):
+                    continue
                 launched.append(
                     self._reserve(
                         db,
                         resource_class="standard",
                         memory_limit_bytes=sizing.standard_limit_bytes,
                         environment=environment,
+                        reserved_for_dispatch_id=reserved_dispatch,
                     )
                 )
             for _ in range(fast_path_warm):
@@ -1043,6 +1056,7 @@ class WorkerCapacityController(ABC):
         memory_limit_bytes: int,
         environment: dict[str, Any],
         execution_lane: str = "normal",
+        reserved_for_dispatch_id: UUID | None = None,
     ) -> UUID:
         """A durable row for one Job, recording the limit it launches with:
         a later Worker memory change applies to new Jobs only."""
@@ -1064,6 +1078,7 @@ class WorkerCapacityController(ABC):
                 runtime_profile=self.runtime_profile,
                 remote_launcher_id=worker_id if cloudflare else None,
                 execution_lane=execution_lane,
+                reserved_for_dispatch_id=reserved_for_dispatch_id,
                 **self._binding_fields(worker_id),
             )
         )
@@ -1206,6 +1221,7 @@ class WorkerPoolController(WorkerCapacityController):
 class LaunchPlan:
     standard: int
     sized: list[tuple[UUID, int]]
+    container_dispatches: tuple[UUID | None, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1296,6 +1312,7 @@ def _plan_launches(
             workflow_slots.occupied[tenant_key(tenant_id)] += 1
 
     sized: list[tuple[UUID, int]] = []
+    container_dispatches: list[UUID | None] = []
     for item in waiting:
         dispatch_id, request = item.id, item.bytes
         placed = False
@@ -1338,8 +1355,10 @@ def _plan_launches(
                 slots.append({handler: new_declared.handler_slots[handler] - 1})
             continue
         if cold:
-            return (LaunchPlan(standard=1, sized=[]) if request <= standard_budget
-                    else LaunchPlan(standard=0, sized=[(dispatch_id, request)]))
+            if request > standard_budget:
+                return LaunchPlan(standard=0, sized=[(dispatch_id, request)])
+            pin = (dispatch_id if item.handler == CLOUDFLARE_WORKFLOW_HANDLER[0] else None,)
+            return LaunchPlan(standard=1, sized=[], container_dispatches=pin if new_containers else ())
         if request > standard_budget:
             if request <= largest_budget or probe_largest:
                 sized.append((dispatch_id, request))
@@ -1348,11 +1367,19 @@ def _plan_launches(
         rooms.append(standard_budget - request)
         new_slots = dict(limited)
         if new_containers:
+            container_dispatches.append(dispatch_id if item.handler == CLOUDFLARE_WORKFLOW_HANDLER[0] else None)
             new_slots[SOLUTION_GIT_CAPABILITY] = int(item.platform_job_type != SOLUTION_UPDATE_CHECK_JOB)
+            new_slots[CLOUDFLARE_WORKFLOW_HANDLER[0]] = 0
         if item.handler in limited:
             new_slots[item.handler] -= 1
         slots.append(new_slots)
-    return LaunchPlan(standard=len(bins) - len(free), sized=sized)
+    return LaunchPlan(standard=len(bins) - len(free), sized=sized, container_dispatches=tuple(container_dispatches))
+
+
+async def _lock_available_dispatch(db, dispatch_id: UUID) -> bool:
+    return await db.scalar(select(WorkDispatch.id).where(
+        WorkDispatch.id == dispatch_id, WorkDispatch.assigned_worker_id.is_(None),
+    ).with_for_update(skip_locked=True)) is not None
 
 
 async def _publish_launchable(largest_budget: int | None, generation: int) -> None:
