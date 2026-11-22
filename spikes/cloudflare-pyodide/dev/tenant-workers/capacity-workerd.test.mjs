@@ -157,9 +157,17 @@ async function referenceAttempt(record, solution, slotCase) {
     record.terminals.delete(route_id);
   }
   if (slotCase?.soak) {
+    const value = terminal.result?.result;
+    if (terminal.result?.success === true) {
+      assert.deepEqual({...value, module_count: undefined}, {
+        case: caseName, table_count: 0, isolated: true, module_count: undefined,
+        ...(solution ? {install_value: 'solution'} : {}),
+      });
+      assert.ok(Number.isSafeInteger(value.module_count) && value.module_count > 0);
+    }
     return {state: terminal.attempt_state, success: terminal.result?.success === true,
       error_type: terminal.result?.error_type ?? null, route_id,
-      module_count: terminal.result?.result?.module_count};
+      module_count: value?.module_count};
   }
   if (slotCase?.cancel) return terminal;
   assert.equal(terminal.attempt_state, 'completed', JSON.stringify(terminal));
@@ -449,7 +457,7 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
       observe: async () => (await (await request(path)).json()).state,
       settle: async () => {
         await next(() => record.heartbeat?.occupied_routes?.length === 0 &&
-          record.heartbeat.received_sequence >= record.terminalAckSequence);
+          record.heartbeat.received_sequence >= (record.terminalAckSequence ?? 0));
         const stopped = await (await request(path, 'DELETE', {resource_uid})).json();
         assert.equal(stopped.state, 'deleted');
         await next(() => sockets.get(id).readyState === 3);
