@@ -92,3 +92,12 @@ stopped at the Existing HTTPS Enable execution-class gate. It did not
 activate the replacement or exercise Upgrade drain and terminal replay.
 
 See the [sanitized combined hosted receipt](../../results/cloudflare-scaleout-combined-hosted.json).
+
+## Combined Hosted Re-run Disposition
+
+Both prepared release manifests passed the production image loader and
+had distinct deployment digests. The Existing HTTPS worker preflight
+stopped before Enable. The replacement image remained offline, and
+Upgrade drain and terminal replay were not exercised.
+
+See the [sanitized re-run receipt](../../results/cloudflare-scaleout-combined-hosted-rerun.json).

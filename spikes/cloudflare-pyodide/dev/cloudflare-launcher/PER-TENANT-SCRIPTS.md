@@ -159,3 +159,13 @@ admission, the queued tenth execution, and isolated cancellation were
 not exercised. Teardown confirmed zero held slots.
 
 See the [sanitized combined hosted receipt](../../results/cloudflare-scaleout-combined-hosted.json).
+
+## Combined Hosted Re-run Slot Disposition
+
+The disposable Compose stack staged scoped loose and Solution workflow
+fixtures. The worker preflight stopped at the IPv4 TLS handshake before
+Enable. There were zero launcher incarnations and zero held workflow slots.
+Provider and Global overlap, ninth-slot admission, the queued tenth
+execution, and isolated cancellation were not measured.
+
+See the [sanitized re-run receipt](../../results/cloudflare-scaleout-combined-hosted-rerun.json).

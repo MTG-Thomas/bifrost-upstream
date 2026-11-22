@@ -344,7 +344,7 @@ async def test_probe_requires_nonce_from_this_request():
         observed.append(request.headers[ingress.PROBE_HEADER.decode()])
         return httpx.Response(404, headers={
             ingress.INGRESS_HEADER: ingress.DENY_MARKER, ingress.PROBE_HEADER: observed[0],
-        })
+        }, stream=httpx.ByteStream(b""))
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(stale_marker)) as client:
         first = await _check_route(client, "https://proxy.test", "workers.example.test", "GET", "/docs", allowed=False)

@@ -38,6 +38,7 @@ print(json.dumps({
     "preflight_execution_class": "remote_launcher",
     "reachable": result.reachable,
     "route_checks": len(result.routes),
+    "http_connections": result.http_connections_as_result(),
     "failure": None if result.reachable else result.failure.as_result(),
 }))
 raise SystemExit(0 if result.reachable else 1)

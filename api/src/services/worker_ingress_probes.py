@@ -9,7 +9,7 @@ import secrets
 import socket
 import ssl
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from typing import TYPE_CHECKING, Literal, cast
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -47,10 +47,11 @@ _REFUSALS = (
 )
 _MISSING_ROUTE_ERRNOS = {errno.ENETUNREACH, errno.EHOSTUNREACH, errno.EAFNOSUPPORT, errno.EADDRNOTAVAIL}
 _PROBE_DEADLINE_SECONDS = 30
+_MAX_PROBE_BODY_BYTES = 1024
 _deadline = asyncio.timeout
-ProbePhase = Literal["tcp_connect", "tls_handshake", "request_write", "response_headers", "websocket"]
+ProbePhase = Literal["tcp_connect", "tls_handshake", "request_write", "response_headers", "response_body", "websocket"]
 _PHASE_ORDER: tuple[ProbePhase | None, ...] = (
-    None, "tcp_connect", "tls_handshake", "request_write", "response_headers", "websocket",
+    None, "tcp_connect", "tls_handshake", "request_write", "response_headers", "response_body", "websocket",
 )
 
 
@@ -124,6 +125,10 @@ class _ProbeProgress:
     inflight: dict[object, CanaryFailure] = field(default_factory=dict)
     deadline_failure: CanaryFailure | None = None
     tls_verified: bool = False
+    fresh_connections: int = 0
+    tls_handshakes_started: int = 0
+    tls_handshakes_completed: int = 0
+    reused_requests: int = 0
 
     def capture_deadline(self) -> None:
         # A gather cancellation unwinds its children one by one. Snapshot
@@ -144,6 +149,15 @@ class RuntimeCanary:
 
 
 @dataclass(frozen=True, slots=True)
+class ProbeHttpConnections:
+    address_family: str
+    fresh_connections: int
+    tls_handshakes_started: int
+    tls_handshakes_completed: int
+    reused_requests: int
+
+
+@dataclass(frozen=True, slots=True)
 class WorkerIngressProbeResult:
     origin: str
     tls: bool
@@ -152,6 +166,11 @@ class WorkerIngressProbeResult:
     routes: tuple[RouteProbe, ...]
     runtime_canary: RuntimeCanary | None = None
     probe_failure: CanaryFailure | None = None
+    http_connections: tuple[ProbeHttpConnections, ...] = ()
+
+    def http_connections_as_result(self) -> list[dict[str, str | int]]:
+        """Return counts in address attempt order without exposing addresses."""
+        return [asdict(counts) for counts in self.http_connections]
 
     @property
     def reachable(self) -> bool:
@@ -271,20 +290,28 @@ async def _check_route(
         nonlocal phase, tls_started, handshake_completed, connection_reused, raw_stream
         if event == "connection.connect_tcp.started":
             phase = "tcp_connect"
+            if progress is not None:
+                progress.fresh_connections += 1
         elif event == "connection.connect_tcp.complete":
             raw_stream = cast("AsyncNetworkStream", info["return_value"])
         elif event == "connection.start_tls.started":
             phase = "tls_handshake"
             tls_started = True
+            if progress is not None:
+                progress.tls_handshakes_started += 1
         elif event == "connection.start_tls.complete":
             handshake_completed = True
             raw_stream = None  # The pool now owns the TLS connection.
+            if progress is not None:
+                progress.tls_handshakes_completed += 1
         elif event == "http11.send_request_headers.started":
             phase = "request_write"
             # A direct HTTPS request can send headers without its own TLS
             # trace only when httpcore has assigned an existing connection.
             handshake_completed = True
             connection_reused = not tls_started
+            if connection_reused and progress is not None:
+                progress.reused_requests += 1
         elif event == "http11.receive_response_headers.started":
             phase = "response_headers"
         else:
@@ -314,7 +341,19 @@ async def _check_route(
             elif response.headers.get(PROBE_HEADER.decode()) != nonce:
                 kind = "invalid_probe_nonce"
             else:
-                return RouteProbe(method, route, status, True)
+                phase = "response_body"
+                if progress is not None:
+                    progress.inflight[tracked] = describe(progress.inflight[tracked])
+                # Consume HTTP framing to release the socket. Count raw bytes
+                # without retaining chunks or invoking content decompression.
+                size = 0
+                async for chunk in response.aiter_raw():
+                    size += len(chunk)
+                    if size > _MAX_PROBE_BODY_BYTES:
+                        break
+                else:
+                    return RouteProbe(method, route, status, True)
+                kind = "response_body_too_large"
             failure = describe(CanaryFailure("ingress_http", kind, status, address_family=family))
             return RouteProbe(method, route, status, False, error_class=kind, failure=failure)
     except asyncio.CancelledError:
@@ -466,6 +505,20 @@ async def probe_public_worker_ingress(origin: str) -> WorkerIngressProbeResult:
     host = urlsplit(origin).hostname
     if host is None or origin != f"https://{host}":
         raise ValueError("A dedicated HTTPS origin is required")
+    attempts: list[tuple[int, _ProbeProgress]] = []
+    result = await _probe_public_addresses(origin, host, attempts)
+    return replace(result, http_connections=tuple(
+        ProbeHttpConnections(
+            f"ipv{family}", progress.fresh_connections, progress.tls_handshakes_started,
+            progress.tls_handshakes_completed, progress.reused_requests,
+        )
+        for family, progress in attempts
+    ))
+
+
+async def _probe_public_addresses(
+    origin: str, host: str, attempts: list[tuple[int, _ProbeProgress]],
+) -> WorkerIngressProbeResult:
     unavailable = WorkerIngressProbeResult(origin, False, False, False, ())
     result = unavailable
     unavailable_families: dict[int, WorkerIngressProbeResult] = {}
@@ -478,8 +531,9 @@ async def probe_public_worker_ingress(origin: str) -> WorkerIngressProbeResult:
             stage = "ingress_http"
             for address in addresses:
                 progress = _ProbeProgress()
-                candidate = await _probe_address(origin, host, address, progress=progress)
                 family = ipaddress.ip_address(address).version
+                attempts.append((family, progress))
+                candidate = await _probe_address(origin, host, address, progress=progress)
                 if candidate.routes and candidate.routes[0].connect_unavailable:
                     if family in reachable_families:
                         return candidate

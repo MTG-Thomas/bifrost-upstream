@@ -765,3 +765,37 @@ volumes, networks, trial image tags, scratch and secret files were removed
 and checked for absence.
 
 See the [sanitized combined hosted receipt](../../results/cloudflare-scaleout-combined-hosted.json).
+
+## Combined Hosted Re-run
+
+**November 22, 2026 UTC · Spike source `bb05eb595`**
+
+The two prepared manifests matched their recorded hashes and their
+distinct deployment digests. Both offline production-image loader
+checks and all 12 packaging tests passed. The Compose project started
+with 9 GiB available and no other Bifrost test stack running.
+
+| Item | Result | Evidence |
+| --- | --- | --- |
+| 1. Offline release verification | Pass | The original prepared release pair used the qualified bundle and distinct deployment digests. |
+| 2. Connect and worker preflight | Stop | Connect returned HTTP 200 and admission remained closed. The sole Compose worker reported `remote_launcher`. Its preflight recorded 29 route checks and failed on `GET /api/forms/{form_id}` with an IPv4 `ConnectTimeout` in `tls_handshake`. The connection was new and the handshake incomplete. No symbolic errno was returned. Enable and its canary were not submitted. |
+| 3–4. Latency, slot burst and cancel | Not run | The preflight stop prevented workload submission. No launcher incarnation or held slot was recorded. |
+| 5. Reconcile, active Scale In and Disconnect | Disconnect passed | Reconcile and Scale In were skipped at the stop. Disconnect completed on the first submission and status returned no installation. |
+| 6–8. Managed Tunnel, rotation and Upgrade | Not run | The Existing HTTPS preflight stopped the re-run before either later leg. |
+| 9. Spend and independent teardown | Teardown verified. Ratio unavailable. | Bifrost displayed $0.00 for this re-run. No Workers or Durable Object namespaces were provisioned for an attributable analytics comparison. |
+
+The approved carry-in was approximately $0.000191 of modeled Bifrost
+usage. The cumulative observed estimate remained below the $0.50 target
+and $1.00 hard stop. There was no workload or canary spend to allocate.
+Provider-billed tunnel costs were unavailable.
+
+After Disconnect, readback showed zero resource journal rows, live launchers,
+held slots, active scopes, staged credentials, and retained credential
+ciphertexts. Exact provider reads and independent inventory confirmed
+the temporary account token and DNS record were absent. Both authoritative
+DNS servers confirmed the route was gone. The tunnel deletion record
+showed zero live sessions. The connector process, project containers,
+volumes, networks, trial image tags, scratch and secret files were
+removed and checked for absence.
+
+See the [sanitized re-run receipt](../../results/cloudflare-scaleout-combined-hosted-rerun.json).
