@@ -20,6 +20,12 @@ remaining. Preset B requires meter requalification before release.
 [Original result](../../results/launcher-lifetime-ct128.json) ·
 [Deadline-aware result](../../results/launcher-lifetime-ct128-requalification.json)
 
+The CT128 hour-long run completed 192 workflows with one signed reconnect
+and retired 350 ms after its pinned deadline. All launcher meters had
+headroom. The 120 s control also passed. Workerd RSS peaked at 823 MiB across
+the local process. The hosted run will measure individual isolates.
+[3,600 s CT128 receipt](../../results/launcher-lifetime-3600-ct128.json)
+
 ## Usage-only limit
 
 The pilot used a previous conservative fleet projection. The monthly

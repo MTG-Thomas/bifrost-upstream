@@ -491,8 +491,11 @@ validated conditional NOT NULL constraint for Workers deadline and lifetime
 columns. Containers share the reservation table and use their own timestamps.
 Remove the legacy executor clock for managed Workers in that follow-up.
 
-The [CT128 receipt](../../results/launcher-lifetime-ct128-requalification.json)
-records the local deadline runs and the change in the meter inventory.
+The [3,600 s CT128 receipt](../../results/launcher-lifetime-3600-ct128.json)
+records the hour-long soak and 120 s control, including cumulative CPU,
+process RSS, meter samples, and both seals. The
+[900 s CT128 receipt](../../results/launcher-lifetime-ct128-requalification.json)
+records the prior validation and the change in the meter inventory.
 
 #### Hosted SDK Measurement
 
