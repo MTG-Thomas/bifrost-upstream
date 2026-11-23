@@ -78,8 +78,16 @@ test("a prepared reservation tolerates a bounded lag in the actor clock", (t) =>
     assert.equal(scope.authorizeStart(request.uid, instance, withinSkew, request.deadline).status, "authorized");
     assert.equal(scope.chargeRelay(request.uid, instance, "ingress", 10, withinSkew), true);
     assert.equal(scope.chargeRelay(request.uid, instance, "ingress", 10, request.deadline), false);
-    assert.equal(scope.observeStart(request.uid, instance, request.reservedAt).status, "observed");
-    assert.equal(scope.closeStart(request.uid, instance, 10_001).authorizedAt, request.reservedAt);
+    const placementStartedAt = 9500;
+    assert.equal(scope.observeStart(request.uid, instance, tooEarly).status, "conflict");
+    assert.equal(scope.observeStart(request.uid, instance, placementStartedAt).status, "observed");
+    assert.equal(scope.closeStart(request.uid, instance, 6499).status, "conflict");
+    const closed = {
+        status: "closed", instance, authorizedAt: request.reservedAt, closedAt: request.reservedAt,
+        startedAt: placementStartedAt, outboundBytes: 0, meterComplete: false,
+    };
+    assert.deepEqual(scope.closeStart(request.uid, instance, 8000), closed);
+    assert.deepEqual(registry().closeStart(request.uid, instance, 12_000), closed);
 });
 
 test("unconfirmed instances retain the tenant seat and the last fleet seat is exclusive", async () => {
@@ -105,7 +113,6 @@ test("a reset with a pending start cannot issue another start or close its fence
     assert.equal(registry().authorizeStart(request.uid, instance, 101, request.deadline + 1).status, "conflict");
     assert.equal(registry().authorizeStart(request.uid, instance, request.deadline, request.deadline).status, "closed");
     assert.equal(registry().closeStart(request.uid, instance, 105).status, "pending");
-    assert.equal(registry().observeStart(request.uid, instance, 99).status, "conflict");
     assert.equal(registry().observeStart(request.uid, instance, 104).status, "observed");
     assert.equal(registry().observeStart(request.uid, instance, 105).status, "conflict");
     const closed = {

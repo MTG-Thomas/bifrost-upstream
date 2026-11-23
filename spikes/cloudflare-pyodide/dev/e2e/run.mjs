@@ -693,9 +693,6 @@ async function containersChecks() {
       `BIFROST_WORKER_CAPACITY_TOKEN=${vmToken}`,
       `BIFROST_CLOUDFLARE_CAPACITY_URL=${hosted?.workersUrl ?? endpoint + '/workers'}`,
       `BIFROST_CLOUDFLARE_CAPACITY_TOKEN=${config.phase6.token}`,
-      `BIFROST_CLOUDFLARE_CONTAINERS_URL=${expiry ? endpoint + '/containers' : hosted?.containersUrl ?? endpoint + '/containers'}`,
-      'BIFROST_CLOUDFLARE_CONTAINERS_SCOPE=containers',
-      `BIFROST_CLOUDFLARE_CONTAINERS_TOKEN=${containersToken}`,
       '',
     ].join('\n'));
     const content = '--no-index\npackaging\n';

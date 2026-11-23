@@ -185,7 +185,7 @@ export class ScopeRegistry {
         return this.storage.transactionSync(() => {
             const start = this.sql.exec("SELECT * FROM start_fences WHERE uid = ?", uid).toArray()[0];
             if (!start || start.instance !== instance || !Number.isSafeInteger(startedAt)
-                || startedAt < start.authorized_at
+                || startedAt < start.authorized_at - RESERVATION_CLOCK_SKEW_MS
                 || (start.closed_at !== null && start.observed_at === null)) return { status: "conflict" };
             if (start.observed_at !== null) {
                 return { status: start.observed_at === startedAt ? "observed" : "conflict" };
@@ -200,12 +200,14 @@ export class ScopeRegistry {
             const start = this.sql.exec("SELECT * FROM start_fences WHERE uid = ?", uid).toArray()[0];
             if (!start || start.instance !== instance || !Number.isSafeInteger(now)) return { status: "conflict" };
             if (start.observed_at === null) return { status: "pending" };
-            if (now < start.observed_at) return { status: "conflict" };
+            if (now < start.observed_at - RESERVATION_CLOCK_SKEW_MS) return { status: "conflict" };
+            // Keep the durable closure causally after authorization and placement.
+            const closedAt = start.closed_at ?? Math.max(now, start.observed_at, start.authorized_at);
             if (start.closed_at === null) {
-                this.sql.exec("UPDATE start_fences SET closed_at = ? WHERE uid = ?", now, uid);
+                this.sql.exec("UPDATE start_fences SET closed_at = ? WHERE uid = ?", closedAt, uid);
             }
             return {
-                status: "closed", instance, authorizedAt: start.authorized_at, closedAt: start.closed_at ?? now,
+                status: "closed", instance, authorizedAt: start.authorized_at, closedAt,
                 startedAt: start.observed_at, outboundBytes: start.outbound, meterComplete: false,
             };
         });
