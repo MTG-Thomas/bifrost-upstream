@@ -278,8 +278,11 @@ inventory installation-local and outside portable manifests.
    supervisor exits when authority expires, and the provider enforces a
    one-shot hard-stop deadline. Arm the provider inactivity backup after
    start and on DO reinitialization for a still-running instance. Its
-   deadline follows both the absolute alarm and the full local idle and
-   drain window. The launcher owns graceful idle stop.
+   deadline follows the full local idle and drain window. Cloudflare caps
+   inactivity at six hours. A long-lived pin schedules a wake at most three
+   hours out to renew the backup without moving the absolute deadline. The
+   launcher owns graceful idle stop. Hosted qualification must confirm that
+   this renewal preserves a busy workflow across an inactivity window.
    Completion of a bounded startup/exit monitor, lack of traffic and
    reset have distinct meanings. At idle, stop DO pings and long-lived
    monitoring that holds the DO active. Observe provider instances via

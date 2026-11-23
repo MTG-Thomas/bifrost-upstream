@@ -13,6 +13,8 @@ const HTTP_REQUEST_BODY_FLOOR = 256;
 // observation bound. Hosted qualification owns validation of that bound.
 const BOOT_OBSERVATION_MS = 60_000;
 const LAUNCHER_DRAIN_GRACE_MS = 300_000;
+// https://developers.cloudflare.com/containers/api/durable-object-container/#setinactivitytimeout
+const PROVIDER_INACTIVITY_MAX_MS = 21_600_000;
 // Permit a small difference between the API's database clock and the DO's
 // clock at reservation. The pinned start and expiry deadlines stay absolute.
 const RESERVATION_CLOCK_SKEW_MS = 3000;
@@ -445,7 +447,7 @@ export class ContainerInstanceLifecycle {
                 if (Date.now() >= pin.startDeadline) return { status: "closed" };
                 // Install the exact HTTPS intercept before crossing the launch fence.
                 await this.ctx.container.interceptOutboundHttps(new URL(this.origin).hostname, this.intercept);
-                await this.ctx.storage.setAlarm(pin.deadline);
+                await this.#scheduleAlarm(pin.deadline);
                 await this.ctx.storage.put("start-ticket", { uid: pin.uid, deadline: pin.deadline });
             }
             const now = Date.now();
@@ -472,10 +474,14 @@ export class ContainerInstanceLifecycle {
     }
 
     async #armProviderInactivity(deadline) {
-        // Local idle/drain decides graceful stop. This backup cannot preempt
-        // a busy workflow before the independently armed absolute alarm.
+        // Local idle/drain decides graceful stop. Long-lived pins wake their
+        // actor before the provider's maximum inactivity window can elapse.
         const delay = Math.max(this.idleMs + LAUNCHER_DRAIN_GRACE_MS, deadline - Date.now()) + 1000;
-        await this.ctx.container.setInactivityTimeout(delay);
+        await this.ctx.container.setInactivityTimeout(Math.min(delay, PROVIDER_INACTIVITY_MAX_MS));
+    }
+
+    async #scheduleAlarm(deadline) {
+        await this.ctx.storage.setAlarm(Math.min(deadline, Date.now() + PROVIDER_INACTIVITY_MAX_MS / 2));
     }
 
     async closeAbsent(uid, observedAbsentAt) {
@@ -506,8 +512,12 @@ export class ContainerInstanceLifecycle {
         return this.ctx.blockConcurrencyWhile(async () => {
             const ticket = await this.ctx.storage.get("start-ticket");
             if (!ticket || ticket.destroyed) return;
-            if (Date.now() < ticket.deadline) await this.ctx.storage.setAlarm(ticket.deadline);
-            else await this.#destroy(ticket);
+            if (Date.now() >= ticket.deadline) {
+                await this.#destroy(ticket);
+            } else {
+                if (this.ctx.container.running) await this.#armProviderInactivity(ticket.deadline);
+                await this.#scheduleAlarm(ticket.deadline);
+            }
         });
     }
 }

@@ -415,8 +415,48 @@ test("the instance lifecycle pins the intercept and launch options, then stops a
     t.mock.timers.setTime(slot.deadline);
     await controller().alarm();
     assert.deepEqual(await controller().stop(slot.uid), { status: "pending" });
-    assert.deepEqual(events, ["intercept", "start", "idle", "idle", "destroy"]);
+    assert.deepEqual(events, ["intercept", "start", "idle", "idle", "idle", "destroy"]);
     assert.equal(registry().closeStart(slot.uid, actor, Date.now()).status, "pending");
+});
+
+test("a long-lived placement renews provider inactivity before six hours and hard-stops at its deadline", async (t) => {
+    t.mock.timers.enable({ apis: ["Date"], now: 100 });
+    const hour = 3_600_000;
+    const ticket = { uid: "b".repeat(32), deadline: 100 + 8 * hour };
+    const delays = [];
+    const alarms = [];
+    let running = true;
+    const lifecycle = new ContainerInstanceLifecycle({
+        id: "b".repeat(64), blockConcurrencyWhile: async (action) => action(),
+        storage: {
+            get: async () => ticket,
+            setAlarm: async (at) => alarms.push(at),
+            put: async (_key, value) => assert.equal(value.destroyed, true),
+        },
+        container: {
+            get running() { return running; },
+            async setInactivityTimeout(ms) { delays.push(ms); },
+            async destroy() { running = false; },
+        },
+    }, {}, {
+        origin: "https://ingress.example.test", release: "d".repeat(64), intercept: {},
+        image: `registry.cloudflare.com/${"a".repeat(32)}/bifrost-${"b".repeat(32)}-r1@sha256:${"c".repeat(64)}`,
+    });
+    await lifecycle.restore();
+    await lifecycle.alarm();
+    assert.deepEqual(delays, [6 * hour, 6 * hour]);
+    assert.deepEqual(alarms, [100 + 3 * hour]);
+    t.mock.timers.setTime(alarms.at(-1));
+    await lifecycle.alarm();
+    assert.equal(delays.at(-1), 5 * hour + 1000);
+    assert.equal(alarms.at(-1), 100 + 6 * hour);
+    t.mock.timers.setTime(alarms.at(-1));
+    await lifecycle.alarm();
+    assert.equal(alarms.at(-1), ticket.deadline);
+    assert.equal(running, true);
+    t.mock.timers.setTime(ticket.deadline);
+    await lifecycle.alarm();
+    assert.equal(running, false);
 });
 
 test("a registry authorization survives a local deadline advance; a throwing start can close absent", async (t) => {
