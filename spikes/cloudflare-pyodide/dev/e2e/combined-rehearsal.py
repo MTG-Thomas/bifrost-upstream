@@ -766,9 +766,18 @@ async def {name}():
             assert re.fullmatch("[a-f0-9]{12,64}", worker_hostname)
             self.primary_hold(worker_hostname=worker_hostname)
             self.submit("replacement", "third")
-            new = self.settle("replacement")
-            assert new["revision"] == new_revision
-            wait("replacement route terminal ACK", lambda: self.terminal_ack(new), 10)
+            replacement_started = time.monotonic()
+            try:
+                new = self.settle("replacement")
+                assert new["revision"] == new_revision
+                wait("replacement route terminal ACK", lambda: self.terminal_ack(new), 10)
+            except (RuntimeError, AssertionError):
+                try:
+                    self.record_replacement_settlement(replacement_started)
+                except (RuntimeError, OSError, ValueError, AssertionError, subprocess.SubprocessError) as error:
+                    evidence("replacement-settlement-readback-error", {"type": type(error).__name__})
+                raise
+            self.record_replacement_settlement(replacement_started)
             self.release_primary()
             evidence_fields.update(admission_fenced=True, same_control_connection=True, successor_scheduler_lease=True,
                                    worker_rebound_to_successor=True,
@@ -777,6 +786,40 @@ async def {name}():
                                        checkpoint["drained"], min(row["observed"] for row in replacement),
                                    ), replacement_signed_canary=True, replacement_execution=True)
         evidence("upgrade", evidence_fields)
+
+    def record_replacement_settlement(self, started):
+        # Take the readback before releasing the primary or disconnecting.
+        if "managementToken" in self.cfg:
+            return
+        execution = str(UUID(self.runs["replacement"]))
+        wire = self.provider("/local/evidence")
+        dispatches = [item for item in wire if item["kind"] == "dispatch" and item["execution"] == execution]
+        timelines = []
+        for dispatch in dispatches:
+            terminals = [item for item in wire if item["kind"] == "result" and item["route"] == dispatch["route"]]
+            terminal_ids = {item["id"] for item in terminals}
+            acks = [item for item in wire if item["kind"] == "ack" and item["id"] in terminal_ids]
+            timelines.append({
+                "terminal_outcomes": [item["attempt"] for item in terminals],
+                "dispatch_to_terminal_ms": [item["observedMs"] - dispatch["observedMs"] for item in terminals],
+                "dispatch_to_ack_ms": [item["observedMs"] - dispatch["observedMs"] for item in acks],
+            })
+        slot = self.slot_rows(["replacement"]).get("replacement")
+        state = self.send("/api/executions/" + execution, method="GET")
+        pending = self.sql(f"""SELECT coalesce((SELECT json_build_object(
+            'lane', execution_lane, 'assigned', assigned_worker_id IS NOT NULL,
+            'workers_approved', cloudflare_revision IS NOT NULL) FROM work_dispatches
+            WHERE subject_id='{execution}'), 'null')""")
+        evidence("replacement-settlement", {
+            "observed_seconds": round(time.monotonic() - started, 3),
+            "execution_status": state["status"],
+            "dispatch": pending,
+            "slot": None if slot is None else {
+                "revision": slot["revision"], "sent": slot["sent"], "released": bool(slot["released"]),
+                "entry": bool(slot["entry"]), "claim_present": bool(slot["claim"]),
+            },
+            "routes": timelines,
+        })
 
     def meter(self):
         result = self.install()["spend"]

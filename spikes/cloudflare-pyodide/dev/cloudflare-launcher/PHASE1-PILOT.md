@@ -619,6 +619,17 @@ Miniflare dependencies, and the same two pinned release packages. Build
 both images as in item 1 and save each loader's release version and
 deployment digest in `.release-1.checked` and `.release-2.checked`.
 Check the host start condition before launching the stack.
+Retain the driver output and logs from both API containers through teardown.
+The driver emits replacement execution, dispatch, slot and per-route
+terminal and ACK readback before releasing the primary on success or
+settlement failure.
+
+Mount the verified Pyodide bundle directory read-only into the local
+provider and set `REHEARSAL_PYODIDE_CACHE_DIR` to that path. Stage the
+qualified bundle as `pyodide_314.0.6_2026-08-17_6.capnp.bin`. The provider
+checks the pinned SHA-256 before opening its listeners and requires the
+cache file again before workerd starts. Keep the provider attached to the
+internal rehearsal network.
 
 Use the verified release's preset B suggestion for both connections. The
 driver checks the $75 policy, three four-slot launchers, nine installation
