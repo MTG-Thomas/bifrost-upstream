@@ -67,7 +67,9 @@ The verified run used archive `7e1f7c846` on CT128, project
 Use a fresh private `combined-local-*` archive on CT128 and the local
 release and Compose setup in [the combined Workers rehearsal](../cloudflare-launcher/PHASE1-PILOT.md).
 Use Node 26 and Buildx 0.21.3. Confirm the host is idle and has at least
-8 GB available before starting the stack.
+8 GB available before starting the stack. Use a disposable Compose project
+named `bifrost-test-containers-*` and run the driver on the Docker host with
+`nsenter` and `iptables` available.
 
 Build the Linux child from the same local API image and label it with
 the source revision in that image's Workers release manifest. The pinned
@@ -102,7 +104,11 @@ placement readback is separate from the registry response.
 The raw TCP challenge uses a private peer on the API's internal Docker
 network. The API connects to it on port 8443 before giving its address to
 the guest. This keeps the raw socket separate from the TLS intercept on
-port 443, which can accept a handshake before it sees the request.
+port 443, which can accept a handshake before it sees the request. The
+local Docker scheduler permits the raw peer connection in this setup. The
+driver supplies the provider-side denial with an input rule inside the
+disposable peer namespace. The API can still reach the peer. The guest must
+observe a real failed connection. Hosted raw TCP denial remains unqualified.
 
 The driver requires a successful native import, a subprocess result and an
 SDK request on a Container worker. It waits for idle settlement, verifies

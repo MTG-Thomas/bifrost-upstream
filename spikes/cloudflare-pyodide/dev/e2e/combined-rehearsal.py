@@ -812,8 +812,30 @@ async def {name}(case: str, hold: int):
 
 
 class ContainerRehearsal(Rehearsal):
+    def isolate_probe_peer(self):
+        """Supply the local scheduler's raw socket denial in a disposable namespace."""
+        peer_id = subprocess.check_output(self.compose + ["ps", "-q", "container-probe-peer"], text=True).strip()
+        peer, api = json.loads(subprocess.check_output(["docker", "inspect", peer_id, self.api_container]))
+        network = self.cfg["network"]
+        assert self.cfg["project"].startswith("bifrost-test-containers-")
+        assert peer["Config"]["Labels"]["com.docker.compose.project"] == self.cfg["project"]
+        assert peer["Config"]["Labels"]["com.docker.compose.service"] == "container-probe-peer"
+        assert set(peer["NetworkSettings"]["Networks"]) == {network}
+        assert not peer["HostConfig"]["PortBindings"] and peer["State"]["Running"]
+        address = str(ipaddress.IPv4Address(api["NetworkSettings"]["Networks"][network]["IPAddress"]))
+        with open(f"/proc/{peer['State']['Pid']}/ns/net", "rb") as namespace:
+            fd = namespace.fileno()
+            assert os.fstat(fd).st_ino != os.stat("/proc/self/ns/net").st_ino
+            subprocess.run([
+                "nsenter", f"--net=/proc/self/fd/{fd}", "--", "iptables", "-I", "INPUT",
+                "-p", "tcp", "--dport", "8443", "!", "-i", "lo", "!", "-s", address,
+                "-j", "REJECT", "--reject-with", "tcp-reset",
+            ], check=True, pass_fds=(fd,))
+        evidence("container-raw-tcp-peer", {"local_provider_boundary": True})
+
     def run(self):
         assert "containers" in self.cfg and "managementToken" not in self.cfg
+        self.isolate_probe_peer()
         apps_path = "/client/v4/accounts/" + self.account + "/containers/applications"
         images_path = "/local/containers-registry"
         assert not self.scripts() and self.provider(apps_path) == [] and self.provider(images_path) == []
