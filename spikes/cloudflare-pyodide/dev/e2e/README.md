@@ -99,6 +99,10 @@ and records the registry mutations locally. Pinned Miniflare runs the
 uploaded registry, checks signed start and stop requests, and uses Docker
 to run the paired Linux image through the exact worker ingress. Docker
 placement readback is separate from the registry response.
+The raw TCP challenge uses a private peer on the API's internal Docker
+network. The API connects to it before giving its address to the guest.
+Miniflare's proxy can reach the Docker host gateway, so the harness uses
+the private peer as its local isolation witness.
 
 The driver requires a successful native import, a subprocess result and an
 SDK request on a Container worker. It waits for idle settlement, verifies

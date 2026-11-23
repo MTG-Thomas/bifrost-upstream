@@ -84,10 +84,6 @@ def prepare(root, project, image, *, initial_tunnel_config, lag_worker_namespace
         "workerNamespaceLagMs": 10_000 if lag_worker_namespace else 0,
     }
     if containers is not None:
-        # The alternate raw-TCP challenge has a real local listener. Fail
-        # before activation if the private bridge address is occupied.
-        with socket.socket() as listener:
-            listener.bind((address, 443))
         proxy_alias = project + "-containers-proxy:local"
         subprocess.run(["docker", "tag", containers["proxyId"], proxy_alias], check=True)
         cfg["containers"] = {**containers, "proxy": proxy_alias}
@@ -144,15 +140,31 @@ signal.pause()
       - ./.rehearsal/edge.pem:/rehearsal/edge.pem:ro
       - ./spikes/cloudflare-pyodide/dev/e2e/combined-site:/rehearsal-site:ro
 """
+    api_dependencies = probe_peer = ""
     if containers_image is not None:
         stub_env += '      REHEARSAL_CONTAINERS: "1"\n'
         mounts += "      - ./.rehearsal/config.json:/rehearsal/containers.json:ro\n"
         mounts += ("      - ./deploy/capacity/cloudflare:/rehearsal-container-bundle:ro\n")
+        # A sibling on the internal API network is reachable from Bifrost.
+        # Miniflare's Docker proxy can reach the host gateway directly, so a
+        # host listener cannot stand in for an isolated alternate peer.
+        api_dependencies = """    depends_on:
+      container-probe-peer:
+        condition: service_healthy
+"""
+        probe_peer = """  container-probe-peer:
+    image: node:26.13.1-bookworm-slim
+    pull_policy: never
+    command: [node, -e, "require('node:net').createServer(socket => socket.end()).listen(443, '0.0.0.0')"]
+    healthcheck:
+      test: [CMD, node, -e, "require('node:net').connect(443, '127.0.0.1').on('connect', function () { this.end() })"]
+      interval: 1s
+"""
     overlay = f"""services:
   api:
     pull_policy: never
     environment:{stub_env}    volumes:{mounts}    stop_grace_period: 15s
-  worker:
+{api_dependencies}  worker:
     pull_policy: never
     environment:{stub_env}    volumes:{mounts}    stop_grace_period: 15s
   cloudflare-connector:
@@ -160,7 +172,7 @@ signal.pause()
     volumes:
       - ./.rehearsal/connector.json:/rehearsal/connector.json:ro
       - ./.rehearsal/cloudflared:/usr/local/bin/cloudflared:ro
-networks:
+{probe_peer}networks:
   default:
     external: true
     name: {network}

@@ -641,14 +641,10 @@ const api = createServer((req, res) => provider(req, res).catch((error) => {
   console.error(error.name, error.message);
   res.writeHead(500).end();
 }));
-// The challenge deliberately dials this known-reachable private address
-// from the API before checking that a raw socket in the guest is denied.
-const alternate = config.containers && createServer((_req, res) => res.writeHead(204).end());
 await Promise.all([
   new Promise((resolve) => relay.listen(relayOnly ? config.relayPort : 0, '127.0.0.1', resolve)),
   edge && new Promise((resolve) => edge.listen(config.edgePort, config.address, resolve)),
   new Promise((resolve) => api.listen(config.providerPort, relayOnly ? '127.0.0.1' : config.address, resolve)),
-  alternate && new Promise((resolve) => alternate.listen(443, config.address, resolve)),
 ]);
 writeFileSync(config.ready, 'ready\n');
 
