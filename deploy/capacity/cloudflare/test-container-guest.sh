@@ -35,7 +35,7 @@ mounts=(
     --mount "type=bind,src=$PWD/api/bifrost,dst=/app/bifrost,readonly"
     --mount "type=bind,src=$PWD/api/qualification/cloudflare_containers,dst=/app/qualification,readonly"
 )
-for scenario in isolation cancel; do
+for scenario in isolation cancel launcher; do
     docker run --pull=never --rm --network=none "${mounts[@]}" \
         --entrypoint /usr/local/bin/python "$tag" /app/qualification/docker_guest.py "$scenario"
 done

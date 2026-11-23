@@ -935,10 +935,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
                 logger.warning(f"Error closing broadcaster: {e}")
 
 
-async def execute_service(
-    request: ExecutionRequest,
-    start_time: datetime | None = None,
-) -> ExecutionResult:
+async def execute_service(request: ExecutionRequest) -> ExecutionResult:
     """Run one supervised @service attempt to a terminal outcome.
 
     Service-mode semantics (vs one-shot workflows):
@@ -957,7 +954,7 @@ async def execute_service(
 
     cfg = request.service
     assert cfg is not None
-    start_time = start_time or datetime.now(timezone.utc)
+    start_time = datetime.now(timezone.utc)
     func = request.func
     if func is None:
         raise ValueError("Service execution requires request.func")

@@ -239,6 +239,7 @@ class Child:
     growth_peak: int = 0
     current_growth: int = 0
     stopping: bool = False
+    result_received: bool = False
     sampler: CPUSampler | None = None
     terminal_reason: tuple[str, str] | None = None
     active_execution: dict[str, Any] | None = None
@@ -801,7 +802,7 @@ class Launcher:
 
     def result_ready(self, route_id: str, *, guest_exited: bool = False) -> None:
         child = self.children.get(route_id)
-        if child is None or (self.container_guest is not None and child.stopping):
+        if child is None or child.result_received or (self.container_guest is not None and child.stopping):
             return
         try:
             result = child.result.get_nowait()
@@ -816,6 +817,7 @@ class Launcher:
         except (EOFError, OSError):
             result = self.failure(child, "ProcessCrashError", "Child exited without a result")
         if asyncio.get_running_loop().remove_reader(child.result.fileno()):
+            child.result_received = True
             self.task(self.finish(child, result))
 
     @staticmethod
@@ -893,7 +895,7 @@ class Launcher:
     async def terminate(self, route_id: str, error_type: str, error: str,
                         grace: float | None = None) -> None:
         child = self.children.get(route_id)
-        if child is None or child.stopping:
+        if child is None or child.stopping or child.result_received:
             return
         child.stopping = True
         if child.service is None or error_type == "MemoryLimitExceeded":
@@ -969,7 +971,7 @@ class Launcher:
                                           "memory_peak_bytes": child.growth_peak,
                                           "peak_cpu_cores": child.sampler.peak_cpu_cores,
                                           "rss_bytes": rss}
-                if child.stopping:
+                if child.stopping or child.result_received:
                     continue
                 reason = None
                 if child.timeout and time.monotonic() - child.started > child.timeout:
@@ -1007,7 +1009,7 @@ class Launcher:
         ):
             return
         candidates = [child for child in self.children.values()
-                      if not child.stopping and child.terminal_reason is None]
+                      if not child.stopping and not child.result_received and child.terminal_reason is None]
         if not candidates:
             return
         child = max(candidates, key=lambda item: item.current_growth)

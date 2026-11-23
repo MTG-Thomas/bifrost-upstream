@@ -2988,6 +2988,12 @@ async def test_disconnect_preserves_unresolved_container_cleanup(db_session, ins
         db_session.add(another_pin)
         await db_session.flush()
         assert await _container_scope_cooldown(db_session, recovered) is None
+        trial_pin.container_stopped_at = verdict.retry_at + timedelta(seconds=1)
+        trial.state = "retired"
+        recovered.now = trial_pin.container_stopped_at
+        await db_session.flush()
+        pending = await _container_scope_cooldown(db_session, recovered)
+        assert pending is not None and pending.code == "CF_CONTAINERS_COOLDOWN"
         await db_session.delete(another_pin)
         await db_session.delete(another)
         await db_session.delete(trial_pin)

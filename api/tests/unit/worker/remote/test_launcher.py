@@ -211,6 +211,24 @@ async def test_container_result_rejects_invalid_data_or_a_guest_crash(managed_la
 
 
 @pytest.mark.asyncio
+async def test_delivered_container_result_wins_over_late_cancel(managed_launcher, monkeypatch) -> None:
+    launcher, guest = managed_launcher
+    child = tracked_container_child(launcher)
+    child.result.get_nowait.return_value = {"execution_id": child.execution_id, "success": True}
+    monkeypatch.setattr(asyncio.get_running_loop(), "remove_reader", Mock(return_value=True))
+    terminal = AsyncMock()
+    monkeypatch.setattr(launcher, "send_terminal", terminal)
+
+    launcher.result_ready(child.route_id)
+    assert child.route_id in launcher.children
+    await launcher.terminate(child.route_id, "CancelledError", "Cancelled")
+    await asyncio.gather(*launcher._tasks)
+
+    assert terminal.await_args.args[0]["result"]["success"] is True
+    guest.stop.assert_awaited_once_with(grace=0)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ["finish", "terminate"])
 async def test_failed_guest_stop_disarms_reader_and_leaves_terminal_unresolved(managed_launcher, monkeypatch, operation) -> None:
     launcher, guest = managed_launcher

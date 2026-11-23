@@ -250,12 +250,12 @@ async def _container_scope_cooldown(
     retry_at = closed_at + CONTAINERS_PLACEMENT_COOLDOWN
     if capacity.now < retry_at:
         return ContainerAdmissionRefused("CF_CONTAINERS_COOLDOWN", retry_at)
-    enrolled, pending = (await db.execute(select(
-        func.bool_or(worker.remote_hello_sequence > 0), func.bool_or(pin.container_stopped_at.is_(None)),
+    enrolled = await db.scalar(select(
+        func.bool_or(worker.remote_hello_sequence > 0),
     ).select_from(pin).join(worker, worker.id == pin.worker_id).where(
-        *scope, pin.container_reserved_at > closed_at,
-    ))).one()
-    if pending and not enrolled:
+        *scope, pin.container_reserved_at > closed_at, pin.container_stopped_at.is_(None),
+    ))
+    if enrolled is False:
         return ContainerAdmissionRefused("CF_CONTAINERS_COOLDOWN")
     return None
 
