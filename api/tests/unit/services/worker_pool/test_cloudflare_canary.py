@@ -60,7 +60,7 @@ async def test_canary_records_only_the_validated_failure(
     else:
         request.return_value = submitted
     session = SimpleNamespace(lease=SimpleNamespace(worker_id=worker, session_generation=2),
-                              bridge=SimpleNamespace(request=request), reconciliation_tasks=set())
+                              bridge=SimpleNamespace(request=request, containers=False), reconciliation_tasks=set())
 
     RemoteControlHost()._start_capacity_canary(session)
     await asyncio.gather(*session.reconciliation_tasks)

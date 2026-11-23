@@ -490,7 +490,7 @@ async def test_managed_linux_hello_is_bound_to_its_incarnation_key_and_release(m
         "event": "hello", "hello": signed, "sample": {"current": 1, "limit": 100},
         "version": "test-build", "credential_protocol": 2, "handlers": [["workflow.execute", 1]],
     })
-    pin = object()
+    pin = SimpleNamespace(canary_job_id=None)
     db = AsyncMock()
     db.scalar.return_value = None if mode == "unknown-reservation" else pin
 
