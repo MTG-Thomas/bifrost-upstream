@@ -194,3 +194,23 @@ removed node volumes contained the six imported images. The kubeconfig,
 binary, archive, local fixture cache copy, and scratch directory were removed.
 Docker reported 84 GiB free after teardown. The rehearsal made zero hosted
 Cloudflare requests and incurred zero model spend.
+
+### First Activate with the readiness wait
+
+The follow-up tested `2351e6d1934b405912d7b2e3f03b4461b5a3ca83` on a fresh Kind v0.24.0 node
+running Kubernetes v1.31.0, with one API replica and one warm Job worker.
+The adapter validated all 23 rendered resources and used the local provider
+fixture with node egress isolated. One Activate request created one Enable
+job and one connector credential. Enable succeeded on attempt one in
+51.5 seconds and recorded `remote_launcher`. The Kubernetes Secret advanced,
+and its connector child started about 38.8 seconds after the last patch.
+The provider reported one attached session and the connector pod recorded
+zero container restarts. The persistence tests exercise readiness at 140
+simulated seconds and terminal `CF_CONNECTOR_UNAVAILABLE` at 180 seconds.
+
+Disconnect was still pending when the rehearsal's 90-second observation
+ended. The teardown deleted the disposable node and verified the absence
+of its volume, its six imported images, both trial image references, the
+bridge, the kubeconfig, and the source and fixture files. The local provider
+state existed only in that cluster. Hosted Cloudflare requests and model
+calls were both zero.
