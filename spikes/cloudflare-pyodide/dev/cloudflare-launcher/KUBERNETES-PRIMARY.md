@@ -276,9 +276,13 @@ requires action with `CF_CLEANUP_PENDING`. Both live jobs finished as
 A managed primary can still be constrained by an explicit shared cap while
 Cloudflare deletions remain unverified. Status reports
 `primary_limited_by_cloudflare_cleanup` when completing those deletions
-would open primary room for queued demand, and uses the current job for
-recovery guidance when available. Live workers in a drain are reported
-separately from unconfirmed provider deletions. The shared cap continues to count the outstanding resources.
+would open primary room for queued demand. Live workers finishing work
+after admission closed report `primary_limited_by_cloudflare_drain`, even
+when a policy change closed admission without a job. Routine lifetime
+retirements continue to consume the cap while outstanding. The status
+uses the job's title only if the current lifecycle action covers those
+resources. The diagnostic reasons appear alongside any Cleanup Pending
+blocker.
 
 Reconcile uses the Enable connector wait when it enters the provisioning
 path. This is intentional. Reconcile can admit a new deployment, so it must

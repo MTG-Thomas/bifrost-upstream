@@ -82,6 +82,7 @@ CloudflarePlacementCode = Literal[
     "tenant_limit_reached", "installation_slots_full", "spend_guard_closed",
     "cleanup_pending", "cloudflare_capacity_unavailable", "release_mismatch",
     "connector_unavailable", "eligible_for_overflow", "primary_limited_by_cloudflare_cleanup",
+    "primary_limited_by_cloudflare_drain",
 ]
 
 

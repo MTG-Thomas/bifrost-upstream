@@ -2477,17 +2477,21 @@ async def test_supervisor_reserves_and_retires_without_restarting(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("shared_cap", "desired_state", "worker_state", "deleted", "expected_jobs"), [
-    (10, "enabled", "ready", False, 1),
-    (3, "enabled", "ready", False, 0),
-    (None, "enabled", "ready", False, 1),
-    (3, "scaled_in", "draining", False, 0),
-    (3, "disconnected", "retired", False, 0),
-    (3, "disconnected", "retired", True, 1),
-    (10, "disconnected", "retired", False, 1),
+@pytest.mark.parametrize(("shared_cap", "desired_state", "worker_state", "deleted", "expected_jobs", "scenario"), [
+    (10, "enabled", "ready", False, 1, ""),
+    (3, "enabled", "ready", False, 0, ""),
+    (None, "enabled", "ready", False, 1, ""),
+    (3, "scaled_in", "draining", False, 0, "job"),
+    (3, "disconnected", "draining", False, 0, "job"),
+    (3, "enabled", "draining", False, 0, "policy"),
+    (3, "scaled_in", "draining", False, 0, "lifetime"),
+    (3, "disconnected", "retired", False, 0, "job"),
+    (3, "disconnected", "retired", False, 0, "unrelated"),
+    (3, "disconnected", "retired", True, 1, ""),
+    (10, "disconnected", "retired", False, 1, "job"),
 ])
 async def test_container_pins_only_consume_an_explicit_shared_ceiling(
-    isolated_capacity_installation, monkeypatch, shared_cap, desired_state, worker_state, deleted, expected_jobs,
+    isolated_capacity_installation, monkeypatch, shared_cap, desired_state, worker_state, deleted, expected_jobs, scenario,
 ) -> None:
     db_session, installation = isolated_capacity_installation
     connection = await db_session.connection()
@@ -2500,6 +2504,7 @@ async def test_container_pins_only_consume_an_explicit_shared_ceiling(
     monkeypatch.setattr(controller, "get_db_context", context)
     monkeypatch.setattr(controller, "_publish_launchable", AsyncMock())
     installation.desired_state = desired_state
+    installation.desired_revision = 1 if desired_state == "enabled" else 2
     installation.admitted_revision = 1 if desired_state == "enabled" else None
     installation.policy = {
         **installation.policy,
@@ -2508,8 +2513,11 @@ async def test_container_pins_only_consume_an_explicit_shared_ceiling(
     now = datetime.now(UTC)
     for _ in range(3):
         worker_id = uuid4()
+        end_reason = None
+        if worker_state == "draining":
+            end_reason = "max_lifetime" if scenario == "lifetime" else "cloudflare_admission_closed"
         db_session.add(ExecutionWorker(
-            id=worker_id, form="external", state=worker_state, capacity_scope="containers",
+            id=worker_id, form="external", state=worker_state, capacity_scope="containers", end_reason=end_reason,
             capacity_resource_deleted_at=now if deleted else None,
             heartbeat_at=now, memory_budget_bytes=128 * 2**20,
         ))
@@ -2537,17 +2545,22 @@ async def test_container_pins_only_consume_an_explicit_shared_ceiling(
     if desired_state == "enabled":
         # Policy edits can close admission without starting a cleanup job.
         installation.admitted_revision = None
+        installation.desired_revision += 1
         await db_session.flush()
     idle = await get_cloudflare_capacity_status(db_session, _platform_operator())
     assert not any(reason.code == "primary_limited_by_cloudflare_cleanup" for reason in idle.placement_reasons)
-    assert not any("Draining Cloudflare Workers" in reason.label for reason in idle.placement_reasons)
-    if desired_state != "enabled" and not deleted:
+    assert not any(reason.code == "primary_limited_by_cloudflare_drain" for reason in idle.placement_reasons)
+    if scenario in ("job", "lifetime", "unrelated"):
         title = "Drain Fixture Workers" if worker_state == "draining" else "Disconnect Fixture Capacity"
+        action = "scale_in" if desired_state == "scaled_in" else "disconnect"
+        job_type = "capacity.cloudflare_reconcile" if scenario == "unrelated" else "capacity.cloudflare_disable"
+        if scenario == "unrelated":
+            title = "Unrelated Fixture Reconcile"
         db_session.add(PlatformJob(
-            job_type="capacity.cloudflare_disable", title=title, status="requires_action",
+            job_type=job_type, title=title, status="requires_action",
             resource_type="cloudflare_installation", resource_id=str(installation.id),
             requested_by_user_id=str(OPERATOR_ID), requested_by_email="operator@example.test",
-            requested_by_name="Fixture Operator", payload={"revision": installation.desired_revision},
+            requested_by_name="Fixture Operator", payload={"revision": installation.desired_revision, "action": action},
         ))
     run = Execution(workflow_name="fixture", executed_by_name="fixture")
     db_session.add(run)
@@ -2562,12 +2575,20 @@ async def test_container_pins_only_consume_an_explicit_shared_ceiling(
                           if reason.code == "primary_limited_by_cloudflare_cleanup"), None)
     assert (cleanup_limit is not None) == (shared_cap == 3 and worker_state == "retired" and not deleted)
     if cleanup_limit is not None:
-        assert "Disconnect Fixture Capacity" in cleanup_limit.remedy
+        expected = "Disconnect Fixture Capacity" if scenario == "job" else "Verify deletion of the outstanding"
+        assert expected in cleanup_limit.remedy
+        assert "Unrelated Fixture Reconcile" not in cleanup_limit.remedy
     drain_limit = next((reason for reason in status.placement_reasons
-                        if reason.label == "Primary Limited by Draining Cloudflare Workers"), None)
-    assert (drain_limit is not None) == (shared_cap == 3 and worker_state == "draining")
+                        if reason.code == "primary_limited_by_cloudflare_drain"), None)
+    assert (drain_limit is not None) == (shared_cap == 3 and worker_state == "draining" and scenario != "lifetime")
     if drain_limit is not None:
-        assert "Drain Fixture Workers" in drain_limit.remedy
+        expected = "Drain Fixture Workers" if scenario == "job" else "Workers finish their current work"
+        assert expected in drain_limit.remedy
+        assert all(drain_limit in lane.reasons for lane in status.lanes)
+        if desired_state == "disconnected":
+            cleanup = next(reason for reason in status.placement_reasons if reason.code == "cleanup_pending")
+            assert cleanup.label == "Cleanup Pending"
+            assert all(cleanup in lane.reasons for lane in status.lanes)
     for worker_id in launched:
         worker = await db_session.get(ExecutionWorker, worker_id)
         assert worker is not None and worker.form == "job" and worker.state == "reserved"

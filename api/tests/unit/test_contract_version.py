@@ -478,7 +478,8 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # older CLIs. The replacement preflight and activate ship with 1.4.3.
     # Cloudflare capacity status adds a primary cleanup reason to its raw JSON.
     # Older CLI clients print the JSON unchanged. Fingerprint only.
-    "721e53731bd0723af747f8b60678b2ff36d2b1351be1b62112b4956f1d8b9e63"
+    # Admission-closure drains add a distinct placement reason to raw status JSON.
+    "9678830117d133676a439f24b3ff577a40486c6b4d02a26864e4a39ec178bdda"
 )
 
 

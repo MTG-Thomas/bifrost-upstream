@@ -88,7 +88,11 @@ PLACEMENT: dict[CloudflarePlacementCode, tuple[str, str]] = {
     "spend_guard_closed": ("Spend Guard Closed", "Verify the ledger and review the monthly limit or wait for the UTC reset."),
     "primary_limited_by_cloudflare_cleanup": (
         "Primary Limited by Cloudflare Cleanup",
-        "Verify the outstanding Cloudflare resource deletions and check the latest capacity job for recovery.",
+        "Verify deletion of the outstanding Cloudflare resources to free room for primary workers.",
+    ),
+    "primary_limited_by_cloudflare_drain": (
+        "Primary Limited by Draining Cloudflare Workers",
+        "Cloudflare admission closed. Workers finish their current work before releasing room for the primary.",
     ),
     "cleanup_pending": ("Cleanup Pending", "Run Scale In to verify retirement or finish an outstanding Disconnect."),
     "cloudflare_capacity_unavailable": (
@@ -303,17 +307,17 @@ def placement_blockers(
     return blockers
 
 
-async def primary_cleanup_limit(
-    db: AsyncSession, *, now: datetime, job: PlatformJob | None,
-) -> CloudflarePlacementReason | None:
+async def primary_cleanup_limits(
+    db: AsyncSession, installation: CloudflareInstallation, *, now: datetime, job: PlatformJob | None,
+) -> list[CloudflarePlacementReason]:
     settings = get_settings()
     if not (os.environ.get("KUBERNETES_SERVICE_HOST") or (settings.worker_capacity_url and settings.worker_capacity_token)):
-        return None
+        return []
     workers = list(await db.scalars(select(ExecutionWorker).where(ExecutionWorker.state.in_(LIVE_STATES))))
     managed_ids = {worker.id for worker in workers if worker.form in MANAGED_WORKER_FORMS}
     cap, pinned, cleanup, draining = await shared_managed_worker_usage(db, managed_ids)
     if cap is None or not (cleanup or draining):
-        return None
+        return []
     policy = await load_kubernetes_policy(db)
     primary = len(managed_ids - pinned)
     occupied = managed_ids | pinned
@@ -323,17 +327,8 @@ async def primary_cleanup_limit(
         after, _ = managed_worker_room(policy.max_workers, primary, cap, len(occupied - releasing))
         return room == 0 and after > 0
 
-    drain_job = job is not None and (
-        job.job_type == "capacity.cloudflare_disable"
-        or (job.job_type == "capacity.cloudflare_reconcile" and job.payload.get("operation") == "upgrade")
-    )
-    if limits(cleanup):
-        notice = reason("primary_limited_by_cloudflare_cleanup")
-    elif drain_job and limits(cleanup | draining):
-        notice = reason("cleanup_pending")
-        notice.label = "Primary Limited by Draining Cloudflare Workers"
-    else:
-        return None
+    if not limits(cleanup | draining):
+        return []
 
     waiting = await waiting_capacity_rows(db, await pending_local_platform_job_ids(db, policy, now), now)
     sizing = JobSizing.of(policy, settings.memory_pressure_threshold, JOB_BASELINE_ESTIMATE_BYTES)
@@ -348,10 +343,37 @@ async def primary_cleanup_limit(
         baselines=await load_packing_baselines(db, linux),
     )
     if not any(request.id not in covered and request.bytes <= sizing.largest_budget_bytes for request in requests):
-        return None
-    if job is not None:
-        notice.remedy = f"Check the {job.title} job for progress or recovery instructions."
-    return notice
+        return []
+    owns_cleanup = job is not None and (
+        (
+            job.job_type == "capacity.cloudflare_disable"
+            and (job.payload.get("action"), installation.desired_state)
+            in (("scale_in", "scaled_in"), ("disconnect", "disconnected"))
+        )
+        or (
+            job.job_type == "capacity.cloudflare_reconcile"
+            and job.payload.get("operation") == "upgrade" and installation.upgrade_release is not None
+        )
+    )
+    owned: set[UUID] = set()
+    if owns_cleanup:
+        pin = CloudflareWorkerReservation
+        owned = set(await db.scalars(select(pin.worker_id).where(
+            pin.worker_id.in_(cleanup | draining), pin.installation_id == installation.id,
+            pin.deployment_revision < installation.desired_revision,
+        )))
+    notices = []
+    if cleanup:
+        notice = reason("primary_limited_by_cloudflare_cleanup")
+        if job is not None and cleanup <= owned:
+            notice.remedy = f"Check the {job.title} job for progress or recovery instructions."
+        notices.append(notice)
+    if draining:
+        notice = reason("primary_limited_by_cloudflare_drain")
+        if job is not None and draining <= owned:
+            notice.remedy = f"Check the {job.title} job for progress or recovery instructions."
+        notices.append(notice)
+    return notices
 
 
 async def overflow_status(

@@ -961,12 +961,15 @@ async def shared_managed_worker_usage(
     if cap is None:
         live_pins = set(await db.scalars(select(pins.worker_id).where(pins.worker_id.in_(managed_ids))))
         return None, live_pins, set(), set()
-    rows = (await db.execute(select(pins.worker_id, ExecutionWorker.state).join(
+    rows = (await db.execute(select(pins.worker_id, ExecutionWorker.state, ExecutionWorker.end_reason).join(
         ExecutionWorker, ExecutionWorker.id == pins.worker_id,
     ).where(occupied))).all()
-    pinned = {worker_id for worker_id, _ in rows}
-    draining = {worker_id for worker_id, state in rows if worker_id in managed_ids and state == "draining"}
-    cleanup = {worker_id for worker_id, state in rows if state not in LIVE_STATES}
+    pinned = {worker_id for worker_id, _, _ in rows}
+    draining = {
+        worker_id for worker_id, state, cause in rows
+        if worker_id in managed_ids and state == "draining" and cause == "cloudflare_admission_closed"
+    }
+    cleanup = {worker_id for worker_id, state, _ in rows if state not in LIVE_STATES}
     return cap, pinned, cleanup, draining
 
 
