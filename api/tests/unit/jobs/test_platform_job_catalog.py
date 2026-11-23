@@ -72,11 +72,12 @@ def test_cloudflare_provisioning_jobs_wait_for_provider_settlement() -> None:
     opted_in = {
         item.job_type: item.policy.retry_delay
         for item in list_platform_job_metadata()
-        if item.policy.retry_delay and item.job_type != "capacity.cloudflare_rotate_worker_credential"
+        if item.policy.retry_delay
     }
     assert opted_in == {
         "capacity.cloudflare_enable": delays,
         "capacity.cloudflare_reconcile": delays,
+        "capacity.cloudflare_rotate_worker_credential": delays,
     }
 
 
@@ -110,7 +111,8 @@ async def test_rotation_can_observe_a_connector_after_kubelet_sync_and_cache_del
         lease = uuid4()
         job.status, job.attempt, job.lease_token = "running", attempt, lease
         assert await platform_jobs.retry_platform_job_failure(
-            job.id, lease, failure, enabled=policy.retry_on_failure, retry_delay=policy.retry_delay,
+            job.id, lease, failure, enabled=policy.retry_on_failure,
+            retry_delay=policy.failure_retry_schedule(failure.code),
         )
         assert job.status == "queued"
         assert job.available_at > now

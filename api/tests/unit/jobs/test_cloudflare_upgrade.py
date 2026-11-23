@@ -73,4 +73,12 @@ async def test_enable_reports_unavailable_tunnel_inventory_as_unverified(monkeyp
     with pytest.raises(PlatformJobRequiresAction) as action:
         await cloudflare_enable._enable(run, payload, repair_tunnel_ingress=True)
 
-    assert action.value.result == {"code": "CF_DEPLOYMENT_UNVERIFIED"}
+    assert action.value.result == {
+        "code": "CF_DEPLOYMENT_UNVERIFIED",
+        "details": {
+            "resource_class": "unknown",
+            "check": "unclassified",
+            "observed_category": "unknown",
+            "expected_category": "unknown",
+        },
+    }

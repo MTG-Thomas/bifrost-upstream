@@ -49,7 +49,7 @@ def _metadata(
 
 
 _CLOUDFLARE_RETRY_DELAY = (timedelta(seconds=15), timedelta(seconds=45))
-_CLOUDFLARE_ROTATION_RETRY_DELAY = (timedelta(seconds=15), timedelta(seconds=165))
+_CONNECTOR_READINESS_RETRY_DELAY = (timedelta(seconds=15), timedelta(seconds=165))
 
 
 _METADATA = MappingProxyType(
@@ -95,7 +95,8 @@ _METADATA = MappingProxyType(
                 PlatformJobPolicy(
                     15 * 60, max_attempts=3, min_memory_headroom_mb=128, retry_on_failure=True,
                     # Allow three minutes for kubelet sync, cache propagation, and connector attach.
-                    retry_delay=_CLOUDFLARE_ROTATION_RETRY_DELAY,
+                    retry_delay=_CLOUDFLARE_RETRY_DELAY,
+                    retry_delays_by_code=(("CF_CONNECTOR_UNAVAILABLE", _CONNECTOR_READINESS_RETRY_DELAY),),
                 ),
             ),
             _metadata(

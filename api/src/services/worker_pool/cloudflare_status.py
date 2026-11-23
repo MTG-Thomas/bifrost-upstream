@@ -36,8 +36,10 @@ from src.models.orm.workflows import Workflow
 from src.services.authorization.enforce import Caller
 from src.services.authorization.execution_access import execution_list_filter
 from src.services.kubernetes_execution import load_kubernetes_policy
+from src.services.memory_requests import JOB_BASELINE_ESTIMATE_BYTES
 from src.services.pool_cadence import CLOUDFLARE_WORKERS_LAUNCH_AGE_SECONDS, POOL_RECONCILE_SPACING_SECONDS
 from src.services.work_dispatch import WAKE_WORKFLOW
+from src.services.worker_pool.calibration import load_packing_baselines
 from src.services.worker_pool.cloudflare_admission import ManagedCloudflareScope, PrimaryPool
 from src.services.worker_pool.cloudflare_containers_admission import LINUX_REVIEW_VERSION, linux_source_current_sql
 from src.services.worker_pool.cloudflare_containers_policy import ContainersPolicy
@@ -48,7 +50,7 @@ from src.services.worker_pool.demand import pending_local_platform_job_ids
 from src.services.worker_pool.eligibility import cloudflare_dispatch_sql
 from src.services.worker_pool.external_client import CapacityProtocolCheck
 from src.services.worker_pool.liveness import HEARTBEAT_LOST_AFTER
-from src.services.worker_pool.sizing import LIVE_STATES, JobSizing, job_baseline
+from src.services.worker_pool.sizing import LIVE_STATES, JobSizing
 from src.worker.remote.protocol import CLOUDFLARE_WORKFLOW_HANDLER, LINUX_RUNTIME_PROFILE
 
 logger = logging.getLogger(__name__)
@@ -256,10 +258,10 @@ async def deployment_evidence(db: AsyncSession, installation: CloudflareInstalla
 
 def primary_coverage(
     workers: list[ExecutionWorker], waiting: list[Request], sizing: JobSizing, *,
-    containers_scope: str | None = None,
+    containers_scope: str | None = None, baselines: dict[UUID, int] | None = None,
 ) -> set[UUID]:
     """Pack primary capacity oldest first, honoring pinned dispatches."""
-    free, covered = linux_capacity_budgets(workers, waiting, sizing, containers_scope=containers_scope)
+    free, covered = linux_capacity_budgets(workers, waiting, sizing, containers_scope=containers_scope, baselines=baselines)
     free.sort(key=lambda budget: budget.containers)
     rooms = [budget.bytes for budget in free]
     slots = [dict(budget.handler_slots) for budget in free]
@@ -324,13 +326,16 @@ async def overflow_status(
         pool_policy = await load_kubernetes_policy(db)
         waiting = await waiting_capacity_rows(db, await pending_local_platform_job_ids(db, pool_policy, now), now)
         settings = get_settings()
-        threshold = settings.memory_pressure_threshold
-        sizing = JobSizing.of(pool_policy, threshold, job_baseline([], pool_policy.worker_memory_mib * 2**20, threshold))
-        covered = primary_coverage(workers, [
+        sizing = JobSizing.of(pool_policy, settings.memory_pressure_threshold, JOB_BASELINE_ESTIMATE_BYTES)
+        requests = [
             Request(row.id, row.memory_request_bytes, row.handler, row.handler_version, row.cloudflare_revision,
                     row.tenant_id, platform_job_type=row.platform_job_type)
             for row in waiting
-        ], sizing, containers_scope=settings.cloudflare_containers_scope)
+        ]
+        covered = primary_coverage(
+            workers, requests, sizing, containers_scope=settings.cloudflare_containers_scope,
+            baselines=await load_packing_baselines(db, workers),
+        )
     slots = await read_workflow_slot_admission(db, installation.id, policy.workers)
     queue = select(WorkDispatch.id).select_from(WorkDispatch).join(
         Execution, Execution.id == WorkDispatch.subject_id,

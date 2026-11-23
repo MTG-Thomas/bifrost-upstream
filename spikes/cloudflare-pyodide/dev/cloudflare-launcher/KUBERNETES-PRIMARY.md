@@ -61,18 +61,22 @@ and derived incarnation keys. Bifrost platform secrets stay on Bifrost.
   to patch that exact Secret. The authorization review has no persistent
   write. Projection uses the API pod namespace even when Jobs run in another
   namespace.
-- Worker credential rotation schedules its existing second and third
-  attempts after delays of 15 and 165 seconds. That gives the final check
-  at least 180 seconds from the first failed check. The window covers a
+- On a connector-readiness failure, worker credential rotation schedules
+  its second and third attempts after delays of 15 and 165 seconds. Provider
+  failures use the 15- and 45-second delays. The connector schedule gives
+  the final check at least 180 seconds from the first failed check. The window covers a
   one-minute kubelet sync, a one-minute TTL cache where configured, and a
   minute of margin for the child restart and session attachment. Clusters
   configured with longer sync or cache intervals can exceed the window.
   [Kubernetes Secret projection](https://kubernetes.io/docs/concepts/configuration/secret/#using-secrets-as-files-from-a-pod) · [Retry timing test](../../../../api/tests/unit/jobs/test_platform_job_catalog.py#L84)
 - The primary keeps its own ceiling while pinned Workers launchers or
   Containers instances are present. An explicit shared ceiling counts
-  each live resource once and retains pending provider deletions. Job and
-  VM-provider status pack the same Linux executor budgets as the controller,
-  including static executors. Cohort health still uses heartbeat freshness.
+  each live resource once and retains pending provider deletions while
+  admission is closed. Job and VM-provider status pack the same Linux
+  executor budgets as the controller, including static executors. For a
+  pending worker the forecast uses calibration from its launch build,
+  package generation, memory threshold, and provider scope. Cohort health
+  still uses heartbeat freshness.
   [Containers ceiling regression](../../../../api/tests/e2e/platform/test_cloudflare_capacity_persistence.py#L2306)
 - The [local tunnel overlay](../../../../k8s/local-cloudflare-tunnel/kustomization.yaml)
   adds the existing connector component to the local manifests. It binds

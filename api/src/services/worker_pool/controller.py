@@ -78,7 +78,7 @@ from src.services.work_dispatch import (
     listen_for_pool_wake,
     wait_for_next_pass,
 )
-from src.services.worker_pool.calibration import measured_budget
+from src.services.worker_pool.calibration import load_memory_calibration, load_packing_baselines
 from src.services.worker_pool.claims import CAPACITY_LOCK, REMOTE_WORKER_HANDLER_NAMES
 from src.services.worker_pool.cloudflare_admission import (
     ManagedCloudflareScope,
@@ -199,8 +199,6 @@ class WorkerCapacityController(ABC):
         self._evictable: dict[UUID, bool] = {}
         self.runtime_profile = LINUX_RUNTIME_PROFILE
         self.capacity_profile: WorkerCapacityProfile | None = None
-        self.peer_profile: WorkerCapacityProfile | None = None
-        self.additional_profile: WorkerCapacityProfile | None = None
         self.managed_cloudflare_scope: ManagedCloudflareScope | None = None
         self.cloudflare_primary: PrimaryPool | None = None
 
@@ -212,27 +210,13 @@ class WorkerCapacityController(ABC):
     def containers_mode(self) -> bool:
         return self.capacity_profile is not None and self.capacity_profile.scope == self.containers_scope
 
-    @property
-    def dual_capacity(self) -> bool:
-        return self.peer_profile is not None
-
-    def _counts_for_warm_floor(self, worker: ExecutionWorker) -> bool:
-        return (
-            not self.dual_capacity
-            or worker.execution_lane != "normal"
-            or (
-                worker.runtime_profile == LINUX_RUNTIME_PROFILE
-                and (self.containers_scope is None or worker.capacity_scope != self.containers_scope)
-            )
-        )
-
     def _outdated(self, worker: ExecutionWorker) -> bool:
-        if worker.form == "external" and worker.state == "ready":
-            for profile in (self.capacity_profile, self.peer_profile, self.additional_profile):
-                if profile is not None and worker.capacity_scope == profile.scope and (
-                    self.dual_capacity or profile.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
-                ):
-                    return worker.version != profile.worker_version
+        profile = self.capacity_profile
+        if (
+            profile is not None and profile.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
+            and worker.form == "external" and worker.state == "ready" and worker.capacity_scope == profile.scope
+        ):
+            return worker.version != profile.worker_version
         return self.live.outdated(worker)
 
     @abstractmethod
@@ -411,20 +395,11 @@ class WorkerCapacityController(ABC):
                 return []
             generation = int(await db.scalar(select(func.coalesce(func.max(PackageChange.id), 0))) or 0)
             environment = self._memory_environment(generation)
-            history = (await db.scalars(select(ExecutionWorker).where(
-                self._managed_scope(),
-                ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE,
-                ExecutionWorker.state.in_((*LIVE_STATES, "retired")),
-                ExecutionWorker.memory_calibration["environment"] == environment,
-                ExecutionWorker.memory_calibration["measurement"].is_not(None),
-            ).distinct(ExecutionWorker.memory_limit_bytes).order_by(
-                ExecutionWorker.memory_limit_bytes, ExecutionWorker.created_at.desc(),
-            ))).all()
-            measurements = [sample for worker in history
-                            if (sample := measured_budget(worker, environment)) is not None]
-            sizing = self._sizing(policy, [])
+            measurements = await load_memory_calibration(db, self._managed_scope(), environment)
+            estimated_sizing = self._sizing(policy, [])
+            sizing = estimated_sizing
             if measurements:
-                sizing = replace(sizing, baseline_bytes=max(sample.baseline_bytes for sample in measurements))
+                sizing = replace(estimated_sizing, baseline_bytes=max(sample.baseline_bytes for sample in measurements))
             standard_reports = [sample.budget_bytes for sample in measurements
                                 if sample.limit_bytes == sizing.standard_limit_bytes]
             largest_reports = [sample.budget_bytes for sample in measurements
@@ -451,7 +426,8 @@ class WorkerCapacityController(ABC):
                 if launch_cutoff is None or row.created_at <= launch_cutoff
             ]
             free, covered = linux_capacity_budgets(
-                linux_workers, waiting_requests, sizing, containers_scope=self.containers_scope,
+                linux_workers, waiting_requests, estimated_sizing, containers_scope=self.containers_scope,
+                baselines=await load_packing_baselines(db, linux_workers),
             )
             cloudflare_workers = [
                 worker for worker in workers
@@ -507,7 +483,7 @@ class WorkerCapacityController(ABC):
             # for requests only Linux can execute.
             free = [*available_declared, *sorted(free, key=lambda budget: budget.containers)]
             needed = [request for request in waiting_requests if request.id not in covered]
-            profile, peer = self.capacity_profile, self.peer_profile
+            profile = self.capacity_profile
             new_declared = None
             if cloudflare:
                 assert profile is not None
@@ -517,17 +493,19 @@ class WorkerCapacityController(ABC):
                 needed.sort(key=new_declared.fits)
             managed_ids = {worker.id for worker in workers if worker.form in MANAGED_WORKER_FORMS}
             jobs = len(managed_ids)
-            shared_cap = await db.scalar(
-                select(CloudflareInstallation.policy["limits"]["shared_managed_worker_cap"].as_integer())
-                .where(
-                    CloudflareInstallation.retired_at.is_(None),
-                    CloudflareInstallation.admitted_revision.is_not(None),
-                )
-            )
             pins = CloudflareWorkerReservation
-            relevant_pins = pins.worker_id.in_(managed_ids)
-            if shared_cap is not None:
-                relevant_pins = relevant_pins | ExecutionWorker.capacity_resource_deleted_at.is_(None)
+            occupied_pins = pins.worker_id.in_(managed_ids) | ExecutionWorker.capacity_resource_deleted_at.is_(None)
+            unsettled_pins = select(pins.worker_id).join(ExecutionWorker).where(
+                pins.installation_id == CloudflareInstallation.id, occupied_pins,
+            ).exists()
+            # Closing admission must not free room still occupied by the installation.
+            shared_cap = await db.scalar(select(
+                func.min(CloudflareInstallation.policy["limits"]["shared_managed_worker_cap"].as_integer())
+            ).where(
+                (CloudflareInstallation.retired_at.is_(None) & CloudflareInstallation.admitted_revision.is_not(None))
+                | unsettled_pins,
+            ))
+            relevant_pins = occupied_pins if shared_cap is not None else pins.worker_id.in_(managed_ids)
             managed_cloudflare_ids = set(await db.scalars(
                 select(pins.worker_id).join(ExecutionWorker).where(relevant_pins),
             ))
@@ -545,22 +523,15 @@ class WorkerCapacityController(ABC):
                 else:
                     room = min(shared_room, room)
             scope_room = room
-            if profile is not None and (cloudflare or self.dual_capacity):
-                scope_counts = await self._external_scope_counts(db, profile, peer)
+            if profile is not None and cloudflare:
+                scope_counts = await self._external_scope_counts(db, profile)
                 live_in_scopes = sum(
                     worker.form == "external" and worker.capacity_scope in scope_counts for worker in workers
                 )
                 if managed_scope is None:
                     room = min(room, max(0, policy.max_workers - jobs - (sum(scope_counts.values()) - live_in_scopes)))
                 scope_room = max(0, profile.max_workers - scope_counts.get(profile.scope, 0))
-                if scope_room == 0:
-                    return []
-                if (self.containers_mode or (cloudflare and self.dual_capacity)) and (
-                    peer is None or sum(
-                        worker.form == "external" and worker.capacity_scope == peer.scope
-                        for worker in linux_workers
-                    ) < peer.max_workers
-                ):
+                if scope_room == 0 or self.containers_mode:
                     return []
             plan = _plan_launches(
                 needed,
@@ -587,7 +558,6 @@ class WorkerCapacityController(ABC):
                 and worker.resource_class == "standard"
                 and worker.state != "draining"
                 and worker.id not in managed_cloudflare_ids
-                and self._counts_for_warm_floor(worker)
                 and not self._outdated(worker)
                 and not self._lifetime_handoff_imminent(worker, now)
             )
@@ -599,7 +569,7 @@ class WorkerCapacityController(ABC):
                         environment=environment,
                     )
                     for _ in range(min(
-                        room, scope_room, plan.standard + (0 if self.dual_capacity or managed_scope else warm),
+                        room, scope_room, plan.standard + (0 if managed_scope is not None else warm),
                     ))
                 ]
                 if launched:
@@ -709,9 +679,8 @@ class WorkerCapacityController(ABC):
                         ).values(state="draining", end_reason="fast_path_reservation"))
                     await db.commit()
                     return []
-            fill_linux_floor = self.dual_capacity and warm > 0
             at_ceiling = primary_jobs >= policy.max_workers or shared_capacity_full
-            if at_ceiling and (plan.sized or plan.standard or fill_linux_floor):
+            if at_ceiling and (plan.sized or plan.standard):
                 # An idle undersized worker may yield the warm minimum, but it
                 # still occupies its slot until the canonical owner retires it.
                 owned = set((await db.scalars(select(ExecutionWorker.id).where(self._managed_scope(), ExecutionWorker.state == "ready"))).all())
@@ -725,7 +694,7 @@ class WorkerCapacityController(ABC):
                 for worker_id, budget in (() if self.containers_mode else idle_declared.items()):
                     if worker_id in owned or (not shared_capacity_full and worker_id in managed_cloudflare_ids):
                         continue
-                    if fill_linux_floor or not any(
+                    if not any(
                         request.tenant_id not in active_tenants and budget.fits(request) for request in needed
                     ):
                         # Capacity demand is global. The fenced launcher owner
@@ -736,8 +705,6 @@ class WorkerCapacityController(ABC):
                         ).values(state="draining", end_reason="capacity_replacement"))
                         await db.commit()
                         return []
-                if not (plan.sized or plan.standard):
-                    return []
                 for worker in ready:
                     assert worker.memory_budget_bytes is not None
                     budget = FreeBudget(
@@ -811,24 +778,15 @@ class WorkerCapacityController(ABC):
         return launched
 
     async def _external_scope_counts(
-        self, db: Any, profile: WorkerCapacityProfile, peer: WorkerCapacityProfile | None,
+        self, db: Any, profile: WorkerCapacityProfile,
     ) -> dict[str, int]:
         # An unbound Cloudflare reservation may have prepared with a lost
         # reply. Keep its slot through the bounded absence check as well.
-        scopes = ExecutionWorker.capacity_scope.in_([
-            item.scope for item in (profile, peer, self.additional_profile) if item is not None
-        ])
+        scopes = ExecutionWorker.capacity_scope == profile.scope
         unbound_can_prepare = ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
         if self.containers_scope is not None:
             scopes = scopes | (ExecutionWorker.capacity_scope == self.containers_scope)
             unbound_can_prepare = unbound_can_prepare | (ExecutionWorker.capacity_scope == self.containers_scope)
-        if self.dual_capacity and (peer is None or (self.containers_mode and self.additional_profile is None)):
-            # Discovery can be down while a previous burst incarnation still
-            # occupies shared physical capacity. Its persisted profile is enough.
-            scopes = scopes | (
-                (ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE)
-                & ExecutionWorker.capacity_scope.is_not(None)
-            )
         counts = await db.execute(
             select(ExecutionWorker.capacity_scope, func.count())
             .where(
@@ -881,7 +839,7 @@ class WorkerCapacityController(ABC):
                 worker
                 for worker, owned in managed
                 if worker.state == "ready"
-                and (owned or (not self.dual_capacity and self.runtime_profile == LINUX_RUNTIME_PROFILE
+                and (owned or (self.runtime_profile == LINUX_RUNTIME_PROFILE
                                and worker.runtime_profile == LINUX_RUNTIME_PROFILE))
                 and self._outdated(worker)
                 and worker.reserved_for_dispatch_id is None
@@ -901,7 +859,6 @@ class WorkerCapacityController(ABC):
                     for worker in ready
                     if worker.execution_lane == lane
                     and worker.resource_class == "standard"
-                    and self._counts_for_warm_floor(worker)
                     and worker.memory_budget_bytes is not None
                     and not self._outdated(worker)
                 )
@@ -910,8 +867,6 @@ class WorkerCapacityController(ABC):
             drainable: list[ExecutionWorker] = []
             for lane, floor in lane_floor.items():
                 lane_outdated = [worker for worker in outdated if worker.execution_lane == lane]
-                drainable.extend(worker for worker in lane_outdated if not self._counts_for_warm_floor(worker))
-                lane_outdated = [worker for worker in lane_outdated if self._counts_for_warm_floor(worker)]
                 if floor == 0 or current_ready[lane] >= floor:
                     drainable.extend(lane_outdated)
                     continue
@@ -921,7 +876,6 @@ class WorkerCapacityController(ABC):
                 current_starting = any(
                     worker.execution_lane == lane
                     and worker.resource_class == "standard"
-                    and self._counts_for_warm_floor(worker)
                     and worker.state in ("reserved", "starting")
                     and not self._outdated(worker)
                     for worker in jobs
@@ -931,7 +885,6 @@ class WorkerCapacityController(ABC):
                     for worker in ready
                     if worker.execution_lane == lane
                     and worker.resource_class == "standard"
-                    and self._counts_for_warm_floor(worker)
                     and worker.memory_budget_bytes is not None
                 )
                 excess = max(0, ready_standard - floor)
@@ -1274,7 +1227,7 @@ def linux_handler_slots(worker: ExecutionWorker, held_handler: str | None, *, co
 
 def linux_capacity_budgets(
     workers: list[ExecutionWorker], waiting: list[Request], sizing: JobSizing, *,
-    containers_scope: str | None = None,
+    containers_scope: str | None = None, baselines: dict[UUID, int] | None = None,
 ) -> tuple[list[FreeBudget], set[UUID]]:
     """Use the same Linux capacity forecast for provisioning and placement status."""
     requests = {request.id: request for request in waiting}
@@ -1293,7 +1246,9 @@ def linux_capacity_budgets(
         if worker.form in MANAGED_WORKER_FORMS and (
             worker.state in ("reserved", "starting") or worker.memory_budget_bytes is None
         ):
-            available = sizing.budget_bytes(launch_limit(worker, sizing.standard_limit_bytes))
+            baseline = baselines.get(worker.id) if baselines is not None else None
+            forecast = replace(sizing, baseline_bytes=baseline) if baseline is not None else sizing
+            available = forecast.budget_bytes(launch_limit(worker, sizing.standard_limit_bytes))
         elif worker.state == "ready" and worker.memory_budget_bytes is not None:
             available = worker.memory_budget_bytes - worker.memory_reserved_bytes
         else:

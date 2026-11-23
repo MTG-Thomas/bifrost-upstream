@@ -80,6 +80,7 @@ from src.services.authorization.enforce import Caller
 from src.services.execution import cloudflare_approval
 from src.services.execution.workflow_dispatch import release_workflow_run
 from src.services.kubernetes_execution import KubernetesExecutionService, KubernetesPolicy
+from src.services.memory_requests import JOB_BASELINE_ESTIMATE_BYTES
 from src.services.work_dispatch import WAKE_WORKFLOW, stage_dispatch
 from src.services.worker_pool import claims as claim_service
 from src.services.worker_pool import (
@@ -2302,9 +2303,16 @@ async def test_supervisor_reserves_and_retires_without_restarting(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("shared_cap", "expected_jobs"), [(10, 1), (3, 0), (None, 1)])
+@pytest.mark.parametrize(("shared_cap", "desired_state", "worker_state", "deleted", "expected_jobs"), [
+    (10, "enabled", "ready", False, 1),
+    (3, "enabled", "ready", False, 0),
+    (None, "enabled", "ready", False, 1),
+    (3, "scaled_in", "draining", False, 0),
+    (3, "disconnected", "retired", False, 0),
+    (3, "disconnected", "retired", True, 1),
+])
 async def test_container_pins_only_consume_an_explicit_shared_ceiling(
-    isolated_capacity_installation, monkeypatch, shared_cap, expected_jobs,
+    isolated_capacity_installation, monkeypatch, shared_cap, desired_state, worker_state, deleted, expected_jobs,
 ) -> None:
     db_session, installation = isolated_capacity_installation
     connection = await db_session.connection()
@@ -2316,8 +2324,8 @@ async def test_container_pins_only_consume_an_explicit_shared_ceiling(
 
     monkeypatch.setattr(controller, "get_db_context", context)
     monkeypatch.setattr(controller, "_publish_launchable", AsyncMock())
-    installation.desired_state = "enabled"
-    installation.admitted_revision = 1
+    installation.desired_state = desired_state
+    installation.admitted_revision = 1 if desired_state == "enabled" else None
     installation.policy = {
         **installation.policy,
         "limits": {**installation.policy["limits"], "shared_managed_worker_cap": shared_cap},
@@ -2326,7 +2334,8 @@ async def test_container_pins_only_consume_an_explicit_shared_ceiling(
     for _ in range(3):
         worker_id = uuid4()
         db_session.add(ExecutionWorker(
-            id=worker_id, form="external", state="ready", capacity_scope="containers",
+            id=worker_id, form="external", state=worker_state, capacity_scope="containers",
+            capacity_resource_deleted_at=now if deleted else None,
             heartbeat_at=now, memory_budget_bytes=128 * 2**20,
         ))
         await db_session.flush()
@@ -5807,7 +5816,7 @@ async def test_preset_b_policy_api_uses_the_qualified_fleet_price(
     "setup_required", "workflow_review_required", "waiting_for_demand", "primary_has_capacity",
     "primary_capacity_unverified", "waiting_for_launch_gate", "tenant_limit_reached", "installation_slots_full",
     "spend_guard_closed", "cleanup_pending", "cloudflare_capacity_unavailable", "release_mismatch",
-    "connector_unavailable", "eligible_for_overflow",
+    "connector_unavailable", "eligible_for_overflow", "measured_primary_budget",
 ])
 async def test_status_explains_placement_over_rest(
     isolated_capacity_installation, monkeypatch, code,
@@ -5828,6 +5837,8 @@ async def test_status_explains_placement_over_rest(
     as_of = await db_session.scalar(select(func.statement_timestamp()))
     assert as_of is not None
     primary = None if code == "primary_capacity_unverified" else PrimaryPool("external", "gap5-fixture", 1)
+    if code == "measured_primary_budget":
+        primary = PrimaryPool("job", ceiling=2)
     cooldown = as_of + timedelta(seconds=30) if code == "cloudflare_capacity_unavailable" else None
     monkeypatch.setattr(cloudflare_status, "_controller_observation", AsyncMock(return_value=(primary, cooldown, None)))
     if code != "setup_required":
@@ -5844,7 +5855,7 @@ async def test_status_explains_placement_over_rest(
 
     queue_codes = {
         "primary_has_capacity", "primary_capacity_unverified", "waiting_for_launch_gate",
-        "tenant_limit_reached", "installation_slots_full", "eligible_for_overflow",
+        "tenant_limit_reached", "installation_slots_full", "eligible_for_overflow", "measured_primary_budget",
     }
     if code in queue_codes:
         run = Execution(workflow_name="fixture", executed_by_name="fixture")
@@ -5853,12 +5864,36 @@ async def test_status_explains_placement_over_rest(
             heartbeat_at=as_of, supported_handlers=["workflow.execute"],
             memory_budget_bytes=2**28, memory_reserved_bytes=0 if code == "primary_has_capacity" else 2**28,
         )
+        request_memory = {}
+        if code == "measured_primary_budget":
+            primary_worker.form = "job"
+            primary_worker.capacity_scope = None
+            primary_worker.kubernetes_namespace = "test"
+            settings = cloudflare_status.get_settings()
+            threshold = settings.memory_pressure_threshold
+            limit = 1024 * 2**20
+            environment = {"form": "job", "version": "test", "package_generation": 0,
+                           "threshold": threshold, "image": "api:test"}
+            measurement = {"version": "test", "package_generation": 0, "threshold": threshold,
+                           "limit_bytes": limit, "baseline_bytes": JOB_BASELINE_ESTIMATE_BYTES + 64 * 2**20}
+            db_session.add_all((
+                ExecutionWorker(
+                    form="job", state="starting", kubernetes_namespace="test", memory_limit_bytes=limit,
+                    supported_handlers=["workflow.execute"], memory_calibration={"environment": environment},
+                ),
+                ExecutionWorker(
+                    form="job", state="retired", kubernetes_namespace="test", memory_limit_bytes=limit,
+                    memory_calibration={"environment": environment, "measurement": measurement},
+                ),
+            ))
+            request_memory = {"memory_request_bytes": int(limit * threshold) - JOB_BASELINE_ESTIMATE_BYTES - 32 * 2**20}
         db_session.add_all((run, primary_worker))
         await db_session.flush()
         db_session.add(WorkDispatch(
             family=WAKE_WORKFLOW, handler="workflow.execute", handler_version=1, subject_id=run.id,
             message={}, payload={}, cloudflare_revision="c" * 64,
             created_at=as_of if code == "waiting_for_launch_gate" else as_of - timedelta(minutes=1),
+            **request_memory,
         ))
         count = {"tenant_limit_reached": 4, "installation_slots_full": 9}.get(code, 0)
         db_session.add_all(CloudflareWorkflowSlot(
@@ -5882,6 +5917,7 @@ async def test_status_explains_placement_over_rest(
     expected = {
         "setup_required": ["setup_required", "waiting_for_demand"],
         "installation_slots_full": ["installation_slots_full", "tenant_limit_reached"],
+        "measured_primary_budget": ["eligible_for_overflow"],
         **{blocker: [blocker, "waiting_for_demand"] for blocker in (
             "spend_guard_closed", "cleanup_pending", "cloudflare_capacity_unavailable",
             "release_mismatch", "connector_unavailable",

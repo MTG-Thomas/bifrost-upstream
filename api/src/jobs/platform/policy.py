@@ -29,3 +29,7 @@ class PlatformJobPolicy:
     # Delays after retryable handler failures, indexed by the completed attempt.
     # An empty tuple preserves immediate eligibility; the last delay is reused.
     retry_delay: tuple[timedelta, ...] = ()
+    retry_delays_by_code: tuple[tuple[str, tuple[timedelta, ...]], ...] = ()
+
+    def failure_retry_schedule(self, code: str) -> tuple[timedelta, ...]:
+        return next((delays for error, delays in self.retry_delays_by_code if error == code), self.retry_delay)
