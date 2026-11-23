@@ -61,7 +61,13 @@ logger = logging.getLogger(__name__)
 
 
 def is_runtime_credential_payload(payload: dict[str, Any]) -> bool:
-    """Whether a payload claims, or resembles, a runtime credential."""
+    """Whether a payload claims, or resembles, a runtime credential.
+
+    Workload token-exchange credentials use ``credential_kind`` too, but they
+    are not run credentials and must not take the run-liveness path.
+    """
+    if payload.get("credential_kind") == "workload":
+        return False
     return "credential_kind" in payload or any(key in payload for key in _LEGACY_RUNTIME_CLAIMS)
 
 

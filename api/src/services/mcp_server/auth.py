@@ -31,8 +31,9 @@ from starlette.routing import Route
 
 from shared.human_sessions import HumanSessionUnavailable, issue_human_session, rotate_human_session
 from shared.identities import is_identity
-
 from shared.mcp_oauth import _mcp_auth_code_key, _open_auth_code_record
+from src.services.workload_auth.constants import TOKEN_EXCHANGE_GRANT, WORKLOAD_SCOPE
+from src.services.workload_auth.grant import handle_token_exchange
 
 logger = logging.getLogger(__name__)
 
@@ -167,10 +168,14 @@ class BifrostAuthProvider:
             "token_endpoint": f"{self.base_url}/token",
             "registration_endpoint": f"{self.base_url}/register",
             "response_types_supported": ["code"],
-            "grant_types_supported": ["authorization_code", "refresh_token"],
+            "grant_types_supported": [
+                "authorization_code",
+                "refresh_token",
+                TOKEN_EXCHANGE_GRANT,
+            ],
             "code_challenge_methods_supported": ["S256"],
             "token_endpoint_auth_methods_supported": ["none"],
-            "scopes_supported": ["mcp:access"],
+            "scopes_supported": ["mcp:access", WORKLOAD_SCOPE],
         })
 
     async def _protected_resource_metadata(self, request: Request) -> JSONResponse:
@@ -266,6 +271,9 @@ class BifrostAuthProvider:
         # Parse form data
         form = await request.form()
         grant_type = form.get("grant_type")
+
+        if grant_type == TOKEN_EXCHANGE_GRANT:
+            return await handle_token_exchange(request, form)
 
         if grant_type == "authorization_code":
             code = form.get("code")
@@ -467,8 +475,10 @@ class BifrostAuthProvider:
         from src.services.authorization.tokens import (
             authenticate_human_token,
             authenticate_runtime_token,
+            authenticate_workload_token,
             parse_human_claims,
             parse_runtime_claims,
+            parse_workload_claims,
         )
 
         payload = decode_token(token, expected_type="access")
@@ -486,7 +496,17 @@ class BifrostAuthProvider:
 
         runtime_principal = None
         runtime_role_names: list[str] | None = None
-        if is_legacy_runtime_payload(payload):
+        if payload.get("credential_kind") == "workload":
+            workload_claims = parse_workload_claims(payload)
+            if workload_claims is None:
+                return None
+            async with get_db_context() as db:
+                workload_principal = await authenticate_workload_token(db, workload_claims)
+            if workload_principal is None:
+                return None
+            runtime_principal = workload_principal
+            runtime_role_names = [role.name for role in workload_claims.usr.roles]
+        elif is_legacy_runtime_payload(payload):
             # Legacy bridge (token PR1c removes it): validated as before.
             async with get_db_context() as db:
                 runtime_principal = await load_runtime_principal(db, payload)

@@ -176,6 +176,9 @@ def rate_limit(
 
 # Pre-configured rate limiters for common auth scenarios
 auth_limiter = RateLimiter(max_requests=10, window_seconds=60)  # 10 req/min
+# Shared CI runners present many exchanges from one address. This is separate
+# from the password limiter so a workload burst cannot lock out human login.
+workload_exchange_limiter = RateLimiter(max_requests=60, window_seconds=60)
 device_token_limiter = RateLimiter(max_requests=20, window_seconds=60)  # 20 req/min
 mfa_limiter = RateLimiter(max_requests=5, window_seconds=60)    # 5 req/min
 password_reset_limiter = RateLimiter(max_requests=3, window_seconds=300)  # 3 req/5min
