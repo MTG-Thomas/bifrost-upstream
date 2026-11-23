@@ -2088,12 +2088,13 @@ async def test_supervisor_reserves_and_retires_without_restarting(supervisor_dat
         heartbeat_at=datetime.now(UTC), supported_handlers=["workflow.execute"],
         memory_budget_bytes=128 * 2**20, memory_reserved_bytes=128 * 2**20,
     )
-    operator = User(email="job-placement@example.test")
-    db_session.add_all((primary_worker, operator))
-    await db_session.flush()
-    caller = _platform_operator(operator.id)
-    run = Execution(workflow_name="fixture", executed_by_name="fixture", executed_by=operator.id)
-    db_session.add(run)
+    role = RoleGrant(uuid4(), frozenset({"platform.read", "executions.read.all"}), (Boundary(BoundaryKind.PLATFORM),))
+    caller = Caller(
+        UserPrincipal(OPERATOR_ID, "operator@example.test", None),
+        AuthorizationContext(OPERATOR_ID, None, uuid4(), False, frozenset(), (role,)),
+    )
+    run = Execution(workflow_name="fixture", executed_by_name="fixture")
+    db_session.add_all((primary_worker, run))
     await db_session.flush()
     dispatch = WorkDispatch(
         family="workflow", handler="workflow.execute", handler_version=1, subject_id=run.id,
