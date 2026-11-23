@@ -60,7 +60,7 @@ def test_catalog_metadata_matches_each_materialized_definition() -> None:
         assert definition.description == item.description
 
 
-def test_deployment_jobs_opt_into_delayed_failure_retries() -> None:
+def test_cloudflare_jobs_wait_for_provider_and_connector_settlement() -> None:
     from src.jobs.platform.catalog import list_platform_job_metadata
 
     delays = (timedelta(seconds=15), timedelta(seconds=45))
@@ -71,6 +71,7 @@ def test_deployment_jobs_opt_into_delayed_failure_retries() -> None:
     assert opted_in == {
         "capacity.cloudflare_enable": delays,
         "capacity.cloudflare_reconcile": delays,
+        "capacity.cloudflare_rotate_worker_credential": delays,
     }
 
 

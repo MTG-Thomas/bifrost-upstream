@@ -91,7 +91,11 @@ _METADATA = MappingProxyType(
                 "capacity.cloudflare_rotate_worker_credential",
                 "src.jobs.platform.cloudflare_capacity",
                 "CLOUDFLARE_ROTATE_WORKER_DEFINITION",
-                PlatformJobPolicy(15 * 60, max_attempts=3, min_memory_headroom_mb=128, retry_on_failure=True),
+                PlatformJobPolicy(
+                    15 * 60, max_attempts=3, min_memory_headroom_mb=128, retry_on_failure=True,
+                    # Secret projection and session replacement happen after the rotation commits.
+                    retry_delay=_CLOUDFLARE_RETRY_DELAY,
+                ),
             ),
             _metadata(
                 "workflow.cloudflare_reapproval",
