@@ -2,6 +2,7 @@
 
 import json
 from asyncio import gather
+from collections import Counter
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -22,7 +23,7 @@ from src.jobs.platform import cloudflare_enable
 from src.jobs.platform.base import PlatformJobContext, PlatformJobRequiresAction
 from src.models.orm.cloudflare_capacity import CloudflareWorkerReservation
 from src.models.orm.execution_workers import ExecutionWorker
-from src.services.worker_pool import cloudflare_containers_rest
+from src.services.worker_pool import cloudflare_containers_admission, cloudflare_containers_rest
 from src.services.worker_pool.cloudflare_admission import PrimaryPool
 from src.services.worker_pool.cloudflare_containers_admission import (
     LinuxReview,
@@ -479,7 +480,7 @@ async def test_refresh_changes_admission_only_on_conflicting_evidence(monkeypatc
     origin = "https://worker.example.test"
     proof = await verified_egress(installation_id, 1, release.digest, origin)
     row = SimpleNamespace(
-        id=installation_id, worker_ingress_origin=origin, deployment_evidence={},
+        id=installation_id, account_id=ACCOUNT, worker_ingress_origin=origin, deployment_evidence={},
         admitted_revision=1, containers_ready_revision=1, containers_release_digest=release.digest,
     )
     db = AsyncMock()
@@ -516,6 +517,40 @@ async def test_refresh_changes_admission_only_on_conflicting_evidence(monkeypatc
     assert bool(row.deployment_evidence) == (outcome == "verified")
     assert reserve.await_args.kwargs["refresh"] is True
     assert verify.await_count == (0 if outcome == "no-spare-seat" else 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocker", [None, "no-demand", "last-instance", "last-workflow-seat", "last-shared-seat"])
+async def test_refresh_canary_leaves_user_headroom(monkeypatch, blocker):
+    release, _, _ = make_release()
+    installation = SimpleNamespace(id=uuid4(), account_id=ACCOUNT)
+    seats = SimpleNamespace(
+        occupied=Counter({"tenant": 1}) if blocker == "last-workflow-seat" else Counter(),
+        policy=SimpleNamespace(installation_slots=2),
+    )
+    capacity = cloudflare_containers_admission._ContainerCapacity(
+        installation, SimpleNamespace(deployment_revision=1), policy(), Decimal(100), datetime.now(UTC), [], seats,
+        frozenset({"tenant"}) if blocker == "last-instance" else frozenset(),
+        1 if blocker == "last-shared-seat" else 2,
+    )
+    db = AsyncMock()
+    db.scalar.return_value = 1
+    db.execute.return_value = Mock(
+        one_or_none=Mock(return_value=(APP_ID, APP_VERSION)),
+        tuples=Mock(return_value=[] if blocker == "no-demand" else [(object(), object(), object(), object())]),
+    )
+    monkeypatch.setattr(cloudflare_containers_admission, "_lock_container_capacity", AsyncMock(return_value=capacity))
+    monkeypatch.setattr(cloudflare_containers_admission, "_container_queue", Mock())
+    monkeypatch.setattr(cloudflare_containers_admission, "eligible_linux_review", Mock(return_value=object()))
+    reservation = CloudflareWorkerReservation(worker_id=uuid4())
+    create = AsyncMock(return_value=reservation)
+    monkeypatch.setattr(cloudflare_containers_admission, "_create_container_reservation", create)
+    result = await cloudflare_containers_admission.reserve_container_canary(
+        db, installation_id=installation.id, controller_id=uuid4(), release=release,
+        job_id=uuid4(), lease_token=uuid4(), refresh=True,
+    )
+    assert result is (reservation if blocker is None else None)
+    assert create.await_count == int(blocker is None)
 
 
 def test_baked_wheel_closure_is_required_for_package_finding() -> None:
