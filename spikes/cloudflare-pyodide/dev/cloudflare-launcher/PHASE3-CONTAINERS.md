@@ -484,6 +484,9 @@ and an exact match with the current application's provider receipt.
 Reconcile can renew it only for eligible demand and with a spare seat beyond
 the one needed by user work. A transient renewal failure pauses Container
 placement until the next reconciliation. Conflicting evidence closes both lanes.
+A policy with a one-instance ceiling has no spare seat for automatic
+refresh. Scale In followed by Enable runs qualification with the revision
+drained.
 
 Run `./test.sh cloudflare-containers <local-api-image> --miniflare` to
 exercise the isolated Linux launcher and the native TLS intercept with the
