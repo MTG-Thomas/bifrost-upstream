@@ -204,7 +204,7 @@ async def reconcile_container_stop(
                 closure = ClosedContainerStart(
                     binding.application, worker_id, uid, instance, binding.prepared_image,
                     datetime.fromtimestamp(fence.authorizedAt / 1000, UTC),
-                    datetime.fromtimestamp(fence.startedAt / 1000, UTC), fence.outboundBytes,
+                    datetime.fromtimestamp(fence.startedAt / 1000, UTC),
                 )
 
         if isinstance(closure, ClosedContainerStart):

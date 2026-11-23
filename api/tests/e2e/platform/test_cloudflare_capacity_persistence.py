@@ -3758,8 +3758,7 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("meter_complete", [False, True])
-async def test_capacity_reports_overdue_unsettled_containers(db_session, installation, monkeypatch, meter_complete) -> None:
+async def test_capacity_reports_overdue_unsettled_containers(db_session, installation, monkeypatch) -> None:
     from src.services.worker_pool.cloudflare_containers_rest import ContainersRest
     from src.services.worker_pool.cloudflare_containers_settlement import (
         ClosedContainerStart,
@@ -3837,7 +3836,7 @@ async def test_capacity_reports_overdue_unsettled_containers(db_session, install
         return httpx.Response(200, json={"success": True, "result": result})
 
     closure = ClosedContainerStart(
-        app, workers[0], uid, actor, image, reserved_at, started_at, 200, meter_complete=meter_complete,
+        app, workers[0], uid, actor, image, reserved_at, started_at,
     )
     async with httpx.AsyncClient(transport=httpx.MockTransport(management)) as http:
         adapter = ContainersRest(http)
@@ -3864,18 +3863,16 @@ async def test_capacity_reports_overdue_unsettled_containers(db_session, install
         started_at = closure.placement_started_at
         installation.desired_state = "disconnected"
         await db_session.flush()
+        stopped_at = datetime.now(UTC) + timedelta(seconds=2)
         await settle_container_stop(db_session, adapter, token=token, closure=closure)
         management_available = False
         await settle_container_stop(db_session, adapter, token=token, closure=closure)
     settled = await db_session.get(CloudflareWorkerReservation, workers[0])
     assert settled is not None and settled.container_envelope is not None
-    assert settled.container_stopped_at == stopped_at
-    if meter_complete:
-        assert settled.container_envelope["measured_outbound_bytes"] == 200
-        assert Decimal(settled.container_envelope["settled_fixed_usd"]) == Decimal("0.00100001")
-    else:
-        assert "settled_fixed_usd" not in settled.container_envelope
-        assert settled.container_envelope["fixed_usd"] == "0.01"
+    assert settled.container_stopped_at is not None and settled.container_stopped_at <= datetime.now(UTC)
+    stopped_worker = await db_session.get(ExecutionWorker, workers[0])
+    assert stopped_worker is not None and stopped_worker.ended_at == settled.container_stopped_at
+    assert settled.container_envelope["fixed_usd"] == "0.01"
     status = await get_cloudflare_capacity_status(db_session, _platform_operator())
     assert status.installation is not None and status.installation.owned_resources_pending == 1
 

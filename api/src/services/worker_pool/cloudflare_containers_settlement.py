@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal
 from uuid import UUID
 
 from pydantic import SecretStr
@@ -36,8 +35,6 @@ class ClosedContainerStart:
     image: str
     last_start_effect_at: datetime
     placement_started_at: datetime
-    outbound_bytes: int | None
-    meter_complete: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,7 +151,7 @@ async def settle_container_stop(
                 raise ValueError
         except (KeyError, OSError, TypeError, ValueError, OverflowError):
             raise ObservationPending("Container absence does not witness its expired start deadline") from None
-        when = max(when, pin.container_reserved_at)
+        when = max(pin.container_reserved_at, min(when, now))
         if await db.scalar(select(exists().where(ExecutionWorkerClaim.worker_id == worker.id))):
             raise ObservationPending("An unstarted Container cannot own a claim")
         await rest.observe_no_placement(token, closure.application, closure.instance_id)
@@ -191,19 +188,11 @@ async def settle_container_stop(
     ):
         raise ObservationPending("Container stop does not match the witnessed start")
     envelope["observed_started_at"] = stop.started_at.isoformat()
-    count = closure.outbound_bytes
-    if closure.meter_complete is True:
-        if type(count) is not int or count < 0:
-            raise ObservationPending("Container egress receipt is invalid")
-        envelope["measured_outbound_bytes"] = count
-        # An aggregate receipt spanning months cannot allocate bytes between
-        # them. Preserve the conservative monthly holds in that case.
-        if (stop.started_at.year, stop.started_at.month) == (stop.stopped_at.year, stop.stopped_at.month):
-            envelope["settled_fixed_usd"] = str(
-                Decimal(envelope["control_usd"]) + Decimal(envelope["outbound_gb_usd"]) * count / 10**9,
-            )
+    # Intercepted bytes are not a qualified provider billing measurement.
     pin.container_envelope = envelope
-    pin.container_stopped_at = max(stop.stopped_at, pin.container_reserved_at)
+    observed_at = await db.scalar(select(func.clock_timestamp()))
+    assert observed_at is not None
+    pin.container_stopped_at = max(pin.container_reserved_at, min(stop.stopped_at, observed_at))
     worker.state = "retired"
     worker.ended_at = pin.container_stopped_at
     await db.flush()
