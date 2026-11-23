@@ -4,7 +4,7 @@ import base64
 import binascii
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from hmac import compare_digest
 from typing import Any
 from urllib.parse import urlsplit
@@ -410,7 +410,8 @@ class TunnelRest(WorkersRestCleanup):
 
     async def write_ingress(
         self, tunnel: ResourceObservation, origin: str, *, repair: bool = False, prove_write: bool = False,
-    ) -> None:
+        before_write: Callable[[], Awaitable[bool]] | None = None,
+    ) -> bool:
         exact = await self._result("GET", f"{self.tunnels}/{tunnel.provider_id}", allow_missing=True)
         if exact is None:
             raise ObservationPending(
@@ -441,15 +442,18 @@ class TunnelRest(WorkersRestCleanup):
                     OwnershipCheck.INGRESS_CONFIG_OWNER, current,
                 )
             if matches and not prove_write:
-                return
+                return True
         else:
             if not matches:
                 raise IngressMismatch(
                     "Cloudflare tunnel ingress differs from the approved route",
                     OwnershipCheck.INGRESS_IDENTITY, current,
                 )
+        if before_write is not None and not await before_write():
+            return False
         await self._put_ingress(path, desired)
         await self.verify_ingress(tunnel, origin)
+        return True
 
     def record_body(self, intent: ResourceIntent, tunnel_id: str) -> dict[str, Any]:
         return {

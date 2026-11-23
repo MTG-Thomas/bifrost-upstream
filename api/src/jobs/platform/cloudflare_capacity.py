@@ -3,7 +3,7 @@
 import asyncio
 import secrets
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from time import monotonic
 from typing import Any, Literal
@@ -727,14 +727,17 @@ async def _stage_reconcile(
         set_workers_release_floor(row, release, order)
 
 
-async def _checked_tunnel_resources(
+async def _current_tunnel_resources(
     db: AsyncSession, installation: CloudflareInstallation, snapshot: cloudflare_tunnel.TunnelVerification,
-) -> tuple[CloudflareOwnedResource, CloudflareOwnedResource]:
+) -> tuple[CloudflareOwnedResource, CloudflareOwnedResource] | None:
     item = await cloudflare_tunnel.resource(db, installation, cloudflare_tunnel.TUNNEL)
     record = await cloudflare_tunnel.resource(db, installation, cloudflare_tunnel.DNS)
-    if item is None or record is None or not cloudflare_tunnel.verification_matches(installation, item, record, snapshot):
-        raise CloudflareRestUnavailable("Managed Tunnel changed during verification")
-    return item, record
+    if (
+        item is not None and record is not None
+        and cloudflare_tunnel.verification_identity(installation, item, record) == snapshot.identity
+    ):
+        return item, record
+    return None
 
 
 async def _settle_reconcile(
@@ -791,6 +794,7 @@ async def _settle_reconcile(
         except ObservationPending:
             raise CloudflareRestUnavailable("Managed Tunnel inventory could not be confirmed") from None
 
+    tunnel_problem = tunnel_snapshot is not None and issue is not None
     if token is not None and issue is None:
         try:
             roles = {receipt.intent.target.name.rsplit("-", 1)[-1] for receipt in inventory}
@@ -828,10 +832,14 @@ async def _settle_reconcile(
         installation = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
         if installation is None or not _current_reconcile(installation, payload.revision):
             return {"outcome": "superseded"}
-        tunnel_resources = (
-            await _checked_tunnel_resources(db, installation, tunnel_snapshot) if tunnel_snapshot is not None else None
-        )
-        if (
+        tunnel_resources = None
+        if tunnel_snapshot is not None:
+            tunnel_resources = await _current_tunnel_resources(db, installation, tunnel_snapshot)
+            if tunnel_resources is None:
+                return {"outcome": "superseded"}
+        if installation.admitted_revision is None and admitted_revision is not None:
+            return {"outcome": "superseded"}
+        if not tunnel_problem and (
             installation.api_token_version != token_version
             or installation.admitted_revision != admitted_revision
             or await _inventory_snapshot(db, installation.id, revision=payload.revision) != inventory
@@ -840,16 +848,16 @@ async def _settle_reconcile(
             return {"outcome": "superseded"}
         if tunnel_snapshot is not None and tunnel_resources is not None:
             item, record = tunnel_resources
-            if connectors is not None:
+            current_connector = cloudflare_tunnel.connector_fence(installation, item) == tunnel_snapshot.connector.fence
+            if not current_connector and not tunnel_problem:
+                raise CloudflareRestUnavailable("Managed Tunnel changed during verification")
+            if current_connector and connectors is not None:
                 record.observed_at = datetime.now(UTC)
                 cloudflare_tunnel.record_connector_readiness(installation, item, tunnel_snapshot.connector, connectors)
         if issue is not None:
+            # Fail closed on a confirmed problem with this tunnel, even if projection
+            # advanced while the provider call was in flight.
             installation.admitted_revision = None
-            if repair_tunnel_ingress and tunnel_snapshot is not None and tunnel_resources is not None:
-                # Fence the repair against the closed admission state that is about to commit.
-                tunnel_snapshot = replace(tunnel_snapshot, connector=replace(
-                    tunnel_snapshot.connector, fence=cloudflare_tunnel.connector_fence(installation, tunnel_resources[0]),
-                ))
         else:
             installation.usage_advisory = advisory
             estimated_usage = await db.scalar(
@@ -857,16 +865,33 @@ async def _settle_reconcile(
             )
         wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
     if repair_tunnel_ingress and tunnel_snapshot is not None and tunnel_client is not None:
-        async with get_db_context() as db:
-            await _hold_installation_lease(db, context, payload.installation_id)
-            installation = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
-            if installation is None or not _current_reconcile(installation, payload.revision):
+        snapshot = tunnel_snapshot
+
+        async def current_repair() -> bool:
+            async with get_db_context() as db:
+                await _hold_installation_lease(db, context, payload.installation_id)
+                row = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
+                return (
+                    row is not None and _current_reconcile(row, payload.revision)
+                    and row.admitted_revision is None and row.api_token_version == token_version
+                    and await _current_tunnel_resources(db, row, snapshot) is not None
+                )
+
+        # Admission closure has committed. Check the lease and exact target again
+        # before the write and after readback. Repair records no health evidence.
+        if not await current_repair():
+            return {"outcome": "superseded"}
+        try:
+            repaired = await tunnel_client.write_ingress(
+                snapshot.connector.receipt, snapshot.origin, repair=True, before_write=current_repair,
+            )
+        except (CloudflareManagementDenied, CloudflareRestUnavailable, ObservationPending, OwnershipConflict):
+            issue = ("Repair Cloudflare Tunnel Ingress", "CF_TUNNEL_INGRESS_MISMATCH")
+        else:
+            if not repaired:
                 return {"outcome": "superseded"}
-            await _checked_tunnel_resources(db, installation, tunnel_snapshot)
-            try:
-                await cloudflare_tunnel.repair_ingress(db, installation, tunnel_client)
-            except (CloudflareManagementDenied, CloudflareRestUnavailable, ObservationPending, OwnershipConflict):
-                issue = ("Repair Cloudflare Tunnel Ingress", "CF_TUNNEL_INGRESS_MISMATCH")
+        if not await current_repair():
+            return {"outcome": "superseded"}
     if issue is not None:
         raise PlatformJobRequiresAction(issue[0], {"code": issue[1]})
     if estimated_usage is None:

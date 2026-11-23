@@ -1519,9 +1519,28 @@ def _running_tunnel_job(
 
 
 @pytest.mark.asyncio
-async def test_reconcile_discards_verification_if_projection_moves_the_fence(managed_tunnel_for_projection) -> None:
+@pytest.mark.parametrize(("race", "code"), [
+    ("disconnected", "CF_CONNECTOR_UNAVAILABLE"),
+    ("ownership", "CF_OWNERSHIP_CONFLICT"),
+    ("repair", "CF_TUNNEL_INGRESS_MISMATCH"),
+    ("repair_superseded", None),
+    ("target_replaced", None),
+    ("admission_superseded", None),
+    ("unhealthy_admission_superseded", None),
+    ("healthy_projection_changed", None),
+])
+async def test_reconcile_fails_closed_and_fences_repair(managed_tunnel_for_projection, race, code) -> None:
     sessions, token_file, installation_id, provider = managed_tunnel_for_projection
     payload = lifecycle_job.CloudflareReconcilePayload(installation_id=installation_id, revision=1)
+    healthy_read = race in ("admission_superseded", "healthy_projection_changed")
+    if healthy_read or race == "repair":
+        assert await cloudflare_connector_channel.project_connector(None) == (installation_id, 1, 1)
+    if healthy_read:
+        provider.connectors = [str(uuid4())]
+    if race == "ownership":
+        provider.private_routes = [{"tunnel_id": provider.tunnel_id, "network": "192.0.2.0/24"}]
+    if race.startswith("repair"):
+        provider.config["warp-routing"] = {"enabled": True}
     async with sessions.begin() as db:
         row = await db.get(CloudflareInstallation, installation_id)
         assert row is not None
@@ -1530,20 +1549,54 @@ async def test_reconcile_discards_verification_if_projection_moves_the_fence(man
         row.deployment_evidence = {"connector_session": "disconnected"}
         running = _running_tunnel_job(db, installation_id, lifecycle_job.RECONCILE_JOB, payload.model_dump(mode="json"))
 
+    reads = writes = 0
+
     async def slow_provider(request):
+        nonlocal reads, writes
         if request.url.path.endswith("/configurations"):
-            # The independent projector must finish before the provider can return the read.
+            # The provider waits for a separate projection transaction to finish.
             assert await cloudflare_connector_channel.project_connector(None) == (installation_id, 1, 1)
             assert token_file.read_bytes()
-            provider.connectors = [str(uuid4())]
+            if request.method == "PUT":
+                writes += 1
+            else:
+                reads += 1
+            async with sessions.begin() as db:
+                row = await db.get(CloudflareInstallation, installation_id)
+                assert row is not None
+                if race.startswith("repair") and reads >= 2:
+                    assert row.admitted_revision is None
+                    if race == "repair_superseded":
+                        row.desired_revision = 2
+                if race == "target_replaced":
+                    item = await cloudflare_tunnel.connector_resource(db, row)
+                    item.provider_version = "replacement-receipt"
+                if race.endswith("admission_superseded"):
+                    row.admitted_revision = None
+                if race == "healthy_projection_changed":
+                    row.tunnel_token_projected_version = 0
         return provider(request)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(slow_provider)) as http:
-        with pytest.raises(CloudflareRestUnavailable, match="changed during verification"):
-            await lifecycle_job._settle_reconcile(running, payload, WorkersRestCleanup(http), tunnel_http=http)
-    async with sessions.begin() as db:
+        reconcile = lifecycle_job._settle_reconcile(running, payload, WorkersRestCleanup(http), tunnel_http=http)
+        if code is not None:
+            with pytest.raises(PlatformJobRequiresAction) as issue:
+                await reconcile
+            assert issue.value.result == {"code": code}
+        elif race == "healthy_projection_changed":
+            with pytest.raises(CloudflareRestUnavailable, match="changed during verification"):
+                await reconcile
+        else:
+            assert await reconcile == {"outcome": "superseded"}
+
+    assert reads >= 1
+    assert writes == (race == "repair")
+    if race.startswith("repair"):
+        assert provider.config["warp-routing"] == {"enabled": (race == "repair_superseded")}
+    async with sessions() as db:
         row = await db.get(CloudflareInstallation, installation_id)
-        assert row is not None and row.tunnel_token_projected_version == 1 and row.admitted_revision == 1
+        assert row is not None
+        assert row.admitted_revision == (1 if race in ("target_replaced", "healthy_projection_changed") else None)
         assert row.deployment_evidence == {"connector_session": "disconnected"}
 
 
@@ -2638,6 +2691,8 @@ async def test_supervisor_reserves_and_retires_without_restarting(
     (3, "enabled", "draining", False, 0, "policy"),
     (3, "enabled", "draining", False, 0, "policy_stop_unconfirmed"),
     (3, "enabled", "draining", False, 0, "policy_idle"),
+    (3, "enabled", "draining", False, 0, "policy_memory"),
+    (3, "enabled", "draining", False, 0, "policy_claimless_idle"),
     (3, "scaled_in", "draining", False, 0, "lifetime"),
     (3, "disconnected", "retired", False, 0, "job"),
     (3, "disconnected", "retired", False, 0, "unrelated"),
@@ -2672,7 +2727,9 @@ async def test_cloudflare_pins_limit_primary_room_and_explain_cleanup(
     now = datetime.now(UTC)
     policy_drains = {
         "policy": None, "policy_stop_unconfirmed": "cloudflare_stop_unconfirmed", "policy_idle": "idle",
+        "policy_memory": None, "policy_claimless_idle": "idle",
     }
+    reserved_only = scenario in ("policy_memory", "policy_claimless_idle")
     worker_pins = []
     for index in range(3):
         worker_id = uuid4()
@@ -2680,14 +2737,14 @@ async def test_cloudflare_pins_limit_primary_room_and_explain_cleanup(
         if worker_state == "draining":
             end_reason = "max_lifetime" if scenario == "lifetime" else "cloudflare_admission_closed"
         workers_lane = worker_state == "draining"
-        state = "ready" if scenario == "policy" else worker_state
+        state = "ready" if scenario in ("policy", "policy_memory") else worker_state
         if scenario in policy_drains:
             end_reason = policy_drains[scenario]
         db_session.add(ExecutionWorker(
             id=worker_id, form="external", state=state,
             capacity_scope="workers" if workers_lane else "containers",
             runtime_profile="cloudflare-python-v1" if workers_lane else "linux-process-v1",
-            end_reason=end_reason,
+            end_reason=end_reason, memory_reserved_bytes=1 if reserved_only else 0,
             capacity_resource_deleted_at=now if deleted else None,
             heartbeat_at=now, memory_budget_bytes=128 * 2**20,
         ))
@@ -2696,7 +2753,7 @@ async def test_cloudflare_pins_limit_primary_room_and_explain_cleanup(
             scope = ManagedCloudflareScope(installation.id, "workers", 1)
             pin = scope.pin(worker_id, 1, reserved_at=now - timedelta(seconds=120), lifetime=3600, deadline_wire=False)
             worker_pins.append(pin)
-            if scenario in policy_drains:
+            if scenario in policy_drains and not reserved_only:
                 running = Execution(
                     id=uuid4(), workflow_name="fixture", executed_by_name="fixture",
                     status=ExecutionStatus.RUNNING, started_at=now - timedelta(seconds=60),
@@ -2789,13 +2846,19 @@ async def test_cloudflare_pins_limit_primary_room_and_explain_cleanup(
             for pin in worker_pins:
                 await supervisor._retire_closed_worker(pin.worker_id)
             before_expiry = await get_cloudflare_capacity_status(db_session, _platform_operator())
-            assert any(reason.code == "primary_limited_by_cloudflare_drain" for reason in before_expiry.placement_reasons)
+            assert any(reason.code == "primary_limited_by_cloudflare_drain" for reason in before_expiry.placement_reasons) == (
+                scenario != "policy_claimless_idle"
+            )
             for pin in worker_pins:
                 pin.workers_deadline_at = now - timedelta(seconds=60)
                 pin.workers_lifetime_seconds = 60
             await db_session.flush()
             for pin in worker_pins:
                 await supervisor._retire_closed_worker(pin.worker_id)
+                worker = await db_session.get(ExecutionWorker, pin.worker_id, populate_existing=True)
+                assert worker is not None and worker.state == "draining"
+                expected_reason = "idle" if scenario == "policy_claimless_idle" else "cloudflare_admission_closed"
+                assert worker.end_reason == expected_reason
 
     status = await get_cloudflare_capacity_status(db_session, _platform_operator())
     cleanup_limit = next((reason for reason in status.placement_reasons
@@ -2809,7 +2872,9 @@ async def test_cloudflare_pins_limit_primary_room_and_explain_cleanup(
         assert "Unrelated Fixture Reconcile" not in cleanup_limit.remedy
     drain_limit = next((reason for reason in status.placement_reasons
                         if reason.code == "primary_limited_by_cloudflare_drain"), None)
-    assert (drain_limit is not None) == (shared_cap == 3 and worker_state == "draining" and scenario != "lifetime")
+    assert (drain_limit is not None) == (
+        shared_cap == 3 and worker_state == "draining" and scenario not in ("lifetime", "policy_claimless_idle")
+    )
     if drain_limit is not None:
         expected = "Drain Fixture Workers" if scenario == "job" else "Workers finish their current work"
         assert expected in drain_limit.remedy

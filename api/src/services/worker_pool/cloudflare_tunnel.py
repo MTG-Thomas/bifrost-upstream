@@ -251,8 +251,9 @@ async def observe_connector(client: TunnelRest, snapshot: ConnectorSnapshot) -> 
     connectors = await client.connectors(provider_id)
     stale_sessions = connectors & snapshot.excluded
     if snapshot.projected and stale_sessions:
-        # Only exact session IDs captured before this token was activated can be
-        # deleted. A later rotation's connector cannot join this immutable set.
+        # The job releases its transaction before provider I/O so Secret projection
+        # can proceed. Eviction is idempotent and targets exact pre-activation session
+        # IDs on the journaled tunnel, even if the job loses its lease during the call.
         await client.evict_connectors(snapshot.receipt, set(stale_sessions))
         connectors = await client.connectors(provider_id)
     return connectors
@@ -262,8 +263,18 @@ async def observe_connector(client: TunnelRest, snapshot: ConnectorSnapshot) -> 
 class TunnelVerification:
     connector: ConnectorSnapshot
     dns: ResourceObservation
-    dns_fence: tuple[object, ...]
+    identity: tuple[object, ...]
+    origin: str
     secret: SecretStr
+
+
+def verification_identity(
+    row: CloudflareInstallation, item: CloudflareOwnedResource, record: CloudflareOwnedResource,
+) -> tuple[object, ...]:
+    return (
+        row.id, row.reachability_mode, row.account_id, row.zone_id, row.worker_ingress_origin,
+        _resource_fence(item), _resource_fence(record),
+    )
 
 
 async def snapshot_verification(db: AsyncSession, row: CloudflareInstallation) -> TunnelVerification:
@@ -280,14 +291,7 @@ async def snapshot_verification(db: AsyncSession, row: CloudflareInstallation) -
     if row.tunnel_token_version is None:
         raise ObservationPending("Managed Tunnel has not published a connector credential")
     secret = await _credential(db, _ref(row, "tunnel_secret", row.tunnel_token_version))
-    return TunnelVerification(connector, receipt, _resource_fence(record), secret)
-
-
-def verification_matches(
-    row: CloudflareInstallation, item: CloudflareOwnedResource, record: CloudflareOwnedResource,
-    snapshot: TunnelVerification,
-) -> bool:
-    return connector_fence(row, item) == snapshot.connector.fence and _resource_fence(record) == snapshot.dns_fence
+    return TunnelVerification(connector, receipt, verification_identity(row, item, record), tunnel_origin(), secret)
 
 
 async def verify(client: TunnelRest, snapshot: TunnelVerification) -> frozenset[str]:
@@ -299,7 +303,7 @@ async def verify(client: TunnelRest, snapshot: TunnelVerification) -> frozenset[
         )
     if await client.dns(snapshot.dns.intent, snapshot.dns, tunnel.provider_id) is None:
         raise TunnelUnavailable("The recorded Cloudflare DNS record is absent")
-    await client.verify_ingress(tunnel, tunnel_origin())
+    await client.verify_ingress(tunnel, snapshot.origin)
     await client.verify_private_routes(tunnel.provider_id)
     if not compare_digest(await client.secret(tunnel.provider_id), snapshot.secret.get_secret_value()):
         raise OwnershipConflict(
@@ -307,10 +311,6 @@ async def verify(client: TunnelRest, snapshot: TunnelVerification) -> frozenset[
             OwnershipResource.CONNECTOR_CREDENTIAL, OwnershipCheck.CONNECTOR_SECRET,
         )
     return await observe_connector(client, snapshot.connector)
-
-
-async def repair_ingress(db: AsyncSession, row: CloudflareInstallation, client: TunnelRest) -> None:
-    await client.write_ingress(await _owned_tunnel(db, row, client), tunnel_origin(), repair=True)
 
 
 async def verify_management_writes(
