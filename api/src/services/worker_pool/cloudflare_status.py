@@ -49,6 +49,7 @@ from src.services.worker_pool.cloudflare_slots import read_workflow_slot_admissi
 from src.services.worker_pool.controller import (
     Request,
     linux_capacity_budgets,
+    managed_worker_room,
     shared_managed_worker_usage,
     take_first_budget,
     waiting_capacity_rows,
@@ -87,7 +88,7 @@ PLACEMENT: dict[CloudflarePlacementCode, tuple[str, str]] = {
     "spend_guard_closed": ("Spend Guard Closed", "Verify the ledger and review the monthly limit or wait for the UTC reset."),
     "primary_limited_by_cloudflare_cleanup": (
         "Primary Limited by Cloudflare Cleanup",
-        "Open the Scale In or Disconnect job. Follow its recovery instructions if it requires action.",
+        "Verify the outstanding Cloudflare resource deletions and check the latest capacity job for recovery.",
     ),
     "cleanup_pending": ("Cleanup Pending", "Run Scale In to verify retirement or finish an outstanding Disconnect."),
     "cloudflare_capacity_unavailable": (
@@ -302,22 +303,55 @@ def placement_blockers(
     return blockers
 
 
-async def primary_cleanup_limited(db: AsyncSession) -> bool:
+async def primary_cleanup_limit(
+    db: AsyncSession, *, now: datetime, job: PlatformJob | None,
+) -> CloudflarePlacementReason | None:
     settings = get_settings()
     if not (os.environ.get("KUBERNETES_SERVICE_HOST") or (settings.worker_capacity_url and settings.worker_capacity_token)):
-        return False
-    managed_ids = set(await db.scalars(select(ExecutionWorker.id).where(
-        ExecutionWorker.form.in_(MANAGED_WORKER_FORMS), ExecutionWorker.state.in_(LIVE_STATES),
-    )))
-    cap, pinned, cleanup = await shared_managed_worker_usage(db, managed_ids)
-    if cap is None or not cleanup:
-        return False
-    limit = (await load_kubernetes_policy(db)).max_workers
-    primary_room = max(0, limit - len(managed_ids - pinned))
+        return None
+    workers = list(await db.scalars(select(ExecutionWorker).where(ExecutionWorker.state.in_(LIVE_STATES))))
+    managed_ids = {worker.id for worker in workers if worker.form in MANAGED_WORKER_FORMS}
+    cap, pinned, cleanup, draining = await shared_managed_worker_usage(db, managed_ids)
+    if cap is None or not (cleanup or draining):
+        return None
+    policy = await load_kubernetes_policy(db)
+    primary = len(managed_ids - pinned)
     occupied = managed_ids | pinned
-    room = min(primary_room, max(0, cap - len(occupied)))
-    room_after_cleanup = min(primary_room, max(0, cap - len(occupied - cleanup)))
-    return room < room_after_cleanup
+    room, _ = managed_worker_room(policy.max_workers, primary, cap, len(occupied))
+
+    def limits(releasing: set[UUID]) -> bool:
+        after, _ = managed_worker_room(policy.max_workers, primary, cap, len(occupied - releasing))
+        return room == 0 and after > 0
+
+    drain_job = job is not None and (
+        job.job_type == "capacity.cloudflare_disable"
+        or (job.job_type == "capacity.cloudflare_reconcile" and job.payload.get("operation") == "upgrade")
+    )
+    if limits(cleanup):
+        notice = reason("primary_limited_by_cloudflare_cleanup")
+    elif drain_job and limits(cleanup | draining):
+        notice = reason("cleanup_pending")
+        notice.label = "Primary Limited by Draining Cloudflare Workers"
+    else:
+        return None
+
+    waiting = await waiting_capacity_rows(db, await pending_local_platform_job_ids(db, policy, now), now)
+    sizing = JobSizing.of(policy, settings.memory_pressure_threshold, JOB_BASELINE_ESTIMATE_BYTES)
+    requests = [
+        Request(row.id, row.memory_request_bytes, row.handler, row.handler_version, row.cloudflare_revision,
+                row.tenant_id, platform_job_type=row.platform_job_type)
+        for row in waiting
+    ]
+    linux = [worker for worker in workers if worker.runtime_profile == LINUX_RUNTIME_PROFILE]
+    covered = primary_coverage(
+        linux, requests, sizing, containers_scope=settings.cloudflare_containers_scope,
+        baselines=await load_packing_baselines(db, linux),
+    )
+    if not any(request.id not in covered and request.bytes <= sizing.largest_budget_bytes for request in requests):
+        return None
+    if job is not None:
+        notice.remedy = f"Check the {job.title} job for progress or recovery instructions."
+    return notice
 
 
 async def overflow_status(

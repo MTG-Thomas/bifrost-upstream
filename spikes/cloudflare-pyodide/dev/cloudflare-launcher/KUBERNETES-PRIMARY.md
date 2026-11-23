@@ -273,19 +273,22 @@ requires action with `CF_CLEANUP_PENDING`. Both live jobs finished as
 A managed primary can still be constrained by an explicit shared cap while
 Cloudflare deletions remain unverified. Status reports
 `primary_limited_by_cloudflare_cleanup` when completing those deletions
-would open primary room, and points to the Scale In or Disconnect job for
-recovery. The shared cap continues to count the outstanding resources.
+would open primary room for queued demand, and uses the current job for
+recovery guidance when available. Live workers in a drain are reported
+separately from unconfirmed provider deletions. The shared cap continues to count the outstanding resources.
 
 Reconcile uses the Enable connector wait when it enters the provisioning
 path. This is intentional. Reconcile can admit a new deployment, so it must
 verify the same projected token and attached session. A connector that
 remains unready after the 180-second wait ends that job with non-retryable
 `CF_CONNECTOR_UNAVAILABLE`. A later explicit replay can reuse the
-journaled connector credential. The readiness probe releases its database
+journaled connector credential. The `_wait_for_connector` loop releases its database
 transaction before reading connector sessions, so a slow provider read
 cannot block Secret projection. It rechecks the job, installation, and
 token versions before recording the observation. Rotation evicts superseded
-sessions under the existing fence after the new token is projected.
+sessions and reads them back under the existing fence after the new token
+is projected. Reconcile verification of an admitted deployment still reads
+the provider under the installation row lock.
 
 Strict kubeconform validated all 23 adapted manifests in each replay. Both
 replays removed the namespace and connector workload, then verified that

@@ -77,7 +77,7 @@ from src.services.worker_pool.cloudflare_status import (
     deployment_evidence,
     overflow_status,
     placement_blockers,
-    primary_cleanup_limited,
+    primary_cleanup_limit,
     reason,
     recovery_for_job,
 )
@@ -314,8 +314,9 @@ async def get_cloudflare_capacity_status(db: AsyncSession, caller: Caller) -> Cl
         connector_session=deployment.connector_session, job_code=job_code, cooldown_until=cooldown,
     )
     lanes = await overflow_status(db, caller, installation, policy, now=as_of, approvals=approvals, blockers=blockers)
-    if await primary_cleanup_limited(db):
-        blockers.append(reason("primary_limited_by_cloudflare_cleanup"))
+    current_job = latest_job if latest_job is not None and latest_job.payload.get("revision") == installation.desired_revision else None
+    if notice := await primary_cleanup_limit(db, now=as_of, job=current_job):
+        blockers = [blocker for blocker in blockers if blocker.code != notice.code] + [notice]
     return CloudflareCapacityStatus(
         consent_text_version=CONSENT_TEXT_VERSION,
         consent_text=CONSENT_TEXT,

@@ -1394,8 +1394,20 @@ async def test_enable_replays_tunnel_after_readiness_timeout_without_blocking_pr
     monkeypatch.setattr(lifecycle_job, "get_db_context", sessions.begin)
     monkeypatch.setattr(cloudflare_spend, "get_db_context", sessions.begin)
     monkeypatch.setattr(PlatformJobContext, "report", AsyncMock())
-    after_readiness = AsyncMock(return_value=False)
-    monkeypatch.setattr(enable_job, "_drain_previous_revision", after_readiness)
+    create_script = AsyncMock()
+    monkeypatch.setattr(enable_job, "request_creation", create_script)
+
+    async def install_script(_adapter, resource, *, token):
+        resource.state = "present"
+        resource.provider_id = resource.target_name
+        resource.provider_version = "fixture-replay"
+        endpoint = "https://capacity.example.test" if resource.target_name.endswith("-capacity") else None
+        return ConfiguredWorkersScript(endpoint, {})
+
+    monkeypatch.setattr(enable_job, "_install_script", install_script)
+    monkeypatch.setattr(enable_job, "probe_worker_ingress", AsyncMock(return_value=SimpleNamespace(
+        ready=True, verified_at=None, runtime_canary=None, http_connections_as_result=lambda: [],
+    )))
 
     elapsed = 0.0
     replaying = False
@@ -1427,24 +1439,30 @@ async def test_enable_replays_tunnel_after_readiness_timeout_without_blocking_pr
     monkeypatch.setattr(lifecycle_job, "monotonic", lambda: elapsed)
     running = PlatformJobContext(job.id, lease, None, str(OPERATOR_ID), "operator@example.test", "")
     payload = enable_job.CloudflareEnablePayload.model_validate(job.payload)
-    release = SimpleNamespace(digest="d" * 64, manifest=SimpleNamespace(release_version="1.1.0", release_sequence=1))
+    release = SimpleNamespace(
+        digest="d" * 64, manifest=SimpleNamespace(
+            release_version="1.1.0", release_sequence=1,
+            meter_bounds=SimpleNamespace(qualification=SimpleNamespace(expected_cpu_ms={"capacity": 9})),
+        ),
+    )
     async with httpx.AsyncClient(transport=httpx.MockTransport(slow_provider)) as http:
         with pytest.raises(PlatformJobFailure) as first:
             await enable_job._settle_enable(running, payload, http, release)
         assert first.value.code == "CF_CONNECTOR_UNAVAILABLE" and not first.value.retryable
         assert elapsed == 180
-        after_readiness.assert_not_awaited()
+        create_script.assert_not_awaited()
         credentials = await connector_credentials()
         assert len(credentials) == 1 and credentials[0].version == 1 and credentials[0].ciphertext
         replaying = True
-        assert await enable_job._settle_enable(running, payload, http, release) == {"outcome": "superseded"}
+        assert (await enable_job._settle_enable(running, payload, http, release))["outcome"] == "enabled"
     assert projected
-    after_readiness.assert_awaited_once()
+    assert create_script.await_count == 3
     assert await connector_credentials() == credentials
     assert provider.tunnel_creates == 1 and provider.rotations == 0
     async with sessions() as db:
         row = await db.get(CloudflareInstallation, installation_id)
         assert row is not None and row.deployment_evidence["connector_session"] == "connected"
+        assert row.admitted_revision == row.deployed_revision == payload.revision
 
 
 @pytest.mark.asyncio
@@ -2516,12 +2534,40 @@ async def test_container_pins_only_consume_an_explicit_shared_ceiling(
     monkeypatch.setattr(cloudflare_status, "load_kubernetes_policy", AsyncMock(
         return_value=KubernetesPolicy(max_workers=3, warm_workers=1),
     ))
+    if desired_state == "enabled":
+        # Policy edits can close admission without starting a cleanup job.
+        installation.admitted_revision = None
+        await db_session.flush()
+    idle = await get_cloudflare_capacity_status(db_session, _platform_operator())
+    assert not any(reason.code == "primary_limited_by_cloudflare_cleanup" for reason in idle.placement_reasons)
+    assert not any("Draining Cloudflare Workers" in reason.label for reason in idle.placement_reasons)
+    if desired_state != "enabled" and not deleted:
+        title = "Drain Fixture Workers" if worker_state == "draining" else "Disconnect Fixture Capacity"
+        db_session.add(PlatformJob(
+            job_type="capacity.cloudflare_disable", title=title, status="requires_action",
+            resource_type="cloudflare_installation", resource_id=str(installation.id),
+            requested_by_user_id=str(OPERATOR_ID), requested_by_email="operator@example.test",
+            requested_by_name="Fixture Operator", payload={"revision": installation.desired_revision},
+        ))
+    run = Execution(workflow_name="fixture", executed_by_name="fixture")
+    db_session.add(run)
+    await db_session.flush()
+    db_session.add(WorkDispatch(
+        family="workflow", handler="workflow.execute", handler_version=1, subject_id=run.id,
+        message={}, payload={}, memory_request_bytes=64 * 2**20, created_at=now - timedelta(seconds=10),
+    ))
+    await db_session.flush()
     status = await get_cloudflare_capacity_status(db_session, _platform_operator())
     cleanup_limit = next((reason for reason in status.placement_reasons
                           if reason.code == "primary_limited_by_cloudflare_cleanup"), None)
-    assert (cleanup_limit is not None) == (shared_cap == 3 and desired_state != "enabled" and not deleted)
+    assert (cleanup_limit is not None) == (shared_cap == 3 and worker_state == "retired" and not deleted)
     if cleanup_limit is not None:
-        assert "Scale In or Disconnect job" in cleanup_limit.remedy
+        assert "Disconnect Fixture Capacity" in cleanup_limit.remedy
+    drain_limit = next((reason for reason in status.placement_reasons
+                        if reason.label == "Primary Limited by Draining Cloudflare Workers"), None)
+    assert (drain_limit is not None) == (shared_cap == 3 and worker_state == "draining")
+    if drain_limit is not None:
+        assert "Drain Fixture Workers" in drain_limit.remedy
     for worker_id in launched:
         worker = await db_session.get(ExecutionWorker, worker_id)
         assert worker is not None and worker.form == "job" and worker.state == "reserved"
