@@ -355,10 +355,13 @@ async def activate_cloudflare(
         async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as http:
             await WorkersRestCleanup(http).verify_workers_paid(account_id, token)
             if (expected_digest := receipt.get("containers_release")) is not None:
+                reviewed_policy = receipt.get("containers_policy")
+                if reviewed_policy is None:
+                    raise CloudflarePolicyConflict("Cloudflare Containers policy is missing. Run preflight again.")
                 release = await load_containers_release(http, workers_release)
                 if release.digest != expected_digest:
                     raise CloudflarePolicyConflict("Cloudflare Containers release changed. Run preflight again.")
-                containers_policy = ContainersPolicy.model_validate(receipt["containers_policy"])
+                containers_policy = ContainersPolicy.model_validate(reviewed_policy)
                 combined_floor = (
                     Decimal(str(priced["fleet_envelope_usd"]))
                     + fleet_envelope(containers_policy, release.manifest.rates, 31 * 86400)

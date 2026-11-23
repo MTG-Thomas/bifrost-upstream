@@ -349,9 +349,6 @@ function CloudflareSetupForm({ status, onAccepted, onCancel, onRefresh }: {
 					container_instance_hours: containers && value("container_instance_hours")
 						? Number(value("container_instance_hours")) : undefined,
 				});
-				if (next.preview?.containers_policy) {
-					setLimit(String(next.preview.policy.monthly_limit_usd));
-				}
 				setPreflight(next);
 				setStale(false);
 				setConsent(false);

@@ -265,6 +265,7 @@ it("opts into Containers during preflight and accepts the combined fleet limit",
 	mocks.preflight.mockResolvedValue({
 		accounts: [{ id: "a".repeat(32), name: "Example Account" }], account_id: "a".repeat(32),
 		reachability_mode: "existing_https_endpoint", workers_paid: "verified",
+		worker_ingress_origin: "https://workers.example.test",
 		preview: {
 			policy: { ...suggestedPolicy, container_instance_hours: 100 },
 			fleet_envelope_usd: "44.40", containers_fleet_envelope_usd: "12.27",
@@ -289,6 +290,15 @@ it("opts into Containers during preflight and accepts the combined fleet limit",
 	expect(screen.getByLabelText("Monthly Estimated Usage Limit")).toHaveValue(75);
 	expect(screen.getByLabelText("Monthly Estimated Usage Limit")).toHaveAttribute("min", "44.4");
 	expect(screen.getByText(/provision paid Cloudflare Containers/)).toBeVisible();
+	const limit = screen.getByLabelText("Monthly Estimated Usage Limit");
+	await user.clear(limit);
+	await user.type(limit, "70");
+	await user.type(screen.getByLabelText("Monthly Container Instance-Hours"), "80");
+	await user.click(screen.getByRole("button", { name: "Check Cloudflare Setup" }));
+	await waitFor(() => expect(mocks.preflight).toHaveBeenLastCalledWith(
+		expect.objectContaining({ containers: true, container_instance_hours: 80 }),
+	));
+	expect(limit).toHaveValue(70);
 });
 
 it("routes activation limit refusals and refreshes status when the review becomes stale", async () => {
