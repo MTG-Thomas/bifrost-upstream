@@ -48,7 +48,7 @@ def configure_release(module):
                     if bundle == {"fixture_manifest_sha256": sha256((cwd / "manifest.json").read_bytes()).hexdigest()}:
                         return b""
             case "crane", ("version",):
-                return b"v0.20.6"
+                return b"0.20.6"
             case "crane", ("copy", source, destination) if source == SOURCE:
                 match = re.fullmatch(rf"registry\.cloudflare\.com/{ACCOUNT}/({REPOSITORY}):release", destination)
                 if match:

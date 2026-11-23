@@ -194,7 +194,7 @@ RUN case "${TARGETARCH:-amd64}" in \
     && install -d /app/artifacts/cloudflare/bin \
     && tar -xzf /tmp/crane.tar.gz -C /app/artifacts/cloudflare/bin crane \
     && rm /tmp/crane.tar.gz \
-    && [ "$(/app/artifacts/cloudflare/bin/crane version)" = v0.20.6 ]
+    && [ "$(/app/artifacts/cloudflare/bin/crane version)" = 0.20.6 ]
 RUN case "${TARGETARCH:-amd64}" in \
       amd64) digest=97bb3b02d23a5980fc9c15a1a270e692da1923f103f920d5b16d4931d5ab55e7 ;; \
       arm64) digest=b155cec3e48e489cfb8e5c602769fb8c771083018d8881d68b4d18a791567c5a ;; \

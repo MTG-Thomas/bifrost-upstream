@@ -1326,7 +1326,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
             case ("cosign", ("verify-blob", *_)):
                 return b""
             case ("crane", ("version",)):
-                return b"v0.20.6"
+                return b"0.20.6"
             case ("crane", ("manifest", _)):
                 return image
             case ("crane", ("config", _)):

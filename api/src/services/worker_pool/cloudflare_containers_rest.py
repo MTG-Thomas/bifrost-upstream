@@ -542,7 +542,7 @@ class ContainerRegistry:
         destination = f"{REGISTRY}/{account}/{name}:release"
         with TemporaryDirectory(prefix="bifrost-oci-") as temp:
             cwd = Path(temp)
-            if (await run_oci_tool(self.crane, "version", cwd=cwd)).strip() != b"v0.20.6":
+            if (await run_oci_tool(self.crane, "version", cwd=cwd)).strip() != b"0.20.6":
                 raise ContainersReleaseUnavailable("Expected the pinned OCI copy tool")
             await self._verify_image(release.manifest.image, release, cwd)
             tags = await self._tags(token, account, name, cwd)

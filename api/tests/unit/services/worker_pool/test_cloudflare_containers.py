@@ -250,7 +250,7 @@ async def test_registry_replays_only_into_an_empty_repository(
 
     async def tool(executable, *args, **kwargs):
         if args == ("version",):
-            return b"v0.20.6"
+            return b"0.20.6"
         if args == ("--version",):
             return b"1.0.0-beta.31"
         if args[:2] == ("accounts", "get"):
