@@ -1,0 +1,14 @@
+{
+  "key": "pr:65",
+  "classification": "omit",
+  "entry_ids": [],
+  "reason": "Dependency security maintenance for a test fixture and the Rewst example. No new customer feature or breaking contract.",
+  "review": {
+    "status": "draft",
+    "evidence": ["https://github.com/MTG-Thomas/bifrost-upstream/pull/65"]
+  },
+  "security_review": {
+    "status": "required",
+    "review_ref": "https://github.com/MTG-Thomas/bifrost-upstream/pull/65"
+  }
+}
