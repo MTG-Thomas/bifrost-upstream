@@ -36,10 +36,11 @@ by the connector policy and a successful connection to the same listening
 target from an unselected pod. Check both Service IPs and direct endpoints
 where applicable. Egress to the local node and host-network workloads
 depends on the CNI and Service routing. Kindnet allowed both the Kubernetes
-API Service and the direct same-node endpoint in the rehearsal. Require a cluster-specific host firewall or
-CNI host policy when the connector must be unable to reach the control plane,
-and probe both paths from the connector. The component disables the
-connector's ServiceAccount token independently of network enforcement.
+API Service and the direct same-node endpoint in the rehearsal. Require a
+cluster-specific host firewall or CNI host policy when the connector must be
+unable to reach the control plane, and probe both paths from the connector.
+The component disables the connector's ServiceAccount token independently
+of network enforcement.
 [Kubernetes NetworkPolicy reference](https://kubernetes.io/docs/reference/kubernetes-api/networking/network-policy-v1/)
 
 Cloudflared establishes outbound connections and listens for metrics on

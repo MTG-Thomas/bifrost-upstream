@@ -2636,11 +2636,14 @@ async def test_supervisor_reserves_and_retires_without_restarting(
     (3, "scaled_in", "draining", False, 0, "job"),
     (3, "disconnected", "draining", False, 0, "job"),
     (3, "enabled", "draining", False, 0, "policy"),
+    (3, "enabled", "draining", False, 0, "policy_stop_unconfirmed"),
+    (3, "enabled", "draining", False, 0, "policy_idle"),
     (3, "scaled_in", "draining", False, 0, "lifetime"),
     (3, "disconnected", "retired", False, 0, "job"),
     (3, "disconnected", "retired", False, 0, "unrelated"),
     (3, "disconnected", "retired", False, 0, "action_mismatch"),
     (3, "enabled", "retired", False, 0, "upgrade"),
+    (3, "enabled", "retired", False, 0, "upgrade_without_release"),
     (3, "disconnected", "retired", False, 0, "current_revision"),
     (3, "disconnected", "retired", False, 0, "partial"),
     (3, "disconnected", "retired", True, 1, ""),
@@ -2667,6 +2670,9 @@ async def test_cloudflare_pins_limit_primary_room_and_explain_cleanup(
         "limits": {**installation.policy["limits"], "shared_managed_worker_cap": shared_cap},
     }
     now = datetime.now(UTC)
+    policy_drains = {
+        "policy": None, "policy_stop_unconfirmed": "cloudflare_stop_unconfirmed", "policy_idle": "idle",
+    }
     worker_pins = []
     for index in range(3):
         worker_id = uuid4()
@@ -2675,13 +2681,14 @@ async def test_cloudflare_pins_limit_primary_room_and_explain_cleanup(
             end_reason = "max_lifetime" if scenario == "lifetime" else "cloudflare_admission_closed"
         workers_lane = worker_state == "draining"
         state = "ready" if scenario == "policy" else worker_state
+        if scenario in policy_drains:
+            end_reason = policy_drains[scenario]
         db_session.add(ExecutionWorker(
             id=worker_id, form="external", state=state,
             capacity_scope="workers" if workers_lane else "containers",
             runtime_profile="cloudflare-python-v1" if workers_lane else "linux-process-v1",
-            end_reason=None if scenario == "policy" else end_reason,
+            end_reason=end_reason,
             capacity_resource_deleted_at=now if deleted else None,
-            memory_reserved_bytes=1 if scenario == "policy" else 0,
             heartbeat_at=now, memory_budget_bytes=128 * 2**20,
         ))
         await db_session.flush()
@@ -2689,6 +2696,14 @@ async def test_cloudflare_pins_limit_primary_room_and_explain_cleanup(
             scope = ManagedCloudflareScope(installation.id, "workers", 1)
             pin = scope.pin(worker_id, 1, reserved_at=now - timedelta(seconds=120), lifetime=3600, deadline_wire=False)
             worker_pins.append(pin)
+            if scenario in policy_drains:
+                running = Execution(
+                    id=uuid4(), workflow_name="fixture", executed_by_name="fixture",
+                    status=ExecutionStatus.RUNNING, started_at=now - timedelta(seconds=60),
+                )
+                db_session.add_all([
+                    running, ExecutionWorkerClaim(worker_id=worker_id, family=WAKE_WORKFLOW, subject_id=running.id),
+                ])
         else:
             current = scenario == "current_revision" or (scenario == "partial" and index == 2)
             pin = CloudflareWorkerReservation(
@@ -2721,19 +2736,25 @@ async def test_cloudflare_pins_limit_primary_room_and_explain_cleanup(
     idle = await get_cloudflare_capacity_status(db_session, _platform_operator())
     assert not any(reason.code == "primary_limited_by_cloudflare_cleanup" for reason in idle.placement_reasons)
     assert not any(reason.code == "primary_limited_by_cloudflare_drain" for reason in idle.placement_reasons)
-    if scenario in ("job", "lifetime", "unrelated", "action_mismatch", "upgrade", "current_revision", "partial"):
+    if scenario in (
+        "job", "lifetime", "unrelated", "action_mismatch", "upgrade", "upgrade_without_release",
+        "current_revision", "partial",
+    ):
         title = "Drain Fixture Workers" if worker_state == "draining" else "Disconnect Fixture Capacity"
         action = "scale_in" if desired_state == "scaled_in" else "disconnect"
-        job_type = "capacity.cloudflare_reconcile" if scenario in ("unrelated", "upgrade") else "capacity.cloudflare_disable"
+        job_type = (
+            "capacity.cloudflare_reconcile" if scenario in ("unrelated", "upgrade", "upgrade_without_release")
+            else "capacity.cloudflare_disable"
+        )
         payload = {"revision": installation.desired_revision, "action": action}
         if scenario == "unrelated":
             title = "Unrelated Fixture Reconcile"
         if scenario == "action_mismatch":
             payload["action"] = "scale_in"
-        if scenario == "upgrade":
+        if scenario in ("upgrade", "upgrade_without_release"):
             title = "Upgrade Fixture Capacity"
             payload["operation"] = "upgrade"
-            installation.upgrade_release = "fixture-release"
+            installation.upgrade_release = "fixture-release" if scenario == "upgrade" else None
         db_session.add(PlatformJob(
             job_type=job_type, title=title, status="requires_action",
             resource_type="cloudflare_installation", resource_id=str(installation.id),
@@ -2748,7 +2769,7 @@ async def test_cloudflare_pins_limit_primary_room_and_explain_cleanup(
         message={}, payload={}, memory_request_bytes=64 * 2**20, created_at=now - timedelta(seconds=10),
     ))
     await db_session.flush()
-    if scenario == "policy":
+    if scenario in policy_drains:
         @asynccontextmanager
         async def retirement_context():
             async with context() as db:

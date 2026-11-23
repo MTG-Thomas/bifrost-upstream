@@ -215,7 +215,7 @@ class ExternalWorkerPoolController(WorkerCapacityController):
                     ExecutionWorkerClaim.worker_id == worker_id,
                 ).exists().select()
             )
-            if worker.state != "draining" or worker.end_reason is None:
+            if worker.end_reason != "cloudflare_admission_closed":
                 worker.end_reason = "max_lifetime" if expired is not None else "cloudflare_admission_closed"
             if worker.active_runs or worker.memory_reserved_bytes or active:
                 worker.state = "draining"

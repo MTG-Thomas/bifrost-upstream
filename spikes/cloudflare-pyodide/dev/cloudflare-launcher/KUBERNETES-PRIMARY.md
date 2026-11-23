@@ -336,11 +336,12 @@ a separate test address to a local listener.
 Kindnet and its bundled policy controller allowed egress to the local
 node. In this single-node layout, the Kubernetes API Service also led to
 that node. Other CNIs can handle own-node and host-network traffic
-differently. Probe the Service and direct endpoint in each cluster. A temporary node-local firewall rule scoped to the connector's
-source address blocked both API paths. The same rule left edge and worker
-ingress reachable from the connector and left both API paths reachable
-from the control pod. The rule was removed after the check. Deployments
-that require this boundary need a host firewall or CNI-specific host policy.
+differently. Probe the Service and direct endpoint in each cluster. A temporary
+node-local firewall rule scoped to the connector's source address blocked
+both API paths. The same rule left edge and worker ingress reachable from
+the connector and left both API paths reachable from the control pod. The
+rule was removed after the check. Deployments that require this boundary
+need a host firewall or CNI-specific host policy.
 The portable component retains the connector's token-free ServiceAccount
 configuration. The probe verified the token was absent and an uncredentialed
 Kubernetes API request returned HTTP 403. [Kubernetes NetworkPolicy scope](https://kubernetes.io/docs/concepts/services-networking/network-policies/#the-two-sorts-of-pod-isolation)
