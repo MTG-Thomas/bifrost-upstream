@@ -5,6 +5,7 @@ import pytest
 
 from src.models.orm.execution_workers import ExecutionWorker
 from src.models.orm.platform_jobs import PlatformJob
+from src.services.kubernetes_execution import KubernetesPolicy
 from src.services.worker_pool.cloudflare_status import (
     PlacementObservation,
     lane_reasons,
@@ -13,8 +14,10 @@ from src.services.worker_pool.cloudflare_status import (
     recovery_for_job,
 )
 from src.services.worker_pool.controller import Request
+from src.services.worker_pool.sizing import JobSizing
 
 NOW = datetime(2026, 11, 22, tzinfo=UTC)
+SIZING = JobSizing.of(KubernetesPolicy(), 0.85, 256 * 2**20)
 
 
 @pytest.mark.parametrize(("fields", "code"), [
@@ -74,17 +77,27 @@ def test_recovery_hides_previous_attempt_during_retry(status):
 
 def test_five_queued_workflows_fit_only_one_primary_slot():
     worker = ExecutionWorker(
-        form="static", state="ready", execution_lane="normal", heartbeat_at=NOW,
+        form="static", state="ready", execution_lane="normal", heartbeat_at=NOW - timedelta(minutes=5),
         memory_budget_bytes=256 * 2**20, memory_reserved_bytes=0, supported_handlers=["workflow.execute"],
     )
     queue = [Request(uuid4(), 256 * 2**20, "workflow.execute", 1) for _ in range(5)]
-    covered = primary_coverage([worker], queue, NOW)
+    covered = primary_coverage([worker], queue, SIZING)
     assert covered == {queue[0].id}
     reasons = lane_reasons(
         PlacementObservation(queued=5, primary_fit=len(covered), primary_saturated=True, aged_demand=4),
         now=NOW, gate_seconds=2, approvals=1, blockers=[],
     )
     assert [item.code for item in reasons] == ["primary_has_capacity", "eligible_for_overflow"]
+
+
+def test_primary_coverage_excludes_managed_container_workers():
+    request = Request(uuid4(), 1, "workflow.execute", 1)
+    worker = ExecutionWorker(
+        form="external", state="ready", execution_lane="normal", capacity_scope="containers",
+        supported_handlers=["workflow.execute"], memory_budget_bytes=100, memory_reserved_bytes=0,
+        reserved_for_dispatch_id=request.id,
+    )
+    assert primary_coverage([worker], [request], SIZING) == set()
 
 
 def test_primary_coverage_respects_held_memory_and_handler_slots():
@@ -100,7 +113,7 @@ def test_primary_coverage_respects_held_memory_and_handler_slots():
         memory_reserved_bytes=0, supported_handlers=["workflow.execute", limited],
         active_handler_counts={limited: limit - 1}, reserved_for_dispatch_id=held.id,
     )
-    assert primary_coverage([worker], [blocked, fits, full, held], NOW) == {fits.id, held.id}
+    assert primary_coverage([worker], [blocked, fits, full, held], SIZING) == {fits.id, held.id}
     reasons = lane_reasons(
         PlacementObservation(
             queued=4, primary_fit=2, primary_saturated=True, oldest=NOW - timedelta(seconds=1),

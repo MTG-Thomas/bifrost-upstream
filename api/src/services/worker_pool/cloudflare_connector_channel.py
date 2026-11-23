@@ -12,6 +12,7 @@ from sqlalchemy import select, text
 from src.config import get_settings
 from src.core.database import get_db_context
 from src.jobs.platform.kubernetes_client import (
+    CLOUDFLARE_CONNECTOR_SECRET,
     KubernetesApiError,
     KubernetesConfigurationError,
     KubernetesJobClient,
@@ -29,15 +30,18 @@ async def connector_channel_ready() -> bool:
     if channel == "compose":
         return COMPOSE_PATH.parent.is_mount() and os.access(COMPOSE_PATH.parent, os.W_OK)
     if channel == "kustomize":
+        namespace = in_cluster_namespace()
+        if namespace is None:
+            return False
         try:
-            client = KubernetesJobClient(namespace=in_cluster_namespace())
+            client = KubernetesJobClient(namespace=namespace)
             try:
                 await client.read_cloudflare_connector()
+                return await client.allows("patch", "secrets", name=CLOUDFLARE_CONNECTOR_SECRET)
             finally:
                 await client.close()
         except (KubernetesApiError, KubernetesConfigurationError, httpx.HTTPError):
             return False
-        return True
     return False
 
 
@@ -74,7 +78,10 @@ async def project_connector(previous: Projection | None) -> Projection | None:
         if channel == "compose":
             _publish_file(COMPOSE_PATH, value)
         else:
-            client = KubernetesJobClient(namespace=in_cluster_namespace())
+            namespace = in_cluster_namespace()
+            if namespace is None:
+                raise KubernetesConfigurationError("The connector projection requires the API pod namespace")
+            client = KubernetesJobClient(namespace=namespace)
             try:
                 await client.publish_cloudflare_connector(value, fence="/".join(map(str, key)))
             finally:

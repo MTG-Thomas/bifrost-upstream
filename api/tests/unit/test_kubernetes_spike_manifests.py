@@ -108,6 +108,14 @@ def test_static_executors_have_fixed_replicas_and_no_autoscaler() -> None:
     assert all(doc.get("kind") not in autoscaling_kinds for doc in _load_documents())
 
 
+def test_worker_ingress_service_targets_the_api_listener() -> None:
+    service = _doc("Service", "worker-ingress")
+    template = _doc("Deployment", "bifrost-api")["spec"]["template"]
+    assert service["spec"]["selector"] == template["metadata"]["labels"]
+    assert service["spec"]["ports"] == [{"name": "http", "port": 8001, "targetPort": "worker-ingress"}]
+    assert {"name": "worker-ingress", "containerPort": 8001} in template["spec"]["containers"][0]["ports"]
+
+
 def test_spike_environment_and_secret_free_status_contracts() -> None:
     config = _doc("ConfigMap", "bifrost-local-config")
     assert config["data"]["BIFROST_ENVIRONMENT"] == "testing"

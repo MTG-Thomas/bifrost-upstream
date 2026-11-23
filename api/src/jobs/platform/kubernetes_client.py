@@ -26,6 +26,7 @@ SERVICE_ACCOUNT_NAMESPACE_PATH = SERVICE_ACCOUNT_ROOT / "namespace"
 
 JOB_TTL_SECONDS = 3600
 JOB_DEADLINE_BUFFER_SECONDS = 60
+CLOUDFLARE_CONNECTOR_SECRET = "bifrost-cloudflare-connector"
 
 
 class KubernetesConfigurationError(RuntimeError):
@@ -252,19 +253,15 @@ class KubernetesJobClient:
         self._owned_client = http_client is None
         self._client = http_client or self._create_http_client()
 
-    async def allows(self, verb: str, resource: str, group: str = "") -> bool:
-        """Whether this service account may ``verb`` ``resource`` in its namespace."""
+    async def allows(self, verb: str, resource: str, group: str = "", *, name: str | None = None) -> bool:
+        """Whether this service account may act on the resource in its namespace."""
+        attributes = {"namespace": self.namespace, "verb": verb, "group": group, "resource": resource}
+        if name is not None:
+            attributes["name"] = name
         review = {
             "apiVersion": "authorization.k8s.io/v1",
             "kind": "SelfSubjectAccessReview",
-            "spec": {
-                "resourceAttributes": {
-                    "namespace": self.namespace,
-                    "verb": verb,
-                    "group": group,
-                    "resource": resource,
-                }
-            },
+            "spec": {"resourceAttributes": attributes},
         }
         response = await self._request(
             "POST",
@@ -288,14 +285,15 @@ class KubernetesJobClient:
     async def read_cloudflare_connector(self) -> tuple[str, dict[str, Any]]:
         """Read and verify the Secret preinstalled by the connector component."""
         namespace = quote(self.namespace, safe="")
-        path = f"/api/v1/namespaces/{namespace}/secrets/bifrost-cloudflare-connector"
+        path = f"/api/v1/namespaces/{namespace}/secrets/{CLOUDFLARE_CONNECTOR_SECRET}"
         response = await self._request("GET", path, expected={200})
         current = response.json()
         metadata = current.get("metadata", {})
         if (
-            metadata.get("name") != "bifrost-cloudflare-connector" or metadata.get("namespace") != self.namespace
+            metadata.get("name") != CLOUDFLARE_CONNECTOR_SECRET or metadata.get("namespace") != self.namespace
             or metadata.get("labels", {}).get("app.kubernetes.io/component") != "cloudflare-connector"
             or not metadata.get("resourceVersion") or current.get("type") != "Opaque"
+            or current.get("immutable") is True
             or set(current.get("data", {})) - {"token"}
         ):
             raise KubernetesApiError("GET", path, 409)

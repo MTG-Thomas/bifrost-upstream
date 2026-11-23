@@ -28,7 +28,7 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareOwnedResource,
     CloudflareWorkerReservation,
 )
-from src.models.orm.execution_workers import MANAGED_WORKER_FORMS, ExecutionWorker, ExecutionWorkerClaim
+from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
 from src.models.orm.executions import Execution
 from src.models.orm.platform_jobs import PlatformJob
 from src.models.orm.work_dispatches import WorkDispatch
@@ -43,12 +43,12 @@ from src.services.worker_pool.cloudflare_containers_admission import LINUX_REVIE
 from src.services.worker_pool.cloudflare_containers_policy import ContainersPolicy
 from src.services.worker_pool.cloudflare_provisioning import ObservationCheck, OwnershipCheck, OwnershipResource
 from src.services.worker_pool.cloudflare_slots import read_workflow_slot_admission, tenant_key
-from src.services.worker_pool.controller import FreeBudget, Request, linux_handler_slots, take_first_budget, waiting_capacity_rows
+from src.services.worker_pool.controller import Request, linux_capacity_budgets, take_first_budget, waiting_capacity_rows
 from src.services.worker_pool.demand import pending_local_platform_job_ids
 from src.services.worker_pool.eligibility import cloudflare_dispatch_sql
 from src.services.worker_pool.external_client import CapacityProtocolCheck
 from src.services.worker_pool.liveness import HEARTBEAT_LOST_AFTER
-from src.services.worker_pool.sizing import JobSizing, job_baseline, launch_limit
+from src.services.worker_pool.sizing import LIVE_STATES, JobSizing, job_baseline
 from src.worker.remote.protocol import CLOUDFLARE_WORKFLOW_HANDLER, LINUX_RUNTIME_PROFILE
 
 logger = logging.getLogger(__name__)
@@ -255,36 +255,10 @@ async def deployment_evidence(db: AsyncSession, installation: CloudflareInstalla
 
 
 def primary_coverage(
-    workers: list[ExecutionWorker], waiting: list[Request], now: datetime, sizing: JobSizing | None = None,
+    workers: list[ExecutionWorker], waiting: list[Request], sizing: JobSizing,
 ) -> set[UUID]:
     """Pack primary capacity oldest first, honoring pinned dispatches."""
-    requests = {request.id: request for request in waiting}
-    covered: set[UUID] = set()
-    free = []
-    for worker in workers:
-        if (
-            worker.state == "draining" or worker.execution_lane != "normal" or worker.memory_pressured
-            or CLOUDFLARE_WORKFLOW_HANDLER[0] not in worker.supported_handlers
-        ):
-            continue
-        held = requests.get(worker.reserved_for_dispatch_id)
-        if held:
-            covered.add(held.id)
-        available = None
-        if sizing is not None and worker.form in MANAGED_WORKER_FORMS and (
-            worker.state in ("reserved", "starting") or worker.memory_budget_bytes is None
-        ):
-            available = sizing.budget_bytes(launch_limit(worker, sizing.standard_limit_bytes))
-        elif (
-            worker.state == "ready" and worker.memory_budget_bytes is not None
-            and worker.heartbeat_at is not None and worker.heartbeat_at >= now - HEARTBEAT_LOST_AFTER
-        ):
-            available = worker.memory_budget_bytes - worker.memory_reserved_bytes
-        if available is not None:
-            free.append(FreeBudget(
-                max(0, available - (held.bytes if held else 0)),
-                frozenset(worker.supported_handlers), linux_handler_slots(worker, held.handler if held else None),
-            ))
+    free, covered = linux_capacity_budgets(workers, waiting, sizing)
     rooms = [budget.bytes for budget in free]
     slots = [dict(budget.handler_slots) for budget in free]
     for request in waiting:
@@ -337,9 +311,10 @@ async def overflow_status(
     if primary is not None:
         workers = list(await db.scalars(select(ExecutionWorker).where(
             ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE,
-            ExecutionWorker.form == primary.form, ExecutionWorker.capacity_scope == primary.scope,
-            ExecutionWorker.state.in_(("reserved", "starting", "ready", "draining")),
+            ExecutionWorker.state.in_(LIVE_STATES),
         )))
+        # The primary cohort determines saturation. Fit includes the Linux
+        # executors the controller can pack across the installation.
         state = primary.capacity_state(workers, now)
         saturated = state == "saturated"
         if cause in (None, "unhealthy", "below_ceiling"):
@@ -352,7 +327,7 @@ async def overflow_status(
             Request(row.id, row.memory_request_bytes, row.handler, row.handler_version, row.cloudflare_revision,
                     row.tenant_id)
             for row in waiting
-        ], now, sizing)
+        ], sizing)
     slots = await read_workflow_slot_admission(db, installation.id, policy.workers)
     queue = select(WorkDispatch.id).select_from(WorkDispatch).join(
         Execution, Execution.id == WorkDispatch.subject_id,
