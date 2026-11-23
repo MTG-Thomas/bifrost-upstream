@@ -9,7 +9,8 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import httpx
-from shared.models import CloudflareCapacityPolicy
+from pydantic import SecretStr
+from shared.models import CloudflareCapacityPolicy, CloudflarePlacementCode
 from sqlalchemy import and_, func, select, update
 
 from src.config import Settings
@@ -43,7 +44,7 @@ from src.services.worker_pool.cloudflare_admission import (
 )
 from src.services.worker_pool.cloudflare_canary import active_cloudflare_canary
 from src.services.worker_pool.cloudflare_containers_admission import ContainerAdmissionRefused, reserve_container
-from src.services.worker_pool.cloudflare_containers_control import reconcile_container_stop, start_container
+from src.services.worker_pool.cloudflare_containers_control import Receipt, reconcile_container_stop, start_container
 from src.services.worker_pool.cloudflare_containers_egress import read_verified_egress
 from src.services.worker_pool.cloudflare_containers_policy import CONTAINERS_SCOPE, container_deadline_sql
 from src.services.worker_pool.cloudflare_containers_release import VerifiedContainerRelease, load_containers_release
@@ -181,6 +182,7 @@ async def _reconcile_containers(
         except ObservationPending:
             pass  # A readback may still be settling. Revisit at the next pass.
 
+    receipt_limit = False
     for worker_id, envelope, canary_job_id, worker_state, deadline in existing:
         if envelope is None:
             continue
@@ -193,7 +195,8 @@ async def _reconcile_containers(
         ):
             await retire(worker_id)
         elif worker_state in ("reserved", "starting") and now < start_deadline:
-            await _start_container_reservation(http, adapter, management, worker_id)
+            receipt = await _start_container_reservation(http, adapter, management, worker_id)
+            receipt_limit |= receipt is not None and receipt.status == "receipt-limit"
 
     if verified is None:
         return
@@ -204,8 +207,10 @@ async def _reconcile_containers(
             return
         releases[binding] = release
     primary, cause = await _primary_pool(settings, http, kubernetes=kubernetes, shared_cap=primary_cap)
-    await record_controller_observation(binding, primary=primary, cause=cause)
-    if primary is None:
+    if primary is None or receipt_limit:
+        await record_controller_observation(
+            binding, primary=primary, cause=cause, placement_code="container_receipt_limit" if receipt_limit else None,
+        )
         return
     async with get_db_context() as db:
         reserved = await reserve_container(
@@ -213,18 +218,32 @@ async def _reconcile_containers(
             release=release, primary=primary, verified_egress=verified,
         )
     if isinstance(reserved, ContainerAdmissionRefused):
+        await record_controller_observation(
+            binding, primary=primary, cause=cause, next_eligible_at=reserved.retry_at,
+            placement_code="container_allocation_cooldown" if reserved.code == "CF_CONTAINERS_COOLDOWN" else "cleanup_pending",
+        )
         return
+    receipt = None
     if reserved is not None:
-        await _start_container_reservation(http, adapter, management, reserved.worker_id)
+        receipt = await _start_container_reservation(http, adapter, management, reserved.worker_id)
+    placement: dict[str, CloudflarePlacementCode] = {
+        "allocation-refused": "container_allocation_cooldown", "receipt-limit": "container_receipt_limit",
+    }
+    await record_controller_observation(
+        binding, primary=primary, cause=cause, placement_code=placement.get(receipt.status) if receipt else None,
+    )
 
 
-async def _start_container_reservation(http, adapter, management, worker_id: UUID) -> None:
+async def _start_container_reservation(
+    http: httpx.AsyncClient, adapter: ContainersRest, management: SecretStr, worker_id: UUID,
+) -> Receipt | None:
     receipt = await start_container(http, worker_id)
     if receipt is not None and receipt.status == "allocation-refused":
         try:
             await reconcile_container_stop(http, adapter, management, worker_id, refusal=receipt)
         except ObservationPending:
             pass
+    return receipt
 
 
 async def _reconcile_scope(

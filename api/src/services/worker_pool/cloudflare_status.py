@@ -40,6 +40,7 @@ from src.services.pool_cadence import CLOUDFLARE_WORKERS_LAUNCH_AGE_SECONDS, POO
 from src.services.work_dispatch import WAKE_WORKFLOW
 from src.services.worker_pool.cloudflare_admission import ManagedCloudflareScope, PrimaryPool
 from src.services.worker_pool.cloudflare_containers_admission import LINUX_REVIEW_VERSION, linux_source_current_sql
+from src.services.worker_pool.cloudflare_containers_egress import read_verified_egress
 from src.services.worker_pool.cloudflare_containers_policy import ContainersPolicy
 from src.services.worker_pool.cloudflare_provisioning import ObservationCheck, OwnershipCheck, OwnershipResource
 from src.services.worker_pool.cloudflare_slots import read_workflow_slot_admission, tenant_key
@@ -89,6 +90,18 @@ PLACEMENT: dict[CloudflarePlacementCode, tuple[str, str]] = {
     "eligible_for_overflow": (
         "Eligible for Overflow", "Wait for a controller pass and a ready slot. Check the queue and claim counts to verify placement.",
     ),
+    "container_readiness_unverified": (
+        "Container Readiness Unverified", "Qualify the exact Linux release and worker ingress through Enable or Reconcile.",
+    ),
+    "container_egress_stale": (
+        "Container Egress Proof Expired", "Wait for Reconcile to verify the Container worker ingress again.",
+    ),
+    "container_allocation_cooldown": (
+        "Container Allocation Cooling Down", "The primary can claim handed-back work while the Container lane settles.",
+    ),
+    "container_receipt_limit": (
+        "Container Receipt Limit Reached", "Wait for expired registry receipts to clear and verify any outstanding cleanup.",
+    ),
 }
 
 
@@ -116,6 +129,9 @@ def recovery_for_job(job: PlatformJob | None) -> CloudflareRecoveryDetails | Non
         "CF_CLEANUP_SETTLING": PLACEMENT["cleanup_pending"][1],
         "CF_PRIOR_WORKERS_LIVE": PLACEMENT["cleanup_pending"][1],
         "CF_PROVIDER_UNAVAILABLE": PLACEMENT["cloudflare_capacity_unavailable"][1],
+        "CF_CONTAINERS_UNVERIFIED": PLACEMENT["container_readiness_unverified"][1],
+        "CF_CONTAINERS_CLEANUP_PENDING": PLACEMENT["cleanup_pending"][1],
+        "CF_CONTAINERS_RELEASE_UNAVAILABLE": PLACEMENT["release_mismatch"][1],
     }
     if not isinstance(code, str) or code not in remedies:
         return None
@@ -194,12 +210,13 @@ def lane_reasons(
 
 
 def _controller_key(binding: ManagedCloudflareScope) -> str:
-    return f"cloudflare:placement:{binding.installation_id}:{binding.revision}"
+    return f"cloudflare:placement:{binding.installation_id}:{binding.revision}:{binding.name}"
 
 
 async def record_controller_observation(
     binding: ManagedCloudflareScope, *, primary: PrimaryPool | None = None, unavailable: bool = False,
     cause: PrimaryCause | None = None,
+    placement_code: CloudflarePlacementCode | None = None, next_eligible_at: datetime | None = None,
 ) -> None:
     try:
         async with get_redis() as redis:
@@ -208,6 +225,8 @@ async def record_controller_observation(
                 "cause": cause,
                 "cooldown": (datetime.now(UTC) + timedelta(seconds=POOL_RECONCILE_SPACING_SECONDS)).isoformat()
                 if unavailable else None,
+                "placement_code": placement_code,
+                "next_eligible_at": next_eligible_at.isoformat() if next_eligible_at else None,
             }), ex=int(HEARTBEAT_LOST_AFTER.total_seconds()))
     except (CacheConnectionError, CacheOperationError):
         logger.debug("Cloudflare controller observation unavailable")
@@ -234,6 +253,23 @@ async def _controller_observation(
     data = json.loads(value)
     return (PrimaryPool(**data["primary"]) if data["primary"] else None,
             datetime.fromisoformat(data["cooldown"]) if data["cooldown"] else None, data.get("cause"))
+
+
+async def _container_controller_reason(installation: CloudflareInstallation) -> CloudflarePlacementReason | None:
+    binding = ManagedCloudflareScope(installation.id, "containers", installation.desired_revision)
+    try:
+        async with get_redis() as redis:
+            value = await redis.get(_controller_key(binding))
+    except (CacheConnectionError, CacheOperationError):
+        return None
+    if value is None:
+        return None
+    data = json.loads(value)
+    code = data.get("placement_code")
+    if code not in ("container_allocation_cooldown", "container_receipt_limit", "cleanup_pending"):
+        return None
+    retry = data.get("next_eligible_at")
+    return reason(code, datetime.fromisoformat(retry) if retry else None)
 
 
 async def deployment_evidence(db: AsyncSession, installation: CloudflareInstallation) -> CloudflareDeploymentEvidence:
@@ -393,10 +429,15 @@ async def overflow_status(
         )
         reserved, running = counts.get(lane, (0, 0))
         lane_blockers = blockers
-        if lane == "containers" and not any(blocker.code == "setup_required" for blocker in blockers):
-            lane_blockers = [*blockers, reason("setup_required").model_copy(update={
-                "remedy": "Automatic Containers placement requires a release that runs the Containers reservation controller.",
-            })]
+        if lane == "containers":
+            lane_blockers = list(blockers)
+            if installation.containers_ready_revision != installation.desired_revision:
+                lane_blockers.append(reason("container_readiness_unverified"))
+            elif read_verified_egress(installation, now) is None:
+                lane_blockers.append(reason("container_egress_stale"))
+            observed_issue = await _container_controller_reason(installation)
+            if observed_issue is not None and not any(item.code == observed_issue.code for item in lane_blockers):
+                lane_blockers.append(observed_issue)
         statuses.append(CloudflareLaneStatus(
             lane=lane, eligible_queued=len(demand), claimed=reserved, running=running, primary_fit=observation.primary_fit,
             primary_saturated=saturated, oldest_eligible_queue_age_seconds=max(0, (now - oldest).total_seconds()) if oldest else None,

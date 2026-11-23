@@ -1,4 +1,8 @@
+import json
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -6,6 +10,8 @@ import pytest
 from src.models.orm.execution_workers import ExecutionWorker
 from src.models.orm.platform_jobs import PlatformJob
 from src.services.kubernetes_execution import KubernetesPolicy
+from src.services.worker_pool import cloudflare_status
+from src.services.worker_pool.cloudflare_admission import ManagedCloudflareScope
 from src.services.worker_pool.cloudflare_status import (
     PlacementObservation,
     lane_reasons,
@@ -18,6 +24,30 @@ from src.services.worker_pool.sizing import JobSizing
 
 NOW = datetime(2026, 11, 22, tzinfo=UTC)
 SIZING = JobSizing.of(KubernetesPolicy(), 0.85, 256 * 2**20)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["container_receipt_limit", "container_allocation_cooldown", "cleanup_pending"])
+async def test_container_controller_reason_is_scope_specific(monkeypatch, code):
+    installation = SimpleNamespace(id=uuid4(), desired_revision=3)
+    containers = ManagedCloudflareScope(installation.id, "containers", 3)
+    workers = ManagedCloudflareScope(installation.id, "workers", 3)
+    until = NOW + timedelta(seconds=30) if code == "container_allocation_cooldown" else None
+    redis = SimpleNamespace(set=AsyncMock(), get=AsyncMock(return_value=json.dumps({
+        "placement_code": code, "next_eligible_at": until.isoformat() if until is not None else None,
+    })))
+
+    @asynccontextmanager
+    async def cache():
+        yield redis
+
+    monkeypatch.setattr(cloudflare_status, "get_redis", cache)
+    await cloudflare_status.record_controller_observation(containers, placement_code=code, next_eligible_at=until)
+    result = await cloudflare_status._container_controller_reason(installation)
+    assert result is not None and result.code == code and result.next_eligible_at == until
+    key = cloudflare_status._controller_key(containers)
+    redis.get.assert_awaited_once_with(key)
+    assert redis.set.await_args.args[0] == key != cloudflare_status._controller_key(workers)
 
 
 @pytest.mark.parametrize(("fields", "code"), [
