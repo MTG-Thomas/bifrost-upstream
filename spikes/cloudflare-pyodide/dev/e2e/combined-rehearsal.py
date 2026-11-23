@@ -937,7 +937,10 @@ async def qualification_container(case: str, hold: int):
             installation_id, str(UUID(workflow)),
         ], check=True)
         original_api = self.api_container
-        self.successor = subprocess.check_output(self.compose + ["run", "-d", "--no-deps", "api"], text=True).strip()
+        # The static launcher reconnects to the Compose service name.
+        self.successor = subprocess.check_output(
+            self.compose + ["run", "-d", "--no-deps", "--use-aliases", "api"], text=True,
+        ).strip()
         successor_address = self.verify_isolation(successor=self.successor)
         successor_origin = f"http://{successor_address}:8000"
 
