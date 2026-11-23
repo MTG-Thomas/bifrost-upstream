@@ -64,6 +64,7 @@ from src.services.worker_pool.cloudflare_containers_release import (
     VerifiedContainerRelease,
     load_containers_release,
 )
+from src.services.worker_pool.cloudflare_containers_policy import ContainersPolicy
 from src.services.worker_pool.cloudflare_containers_rest import ContainerLauncherRest, ContainerRegistry, ContainersRest
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
@@ -602,8 +603,17 @@ async def _deploy_container_launcher(
             prepared = ResourceObservation(intent, image.provider_id, image.provider_version)
         launcher = await _container_resource(db, row, release, kind="worker_script", name=f"{name}-containers")
         launcher_id = launcher.id
+        origin = row.worker_ingress_origin
+        policy = ContainersPolicy.model_validate(row.containers_policy)
+        ref = CredentialRef(row.id, row.account_id, "scope_bearer", "containers", payload.revision)
+        scope_credential = await db.get(CloudflareCredential, (row.id, ref.purpose, ref.scope, ref.version))
+        if scope_credential is None:
+            signing_secret = SecretStr(secrets.token_urlsafe(48))
+            db.add(seal_credential(ref, signing_secret, actor=context.requested_by_user_id, now=datetime.now(UTC)))
+        else:
+            signing_secret = open_credential(ref, scope_credential)
 
-    provisioner = ContainerLauncherRest(http, release, prepared)
+    provisioner = ContainerLauncherRest(http, release, prepared, origin=origin, policy=policy, signing_secret=signing_secret)
     async with get_db_context() as db:
         row = await _locked_current(db, context, payload)
         if row is None:
@@ -629,7 +639,12 @@ async def _deploy_container_launcher(
             raise OwnershipConflict("Container launcher intent disappeared",
                                     OwnershipResource.WORKER_SCRIPT, OwnershipCheck.JOURNAL_INTENT)
         try:
-            await _install_script(provisioner, launcher, token=await _management_token(db, row))
+            result = await _install_script(provisioner, launcher, token=await _management_token(db, row))
+            prior_endpoint = launcher.provider_details.get("endpoint")
+            if result.endpoint is None or prior_endpoint not in (None, result.endpoint):
+                raise OwnershipConflict("Container launcher endpoint differs from its receipt",
+                                        OwnershipResource.WORKERS_ENDPOINT, OwnershipCheck.RECEIPT_MISMATCH)
+            launcher.provider_details = {**launcher.provider_details, "endpoint": result.endpoint}
         except ObservationSettling as exc:
             pending_readback = exc
     if pending_readback is not None:

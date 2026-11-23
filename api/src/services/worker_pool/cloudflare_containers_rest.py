@@ -15,7 +15,8 @@ import httpx
 
 from pydantic import SecretStr
 
-from src.services.worker_pool.cloudflare_containers_policy import CONTAINER_CLOCK_SKEW
+from src.services.worker_pool.cloudflare_containers_auth import container_scope_public_key
+from src.services.worker_pool.cloudflare_containers_policy import CONTAINER_CLOCK_SKEW, ContainersPolicy
 from src.services.worker_pool.cloudflare_containers_release import (
     ContainersReleaseUnavailable,
     VerifiedContainerRelease,
@@ -369,10 +370,14 @@ class ContainerLauncherRest(ScriptRestProvisioner):
 
     def __init__(
         self, http: httpx.AsyncClient, release: VerifiedContainerRelease, image: ResourceObservation,
+        *, origin: str, policy: ContainersPolicy, signing_secret: SecretStr,
     ) -> None:
         super().__init__(http)
         self.release = release
         self.image = image
+        self.origin = origin
+        self.policy = policy
+        self.public_key = container_scope_public_key(signing_secret.get_secret_value())
 
     def _require_target(self, intent: ResourceIntent) -> str:
         name = _name(self.image.intent, "container_image")
@@ -398,15 +403,40 @@ class ContainerLauncherRest(ScriptRestProvisioner):
             raise OwnershipConflict("Container launcher upload does not take a bearer",
                                     OwnershipResource.WORKER_SCRIPT, OwnershipCheck.SCOPE_BEARER)
         module = "container-registry.mjs"
+        settings = {
+            "CONTAINERS_INSTALLATION": str(intent.target.installation_id),
+            "CONTAINERS_REVISION": str(intent.desired_revision),
+            "CONTAINERS_PUBLIC_KEY": self.public_key,
+            "CONTAINERS_ORIGIN": self.origin,
+            "CONTAINERS_CAP": str(self.policy.installation_instances),
+            "CONTAINERS_IDLE_SECONDS": str(self.policy.idle_seconds),
+            "CONTAINERS_INGRESS_BYTES": str(self.policy.ingress_bytes),
+            "CONTAINERS_OUTBOUND_BYTES": str(self.policy.outbound_bytes),
+            "CONTAINERS_IMAGE": self.image.provider_version,
+            "CONTAINERS_PREPARED_IMAGE": image,
+            "CONTAINERS_RELEASE": self.release.digest,
+            "CONTAINERS_INGRESS_POLICY": (
+                Path(__file__).resolve().parents[1] / "worker_ingress_routes.json"
+            ).read_text(encoding="utf-8"),
+        }
         metadata = {
             "main_module": module,
             "compatibility_date": "2026-10-30",
-            "exports": {"ContainerLauncher": {"type": "durable-object", "storage": "sqlite", "container": "linux"}},
+            "exports": {
+                "ContainerLauncher": {"type": "durable-object", "storage": "sqlite", "container": "linux"},
+                "ContainerScopeRegistry": {"type": "durable-object", "storage": "sqlite"},
+                "ContainerIngress": {"type": "worker"},
+            },
             # The raw upload uses the prepared reference string. Wrangler
             # config objects are resolved before the multipart upload.
             # https://github.com/cloudflare/workers-sdk/blob/657179d3d707a244038168675292b288e0a1f4ef/packages/deploy-helpers/tests/container-metadata.test.ts
             "containers": [{"name": "linux", "class_name": "ContainerLauncher", "images": {"bifrost-linux": image}}],
-            "bindings": [{"name": OWNER_BINDING, "type": "plain_text", "text": worker_owner_value(intent)}],
+            "bindings": [
+                {"name": OWNER_BINDING, "type": "plain_text", "text": worker_owner_value(intent)},
+                *({"name": name, "type": "plain_text", "text": value} for name, value in settings.items()),
+                {"name": "CONTAINER_INSTANCE", "type": "durable_object_namespace", "class_name": "ContainerLauncher"},
+                {"name": "CONTAINER_REGISTRY", "type": "durable_object_namespace", "class_name": "ContainerScopeRegistry"},
+            ],
             "keep_bindings": [],
             "observability": {"enabled": False},
             "logpush": False,
@@ -421,7 +451,7 @@ class ContainerLauncherRest(ScriptRestProvisioner):
     ) -> ConfiguredWorkersScript:
         self._require_target(expected.intent)
         return await self._configure_script_endpoint(
-            api_token, expected, exports={"ContainerLauncher"}, public_endpoint=False,
+            api_token, expected, exports={"ContainerLauncher", "ContainerScopeRegistry"}, public_endpoint=True,
         )
 
 

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import test, { mock } from "node:test";
-import launcher, { ContainerInstanceLifecycle, forwardContainerHttp, relayControlSockets, ScopeRegistry } from "./container-registry.mjs";
+import { ContainerInstanceLifecycle, dispatchContainerControl, forwardContainerHttp, relayControlSockets, ScopeRegistry } from "./container-registry.mjs";
 
 const policy = JSON.parse(readFileSync(new URL("../../../api/src/services/worker_ingress_routes.json", import.meta.url)));
 
@@ -60,8 +60,55 @@ function reserve(scope, pin, now = pin.reservedAt) {
     return withClock(now, () => scope.reserve(pin));
 }
 
-test("the provisioning-only launcher rejects requests before a control route is installed", () => {
-    assert.equal(launcher.fetch(new Request("https://containers.example.test/")).status, 404);
+test("the Container transport only dispatches a fresh, certified incarnation request", async (t) => {
+    const { db, pin } = fixture();
+    t.after(() => db.close());
+    const scope = generateKeyPairSync("ed25519");
+    const incarnation = generateKeyPairSync("ed25519");
+    const rawPublic = key => key.export({ format: "der", type: "spki" }).subarray(-32).toString("hex");
+    const key = rawPublic(incarnation.publicKey);
+    const reservation = pin();
+    const env = {
+        CONTAINERS_INSTALLATION: reservation.installation,
+        CONTAINERS_REVISION: String(reservation.revision),
+        CONTAINERS_PUBLIC_KEY: rawPublic(scope.publicKey),
+    };
+    const body = JSON.stringify({ pin: reservation });
+    const signValue = (identity, domain, value) =>
+        sign(null, Buffer.from(domain + JSON.stringify(value)), identity.privateKey).toString("hex");
+    const certificate = signValue(scope, "bifrost.containers.incarnation.v1\0",
+        [reservation.installation, reservation.revision, reservation.worker, reservation.uid, key]);
+    const path = "/v1/stop";
+    const now = Date.now();
+    const headers = time => ({
+        "X-Bifrost-Incarnation-Key": key,
+        "X-Bifrost-Incarnation-Certificate": certificate,
+        "X-Bifrost-Request-Time": String(time),
+        "X-Bifrost-Request-Signature": signValue(incarnation, "bifrost.containers.request.v1\0",
+            [path, time, createHash("sha256").update(body).digest("hex")]),
+    });
+    const request = (pathname, options) => new Request("https://containers.example.test" + pathname, options);
+    let calls = 0;
+    const invoke = (operation, data) => {
+        assert.equal(operation, path);
+        assert.deepEqual(data.pin, reservation);
+        calls++;
+        return new Response(null, { status: 202 });
+    };
+    assert.equal((await dispatchContainerControl(request("/"), env, invoke)).status, 404);
+    for (const [route, content, h] of [
+        [path, body, {}],
+        ["/v1/start", body, headers(now)],
+        [path, body + " ", headers(now)],
+        [path, body, headers(now - 60_000)],
+    ]) {
+        assert.equal((await dispatchContainerControl(request(route, { method: "POST", headers: h, body: content }),
+            env, invoke)).status, 403);
+    }
+    assert.equal(calls, 0);
+    assert.equal((await dispatchContainerControl(request(path, { method: "POST", headers: headers(now), body }),
+        env, invoke)).status, 202);
+    assert.equal(calls, 1);
 });
 
 test("caller timestamps cannot prune reservations or void a seat early", (t) => {

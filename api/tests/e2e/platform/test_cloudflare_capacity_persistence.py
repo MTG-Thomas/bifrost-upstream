@@ -1263,7 +1263,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
     installation.policy = {**installation.policy, "bounds_release": workers.digest}
     cloudflare_policy.set_workers_release_floor(installation, workers.digest, TEST_ORDER)
     installation.desired_state = "enabled"
-    installation.containers_policy = {"enabled": True}
+    installation.containers_policy = container_policy().model_copy(update={"enabled": True}).model_dump(mode="json")
     await db_session.flush()
     connection = await db_session.connection()
     signer = tmp_path / "linux-release-signer"
@@ -1283,7 +1283,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
     bindings = []
     application = None
     copied = False
-    endpoint = {"enabled": False, "previews_enabled": False}
+    endpoint = {"enabled": True, "previews_enabled": False}
 
     @asynccontextmanager
     async def transaction():
@@ -1357,7 +1357,9 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
             }]
             assert metadata["exports"]["ContainerLauncher"]["container"] == "linux"
             bindings = metadata["bindings"]
-            assert len(bindings) == 1 and bindings[0]["name"] == OWNER_BINDING
+            assert bindings[0]["name"] == OWNER_BINDING
+            assert not any(binding["type"] == "secret_text" for binding in bindings)
+            assert any(binding["name"] == "CONTAINERS_PUBLIC_KEY" and len(binding["text"]) == 64 for binding in bindings)
             assert bindings[0]["text"].endswith(f":1:{digest}")
             events.append("launcher")
             result = {"id": f"{name}-containers"}
@@ -1369,8 +1371,13 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
             result = {"deployments": [{"id": deployment, "versions": [{"version_id": version, "percentage": 100}]}]}
         elif path.endswith(f"/{name}-containers/subdomain"):
             result = endpoint
+        elif path.endswith("/workers/subdomain"):
+            result = {"subdomain": "local-fixture"}
         elif path.endswith("/workers/durable_objects/namespaces"):
-            result = [{"id": namespace, "class": "ContainerLauncher", "script": f"{name}-containers"}]
+            result = [
+                {"id": namespace, "class": "ContainerLauncher", "script": f"{name}-containers"},
+                {"id": "b" * 32, "class": "ContainerScopeRegistry", "script": f"{name}-containers"},
+            ]
         elif path.endswith("/containers/applications"):
             if request.method == "POST":
                 assert application is None and json.loads(request.content)["durable_objects"] == {"namespace_id": namespace}

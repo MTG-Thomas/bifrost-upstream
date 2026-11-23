@@ -18,6 +18,7 @@ from src.models.orm.cloudflare_capacity import (
 )
 from src.models.orm.execution_workers import ExecutionWorker
 from src.models.orm.platform_jobs import PlatformJob
+from src.services.worker_pool.cloudflare_containers_auth import request_container_control
 from src.services.worker_pool.cloudflare_containers_policy import (
     CONTAINERS_SCOPE,
     container_identity_matches,
@@ -29,10 +30,6 @@ from src.services.worker_pool.cloudflare_credentials import (
     open_credential,
 )
 from src.services.worker_pool.cloudflare_tunnel_rest import dedicated_hostname
-from src.services.worker_pool.external_client import (
-    CAPACITY_REQUEST_SECONDS,
-    ExternalCapacityClient,
-)
 from src.worker.remote.protocol import new_nonce, nonce_digest
 
 _MINT = object()
@@ -147,27 +144,18 @@ async def _probe_container_egress(
         if resource_uid is None:
             return None
         token = open_credential(ref, credential).get_secret_value()
-        endpoint = ExternalCapacityClient.check_configuration(scope.endpoint, token)
         provider_pin = container_provider_pin(reservation, resource_uid)
         if provider_pin["credentialVersion"] != scope.bearer_version:
             return None
         control_key = await load_managed_control_key(db, reservation, resource_uid)
-        async with http.stream(
-            "POST", f"{endpoint}/v1/egress-probe",
-            headers={"Authorization": f"Bearer {token}", "X-Bifrost-Capacity-Scope": CONTAINERS_SCOPE},
-            json={
-                "pin": provider_pin, "nonce": nonce, "control_key": control_key, "origin": origin,
-                "release_digest": release_digest, "application_id": app.provider_id,
-                "provider_version": app.provider_version,
+        payload = await request_container_control(
+            http, scope.endpoint, token, control_key, operation="egress-probe", pin=provider_pin,
+            now_ms=int(observed_at.timestamp() * 1000),
+            payload={
+                "nonce": nonce, "origin": origin, "release_digest": release_digest,
+                "application_id": app.provider_id, "provider_version": app.provider_version,
             },
-            timeout=CAPACITY_REQUEST_SECONDS, follow_redirects=False,
-        ) as response:
-            response.raise_for_status()
-            payload = bytearray()
-            async for chunk in response.aiter_bytes():
-                if len(payload) + len(chunk) > 8192:
-                    return None
-                payload.extend(chunk)
+        )
         report = ProbeReport.model_validate_json(payload, strict=True)
     except (httpx.HTTPError, ValueError):
         return None

@@ -12,7 +12,8 @@ rates=$5
 [[ "$revision" =~ ^[a-f0-9]{40}$ ]]
 test "$(git rev-parse HEAD)" = "$revision"
 mkdir -p "$output"
-cp deploy/capacity/cloudflare/container-registry.mjs "$output/"
+cat deploy/capacity/cloudflare/container-registry.mjs deploy/capacity/cloudflare/container-scope.mjs \
+    > "$output/container-registry.mjs"
 metadata=$(mktemp)
 trap 'rm -f "$metadata"' EXIT
 workers_digest=$(docker run --rm --network=none --platform linux/amd64 --entrypoint /usr/local/bin/python "$base" \

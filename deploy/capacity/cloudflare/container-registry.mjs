@@ -300,12 +300,82 @@ export class ScopeRegistry {
     }
 }
 
-// The deployment binds this namespace to the separately provisioned application.
-export class ContainerLauncher {}
+const CERTIFICATE_DOMAIN = "bifrost.containers.incarnation.v1\0";
+const REQUEST_DOMAIN = "bifrost.containers.request.v1\0";
+const CONTROL_REQUEST_ROUTES = new Set([
+    "/v1/start", "/v1/stop", "/v1/egress-probe", "/v1/void", "/v1/observe-start",
+    "/v1/close-absent", "/v1/close", "/v1/retire",
+]);
+const MAX_CONTROL_REQUEST = 8192;
+const CONTROL_REQUEST_CLOCK_WINDOW = 30_000;
 
-export default {
-    fetch() { return new Response(null, { status: 404 }); },
-};
+function hex(bytes) {
+    return Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function verifySignature(publicKey, signature, content) {
+    const key = await crypto.subtle.importKey("raw", Uint8Array.fromHex(publicKey), "Ed25519", false, ["verify"]);
+    return crypto.subtle.verify("Ed25519", key, Uint8Array.fromHex(signature), new TextEncoder().encode(content));
+}
+
+async function readControlBody(request) {
+    const reader = request.body?.getReader();
+    if (!reader) return null;
+    const body = new Uint8Array(MAX_CONTROL_REQUEST);
+    let length = 0;
+    try {
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) return body.subarray(0, length);
+            if (length + value.byteLength > body.length) {
+                await reader.cancel();
+                return null;
+            }
+            body.set(value, length);
+            length += value.byteLength;
+        }
+    } finally {
+        reader.releaseLock();
+    }
+}
+
+// Authentication happens before a request can address a stateful actor. Only
+// public verification material is installed in the Worker.
+export async function dispatchContainerControl(request, env, invoke) {
+    const url = new URL(request.url);
+    if (request.method !== "POST" || url.search || !CONTROL_REQUEST_ROUTES.has(url.pathname)) {
+        return new Response(null, { status: 404 });
+    }
+    const denied = () => new Response(null, { status: 403 });
+    const root = env.CONTAINERS_PUBLIC_KEY;
+    const publicKey = request.headers.get("X-Bifrost-Incarnation-Key");
+    const certificate = request.headers.get("X-Bifrost-Incarnation-Certificate");
+    const signature = request.headers.get("X-Bifrost-Request-Signature");
+    const time = request.headers.get("X-Bifrost-Request-Time");
+    if (!/^[a-f0-9]{64}$/.test(root) || !/^[a-f0-9]{64}$/.test(publicKey)
+        || !/^[a-f0-9]{128}$/.test(certificate) || !/^[a-f0-9]{128}$/.test(signature)
+        || !/^[0-9]{13}$/.test(time) || Math.abs(Date.now() - Number(time)) > CONTROL_REQUEST_CLOCK_WINDOW) {
+        return denied();
+    }
+    let data;
+    try {
+        const body = await readControlBody(request);
+        if (!body) return denied();
+        const digest = hex(new Uint8Array(await crypto.subtle.digest("SHA-256", body)));
+        const message = JSON.stringify([url.pathname, Number(time), digest]);
+        if (!await verifySignature(publicKey, signature, REQUEST_DOMAIN + message)) return denied();
+        data = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
+        const pin = data.pin;
+        if (pin?.installation !== env.CONTAINERS_INSTALLATION
+            || pin?.revision !== Number(env.CONTAINERS_REVISION)
+            || !UUID.test(pin?.worker) || !UID.test(pin?.uid)) return denied();
+        const binding = JSON.stringify([pin.installation, pin.revision, pin.worker, pin.uid, publicKey]);
+        if (!await verifySignature(root, certificate, CERTIFICATE_DOMAIN + binding)) return denied();
+    } catch {
+        return denied();
+    }
+    return await invoke(url.pathname, data);
+}
 
 // The per-incarnation Durable Object calls this before it exposes a control
 // endpoint. The registry may be a remote DO stub. A running bit or the

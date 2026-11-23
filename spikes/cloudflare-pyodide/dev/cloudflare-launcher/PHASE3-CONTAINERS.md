@@ -459,6 +459,16 @@ Enable still verifies the retained release digest, exact application, and
 scope. Joint readiness remains bound to that revision and digest, and a
 configuration or release cutover cannot inherit it.
 
+The deployed control endpoint receives a public verification key in its
+Worker metadata. Bifrost keeps the scope signing secret in its credential
+journal and uses it to certify the public key of each reserved incarnation.
+The incarnation signs the control route, timestamp and exact request body.
+Start and egress challenges carry only that incarnation's bootstrap control
+key. Stop carries its signature and identity. The Worker validates the
+certificate and request before addressing the incarnation's Durable Object.
+The egress challenge starts the fenced qualification actor. Its launch
+receipt alone cannot establish readiness.
+
 Hosted qualification needs explicit approval of the disposable account lane,
 installation, grants, time window and spend bounds, with an independent
 readback operator. Use the exact signed release, a held primary, synthetic

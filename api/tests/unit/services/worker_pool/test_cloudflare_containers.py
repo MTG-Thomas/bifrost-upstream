@@ -13,6 +13,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from pydantic import SecretStr, ValidationError
 from src.models.orm.execution_workers import ExecutionWorker
 from src.services.worker_pool import cloudflare_containers_rest
@@ -22,6 +23,7 @@ from src.services.worker_pool.cloudflare_containers_admission import (
     linux_review_digest,
     primary_has_no_fit,
 )
+from src.services.worker_pool.cloudflare_containers_auth import container_scope_public_key, request_container_control
 from src.services.worker_pool.cloudflare_containers_egress import (
     REQUIRED_DENIALS,
     VerifiedEgress,
@@ -421,7 +423,9 @@ async def test_owned_egress_probe_challenges_scope_and_requires_api_witness(case
 
     def probe(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST" and str(request.url) == endpoint + "/v1/egress-probe"
-        assert request.headers["authorization"] == f"Bearer {token.get_secret_value()}"
+        assert "authorization" not in request.headers
+        assert len(request.headers["x-bifrost-incarnation-certificate"]) == 128
+        assert len(request.headers["x-bifrost-request-signature"]) == 128
         body = json.loads(request.content)
         pin = body["pin"]
         assert pin["worker"] == str(worker) and len(body["nonce"]) == 43
@@ -671,6 +675,40 @@ async def test_exact_size_stopped_history_does_not_block_deletion(observed_conta
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
         await ContainersRest(http).delete_application(TOKEN, application)
     assert observed_states == ["active"] and not present
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["start", "stop", "egress-probe"])
+async def test_container_control_signs_each_route_for_the_incarnation(operation) -> None:
+    pin = {"installation": str(uuid4()), "revision": 2, "worker": str(uuid4()), "uid": uuid4().hex}
+    scope_secret = "synthetic-private-scope-material-000001"
+    control_key = "f" * 64
+    path = "/v1/" + operation
+    now = 1795442400000
+
+    def provider(request):
+        assert request.url.path == path and request.method == "POST"
+        assert "authorization" not in request.headers and scope_secret.encode() not in request.content
+        headers = request.headers
+        key = headers["x-bifrost-incarnation-key"]
+        certificate = json.dumps([pin["installation"], pin["revision"], pin["worker"], pin["uid"], key],
+                                 separators=(",", ":")).encode()
+        Ed25519PublicKey.from_public_bytes(bytes.fromhex(container_scope_public_key(scope_secret))).verify(
+            bytes.fromhex(headers["x-bifrost-incarnation-certificate"]), b"bifrost.containers.incarnation.v1\0" + certificate,
+        )
+        message = json.dumps([path, now, sha256(request.content).hexdigest()], separators=(",", ":")).encode()
+        Ed25519PublicKey.from_public_bytes(bytes.fromhex(key)).verify(
+            bytes.fromhex(headers["x-bifrost-request-signature"]), b"bifrost.containers.request.v1\0" + message,
+        )
+        assert (control_key.encode() in request.content) == (operation != "stop")
+        return httpx.Response(200, json={"status": "pending"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+        receipt = await request_container_control(
+            http, "https://containers.example.test", scope_secret, control_key,
+            operation=operation, pin=pin, now_ms=now, payload={},
+        )
+    assert json.loads(receipt) == {"status": "pending"}
 
 
 @pytest.mark.asyncio
