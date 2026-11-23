@@ -2622,18 +2622,23 @@ async def test_container_pins_only_consume_an_explicit_shared_ceiling(
         "limits": {**installation.policy["limits"], "shared_managed_worker_cap": shared_cap},
     }
     now = datetime.now(UTC)
-    for _ in range(3):
+    stopped = None
+    for index in range(3):
         worker_id = uuid4()
-        db_session.add(ExecutionWorker(
-            id=worker_id, form="external", state="ready", capacity_scope="containers",
-            heartbeat_at=now, memory_budget_bytes=128 * 2**20,
-        ))
+        worker = ExecutionWorker(
+            id=worker_id, form="external", state="retired" if index == 0 else "ready",
+            capacity_scope="containers", heartbeat_at=now, memory_budget_bytes=128 * 2**20,
+        )
+        if index == 0:
+            stopped = worker
+        db_session.add(worker)
         await db_session.flush()
         db_session.add(CloudflareWorkerReservation(
             worker_id=worker_id, installation_id=installation.id, scope="containers", deployment_revision=1,
             control_root_version=installation.control_root_version,
             container_tenant=str(uuid4()), container_release="c" * 64,
             container_envelope={}, container_reserved_at=now,
+            container_stopped_at=now if index == 0 else None,
         ))
     await db_session.flush()
 
@@ -2643,8 +2648,15 @@ async def test_container_pins_only_consume_an_explicit_shared_ceiling(
         primary = controller.WorkerPoolController(
             KubernetesJobClient(settings, http_client=http, namespace="test"), settings, spec,
         )
-        launched = await primary.launch_for_demand(KubernetesPolicy(max_workers=3, warm_workers=1))
-    assert len(launched) == expected_jobs
+        policy = KubernetesPolicy(max_workers=3, warm_workers=1)
+        launched = await primary.launch_for_demand(policy)
+        assert len(launched) == expected_jobs
+        if shared_cap == 3:
+            assert stopped is not None
+            stopped.capacity_resource_deleted_at = now
+            await db_session.flush()
+            launched = await primary.launch_for_demand(policy)
+            assert len(launched) == 1
     for worker_id in launched:
         worker = await db_session.get(ExecutionWorker, worker_id)
         assert worker is not None and worker.form == "job" and worker.state == "reserved"
@@ -2758,13 +2770,14 @@ async def create_installation(
     "stale-hash", "missing-pin", "solution-generation", "solution-version", "solution-outbound",
     "cross-org", "wrong-approval-owner", "tenant-owned-global-approval",
     "stale-egress", "different-provider-version", "overdue-account", "overdue-other-account",
-    "cold-canary",
+    "cold-canary", "stopped-unconfirmed",
 ])
 async def test_container_reservation_rejects_unreviewed_source_and_scope(
     db_session, installation, reason,
 ) -> None:
     from src.models.contracts.cloudflare_approval import SolutionApprovalScope
     from src.models.orm.cloudflare_approvals import CloudflareApproval
+    from src.models.orm.execution_workers import MANAGED_WORKER_FORMS
     from src.models.orm.file_index import FileIndex, SolutionFileIndex
     from src.models.orm.solutions import Solution
     from src.models.orm.workflows import Workflow
@@ -2776,6 +2789,9 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
         reserve_container,
         reserve_container_canary,
     )
+
+    from src.services.worker_pool.cloudflare_containers_policy import container_envelope
+    from src.services.worker_pool.sizing import LIVE_STATES
 
     db = db_session
     release, _, _ = make_release()
@@ -2924,6 +2940,29 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
         )
     elif reason == "different-provider-version":
         application.provider_version = "f" * 32
+    elif reason == "stopped-unconfirmed":
+        live_managed = await db.scalar(select(func.count()).select_from(ExecutionWorker).where(
+            ExecutionWorker.form.in_(MANAGED_WORKER_FORMS), ExecutionWorker.state.in_(LIVE_STATES),
+        ))
+        assert live_managed is not None
+        installation.policy = {
+            **installation.policy, "limits": {
+                **installation.policy["limits"], "shared_managed_worker_cap": live_managed + 1,
+            },
+        }
+        stopped = ExecutionWorker(id=uuid4(), form="external", state="retired", capacity_scope="containers")
+        db.add(stopped)
+        await db.flush()
+        db.add(CloudflareWorkerReservation(
+            worker_id=stopped.id, installation_id=installation.id, scope="containers",
+            deployment_revision=1, control_root_version=installation.control_root_version,
+            container_tenant="platform", container_release=release.digest,
+            container_reserved_at=now - timedelta(seconds=1), container_stopped_at=now,
+            container_envelope=container_envelope(container_policy(), release.manifest.rates),
+        ))
+        await db.flush()
+        assert await reserve_container(db, **admission) is None
+        stopped.capacity_resource_deleted_at = now
     elif reason.startswith("overdue-"):
         prior_id, prior_worker = uuid4(), uuid4()
         account = installation.account_id if reason == "overdue-account" else "b" * 32
@@ -2960,7 +2999,7 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
     result = await reserve_container(db, **admission)
     if reason == "overdue-account":
         assert isinstance(result, ContainerAdmissionRefused) and result.code == "CF_CONTAINERS_CLEANUP_PENDING"
-    elif reason in ("overdue-other-account", "cold-canary"):
+    elif reason in ("overdue-other-account", "cold-canary", "stopped-unconfirmed"):
         assert isinstance(result, CloudflareWorkerReservation)
     else:
         assert result is None

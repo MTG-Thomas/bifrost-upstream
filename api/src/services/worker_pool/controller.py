@@ -49,7 +49,6 @@ from src.jobs.platform.kubernetes_client import (
 )
 from src.models.orm.cloudflare_capacity import (
     CloudflareInstallation,
-    CloudflareWorkerReservation,
 )
 from src.models.orm.execution_workers import MANAGED_WORKER_FORMS, ExecutionWorker
 from src.models.orm.executions import Execution
@@ -82,6 +81,7 @@ from src.services.worker_pool.claims import CAPACITY_LOCK, REMOTE_WORKER_HANDLER
 from src.services.worker_pool.cloudflare_admission import (
     ManagedCloudflareScope,
     PrimaryPool,
+    read_managed_worker_occupancy,
 )
 from src.services.worker_pool.cloudflare_containers_policy import CONTAINERS_SCOPE
 from src.services.worker_pool.cloudflare_slots import (
@@ -393,12 +393,10 @@ class WorkerCapacityController(ABC):
                     ).with_for_update()
                 )
             ).scalars().all()
-            linux_workers = [
-                worker for worker in workers if worker.runtime_profile == LINUX_RUNTIME_PROFILE
-                and worker.capacity_scope != CONTAINERS_SCOPE
-            ]
+            linux_workers = [worker for worker in workers if worker.runtime_profile == LINUX_RUNTIME_PROFILE]
+            primary_linux_workers = [worker for worker in linux_workers if worker.capacity_scope != CONTAINERS_SCOPE]
             if managed_scope is not None and (
-                self.cloudflare_primary is None or not self.cloudflare_primary.saturated(linux_workers, _now())
+                self.cloudflare_primary is None or not self.cloudflare_primary.saturated(primary_linux_workers, _now())
             ):
                 return []
             generation = int(await db.scalar(select(func.coalesce(func.max(PackageChange.id), 0))) or 0)
@@ -504,8 +502,6 @@ class WorkerCapacityController(ABC):
             if new_declared is not None:
                 # Give Linux-only work first use of any remaining Linux budget.
                 needed.sort(key=new_declared.fits)
-            managed_ids = {worker.id for worker in workers if worker.form in MANAGED_WORKER_FORMS}
-            jobs = len(managed_ids)
             shared_cap = await db.scalar(
                 select(CloudflareInstallation.policy["limits"]["shared_managed_worker_cap"].as_integer())
                 .where(
@@ -513,21 +509,16 @@ class WorkerCapacityController(ABC):
                     CloudflareInstallation.admitted_revision.is_not(None),
                 )
             )
-            pins = CloudflareWorkerReservation
-            relevant_pins = pins.worker_id.in_(managed_ids)
-            if shared_cap is not None:
-                relevant_pins = relevant_pins | ExecutionWorker.capacity_resource_deleted_at.is_(None)
-            managed_cloudflare_ids = set(await db.scalars(
-                select(pins.worker_id).join(ExecutionWorker).where(relevant_pins),
-            ))
-            # The pin identifies both Workers launchers and Linux Containers.
-            # A live pin belongs to the Cloudflare ceiling, and a shared cap
-            # includes it once alongside unconfirmed provider deletions.
-            primary_jobs = len(managed_ids - managed_cloudflare_ids)
+            occupancy = await read_managed_worker_occupancy(
+                db, workers, include_pending_deletions=shared_cap is not None,
+            )
+            jobs = len(occupancy.live)
+            managed_cloudflare_ids = occupancy.cloudflare
+            primary_jobs = occupancy.primary_count
             room = policy.max_workers if managed_scope is not None else max(0, policy.max_workers - primary_jobs)
             shared_capacity_full = False
             if shared_cap is not None:
-                shared_room = max(0, shared_cap - len(managed_ids | managed_cloudflare_ids))
+                shared_room = max(0, shared_cap - occupancy.shared_count)
                 shared_capacity_full = shared_room == 0
                 if managed_scope is not None:
                     room = shared_room
@@ -546,7 +537,7 @@ class WorkerCapacityController(ABC):
                     return []
                 if cloudflare and peer is not None and sum(
                     worker.form == "external" and worker.capacity_scope == peer.scope
-                    for worker in linux_workers
+                    for worker in primary_linux_workers
                 ) < peer.max_workers:
                     return []
             plan = _plan_launches(
@@ -632,7 +623,7 @@ class WorkerCapacityController(ABC):
                  (worker.state == "ready" and worker.memory_budget_bytes is None))
                 and worker.memory_calibration
                 and worker.memory_calibration.get("environment") == environment
-                for worker in linux_workers if worker.form in MANAGED_WORKER_FORMS
+                for worker in primary_linux_workers if worker.form in MANAGED_WORKER_FORMS
             ):
                 return []
             # Pace failures per resource size without disabling recovery. An
@@ -648,7 +639,7 @@ class WorkerCapacityController(ABC):
             ))).all())
             known_limits = {sample.limit_bytes for sample in measurements}
             probing_limits = {
-                worker.memory_limit_bytes for worker in linux_workers
+                worker.memory_limit_bytes for worker in primary_linux_workers
                 if worker.form in MANAGED_WORKER_FORMS and worker.memory_budget_bytes is None
                 and worker.memory_calibration
                 and worker.memory_calibration.get("environment") == environment
@@ -701,7 +692,7 @@ class WorkerCapacityController(ABC):
                 # An idle undersized worker may yield the warm minimum, but it
                 # still occupies its slot until the canonical owner retires it.
                 owned = set((await db.scalars(select(ExecutionWorker.id).where(self._managed_scope(), ExecutionWorker.state == "ready"))).all())
-                ready = [worker for worker in linux_workers
+                ready = [worker for worker in primary_linux_workers
                          if worker.id in owned and worker.state == "ready"
                          and worker.active_runs == 0 and worker.memory_reserved_bytes == 0
                          and worker.active_handler_counts is not None
@@ -1239,13 +1230,19 @@ def linux_capacity_budgets(
     free = []
     covered: set[UUID] = set()
     for worker in workers:
+        held = requests.get(worker.reserved_for_dispatch_id)
+        if worker.capacity_scope == CONTAINERS_SCOPE:
+            # The pin covers its dispatch through settlement. Spare memory
+            # in the same instance cannot cover another dispatch.
+            if held is not None:
+                covered.add(held.id)
+            continue
         if (
             worker.state == "draining" or worker.execution_lane != "normal" or worker.memory_pressured
-            or worker.capacity_scope == CONTAINERS_SCOPE or "workflow.execute" not in worker.supported_handlers
+            or "workflow.execute" not in worker.supported_handlers
         ):
             continue
         # Preserve memory and handler slots for a worker's reserved dispatch.
-        held = requests.get(worker.reserved_for_dispatch_id)
         if held is not None:
             covered.add(held.id)
         if worker.form in MANAGED_WORKER_FORMS and (

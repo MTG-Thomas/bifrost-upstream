@@ -1,5 +1,6 @@
 """Serialize installation admission changes with managed Workers claims."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
@@ -15,7 +16,7 @@ from src.models.orm.cloudflare_capacity import (
     CloudflareOwnedResource,
     CloudflareWorkerReservation,
 )
-from src.models.orm.execution_workers import ExecutionWorker
+from src.models.orm.execution_workers import MANAGED_WORKER_FORMS, ExecutionWorker
 from src.services.worker_pool.cloudflare_containers_policy import CONTAINERS_SCOPE
 from src.services.worker_pool.cloudflare_release import installed_workers_release_digest
 from src.services.worker_pool.cloudflare_spend import cloudflare_usage_within_limit
@@ -25,6 +26,35 @@ from src.worker.remote.protocol import (
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
     WORKERS_DEADLINE_DISPATCH_SECONDS,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedWorkerOccupancy:
+    live: frozenset[UUID]
+    cloudflare: frozenset[UUID]
+
+    @property
+    def primary_count(self) -> int:
+        return len(self.live - self.cloudflare)
+
+    @property
+    def shared_count(self) -> int:
+        return len(self.live | self.cloudflare)
+
+
+async def read_managed_worker_occupancy(
+    db: AsyncSession, live_workers: Sequence[ExecutionWorker], *, include_pending_deletions: bool,
+) -> ManagedWorkerOccupancy:
+    """Count each live managed worker once and keep pins until deletion is confirmed."""
+    live = frozenset(worker.id for worker in live_workers if worker.form in MANAGED_WORKER_FORMS)
+    pin = CloudflareWorkerReservation
+    relevant = pin.worker_id.in_(live)
+    if include_pending_deletions:
+        relevant = relevant | ExecutionWorker.capacity_resource_deleted_at.is_(None)
+    cloudflare = frozenset(await db.scalars(select(pin.worker_id).join(
+        ExecutionWorker, ExecutionWorker.id == pin.worker_id,
+    ).where(relevant)))
+    return ManagedWorkerOccupancy(live, cloudflare)
 
 
 @dataclass(frozen=True, slots=True)

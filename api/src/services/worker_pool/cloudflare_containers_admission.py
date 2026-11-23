@@ -33,6 +33,7 @@ from src.models.orm.workflows import Workflow
 from src.services.worker_pool.claims import CAPACITY_LOCK
 from src.services.worker_pool.cloudflare_admission import (
     PrimaryPool,
+    read_managed_worker_occupancy,
     workers_release_matches,
 )
 from src.services.worker_pool.cloudflare_containers_egress import (
@@ -63,6 +64,7 @@ from src.services.worker_pool.cloudflare_spend import (
     usage_period,
 )
 from src.services.worker_pool.eligibility import cloudflare_dispatch_sql
+from src.services.worker_pool.sizing import LIVE_STATES
 from src.worker.remote.protocol import (
     CLOUDFLARE_WORKFLOW_HANDLER,
     LINUX_RUNTIME_PROFILE,
@@ -72,7 +74,6 @@ QUALIFICATION_CANARY_TENANT = "qualification-canary"
 CONTAINERS_PLACEMENT_COOLDOWN = timedelta(minutes=1)
 
 LINUX_REVIEW_VERSION = "containers-linux-v1"
-LIVE_STATES = ("reserved", "starting", "ready", "draining")
 
 
 class LinuxReview(BaseModel):
@@ -302,16 +303,10 @@ async def _lock_container_capacity(
     if len(live) >= containers.installation_instances:
         return None
     workers = list(await db.scalars(select(ExecutionWorker).where(ExecutionWorker.state.in_(LIVE_STATES))))
-    if policy.shared_managed_worker_cap is not None and (
-        len({worker.id for worker in workers if worker.form in ("external", "job")})
-        + (await db.scalar(select(func.count()).select_from(pin).join(
-            ExecutionWorker, ExecutionWorker.id == pin.worker_id,
-        ).where(
-            ExecutionWorker.capacity_resource_deleted_at.is_(None), ExecutionWorker.state.not_in(LIVE_STATES),
-            pin.container_stopped_at.is_(None),
-        )) or 0) >= policy.shared_managed_worker_cap
-    ):
-        return None
+    if policy.shared_managed_worker_cap is not None:
+        occupancy = await read_managed_worker_occupancy(db, workers, include_pending_deletions=True)
+        if occupancy.shared_count >= policy.shared_managed_worker_cap:
+            return None
     seats = await read_workflow_slot_admission(db, installation_id, policy.workers)
     if seats.full:
         return None

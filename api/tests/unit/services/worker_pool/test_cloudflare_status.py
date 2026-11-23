@@ -90,14 +90,17 @@ def test_five_queued_workflows_fit_only_one_primary_slot():
     assert [item.code for item in reasons] == ["primary_has_capacity", "eligible_for_overflow"]
 
 
-def test_primary_coverage_excludes_managed_container_workers():
-    request = Request(uuid4(), 1, "workflow.execute", 1)
+def test_coverage_reserves_a_container_only_for_its_pinned_dispatch():
+    held, other, third = [
+        Request(uuid4(), 128 * 2**20, "workflow.execute", 1, tenant_id=uuid4())
+        for _ in range(3)
+    ]
     worker = ExecutionWorker(
-        form="external", state="ready", execution_lane="normal", capacity_scope="containers",
-        supported_handlers=["workflow.execute"], memory_budget_bytes=100, memory_reserved_bytes=0,
-        reserved_for_dispatch_id=request.id,
+        form="external", state="reserved", execution_lane="normal", capacity_scope="containers",
+        supported_handlers=["workflow.execute"], memory_limit_bytes=4 * 2**30,
+        reserved_for_dispatch_id=held.id,
     )
-    assert primary_coverage([worker], [request], SIZING) == set()
+    assert primary_coverage([worker], [held, other, third], SIZING) == {held.id}
 
 
 def test_primary_coverage_respects_held_memory_and_handler_slots():
