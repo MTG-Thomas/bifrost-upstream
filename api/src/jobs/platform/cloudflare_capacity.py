@@ -197,12 +197,11 @@ async def _management_token(db: AsyncSession, installation: CloudflareInstallati
         raise CloudflareManagementDenied from None
 
 
-async def _cleanup_one(
-    db: AsyncSession, row: CloudflareInstallation, adapter: OwnedResourceCleanup, *, before_revision: int | None = None,
+def _next_cleanup_resource(
+    installation_id: UUID, *, before_revision: int | None = None,
     stranded_scope: tuple[str, int] | None = None,
     workers_only: bool = False,
-    container_adapter: ContainersRest | None = None,
-) -> Literal["complete", "progressed", "settling"]:
+):
     # Newer generations first, then withdraw the capacity entry point before
     # retiring launcher and runtime dependencies. Workers scripts implicitly
     # own their namespaces. The adapter checks for those before recording absence.
@@ -210,7 +209,7 @@ async def _cleanup_one(
         CloudflareOwnedResource.kind.in_(("container_application", "worker_script", "container_image"))
     )
     query = select(CloudflareOwnedResource).where(
-        CloudflareOwnedResource.installation_id == row.id,
+        CloudflareOwnedResource.installation_id == installation_id,
         CloudflareOwnedResource.state != "absent",
         (CloudflareOwnedResource.scope == "workers") | containers,
     )
@@ -221,7 +220,7 @@ async def _cleanup_one(
     if stranded_scope is not None:
         scope, revision = stranded_scope
         query = query.where(CloudflareOwnedResource.scope == scope, CloudflareOwnedResource.desired_revision == revision)
-    resource = await db.scalar(query.order_by(
+    return query.order_by(
         CloudflareOwnedResource.desired_revision.desc(),
         case(
             (CloudflareOwnedResource.kind == "container_application", 0),
@@ -231,7 +230,23 @@ async def _cleanup_one(
             else_=3,
         ),
         CloudflareOwnedResource.target_name,
-    ).limit(1).with_for_update())
+    ).limit(1)
+
+
+async def _next_cleanup_is_image(db: AsyncSession, installation_id: UUID, *, before_revision: int | None = None) -> bool:
+    return await db.scalar(_next_cleanup_resource(installation_id, before_revision=before_revision)
+                           .with_only_columns(CloudflareOwnedResource.kind)) == "container_image"
+
+
+async def _cleanup_one(
+    db: AsyncSession, row: CloudflareInstallation, adapter: OwnedResourceCleanup, *, before_revision: int | None = None,
+    stranded_scope: tuple[str, int] | None = None,
+    workers_only: bool = False,
+    container_adapter: ContainersRest | None = None,
+) -> Literal["complete", "progressed", "settling"]:
+    resource = await db.scalar(_next_cleanup_resource(
+        row.id, before_revision=before_revision, stranded_scope=stranded_scope, workers_only=workers_only,
+    ).with_for_update())
     if resource is None:
         return "complete"
     intent = _resource_intent(resource)
@@ -245,6 +260,9 @@ async def _cleanup_one(
         if container_adapter is None:
             raise ObservationPending("Container cleanup requires the registry adapter",
                                      OwnershipResource.CONTAINER_IMAGE, ObservationCheck.CONTAINER_INVENTORY)
+        if resource.state != "deleting" and _container_create_may_exist(resource):
+            resource.state = "deleting"
+            return "progressed"
         return await _cleanup_container_image(ContainerRegistry(container_adapter), token, resource, intent)
     if resource.state == "creating":
         recorded = (
@@ -529,13 +547,19 @@ async def _settle_disable(
         waiting_for_deletion = False
         async with get_db_context() as db:
             await _hold_installation_lease(db, context, payload.installation_id)
-            row = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
+            row = await db.get(CloudflareInstallation, payload.installation_id)
             if row is None or row.desired_revision != payload.revision or row.desired_state != payload.desired_state:
                 return {"outcome": "superseded"}
             if row.retired_at is not None:
                 # Retirement already verified cleanup and removed the management token.
                 return {"outcome": "disconnected"}
             workers_remain = await cloudflare_workers_remain(db, row.id)
+            # The provisioning lease and owned image row fence registry I/O.
+            # Keep the installation available while waiting for CLI effects.
+            if workers_remain or payload.action != "disconnect" or not await _next_cleanup_is_image(db, row.id):
+                row = await db.get(CloudflareInstallation, payload.installation_id, with_for_update=True, populate_existing=True)
+                if row is None or row.desired_revision != payload.revision or row.desired_state != payload.desired_state:
+                    return {"outcome": "superseded"}
             if workers_remain:
                 await _require_legacy_cleanup(db)
                 if payload.action == "disconnect":

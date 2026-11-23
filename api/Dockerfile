@@ -99,10 +99,10 @@ COPY api/bifrost.py /app/
 COPY api/scripts/ /app/scripts/
 COPY deploy/capacity/cloudflare/image-artifacts/ /app/artifacts/cloudflare/
 COPY deploy/capacity/cloudflare/registry-toolchain/package*.json /tmp/registry-toolchain/
-RUN if [ -f /app/artifacts/cloudflare/linux-release-signer ]; then \
-      npm ci --prefix /tmp/registry-toolchain --omit=dev --ignore-scripts --no-audit --no-fund \
-      && mv /tmp/registry-toolchain/node_modules /app/artifacts/cloudflare/; \
-    fi && rm -rf /tmp/registry-toolchain
+# Cleanup must work under a replacement image without the release signer.
+RUN npm ci --prefix /tmp/registry-toolchain --omit=dev --ignore-scripts --no-audit --no-fund \
+    && mv /tmp/registry-toolchain/node_modules /app/artifacts/cloudflare/ \
+    && rm -rf /tmp/registry-toolchain
 COPY --chmod=644 LICENSE /app/LICENSE
 COPY assets/ /app/assets/
 RUN chmod -R a+rX /app/assets

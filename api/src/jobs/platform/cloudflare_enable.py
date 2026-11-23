@@ -34,6 +34,7 @@ from src.jobs.platform.cloudflare_capacity import (
     _hold_installation_lease,
     _inventory_snapshot,
     _management_token,
+    _next_cleanup_is_image,
     _observe_inventory,
     _remove_verified_scopes,
     _require_legacy_cleanup,
@@ -984,7 +985,7 @@ async def _drain_previous_revision(
     deadline = monotonic() + DRAIN_DEADLINE.total_seconds()
     while True:
         async with get_db_context() as db:
-            row = await _locked_current(db, context, payload)
+            row = await _locked_current(db, context, payload, lock_row=False)
             if row is None:
                 return False
             if upgrading and (row.upgrade_release is None or row.admitted_revision is not None):
@@ -995,6 +996,10 @@ async def _drain_previous_revision(
             if row.upgrade_drained_at is not None:
                 return True
             workers_remain = await cloudflare_workers_remain(db, row.id, before_revision=payload.revision)
+            if workers_remain or not await _next_cleanup_is_image(db, row.id, before_revision=payload.revision):
+                row = await _locked_current(db, context, payload)
+                if row is None:
+                    return False
             if workers_remain:
                 result = await _cleanup_stranded_workflow_slots(db, row, adapter, before_revision=payload.revision)
             else:
