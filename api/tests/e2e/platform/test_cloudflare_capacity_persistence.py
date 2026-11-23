@@ -3140,6 +3140,14 @@ async def test_disconnect_preserves_unresolved_container_cleanup(db_session, ins
         await settle_container_stop(db_session, rest, token=token, closure=receipt)
         available = False
         await settle_container_stop(db_session, rest, token=token, closure=receipt)
+    if refused:
+        assert pin.container_stopped_at is not None
+        fresh = SimpleNamespace(
+            installation=installation, scope=scope, now=pin.container_stopped_at + timedelta(seconds=1),
+        )
+        cooldown = await _container_scope_cooldown(db_session, fresh)
+        assert cooldown is not None and cooldown.code == "CF_CONTAINERS_COOLDOWN"
+        assert cooldown.retry_at is not None and cooldown.retry_at > fresh.now
     assert not await cloudflare_workers_remain(db_session, installation.id)
     assert await db_session.scalar(select(container_account_usage(literal(deadline))).where(
         CloudflareInstallation.id == installation.id,

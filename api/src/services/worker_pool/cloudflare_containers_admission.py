@@ -233,7 +233,7 @@ class _ContainerCapacity:
 async def _container_scope_cooldown(
     db: AsyncSession, capacity: _ContainerCapacity,
 ) -> ContainerAdmissionRefused | None:
-    """After witnessed absence, allow one new attempt until signed enrollment."""
+    """Back off the scope after an ambiguous capacity refusal or placement failure."""
     pin = CloudflareWorkerReservation
     worker = ExecutionWorker
     scope = (

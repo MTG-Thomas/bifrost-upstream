@@ -524,7 +524,11 @@ A witnessed absent ordinary launch drops its placement pointer. The
 original queued dispatch can be claimed by the primary without creating
 a second dispatch. The scope waits one minute before permitting one
 demand-driven placement. Further launches wait for its signed enrollment
-or a new settlement.
+or a new settlement. The pilot applies the cooldown installation-wide.
+The receipt does not distinguish the one-instance tenant limit from the
+two-instance installation limit. Either refusal after API admission can
+indicate a stale provider seat. Pausing the installation bounds repeated
+starts while the registry and API settle the placement.
 A committed settlement can replay after provider inventory is collected.
 
 Egress readiness expires after five minutes. The authenticated scope
