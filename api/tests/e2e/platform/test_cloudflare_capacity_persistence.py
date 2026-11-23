@@ -973,7 +973,6 @@ async def test_canary_proof_requires_current_lease_worker_generation_and_revisio
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("readback", ["ambiguous_namespaces", "invisible_upload"])
 async def test_enable_retracts_workers_admission_without_container_readiness(
     db_session, installation, monkeypatch,
 ) -> None:
@@ -1006,6 +1005,7 @@ async def test_enable_retracts_workers_admission_without_container_readiness(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("readback", ["ambiguous_namespaces", "invisible_upload"])
 async def test_enable_keeps_admission_closed_on_unverified_readback(
     db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch, readback,
 ) -> None:
