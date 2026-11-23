@@ -615,11 +615,8 @@ inputs and harness evidence, and the API hides SQL parameters when a
 Containers scope is configured. The launcher rejects service, agent and
 generic platform-job commands.
 
-Enable the third scope with `BIFROST_CLOUDFLARE_CONTAINERS_SCOPE`,
-`BIFROST_CLOUDFLARE_CONTAINERS_URL` and
-`BIFROST_CLOUDFLARE_CONTAINERS_TOKEN` on the API. The provider must report
-the configured Linux scope and use a distinct endpoint and token. VM and
-Workers configuration remains in the existing settings. Both overflow
+See [Phase 3 Containers](PHASE3-CONTAINERS.md) for the managed deployment
+and database-backed scope. The prototype's overflow
 scopes wait for the reconciled VM to reach its live ceiling. Containers
 advertise Normal `workflow.execute@1` and the update-check stage. The planner
 and fenced dispatch predicates exclude Workers-eligible workflows from

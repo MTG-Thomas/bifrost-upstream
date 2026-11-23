@@ -151,7 +151,7 @@ export class ScopeRegistry {
                 + "count(CASE WHEN state <> 'retired' AND tenant = ? THEN 1 END) AS tenant FROM reservations", pin.tenant,
             ).one();
             const full = total >= this.cap || tenant >= 1;
-            if (tracked >= MAX_RESERVATION_RECORDS) return { status: closingUnstarted ? "pending" : "full" };
+            if (tracked >= MAX_RESERVATION_RECORDS) return { status: closingUnstarted ? "pending" : "receipt-limit" };
             if (observation === null && full) return { status: "full" };
             const tombstone = observation && (closingUnstarted || full) ? observation : null;
             const voidedAt = Math.max(now, reservedAt);

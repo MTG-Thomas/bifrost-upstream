@@ -17,7 +17,7 @@ from src.models.orm.cloudflare_capacity import (
 )
 from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
 from src.models.orm.executions import Execution
-from src.services.worker_pool.cloudflare_containers_policy import CONTAINERS_SCOPE
+from src.services.worker_pool.cloudflare_containers_policy import CONTAINER_CLOCK_SKEW, CONTAINERS_SCOPE
 from src.services.worker_pool.cloudflare_containers_rest import ContainersRest
 from src.services.worker_pool.cloudflare_provisioning import (
     ObservationPending,
@@ -145,7 +145,7 @@ async def settle_container_stop(
                 or (
                     isinstance(closure, AbsentContainerStart) and (
                         type(closure.authorized_at_ms) is not int
-                        or not int(pin.container_reserved_at.timestamp() * 1000)
+                        or not int((pin.container_reserved_at - CONTAINER_CLOCK_SKEW).timestamp() * 1000)
                         <= closure.authorized_at_ms < closure.start_deadline_ms
                         or closed_at_ms < closure.start_deadline_ms + BOOT_OBSERVATION_MS
                     )
@@ -185,7 +185,10 @@ async def settle_container_stop(
         token, closure.application, instance_id=closure.instance_id,
         image=closure.image, not_before=closure.last_start_effect_at,
     )
-    if stop.started_at < pin.container_reserved_at or stop.started_at != closure.placement_started_at:
+    if (
+        stop.started_at < pin.container_reserved_at - CONTAINER_CLOCK_SKEW
+        or stop.started_at != closure.placement_started_at
+    ):
         raise ObservationPending("Container stop does not match the witnessed start")
     envelope["observed_started_at"] = stop.started_at.isoformat()
     count = closure.outbound_bytes
@@ -200,7 +203,7 @@ async def settle_container_stop(
                 Decimal(envelope["control_usd"]) + Decimal(envelope["outbound_gb_usd"]) * count / 10**9,
             )
     pin.container_envelope = envelope
-    pin.container_stopped_at = stop.stopped_at
+    pin.container_stopped_at = max(stop.stopped_at, pin.container_reserved_at)
     worker.state = "retired"
     worker.ended_at = stop.stopped_at
     await db.flush()

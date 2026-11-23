@@ -443,6 +443,12 @@ only. Joint admission still requires a signed runtime canary. Disconnect
 removes the application and launcher before removing the digest-checked tag.
 [Cloudflare image management](https://developers.cloudflare.com/containers/guides/image-management/)
 
+Scale In preserves the revision of a fully admitted deployment. It closes
+admission immediately, and Enable can reopen that revision only after the
+Scale In job and its worker drain finish. This preserves the exact image,
+application, launcher, and readiness binding for unchanged configuration.
+Disconnect and a paused cutover still advance the revision.
+
 Hosted qualification needs explicit approval of the disposable account lane,
 installation, grants, time window and spend bounds, with an independent
 readback operator. Use the exact signed release, a held primary, synthetic
@@ -554,13 +560,16 @@ original direction against the incarnation's durable byte budget. Before
 using those bytes for settlement, charge the scoped HTTP paths to the same
 budget and verify that the scope has fenced all relays. The closure must
 explicitly attest complete metering before settlement can reduce the fixed
-hold. Pair the closure with a singleton management inventory result for
-the fenced actor and exact placement start. Read complete
-[`instances-v2` inventory](https://developers.cloudflare.com/api/resources/containers/subresources/applications/subresources/instances/methods/list/)
-and match the exact actor ID locally. The provider prefix filter can hide a
-named placement from an actor-ID search. Walk the documented cursor
-pagination and check any numbered pages against their declared total.
-A full page without continuation or a total cannot establish absence.
+hold. Pair the closure with an exact management GET for the fenced actor
+under the verified application. Compare the placement start to the fence
+with the same three-second clock allowance as the registry.
+[Cloudflare exact instance lookup](https://developers.cloudflare.com/api/resources/containers/subresources/applications/subresources/instances/methods/get/)
+For application deletion, require an empty, terminal `instances-v2` read
+filtered to active placements, including provisioning and stopping, so
+stopped history cannot block deletion. Walk cursor pagination and check
+any numbered pages against their declared total. A full page without
+continuation or a total cannot establish absence.
+[Cloudflare instance inventory](https://developers.cloudflare.com/api/resources/containers/subresources/applications/subresources/instances/methods/list/)
 Share one management adapter across a settlement pass to pace ownership and
 placement inventory reads at two per second. Application health counts can veto
 deletion when the provider reports activity or an incomplete sweep. Verify

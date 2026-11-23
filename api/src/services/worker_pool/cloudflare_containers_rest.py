@@ -4,7 +4,6 @@ import base64
 import json
 import os
 import re
-from asyncio import Lock, sleep
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,6 +15,7 @@ import httpx
 
 from pydantic import SecretStr
 
+from src.services.worker_pool.cloudflare_containers_policy import CONTAINER_CLOCK_SKEW
 from src.services.worker_pool.cloudflare_containers_release import (
     ContainersReleaseUnavailable,
     VerifiedContainerRelease,
@@ -75,19 +75,16 @@ def _name(intent: ResourceIntent, kind: str) -> str:
 class ContainersRest(WorkersRestCleanup):
     def __init__(self, http: httpx.AsyncClient) -> None:
         super().__init__(http)
-        self._placement_read_lock = Lock()
         self._next_placement_read = 0.0
 
-    async def _placement_read(
-        self, token: SecretStr, account: str, path: str, *, params: dict[str, int | str] | None = None,
-    ) -> dict[str, Any] | None:
-        # A settlement pass shares this adapter across its actors.
-        async with self._placement_read_lock:
-            delay = self._next_placement_read - monotonic()
-            if delay > 0:
-                await sleep(delay)
-            self._next_placement_read = monotonic() + _PLACEMENT_READ_INTERVAL
-        return await self._request(token, account, "GET", path, params=params)
+    def _take_placement_reads(self, count: int) -> bool:
+        # Reserve the entire check before sending any reads. The caller can
+        # wait on settling after its transaction releases the row locks.
+        now = monotonic()
+        if now < self._next_placement_read:
+            return False
+        self._next_placement_read = now + count * _PLACEMENT_READ_INTERVAL
+        return True
 
     async def verify_launcher_namespace(
         self, token: SecretStr, expected: ResourceObservation, namespace: str,
@@ -114,7 +111,7 @@ class ContainersRest(WorkersRestCleanup):
         # Containers lists document result_info.page_token (echoed request),
         # next_page_token and per_page. An envelope with page/total_pages
         # instead is checked as numbered pagination, never mixed with cursors.
-        # https://developers.cloudflare.com/api/resources/containers/subresources/applications/subresources/instances/methods/list/
+        # https://developers.cloudflare.com/api/resources/containers/subresources/applications/methods/list/
         params: dict[str, int | str] = {"per_page": _INVENTORY_PAGE_SIZE, **filters}
         rows: dict[str, dict[str, Any]] = {}
         cursors: set[str] = set()
@@ -122,10 +119,7 @@ class ContainersRest(WorkersRestCleanup):
         page_count = None
         page_size = _INVENTORY_PAGE_SIZE
         for page in range(1, _MAX_INVENTORY_PAGES + 1):
-            if path.endswith("/instances-v2"):
-                envelope = await self._placement_read(token, account, path, params=params)
-            else:
-                envelope = await self._request(token, account, "GET", path, params=params)
+            envelope = await self._request(token, account, "GET", path, params=params)
             assert envelope is not None
             batch, info = envelope["result"], envelope.get("result_info", {})
             if not isinstance(batch, list) or not isinstance(info, dict):
@@ -242,7 +236,7 @@ class ContainersRest(WorkersRestCleanup):
             health = receipt["result"]["health"]
             counts = health.get("instances") if isinstance(health, dict) and health.get("summary") != "pending" else None
             if not isinstance(counts, dict) or any(
-                type(value := counts.get(state)) is not int or value != 0 for state in ("active", "starting")
+                type(value := counts.get(state)) is not int or value != 0 for state in ("active", "assigned")
             ):
                 # The aggregate can veto deletion. A zero count is not a
                 # substitute for the independent placement inventory.
@@ -259,12 +253,23 @@ class ContainersRest(WorkersRestCleanup):
             return
         account = intent.target.account_id
         path = f"containers/applications/{expected.provider_id}"
-        placements = await self._inventory(token, account, f"{path}/instances-v2")
-        if any(
-            row.get("application_id") != expected.provider_id
-            or not isinstance(row.get("status"), dict)
-            or row["status"].get("state") not in ("stopped", "inactive")
-            for row in placements
+        # The documented active filter includes provisioning, running and
+        # stopping actors. A single empty, terminal page proves no active
+        # placements even when stopped history fills an exact page.
+        # https://developers.cloudflare.com/api/resources/containers/subresources/applications/subresources/instances/methods/list/
+        if not self._take_placement_reads(1):
+            raise DeletionSettling("Waiting to read active Container placements",
+                                   OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_PLACEMENTS)
+        occupied = await self._request(
+            token, account, "GET", f"{path}/instances-v2", params={"state": "active", "per_page": 1},
+        )
+        assert occupied is not None
+        info = occupied.get("result_info", {})
+        if (
+            occupied["result"] != [] or not isinstance(info, dict)
+            or any(info.get(key) not in (None, "") for key in ("page_token", "next_page_token"))
+            or any(type(info.get(key, 0)) is not int or info.get(key, 0) != 0
+                   for key in ("count", "total_count", "total_pages"))
         ):
             raise DeletionSettling("Container application still has live or unverified placements",
                                    OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_PLACEMENTS)
@@ -315,7 +320,7 @@ class ContainersRest(WorkersRestCleanup):
                 raise ValueError
             started_at = datetime.fromisoformat(placement["started_at"])
             stopped_at = datetime.fromisoformat(status["updated_at"])
-            if not not_before <= started_at <= stopped_at <= datetime.now(UTC):
+            if not not_before - CONTAINER_CLOCK_SKEW <= started_at <= stopped_at <= datetime.now(UTC):
                 raise ValueError
         except (KeyError, TypeError, ValueError):
             raise ObservationPending("Provider has not witnessed a bounded stop for this placement") from None
@@ -336,17 +341,27 @@ class ContainersRest(WorkersRestCleanup):
         ):
             raise OwnershipConflict("Invalid Container instance observation target")
         path = f"containers/applications/{application.provider_id}"
-        app = await self._placement_read(token, account, path)
+        if not self._take_placement_reads(2):
+            raise ObservationSettling("Waiting to read the exact Container placement",
+                                      OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_PLACEMENTS)
+        app = await self._request(token, account, "GET", path)
         assert app is not None
         if self._application(app["result"], account, name, application.provider_version) != application.provider_id:
             raise OwnershipConflict("Container application ID changed")
-        # The provider filters names before actor IDs. A named placement
-        # would disappear from a prefix search by its actor ID.
-        rows = await self._inventory(token, account, f"{path}/instances-v2")
-        if any(row.get("application_id") != application.provider_id or not _ACTOR_ID.fullmatch(row["id"]) for row in rows):
-            raise OwnershipConflict("Container placement inventory differs from the journal",
+        # The exact actor endpoint includes named actors and does not depend
+        # on the size or lifecycle state of the application's history.
+        # https://developers.cloudflare.com/api/resources/containers/subresources/applications/subresources/instances/methods/get/
+        observed = await self._request(token, account, "GET", f"{path}/instances/{instance_id}", allow_missing=True)
+        if observed is None:
+            return None
+        placement = observed["result"]
+        if (
+            not isinstance(placement, dict) or placement.get("application_id") != application.provider_id
+            or placement.get("id") != instance_id
+        ):
+            raise OwnershipConflict("Container placement differs from the exact actor or application",
                                     OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.RECEIPT_MISMATCH)
-        return next((row for row in rows if row["id"] == instance_id), None)
+        return placement
 
 
 class ContainerLauncherRest(ScriptRestProvisioner):

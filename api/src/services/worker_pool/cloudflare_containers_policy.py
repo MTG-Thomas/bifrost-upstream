@@ -27,6 +27,8 @@ from src.services.worker_pool.cloudflare_containers_release import ContainerRate
 
 CONTAINERS_SCOPE = "containers"
 CONTAINERS_CLEANUP_PENDING = "CF_CONTAINERS_CLEANUP_PENDING"
+# Match the provider registry's allowance when comparing the two clocks.
+CONTAINER_CLOCK_SKEW = timedelta(seconds=3)
 
 
 def unresolved_container_reservation():

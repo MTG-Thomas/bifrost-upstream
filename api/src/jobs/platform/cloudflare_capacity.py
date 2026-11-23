@@ -1408,10 +1408,21 @@ async def enqueue_cloudflare_disable(
     else:
         require_operation(caller, "capacity.cloudflare_disconnect", GLOBAL)
     actor = caller.principal
-    payload = CloudflareDisablePayload(installation_id=installation_id, revision=expected_revision + 1, action=action)
     row = await db.get(CloudflareInstallation, installation_id, with_for_update=True, populate_existing=True)
     if row is None or row.retired_at is not None:
         raise CloudflarePolicyConflict("Cloudflare installation is unavailable")
+    retain_revision = (
+        action == "scale_in" and row.deployed_revision == row.desired_revision == expected_revision
+        and row.upgrade_release is None and not row.drain_required
+        and (row.admitted_revision == expected_revision or row.desired_state == "scaled_in")
+    )
+    # Keep the deployment identity when pausing a fully admitted revision.
+    # Admission and the Scale In job lease fence the drain. A cutover or
+    # Disconnect still advances the revision to invalidate outstanding work.
+    payload = CloudflareDisablePayload(
+        installation_id=installation_id, revision=expected_revision if retain_revision else expected_revision + 1,
+        action=action,
+    )
     if row.desired_revision != expected_revision:
         if row.desired_revision == payload.revision and row.desired_state == payload.desired_state:
             existing = await find_active_platform_job(

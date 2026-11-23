@@ -21,8 +21,11 @@ from src.jobs.platform.base import (
     define_platform_job,
 )
 from src.jobs.platform.cloudflare_capacity import (
+    CREATE_SETTLEMENT_WINDOW,
+    DISABLE_JOB,
     DRAIN_DEADLINE,
     RELEASE_FENCE_REMEDY,
+    CloudflareDisablePayload,
     _cleanup_one,
     _cleanup_stranded_workflow_slots,
     _container_create_absence_settled,
@@ -46,7 +49,7 @@ from src.models.orm.platform_jobs import PlatformJob
 from src.services.audit import emit_audit
 from src.services.authorization.enforce import Caller, require_operation
 from src.services.authorization.evaluator import GLOBAL
-from src.services.platform_jobs import enqueue_platform_job
+from src.services.platform_jobs import enqueue_platform_job, find_active_platform_job
 from src.services.work_dispatch import (
     WAKE_CLOUDFLARE_CAPACITY,
     wake_pool_workers_after_commit,
@@ -121,6 +124,10 @@ class CloudflareEnablePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     installation_id: UUID
     revision: int = Field(gt=0)
+
+
+class _EarlierContainerCreate(ObservationSettling):
+    """A committed empty read has started the previous attempt's absence window."""
 
 
 class WorkersProvisioner(ProvisioningAdapter, Protocol):
@@ -327,7 +334,7 @@ async def _settle_enable(
         if not await _deploy_container_launcher(context, payload, http, container_adapter, container_release):
             return {"outcome": "superseded"}
         await context.report("Provisioning Cloudflare Container Application")
-        if not await _provision_container_application(context, payload, container_adapter, container_release):
+        if not await _wait_for_container_application(context, payload, container_adapter, container_release):
             return {"outcome": "superseded"}
 
     async with get_db_context() as db:
@@ -683,8 +690,8 @@ async def _provision_container_application(
         now = datetime.now(UTC)
         if may_exist and not _container_create_absence_settled(application, now):
             await db.commit()
-            raise ObservationSettling("Waiting for the earlier Container application create",
-                                      OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_CREATE)
+            raise _EarlierContainerCreate("Waiting for the earlier Container application create",
+                                          OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_CREATE)
         # Provider inventory and the launcher fence have both been checked.
         # An expired attempt may retry only at the same account-unique name.
         application_id = application.id
@@ -748,6 +755,25 @@ def _record_container_application(resource: CloudflareOwnedResource, receipt: Re
     resource.provider_version = receipt.provider_version
     resource.state = "present"
     resource.observed_at = datetime.now(UTC)
+
+
+async def _wait_for_container_application(
+    context: PlatformJobContext, payload: CloudflareEnablePayload,
+    adapter: ContainersRest, release: VerifiedContainerRelease,
+) -> bool:
+    # Allow two empty observations a full settlement window apart in one job
+    # attempt. The first empty observation commits before each wait. A late
+    # exact-name app can be adopted on any probe.
+    deadline = monotonic() + CREATE_SETTLEMENT_WINDOW.total_seconds() + 5
+    while True:
+        try:
+            return await _provision_container_application(context, payload, adapter, release)
+        except _EarlierContainerCreate:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise
+        await context.report("Waiting for Earlier Cloudflare Container Creation")
+        await sleep(min(2, remaining))
 
 
 async def _drain_previous_revision(
@@ -883,6 +909,13 @@ async def enqueue_cloudflare_enable(
         raise CloudflarePolicyConflict("Cloudflare installation changed. Reload its current policy.")
     if row.upgrade_release is not None:
         raise CloudflarePolicyConflict("Reconcile the pending Cloudflare upgrade.")
+    if row.desired_state == "scaled_in" and row.deployed_revision == expected_revision:
+        scale_in = CloudflareDisablePayload(installation_id=row.id, revision=expected_revision, action="scale_in")
+        if (
+            await find_active_platform_job(db, DISABLE_JOB, scale_in.key) is not None
+            or await cloudflare_workers_remain(db, row.id)
+        ):
+            raise CloudflarePolicyConflict("Wait for Cloudflare Scale In to finish draining.")
     row.desired_state = "enabled"
     payload = CloudflareEnablePayload(installation_id=row.id, revision=row.desired_revision)
     job, reused = await enqueue_platform_job(

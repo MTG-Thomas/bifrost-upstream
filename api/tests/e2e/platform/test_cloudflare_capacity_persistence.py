@@ -1025,6 +1025,7 @@ async def test_container_application_effect_survives_provisioning_failures(
         worker_owner_value,
     )
 
+    monkeypatch.setattr("src.services.worker_pool.cloudflare_containers_rest._PLACEMENT_READ_INTERVAL", 0)
     release, _, _ = make_release()
     installation.desired_state = "enabled"
     installation.containers_policy = {"enabled": True}
@@ -1066,6 +1067,7 @@ async def test_container_application_effect_survives_provisioning_failures(
     placement_state = "running"
     observed_namespace = "e" * 32
     writes: list[str] = []
+    empty_reads: list[float] = []
     late = isinstance(create_failure, str) and create_failure.startswith("late-")
     listed = not late
     fault = "lost-ack" if late else create_failure
@@ -1132,10 +1134,13 @@ async def test_container_application_effect_survives_provisioning_failures(
                 fault = None
                 return httpx.Response(503)
             result = [application] if present and listed else []
+            if not result and writes == ["POST"]:
+                empty_reads.append(perf_counter())
         elif path.endswith(f"/{provider_id}/instances-v2"):
+            assert request.url.params["state"] == "active"
             result = [{
                 "application_id": provider_id, "id": "f" * 64, "status": {"state": placement_state},
-            }]
+            }] if placement_state == "running" else []
         else:
             assert path.endswith(f"/applications/{provider_id}")
             if not present or not listed:
@@ -1185,13 +1190,19 @@ async def test_container_application_effect_survives_provisioning_failures(
                     await enable_job._settle_enable(job_context, payload, http, workers_release)
                 assert writes == ["POST"]
                 listed = True
-            if create_failure in (400, 409, 429, "ambiguous-absent") or late:
+            if create_failure == "ambiguous-absent":
+                # The application is genuinely absent. The next Enable
+                # attempt must wait for two committed reads a window apart.
+                window = timedelta(milliseconds=100)
+                monkeypatch.setattr(lifecycle_job, "CREATE_SETTLEMENT_WINDOW", window)
+                monkeypatch.setattr(enable_job, "CREATE_SETTLEMENT_WINDOW", window)
+            if create_failure in (400, 409, 429) or late:
                 # Age of the send alone does not establish a settled absence.
                 assert journal.observed_at is not None
                 journal.observed_at -= lifecycle_job.CREATE_SETTLEMENT_WINDOW
                 await db_session.flush()
                 with pytest.raises(ObservationSettling) as waiting:
-                    await enable_job._settle_enable(job_context, payload, http, workers_release)
+                    await enable_job._provision_container_application(job_context, payload, adapter, release)
                 assert waiting.value.check is ObservationCheck.CONTAINER_CREATE
                 assert writes == ["POST"]
                 await db_session.refresh(journal)
@@ -1219,6 +1230,9 @@ async def test_container_application_effect_survives_provisioning_failures(
                 assert held.value.result["code"] == "CF_CONTAINERS_UNVERIFIED"
             await db_session.refresh(installation)
             assert installation.admitted_revision is None
+            if create_failure == "ambiguous-absent":
+                assert len(empty_reads) >= 2
+                assert empty_reads[-1] - empty_reads[0] >= window.total_seconds()
 
         assert await cleanup() == "progressed"
         with pytest.raises(lifecycle_job.DeletionSettling):
@@ -2321,6 +2335,11 @@ async def test_scale_in_job_uses_platform_authority_and_current_lease(
     )
     assert not reused and job.payload_version == 1
     assert installation.desired_state == "scaled_in" and installation.admitted_revision is None
+    assert installation.desired_revision == job.payload["revision"] == 1
+    with pytest.raises(CloudflarePolicyConflict, match="finish draining"):
+        await enable_job.enqueue_cloudflare_enable(
+            db_session, admin, installation_id=installation.id, expected_revision=1,
+        )
     duplicate, reused = await lifecycle_job.enqueue_cloudflare_disable(
         db_session, admin, installation_id=installation.id, expected_revision=1, action="scale_in",
     )
@@ -2356,6 +2375,13 @@ async def test_scale_in_job_uses_platform_authority_and_current_lease(
     assert await db_session.get(CloudflareCapacityScope, (installation.id, "containers", 1)) is not None
     actions = set(await db_session.scalars(select(AuditLog.action).where(AuditLog.resource_id == installation.id)))
     assert {"capacity.cloudflare_scale_in", "capacity.cloudflare_scaled_in"} <= actions
+    job.status = "succeeded"
+    await db_session.flush()
+    enabling, _ = await enable_job.enqueue_cloudflare_enable(
+        db_session, admin, installation_id=installation.id, expected_revision=1,
+    )
+    assert enabling.payload["revision"] == 1 and installation.containers_ready_revision == 1
+    assert installation.desired_state == "enabled" and installation.admitted_revision is None
 
 
 @pytest.mark.asyncio
@@ -2501,7 +2527,7 @@ async def test_joint_cleanup_waits_for_container_absence_before_deleting_workers
     app_row = {
         "id": app.provider_id, "name": app.target_name, "account_id": app.account_id,
         "scheduling_policy": "durable_object", "durable_objects": {"namespace_id": app.provider_version},
-        "health": {"instances": {"active": 0, "starting": 0}},
+        "health": {"instances": {"active": 0, "assigned": 0}},
     }
 
     def remote(request):
@@ -2515,6 +2541,7 @@ async def test_joint_cleanup_waits_for_container_absence_before_deleting_workers
         if path.endswith("/applications"):
             result = [app_row] if listed else []
         elif path.endswith("/instances-v2"):
+            assert request.url.params["state"] == "active"
             result = []
         else:
             assert path.endswith(f"/applications/{app.provider_id}")
@@ -3486,7 +3513,7 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("meter_complete", [False, True])
-async def test_capacity_reports_overdue_unsettled_containers(db_session, installation, meter_complete) -> None:
+async def test_capacity_reports_overdue_unsettled_containers(db_session, installation, monkeypatch, meter_complete) -> None:
     from src.services.worker_pool.cloudflare_containers_rest import ContainersRest
     from src.services.worker_pool.cloudflare_containers_settlement import (
         ClosedContainerStart,
@@ -3499,6 +3526,7 @@ async def test_capacity_reports_overdue_unsettled_containers(db_session, install
         ResourceTarget,
     )
 
+    monkeypatch.setattr("src.services.worker_pool.cloudflare_containers_rest._PLACEMENT_READ_INTERVAL", 0)
     now = datetime.now(UTC)
     workers = [uuid4() for _ in range(3)]
     uid, actor, app_id, namespace = uuid4().hex, "b" * 64, "c" * 32, "d" * 32
@@ -3535,23 +3563,25 @@ async def test_capacity_reports_overdue_unsettled_containers(db_session, install
     assert status.installation.owned_resources_pending == 2
     assert status.installation.spend is not None
     assert any("Unresolved cleanup for 1 Cloudflare Container" in note for note in status.installation.spend.coverage)
-    started_at = (now - timedelta(minutes=55)).replace(second=0, microsecond=0)
-    stopped_at = started_at + timedelta(seconds=2)
+    reserved_at = now - timedelta(hours=1)
+    started_at = reserved_at - timedelta(seconds=2)
+    stopped_at = started_at + timedelta(seconds=5)
     phase = "provisioning"
-    placement_ids = [actor]
+    placement_id = actor
     placement_app_id = app_id
     management_available = True
 
     def management(request: httpx.Request) -> httpx.Response:
         assert management_available, "Settlement replay must not contact management"
         assert request.method == "GET"
-        if request.url.path.endswith("/instances-v2"):
-            assert "name_prefix" not in request.url.params
-            result = [{
-                "id": placement, "application_id": placement_app_id, "image": image, "name": f"placement-{placement[:8]}",
+        if request.url.path.endswith(f"/instances/{actor}"):
+            if placement_id is None:
+                return httpx.Response(404)
+            result = {
+                "id": placement_id, "application_id": placement_app_id, "image": image, "name": "named-placement",
                 "started_at": started_at.isoformat(),
                 "status": {"state": phase, "updated_at": stopped_at.isoformat()},
-            } for placement in placement_ids]
+            }
         else:
             assert request.url.path.endswith(f"/applications/{app_id}")
             result = {
@@ -3561,7 +3591,7 @@ async def test_capacity_reports_overdue_unsettled_containers(db_session, install
         return httpx.Response(200, json={"success": True, "result": result})
 
     closure = ClosedContainerStart(
-        app, workers[0], uid, actor, image, started_at, started_at, 200, meter_complete=meter_complete,
+        app, workers[0], uid, actor, image, reserved_at, started_at, 200, meter_complete=meter_complete,
     )
     async with httpx.AsyncClient(transport=httpx.MockTransport(management)) as http:
         adapter = ContainersRest(http)
@@ -3569,18 +3599,23 @@ async def test_capacity_reports_overdue_unsettled_containers(db_session, install
         with pytest.raises(ObservationPending):
             await settle_container_stop(db_session, adapter, token=token, closure=closure)
         phase = "inactive"
-        placement_ids = [actor, actor]
-        with pytest.raises(ObservationPending, match="Container inventory is incomplete"):
+        placement_id = "e" * 64
+        with pytest.raises(OwnershipConflict, match="differs from the exact actor or application"):
             await settle_container_stop(db_session, adapter, token=token, closure=closure)
-        placement_ids = ["e" * 64]
+        placement_id = None
         with pytest.raises(ObservationPending, match="Missing instance readback"):
             await settle_container_stop(db_session, adapter, token=token, closure=closure)
-        placement_ids = [actor]
+        placement_id = actor
         placement_app_id = "f" * 32
-        with pytest.raises(OwnershipConflict, match="inventory differs"):
+        with pytest.raises(OwnershipConflict, match="differs from the exact actor or application"):
             await settle_container_stop(db_session, adapter, token=token, closure=closure)
         placement_app_id = app_id
-        placement_ids = [actor, "e" * 64]
+        started_at -= timedelta(seconds=2)
+        with pytest.raises(ObservationPending, match="bounded stop"):
+            await settle_container_stop(
+                db_session, adapter, token=token, closure=replace(closure, placement_started_at=started_at),
+            )
+        started_at = closure.placement_started_at
         installation.desired_state = "disconnected"
         await db_session.flush()
         await settle_container_stop(db_session, adapter, token=token, closure=closure)
@@ -3774,6 +3809,7 @@ async def test_disconnect_preserves_unresolved_container_cleanup(db_session, ins
         ResourceTarget,
     )
 
+    monkeypatch.setattr("src.services.worker_pool.cloudflare_containers_rest._PLACEMENT_READ_INTERVAL", 0)
     now = datetime.now(UTC)
     worker, uid = uuid4(), uuid4().hex
     actor = "e" * 64
@@ -3862,15 +3898,17 @@ async def test_disconnect_preserves_unresolved_container_cleanup(db_session, ins
             allocation_refused=refused,
         )
     )
-    placements = [{"id": actor, "application_id": app.provider_id, "name": "named-placement"}]
+    present = True
     available = True
 
     def management(request):
         assert available
-        if request.url.path.endswith("/instances-v2"):
-            assert "name_prefix" not in request.url.params
-            result = placements
+        if request.url.path.endswith(f"/instances/{actor}"):
+            if not present:
+                return httpx.Response(404)
+            result = {"id": actor, "application_id": app.provider_id, "name": "named-placement"}
         else:
+            assert request.url.path.endswith(f"/applications/{app.provider_id}")
             result = {
                 "id": app.provider_id, "name": target.name, "account_id": target.account_id,
                 "scheduling_policy": "durable_object", "durable_objects": {"namespace_id": app.provider_version},
@@ -3886,7 +3924,7 @@ async def test_disconnect_preserves_unresolved_container_cleanup(db_session, ins
                 await settle_container_stop(db_session, rest, token=token, closure=early)
         with pytest.raises(ObservationPending, match="still has a provider placement"):
             await settle_container_stop(db_session, rest, token=token, closure=receipt)
-        placements[:] = [{"id": "f" * 64, "application_id": app.provider_id, "name": "another-placement"}]
+        present = False
         await settle_container_stop(db_session, rest, token=token, closure=receipt)
         available = False
         await settle_container_stop(db_session, rest, token=token, closure=receipt)

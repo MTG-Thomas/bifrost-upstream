@@ -258,7 +258,7 @@ test("the registry limits recent receipts without dropping a live fence", (t) =>
         assert.equal(scope.reserveForStart(pending, actor, pending.reservedAt).status, "allocation-refused");
     }
     const overflow = pin();
-    assert.equal(scope.reserveForStart(overflow, actor, overflow.reservedAt).status, "full");
+    assert.equal(scope.reserveForStart(overflow, actor, overflow.reservedAt).status, "receipt-limit");
     assert.deepEqual(reserve(scope, rejected), receipt);
     assert.equal(scope.voidUnstarted(overflow, actor, overflow.startDeadline).status, "pending");
     assert.equal(db.prepare("SELECT count(*) AS count FROM reservations").get().count, 1024);

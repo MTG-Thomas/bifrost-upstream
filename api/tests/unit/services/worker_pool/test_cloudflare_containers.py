@@ -528,9 +528,9 @@ async def test_opaque_application_readback_and_ambiguous_create_use_exact_invent
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("health", [
-    {"instances": {"active": 1, "starting": 0}},
-    {"instances": {"active": 0, "starting": 1}},
-    {"instances": {"active": 0, "starting": 0}, "summary": "pending"},
+    {"instances": {"active": 1, "assigned": 0}},
+    {"instances": {"active": 0, "assigned": 1}},
+    {"instances": {"active": 0, "assigned": 0}, "summary": "pending"},
     {"instances": {"active": 0}},
 ])
 async def test_container_health_vetoes_deletion(health) -> None:
@@ -586,21 +586,19 @@ def observed_container():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("style", ["cursor", "numbered", "complete", "truncated", "cursor-loop", "numbered-drift"])
-async def test_placement_absence_requires_complete_inventory(observed_container, monkeypatch, style) -> None:
+async def test_application_absence_requires_complete_inventory(observed_container, style) -> None:
     application, row = observed_container
-    actor = "f" * 64
-    first = [{"id": f"{index:064x}", "application_id": APP} for index in range(100)]
+    first = [{"id": f"{index:032x}", "name": f"{row['name']}-{index}"} for index in range(100)]
     next_page = "next-page"
     pages = []
-    monkeypatch.setattr(cloudflare_containers_rest, "_PLACEMENT_READ_INTERVAL", 0)
 
     def provider(request: httpx.Request) -> httpx.Response:
         assert request.method == "GET"
         if request.url.path.endswith(f"/applications/{APP}"):
             return httpx.Response(200, json={"success": True, "result": row})
-        assert request.url.path.endswith(f"/applications/{APP}/instances-v2")
+        assert request.url.path.endswith("/applications")
         assert request.url.params["per_page"] == "100"
-        assert "name_prefix" not in request.url.params
+        assert request.url.params["name"] == row["name"]
         pages.append(request.url.params)
         numbered = style.startswith("numbered")
         if len(pages) == 1:
@@ -622,19 +620,56 @@ async def test_placement_absence_requires_complete_inventory(observed_container,
                 info = {"per_page": 100, "page_token": next_page}
                 if style == "cursor-loop":
                     info["next_page_token"] = next_page
-            # The placement has a name which does not start with the actor ID.
-            result = [{"id": "e" * 64 if style == "complete" else actor, "application_id": APP, "name": "named-placement"}]
+            result = [{**row, "name": f"{row['name']}-other"} if style == "complete" else row]
         return httpx.Response(200, json={"success": True, "result": result, "result_info": info})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
         adapter = ContainersRest(http)
-        if style == "complete":
-            await adapter.observe_no_placement(TOKEN, application, actor)
+        async def observe():
+            return await adapter.observe_application(TOKEN, application.intent, application.provider_version)
+
+        if style in {"complete", "cursor", "numbered"}:
+            assert await observe() == (None if style == "complete" else application)
         else:
-            message = "still has a provider placement" if style in {"cursor", "numbered"} else "inventory is incomplete"
-            with pytest.raises(ObservationPending, match=message):
-                await adapter.observe_no_placement(TOKEN, application, actor)
+            with pytest.raises(ObservationPending, match="inventory is incomplete"):
+                await observe()
     assert len(pages) == (1 if style == "truncated" else 2)
+
+
+@pytest.mark.asyncio
+async def test_exact_size_stopped_history_does_not_block_deletion(observed_container) -> None:
+    application, row = observed_container
+    instances = [
+        {"id": f"{index:064x}", "application_id": APP, "status": {"state": "stopped"}}
+        for index in range(100)
+    ]
+    present = True
+    observed_states = []
+
+    def provider(request):
+        nonlocal present
+        path = request.url.path
+        if path.endswith("/instances-v2"):
+            state = request.url.params.get("state")
+            observed_states.append(state)
+            result = [] if state == "active" else instances
+            return httpx.Response(200, json={"success": True, "result": result, "result_info": {"per_page": 100}})
+        if request.method == "DELETE":
+            assert path.endswith(f"/{APP}") and present
+            present = False
+            return httpx.Response(204)
+        if path.endswith("/applications"):
+            result = [row] if present else []
+        elif present:
+            assert path.endswith(f"/{APP}")
+            result = row
+        else:
+            return httpx.Response(404)
+        return httpx.Response(200, json={"success": True, "result": result})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+        await ContainersRest(http).delete_application(TOKEN, application)
+    assert observed_states == ["active"] and not present
 
 
 @pytest.mark.asyncio
@@ -643,22 +678,23 @@ async def test_concurrent_placement_reads_share_one_request_pacing_budget(observ
     now = 100.0
     starts = []
 
-    async def advance(delay):
-        nonlocal now
-        now += delay
-
     def provider(request: httpx.Request) -> httpx.Response:
         assert request.method == "GET"
         starts.append(now)
-        result = [] if request.url.path.endswith("/instances-v2") else row
-        return httpx.Response(200, json={"success": True, "result": result})
+        if "/instances/" in request.url.path:
+            return httpx.Response(404)
+        return httpx.Response(200, json={"success": True, "result": row})
 
     monkeypatch.setattr(cloudflare_containers_rest, "monotonic", lambda: now)
-    monkeypatch.setattr(cloudflare_containers_rest, "sleep", advance)
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
         adapter = ContainersRest(http)
-        await gather(
+        results = await gather(
             adapter.observe_no_placement(TOKEN, application, "e" * 64),
             adapter.observe_no_placement(TOKEN, application, "f" * 64),
+            return_exceptions=True,
         )
-    assert starts == [100.0, 100.5, 101.0, 101.5]
+        assert results[0] is None and isinstance(results[1], ObservationSettling)
+        assert starts == [100.0, 100.0]
+        now += 1
+        await adapter.observe_no_placement(TOKEN, application, "f" * 64)
+    assert starts == [100.0, 100.0, 101.0, 101.0]
