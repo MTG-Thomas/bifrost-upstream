@@ -1,0 +1,13 @@
+{
+  "key": "pr:57",
+  "classification": "omit",
+  "entry_ids": [],
+  "reason": "Fork-only experimental option: a Foldkit scaffold for independent V2 Apps, a framework-neutral bifrost/core SDK entry, and optional React peers in the SDK package. React Apps are unchanged and the option is not intended for upstream as-is, so there is nothing to announce.",
+  "review": {
+    "status": "draft",
+    "evidence": [
+      "https://github.com/MTG-Thomas/bifrost-upstream/pull/57",
+      "Experimental and fork-only; `bifrost app create --framework foldkit` is opt-in and the default remains React."
+    ]
+  }
+}

@@ -46,6 +46,10 @@ _PEER_DEPS = {
     "react": ">=18",
     "react-dom": ">=18",
 }
+# React Apps depend on React directly, so marking the peers optional changes
+# nothing for them.  Apps that use only ``bifrost/core`` do not install React,
+# and npm must not try to add it to a locked build behind their lockfile.
+_PEER_DEPS_META = {name: {"optional": True} for name in _PEER_DEPS}
 _HOSTED_ARTIFACT_PATH = Path(
     os.environ.get("BIFROST_HOSTED_APP_SDK_ARTIFACT", "/app/artifacts/app-sdk/hosted-v1.js")
 )
@@ -72,11 +76,11 @@ def sdk_package_version(version: str) -> str:
     return _pep440ish(version)
 
 
-def _bundle(workdir: Path) -> bytes:
-    """Run esbuild over the installed binding, returning ESM bytes."""
-    out = workdir / "index.mjs"
+def _bundle(workdir: Path, mode: str = "binding") -> bytes:
+    """Run esbuild over the installed binding or ``bifrost/core``, returning ESM bytes."""
+    out = workdir / f"{mode}.mjs"
     subprocess.run(  # noqa: S603 - trusted toolchain, fixed argv
-        ["node", str(_BUILDER), "binding", str(_SDK_SRC), str(out)],
+        ["node", str(_BUILDER), mode, str(_SDK_SRC), str(out)],
         cwd=str(workdir),
         check=True,
         capture_output=True,
@@ -124,6 +128,17 @@ def _built_bundle(version: str) -> bytes:
     function of the source; ``version`` keys the cache for rolling upgrades."""
     with tempfile.TemporaryDirectory(prefix="bifrost-sdk-build-") as tmp:
         return _bundle(Path(tmp))
+
+
+# ``bifrost/core`` (experimental) is compiled into the Apps that import it.  It
+# is not part of ``sdk_fingerprint``: that identifies the hosted binding, and
+# including core would mark every React App stale whenever shared SDK modules
+# change.  Core Apps pick up SDK changes on their next build.
+@functools.lru_cache(maxsize=2)
+def _built_core_bundle(version: str) -> bytes:
+    """esbuild output for the framework-neutral entry; ``version`` keys the cache."""
+    with tempfile.TemporaryDirectory(prefix="bifrost-sdk-core-build-") as tmp:
+        return _bundle(Path(tmp), "core")
 
 
 def sdk_fingerprint(version: str) -> str:
@@ -215,9 +230,11 @@ def sdk_automatic_hosted_migration_contracts() -> frozenset[int]:
 def build_sdk_tarball(version: str) -> bytes:
     """Produce an npm-installable ``bifrost`` package tarball (gzip), version
     stamped. Layout: ``package/package.json`` (name ``bifrost``, ESM ``module``
-    entry, React peer deps) + ``package/dist/index.mjs`` (the bundle)."""
+    entry, optional React peer deps) + ``package/dist/index.mjs`` (the binding)
+    + ``package/dist/core.mjs`` (the framework-neutral ``bifrost/core``)."""
     pkg_version = sdk_package_version(version)
     bundle = _built_bundle(version)
+    core_bundle = _built_core_bundle(version)
 
     package_json = {
         "name": "bifrost",
@@ -228,8 +245,12 @@ def build_sdk_tarball(version: str) -> bytes:
         "module": "dist/index.mjs",
         "main": "dist/index.mjs",
         "types": "types/hosted-binding.d.ts",
-        "exports": {".": {"types": "./types/hosted-binding.d.ts", "import": "./dist/index.mjs"}},
+        "exports": {
+            ".": {"types": "./types/hosted-binding.d.ts", "import": "./dist/index.mjs"},
+            "./core": {"types": "./types/core.d.ts", "import": "./dist/core.mjs"},
+        },
         "peerDependencies": _PEER_DEPS,
+        "peerDependenciesMeta": _PEER_DEPS_META,
         "bifrost": {
             "fingerprint": sdk_fingerprint(version),
             "contract": sdk_contract_version(),
@@ -250,6 +271,7 @@ def build_sdk_tarball(version: str) -> bytes:
             _add("package/package.json", json.dumps(package_json, indent=2).encode())
             _add("package/LICENSE", _LICENSE_PATH.read_bytes())
             _add("package/dist/index.mjs", bundle)
+            _add("package/dist/core.mjs", core_bundle)
             for declaration in types_root.rglob("*.d.ts"):
                 _add(
                     f"package/types/{declaration.relative_to(types_root).as_posix()}",

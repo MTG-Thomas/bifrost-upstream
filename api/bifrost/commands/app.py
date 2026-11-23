@@ -38,7 +38,7 @@ def _slugify(value: str) -> str:
     return slug
 
 
-def _scaffold(root: pathlib.Path, slug: str) -> None:
+def _scaffold(root: pathlib.Path, slug: str, framework: str = "react") -> None:
     if root.exists() and any(root.iterdir()):
         raise click.ClickException(f"{root} is not empty.")
     root.mkdir(parents=True, exist_ok=True)
@@ -46,13 +46,15 @@ def _scaffold(root: pathlib.Path, slug: str) -> None:
     # deploy command names differ. This keeps both runtimes on one SDK
     # mount contract while App projects remain ordinary Vite repositories.
     from bifrost.commands.solution import _v2_scaffold_files
+    from bifrost.foldkit_scaffold import foldkit_scaffold_files
 
     replacements = {
         "bifrost solution start": "bifrost app start",
         "bifrost deploy": "bifrost app deploy",
         "standalone_v2 app": "V2 App",
     }
-    for rel, content in _v2_scaffold_files(slug).items():
+    files = foldkit_scaffold_files(slug) if framework == "foldkit" else _v2_scaffold_files(slug)
+    for rel, content in files.items():
         for old, new in replacements.items():
             content = content.replace(old, new)
         dest = root / rel
@@ -87,6 +89,7 @@ def _create_project(
     org_ref: str | None,
     is_global: bool,
     api_url: str | None,
+    framework: str = "react",
 ) -> tuple[dict, str]:
     if org_ref and is_global:
         raise click.UsageError("Use either --org or --global, not both.")
@@ -112,7 +115,7 @@ def _create_project(
 
     app, selected_api_url = asyncio.run(run())
     try:
-        _scaffold(root, app_slug)
+        _scaffold(root, app_slug, framework)
         write_app_binding(
             root,
             AppBinding(api_url=selected_api_url, app_id=str(app["id"])),
@@ -131,6 +134,13 @@ def _create_project(
 @click.option("--org", "org_ref", default=None, help="Organization UUID or name.")
 @click.option("--global", "is_global", is_flag=True, help="Create a globally visible App.")
 @click.option("--url", "api_url", default=None, help="Bifrost instance URL.")
+@click.option(
+    "--framework",
+    type=click.Choice(["react", "foldkit"]),
+    default="react",
+    show_default=True,
+    help="UI framework. foldkit is experimental.",
+)
 def create_cmd(
     path: str,
     name: str | None,
@@ -138,6 +148,7 @@ def create_cmd(
     org_ref: str | None,
     is_global: bool,
     api_url: str | None,
+    framework: str,
 ) -> None:
     """Create a Vite project and its remote App record."""
     root = pathlib.Path(path).resolve()
@@ -148,6 +159,7 @@ def create_cmd(
         org_ref=org_ref,
         is_global=is_global,
         api_url=api_url,
+        framework=framework,
     )
     click.echo(f"Created App {app['id']} in {root}")
     click.echo("Run `npm install`, then `bifrost app start`.")
