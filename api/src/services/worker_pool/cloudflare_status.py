@@ -213,6 +213,12 @@ def _controller_key(binding: ManagedCloudflareScope) -> str:
     return f"cloudflare:placement:{binding.installation_id}:{binding.revision}:{binding.name}"
 
 
+async def _read_controller_observation(binding: ManagedCloudflareScope) -> dict | None:
+    async with get_redis() as redis:
+        value = await redis.get(_controller_key(binding))
+    return json.loads(value) if value is not None else None
+
+
 async def record_controller_observation(
     binding: ManagedCloudflareScope, *, primary: PrimaryPool | None = None, unavailable: bool = False,
     cause: PrimaryCause | None = None,
@@ -244,13 +250,11 @@ async def _controller_observation(
         return None, None, None
     binding = ManagedCloudflareScope(installation.id, "workers", revision)
     try:
-        async with get_redis() as redis:
-            value = await redis.get(_controller_key(binding))
+        data = await _read_controller_observation(binding)
     except (CacheConnectionError, CacheOperationError):
         return None, None, "unreachable"
-    if value is None:
+    if data is None:
         return None, None, None
-    data = json.loads(value)
     return (PrimaryPool(**data["primary"]) if data["primary"] else None,
             datetime.fromisoformat(data["cooldown"]) if data["cooldown"] else None, data.get("cause"))
 
@@ -258,13 +262,11 @@ async def _controller_observation(
 async def _container_controller_reason(installation: CloudflareInstallation) -> CloudflarePlacementReason | None:
     binding = ManagedCloudflareScope(installation.id, "containers", installation.desired_revision)
     try:
-        async with get_redis() as redis:
-            value = await redis.get(_controller_key(binding))
+        data = await _read_controller_observation(binding)
     except (CacheConnectionError, CacheOperationError):
         return None
-    if value is None:
+    if data is None:
         return None
-    data = json.loads(value)
     code = data.get("placement_code")
     if code is None and data.get("cooldown"):
         return reason("cloudflare_capacity_unavailable", datetime.fromisoformat(data["cooldown"]))

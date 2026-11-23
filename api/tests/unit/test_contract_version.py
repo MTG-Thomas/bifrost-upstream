@@ -476,7 +476,7 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # stage by installation ID. Gate seconds remain a JSON number for readers.
     # CLI-breaking: retiring Cloudflare PATCH connect removes a request sent by
     # older CLIs. The replacement preflight and activate ship with 1.4.3.
-    "c66fffac3ac49f3abbd58e625c5a7399bc362d15440b1b892430a2845a68a286"
+    "b59827b297476ee1fe12c9031fa74313e7410dab01c2053b7f134427f9b78940"
 )
 
 

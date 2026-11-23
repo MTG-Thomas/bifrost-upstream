@@ -2255,7 +2255,7 @@ _REDIS_PLAIN_READS: dict[str, tuple[int, str]] = {
     "src.services.execution.cloudflare_chat_outbox.project": (
         1, "Conversation replay projection and its receipt; agent authority is fenced in PostgreSQL.",
     ),
-    "src.services.worker_pool.cloudflare_status._controller_observation": (
+    "src.services.worker_pool.cloudflare_status._read_controller_observation": (
         1, "Revision-bound placement diagnostics; never used for admission or authorization.",
     ),
     "src.services.execution.install_progress.report_phase": (1, "Package install progress."),

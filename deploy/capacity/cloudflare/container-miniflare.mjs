@@ -20,28 +20,38 @@ const policy = await readFile("/fixture-routes.json", "utf8");
 const guest = `
 import asyncio
 import ssl
+import sys
 import httpx
 import websockets
 
+checkpoint = 10
 async def exercise():
+    global checkpoint
     origin = "${origin}"
     trust = ssl.create_default_context(cafile="/etc/cloudflare/certs/cloudflare-containers-ca.crt")
     async with websockets.connect("wss://ingress.example.test/api/worker-control", ssl=trust) as ws:
         await ws.send("fixture-frame")
         assert await ws.recv() == "fixture-frame"
+    checkpoint = 11
     async with httpx.AsyncClient(verify=trust, trust_env=False, follow_redirects=False) as client:
         path = "/api/sdk/capacity-canary/00000000-0000-0000-0000-000000000001"
         response = await client.get(origin + path)
         assert response.status_code == 204 and response.headers["x-bifrost-worker-ingress"] == "v1; allowed"
+        checkpoint = 12
         response = await client.get(origin + path, headers={"Host": "untrusted.example.test"})
         assert response.status_code == 403 and response.headers["x-bifrost-container-relay-rejection"] == "origin"
+        checkpoint = 13
         response = await client.get(origin + "/unapproved")
         assert response.status_code == 403 and response.headers["x-bifrost-container-relay-rejection"] == "route"
+        checkpoint = 14
         response = await client.get(origin + path, headers={"X-Bifrost-Canary-Redirect": "1"})
         assert response.status_code == 403 and response.headers["x-bifrost-container-relay-rejection"] == "redirect"
         assert "location" not in response.headers
 
-asyncio.run(exercise())
+try:
+    asyncio.run(exercise())
+except Exception:
+    sys.exit(checkpoint)
 `;
 const source = registry + scopeBundle.replace("export default {", "const scopeControl = {") + `
 export class Fixture extends DurableObject {
