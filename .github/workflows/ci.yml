@@ -1094,6 +1094,8 @@ jobs:
     needs: [build-api, build-client]
     runs-on: ubuntu-latest
     name: Create Release
+    outputs:
+      release-id: ${{ steps.release.outputs.id }}
     permissions:
       contents: write       # upload assets to the GitHub Release
       id-token: write       # OIDC token for keyless cosign signing
@@ -1185,7 +1187,8 @@ jobs:
         with:
           subject-path: ${{ steps.source_tarball.outputs.tarball }}
 
-      - name: Create release
+      - name: Stage release
+        id: release
         uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           tag_name: ${{ steps.get_version.outputs.version }}
@@ -1202,21 +1205,27 @@ jobs:
             cloudflare-containers-container-registry.mjs
           fail_on_unmatched_files: false
           body_path: product-updates/release-bodies/${{ steps.get_version.outputs.version }}.md
-          draft: false
+          draft: true
           prerelease: ${{ steps.get_version.outputs.prerelease == 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Verify the published Cloudflare Linux release bytes
+      - name: Verify the staged Cloudflare Linux release bytes
         if: needs.build-api.outputs.containers-release == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ steps.release.outputs.id }}
         run: |
           set -euo pipefail
+          [[ "$RELEASE_ID" =~ ^[0-9]+$ ]]
           downloaded=$(mktemp -d)
           trap 'rm -rf "$downloaded"' EXIT
+          assets=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets")
           for name in manifest.json manifest.sigstore.json container-registry.mjs; do
             asset="cloudflare-containers-$name"
-            curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
-              --output "$downloaded/$asset" "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$asset"
+            id=$(jq -er --arg name "$asset" '[.[] | select(.name == $name)] | select(length == 1) | .[0].id' <<< "$assets")
+            gh api "repos/$GITHUB_REPOSITORY/releases/assets/$id" \
+              -H 'Accept: application/octet-stream' > "$downloaded/$asset"
             cmp "$RUNNER_TEMP/containers-release/$name" "$downloaded/$asset"
           done
 
@@ -1231,6 +1240,7 @@ jobs:
     runs-on: ubuntu-latest
     name: Promote Release Images
     permissions:
+      contents: write
       packages: write
 
     steps:
@@ -1271,3 +1281,15 @@ jobs:
           }
           promote "$REGISTRY/$API_IMAGE" "$API_DIGEST" "$API_TAGS"
           promote "$REGISTRY/$CLIENT_IMAGE" "$CLIENT_DIGEST" "$CLIENT_TAGS"
+
+      - name: Publish the verified release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ needs.create-release.outputs.release-id }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_ID" =~ ^[0-9]+$ ]]
+          endpoint="repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID"
+          if [[ "$(gh api "$endpoint" --jq '.draft')" == true ]]; then
+            [[ "$(gh api --method PATCH "$endpoint" -F draft=false --jq '.draft')" == false ]]
+          fi

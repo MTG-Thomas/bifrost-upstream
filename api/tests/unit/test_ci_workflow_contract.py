@@ -371,6 +371,20 @@ def test_release_tags_still_require_the_complete_suite() -> None:
     assert "needs.build-client.result == 'success'" in release_condition
 
 
+def test_release_remains_draft_until_assets_and_images_are_verified() -> None:
+    jobs = _load_workflow(CI_WORKFLOW)["jobs"]
+    stage = jobs["create-release"]
+    create, verify = stage["steps"][-2:]
+    assert create["id"] == "release" and create["with"]["draft"] is True
+    assert verify["env"]["RELEASE_ID"] == "${{ steps.release.outputs.id }}"
+    promotion = jobs["promote-release-images"]
+    assert "needs.create-release.result == 'success'" in _normalized(promotion["if"])
+    promote, publish = promotion["steps"][-2:]
+    assert promote["name"] == "Promote and verify the signed image digests"
+    assert publish["env"]["RELEASE_ID"] == "${{ needs.create-release.outputs.release-id }}"
+    assert "draft=false" in publish["run"]
+
+
 def test_nightly_owns_full_browser_slow_and_clean_build_discovery() -> None:
     workflow = _load_workflow(NIGHTLY_WORKFLOW)
     triggers = workflow["on"]
