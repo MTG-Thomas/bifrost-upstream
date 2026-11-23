@@ -382,8 +382,8 @@ the same pinned joint revision. Scope-local status remains visible in
 steady state. The first release has no independent per-lane repair.
 
 Scale In drains both lanes to zero compute and retains provisioned resources,
-readiness evidence, meter history and ingress. Require verified stop before
-reporting completion. Each Container registry keeps at most 1,024 reservation
+historical evidence, meter history and ingress. Invalidate current Container
+readiness and require verified stop before reporting completion. Each Container registry keeps at most 1,024 reservation
 rows and 1,024 corresponding start fences. On the next reservation or void
 request it prunes settled receipts and unstarted pins whose absolute deadline
 has passed. Unsettled start fences retain their seats until settlement. At
@@ -456,8 +456,8 @@ closed after re-enable. A replacement has a new worker ID and resource UID and
 receives a key derived for that incarnation and scope. A previous launcher's
 key cannot enroll the replacement even when the script version is reused.
 Enable still verifies the retained release digest, exact application, and
-scope. Scale In clears the Container readiness revision, so re-enable must
-prove the retained revision and digest again before joint admission.
+scope. Scale In clears the paired Container readiness revision and digest.
+Re-enable must prove the retained revision and digest before joint admission.
 
 The deployed control endpoint receives a public verification key in its
 Worker metadata. Bifrost keeps the scope signing secret in its credential

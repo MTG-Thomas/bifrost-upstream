@@ -1189,26 +1189,47 @@ jobs:
 
       - name: Stage release
         id: release
-        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
-        with:
-          tag_name: ${{ steps.get_version.outputs.version }}
-          name: Release ${{ steps.get_version.outputs.version }}
-          files: |
-            ${{ steps.source_tarball.outputs.tarball }}
-            ${{ steps.source_tarball.outputs.tarball }}.sha256
-            ${{ steps.source_tarball.outputs.tarball }}.sigstore
-            bifrost.pyi
-            bifrost.pyi.sigstore
-            stubs/DISTRIBUTION.md
-            cloudflare-containers-manifest.json
-            cloudflare-containers-manifest.sigstore.json
-            cloudflare-containers-container-registry.mjs
-          fail_on_unmatched_files: false
-          body_path: product-updates/release-bodies/${{ steps.get_version.outputs.version }}.md
-          draft: true
-          prerelease: ${{ steps.get_version.outputs.prerelease == 'true' }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.get_version.outputs.version }}
+          RELEASE_PRERELEASE: ${{ steps.get_version.outputs.prerelease }}
+          SOURCE_TARBALL: ${{ steps.source_tarball.outputs.tarball }}
+        run: |
+          set -euo pipefail
+          endpoint="repos/$GITHUB_REPOSITORY/releases"
+          # GET by tag can omit drafts. Resolve the exact tag across all pages,
+          # then use the same release ID for creation readback and asset writes.
+          id=$(gh api --paginate --slurp "$endpoint?per_page=100" |
+            jq -r --arg tag "$RELEASE_TAG" '
+              (add // []) | map(select(.tag_name == $tag))
+              | if length > 1 then error("Release tag has multiple records") else (.[0].id // empty) end
+            ')
+          body=$(jq -cn --arg tag "$RELEASE_TAG" --argjson prerelease "$RELEASE_PRERELEASE" \
+            --rawfile body "product-updates/release-bodies/$RELEASE_TAG.md" \
+            '{tag_name: $tag, name: ("Release " + $tag), body: $body, prerelease: $prerelease}')
+          if [[ -z "$id" ]]; then
+            id=$(jq -c '.draft = true' <<< "$body" |
+              gh api --method POST "$endpoint" --input - --jq '.id')
+          else
+            [[ "$id" =~ ^[0-9]+$ ]]
+            gh api --method PATCH "$endpoint/$id" --input - <<< "$body" >/dev/null
+          fi
+          [[ "$id" =~ ^[0-9]+$ ]]
+          assets=$(gh api --paginate --slurp "$endpoint/$id/assets?per_page=100" | jq -c 'add // []')
+          for asset in "$SOURCE_TARBALL" "$SOURCE_TARBALL.sha256" "$SOURCE_TARBALL.sigstore" \
+              bifrost.pyi bifrost.pyi.sigstore stubs/DISTRIBUTION.md \
+              cloudflare-containers-{manifest.json,manifest.sigstore.json,container-registry.mjs}; do
+            [[ -f "$asset" ]] || continue
+            name=${asset##*/}
+            existing_id=$(jq -r --arg name "$name" '.[] | select(.name == $name) | .id' <<< "$assets")
+            if [[ -n "$existing_id" ]]; then
+              [[ "$existing_id" =~ ^[0-9]+$ ]]
+              gh api --method DELETE "$endpoint/assets/$existing_id"
+            fi
+            gh api --method POST "https://uploads.github.com/$endpoint/$id/assets?name=$name" \
+              -H 'Content-Type: application/octet-stream' --input "$asset" >/dev/null
+          done
+          printf 'id=%s\n' "$id" >> "$GITHUB_OUTPUT"
 
       - name: Verify the staged Cloudflare Linux release bytes
         if: needs.build-api.outputs.containers-release == '1'
