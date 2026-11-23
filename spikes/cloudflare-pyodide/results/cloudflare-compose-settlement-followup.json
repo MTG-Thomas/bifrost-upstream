@@ -1,0 +1,209 @@
+{
+  "full_trace": {
+    "events": [
+      {
+        "stage": "upgrade-rebind-control",
+        "first_rolling_primary_targets_successor": true
+      },
+      {
+        "stage": "primary-hold-timing",
+        "replacement": false,
+        "seconds": 8.905
+      },
+      {
+        "stage": "primary-hold-timing",
+        "replacement": false,
+        "seconds": 5.924
+      },
+      {
+        "stage": "disconnect",
+        "workers_404": 3,
+        "namespaces_404": 4,
+        "live_ledger_rows": 0
+      },
+      {
+        "stage": "primary-hold-timing",
+        "replacement": false,
+        "seconds": 5.605
+      },
+      {
+        "stage": "primary-hold-timing",
+        "replacement": true,
+        "seconds": 24.817
+      },
+      {
+        "stage": "replacement-settlement",
+        "observed_seconds": 11.228,
+        "execution_status": "Success",
+        "dispatch": null,
+        "slot": {
+          "revision": 2,
+          "sent": true,
+          "released": true,
+          "entry": true,
+          "claim_present": true
+        },
+        "routes": [
+          {
+            "terminal_outcomes": [
+              "completed"
+            ],
+            "dispatch_to_terminal_ms": [
+              7068
+            ],
+            "dispatch_to_ack_ms": [
+              7587
+            ]
+          }
+        ]
+      },
+      {
+        "stage": "upgrade",
+        "original_claim": true,
+        "dispatch_count": 1,
+        "terminal_ack": true,
+        "old_workers_404": 3,
+        "old_namespaces_404": 4,
+        "admission_fenced": true,
+        "same_control_connection": true,
+        "successor_scheduler_lease": true,
+        "worker_rebound_to_successor": true,
+        "old_absence_checkpoint_before_replacement": true,
+        "first_replacement_observation_after_checkpoint_ms": 167,
+        "replacement_signed_canary": true,
+        "replacement_execution": true
+      },
+      {
+        "stage": "meter_guard",
+        "estimated_usd": "0.08",
+        "limit_usd": "0.50",
+        "within_limit": true,
+        "ledger": {
+          "retired": 9,
+          "uncertain": 0,
+          "uncertain_with_final_receipt": 0
+        }
+      },
+      {
+        "stage": "disconnect",
+        "workers_404": 9,
+        "namespaces_404": 12,
+        "live_ledger_rows": 0
+      },
+      {
+        "stage": "managed-teardown",
+        "tunnel_deleted": true,
+        "sessions": 0
+      }
+    ],
+    "offline_tests_passed": 19,
+    "offline_tests_failed": 0,
+    "proxmox_backup_process_scan_matches": 1,
+    "teardown_verified": true
+  },
+  "managed_retirement_control": {
+    "events": [
+      {
+        "stage": "upgrade-rebind-control",
+        "first_rolling_primary_targets_successor": true
+      },
+      {
+        "stage": "primary-hold-timing",
+        "replacement": false,
+        "seconds": 8.513
+      },
+      {
+        "stage": "primary-hold-timing",
+        "replacement": true,
+        "seconds": 25.108
+      },
+      {
+        "stage": "replacement-settlement",
+        "observed_seconds": 10.144,
+        "execution_status": "Success",
+        "dispatch": null,
+        "slot": {
+          "revision": 2,
+          "sent": true,
+          "released": true,
+          "entry": true,
+          "claim_present": true
+        },
+        "routes": [
+          {
+            "terminal_outcomes": [
+              "completed"
+            ],
+            "dispatch_to_terminal_ms": [
+              6450
+            ],
+            "dispatch_to_ack_ms": [
+              6564
+            ]
+          }
+        ]
+      },
+      {
+        "stage": "upgrade",
+        "original_claim": true,
+        "dispatch_count": 1,
+        "terminal_ack": true,
+        "old_workers_404": 3,
+        "old_namespaces_404": 4,
+        "admission_fenced": true,
+        "same_control_connection": true,
+        "successor_scheduler_lease": true,
+        "worker_rebound_to_successor": true,
+        "old_absence_checkpoint_before_replacement": true,
+        "first_replacement_observation_after_checkpoint_ms": 303,
+        "replacement_signed_canary": true,
+        "replacement_execution": true
+      },
+      {
+        "stage": "meter_guard",
+        "estimated_usd": "0.01",
+        "limit_usd": "0.50",
+        "within_limit": true,
+        "ledger": {
+          "retired": 5,
+          "uncertain": 0,
+          "uncertain_with_final_receipt": 0
+        }
+      },
+      {
+        "stage": "disconnect",
+        "workers_404": 6,
+        "namespaces_404": 8,
+        "live_ledger_rows": 0
+      },
+      {
+        "stage": "managed-teardown",
+        "tunnel_deleted": true,
+        "sessions": 0
+      }
+    ],
+    "offline_tests_passed": 19,
+    "offline_tests_failed": 0,
+    "proxmox_backup_process_scan_matches": 0,
+    "teardown_verified": true,
+    "interim_worker_stopped_before_original_api": true
+  },
+  "product_revision": "0dcf4ae13867c7260fde9d0ec9baf2bae17e3b0c",
+  "harness_revision": "7ea1114d9b614f8f2d963982b85604988b06288b",
+  "proxmox_backup_validation": {
+    "overlapping_vzdump_tasks": 0,
+    "full_trace_single_process_scan_match_utc": "2026-11-23T23:17:08Z"
+  },
+  "historical_timeout": {
+    "deadline_seconds": 38,
+    "upgrade_job_attempt": 1,
+    "upgrade_job_seconds": 31.111,
+    "post_readiness_primary_hold_seconds": 5.231,
+    "workload_terminal_log_count": 15,
+    "retained_route_timing": false,
+    "retained_successor_api_log": false,
+    "retained_deadline_database_state": false,
+    "disposition": "The historical logs prove which assertion timed out. The old harness did not capture the replacement readback before teardown. Neither traced control reproduced the timeout or matched the old short hold interval after readiness.",
+    "evidence_retention_fixed": true
+  }
+}

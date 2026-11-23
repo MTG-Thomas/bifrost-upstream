@@ -10,16 +10,19 @@ import {BlockList, createConnection, isIPv4} from 'node:net';
 import {dirname, join} from 'node:path';
 import {buffer} from 'node:stream/consumers';
 import {relayHeaders} from './relay-http.mjs';
+import {useOfflineWorkerd, verifyOfflinePyodide} from './offline-pyodide.mjs';
 
 const config = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+const relayOnly = process.argv[3] === '--hosted-ingress-relay';
+const cache = relayOnly ? null : await verifyOfflinePyodide(process.env.REHEARSAL_PYODIDE_CACHE_DIR);
 const dependencies = config.containers
   ? '../../../../deploy/capacity/cloudflare/registry-toolchain/package.json'
   : '../tenant-workers/package.json';
 const require = createRequire(new URL(dependencies, import.meta.url));
 const runtimeRequire = config.containers ? require : createRequire(require.resolve('wrangler'));
+if (cache) useOfflineWorkerd(runtimeRequire('workerd').default, cache);
 const {Miniflare} = runtimeRequire('miniflare');
 const {WebSocket, WebSocketServer} = require('ws');
-const relayOnly = process.argv[3] === '--hosted-ingress-relay';
 if (relayOnly) {
   assert.match(config.relayToken ?? '', /^[0-9a-f]{64}$/);
   assert.ok(Number.isInteger(config.relayPort) && config.relayPort > 1023 && config.relayPort < 65536);
@@ -57,7 +60,11 @@ let ingressHost;
 let lagNamespace;
 
 function event(kind, details = {}) {
-  observations.push({kind, ...details});
+  if (kind === 'dispatch' || kind === 'result' || kind === 'ack') {
+    observations.push({kind, ...details, observedMs: Date.now()});
+  } else {
+    observations.push({kind, ...details});
+  }
 }
 
 async function fenceRawTcp(worker) {
