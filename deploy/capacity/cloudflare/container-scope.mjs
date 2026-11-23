@@ -123,7 +123,8 @@ export default {
         return dispatchContainerControl(request, env, async (operation, data) => {
             const { pin, nonce, control_key: controlKey } = data;
             if (operation === "/v1/egress-probe" &&
-                (pin.tenant !== "qualification-canary" || !/^[A-Za-z0-9_-]{43}$/.test(nonce))) {
+                (pin.tenant !== "qualification-canary" || !/^[A-Za-z0-9_-]{43}$/.test(nonce)
+                    || data.origin !== env.CONTAINERS_ORIGIN || data.release_digest !== env.CONTAINERS_RELEASE)) {
                 return new Response(null, { status: 403 });
             }
             const id = env.CONTAINER_INSTANCE.idFromName(pin.uid);

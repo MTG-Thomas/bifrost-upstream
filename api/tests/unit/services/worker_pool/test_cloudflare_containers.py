@@ -405,6 +405,7 @@ async def test_owned_egress_probe_challenges_scope_and_requires_api_witness(case
         container_tenant="platform", container_reserved_at=now,
         container_envelope={
             "seconds": 500, "start_deadline": (now + timedelta(seconds=20)).isoformat(),
+            "probe_nonce": "p" * 43,
             "image_digest": "sha256:" + "e" * 64, "instance_type": "standard-1",
             "credential_version": 1, "ingress_bytes": 100, "outbound_bytes": 100,
         },
@@ -428,7 +429,7 @@ async def test_owned_egress_probe_challenges_scope_and_requires_api_witness(case
         assert len(request.headers["x-bifrost-request-signature"]) == 128
         body = json.loads(request.content)
         pin = body["pin"]
-        assert pin["worker"] == str(worker) and len(body["nonce"]) == 43
+        assert pin["worker"] == str(worker) and body["nonce"] == "p" * 43
         assert pin["deadline"] - pin["reservedAt"] == 500_000
         assert pin["startDeadline"] - pin["reservedAt"] == 20_000
         assert body["control_key"] == "f" * 64

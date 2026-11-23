@@ -1,5 +1,6 @@
 """Verify the network boundary against the owned scope and dedicated ingress."""
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from uuid import UUID
@@ -30,7 +31,7 @@ from src.services.worker_pool.cloudflare_credentials import (
     open_credential,
 )
 from src.services.worker_pool.cloudflare_tunnel_rest import dedicated_hostname
-from src.worker.remote.protocol import new_nonce, nonce_digest
+from src.worker.remote.protocol import nonce_digest
 
 _MINT = object()
 # A brief cache lets the planner reuse a successful probe within one
@@ -127,7 +128,7 @@ async def _probe_container_egress(
     ).join(PlatformJob, _active_probe_job()).where(
         pin.worker_id == probe_worker_id, pin.installation_id == installation_id,
         pin.deployment_revision == revision, pin.canary_job_id.is_not(None),
-        worker.state == "starting",
+        worker.state.in_(("starting", "ready")),
         container_identity_matches(probe_worker_id, release_digest),
     ))).one_or_none()
     if binding is None:
@@ -138,9 +139,11 @@ async def _probe_container_egress(
         return None
     observed_at = await db.scalar(select(func.clock_timestamp()))
     assert observed_at is not None
-    nonce = new_nonce()
     try:
         reservation, resource_uid = binding
+        nonce = (reservation.container_envelope or {}).get("probe_nonce")
+        if not isinstance(nonce, str) or re.fullmatch(r"[A-Za-z0-9_-]{43}", nonce) is None:
+            return None
         if resource_uid is None:
             return None
         token = open_credential(ref, credential).get_secret_value()

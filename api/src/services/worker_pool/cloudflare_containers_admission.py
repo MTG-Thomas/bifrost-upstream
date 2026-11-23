@@ -68,6 +68,7 @@ from src.services.worker_pool.sizing import LIVE_STATES
 from src.worker.remote.protocol import (
     CLOUDFLARE_WORKFLOW_HANDLER,
     LINUX_RUNTIME_PROFILE,
+    new_nonce,
 )
 
 QUALIFICATION_CANARY_TENANT = "qualification-canary"
@@ -482,6 +483,7 @@ async def _create_container_reservation(
             "ingress_bytes": limits.ingress_bytes,
             "image_digest": release.manifest.image_digest,
             "start_deadline": (now + timedelta(seconds=limits.start_timeout_seconds)).isoformat(),
+            **({"probe_nonce": new_nonce()} if canary else {}),
         },
     )
     db.add(reservation)
