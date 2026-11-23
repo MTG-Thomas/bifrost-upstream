@@ -133,8 +133,56 @@ The rotated value stopped the old child and started its replacement with
 zero container restarts. Clearing the Secret stopped the replacement.
 Sampling put the lower bounds from successful patch to child start at
 about 66 seconds for initial projection and 78 seconds for rotation.
-These observations exceeded the former 60 seconds of scheduled retry delays. The
-full rotation job, including provider session eviction and retry behavior,
-still needs qualification on a cluster with room for the Bifrost image.
+These observations exceeded the former 60 seconds of scheduled retry delays.
+The follow-up below exercised the full rotation job and provider session
+eviction.
 The connector namespace, disposable nodes, fixture containers, and
 rehearsal networks were removed and their absence verified.
+
+### Full local rehearsal
+
+On 2026-11-23, the follow-up ran Bifrost at `ebfaea092bd4979101b4a890c289203c13db6979`
+on a single Kind v0.24.0 node with Kubernetes v1.31.0. It used one API
+replica, one warm Kubernetes Job at a one-Job ceiling, and the repository's
+[local provider](../e2e/combined-provider.mjs) with Miniflare, Workerd, and a
+checksum-verified offline Pyodide cache. The Bifrost connector supervisor
+started a local cloudflared stand-in from the projected Kubernetes Secret.
+
+The run waited while peer Compose stacks used the host and resumed with
+at least 8 GiB of available RAM. The Docker filesystem had 85 GiB free
+before the final node boot and 77 GiB with workloads running. The
+temporary adapter split the Kustomize output on document separator lines
+and wrote each document with its own separator and newline. Strict
+kubeconform validation passed all 23 adapted resources. The first import stopped at the
+isolation check. The replacement node showed both IPv4 and IPv6 default
+routes and removed them before workloads started. The adapter bound the fixture's HTTP server for kubectl port
+forwarding, installed the local CA for Workerd, and allowed connector
+egress only to the fixture on its local port. The first overflow reached
+the Workers claim but stopped before Python entry. The replay supplied the
+pinned bundle from the existing offline cache.
+
+A fresh Activate request created one installation and queued Enable.
+Attempt three failed with `CF_CONNECTOR_UNAVAILABLE` 69.3 seconds after job
+creation. The connector started 81.3 seconds after the last successful
+Secret patch and 15.8 seconds after the job failed. Status showed
+`connector_unavailable` and `setup_required`. After the local connector
+session attached, Enable on the same installation succeeded in 4.6
+seconds and recorded `remote_launcher`. Initial Managed Tunnel Enable
+still needs a readiness window that covers kubelet projection. The
+longer window already applied to rotation handled the same boundary.
+
+| Check | Observed result |
+| --- | --- |
+| Primary with room | A Kubernetes Job held the execution claim and completed it in 4.354 s from queue entry. The execution had no Workers slot. Idle Workers reported `waiting_for_demand`. |
+| Primary at its ceiling | The sole Job's reservation left no room for the next approved workflow. Status reported `waiting_for_launch_gate` then `eligible_for_overflow` while the primary was saturated and primary fit was zero. The controller decided at 2.125 s after the 2.000 s gate. Workers claimed at 2.429 s, reached engine entry at 6.602 s, and completed at 24.671 s, including the fixture's 18 s hold, and received a terminal ACK. |
+| Connector rotation | The Secret resource version advanced. The new child started 39.8 s after the rotation patch. Rotation completed on attempt three in 188.2 s, evicted one old session, attached one replacement, and the old token returned HTTP 403. The connector container had zero restarts. |
+| Scale In | Admission closed while the original Workers claim kept its fence and drained successfully. Scale In and readback took 32.8 s. Three current scripts remained, with zero live usage incarnations. Status showed `setup_required` and `waiting_for_demand`. |
+| Disconnect | The cleanup status showed `cleanup_pending` and `setup_required`. Full product readback took 7.6 s. The Secret was empty, the child was stopped, DNS returned 404, the tunnel was deleted, and no connector sessions remained. Across three revisions, nine journaled scripts and twelve namespaces returned 404. No live usage rows, unreleased workflow slots, stored credentials, or live ownership receipts remained. Final status showed `setup_required`. |
+
+The rehearsal namespace and connector Deployment were deleted before Kind
+teardown. Cleanup verified zero trial containers, zero recorded node volumes,
+and absence of the disposable bridge and both trial image references. The
+removed node volumes contained the six imported images. The kubeconfig,
+binary, archive, local fixture cache copy, and scratch directory were removed.
+Docker reported 84 GiB free after teardown. The rehearsal made zero hosted
+Cloudflare requests and incurred zero model spend.
