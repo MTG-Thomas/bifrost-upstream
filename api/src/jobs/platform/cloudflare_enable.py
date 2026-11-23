@@ -63,6 +63,7 @@ from src.services.worker_pool.cloudflare_canary import CANARY_DEADLINE_SECONDS, 
 from src.services.worker_pool.cloudflare_containers_admission import reserve_container_canary
 from src.services.worker_pool.cloudflare_containers_control import reconcile_container_stop
 from src.services.worker_pool.cloudflare_containers_egress import (
+    ContainerEgressMismatch,
     current_container_application,
     read_verified_egress,
     verify_container_egress,
@@ -319,6 +320,8 @@ async def _settle_enable(
         outcome = await _qualify_container_revision(
             context, payload, http, container_adapter, management_token, container_release, refresh=True,
         )
+        if outcome is None:
+            return {"outcome": "container_egress_refresh_pending"}
         return {"outcome": "enabled" if outcome else "superseded"}
     if installation.reachability_mode == "managed_tunnel":
         await context.report("Provisioning Managed Tunnel")
@@ -545,7 +548,7 @@ async def _qualify_container_revision(
     context: PlatformJobContext, payload: CloudflareEnablePayload, http: httpx.AsyncClient,
     adapter: ContainersRest, management_token: SecretStr, release: VerifiedContainerRelease,
     *, refresh: bool = False,
-) -> bool:
+) -> bool | None:
     async with get_db_context() as db:
         installation = await _locked_current(db, context, payload)
         if installation is None:
@@ -590,16 +593,15 @@ async def _qualify_container_revision(
     async with get_db_context() as db:
         reserved = await reserve_container_canary(
             db, installation_id=payload.installation_id, controller_id=context.job_id,
-            job_id=context.job_id, lease_token=context.lease_token, release=release,
+            job_id=context.job_id, lease_token=context.lease_token, release=release, refresh=refresh,
         )
     if not isinstance(reserved, CloudflareWorkerReservation):
         if refresh:
-            raise PlatformJobFailure(
-                "CF_CONTAINERS_CANARY_SEAT", "Waiting for a Container Canary Seat", retryable=True,
-            )
+            return None
         raise PlatformJobRequiresAction("Verify Cloudflare Containers Readiness", {"code": "CF_CONTAINERS_UNVERIFIED"})
     verified = None
     failure = None
+    mismatch = False
     try:
         async with timeout(CANARY_DEADLINE_SECONDS):
             while verified is None:
@@ -626,20 +628,25 @@ async def _qualify_container_revision(
                     await sleep(0.5)
     except TimeoutError:
         failure = failure or CanaryFailure("ack", "timeout")
+    except ContainerEgressMismatch:
+        mismatch = True
     finally:
-        retired = False
+        if mismatch and refresh:
+            async with get_db_context() as db:
+                installation = await _locked_current(db, context, payload)
+                if installation is not None:
+                    installation.admitted_revision = installation.containers_ready_revision = None
+                    installation.containers_release_digest = None
+                    wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
         try:
             await retire(reserved.worker_id)
-            retired = True
-        finally:
-            if refresh and (verified is None or not retired):
-                async with get_db_context() as db:
-                    installation = await _locked_current(db, context, payload)
-                    if installation is not None:
-                        installation.admitted_revision = installation.containers_ready_revision = None
-                        installation.containers_release_digest = None
-                        wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
+        except PlatformJobFailure:
+            if not refresh or mismatch:
+                raise
+            verified = None
     if verified is None:
+        if refresh and not mismatch:
+            return None
         raise PlatformJobRequiresAction("Verify Cloudflare Containers Readiness", {
             "code": "CF_CONTAINERS_UNVERIFIED",
             **({"canary_failure": failure.as_result()} if failure is not None else {}),
@@ -656,13 +663,19 @@ async def _qualify_container_revision(
             application != (verified.provider_id, verified.provider_version)
             or installation.worker_ingress_origin != verified.origin
         ):
-            raise ObservationPending("Cloudflare Container application changed after ingress qualification")
-        installation.containers_ready_revision = payload.revision
-        installation.containers_release_digest = release.digest
-        installation.deployment_evidence = {
-            **(installation.deployment_evidence or {}), "container_egress": verified.as_record(),
-        }
-    return True
+            if not refresh:
+                raise ObservationPending("Cloudflare Container application changed after ingress qualification")
+            installation.admitted_revision = installation.containers_ready_revision = None
+            installation.containers_release_digest = None
+            wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
+        else:
+            installation.containers_ready_revision = payload.revision
+            installation.containers_release_digest = release.digest
+            installation.deployment_evidence = {
+                **(installation.deployment_evidence or {}), "container_egress": verified.as_record(),
+            }
+            return True
+    raise PlatformJobRequiresAction("Verify Cloudflare Containers Readiness", {"code": "CF_CONTAINERS_UNVERIFIED"})
 
 
 async def _container_launcher_namespace(

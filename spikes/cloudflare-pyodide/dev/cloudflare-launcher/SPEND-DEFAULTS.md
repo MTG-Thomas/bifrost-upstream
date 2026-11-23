@@ -27,6 +27,15 @@ Workers duty below means **executing slot-seconds ÷ available physical slot-sec
 
 Workers ranges vary the unit costs at fixed workflow counts and cold share. The Containers-inclusive range also varies Container starts from half to double, with the same cost per burst. These are sensitivity ranges for complete settlement, with bootstrap, cleanup and live reservation variability left visible in the ledger. Orphaned resources, missing receipts, more expensive work and rapid re-creation can raise estimated usage sooner. The Containers design's always-live reference is `2 × 30 × 24 × 3,600 × $0.00002056 = $106.58` for compute alone. Production control cost and egress assumptions must come from the selected release and workload. [Container rates fixture](../../../../api/tests/helpers/cloudflare_containers.py)
 
+At one refresh per hour for 31 days of eligible demand, with a modeled
+45 seconds of billed residence per canary, Container refresh adds about
+`744 × 45 × $0.00002056 = $0.69` in compute plus egress and control.
+Reconcile uses its normal five-minute schedule while proof is pending. If
+every attempt starts a canary and never succeeds, the same model gives
+about $8.26 in compute before the account spend guard, with no starts when
+eligible demand or spare seats are absent. The ledger still holds the full
+bounded envelope until independent stop evidence arrives.
+
 ## Owner Options
 
 Each limit is a suggested USD amount per UTC month for the **shared Bifrost estimate**, including unsettled usage. When the limit is reached, Bifrost closes new Cloudflare admission and new work stays on or queues for the primary. The ledger can close admission earlier when it cannot verify usage or safely reserve the next start. Existing admitted work and cleanup follow their own deadlines and settlement rules. Fresh headroom can come from settlement, the UTC month rollover or an explicit policy change.

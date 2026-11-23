@@ -37,7 +37,11 @@ from src.worker.remote.protocol import nonce_digest
 _MINT = object()
 # A brief cache lets the planner reuse a successful probe within one
 # reconciliation window. A provider version change invalidates it immediately.
-EGRESS_PROOF_MAX_AGE = timedelta(minutes=5)
+EGRESS_PROOF_MAX_AGE = timedelta(hours=1)
+
+
+class ContainerEgressMismatch(Exception):
+    """An authenticated challenge produced conflicting evidence."""
 
 
 def _active_probe_job():
@@ -53,12 +57,11 @@ class ProbeReport(BaseModel):
 
     nonce: str
     worker_id: UUID
+    revision: int
+    release_digest: str
     application_id: str
     provider_version: str
     origin: str
-    internet_enabled: bool
-    intercepted_origins: frozenset[str]
-    bounded_relay: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,7 +199,7 @@ async def _probe_container_egress(
     except (httpx.HTTPError, ValueError):
         return None
     if report.nonce != nonce or report.worker_id != probe_worker_id:
-        return None
+        raise ContainerEgressMismatch("Container probe identity changed")
 
     # The API records the signed supervisor's own network observations only
     # after the dedicated ingress accepted the same session's SDK credential.
@@ -238,11 +241,11 @@ async def verify_container_egress(
         report.application_id != observation.provider_id
         or report.provider_version != observation.provider_version
         or report.origin != observation.origin
-        or report.internet_enabled
-        or report.intercepted_origins != {origin}
-        or not observation.signed_control_round_trip
-        or not report.bounded_relay
-        or observation.denied != CONTAINER_EGRESS_DENIALS
+        or report.revision != revision or report.release_digest != release_digest
     ):
+        raise ContainerEgressMismatch("Container probe application or origin changed")
+    if not observation.signed_control_round_trip:
         return None
+    if observation.denied != CONTAINER_EGRESS_DENIALS:
+        raise ContainerEgressMismatch("Container probe did not witness the required denials")
     return VerifiedEgress(observation, _mint=_MINT)

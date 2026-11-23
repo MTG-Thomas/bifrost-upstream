@@ -1963,7 +1963,7 @@ class RemoteControlHost:
                     denied = reply.get("denied") if isinstance(reply, dict) and set(reply) == {"denied"} else None
                     if (
                         isinstance(denied, list) and all(isinstance(item, str) for item in denied)
-                        and set(denied) == CONTAINER_EGRESS_DENIALS
+                        and set(denied) <= CONTAINER_EGRESS_DENIALS
                         and await record_container_network_denials(worker_id, generation, denied)
                         and await cloudflare_sdk_canary_proof(worker_id, generation, acknowledged=True) is not None
                     ):

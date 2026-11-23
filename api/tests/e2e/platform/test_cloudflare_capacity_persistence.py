@@ -1391,8 +1391,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
                 return httpx.Response(200, json={
                     "nonce": body["nonce"], "worker_id": str(canary_id), "application_id": application["id"],
                     "provider_version": namespace, "origin": installation.worker_ingress_origin,
-                    "internet_enabled": False, "intercepted_origins": [installation.worker_ingress_origin],
-                    "bounded_relay": True,
+                    "revision": 1, "release_digest": digest,
                 })
             assert "control_key" not in body
             if path == "/v1/stop":
@@ -3549,8 +3548,8 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
             await db.flush()
             return httpx.Response(200, json={
                 "nonce": nonce, "worker_id": str(worker.id), "application_id": application.provider_id,
-                "provider_version": application.provider_version, "origin": origin, "internet_enabled": False,
-                "intercepted_origins": [origin], "bounded_relay": True,
+                "provider_version": application.provider_version, "origin": origin,
+                "revision": 1, "release_digest": release.digest,
             })
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
@@ -3682,7 +3681,7 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
         execution.organization_id = other
     elif reason == "stale-egress":
         admission["verified_egress"] = await verified_egress(
-            installation.id, 1, release.digest, origin, observed_at=now - timedelta(minutes=6),
+            installation.id, 1, release.digest, origin, observed_at=now - timedelta(hours=2),
         )
     elif reason == "different-provider-version":
         application.provider_version = "f" * 32

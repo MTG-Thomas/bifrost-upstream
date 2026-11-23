@@ -474,9 +474,11 @@ receipt alone cannot establish readiness. The scope observes bytes in both
 directions in the active start fence. The API separately verifies the signed
 hello, the scoped SDK receipt and all five network denials from the same
 control session. Enable and Upgrade settle the canary before admitting the
-joint revision. A later Container placement requires proof within five
-minutes and an exact match with the current application's provider receipt.
-Reconcile can renew the proof when a reviewed workflow is queued.
+joint revision. A later Container placement requires proof within one hour
+and an exact match with the current application's provider receipt.
+Reconcile can renew it only for eligible demand and with a spare seat beyond
+the one needed by user work. A transient renewal failure pauses Container
+placement until the next reconciliation. Conflicting evidence closes both lanes.
 
 Run `./test.sh cloudflare-containers <local-api-image> --miniflare` to
 exercise the isolated Linux launcher and the native TLS intercept with the
@@ -632,8 +634,11 @@ indicate a stale provider seat. Pausing the installation bounds repeated
 starts while the registry and API settle the placement.
 A committed settlement can replay after provider inventory is collected.
 
-Egress readiness expires after five minutes. The authenticated scope
-challenge reports the network observations. The API independently verifies
+Egress placement proof expires after one hour. At 45 billed seconds per
+successful hourly canary, the `standard-1` pilot costs about $0.69 in compute
+over 31 days of continuous eligible demand. See [Spend Defaults](SPEND-DEFAULTS.md)
+for the model and the transient failure case. The authenticated scope returns
+its identity after independently metering the exchange. The API verifies
 that it accepted the fresh, signed canary nonce via worker ingress. The
 proof binds the exact application ID and provider version from inventory.
 An overdue unresolved placement blocks Container admission for its

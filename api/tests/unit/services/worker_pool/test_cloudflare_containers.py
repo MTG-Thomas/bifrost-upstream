@@ -2,6 +2,7 @@
 
 import json
 from asyncio import gather
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -17,6 +18,9 @@ import pytest
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from pydantic import SecretStr, ValidationError
+from src.jobs.platform import cloudflare_enable
+from src.jobs.platform.base import PlatformJobContext, PlatformJobRequiresAction
+from src.models.orm.cloudflare_capacity import CloudflareWorkerReservation
 from src.models.orm.execution_workers import ExecutionWorker
 from src.services.worker_pool import cloudflare_containers_rest
 from src.services.worker_pool.cloudflare_admission import PrimaryPool
@@ -27,6 +31,7 @@ from src.services.worker_pool.cloudflare_containers_admission import (
 )
 from src.services.worker_pool.cloudflare_containers_auth import container_scope_public_key, request_container_control
 from src.services.worker_pool.cloudflare_containers_egress import (
+    ContainerEgressMismatch,
     VerifiedEgress,
     verify_container_egress,
 )
@@ -61,6 +66,7 @@ from tests.helpers.cloudflare_containers import (
     make_release,
     policy,
     successful_probe,
+    verified_egress,
 )
 
 ACCOUNT = "a" * 32
@@ -371,8 +377,9 @@ def test_linux_review_digest_distinguishes_replacement_and_reacceptance() -> Non
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("change", [
-    {"provider_version": "f" * 32}, {"internet_enabled": True}, {"signed_control_round_trip": False},
-    {"bounded_relay": False}, {"denied": frozenset()}, {"intercepted_origins": frozenset()},
+    {"provider_version": "f" * 32}, {"origin": "https://other.example.test"},
+    {"revision": 3}, {"release_digest": "c" * 64},
+    {"signed_control_round_trip": False}, {"denied": frozenset()},
 ])
 async def test_egress_proof_requires_exact_release_and_observed_network_controls(change) -> None:
     origin = "https://worker.example.test"
@@ -382,9 +389,10 @@ async def test_egress_proof_requires_exact_release_and_observed_network_controls
         observation = replace(observation, **change)
     else:
         observation = replace(observation, report=observation.report.model_copy(update=change))
-    with patch(
-        "src.services.worker_pool.cloudflare_containers_egress._probe_container_egress",
-        new=AsyncMock(return_value=observation),
+    with (
+        patch("src.services.worker_pool.cloudflare_containers_egress._probe_container_egress",
+              new=AsyncMock(return_value=observation)),
+        nullcontext() if "signed_control_round_trip" in change else pytest.raises(ContainerEgressMismatch),
     ):
         assert await verify_container_egress(
             None, None, installation_id=installation_id, revision=1, release_digest="a" * 64, origin=origin,
@@ -442,15 +450,16 @@ async def test_owned_egress_probe_challenges_scope_and_requires_api_witness(case
         return httpx.Response(200, json={
             "nonce": "stale" if case == "wrong-nonce" else body["nonce"], "worker_id": str(worker),
             "application_id": APP_ID, "provider_version": APP_VERSION, "origin": origin,
-            "internet_enabled": False, "intercepted_origins": [origin],
-            "bounded_relay": True,
+            "revision": 1, "release_digest": digest,
         })
 
+    proof = None
     async with httpx.AsyncClient(transport=httpx.MockTransport(probe), follow_redirects=True) as client:
         with (
             patch("src.services.worker_pool.cloudflare_containers_egress.open_credential", return_value=token),
             patch("src.services.worker_pool.cloudflare_containers_egress.load_managed_control_key",
                   new=AsyncMock(return_value="f" * 64)),
+            pytest.raises(ContainerEgressMismatch) if case in ("wrong-nonce", "missing-denial") else nullcontext(),
         ):
             proof = await verify_container_egress(
                 db, client, installation_id=installation, revision=1, release_digest=digest,
@@ -460,6 +469,53 @@ async def test_owned_egress_probe_challenges_scope_and_requires_api_witness(case
         assert proof is not None and proof.observed_at == now and proof.provider_version == APP_VERSION
     else:
         assert proof is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["transient", "mismatch", "verified", "no-spare-seat"])
+async def test_refresh_changes_admission_only_on_conflicting_evidence(monkeypatch, outcome):
+    release, _, _ = make_release()
+    installation_id = uuid4()
+    origin = "https://worker.example.test"
+    proof = await verified_egress(installation_id, 1, release.digest, origin)
+    row = SimpleNamespace(
+        id=installation_id, worker_ingress_origin=origin, deployment_evidence={},
+        admitted_revision=1, containers_ready_revision=1, containers_release_digest=release.digest,
+    )
+    db = AsyncMock()
+    db.scalars.return_value = []
+    db.execute.return_value = Mock(one_or_none=Mock(return_value=(APP_ID, APP_VERSION)))
+
+    @asynccontextmanager
+    async def transaction():
+        yield db
+
+    monkeypatch.setattr(cloudflare_enable, "get_db_context", transaction)
+    monkeypatch.setattr(cloudflare_enable, "_locked_current", AsyncMock(return_value=row))
+    monkeypatch.setattr(cloudflare_enable, "wake_pool_workers_after_commit", Mock())
+    monkeypatch.setattr(cloudflare_enable, "canary_session_failure", Mock(
+        return_value=cloudflare_enable.CanaryFailure("ack", "invalid_reply"),
+    ))
+    reserve = AsyncMock(return_value=None if outcome == "no-spare-seat" else CloudflareWorkerReservation(worker_id=uuid4()))
+    monkeypatch.setattr(cloudflare_enable, "reserve_container_canary", reserve)
+    monkeypatch.setattr(cloudflare_enable, "reconcile_container_stop", AsyncMock(return_value=True))
+    verify = AsyncMock(return_value=proof if outcome == "verified" else None)
+    if outcome == "mismatch":
+        verify.side_effect = ContainerEgressMismatch("fixture mismatch")
+    monkeypatch.setattr(cloudflare_enable, "verify_container_egress", verify)
+    if outcome == "transient":
+        db.execute.return_value = Mock(one_or_none=Mock(return_value=SimpleNamespace(result={}, remote_session_generation=1)))
+
+    payload = cloudflare_enable.CloudflareEnablePayload(installation_id=installation_id, revision=1)
+    context = PlatformJobContext(uuid4(), uuid4(), None, str(uuid4()), "", "")
+    with pytest.raises(PlatformJobRequiresAction) if outcome == "mismatch" else nullcontext():
+        result = await cloudflare_enable._qualify_container_revision(context, payload, None, None, TOKEN, release, refresh=True)
+        assert result is (True if outcome == "verified" else None)
+    assert row.admitted_revision == row.containers_ready_revision == (None if outcome == "mismatch" else 1)
+    assert row.containers_release_digest == (None if outcome == "mismatch" else release.digest)
+    assert bool(row.deployment_evidence) == (outcome == "verified")
+    assert reserve.await_args.kwargs["refresh"] is True
+    assert verify.await_count == (0 if outcome == "no-spare-seat" else 1)
 
 
 def test_baked_wheel_closure_is_required_for_package_finding() -> None:

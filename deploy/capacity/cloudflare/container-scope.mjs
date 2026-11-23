@@ -150,7 +150,7 @@ export default {
                     return Response.json({
                         nonce, worker_id: pin.worker, application_id: data.application_id,
                         provider_version: data.provider_version, origin: env.CONTAINERS_ORIGIN,
-                        internet_enabled: false, intercepted_origins: [env.CONTAINERS_ORIGIN], bounded_relay: true,
+                        revision: Number(env.CONTAINERS_REVISION), release_digest: env.CONTAINERS_RELEASE,
                     });
                 }
                 case "/v1/stop": return Response.json(await actor().stop(uid));

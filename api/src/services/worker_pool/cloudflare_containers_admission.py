@@ -258,6 +258,7 @@ class _ContainerCapacity:
     workers: list[ExecutionWorker]
     seats: WorkflowSlotAdmission
     container_tenants: frozenset[str | None]
+    shared_seats_remaining: int | None
 
 
 async def _container_scope_cooldown(
@@ -332,14 +333,46 @@ async def _lock_container_capacity(
     if len(live) >= containers.installation_instances:
         return None
     workers = list(await db.scalars(select(ExecutionWorker).where(ExecutionWorker.state.in_(LIVE_STATES))))
+    shared_seats_remaining = None
     if policy.shared_managed_worker_cap is not None:
         occupancy = await read_managed_worker_occupancy(db, workers, include_pending_deletions=True)
-        if occupancy.shared_count >= policy.shared_managed_worker_cap:
+        shared_seats_remaining = policy.shared_managed_worker_cap - occupancy.shared_count
+        if shared_seats_remaining <= 0:
             return None
     seats = await read_workflow_slot_admission(db, installation_id, policy.workers)
     if seats.full:
         return None
-    return _ContainerCapacity(installation, scope, containers, policy.monthly_limit_usd, now, workers, seats, frozenset(live))
+    return _ContainerCapacity(
+        installation, scope, containers, policy.monthly_limit_usd, now, workers, seats, frozenset(live), shared_seats_remaining,
+    )
+
+
+def _container_queue(capacity: _ContainerCapacity, release: VerifiedContainerRelease):
+    installation, limits, seats = capacity.installation, capacity.limits, capacity.seats
+    covered = {row.reserved_for_dispatch_id for row in capacity.workers if row.reserved_for_dispatch_id is not None}
+    blocked_tenants = seats.blocked_tenants | capacity.container_tenants
+    declaration = CloudflareApproval.declaration
+    return select(WorkDispatch, Execution, Workflow, CloudflareApproval).join(
+        Execution, Execution.id == WorkDispatch.subject_id,
+    ).join(Workflow, Workflow.id == Execution.workflow_id).join(
+        CloudflareApproval, CloudflareApproval.workflow_id == Workflow.id,
+    ).where(
+        Execution.status == ExecutionStatus.PENDING, WorkDispatch.assigned_worker_id.is_(None),
+        WorkDispatch.id.not_in(covered), WorkDispatch.created_at <= capacity.now - timedelta(seconds=limits.queue_wait_seconds),
+        WorkDispatch.execution_lane == "normal", Execution.execution_lane == "normal",
+        WorkDispatch.handler == CLOUDFLARE_WORKFLOW_HANDLER[0],
+        WorkDispatch.handler_version == CLOUDFLARE_WORKFLOW_HANDLER[1],
+        WorkDispatch.cloudflare_revision.is_(None),
+        Workflow.is_active, Workflow.type == "workflow", Workflow.execution_lane != "fast_path",
+        or_(Workflow.organization_id.is_(None), Workflow.organization_id == Execution.organization_id),
+        CloudflareApproval.organization_id.is_not_distinct_from(Workflow.organization_id),
+        func.coalesce(cast(Execution.organization_id, String), tenant_key(None)).not_in(blocked_tenants),
+        CloudflareApproval.is_current, CloudflareApproval.policy_version == LINUX_REVIEW_VERSION,
+        declaration["release_digest"].as_string() == release.digest,
+        declaration["installation_id"].as_string() == str(installation.id),
+        declaration["worker_ingress_origin"].as_string() == installation.worker_ingress_origin,
+        linux_source_current_sql(),
+    ).order_by(WorkDispatch.created_at, WorkDispatch.id).limit(1000)
 
 
 async def reserve_container(
@@ -372,32 +405,8 @@ async def reserve_container(
     if cooldown is not None:
         return cooldown
     linux_workers = [worker for worker in workers if worker.runtime_profile == LINUX_RUNTIME_PROFILE]
-    covered = {row.reserved_for_dispatch_id for row in workers if row.reserved_for_dispatch_id is not None}
-    blocked_tenants = seats.blocked_tenants | capacity.container_tenants
-    declaration = CloudflareApproval.declaration
-    queue = select(WorkDispatch, Execution, Workflow, CloudflareApproval).join(
-        Execution, Execution.id == WorkDispatch.subject_id,
-    ).join(Workflow, Workflow.id == Execution.workflow_id).join(
-        CloudflareApproval, CloudflareApproval.workflow_id == Workflow.id,
-    ).where(
-        Execution.status == ExecutionStatus.PENDING, WorkDispatch.assigned_worker_id.is_(None),
-        WorkDispatch.id.not_in(covered), WorkDispatch.created_at <= now - timedelta(seconds=containers.queue_wait_seconds),
-        WorkDispatch.execution_lane == "normal", Execution.execution_lane == "normal",
-        WorkDispatch.handler == CLOUDFLARE_WORKFLOW_HANDLER[0],
-        WorkDispatch.handler_version == CLOUDFLARE_WORKFLOW_HANDLER[1],
-        WorkDispatch.cloudflare_revision.is_(None),
-        Workflow.is_active, Workflow.type == "workflow", Workflow.execution_lane != "fast_path",
-        or_(Workflow.organization_id.is_(None), Workflow.organization_id == Execution.organization_id),
-        CloudflareApproval.organization_id.is_not_distinct_from(Workflow.organization_id),
-        func.coalesce(cast(Execution.organization_id, String), tenant_key(None)).not_in(blocked_tenants),
-        CloudflareApproval.is_current, CloudflareApproval.policy_version == LINUX_REVIEW_VERSION,
-        declaration["release_digest"].as_string() == release.digest,
-        declaration["installation_id"].as_string() == str(installation_id),
-        declaration["worker_ingress_origin"].as_string() == verified_egress.origin,
-        linux_source_current_sql(),
-    ).order_by(WorkDispatch.created_at, WorkDispatch.id).limit(1000)
     demand: list[tuple[WorkDispatch, Execution, CloudflareApproval]] = []
-    for dispatch, execution, workflow, approval in (await db.execute(queue)).tuples():
+    for dispatch, execution, workflow, approval in (await db.execute(_container_queue(capacity, release))).tuples():
         if (
             primary_has_no_fit(primary, linux_workers, now, dispatch.memory_request_bytes)
             and eligible_linux_review(
@@ -438,7 +447,7 @@ async def reserve_container(
 
 async def reserve_container_canary(
     db: AsyncSession, *, installation_id: UUID, controller_id: UUID, release: VerifiedContainerRelease,
-    job_id: UUID, lease_token: UUID,
+    job_id: UUID, lease_token: UUID, refresh: bool = False,
 ) -> CloudflareWorkerReservation | ContainerAdmissionRefused | None:
     """Book one bounded synthetic launch under the current qualification job."""
     job_revision = await db.scalar(select(PlatformJob.payload["revision"].as_integer()).where(
@@ -457,6 +466,20 @@ async def reserve_container_canary(
         or QUALIFICATION_CANARY_TENANT in capacity.container_tenants
     ):
         return None
+    if refresh:
+        if (
+            len(capacity.container_tenants) + 1 >= capacity.limits.installation_instances
+            or capacity.seats.occupied.total() + 1 >= capacity.seats.policy.installation_slots
+            or capacity.shared_seats_remaining == 1
+        ):
+            return None
+        if not any(eligible_linux_review(
+            dispatch=dispatch, execution=execution, workflow=workflow, approval=approval,
+            installation=capacity.installation, policy=capacity.limits, release=release,
+        ) is not None for dispatch, execution, workflow, approval in (
+            await db.execute(_container_queue(capacity, release))
+        ).tuples()):
+            return None
     if (await db.execute(current_container_application(
         capacity.installation, capacity.scope.deployment_revision, release.digest,
     ))).one_or_none() is None:

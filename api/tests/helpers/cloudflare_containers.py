@@ -86,8 +86,7 @@ def successful_probe(
         installation_id, revision, digest, origin, APP_ID, APP_VERSION, observed_at or datetime.now(UTC),
         ProbeReport(
             nonce="fixture", worker_id=uuid4(), application_id=APP_ID, provider_version=APP_VERSION,
-            origin=origin, internet_enabled=False, intercepted_origins=frozenset({origin}),
-            bounded_relay=True,
+            origin=origin, revision=revision, release_digest=digest,
         ),
         True, CONTAINER_EGRESS_DENIALS,
     )

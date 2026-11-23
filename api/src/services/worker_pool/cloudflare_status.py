@@ -94,7 +94,8 @@ PLACEMENT: dict[CloudflarePlacementCode, tuple[str, str]] = {
         "Container Readiness Unverified", "Qualify the exact Linux release and worker ingress through Enable or Reconcile.",
     ),
     "container_egress_stale": (
-        "Container Egress Proof Expired", "Wait for Reconcile to verify the Container worker ingress again.",
+        "Container Egress Refresh Pending",
+        "Reconcile checks the Container worker ingress when eligible work is queued and a spare slot is available.",
     ),
     "container_allocation_cooldown": (
         "Container Allocation Cooling Down", "The primary can claim handed-back work while the Container lane settles.",
