@@ -467,7 +467,18 @@ Start and egress challenges carry only that incarnation's bootstrap control
 key. Stop carries its signature and identity. The Worker validates the
 certificate and request before addressing the incarnation's Durable Object.
 The egress challenge starts the fenced qualification actor. Its launch
-receipt alone cannot establish readiness.
+receipt alone cannot establish readiness. The scope observes bytes in both
+directions in the active start fence. The API separately verifies the signed
+hello, the scoped SDK receipt and all five network denials from the same
+control session. Enable and Upgrade settle the canary before admitting the
+joint revision. A later Container placement requires proof within five
+minutes and an exact match with the current application's provider receipt.
+Reconcile can renew the proof when a reviewed workflow is queued.
+
+Run `./test.sh cloudflare-containers <local-api-image> --miniflare` to
+exercise the isolated Linux launcher and the native TLS intercept with the
+pinned workerd and sidecar. The latter uses the real registry meter and an
+in-process worker ingress to check HTTP, WebSocket and rejection responses.
 
 Hosted qualification needs explicit approval of the disposable account lane,
 installation, grants, time window and spend bounds, with an independent

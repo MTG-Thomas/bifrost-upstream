@@ -2,6 +2,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock
+from uuid import UUID
 
 import pytest
 
@@ -11,6 +12,7 @@ from src.services.pool_cadence import (
 )
 from src.services.work_dispatch import WAKE_WORKFLOW
 from src.services.worker_pool import cloudflare_supervisor, controller
+from src.services.worker_pool.cloudflare_admission import ManagedCloudflareScope
 from src.services.worker_pool.cloudflare_timing import worker_terminal_timing
 
 
@@ -66,7 +68,7 @@ async def test_early_workflow_wake_keeps_the_launch_deadline(monkeypatch) -> Non
     deadline = queued_at + cloudflare_supervisor.LAUNCH_AGE
     now = queued_at
     stop = asyncio.Event()
-    binding = object()
+    binding = ManagedCloudflareScope(UUID(int=1), "workers", 1)
     passes = []
     scheduled = []
 
