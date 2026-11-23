@@ -1,7 +1,12 @@
 # Phase 2 Managed Tunnel
 
 Managed Tunnel uses an exact hostname in an active DNS zone owned by the
-selected Cloudflare account. Supply the HTTPS origin and zone ID at Connect.
+selected Cloudflare account. Preflight proposes the hostname and discovers
+the zone. Review both before selecting **Scale Out with Cloudflare**.
+For CLI or MCP, stage the scoped credential and use its reference for
+preflight and activation. Confirm the discovered zone, proposed hostname,
+consent and spend limit using the combined activation procedure.
+[Combined activation procedure](PHASE1-PILOT.md#combined-hosted-qualification-plan)
 The account token needs Account Settings Read, Workers Scripts Write and
 Cloudflare Tunnel Write on that account. Grant Zone Read and DNS Write only
 for the selected zone. Leave the dedicated hostname unoccupied.
@@ -38,8 +43,9 @@ proposed change outside this branch. It requires a breaking-change Product
 Updates disposition and an upgrade note showing how to replace port mappings
 with `ports: !override`.
 
-Use Enable to create and verify the tunnel, ingress and proxied CNAME before
-running the existing signed Worker canary. If a connector is lost, Reconcile
+Activation saves consent and policy and queues one Enable job. That job
+creates and verifies the tunnel, ingress and proxied CNAME, checks for a
+live connector, then runs the signed Worker canary. If a connector is lost, Reconcile
 closes admission when it observes the loss. A transient Cloudflare REST
 outage leaves admission as observed before the failed reconcile. On ingress
 drift, Reconcile closes admission before reasserting the approved config on
@@ -74,7 +80,8 @@ and Kubernetes installations. Start with read-only entitlement and grant
 checks. Use the same packaged release and pinned cloudflared build in both
 layouts. Record only sanitized resource receipts and job outcomes.
 
-1. Enable Managed Tunnel. Independently verify exact account, zone, tunnel
+1. Preflight and activate Managed Tunnel once. Poll the returned Enable
+   job. Independently verify exact account, zone, tunnel
    ID, CNAME and connector sessions. Exercise a signed hello, scoped SDK call
    and terminal receipt. Probe login, OpenAPI, wrong Host, wrong method,
    normalized path escapes and unsigned WebSocket hello for refusal.
@@ -135,3 +142,129 @@ The separately owned Existing HTTPS tunnel was verified deleted with
 zero live sessions.
 
 See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-observable-gates.json).
+
+## Hosted Cold and Warm Reuse Run
+
+The run from `788ffc641` stopped after Existing HTTPS latency at a
+post-reuse harness gate, before Managed Tunnel Connect. The
+warp-routing echo, route-list grant and old-session eviction remain
+unqualified on hosted. The Existing HTTPS tunnel had a deletion
+tombstone with zero live sessions.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-latency-reuse.json).
+
+### Combined Hosted Run at `db39a3698`
+
+The Existing HTTPS Enable ownership gate stopped the run before the
+Managed Tunnel leg. This run produced no hosted warp-routing echo,
+route-list grant, or rotation evidence. The Existing HTTPS tunnel was
+retired, with a deletion tombstone and zero sessions.
+
+See the [sanitized ownership-stop receipt](../../results/cloudflare-scaleout-combined-hosted-ownership-stop.json).
+
+### Hosted Preset B Stop at `e7c59788c`
+
+Managed Connect accepted preset B with admission closed. Enable
+returned `CF_OWNERSHIP_CONFLICT` with resource class `tunnel_ingress`,
+check `ingress_occupied`, observed category `already_configured` and
+expected category `empty_or_matching`. The stop preceded the signed
+canary, warp-routing echo, route-list grant readback, and rotation.
+Disconnect verified a deleted tunnel with zero sessions. The DNS
+intent had no provider ID. Exact-name inventory and both authorities
+verified its absence.
+
+See the [sanitized preset B receipt](../../results/cloudflare-scaleout-preset-b-hosted.json).
+
+### Catch-all during initial provisioning
+
+Cloudflare documents `http_status:404` as a catch-all with no origin.
+Its remote tunnel setup guide creates a tunnel before installing ingress
+rules. The hosted stop retained only a categorized error. The public
+examples and receipt leave the exact initial response body and version
+unconfirmed. The single 404 rule is the narrow provider-default shape
+modeled by the local fixture.
+[Create a remote tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel-api/) · [Configuration API](https://developers.cloudflare.com/api/resources/zero_trust/subresources/tunnels/subresources/cloudflared/subresources/configurations/)
+
+Bifrost accepts a single 404 catch-all regardless of version during
+initial provisioning, including a retry after a lost create response.
+The committed creation secret must prove the exact tunnel, and its
+configuration must identify the same account and tunnel. The rule can
+have only blank matching fields, empty origin options, and default or
+disabled WARP routing. Once a receipt is recorded, the catch-all alone
+is ingress drift and requires repair. A conflict reports the version,
+recognized keys, rule count, and service categories. Unknown keys are
+reported as `other`; provider IDs, hostnames and rule values are omitted.
+
+The local provider starts with version 0 and a null configuration.
+`combined-stack.py --default-tunnel-config` starts with the catch-all.
+`combined-stack.py --missing-tunnel-config` returns HTTP 404 before
+ingress is written. Use `combined-rehearsal.py --managed-only` to
+exercise items 6–8 and final teardown with each response.
+
+CT128 exercised combined items 6–8 at `a580a0b70` with both pinned
+release packages and internal-only fixtures. The Managed Tunnel stub
+started with the version 1 404 rule. Enable programmed the approved
+route, then returned a signed canary receipt. Route listing returned
+200 and the WARP echo was disabled. Rotation replaced one old session
+with one new session and refused the old token. Upgrade reconnected the
+original claim, delivered and acknowledged its terminal result after one
+dispatch, and verified three old script and four old namespace 404s.
+Final Disconnect removed the stub tunnel with zero sessions and no DNS
+record. The hosted behavior of this change remains unverified.
+
+### Hosted version-zero configuration envelope
+
+The Managed-only run at `a9226cb62` stopped at
+`tunnel_ingress / ingress_occupied / already_configured / empty_or_matching`.
+The provider returned version 0 with the envelope keys `config`,
+`created_at`, `source`, `tunnel_id`, and `version`. The missing
+`account_id` key fails the exact configuration identity check before
+Bifrost evaluates the empty-config or catch-all rule. Shape diagnostics
+classify `config` as a non-object without recording its raw value, so
+the run cannot establish that the value was JSON null.
+
+The signed canary, disabled WARP echo, route-list grant and connector
+rotation remain unqualified on this run. Disconnect verified the tunnel
+tombstone, zero sessions, and DNS and token absence.
+
+See the [sanitized Managed-only receipt](../../results/cloudflare-scaleout-managed-hosted-a922.json).
+
+The configuration GET schema marks `account_id`, `tunnel_id`, `config`,
+and `version` optional. The request path selects the exact account and
+tunnel. Bifrost checks both identifiers when echoed, and initializes
+version 0 with a null or absent config only during initial provisioning.
+A recorded receipt must match the approved ingress or use the fenced
+repair path. [Cloudflare configuration GET](https://developers.cloudflare.com/api/resources/zero_trust/subresources/tunnels/subresources/cloudflared/subresources/configurations/methods/get/)
+
+The tunnel read accepts an omitted account tag on the scoped path and
+uses `remote_config: true` only when `config_src` is absent. The
+connector read can use one consistent nested `client_id` if the parent
+ID is omitted. The filtered route read treats a row with no echoed
+tunnel ID as a route on the selected tunnel and blocks admission.
+[Tunnel GET](https://developers.cloudflare.com/api/resources/zero_trust/subresources/tunnels/subresources/cloudflared/methods/get/) ·
+[Connections GET](https://developers.cloudflare.com/api/resources/zero_trust/subresources/tunnels/subresources/cloudflared/subresources/connections/methods/get/) ·
+[Routes GET](https://developers.cloudflare.com/api/resources/zero_trust/subresources/networks/subresources/routes/methods/list/)
+
+DNS retains its exact CNAME, record ID, modification time, and
+ownership comment checks. The connector token endpoint returns a
+string. The decoded token still proves the account, tunnel, and
+creation or rotation secret. Preflight checks the account entitlement
+with the supplied management token. [DNS record GET](https://developers.cloudflare.com/api/resources/dns/subresources/records/methods/get/) ·
+[Connector token GET](https://developers.cloudflare.com/api/resources/zero_trust/subresources/tunnels/subresources/cloudflared/subresources/token/methods/get/) ·
+[cloudflared token fields](https://github.com/cloudflare/cloudflared/blob/2026.11.1/connection/connection.go)
+
+### Hosted Managed Enable and Rotation at `8712eb4c6`
+
+The hosted preset B run passed Enable and the signed canary. The exact
+owned tunnel, proxied CNAME and approved ingress matched independently.
+The provider echoed disabled WARP routing and granted the scoped route
+list with HTTP 200 and zero private routes. The approved configuration
+read back at version 1. Successful Enable leaves the initial configuration
+body unclassified in its receipt.
+
+Rotation evicted the old connector session, refused its token, and
+established one replacement session. Worker preflight and signed re-Enable
+passed on `remote_launcher`. Disconnect verified exact DNS absence, the
+tunnel tombstone, zero sessions, and an empty connector token projection.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-managed-hosted-8712.json).

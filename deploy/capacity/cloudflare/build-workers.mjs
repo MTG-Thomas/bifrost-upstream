@@ -12,7 +12,7 @@ import { MAX_WORKFLOW_SLOTS } from "../../../spikes/cloudflare-pyodide/dev/cloud
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const spike = resolve(root, "spikes/cloudflare-pyodide");
 const require = createRequire(new URL("../../../api/src/services/app_bundler/package.json", import.meta.url));
-const runtimePin = "fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5";
+const runtimePin = "11ade0a1ea1b117d577803cff87d1c3c4074d793df5bcb17a9f473923e55f254";
 const uploadLimit = 64 * 1024 * 1024;
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const durableObject = (name, class_name, script) => ({
@@ -175,6 +175,12 @@ export function assertMeterInventory(role, inputs, inventory) {
   }
 }
 
+export function lifetimeMeterBinding(bounds, launcherMeters) {
+  return plain("BIFROST_LAUNCHER_METERS_PER_SECOND", JSON.stringify(Object.fromEntries(
+    Object.keys(launcherMeters).map(name => [name, Number(bounds.per_launcher_second[name])]),
+  )));
+}
+
 export async function buildWorkers(runtimePath, outputPath, sourceRevision, meterBounds, releaseVersion, releaseSequence) {
   if (!Number.isSafeInteger(releaseSequence) || releaseSequence < 1) {
     throw new Error("A positive Workers release sequence is required");
@@ -235,6 +241,7 @@ export async function buildWorkers(runtimePath, outputPath, sourceRevision, mete
         plain("BIFROST_METER_WARM_CPU_MS", limits.warmCpuMs),
         plain("BIFROST_METER_EXERCISE_CPU_MS", limits.exerciseCpuMs),
         plain("BIFROST_LAUNCHER_METERS", JSON.stringify(limits.launcherMeters)),
+        lifetimeMeterBinding(pinnedBounds, limits.launcherMeters),
       ] : bindings,
       cpu_ms: {capacity: limits.capacityCpuMs, gateway: limits.launcherCpuMs, launcher: theoreticalCpuMs}[role],
       preview_urls: false,

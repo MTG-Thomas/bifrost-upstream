@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import textwrap
+from datetime import timedelta
 
 
 def test_catalog_metadata_matches_each_materialized_definition() -> None:
@@ -57,6 +58,20 @@ def test_catalog_metadata_matches_each_materialized_definition() -> None:
         assert definition.encrypt_payload == item.encrypt_payload
         assert definition.display_name == item.display_name
         assert definition.description == item.description
+
+
+def test_deployment_jobs_opt_into_delayed_failure_retries() -> None:
+    from src.jobs.platform.catalog import list_platform_job_metadata
+
+    delays = (timedelta(seconds=15), timedelta(seconds=45))
+    opted_in = {
+        item.job_type: item.policy.retry_delay
+        for item in list_platform_job_metadata() if item.policy.retry_delay
+    }
+    assert opted_in == {
+        "capacity.cloudflare_enable": delays,
+        "capacity.cloudflare_reconcile": delays,
+    }
 
 
 def test_metadata_lookup_imports_no_handler_modules_in_a_fresh_process() -> None:

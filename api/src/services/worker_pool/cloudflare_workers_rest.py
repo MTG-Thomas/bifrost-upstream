@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from enum import Enum
 from typing import Any
 
 import httpx
@@ -14,8 +15,12 @@ from shared.models import CloudflareWorkersPolicy
 
 from src.services.worker_pool.cloudflare_provisioning import (
     DeletionSettling,
+    ObservationCheck,
     ObservationPending,
+    ObservationSettling,
+    OwnershipCheck,
     OwnershipConflict,
+    OwnershipResource,
     ResourceIntent,
     ResourceObservation,
     ResourceTarget,
@@ -51,12 +56,71 @@ def _script_path(target: ResourceTarget) -> str:
         or not _ACCOUNT_ID.fullmatch(target.account_id)
         or not re.fullmatch(r"[a-z0-9-]{1,63}", target.name)
     ):
-        raise OwnershipConflict("Cloudflare resource is outside the Workers cleanup contract")
+        raise OwnershipConflict(
+            "Cloudflare resource is outside the Workers cleanup contract",
+            OwnershipResource.WORKER_SCRIPT, OwnershipCheck.TARGET_CONTRACT,
+        )
     return f"workers/scripts/{target.name}"
 
 
 def worker_owner_value(intent: ResourceIntent) -> str:
     return f"{intent.target.installation_id}:{intent.creation_effect_id}:{intent.desired_revision}:{intent.artifact_digest}"
+
+
+class _RestOperation(Enum):
+    ACCOUNT = (OwnershipResource.ACCOUNT, "account_read")
+    ENTITLEMENTS = (OwnershipResource.ACCOUNT, "entitlements_read")
+    SCRIPT_SETTINGS = (OwnershipResource.WORKER_SCRIPT, "script_settings_read")
+    SCRIPT_DEPLOYMENTS = (OwnershipResource.WORKER_SCRIPT, "script_deployments_read")
+    SCRIPT_UPLOAD = (OwnershipResource.WORKER_SCRIPT, "script_upload")
+    SCRIPT_DELETE = (OwnershipResource.WORKER_SCRIPT, "script_delete")
+    SCRIPT_SUBDOMAIN = (OwnershipResource.WORKERS_ENDPOINT, "script_subdomain")
+    ACCOUNT_SUBDOMAIN = (OwnershipResource.WORKERS_ENDPOINT, "account_subdomain")
+    NAMESPACES = (OwnershipResource.DURABLE_OBJECT_NAMESPACE, "namespace_inventory")
+    ZONE = (OwnershipResource.DNS_ZONE, "zone_read")
+    DNS = (OwnershipResource.DNS_RECORD, "dns_request")
+    TUNNEL = (OwnershipResource.TUNNEL, "tunnel_request")
+    TUNNEL_INGRESS = (OwnershipResource.TUNNEL_INGRESS, "tunnel_configuration")
+    CONNECTOR = (OwnershipResource.CONNECTOR, "connector_inventory")
+    CONNECTOR_TOKEN = (OwnershipResource.CONNECTOR_CREDENTIAL, "connector_token")
+    PRIVATE_ROUTES = (OwnershipResource.PRIVATE_ROUTE, "private_route_inventory")
+
+
+def _rest_operation(method: str, path: str) -> _RestOperation:
+    if "/workers/scripts/" in path:
+        if path.endswith("/subdomain"):
+            return _RestOperation.SCRIPT_SUBDOMAIN
+        if path.endswith("/deployments"):
+            return _RestOperation.SCRIPT_DEPLOYMENTS
+        if path.endswith("/settings"):
+            return _RestOperation.SCRIPT_SETTINGS
+        return _RestOperation.SCRIPT_UPLOAD if method == "PUT" else _RestOperation.SCRIPT_DELETE
+    if "/workers/durable_objects/" in path:
+        return _RestOperation.NAMESPACES
+    if path.endswith("/workers/subdomain"):
+        return _RestOperation.ACCOUNT_SUBDOMAIN
+    if "/dns_records" in path:
+        return _RestOperation.DNS
+    if "/configurations" in path:
+        return _RestOperation.TUNNEL_INGRESS
+    if "/connections" in path:
+        return _RestOperation.CONNECTOR
+    if "/cfd_tunnel" in path:
+        return _RestOperation.CONNECTOR_TOKEN if path.endswith("/token") else _RestOperation.TUNNEL
+    if "/teamnet/routes" in path:
+        return _RestOperation.PRIVATE_ROUTES
+    if path.startswith("zones/"):
+        return _RestOperation.ZONE
+    return _RestOperation.ENTITLEMENTS if path.endswith("/entitlements") else _RestOperation.ACCOUNT
+
+
+class _RestObservation(ObservationPending):
+    def __init__(self, message: str, operation: _RestOperation, check: ObservationCheck) -> None:
+        super().__init__(message, operation.value[0], check)
+        self.operation = operation
+
+    def as_result(self) -> dict[str, str]:
+        return {**super().as_result(), "check": self.operation.value[1]}
 
 
 class WorkersRestCleanup:
@@ -145,7 +209,9 @@ class WorkersRestCleanup:
         if response.status_code in (408, 429) or response.status_code >= 500:
             raise CloudflareRestUnavailable("Cloudflare REST is temporarily unavailable")
         if not response.is_success:
-            raise ObservationPending("Cloudflare REST request did not succeed")
+            raise _RestObservation(
+                "Cloudflare REST request did not succeed", _rest_operation(method, path), ObservationCheck.REST_REJECTED,
+            )
         if method == "DELETE" and response.status_code in (200, 204) and not response.content:
             # Worker delete can acknowledge with an empty body. The caller
             # still verifies script and namespace absence independently.
@@ -153,9 +219,13 @@ class WorkersRestCleanup:
         try:
             payload = response.json()
         except ValueError:
-            raise ObservationPending("Cloudflare REST returned an invalid response") from None
+            raise _RestObservation(
+                "Cloudflare REST returned an invalid response", _rest_operation(method, path), ObservationCheck.REST_JSON,
+            ) from None
         if not isinstance(payload, dict) or payload.get("success") is not True or "result" not in payload:
-            raise ObservationPending("Cloudflare REST returned an unconfirmed result")
+            raise _RestObservation(
+                "Cloudflare REST returned an unconfirmed result", _rest_operation(method, path), ObservationCheck.REST_RESULT,
+            )
         return payload
 
     async def verify_account(self, account_id: str, candidate: SecretStr) -> None:
@@ -167,6 +237,33 @@ class WorkersRestCleanup:
         record = account["result"] if account is not None else None
         if not isinstance(record, dict) or record.get("id") != account_id:
             raise CloudflareManagementDenied
+
+    async def discovery_inventory(
+        self, candidate: SecretStr, account_id: str | None = None,
+    ) -> list[dict[str, Any]] | None:
+        """List accounts, or active zones for one selected account."""
+        if not re.fullmatch(r"[\x21-\x7e]{16,512}", candidate.get_secret_value()):
+            raise CloudflareManagementDenied
+        path = "accounts" if account_id is None else "zones"
+        filters: dict[str, int | str] = {} if account_id is None else {"account.id": account_id, "status": "active"}
+        entries: list[dict[str, Any]] = []
+        for page in range(1, 21):
+            try:
+                payload = await self._request_resource(
+                    candidate, "GET", path, params={**filters, "per_page": 50, "page": page},
+                )
+            except CloudflareManagementDenied:
+                return None
+            items = payload["result"] if payload else None
+            if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+                raise CloudflareRestUnavailable("Cloudflare returned an invalid discovery inventory")
+            info = payload.get("result_info") if payload else None
+            total_pages = info.get("total_pages") if isinstance(info, dict) else None
+            entries.extend(items)
+            last_page = page >= total_pages if type(total_pages) is int else len(items) < 50
+            if last_page:
+                return entries
+        raise CloudflareRestUnavailable("Cloudflare discovery inventory exceeds the supported size")
 
     async def verify_workers_paid(self, account_id: str, candidate: SecretStr) -> None:
         await self.verify_account(account_id, candidate)
@@ -225,15 +322,26 @@ class WorkersRestCleanup:
         record = settings["result"]
         bindings = record.get("bindings") if isinstance(record, dict) else None
         if not isinstance(bindings, list) or any(not isinstance(binding, dict) for binding in bindings):
-            raise ObservationPending("Cloudflare Worker binding readback is unavailable")
+            raise ObservationPending(
+                "Cloudflare Worker binding readback is unavailable",
+                OwnershipResource.WORKER_SCRIPT, ObservationCheck.SCRIPT_BINDINGS,
+            )
         owners = [binding for binding in bindings if binding.get("name") == OWNER_BINDING]
         if len(owners) != 1 or owners[0].get("type") != "plain_text" or owners[0].get("text") != worker_owner_value(intent):
-            raise OwnershipConflict("Cloudflare Worker has a different or missing owner")
+            raise OwnershipConflict(
+                "Cloudflare Worker has a different or missing owner",
+                OwnershipResource.WORKER_SCRIPT, OwnershipCheck.FOREIGN_OCCUPANT,
+            )
         deployments = await self._request(
             api_token, target.account_id, "GET", f"{path}/deployments", params={"page": 1, "per_page": 1},
         )
         result = deployments["result"] if deployments is not None else None
         history = result.get("deployments") if isinstance(result, dict) else None
+        if history == []:
+            raise ObservationSettling(
+                "Cloudflare has not listed the exactly owned Worker's deployment",
+                OwnershipResource.WORKER_SCRIPT, ObservationCheck.SCRIPT_DEPLOYMENT_PENDING,
+            )
         current = history[0] if isinstance(history, list) and history else None
         versions = current.get("versions") if isinstance(current, dict) else None
         deployment_id = current.get("id") if isinstance(current, dict) else None
@@ -244,7 +352,10 @@ class WorkersRestCleanup:
             or not isinstance(versions[0].get("version_id"), str)
             or not _CF_UUID.fullmatch(versions[0]["version_id"])
         ):
-            raise OwnershipConflict("Cloudflare Worker does not have one exact active version")
+            raise OwnershipConflict(
+                "Cloudflare Worker does not have one exact active version",
+                OwnershipResource.WORKER_SCRIPT, OwnershipCheck.ACTIVE_VERSION,
+            )
         return ResourceObservation(intent, deployment_id, versions[0]["version_id"])
 
     async def delete(self, *, api_token: SecretStr, expected: ResourceObservation) -> None:
@@ -278,36 +389,67 @@ class WorkersRestCleanup:
                 not isinstance(rows, list) or not isinstance(info, dict)
                 or info.get("page", page) != page or info.get("count", len(rows)) != len(rows)
             ):
-                raise ObservationPending("Cloudflare namespace inventory is incomplete")
+                raise ObservationPending(
+                    "Cloudflare namespace inventory is incomplete",
+                    OwnershipResource.DURABLE_OBJECT_NAMESPACE, ObservationCheck.NAMESPACE_PAGE,
+                )
             for row in rows:
                 if (
                     not isinstance(row, dict) or not isinstance(row.get("id"), str)
-                    or not row["id"] or row["id"] in seen
+                    or not row["id"]
                 ):
-                    raise ObservationPending("Cloudflare namespace inventory has invalid identity")
+                    raise ObservationPending(
+                        "Cloudflare namespace inventory has invalid identity",
+                        OwnershipResource.DURABLE_OBJECT_NAMESPACE, ObservationCheck.NAMESPACE_IDENTITY,
+                    )
+                if row["id"] in seen:
+                    raise ObservationSettling(
+                        "Cloudflare namespace inventory repeated an identity across the snapshot",
+                        OwnershipResource.DURABLE_OBJECT_NAMESPACE, ObservationCheck.NAMESPACE_PAGINATION,
+                    )
                 seen.add(row["id"])
                 if row["id"] in namespace_ids or row.get("script") == target.name:
                     owned.append(row)
                 elif not isinstance(row.get("script"), str) and not namespace_ids:
-                    raise ObservationPending("Cloudflare namespace is unassigned and no exact namespace receipt exists")
+                    raise ObservationPending(
+                        "Cloudflare namespace is unassigned and no exact namespace receipt exists",
+                        OwnershipResource.DURABLE_OBJECT_NAMESPACE, ObservationCheck.NAMESPACE_UNASSIGNED,
+                    )
             reported_total = info.get("total_count", total)
             pages = info.get("total_pages")
             if (
                 reported_total is not None
-                and (type(reported_total) is not int or reported_total < len(seen) or total not in (None, reported_total))
-            ) or (
-                pages is not None and (type(pages) is not int or pages < 0 or (page > pages and rows))
-            ):
-                raise ObservationPending("Cloudflare namespace inventory totals changed")
+                and (type(reported_total) is not int or reported_total < 0)
+            ) or (pages is not None and (type(pages) is not int or pages < 0)):
+                raise ObservationPending(
+                    "Cloudflare namespace inventory has malformed pagination",
+                    OwnershipResource.DURABLE_OBJECT_NAMESPACE, ObservationCheck.NAMESPACE_PAGE,
+                )
+            if (
+                reported_total is not None and (reported_total < len(seen) or total not in (None, reported_total))
+            ) or (pages is not None and page > pages and rows):
+                raise ObservationSettling(
+                    "Cloudflare namespace inventory totals changed",
+                    OwnershipResource.DURABLE_OBJECT_NAMESPACE, ObservationCheck.NAMESPACE_PAGINATION,
+                )
             total = reported_total
             more = (pages is not None and page < pages) or (total is not None and len(seen) < total)
             if not more and (pages is not None or total is not None or len(rows) < 100):
                 if total is None or total == len(seen):
                     return owned
-                break
+                raise ObservationSettling(
+                    "Cloudflare namespace inventory ended before its advertised total",
+                    OwnershipResource.DURABLE_OBJECT_NAMESPACE, ObservationCheck.NAMESPACE_PAGINATION,
+                )
             if not rows:
-                break
-        raise ObservationPending("Cloudflare namespace inventory is incomplete")
+                raise ObservationSettling(
+                    "Cloudflare namespace inventory ended before its advertised total",
+                    OwnershipResource.DURABLE_OBJECT_NAMESPACE, ObservationCheck.NAMESPACE_PAGINATION,
+                )
+        raise ObservationPending(
+            "Cloudflare namespace inventory is incomplete",
+            OwnershipResource.DURABLE_OBJECT_NAMESPACE, ObservationCheck.NAMESPACE_LIMIT,
+        )
 
     async def verify_absent(
         self, *, api_token: SecretStr, target: ResourceTarget, namespace_ids: frozenset[str] = frozenset(),
@@ -318,7 +460,10 @@ class WorkersRestCleanup:
         if await self._request(
             api_token, target.account_id, "GET", f"{path}/settings", allow_missing=True,
         ) is not None:
-            raise OwnershipConflict("Cloudflare Worker reappeared during absence verification")
+            raise OwnershipConflict(
+                "Cloudflare Worker reappeared during absence verification",
+                OwnershipResource.WORKER_SCRIPT, OwnershipCheck.REAPPEARED,
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -346,14 +491,20 @@ class WorkersRestProvisioner(WorkersRestCleanup):
 
     def _worker_role(self, intent: ResourceIntent) -> WorkerRole:
         if intent.artifact_digest != self._deployment.release.digest:
-            raise OwnershipConflict("Cloudflare upload intent is bound to a different release")
+            raise OwnershipConflict(
+                "Cloudflare upload intent is bound to a different release",
+                OwnershipResource.WORKERS_RELEASE, OwnershipCheck.RELEASE_INTENT,
+            )
         if intent.target.name == self._deployment.launcher_name:
             return "launcher"
         if intent.target.name == self._deployment.capacity_name:
             return "capacity"
         if intent.target.name == self._deployment.gateway_name:
             return "gateway"
-        raise OwnershipConflict("Cloudflare upload intent has an unknown deployment target")
+        raise OwnershipConflict(
+            "Cloudflare upload intent has an unknown deployment target",
+            OwnershipResource.WORKER_SCRIPT, OwnershipCheck.TARGET_BINDING,
+        )
 
     def _render_upload(
         self, role: WorkerRole, intent: ResourceIntent, bearer: SecretStr | None,
@@ -362,7 +513,10 @@ class WorkersRestProvisioner(WorkersRestCleanup):
         manifest = deployment.release.manifest
         artifact = manifest.workers[role]
         if (role == "capacity") != (bearer is not None):
-            raise OwnershipConflict("Only the capacity Worker must receive the scope bearer")
+            raise OwnershipConflict(
+                "Only the capacity Worker must receive the scope bearer",
+                OwnershipResource.WORKERS_SCOPE, OwnershipCheck.SCOPE_BEARER,
+            )
         values = {
             "worker_ingress_origin": deployment.worker_ingress_origin,
             "launcher_cap": str(deployment.policy.launcher_cap),
@@ -372,17 +526,26 @@ class WorkersRestProvisioner(WorkersRestCleanup):
             "worker_version": deployment.release.digest,
         }
         if deployment.policy.slots_per_launcher > manifest.max_slots_per_launcher:
-            raise OwnershipConflict("Cloudflare release supports fewer slots than this policy")
+            raise OwnershipConflict(
+                "Cloudflare release supports fewer slots than this policy",
+                OwnershipResource.WORKERS_RELEASE, OwnershipCheck.SLOT_POLICY,
+            )
         bindings = []
         for binding in artifact.bindings:
             value = binding.model_dump(exclude_none=True, exclude={"source", "script"})
             if binding.type == "secret_text":
                 if role != "capacity" or binding.name != "CAPACITY_TOKEN" or binding.source != "scope_bearer" or bearer is None:
-                    raise OwnershipConflict("Cloudflare release declares an invalid secret binding")
+                    raise OwnershipConflict(
+                        "Cloudflare release declares an invalid secret binding",
+                        OwnershipResource.WORKERS_RELEASE, OwnershipCheck.SECRET_BINDING,
+                    )
                 value["text"] = bearer.get_secret_value()
             elif binding.source is not None:
                 if binding.type != "plain_text" or binding.source not in values:
-                    raise OwnershipConflict("Cloudflare release declares an invalid dynamic binding")
+                    raise OwnershipConflict(
+                        "Cloudflare release declares an invalid dynamic binding",
+                        OwnershipResource.WORKERS_RELEASE, OwnershipCheck.DYNAMIC_BINDING,
+                    )
                 value["text"] = values[binding.source]
             if binding.script is not None:
                 if (role, binding.type, binding.script) == ("capacity", "durable_object_namespace", "launcher"):
@@ -390,11 +553,17 @@ class WorkersRestProvisioner(WorkersRestCleanup):
                 elif (role, binding.type, binding.script) == ("launcher", "service", "gateway"):
                     value.update(service=deployment.gateway_name, environment="production")
                 else:
-                    raise OwnershipConflict("Cloudflare release declares an invalid cross-script binding")
+                    raise OwnershipConflict(
+                        "Cloudflare release declares an invalid cross-script binding",
+                        OwnershipResource.WORKERS_RELEASE, OwnershipCheck.CROSS_SCRIPT_BINDING,
+                    )
             bindings.append(value)
         bindings.append({"name": OWNER_BINDING, "type": "plain_text", "text": worker_owner_value(intent)})
         if len({row["name"] for row in bindings}) != len(bindings):
-            raise OwnershipConflict("Cloudflare release contains duplicate bindings")
+            raise OwnershipConflict(
+                "Cloudflare release contains duplicate bindings",
+                OwnershipResource.WORKERS_RELEASE, OwnershipCheck.DUPLICATE_BINDING,
+            )
         metadata = {
             "main_module": artifact.main_module,
             "compatibility_date": manifest.compatibility_date.isoformat(),
@@ -423,7 +592,10 @@ class WorkersRestProvisioner(WorkersRestCleanup):
         # Check immediately before the upload. REST has no conditional create,
         # so the caller must retain its effect receipt if confirmation is lost.
         if await observe_owned(self, api_token=api_token, intent=intent, recorded=None) is not None:
-            raise OwnershipConflict("Cloudflare Worker already exists at the intended target")
+            raise OwnershipConflict(
+                "Cloudflare Worker already exists at the intended target",
+                OwnershipResource.WORKER_SCRIPT, OwnershipCheck.TARGET_OCCUPIED,
+            )
         try:
             async with asyncio.timeout(30):
                 payload = await self._request(api_token, intent.target.account_id, "PUT", path, files=files)
@@ -431,10 +603,10 @@ class WorkersRestProvisioner(WorkersRestCleanup):
             raise CloudflareRestUnavailable("Cloudflare upload deadline elapsed") from None
         worker = payload["result"] if payload is not None else None
         if not isinstance(worker, dict) or worker.get("id") != intent.target.name:
-            raise ObservationPending("Cloudflare upload returned an unconfirmed script identity")
-        observed = await observe_owned(self, api_token=api_token, intent=intent, recorded=None)
-        if observed is None:
-            raise ObservationPending("Cloudflare upload could not be observed")
+            raise ObservationPending(
+                "Cloudflare upload returned an unconfirmed script identity",
+                OwnershipResource.WORKER_SCRIPT, ObservationCheck.SCRIPT_UPLOAD_RESULT,
+            )
 
     async def configure_endpoint(
         self, *, api_token: SecretStr, expected: ResourceObservation,
@@ -443,24 +615,46 @@ class WorkersRestProvisioner(WorkersRestCleanup):
         intent = expected.intent
         role = self._worker_role(intent)
         path = _script_path(intent.target)
-        if await observe_owned(self, api_token=api_token, intent=intent, recorded=expected) is None:
-            raise ObservationPending("Cloudflare uploaded Worker has disappeared")
+        async def require_script() -> None:
+            if await observe_owned(self, api_token=api_token, intent=intent, recorded=expected) is None:
+                raise ObservationSettling(
+                    "Cloudflare uploaded Worker has disappeared during readback",
+                    OwnershipResource.WORKER_SCRIPT, ObservationCheck.SCRIPT_CHANGED_DURING_READBACK,
+                )
+
+        await require_script()
         namespaces: dict[str, str] = {}
         for row in await self._script_namespaces(api_token, intent.target):
             if row.get("preview") is True:
                 continue
             class_name = row.get("class")
-            if not isinstance(class_name, str) or class_name in namespaces:
-                raise OwnershipConflict("Cloudflare Worker has ambiguous namespace bindings")
+            if not isinstance(class_name, str):
+                raise OwnershipConflict(
+                    "Cloudflare Worker namespace has no class",
+                    OwnershipResource.DURABLE_OBJECT_NAMESPACE, OwnershipCheck.NAMESPACE_CLASS,
+                )
+            if class_name in namespaces:
+                raise OwnershipConflict(
+                    "Cloudflare Worker has ambiguous namespace bindings",
+                    OwnershipResource.DURABLE_OBJECT_NAMESPACE, OwnershipCheck.NAMESPACE_BINDINGS,
+                )
             namespaces[class_name] = row["id"]
-        if namespaces.keys() != self._deployment.release.manifest.workers[role].exports.keys():
-            raise ObservationPending("Cloudflare namespace exports differ from the packaged release")
+        exports = self._deployment.release.manifest.workers[role].exports.keys()
+        if namespaces.keys() - exports:
+            raise ObservationPending(
+                "Cloudflare namespace inventory includes unexpected exports",
+                OwnershipResource.DURABLE_OBJECT_NAMESPACE, ObservationCheck.NAMESPACE_EXPORTS_UNEXPECTED,
+            )
+        if exports - namespaces.keys():
+            raise ObservationSettling(
+                "Cloudflare has not listed all packaged namespace exports",
+                OwnershipResource.DURABLE_OBJECT_NAMESPACE, ObservationCheck.NAMESPACE_EXPORTS_PENDING,
+            )
         settings = {"enabled": role == "capacity", "previews_enabled": False}
         response = await self._request(api_token, intent.target.account_id, "GET", f"{path}/subdomain", allow_missing=True)
         readback = response["result"] if response is not None else None
         if not isinstance(readback, dict) or any(readback.get(key) is not value for key, value in settings.items()):
-            if await observe_owned(self, api_token=api_token, intent=intent, recorded=expected) is None:
-                raise ObservationPending("Cloudflare uploaded Worker has disappeared")
+            await require_script()
             # The update returns both authoritative settings. A separate GET
             # can still reflect the previous endpoint while it propagates.
             response = await self._request(
@@ -468,9 +662,11 @@ class WorkersRestProvisioner(WorkersRestCleanup):
             )
             confirmed = response["result"] if response is not None else None
             if not isinstance(confirmed, dict) or any(confirmed.get(key) is not value for key, value in settings.items()):
-                raise ObservationPending("Cloudflare Worker endpoint update did not confirm the requested settings")
-        if await observe_owned(self, api_token=api_token, intent=intent, recorded=expected) is None:
-            raise ObservationPending("Cloudflare uploaded Worker has disappeared")
+                raise ObservationPending(
+                    "Cloudflare Worker endpoint update did not confirm the requested settings",
+                    OwnershipResource.WORKERS_ENDPOINT, ObservationCheck.ENDPOINT_UPDATE,
+                )
+        await require_script()
         if role != "capacity":
             return ConfiguredWorkersScript(None, namespaces)
         response = await self._request(
@@ -479,5 +675,8 @@ class WorkersRestProvisioner(WorkersRestCleanup):
         account = response["result"] if response is not None else None
         subdomain = account.get("subdomain") if isinstance(account, dict) else None
         if not isinstance(subdomain, str) or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", subdomain):
-            raise ObservationPending("Cloudflare account's Workers subdomain could not be verified")
+            raise ObservationPending(
+                "Cloudflare account's Workers subdomain could not be verified",
+                OwnershipResource.WORKERS_ENDPOINT, ObservationCheck.ACCOUNT_SUBDOMAIN,
+            )
         return ConfiguredWorkersScript(f"https://{intent.target.name}.{subdomain}.workers.dev", namespaces)

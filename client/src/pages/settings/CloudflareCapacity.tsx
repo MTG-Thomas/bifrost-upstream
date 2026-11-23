@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 
@@ -26,17 +26,23 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { CloudflareWorkflowApprovals } from "@/components/workflows/CloudflareWorkflowApprovals";
 import { ApiError, getErrorMessage } from "@/lib/api-error";
 import { GLOBAL_TARGET } from "@/lib/authorization";
+import type { components } from "@/lib/v1";
 import { useAuthorization } from "@/services/authorization";
 import {
+	activateCloudflareCapacity,
 	configureCloudflareCapacity,
 	getCloudflareCapacity,
+	preflightCloudflareCapacity,
 	rotateCloudflareAccountToken,
 	startCloudflareAction,
 	type CloudflareAction,
 	type CloudflareCapacityStatus,
-	type CloudflareConfiguration,
+	type CloudflareJobAccepted,
+	type CloudflarePreflight,
+	type CloudflarePreflightRequest,
 } from "@/services/cloudflareCapacity";
 import { observePlatformJob, type PlatformJob } from "@/services/platformJobs";
 import { webSocketService } from "@/services/websocket";
@@ -49,8 +55,18 @@ const terminal = new Set([
 ]);
 
 const statusKey = ["cloudflare-capacity"];
+const utcDate = new Intl.DateTimeFormat(undefined, {
+	dateStyle: "medium", timeStyle: "medium", timeZone: "UTC",
+});
+
+function timestamp(value?: string | null) {
+	return value ? `${utcDate.format(new Date(value))} UTC` : "Unobserved";
+}
+
+function amount(value?: string | number | null) {
+	return value == null ? "Unavailable" : `${value} USD`;
+}
 const fieldNames: Record<string, string> = {
-	worker_ingress_origin: "origin",
 	slots_per_launcher: "slots",
 	slots_per_tenant: "tenant_slots",
 	max_lifetime_seconds: "lifetime",
@@ -62,6 +78,41 @@ const fieldNames: Record<string, string> = {
 };
 
 type FieldErrors = Record<string, string>;
+type FormFailure = {
+	message: string;
+	fields: FieldErrors;
+	labels: Record<string, string>;
+	messages?: string[];
+	cause?: unknown;
+};
+
+function formIssues(form: HTMLFormElement) {
+	const labels: Record<string, string> = {};
+	const invalid: FieldErrors = {};
+	for (const field of form.elements) {
+		if (!(field instanceof HTMLInputElement || field instanceof HTMLSelectElement) || !field.name) continue;
+		labels[field.name] = field.labels?.[0]?.textContent?.trim() || field.name;
+		if (!field.validity.valid) invalid[field.name] = field.validationMessage;
+	}
+	return { labels, invalid };
+}
+
+function useCapacityFormErrors() {
+	const [failure, setFailure] = useState<FormFailure>();
+	const formRef = useRef<HTMLFormElement>(null);
+	const fieldProps = (name: string, help?: string) => {
+		const error = failure?.fields[name];
+		return {
+			"aria-invalid": error ? true : undefined,
+			"aria-describedby": [help, error && `cf-error-${name}`].filter(Boolean).join(" ") || undefined,
+		};
+	};
+	const fieldError = (name: string) => {
+		const error = failure?.fields[name];
+		return error && <p className="text-sm text-destructive" id={`cf-error-${name}`}>{error}</p>;
+	};
+	return { failure, setFailure, formRef, fieldProps, fieldError };
+}
 
 function validationMessages(error: unknown, form: HTMLFormElement) {
 	const fields: FieldErrors = {};
@@ -113,6 +164,42 @@ function ErrorDetails({ error }: { error: unknown }) {
 	);
 }
 
+function CapacityFormError({ failure, formRef, onRefresh, refreshLabel }: {
+	failure: FormFailure;
+	formRef: RefObject<HTMLFormElement | null>;
+	onRefresh: () => void;
+	refreshLabel: string;
+}) {
+	const summaryRef = useRef<HTMLDivElement>(null);
+	useEffect(() => { summaryRef.current?.focus(); }, [failure]);
+	return (
+		<div ref={summaryRef} tabIndex={-1} role="region" aria-labelledby="cf-settings-error" className="space-y-2 rounded-md border border-destructive p-3">
+			<h3 id="cf-settings-error" className="font-semibold">Cloudflare Settings Error</h3>
+			<p>{failure.message}</p>
+			<ErrorDetails error={failure.cause} />
+			{(Object.keys(failure.fields).length > 0 || Boolean(failure.messages?.length)) && (
+				<ul className="list-disc pl-5">
+					{[...new Set(failure.messages)].map((message) => <li key={message}>{message}</li>)}
+					{Object.entries(failure.fields).map(([name, message]) => (
+						<li key={name}>
+							<button className="text-left underline" type="button" onClick={() => {
+								const field = formRef.current?.elements.namedItem(name);
+								if (!(field instanceof HTMLElement)) return;
+								const details = field.closest("details");
+								if (details) details.open = true;
+								field.focus();
+							}}>{failure.labels[name]}: {message}</button>
+						</li>
+					))}
+				</ul>
+			)}
+			{failure.cause instanceof ApiError && failure.cause.statusCode === 409 && (
+				<Button type="button" variant="outline" onClick={onRefresh}>{refreshLabel}</Button>
+			)}
+		</div>
+	);
+}
+
 function BoundedList({ as: List = "ul", children, label, className }: {
 	as?: "ul" | "ol";
 	children: ReactNode;
@@ -142,72 +229,11 @@ function BoundedList({ as: List = "ul", children, label, className }: {
 	);
 }
 
-function CloudflareConfigurationForm({ status, onSaved, onCancel, onRefresh, busy }: {
-	status: CloudflareCapacityStatus;
-	onSaved: (status: CloudflareCapacityStatus) => void;
-	onCancel: () => void;
-	onRefresh: () => void;
-	busy: boolean;
-}) {
-	const installation = status.installation;
-	const settings = installation?.policy;
-	const [saving, setSaving] = useState(false);
-	const [failure, setFailure] = useState<{
-		message: string;
-		fields: FieldErrors;
-		labels: Record<string, string>;
-		messages?: string[];
-		cause?: unknown;
-	}>();
-	const formRef = useRef<HTMLFormElement>(null);
-	const summaryRef = useRef<HTMLDivElement>(null);
+type CapacityPolicy = components["schemas"]["CloudflareCapacityPolicy-Input"];
 
-	useEffect(() => {
-		formRef.current?.querySelector("input")?.focus();
-	}, []);
-
-	useEffect(() => {
-		if (failure) summaryRef.current?.focus();
-	}, [failure]);
-
-	function fieldProps(name: string, help?: string) {
-		const error = failure?.fields[name];
+function readPolicy(fields: FormData): CapacityPolicy {
+	const sharedCap = String(fields.get("shared_cap") ?? "");
 		return {
-			"aria-invalid": error ? true : undefined,
-			"aria-describedby": [help, error && `cf-error-${name}`].filter(Boolean).join(" ") || undefined,
-		};
-	}
-
-	function fieldError(name: string) {
-		const error = failure?.fields[name];
-		return error && <p className="text-sm text-destructive" id={`cf-error-${name}`}>{error}</p>;
-	}
-	const [managedTunnel, setManagedTunnel] = useState(false);
-
-	async function save(event: FormEvent<HTMLFormElement>) {
-		event.preventDefault();
-		if (saving || busy) return;
-		const form = event.currentTarget;
-		const fields = new FormData(form);
-		const labels: Record<string, string> = {};
-		const invalid: FieldErrors = {};
-		for (const field of form.elements) {
-			if (!(field instanceof HTMLInputElement || field instanceof HTMLSelectElement)) continue;
-			labels[field.name] = field.labels?.[0]?.textContent?.trim() || field.name;
-			if (!field.validity.valid) {
-				invalid[field.name] = field.name === "consent"
-					? "Accept the Cloudflare terms to connect."
-					: field.validity.patternMismatch
-						? "Enter a 32-character lowercase hexadecimal ID."
-						: field.validationMessage;
-			}
-		}
-		if (Object.keys(invalid).length) {
-			setFailure({ message: "Review the highlighted fields.", fields: invalid, labels });
-			return;
-		}
-		const sharedCap = String(fields.get("shared_cap") ?? "");
-		const policy = {
 			version: 1 as const,
 			workers: {
 				launcher_cap: Number(fields.get("launcher_cap")),
@@ -222,112 +248,14 @@ function CloudflareConfigurationForm({ status, onSaved, onCancel, onRefresh, bus
 			monthly_limit_usd: String(fields.get("monthly_limit")),
 			shared_managed_worker_cap: sharedCap ? Number(sharedCap) : null,
 		};
-		const request: CloudflareConfiguration = installation ? {
-			action: "policy",
-			installation_id: installation.installation_id,
-			expected_revision: installation.desired_revision,
-			policy,
-		} : {
-			action: "connect",
-			account_id: String(fields.get("account_id")),
-			worker_ingress_origin: String(fields.get("origin")),
-			reachability_mode: managedTunnel ? "managed_tunnel" : "existing_https_endpoint",
-			...(managedTunnel ? { zone_id: String(fields.get("zone_id")) } : {}),
-			api_token: String(fields.get("api_token")),
-			consent: true,
-			consent_version: status.consent_text_version,
-			policy,
-		};
-		const secretInput = form.elements.namedItem("api_token");
-		if (secretInput instanceof HTMLInputElement) secretInput.value = "";
-		setSaving(true);
-		setFailure(undefined);
-		try {
-			onSaved(await configureCloudflareCapacity(request));
-		} catch (cause) {
-			const message = getErrorMessage(cause, "Could not save Cloudflare capacity.");
-			const { fields: rejected, messages } = validationMessages(cause, form);
-			if (message.startsWith("The estimated fleet usage is USD ")) {
-				rejected.monthly_limit = `${message}. The submitted limit was ${policy.monthly_limit_usd} USD/month. Raise the limit or reduce the fleet size or lifetime.`;
-			}
-			const summary = Object.keys(rejected).length ? "Review the highlighted fields."
-				: messages.length ? "Review the settings below." : message;
-			setFailure({ message: summary, fields: rejected, labels, messages, cause });
-		} finally {
-			setSaving(false);
-		}
-	}
+}
 
+function PolicyFields({ settings, fieldProps = () => ({}), fieldError = () => null }: {
+	settings: CapacityPolicy;
+	fieldProps?: (name: string, help?: string) => Record<string, unknown>;
+	fieldError?: (name: string) => ReactNode;
+}) {
 	return (
-		<form ref={formRef} className="space-y-4" noValidate onSubmit={save}>
-			{failure && (
-				<div ref={summaryRef} tabIndex={-1} role="region" aria-labelledby="cf-settings-error" className="space-y-2 rounded-md border border-destructive p-3">
-					<h3 id="cf-settings-error" className="font-semibold">Cloudflare Settings Error</h3>
-					<p>{failure.message}</p>
-					<ErrorDetails error={failure.cause} />
-					{(Object.keys(failure.fields).length > 0 || Boolean(failure.messages?.length)) && (
-						<ul className="list-disc pl-5">
-							{[...new Set(failure.messages)].map((message) => <li key={message}>{message}</li>)}
-							{Object.entries(failure.fields).map(([name, message]) => (
-								<li key={name}>
-									<button className="text-left underline" type="button" onClick={() => {
-										const field = formRef.current?.elements.namedItem(name);
-										if (field instanceof HTMLElement) field.focus();
-									}}>{failure.labels[name]}: {message}</button>
-								</li>
-							))}
-						</ul>
-					)}
-					{failure.cause instanceof ApiError && failure.cause.statusCode === 409 && (
-						<Button type="button" variant="outline" onClick={onRefresh}>Refresh and Review Settings</Button>
-					)}
-				</div>
-			)}
-			{!installation && (
-				<fieldset className="min-w-0 space-y-3">
-					<legend className="pb-2 font-semibold">Connection</legend>
-					<Label htmlFor="cf-account-id">Cloudflare Account ID</Label>
-					<Input id="cf-account-id" name="account_id" pattern="[a-f0-9]{32}" required {...fieldProps("account_id")} />{fieldError("account_id")}
-					{status.managed_tunnel_available && (
-						<div className="grid gap-2">
-							<Label htmlFor="cf-reachability-mode">Reachability</Label>
-							<select id="cf-reachability-mode" name="reachability_mode" {...fieldProps("reachability_mode")} className="rounded-md border bg-background p-2"
-								value={managedTunnel ? "managed_tunnel" : "existing_https_endpoint"}
-								onChange={(event) => setManagedTunnel(event.target.value === "managed_tunnel")}
-							>
-								<option value="existing_https_endpoint">Existing HTTPS Endpoint</option>
-								<option value="managed_tunnel">Managed Tunnel</option>
-							</select>
-							{fieldError("reachability_mode")}
-						</div>
-					)}
-					{managedTunnel && (
-						<>
-							<Label htmlFor="cf-zone-id">Cloudflare DNS Zone ID</Label>
-							<Input id="cf-zone-id" name="zone_id" pattern="[a-f0-9]{32}" required {...fieldProps("zone_id", "cf-tunnel-help")} />{fieldError("zone_id")}
-							<p id="cf-tunnel-help" className="text-sm text-muted-foreground">Grant Cloudflare Tunnel Write on the account and Zone Read and DNS Write on this zone.</p>
-						</>
-					)}
-					<Label htmlFor="cf-ingress-origin">{managedTunnel ? "Dedicated Tunnel HTTPS Origin" : "Existing HTTPS Endpoint"}</Label>
-					<Input id="cf-ingress-origin" name="origin" type="url" required {...fieldProps("origin")} />{fieldError("origin")}
-					<Label htmlFor="cf-connect-token">Cloudflare API Token</Label>
-					<Input id="cf-connect-token" name="api_token" type="password" autoComplete="new-password" required {...fieldProps("api_token", managedTunnel ? "cf-tunnel-help" : undefined)} />{fieldError("api_token")}
-					<p id="cf-consent-help" className="text-sm text-muted-foreground">{status.consent_text}</p>
-					<label className="flex items-center gap-2 text-sm">
-						<input type="checkbox" name="consent" required {...fieldProps("consent", "cf-consent-help")} />
-						Accept Cloudflare Terms
-					</label>
-					{fieldError("consent")}
-				</fieldset>
-			)}
-			<fieldset className="min-w-0">
-				<legend className="pb-2 font-semibold">Spending</legend>
-				<div className="space-y-1">
-					<Label htmlFor="cf-monthly">Monthly Estimated Usage Limit</Label>
-					<Input id="cf-monthly" name="monthly_limit" type="number" min="0.01" step="0.01" defaultValue={settings?.monthly_limit_usd ?? "30.00"} required {...fieldProps("monthly_limit", "cf-monthly-unit")} />{fieldError("monthly_limit")}
-					<p id="cf-monthly-unit" className="text-sm text-muted-foreground">USD/month</p>
-				</div>
-			</fieldset>
 			<fieldset className="min-w-0 space-y-3">
 				<legend className="pb-2 font-semibold">Advanced Policy</legend>
 				<div className="grid gap-3 sm:grid-cols-2">
@@ -346,11 +274,322 @@ function CloudflareConfigurationForm({ status, onSaved, onCancel, onRefresh, bus
 				</label>
 				{fieldError("workflows")}
 			</fieldset>
+	);
+}
+
+function CloudflareSetupForm({ status, onAccepted, onCancel, onRefresh }: {
+	status: CloudflareCapacityStatus;
+	onAccepted: (accepted: CloudflareJobAccepted) => void;
+	onCancel: () => void;
+	onRefresh: () => void;
+}) {
+	const [preflight, setPreflight] = useState<CloudflarePreflight>();
+	const [stale, setStale] = useState(false);
+	const [policyEdited, setPolicyEdited] = useState(false);
+	const [limit, setLimit] = useState(String(status.suggested_policy?.monthly_limit_usd ?? ""));
+	const [consent, setConsent] = useState(false);
+	const [limitConfirmed, setLimitConfirmed] = useState(false);
+	const [saving, setSaving] = useState(false);
+	const { failure, setFailure, formRef, fieldProps, fieldError } = useCapacityFormErrors();
+	const submitLock = useRef(false);
+	const tokenRef = useRef<HTMLInputElement>(null);
+	const mode = preflight?.reachability_mode;
+	const [reachability, setReachability] = useState<CloudflarePreflightRequest["reachability_mode"]>();
+	const selectedMode = reachability ?? mode;
+	const receipt = stale ? undefined : preflight?.preflight_receipt;
+	const preview = preflight?.preview;
+	const showForecast = preview?.estimated_usage_min_usd != null && preview.estimated_usage_max_usd != null
+		&& !(policyEdited && stale);
+	const showZones = selectedMode === "managed_tunnel" && preflight?.connector_ready && preflight.workers_paid === "verified";
+	useEffect(() => { tokenRef.current?.focus(); }, []);
+
+	async function submit(event: FormEvent<HTMLFormElement>) {
+		event.preventDefault();
+		if (submitLock.current) return;
+		const form = event.currentTarget;
+		const { labels, invalid } = formIssues(form);
+		if (Object.keys(invalid).length) {
+			setFailure({ message: "Review the highlighted fields.", fields: invalid, labels });
+			return;
+		}
+		const fields = new FormData(form);
+		const value = (name: string) => String(fields.get(name) ?? "") || undefined;
+		const api_token = value("api_token");
+		submitLock.current = true;
+		setSaving(true);
+		setFailure(undefined);
+		try {
+			if (receipt && preflight) {
+				if (!consent || !limitConfirmed || Number(limit) < Number(preview?.fleet_envelope_usd)) return;
+				const accepted = await activateCloudflareCapacity({
+					api_token, preflight_receipt: receipt, consent: true,
+					consent_version: preflight.consent_version, monthly_limit_usd: limit,
+				});
+				form.reset();
+				onAccepted(accepted);
+			} else {
+				const next = await preflightCloudflareCapacity({
+					api_token,
+					account_id: value("account_id") ?? preflight?.account_id ?? undefined,
+					zone_id: selectedMode === "managed_tunnel" ? value("zone_id") ?? preflight?.zone_id ?? undefined : undefined,
+					reachability_mode: selectedMode,
+					worker_ingress_origin: value("worker_ingress_origin"),
+					policy: policyEdited ? readPolicy(fields) : undefined,
+				});
+				setPreflight(next);
+				setStale(false);
+				setConsent(false);
+				setLimitConfirmed(false);
+			}
+		} catch (cause) {
+			const { fields, messages } = validationMessages(cause, form);
+			setFailure({
+				message: Object.keys(fields).length ? "Review the highlighted fields."
+					: getErrorMessage(cause, "Could not complete Cloudflare setup."),
+				fields, labels, messages, cause,
+			});
+			if (cause instanceof ApiError && cause.statusCode === 409) {
+				invalidate();
+				onRefresh();
+			}
+		} finally {
+			setSaving(false);
+			submitLock.current = false;
+		}
+	}
+
+	function invalidate() {
+		setStale(true);
+		setConsent(false);
+		setLimitConfirmed(false);
+	}
+
+	return (
+		<form ref={formRef} aria-label="Cloudflare Setup" className="space-y-4" noValidate onSubmit={submit}>
+			{failure && <CapacityFormError failure={failure} formRef={formRef} onRefresh={() => {
+				if (status.installation) onCancel();
+				else onRefresh();
+			}} refreshLabel="Refresh and Review" />}
+			<fieldset disabled={saving} className="min-w-0 space-y-4">
+				<div className="space-y-1">
+					<Label htmlFor="cf-connect-token">Cloudflare API Token</Label>
+					<Input ref={tokenRef} id="cf-connect-token" name="api_token" type="password" autoComplete="new-password" required minLength={16} maxLength={512} {...fieldProps("api_token")}
+						onChange={() => {
+							setPreflight(undefined);
+							setReachability(undefined);
+							setPolicyEdited(false);
+							invalidate();
+						}} />
+					{fieldError("api_token")}
+				</div>
+				{preflight && (
+					<div className="space-y-3">
+						<dl className="grid gap-2 text-sm sm:grid-cols-2">
+							<div><dt>Primary Capacity</dt><dd>{{ static: "Local Workers", job: "Kubernetes Jobs", external: "External Worker Provider", unknown: "Unconfirmed" }[preflight.primary]}</dd></div>
+							<div><dt>Managed Tunnel Channel</dt><dd>{preflight.connector_ready ? (preflight.connector_channel === "compose" ? "Compose Ready" : "Kustomize Ready") : "Unavailable"}</dd></div>
+							<div><dt>Workers Paid</dt><dd>{preflight.workers_paid ? {
+								verified: "Verified", denied: "Denied", unverified: "Unverified",
+							}[preflight.workers_paid] : "Not Checked"}</dd></div>
+							<div><dt>Placement</dt><dd>Unrestricted for Approved Workflows</dd></div>
+						</dl>
+						{preflight.workers_paid === "denied" && <p>Grant Account Settings Read for the selected account and check it again.</p>}
+						{preflight.workers_paid === "unverified" && <p>Verify Workers Paid and active Workers and Containers entitlements in Cloudflare.</p>}
+						<div className="space-y-1">
+							{preflight.accounts === null ? (
+								<><Label htmlFor="cf-account-id">Cloudflare Account ID</Label><Input id="cf-account-id" name="account_id" required pattern="[a-f0-9]{32}" defaultValue={preflight.account_id ?? ""} {...fieldProps("account_id")} onChange={invalidate} /></>
+							) : (preflight.accounts?.length ?? 0) > 1 ? (
+								<><Label htmlFor="cf-account-id">Cloudflare Account</Label>
+									<select id="cf-account-id" name="account_id" className="block max-w-full rounded-md border bg-background p-2" defaultValue={preflight.account_id ?? ""} required {...fieldProps("account_id")} onChange={invalidate}>
+										<option value="">Select an Account</option>
+										{preflight.accounts?.map(({ id, name }) => <option key={id} value={id}>{name}</option>)}
+									</select></>
+							) : preflight.account_id ? (
+								<p>Cloudflare Account: {preflight.accounts?.find(({ id }) => id === preflight.account_id)?.name ?? preflight.account_id}</p>
+							) : <p>No Cloudflare accounts are available to this token.</p>}
+							{fieldError("account_id")}
+						</div>
+						<div className="space-y-1">
+							<Label htmlFor="cf-reachability-mode">Reachability</Label>
+							<select id="cf-reachability-mode" name="reachability_mode" className="block max-w-full rounded-md border bg-background p-2" {...fieldProps("reachability_mode")}
+								value={selectedMode ?? undefined} onChange={(event) => {
+									setReachability(event.target.value === "managed_tunnel" ? "managed_tunnel" : "existing_https_endpoint");
+									invalidate();
+								}}>
+								<option value="existing_https_endpoint">Existing HTTPS Endpoint</option>
+								{preflight.connector_ready && <option value="managed_tunnel">Managed Tunnel</option>}
+							</select>
+							{fieldError("reachability_mode")}
+							{!preflight.connector_ready && <p className="text-sm text-muted-foreground">Managed Tunnel requires the Compose connector or the Kustomize component.</p>}
+						</div>
+						{showZones && (
+							<div className="space-y-1">
+								{preflight.zones == null ? (
+									<><Label htmlFor="cf-zone-id">Cloudflare DNS Zone ID</Label><Input id="cf-zone-id" name="zone_id" required pattern="[a-f0-9]{32}" defaultValue={preflight.zone_id ?? ""} {...fieldProps("zone_id")} onChange={invalidate} /></>
+								) : (preflight.zones?.length ?? 0) > 1 ? (
+									<><Label htmlFor="cf-zone-id">Cloudflare DNS Zone</Label>
+										<select id="cf-zone-id" name="zone_id" className="block max-w-full rounded-md border bg-background p-2" defaultValue={preflight.zone_id ?? ""} required {...fieldProps("zone_id")} onChange={invalidate}>
+											<option value="">Select a DNS Zone</option>
+											{preflight.zones?.map(({ id, name }) => <option key={id} value={id}>{name}</option>)}
+										</select></>
+								) : preflight.zone_name ? <p>Cloudflare DNS Zone: {preflight.zone_name}</p> : <p>No active zones are available to this token.</p>}
+								{fieldError("zone_id")}
+								{preflight.zones == null && preflight.zone_name && <p>Cloudflare DNS Zone: {preflight.zone_name}</p>}
+								{mode === "managed_tunnel" && preflight.worker_ingress_origin && <p className="break-all">Dedicated Hostname: {preflight.worker_ingress_origin}</p>}
+								{preflight.hostname_collision && <p role="alert">The proposed hostname is already in use or could not be verified as unused. Check for a leftover DNS record from a previous installation, choose another zone, or use an existing HTTPS endpoint.</p>}
+							</div>
+						)}
+						{selectedMode === "existing_https_endpoint" && (
+							<div className="space-y-1">
+								<Label htmlFor="cf-ingress-origin">Existing HTTPS Endpoint</Label>
+								<Input id="cf-ingress-origin" name="worker_ingress_origin" type="url" required defaultValue={mode === selectedMode ? preflight.worker_ingress_origin ?? "" : ""}
+									{...fieldProps("worker_ingress_origin")} onChange={invalidate} />
+								{fieldError("worker_ingress_origin")}
+							</div>
+						)}
+					</div>
+				)}
+				{preview && (
+					<div className="space-y-2">
+						<h3 className="font-semibold">Workers Capacity Preview</h3>
+						<p>{preview.policy.workers.launcher_cap} launchers × {preview.policy.workers.slots_per_launcher} slots, {preview.policy.workers.installation_slots} installation slots, and a {preview.policy.workers.max_lifetime_seconds.toLocaleString()}-second lifetime.</p>
+						<dl className="grid gap-2 text-sm sm:grid-cols-2">
+							<div><dt>Estimated Overflow Usage</dt><dd>{showForecast
+								? `About $${Number(preview.estimated_usage_min_usd)}–$${Number(preview.estimated_usage_max_usd)}/month`
+								: "Forecast Unavailable for Edited Policy"}</dd></div>
+							<div><dt>Workers Paid Subscription</dt><dd>{amount(preview.workers_paid_subscription_usd)}/month, billed separately</dd></div>
+							<div><dt>Minimum Limit for This Fleet</dt><dd>{amount(preview.fleet_envelope_usd)}/month</dd></div>
+						</dl>
+						{showForecast && <p className="text-sm text-muted-foreground">The moderate forecast assumes 40 workflows per day in bursts, 35% cold starts, and about 0.077% Workers duty with nine slots.</p>}
+						<p className="text-sm text-muted-foreground">At the usage limit, new work stays on the primary. Overflow can pause earlier if usage or the next reservation cannot be verified.</p>
+					</div>
+				)}
+				{preflight && (
+					<div className="space-y-2">
+						<Label htmlFor="cf-activation-limit">Monthly Estimated Usage Limit</Label>
+						<Input id="cf-activation-limit" name="monthly_limit" type="number" required min={receipt ? Number(preview?.fleet_envelope_usd) : 0.01}
+							step="0.01" value={limit} {...fieldProps("monthly_limit")} onChange={(event) => { setLimit(event.target.value); setLimitConfirmed(false); }} />
+						{fieldError("monthly_limit")}
+						{status.suggested_policy && (
+							<details onChange={() => { setPolicyEdited(true); invalidate(); }}>
+								<summary className="cursor-pointer font-medium">Edit Policy</summary>
+								<PolicyFields settings={status.suggested_policy} fieldProps={fieldProps} fieldError={fieldError} />
+							</details>
+						)}
+					</div>
+				)}
+				{receipt && (
+					<div className="space-y-2">
+						<label className="flex items-center gap-2"><input type="checkbox" name="limit_confirmed" required checked={limitConfirmed} {...fieldProps("limit_confirmed")} onChange={(event) => setLimitConfirmed(event.target.checked)} /> Confirm Monthly Usage Limit</label>
+						{fieldError("limit_confirmed")}
+						<p id="cf-activation-consent" className="text-sm">{preflight?.consent_text}</p>
+						<label className="flex items-center gap-2"><input type="checkbox" name="consent" required checked={consent} {...fieldProps("consent", "cf-activation-consent")} onChange={(event) => setConsent(event.target.checked)} /> Accept Cloudflare Terms</label>
+						{fieldError("consent")}
+					</div>
+				)}
+				<div className="flex flex-wrap gap-2">
+					<Button type="submit">{receipt ? "Scale Out with Cloudflare" : preflight ? "Check Cloudflare Setup" : "Run Preflight"}</Button>
+					<Button type="button" variant="outline" onClick={onCancel}>Cancel</Button>
+				</div>
+			</fieldset>
+		</form>
+	);
+}
+
+function CloudflareConfigurationForm({ installation, onSaved, onCancel, onRefresh, busy }: {
+	installation: NonNullable<CloudflareCapacityStatus["installation"]>;
+	onSaved: (status: CloudflareCapacityStatus) => void;
+	onCancel: () => void;
+	onRefresh: () => void;
+	busy: boolean;
+}) {
+	const settings = installation.policy;
+	const [saving, setSaving] = useState(false);
+	const { failure, setFailure, formRef, fieldProps, fieldError } = useCapacityFormErrors();
+
+	useEffect(() => {
+		formRef.current?.querySelector("input")?.focus();
+	}, [formRef]);
+
+	async function save(event: FormEvent<HTMLFormElement>) {
+		event.preventDefault();
+		if (saving || busy) return;
+		const form = event.currentTarget;
+		const fields = new FormData(form);
+		const { labels, invalid } = formIssues(form);
+		if (Object.keys(invalid).length) {
+			setFailure({ message: "Review the highlighted fields.", fields: invalid, labels });
+			return;
+		}
+		const request = {
+			action: "policy" as const,
+			installation_id: installation.installation_id,
+			expected_revision: installation.desired_revision,
+			policy: readPolicy(fields),
+		};
+		setSaving(true);
+		setFailure(undefined);
+		try {
+			onSaved(await configureCloudflareCapacity(request));
+		} catch (cause) {
+			const message = getErrorMessage(cause, "Could not save Cloudflare capacity.");
+			const { fields: rejected, messages } = validationMessages(cause, form);
+			const summary = Object.keys(rejected).length ? "Review the highlighted fields."
+				: messages.length ? "Review the settings below." : message;
+			setFailure({ message: summary, fields: rejected, labels, messages, cause });
+		} finally {
+			setSaving(false);
+		}
+	}
+
+	return (
+		<form ref={formRef} className="space-y-4" noValidate onSubmit={save}>
+			{failure && <CapacityFormError failure={failure} formRef={formRef} onRefresh={onRefresh} refreshLabel="Refresh and Review Settings" />}
+			<fieldset className="min-w-0">
+				<legend className="pb-2 font-semibold">Spending</legend>
+				<div className="space-y-1">
+					<Label htmlFor="cf-monthly">Monthly Estimated Usage Limit</Label>
+					<Input id="cf-monthly" name="monthly_limit" type="number" min="0.01" step="0.01" defaultValue={settings.monthly_limit_usd} required {...fieldProps("monthly_limit", "cf-monthly-unit")} />{fieldError("monthly_limit")}
+					<p id="cf-monthly-unit" className="text-sm text-muted-foreground">USD/month</p>
+				</div>
+			</fieldset>
+			<PolicyFields settings={settings} fieldProps={fieldProps} fieldError={fieldError} />
 			<div className="flex flex-wrap gap-2">
-				<Button type="submit" disabled={saving || busy}>{installation ? "Save Policy" : "Connect Cloudflare"}</Button>
+				<Button type="submit" disabled={saving || busy}>Save Policy</Button>
 				<Button type="button" variant="outline" disabled={saving} onClick={onCancel}>Cancel</Button>
 			</div>
 		</form>
+	);
+}
+
+function PlacementReasons({ reasons }: { reasons: components["schemas"]["CloudflarePlacementReason"][] }) {
+	return (
+		<BoundedList label="Placement Reasons" className="space-y-2">
+			{reasons.map((reason) => (
+				<li key={reason.code}>
+					<p className="font-medium">{reason.label}</p>
+					<p>{reason.remedy}</p>
+					{reason.next_eligible_at && (
+						<p>{reason.code === "cloudflare_capacity_unavailable" ? "Cooldown Until" : "Next Eligible Check"} {timestamp(reason.next_eligible_at)}</p>
+					)}
+				</li>
+			))}
+		</BoundedList>
+	);
+}
+
+function RecoveryDetails({ recovery }: { recovery: components["schemas"]["CloudflareRecoveryDetails"] }) {
+	return (
+		<div className="space-y-1">
+			<p>{recovery.remedy}</p>
+			{recovery.check && (
+				<dl className="grid gap-2 text-sm sm:grid-cols-2">
+					<div><dt className="text-muted-foreground">Resource Class</dt><dd><code>{recovery.resource_class}</code></dd></div>
+					<div><dt className="text-muted-foreground">Verification Check</dt><dd><code>{recovery.check}</code></dd></div>
+					<div><dt className="text-muted-foreground">Observed Category</dt><dd><code>{recovery.observed_category}</code></dd></div>
+					<div><dt className="text-muted-foreground">Expected Category</dt><dd><code>{recovery.expected_category}</code></dd></div>
+				</dl>
+			)}
+		</div>
 	);
 }
 
@@ -372,9 +611,8 @@ export function CloudflareCapacity() {
 	const [readbackFailure, setReadbackFailure] = useState<string>();
 	const readbackRef = useRef<(replace?: boolean) => void>(null);
 	const [connecting, setConnecting] = useState(false);
-	const [focusTarget, setFocusTarget] = useState<"setup" | "enable" | "policy">();
+	const [focusTarget, setFocusTarget] = useState<"setup" | "policy">();
 	const setupRef = useRef<HTMLButtonElement>(null);
-	const enableRef = useRef<HTMLButtonElement>(null);
 	const policyRef = useRef<HTMLButtonElement>(null);
 	const jobStatusRef = useRef<HTMLDivElement>(null);
 	const actionErrorRef = useRef<HTMLDivElement>(null);
@@ -433,7 +671,7 @@ export function CloudflareCapacity() {
 			setReadbackFailure(undefined);
 			if (terminal.has(next.status)) {
 				void refetch().then(({ data: status, isSuccess }) => {
-					if (!disposed && isSuccess && status?.latest_job_id) {
+					if (!disposed && isSuccess && (status?.latest_job_id || status?.disconnected_at)) {
 						setAcceptedJobId((accepted) => accepted === next.id ? undefined : accepted);
 					}
 				});
@@ -470,7 +708,7 @@ export function CloudflareCapacity() {
 
 	useEffect(() => {
 		if (!focusTarget) return;
-		const target = { setup: setupRef, enable: enableRef, policy: policyRef }[focusTarget].current;
+		const target = { setup: setupRef, policy: policyRef }[focusTarget].current;
 		if (target && !target.disabled) {
 			target.focus();
 			setFocusTarget(undefined);
@@ -483,12 +721,13 @@ export function CloudflareCapacity() {
 
 	const ownJob = localAction?.id === jobId ? localAction : undefined;
 	const jobRefused = job?.status === "failed" || job?.status === "requires_action";
-	const disconnected = ownJob?.action === "disconnect" && job?.status === "succeeded" && data?.installation === null;
+	const disconnected = !installation && (Boolean(data?.disconnected_at)
+		|| (ownJob?.action === "disconnect" && job?.status === "succeeded" && data?.installation === null));
 
 	useEffect(() => {
-		if (disconnected) setupRef.current?.focus();
+		if (disconnected && localAction?.action === "disconnect") setupRef.current?.focus();
 		else if (ownJob) jobStatusRef.current?.focus();
-	}, [disconnected, ownJob, jobRefused]);
+	}, [disconnected, localAction, ownJob, jobRefused]);
 
 	const jobAnnouncements: Partial<Record<PlatformJob["status"], string>> = {
 		queued: "The Cloudflare job is queued.",
@@ -497,25 +736,26 @@ export function CloudflareCapacity() {
 		cancelled: "The Cloudflare job was cancelled.",
 		requires_action: "The Cloudflare job needs your attention.",
 	};
-	const jobAnnouncement = disconnected ? "Cloudflare was disconnected."
-		: readbackFailure === jobId ? "Could not read the Cloudflare job status."
+	const jobAnnouncement = readbackFailure && readbackFailure === jobId ? "Could not read the Cloudflare job status."
 			: job && ((terminal.has(job.status) ? job.error?.message : undefined) ?? jobAnnouncements[job.status]);
 
 	function finishConfiguration(next: CloudflareCapacityStatus) {
-		if (!installation) {
-			setAcceptedJobId(undefined);
-			setLocalAction(undefined);
-		}
-		setConnecting(false);
 		setEditing(false);
 		queryClient.setQueryData(statusKey, next);
-		setFocusTarget(installation ? "policy" : "enable");
+		setFocusTarget("policy");
 	}
 
 	function cancelConfiguration() {
 		setConnecting(false);
 		setEditing(false);
 		setFocusTarget(installation ? "policy" : "setup");
+	}
+
+	function finishActivation(accepted: CloudflareJobAccepted) {
+		setLocalAction({ id: accepted.job_id, action: "enable" });
+		setAcceptedJobId(accepted.job_id);
+		setConnecting(false);
+		void refetch();
 	}
 
 	async function submitRotation(event: FormEvent<HTMLFormElement>) {
@@ -567,6 +807,7 @@ export function CloudflareCapacity() {
 				<h2 className="text-base font-medium">Scale Out with Cloudflare</h2>
 			</CardHeader>
 			<CardContent className="space-y-4">
+				{canRead && <CloudflareWorkflowApprovals />}
 				{(authorization.isLoading || isLoading) && (
 					<p role="status">Loading Cloudflare capacity…</p>
 				)}
@@ -593,23 +834,31 @@ export function CloudflareCapacity() {
 				{canRead && data && !installation && (
 					<section className="space-y-2">
 						<h3 className="font-semibold">Cloudflare Connection</h3>
-						<p>Use a Cloudflare account with Workers Paid, an account API token, and a reachable HTTPS endpoint or a managed tunnel.</p>
-						<p>Connecting authorizes Bifrost to manage Cloudflare resources for approved workflows.</p>
+						{disconnected && <p role="status">Cloudflare was disconnected. Bifrost verified removal of its owned resources.{data.disconnected_at && ` ${timestamp(data.disconnected_at)}.`}</p>}
+						<p>Use a dedicated Cloudflare account with Workers Paid where possible. A shared account is supported.</p>
+						<p>Grant Account Settings Read and Workers Scripts Write. For Managed Tunnel, also grant Cloudflare Tunnel Write, Zone Read, and DNS Write on the selected zone.</p>
+						{!data.suggested_policy && <p>Install a qualified Workers release with lifetime meters to set up Cloudflare capacity.</p>}
+						<PlacementReasons reasons={data.placement_reasons ?? []} />
 						{canWrite && !connecting && (
-							<Button ref={setupRef} disabled={busy} onClick={() => setConnecting(true)}>Set Up Cloudflare</Button>
+							<Button ref={setupRef} disabled={busy || !data.suggested_policy} onClick={() => setConnecting(true)}>Set Up Cloudflare</Button>
 						)}
 					</section>
 				)}
 				{canRead && data && (
 					<p>
+						<span>{data.approved_workflow_count == null ? "Approved workflow count is unavailable." :
+							`${data.approved_workflow_count} approved ${data.approved_workflow_count === 1 ? "workflow" : "workflows"}.`}</span>{" "}
 						Only approved workflows can use Cloudflare capacity.{" "}
 						<Link className="underline" to="/workflows">Review Workflows</Link>
 					</p>
 				)}
-				{canRead && data && canWrite && (installation ? editing : connecting) && (
+				{canRead && data && canWrite && connecting && (
+					<CloudflareSetupForm status={data} onAccepted={finishActivation} onCancel={cancelConfiguration} onRefresh={() => void refetch()} />
+				)}
+				{canRead && data && canWrite && installation && editing && !connecting && (
 					<CloudflareConfigurationForm
 						key={installation?.desired_revision ?? "connect"}
-						status={data}
+						installation={installation}
 						onSaved={finishConfiguration}
 						onCancel={cancelConfiguration}
 						onRefresh={() => void refetch()}
@@ -626,20 +875,30 @@ export function CloudflareCapacity() {
 								</dt>
 								<dd>{connectionStatus}</dd>
 							</div>
-							{installation.deployed_revision != null && (
-								<div>
-									<dt className="text-muted-foreground">Deployed Revision</dt>
-									<dd>{installation.deployed_revision}</dd>
-								</div>
-							)}
+							<div><dt className="text-muted-foreground">Desired Revision</dt><dd>{installation.desired_revision}</dd></div>
+							<div><dt className="text-muted-foreground">Observed Deployment Revision</dt><dd>{installation.deployed_revision ?? "Unobserved"}</dd></div>
 							<div>
-								<dt className="text-muted-foreground">
-									{installation.reachability_mode === "managed_tunnel" ? "Managed Tunnel" : "Existing HTTPS Endpoint"}
-								</dt>
-								<dd className="break-all">
-									{installation.worker_ingress_origin}
-								</dd>
+								<dt className="text-muted-foreground">Reachability</dt>
+								<dd>{installation.reachability_mode === "managed_tunnel" ? "Managed Tunnel" : "Existing HTTPS Endpoint"}</dd>
 							</div>
+							{data?.deployment && (
+								<>
+									<div><dt className="text-muted-foreground">Last Verified Ingress Probe</dt><dd>{timestamp(data.deployment.ingress_verified_at)}</dd></div>
+									<div><dt className="text-muted-foreground">Last Verified DNS</dt><dd>{installation.reachability_mode === "managed_tunnel" ? timestamp(data.deployment.dns_verified_at) : "Not Separately Verified"}</dd></div>
+									<div><dt className="text-muted-foreground">Last Signed Canary</dt><dd>{timestamp(data.deployment.signed_canary_at)}</dd></div>
+									{data.deployment.revision != null && <div><dt className="text-muted-foreground">Ingress and Canary Evidence Revision</dt><dd>{data.deployment.revision}</dd></div>}
+									{installation.reachability_mode === "managed_tunnel" && (
+										<>
+											<div><dt className="text-muted-foreground">Last Observed Connector Session</dt><dd>{({
+												connected: "Connected", disconnected: "Disconnected", unobserved: "Unobserved",
+												waiting_for_projection: "Waiting for Token Projection",
+											})[data.deployment.connector_session ?? "unobserved"]}</dd></div>
+											<div><dt className="text-muted-foreground">Connector Session Checked</dt><dd>{timestamp(data.deployment.connector_checked_at)}</dd></div>
+											<div><dt className="text-muted-foreground">Connector Last Ready</dt><dd>{timestamp(data.deployment.connector_last_ready_at)}</dd></div>
+										</>
+									)}
+								</>
+							)}
 							<div>
 								<dt className="text-muted-foreground">
 									Workers Launcher Limit
@@ -659,6 +918,10 @@ export function CloudflareCapacity() {
 									}
 								</dd>
 							</div>
+						</dl>
+						<section aria-labelledby="cf-spend-heading" className="space-y-2">
+							<h4 id="cf-spend-heading" className="font-semibold">Spending</h4>
+							<dl className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
 							<div>
 								<dt className="text-muted-foreground">
 									Monthly Estimated Usage Limit
@@ -669,7 +932,7 @@ export function CloudflareCapacity() {
 							</div>
 							<div>
 								<dt className="text-muted-foreground">
-									Estimated Fleet Usage
+									Fleet Envelope Backstop
 								</dt>
 								<dd>{installation.fleet_envelope_usd} USD/month</dd>
 							</div>
@@ -680,6 +943,10 @@ export function CloudflareCapacity() {
 										<dd>{installation.spend.estimated_usd === null ? "Spend Ledger Unavailable" : `${installation.spend.estimated_usd} USD`}</dd>
 										{installation.spend.state === "budget_reached" && <dd>Estimated usage reached the monthly limit.</dd>}
 									</div>
+									<div><dt className="text-muted-foreground">Estimated Usage Outside Reservations</dt><dd>{amount(installation.spend.settled_usd)}</dd><dd className="text-muted-foreground">Workflow activity charges are estimated and cannot yet be split into settled and unsettled amounts.</dd></div>
+									<div><dt className="text-muted-foreground">Outstanding Reservations</dt><dd>{amount(installation.spend.reserved_usd)}</dd></div>
+									<div><dt className="text-muted-foreground">Remaining Monthly Headroom</dt><dd>{amount(installation.spend.remaining_headroom_usd)}</dd></div>
+									<div><dt className="text-muted-foreground">Monthly Limit Resets</dt><dd>{timestamp(installation.spend.period_end)}</dd></div>
 									<div>
 										<dt className="text-muted-foreground">Workers Paid Subscription (Billed by Cloudflare)</dt>
 										<dd>{installation.spend.workers_paid_subscription_usd} USD/month</dd>
@@ -705,7 +972,36 @@ export function CloudflareCapacity() {
 									) : null}
 								</>
 							)}
-						</dl>
+							</dl>
+						</section>
+						{Boolean(data?.lanes?.length) && (
+							<section className="space-y-3" aria-labelledby="cf-placement-heading">
+								<h4 id="cf-placement-heading" className="font-semibold">Overflow Placement</h4>
+								<p>Observed {timestamp(data?.observed_at)}</p>
+								<Button variant="outline" disabled={isFetching} onClick={() => void refetch()}>Refresh Capacity Status</Button>
+								{data?.lanes?.map((lane) => (
+									<section key={lane.lane} className="space-y-2 text-sm">
+										<h5 className="font-semibold">{lane.lane === "workers" ? "Workers" : "Containers"}</h5>
+										<dl className="grid gap-2 sm:grid-cols-2">
+											<div><dt className="text-muted-foreground">Eligible Queued</dt><dd>{lane.eligible_queued}</dd></div>
+											<div><dt className="text-muted-foreground">Claimed</dt><dd>{lane.claimed}</dd></div>
+											<div><dt className="text-muted-foreground">Running</dt><dd>{lane.running}</dd></div>
+											<div><dt className="text-muted-foreground">Queued Work Fitting the Primary</dt><dd>{lane.primary_fit ?? "Unobserved"}</dd></div>
+											<div><dt className="text-muted-foreground">Primary Saturation</dt><dd>{lane.primary_saturated == null ? "Unobserved" : lane.primary_saturated ? "At Capacity Ceiling" : "Ceiling Not Confirmed"}</dd></div>
+											<div><dt className="text-muted-foreground">Oldest Eligible Queue Age / Launch Gate</dt><dd>{lane.oldest_eligible_queue_age_seconds == null
+												? "Queue Empty" : `${lane.oldest_eligible_queue_age_seconds.toFixed(2)} s`} / {lane.launch_gate_seconds} s</dd></div>
+										</dl>
+										<PlacementReasons reasons={lane.reasons} />
+									</section>
+								))}
+							</section>
+						)}
+						{data?.recovery && !job && (
+							<section aria-label="Cloudflare Recovery">
+								<p>Error Code <code>{data.recovery.code}</code></p>
+								<RecoveryDetails recovery={data.recovery} />
+							</section>
+						)}
 						{canWrite && (
 							<div className="flex flex-wrap gap-2">
 								<Button ref={policyRef} variant="outline" disabled={busy || editing || installation.desired_state === "disconnected"}
@@ -714,7 +1010,6 @@ export function CloudflareCapacity() {
 									Edit Policy
 								</Button>
 								<Button
-									ref={enableRef}
 									disabled={enableDisabled}
 									onClick={() => mutation.mutate("enable")}
 								>
@@ -860,7 +1155,7 @@ export function CloudflareCapacity() {
 						)}
 					</div>
 				)}
-				{canRead && jobId && (
+				{canRead && jobId && !disconnected && (
 					<section ref={jobStatusRef} tabIndex={-1} className="space-y-2" aria-labelledby="cf-job-status-heading">
 						<h3 id="cf-job-status-heading" className="font-semibold">Cloudflare Job Status</h3>
 						<p role="status" className={jobAnnouncement ? undefined : "sr-only"}>{jobAnnouncement}</p>
@@ -872,18 +1167,19 @@ export function CloudflareCapacity() {
 								readbackRef.current?.();
 							}}>Check Job Status</Button>
 						)}
-						{(job?.error || typeof job?.result?.code === "string") && (
+						{jobRefused && (job?.error || typeof job?.result?.code === "string") && (
 							<p>Error Code <code>{job.error?.code ?? String(job.result?.code)}</code></p>
 						)}
-						{typeof job?.result?.reason === "string" && <p>{job.result.reason}</p>}
-						{typeof job?.result?.remedy === "string" && <p>{job.result.remedy}</p>}
-						{Array.isArray(instructions) && (
+						{jobRefused && typeof job?.result?.reason === "string" && <p>{job.result.reason}</p>}
+						{jobRefused && !data?.recovery && typeof job?.result?.remedy === "string" && <p>{job.result.remedy}</p>}
+						{jobRefused && data?.recovery && job?.id === data.latest_job_id && <RecoveryDetails recovery={data.recovery} />}
+						{jobRefused && Array.isArray(instructions) && (
 							<BoundedList as="ol" label="Recovery Instructions" className="list-decimal pl-5 text-sm">
 								{instructions.filter((instruction): instruction is string => typeof instruction === "string")
 									.map((instruction) => <li key={instruction}>{instruction}</li>)}
 							</BoundedList>
 						)}
-						{Array.isArray(legacyWorkers) && (
+						{jobRefused && Array.isArray(legacyWorkers) && (
 							<BoundedList label="Workers Requiring Review" className="text-sm">
 								{legacyWorkers.map((worker) => (
 									<li className="break-all" key={String(worker.worker_id)}>

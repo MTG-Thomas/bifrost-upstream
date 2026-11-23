@@ -5,6 +5,7 @@ import json
 import ssl
 import tempfile
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from functools import cache
 from hashlib import sha256
@@ -20,7 +21,11 @@ from pydantic import SecretStr
 from shared.models import WorkerCapacityProfile, WorkerCapacityResource
 from src.services import worker_ingress_probes as probes
 from src.services.worker_ingress import ALLOW_MARKER, CONTROL_PATH, INGRESS_HEADER, PORT
-from src.services.worker_pool import cloudflare_admission, cloudflare_connection, cloudflare_policy, cloudflare_release
+from src.services.worker_pool import (
+    cloudflare_admission,
+    cloudflare_policy,
+    cloudflare_release,
+)
 from src.services.worker_pool.cloudflare_provisioning import ResourceObservation
 from src.services.worker_pool.cloudflare_release import (
     QUALIFIED_RUNTIME_SHA256,
@@ -31,7 +36,7 @@ from src.services.worker_pool.cloudflare_workers_rest import (
     ConfiguredWorkersScript,
     WorkersRestCleanup,
 )
-from src.worker.remote.protocol import ControlEnvelope, Hello, new_nonce, sign_hello
+from src.worker.remote.protocol import CLOUDFLARE_DEV_BUDGET_BYTES, ControlEnvelope, Hello, new_nonce, sign_hello
 from websockets.asyncio.client import connect
 
 ACCOUNT = "f" * 32
@@ -43,8 +48,31 @@ CAPACITY = "https://capacity.browser-fixture.test"
 EXPORTS = cloudflare_release.WORKER_EXPORTS
 
 
+def block_cloudflare_network(set_attribute: Callable[..., None] = setattr) -> None:
+    """Refuse hosted endpoints at HTTPX's socket transport, even without a provider stub."""
+    domains = ("cloudflare.com", "workers.dev", "cfargotunnel.com", "trycloudflare.com")
+    send = httpx.HTTPTransport.handle_request
+    send_async = httpx.AsyncHTTPTransport.handle_async_request
+
+    def check(request: httpx.Request) -> None:
+        host = request.url.host.rstrip(".").lower()
+        if any(host == domain or host.endswith("." + domain) for domain in domains):
+            raise RuntimeError("Hosted Cloudflare requests are blocked in the test fixture")
+
+    def local_request(transport: httpx.HTTPTransport, request: httpx.Request) -> httpx.Response:
+        check(request)
+        return send(transport, request)
+
+    async def local_async_request(transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        check(request)
+        return await send_async(transport, request)
+
+    set_attribute(httpx.HTTPTransport, "handle_request", local_request)
+    set_attribute(httpx.AsyncHTTPTransport, "handle_async_request", local_async_request)
+
+
 @cache
-def _release():
+def _release(*, lifetime_meters: bool = False):
     manifest = {
         "manifest_version": 1, "source_revision": "a" * 40, "runtime_sha256": QUALIFIED_RUNTIME_SHA256,
         "release_version": "1.0.0", "release_sequence": 1,
@@ -83,6 +111,13 @@ def _release():
                 "cpu_ms": cpu["workflow" if role == "launcher" else role],
                 "public_endpoint": role == "capacity", "preview_urls": False,
             }
+        if lifetime_meters:
+            manifest["workers"]["launcher"]["bindings"].append({
+                "name": "BIFROST_LAUNCHER_METERS_PER_SECOND", "type": "plain_text", "text": json.dumps(
+                    {name: int(bounds["per_launcher_second"][name]) for name in qualification.launcher_caps},
+                    sort_keys=True, separators=(",", ":"),
+                ),
+            })
         modules = [manifest["workers"][role]["modules"][0] for role in EXPORTS]
         bounds["qualification"]["capacity_module_sha256"] = modules[-1]["sha256"]
         bounds["qualification"]["bundle_sha256"] = sha256("\n".join(
@@ -100,6 +135,10 @@ class _Cloudflare(WorkersRestCleanup):
     def __init__(self, _http, deployment=None):
         self.deployment = deployment
 
+    async def discovery_inventory(self, candidate, account_id=None):
+        assert candidate == TOKEN
+        return [{"id": "f" * 32, "name": "Browser Fixture Account"}] if account_id is None else []
+
     async def _request(self, token, account_id, method, path, **kwargs):
         if token == REFUSED_TOKEN:
             raise CloudflareManagementDenied("The browser fixture refused the replacement token")
@@ -115,7 +154,6 @@ class _Cloudflare(WorkersRestCleanup):
 
     async def advisory_workers_requests(self, account_id, api_token, scripts, start, end):
         assert (account_id, api_token) == (ACCOUNT, TOKEN)
-        return None
 
     async def observe(self, *, api_token, intent):
         assert (intent.target.account_id, api_token) == (ACCOUNT, TOKEN)
@@ -191,19 +229,26 @@ async def _forward(reader, writer):
 
 
 def install_api():
+    from src.services.worker_pool import cloudflare_activation
     from src.jobs.platform import cloudflare_capacity
 
-    cloudflare_connection.load_workers_release = _release
-    cloudflare_connection.WorkersRestCleanup = _Cloudflare
+    block_cloudflare_network()
+    cloudflare_activation.load_workers_release = _browser_release
+    cloudflare_activation.WorkersRestCleanup = _Cloudflare
     cloudflare_capacity.installed_workers_release_digest = _fixture_digest
     cloudflare_capacity.installed_workers_release_order = _fixture_order
     cloudflare_admission.installed_workers_release_digest = _fixture_digest
     cloudflare_policy.installed_workers_release_digest = _fixture_digest
     cloudflare_policy.installed_workers_release_order = _fixture_order
+    cloudflare_policy.load_workers_release = _browser_release
+
+
+def _browser_release():
+    return _release(lifetime_meters=True)
 
 
 def _fixture_digest():
-    return _release().digest
+    return _browser_release().digest
 
 
 def _fixture_order():
@@ -240,12 +285,13 @@ def install_enable(job_module):
 
         async def profile(self):
             return WorkerCapacityProfile(
-                protocol_version=2, scope="workers", worker_version=_release().digest,
-                runtime_profile="cloudflare-python-v1", memory_limit_bytes=256 * 2**20,
-                max_workers=1, max_lifetime_seconds=3600,
+                protocol_version=2, scope="workers", worker_version=_fixture_digest(),
+                runtime_profile="cloudflare-python-v1", memory_limit_bytes=4 * CLOUDFLARE_DEV_BUDGET_BYTES,
+                max_workers=3, max_lifetime_seconds=3600,
             )
 
-        async def prepare(self, reservation, scope, *, managed_identity):
+        async def prepare(self, reservation, scope, *, managed_identity, managed_deadline):
+            assert managed_deadline > datetime.now(UTC)
             uid, self.key = managed_identity
             self.resource = WorkerCapacityResource(
                 scope=scope, worker_id=reservation.worker_id, worker_version=reservation.worker_version,
@@ -305,7 +351,7 @@ def install_enable(job_module):
             self.resource = self.resource.model_copy(update={"state": "deleted"})
             return self.resource
 
-    job_module.load_workers_release = _release
+    job_module.load_workers_release = _browser_release
     job_module.WorkersRestProvisioner = _Cloudflare
     job_module.WorkersRestCleanup = _Cloudflare
     job_module.ExternalCapacityClient = Launcher

@@ -7,6 +7,7 @@ import re
 import secrets
 import socket
 import subprocess
+from hashlib import sha256
 from pathlib import Path
 
 
@@ -21,7 +22,7 @@ def ports(count):
             listener.close()
 
 
-def prepare(root, project, image):
+def prepare(root, project, image, *, initial_tunnel_config, lag_worker_namespace):
     fixture = root / ".rehearsal"
     fixture.mkdir(mode=0o755)
     site = root / "spikes/cloudflare-pyodide/dev/e2e/combined-site"
@@ -34,16 +35,20 @@ def prepare(root, project, image):
     if not inspection["Internal"] or not ipaddress.IPv4Address(address).is_private:
         raise SystemExit("Expected a private Docker bridge address")
     edge, provider = ports(2)
+    public_url = "http://localhost:8000"
+    managed_host = f"bifrost-workers-{sha256(public_url.encode()).hexdigest()[:16]}.example.test"
     subprocess.run([
         "openssl", "req", "-x509", "-newkey", "rsa:2048", "-noenc", "-days", "1",
         "-subj", "/CN=Existing HTTPS rehearsal",
-        "-addext", "subjectAltName=DNS:existing.example.test,DNS:managed.example.test",
+        "-addext", f"subjectAltName=DNS:existing.example.test,DNS:{managed_host}",
         "-keyout", str(fixture / "edge.key"), "-out", str(fixture / "edge.pem"),
     ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     cfg = {
         "address": address, "subnet": inspection["IPAM"]["Config"][0]["Subnet"],
         "edgePort": edge, "providerPort": provider, "cert": str(fixture / "edge.pem"), "key": str(fixture / "edge.key"),
         "ready": str(fixture / "ready"), "project": project, "image": image, "network": network,
+        "initialTunnelConfig": initial_tunnel_config,
+        "workerNamespaceLagMs": 10_000 if lag_worker_namespace else 0,
     }
     (fixture / "config.json").write_text(json.dumps(cfg))
     (fixture / "connector.json").write_text(json.dumps({"base": f"http://{address}:{provider}/local/tunnel-"}))
@@ -83,9 +88,13 @@ signal.pause()
     source = re.sub(r"^    container_name:.*\n", "", source, flags=re.M)
     source = re.sub(r"^    ports:\n(?:      - .*\n)+", "", source, flags=re.M)
     source = source.replace("ghcr.io/gobifrost/bifrost-api:${BIFROST_VERSION:-latest}", image + ":release-${TRIAL_RELEASE:-1}")
+    source = source.replace("BIFROST_API_URL: http://api:8000",
+                            "BIFROST_API_URL: ${TRIAL_CONTROL_API_URL:-http://api:8000}")
     (root / "rehearsal-compose.yml").write_text(source)
     stub_env = f"""
       PYTHONPATH: /rehearsal-site:/app
+      BIFROST_PUBLIC_URL: "{public_url}"
+      REHEARSAL_MANAGED_HOST: "{managed_host}"
       REHEARSAL_ADDRESS: "{address}"
       REHEARSAL_PROVIDER_PORT: "{provider}"
       REHEARSAL_EDGE_PORT: "{edge}"
@@ -130,8 +139,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("project")
     parser.add_argument("image")
+    parser.add_argument("--lag-worker-namespace", action="store_true")
+    variants = parser.add_mutually_exclusive_group()
+    variants.add_argument("--missing-tunnel-config", dest="initial_tunnel_config", action="store_const", const="http_404",
+                          help="Return HTTP 404 until tunnel ingress is written")
+    variants.add_argument("--default-tunnel-config", dest="initial_tunnel_config", action="store_const", const="default_404",
+                          help="Return a single 404 catch-all before tunnel ingress is written")
+    parser.set_defaults(initial_tunnel_config="version_zero")
     args = parser.parse_args()
     root = Path.cwd()
     if not root.name.startswith("combined-local-") or root.stat().st_mode & 0o077:
         parser.error("Use a fresh private combined-local-* archive")
-    prepare(root, args.project, args.image)
+    prepare(root, args.project, args.image, initial_tunnel_config=args.initial_tunnel_config,
+            lag_worker_namespace=args.lag_worker_namespace)

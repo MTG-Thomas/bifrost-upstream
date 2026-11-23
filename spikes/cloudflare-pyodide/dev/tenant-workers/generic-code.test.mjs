@@ -52,7 +52,7 @@ test('engine child re-establishes attempt-scoped SDK state at every attempt', ()
   // the previous attempt's run handle and its SDK/module calls are refused.
   assert.ok(ENGINE_PYTHON.includes('from bifrost.client import _install_cached_access_token'));
   const handoff = ENGINE_PYTHON.indexOf('_install_cached_access_token(body["api_url"], token)');
-  const run = ENGINE_PYTHON.indexOf('await run_authorized_attempt(\n            body["execution_id"]');
+  const run = ENGINE_PYTHON.search(/await run_authorized_attempt\(\s+body\["execution_id"\]/);
   assert.ok(run > 0, 'the attempt run is present');
   assert.ok(handoff > 0, 'credential handoff present');
   assert.ok(handoff < run, 'handoff happens before the engine run starts');

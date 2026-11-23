@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
@@ -17,8 +17,8 @@ from src.models.orm.cloudflare_capacity import CloudflareWorkerReservation
 from src.models.orm.execution_workers import MANAGED_WORKER_FORMS, ExecutionWorker, ExecutionWorkerClaim
 from src.models.orm.executions import Execution
 from src.models.orm.work_dispatches import WorkDispatch
-from src.services.kubernetes_execution import load_kubernetes_policy
 from src.services.execution.summary_dispatch import LINUX_ONLY_SUMMARY
+from src.services.kubernetes_execution import load_kubernetes_policy
 from src.services.worker_pool.cloudflare_admission import cloudflare_claim_allowed
 from src.services.worker_pool.cloudflare_containers_policy import CONTAINERS_SCOPE, container_identity_matches
 from src.services.worker_pool.cloudflare_slots import (
@@ -31,7 +31,12 @@ from src.services.worker_pool.cloudflare_slots import (
     stage_queue_preparations,
     tenant_key,
 )
-from src.services.worker_pool.eligibility import cloudflare_active_claims, cloudflare_dispatch_sql, containers_dispatch_sql
+from src.services.worker_pool.eligibility import (
+    cloudflare_active_claims,
+    cloudflare_dispatch_sql,
+    containers_dispatch_sql,
+    managed_workflow_fits,
+)
 from src.worker.remote.fencing import current_remote_lease_ref, fence_remote_owner
 from src.worker.remote.protocol import (
     CLOUDFLARE_DEV_BUDGET_BYTES,
@@ -74,6 +79,7 @@ class PoolClaim:
     tenant_id: UUID | None = None
     workflow_slot: WorkflowSlotTicket | None = None
     queue_preparations: tuple[QueuePreparation, ...] = ()
+    cloudflare_claim_committed_at: datetime | None = None
 
 
 def _now() -> datetime:
@@ -288,10 +294,13 @@ async def claim_next(
         | (
             (ExecutionWorker.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE)
             & (
-                (cloudflare_dispatch_sql() & (managed | ~exists().where(
-                    active_cloudflare.c.execution_id.is_not(None),
-                    active_cloudflare.c.tenant_id.is_not_distinct_from(dispatch_tenant),
-                )))
+                (cloudflare_dispatch_sql() & case(
+                    (managed, managed_workflow_fits(incarnation_id)),
+                    else_=~exists().where(
+                        active_cloudflare.c.execution_id.is_not(None),
+                        active_cloudflare.c.tenant_id.is_not_distinct_from(dispatch_tenant),
+                    ),
+                ))
                 | (
                     (WorkDispatch.handler == CLOUDFLARE_SUMMARY_HANDLER[0])
                     & (WorkDispatch.handler_version == CLOUDFLARE_SUMMARY_HANDLER[1])
@@ -566,6 +575,8 @@ async def claim_next(
         if reserved and claim is not None and release_reservation is not None:
             release_reservation(claim)
         raise
+    if claim is not None and claim.workflow_slot is not None:
+        claim = replace(claim, cloudflare_claim_committed_at=_now())
     return claim
 
 

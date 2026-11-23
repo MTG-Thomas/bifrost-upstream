@@ -1,5 +1,5 @@
 // Measure sequential requests against two packaged modules in Linux workerd.
-// Usage: node qualify-cpu.mjs <package directory> [batches]
+// Usage: node qualify-cpu.mjs <package directory> [batches] [--max-receipt-only]
 import assert from 'node:assert/strict';
 import {randomUUID, createHash} from 'node:crypto';
 import {readFileSync, readdirSync} from 'node:fs';
@@ -19,6 +19,7 @@ const bindings = Object.fromEntries(manifest.workers.launcher.bindings
   .filter(binding => binding.text !== undefined).map(binding => [binding.name, {type: 'text', value: binding.text}]));
 const observations = {};
 const lifecycleCases = Number(process.argv[3] ?? 4);
+const receiptOnly = process.argv[4] === '--max-receipt-only';
 assert.ok(Number.isSafeInteger(lifecycleCases) && lifecycleCases > 0);
 
 function workerdCpuClock() {
@@ -56,7 +57,7 @@ function workflow(tenantId, solution) {
   }};
 }
 
-for (let batch = 0; batch < lifecycleCases; batch++) {
+for (let batch = 0; !receiptOnly && batch < lifecycleCases; batch++) {
   const mf = new Miniflare({cf: false, workers: [
     capacityWorker({...settings, bundle: capacity}),
     {dev: {outboundService: {type: 'worker', worker: 'origin'}}, config: {
@@ -150,5 +151,72 @@ const samples = Object.fromEntries(Object.entries(observations).map(([path, valu
   const sorted = values.toSorted((a, b) => a - b);
   return [path, {samples: sorted.length, p99_us: sorted[Math.ceil(sorted.length * 0.99) - 1]}];
 }));
-console.info('qualified-cpu', JSON.stringify({run: randomUUID(), launcher: sha256(launcher),
+if (!receiptOnly) console.info('qualified-cpu', JSON.stringify({run: randomUUID(), launcher: sha256(launcher),
   capacity: sha256(readFileSync(capacity)), samples}));
+
+// Exercise the packaged capacity Worker and its real SQLite ledger. The
+// launcher stub supplies the largest shape accepted by the API receipt schema.
+const routes = Object.fromEntries(['workflow', 'prepare'].flatMap(kind =>
+  Array.from({length: 512}, (_, index) => [
+    (kind + ':' + index + ':').padEnd(128, 'x'),
+    Array.from({length: 4}, (_, call) => ({
+      identity: ('tenant-eng-fixture-' + index + '-' + call).padEnd(128, 'x'),
+      kind: call === 3 ? 'workflow' : 'boot', cold: true,
+      started_at: '2026-11-22T00:00:00.000Z', wall_ms: Number.MAX_SAFE_INTEGER,
+    })),
+  ])));
+const usage = {sqlite_rows_written: 460800, do_requests: 230400, log_events: 230400,
+  exhausted: false, routes};
+const mf = new Miniflare({cf: false, workers: [
+  capacityWorker({...settings, bundle: capacity}),
+  {config: {
+    name: 'launcher', compatibilityDate: '2026-10-30',
+    exports: {CloudflareLauncher: {type: 'durable-object', storage: 'sqlite'}},
+    manifest: {mainModule: 'stub.mjs', modules: {'stub.mjs': {type: 'esm', contents: `
+      import {DurableObject} from 'cloudflare:workers';
+      const usage = ${JSON.stringify(usage)};
+      export class CloudflareLauncher extends DurableObject {
+        prepareManaged() { return 1; }
+        releaseManaged() { return usage; }
+        clearReleasedStorage() {}
+      }
+    `}}},
+  }},
+]});
+try {
+  const provider = await mf.getWorker('capacity');
+  const clock = workerdCpuClock();
+  const receiptSamples = {capacity_delete_max_receipt: [], capacity_get_max_receipt: []};
+  for (let batch = 0; batch < lifecycleCases; batch++) {
+    const workerId = randomUUID();
+    const resourceUid = randomUUID().replaceAll('-', '');
+    const url = 'https://capacity.invalid/v1/workers/' + workerId;
+    const call = (method, body) => provider.fetch(url, {method, body: body && JSON.stringify(body), headers});
+    const prepared = await call('PUT', {
+      worker_id: workerId, worker_version: settings.version, memory_limit_bytes: 128 * 1024 ** 2,
+      max_lifetime_seconds: 3600, drain_grace_seconds: 285, deadline_ms: Date.now() + 3_600_000,
+      resource_uid: resourceUid, control_key: 'a'.repeat(64),
+    });
+    assert.equal(prepared.status, 200, await prepared.text());
+    for (const [path, method, body] of [
+      ['capacity_delete_max_receipt', 'DELETE', {resource_uid: resourceUid}],
+      ['capacity_get_max_receipt', 'GET'],
+    ]) {
+      const start = clock();
+      const response = await call(method, body);
+      const bytes = await response.text();
+      receiptSamples[path].push(Math.ceil((clock() - start) / 1000));
+      assert.equal(response.status, 200, bytes);
+      const result = JSON.parse(bytes);
+      assert.equal(result.state, 'deleted');
+      assert.deepEqual(result.usage.routes, routes);
+    }
+  }
+  console.info('qualified-max-receipt-cpu', JSON.stringify({
+    receipt_bytes: Buffer.byteLength(JSON.stringify(usage)), routes: Object.keys(routes).length,
+    capacity: sha256(readFileSync(capacity)), package_cpu_ms: manifest.workers.capacity.cpu_ms,
+    samples_us: receiptSamples,
+  }));
+} finally {
+  await mf.dispose();
+}

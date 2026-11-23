@@ -6,7 +6,133 @@
           "path": [
             "capacity",
             "cloudflare",
-            "connect"
+            "preflight"
+          ],
+          "status": "exact_parity"
+        },
+        "manifest": {
+          "entity": null,
+          "status": "intentionally_unsupported"
+        },
+        "mcp": {
+          "name": "bifrost_cloudflare_preflight_validate",
+          "status": "exact_parity"
+        },
+        "rest": {
+          "operation_id": "capacity.cloudflare_preflight",
+          "status": "exact_parity"
+        },
+        "sdk": {
+          "binding": null,
+          "status": "intentionally_unsupported"
+        }
+      },
+      "operation": {
+        "action_scopes": [
+          "platform.readwrite"
+        ],
+        "async_policy": "synchronous",
+        "audit_event": null,
+        "authorization_resolver": "platform.readwrite at Global",
+        "cli": {
+          "path": [
+            "capacity",
+            "cloudflare",
+            "preflight"
+          ]
+        },
+        "exclusions": {
+          "manifest": "Capacity installations are bound to the deployment.",
+          "native_builder": "Cloudflare capacity is platform administration.",
+          "sdk": "Runtime SDKs do not administer capacity."
+        },
+        "manifest": null,
+        "mcp": {
+          "name": "bifrost_cloudflare_preflight_validate"
+        },
+        "native_builder": false,
+        "operation_id": "capacity.cloudflare_preflight",
+        "rest": {
+          "method": "POST",
+          "path": "/api/capacity/cloudflare/preflight",
+          "request_model": "CloudflarePreflightRequest",
+          "response_model": "CloudflarePreflight"
+        },
+        "side_effects": [],
+        "summary": "Preview Cloudflare Capacity",
+        "target_kind": "platform"
+      }
+    },
+    {
+      "observed": {
+        "cli": {
+          "path": [
+            "capacity",
+            "cloudflare",
+            "activate"
+          ],
+          "status": "exact_parity"
+        },
+        "manifest": {
+          "entity": null,
+          "status": "intentionally_unsupported"
+        },
+        "mcp": {
+          "name": "bifrost_cloudflare_activate_execute",
+          "status": "exact_parity"
+        },
+        "rest": {
+          "operation_id": "capacity.cloudflare_activate",
+          "status": "exact_parity"
+        },
+        "sdk": {
+          "binding": null,
+          "status": "intentionally_unsupported"
+        }
+      },
+      "operation": {
+        "action_scopes": [
+          "platform.readwrite"
+        ],
+        "async_policy": "platform_job",
+        "audit_event": "capacity.cloudflare_activate",
+        "authorization_resolver": "platform.readwrite at Global",
+        "cli": {
+          "path": [
+            "capacity",
+            "cloudflare",
+            "activate"
+          ]
+        },
+        "exclusions": {
+          "manifest": "Capacity installations are bound to the deployment.",
+          "native_builder": "Cloudflare capacity is platform administration.",
+          "sdk": "Runtime SDKs do not administer capacity."
+        },
+        "manifest": null,
+        "mcp": {
+          "name": "bifrost_cloudflare_activate_execute"
+        },
+        "native_builder": false,
+        "operation_id": "capacity.cloudflare_activate",
+        "rest": {
+          "method": "POST",
+          "path": "/api/capacity/cloudflare/activate",
+          "request_model": "CloudflareActivateRequest",
+          "response_model": "PlatformJobAccepted"
+        },
+        "side_effects": [],
+        "summary": "Scale Out with Cloudflare",
+        "target_kind": "platform"
+      }
+    },
+    {
+      "observed": {
+        "cli": {
+          "path": [
+            "capacity",
+            "cloudflare",
+            "policy"
           ],
           "status": "exact_parity"
         },
@@ -35,17 +161,10 @@
         "audit_event": null,
         "authorization_resolver": "platform.readwrite at Global",
         "cli": {
-          "aliases": [
-            [
-              "capacity",
-              "cloudflare",
-              "policy"
-            ]
-          ],
           "path": [
             "capacity",
             "cloudflare",
-            "connect"
+            "policy"
           ]
         },
         "exclusions": {
@@ -55,9 +174,6 @@
         },
         "manifest": null,
         "mcp": {
-          "aliases": [
-            "bifrost_cloudflare_connect_execute"
-          ],
           "name": "bifrost_cloudflare_policy_update"
         },
         "native_builder": false,
@@ -65,11 +181,11 @@
         "rest": {
           "method": "PATCH",
           "path": "/api/capacity/cloudflare",
-          "request_model": "CloudflareConnectRequest | CloudflarePolicyUpdate",
+          "request_model": "CloudflarePolicyUpdate",
           "response_model": "CloudflareCapacityStatus"
         },
         "side_effects": [],
-        "summary": "Connect and Configure Cloudflare Capacity",
+        "summary": "Update Cloudflare Capacity Policy",
         "target_kind": "platform"
       }
     },
@@ -2418,6 +2534,70 @@
           "path": [
             "workflows",
             "cloudflare-approval",
+            "list"
+          ],
+          "status": "exact_parity"
+        },
+        "manifest": {
+          "entity": null,
+          "status": "intentionally_unsupported"
+        },
+        "mcp": {
+          "name": "bifrost_workflow_cloudflare_approval_list",
+          "status": "exact_parity"
+        },
+        "rest": {
+          "operation_id": "workflows.cloudflare_approval.list",
+          "status": "exact_parity"
+        },
+        "sdk": {
+          "binding": null,
+          "status": "intentionally_unsupported"
+        }
+      },
+      "operation": {
+        "action_scopes": [
+          "workflows.read",
+          "platform.readwrite"
+        ],
+        "async_policy": "synchronous",
+        "audit_event": null,
+        "authorization_resolver": "Workflow read or human Global platform.readwrite, constrained to workflow reach",
+        "cli": {
+          "path": [
+            "workflows",
+            "cloudflare-approval",
+            "list"
+          ]
+        },
+        "exclusions": {
+          "manifest": "Cloudflare approval binds source and operator authority in the current environment.",
+          "native_builder": "Cloudflare approval review is an interactive workflow operation.",
+          "sdk": "Cloudflare approval review is an interactive workflow operation."
+        },
+        "manifest": null,
+        "mcp": {
+          "name": "bifrost_workflow_cloudflare_approval_list"
+        },
+        "native_builder": false,
+        "operation_id": "workflows.cloudflare_approval.list",
+        "rest": {
+          "method": "GET",
+          "path": "/api/workflows/cloudflare-approvals",
+          "request_model": null,
+          "response_model": "CloudflareApprovalList"
+        },
+        "side_effects": [],
+        "summary": "List workflow Cloudflare approval states and counts",
+        "target_kind": "collection"
+      }
+    },
+    {
+      "observed": {
+        "cli": {
+          "path": [
+            "workflows",
+            "cloudflare-approval",
             "status"
           ],
           "status": "exact_parity"
@@ -2446,7 +2626,7 @@
         ],
         "async_policy": "synchronous",
         "audit_event": null,
-        "authorization_resolver": "Workflow read permission at the owning scope or human Global platform.readwrite",
+        "authorization_resolver": "Workflow read or human Global platform.readwrite, constrained to workflow reach. Full proposal source requires Global repository.read",
         "cli": {
           "path": [
             "workflows",
@@ -2508,8 +2688,8 @@
           "platform.readwrite"
         ],
         "async_policy": "synchronous",
-        "audit_event": null,
-        "authorization_resolver": "Human Global platform.readwrite",
+        "audit_event": "workflow.cloudflare_approval.propose",
+        "authorization_resolver": "Human Global platform.readwrite and workflow reach. Full proposal source requires Global repository.read",
         "cli": {
           "path": [
             "workflows",
@@ -2534,7 +2714,9 @@
           "request_model": "CloudflareApprovalOptions",
           "response_model": "CloudflareApprovalState"
         },
-        "side_effects": [],
+        "side_effects": [
+          "store a non-executable workflow proposal"
+        ],
         "summary": "Analyze workflow source and generate a Cloudflare approval proposal",
         "target_kind": "resource"
       }
@@ -2572,7 +2754,7 @@
         ],
         "async_policy": "synchronous",
         "audit_event": "workflow.cloudflare_approval.accept",
-        "authorization_resolver": "Human Global platform.readwrite and a current reviewed digest",
+        "authorization_resolver": "Human Global platform.readwrite, workflow reach, and a current reviewed digest",
         "cli": {
           "path": [
             "workflows",
@@ -2637,7 +2819,7 @@
         ],
         "async_policy": "synchronous",
         "audit_event": "workflow.cloudflare_approval.revoke",
-        "authorization_resolver": "Human Global platform.readwrite",
+        "authorization_resolver": "Human Global platform.readwrite and workflow reach",
         "cli": {
           "path": [
             "workflows",
@@ -11597,10 +11779,10 @@
     }
   ],
   "counts": {
-    "cli": 199,
+    "cli": 201,
     "manifest": 16,
-    "mcp": 115,
-    "rest": 738,
+    "mcp": 117,
+    "rest": 741,
     "sdk": 21
   },
   "schema_version": 1,

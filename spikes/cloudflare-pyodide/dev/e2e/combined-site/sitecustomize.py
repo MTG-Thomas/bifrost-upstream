@@ -9,7 +9,7 @@ import sys
 ADDRESS = os.environ["REHEARSAL_ADDRESS"]
 PROVIDER = f"http://{ADDRESS}:{os.environ['REHEARSAL_PROVIDER_PORT']}"
 EDGE_PORT = int(os.environ["REHEARSAL_EDGE_PORT"])
-CANARY_HOSTS = {"existing.example.test", "managed.example.test"}
+CANARY_HOSTS = {"existing.example.test", os.environ["REHEARSAL_MANAGED_HOST"]}
 
 
 def capacity_transport(httpx):

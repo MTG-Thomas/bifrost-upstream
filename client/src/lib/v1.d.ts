@@ -2271,6 +2271,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workflows/cloudflare-approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Workflow Cloudflare Approvals */
+        get: operations["workflows.cloudflare_approval.list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workflows/usage-stats": {
         parameters: {
             query?: never;
@@ -3062,6 +3079,40 @@ export interface paths {
         put?: never;
         /** Stage Cloudflare Credential */
         post: operations["capacity.cloudflare_credential_stage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/capacity/cloudflare/preflight": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Run Cloudflare Preflight */
+        post: operations["capacity.cloudflare_preflight"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/capacity/cloudflare/activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Activate Cloudflare Capacity */
+        post: operations["capacity.cloudflare_activate"];
         delete?: never;
         options?: never;
         head?: never;
@@ -16438,6 +16489,36 @@ export interface components {
              */
             api_token: string;
         };
+        /** CloudflareActivateRequest */
+        CloudflareActivateRequest: {
+            /** Api Token */
+            api_token?: string | null;
+            /** Credential Ref */
+            credential_ref?: string | null;
+            /** Preflight Receipt */
+            preflight_receipt: string;
+            /** Consent Version */
+            consent_version: string;
+            /**
+             * Consent
+             * @constant
+             */
+            consent: true;
+            /** Monthly Limit Usd */
+            monthly_limit_usd: number | string;
+        };
+        /** CloudflareActivationPreview */
+        CloudflareActivationPreview: {
+            policy: components["schemas"]["CloudflareCapacityPolicy-Output"];
+            /** Fleet Envelope Usd */
+            fleet_envelope_usd: string;
+            /** Estimated Usage Min Usd */
+            estimated_usage_min_usd?: string | null;
+            /** Estimated Usage Max Usd */
+            estimated_usage_max_usd?: string | null;
+            /** Workers Paid Subscription Usd */
+            workers_paid_subscription_usd: string;
+        };
         /** CloudflareApprovalAccept */
         CloudflareApprovalAccept: {
             /** Subrequest Allowance */
@@ -16469,12 +16550,52 @@ export interface components {
             /** Column */
             column?: number | null;
         };
+        /** CloudflareApprovalList */
+        CloudflareApprovalList: {
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Workflows */
+            workflows: components["schemas"]["CloudflareApprovalListItem"][];
+            /** Can Propose */
+            can_propose: boolean;
+        };
+        /** CloudflareApprovalListItem */
+        CloudflareApprovalListItem: {
+            /**
+             * Workflow Id
+             * Format: uuid
+             */
+            workflow_id: string;
+            /** Name */
+            name: string;
+            /** Organization Id */
+            organization_id: string | null;
+            /**
+             * Scope
+             * @enum {string}
+             */
+            scope: "provider" | "global" | "organization";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "approved" | "pending_review" | "revision_changed" | "ineligible" | "temporarily_unavailable";
+            /** Has Proposal */
+            has_proposal: boolean;
+            /**
+             * Needs Larger Budget
+             * @default false
+             */
+            needs_larger_budget: boolean;
+        };
         /** CloudflareApprovalOptions */
         CloudflareApprovalOptions: {
             /** Subrequest Allowance */
-            subrequest_allowance: number;
+            subrequest_allowance?: number;
             /** Cpu Budget Ms */
-            cpu_budget_ms: number;
+            cpu_budget_ms?: number;
             /** Https Hosts */
             https_hosts?: string[];
         };
@@ -16543,6 +16664,10 @@ export interface components {
             current_revision?: string | null;
             current_declaration?: components["schemas"]["ApprovalDeclaration"] | null;
             proposal?: components["schemas"]["CloudflareApprovalReview"] | null;
+            /** Proposal Sources */
+            proposal_sources?: {
+                [key: string]: string;
+            } | null;
             /** Diagnostics */
             diagnostics?: components["schemas"]["CloudflareApprovalDiagnostic"][];
         };
@@ -16599,43 +16724,43 @@ export interface components {
             installation: components["schemas"]["CloudflareInstallationStatus"] | null;
             /** Latest Job Id */
             latest_job_id?: string | null;
-            /**
-             * Managed Tunnel Available
-             * @default false
-             */
-            managed_tunnel_available: boolean;
+            suggested_policy?: components["schemas"]["CloudflareCapacityPolicy-Output"] | null;
+            /** Observed At */
+            observed_at?: string | null;
+            /** Approved Workflow Count */
+            approved_workflow_count?: number | null;
+            /** Lanes */
+            lanes?: components["schemas"]["CloudflareLaneStatus"][];
+            /** Placement Reasons */
+            placement_reasons?: components["schemas"]["CloudflarePlacementReason"][];
+            deployment?: components["schemas"]["CloudflareDeploymentEvidence"] | null;
+            recovery?: components["schemas"]["CloudflareRecoveryDetails"] | null;
+            /** Disconnected At */
+            disconnected_at?: string | null;
         };
-        /** CloudflareConnectRequest */
-        CloudflareConnectRequest: {
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            action: "connect";
-            /** Account Id */
-            account_id: string;
-            /** Worker Ingress Origin */
-            worker_ingress_origin: string;
-            /**
-             * Reachability Mode
-             * @default existing_https_endpoint
-             * @enum {string}
-             */
-            reachability_mode: "existing_https_endpoint" | "managed_tunnel";
-            /** Zone Id */
-            zone_id?: string | null;
-            /** Consent Version */
-            consent_version: string;
-            /**
-             * Consent
-             * @constant
-             */
-            consent: true;
-            /** Api Token */
-            api_token?: string | null;
-            /** Credential Ref */
-            credential_ref?: string | null;
-            policy: components["schemas"]["CloudflareCapacityPolicy-Input"];
+        /** CloudflareDeploymentEvidence */
+        CloudflareDeploymentEvidence: {
+            /** Revision */
+            revision?: number | null;
+            /** Connector Session */
+            connector_session?: ("unobserved" | "waiting_for_projection" | "connected" | "disconnected") | null;
+            /** Connector Checked At */
+            connector_checked_at?: string | null;
+            /** Connector Last Ready At */
+            connector_last_ready_at?: string | null;
+            /** Dns Verified At */
+            dns_verified_at?: string | null;
+            /** Ingress Verified At */
+            ingress_verified_at?: string | null;
+            /** Signed Canary At */
+            signed_canary_at?: string | null;
+        };
+        /** CloudflareDiscoveryChoice */
+        CloudflareDiscoveryChoice: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
         };
         /** CloudflareInstallationStatus */
         CloudflareInstallationStatus: {
@@ -16644,18 +16769,12 @@ export interface components {
              * Format: uuid
              */
             installation_id: string;
-            /** Account Id */
-            account_id: string;
-            /** Worker Ingress Origin */
-            worker_ingress_origin: string;
             /**
              * Reachability Mode
              * @default existing_https_endpoint
              * @enum {string}
              */
             reachability_mode: "existing_https_endpoint" | "managed_tunnel";
-            /** Zone Id */
-            zone_id?: string | null;
             /** Connector Token Version */
             connector_token_version?: number | null;
             /** Consent Version */
@@ -16696,6 +16815,44 @@ export interface components {
             owned_resources_pending: number;
             spend?: components["schemas"]["CloudflareSpendStatus"] | null;
         };
+        /** CloudflareLaneStatus */
+        CloudflareLaneStatus: {
+            /**
+             * Lane
+             * @enum {string}
+             */
+            lane: "workers" | "containers";
+            /** Eligible Queued */
+            eligible_queued: number;
+            /** Claimed */
+            claimed: number;
+            /** Running */
+            running: number;
+            /** Primary Fit */
+            primary_fit?: number | null;
+            /** Primary Saturated */
+            primary_saturated?: boolean | null;
+            /** Oldest Eligible Queue Age Seconds */
+            oldest_eligible_queue_age_seconds?: number | null;
+            /** Launch Gate Seconds */
+            launch_gate_seconds: number;
+            /** Reasons */
+            reasons: components["schemas"]["CloudflarePlacementReason"][];
+        };
+        /** CloudflarePlacementReason */
+        CloudflarePlacementReason: {
+            /**
+             * Code
+             * @enum {string}
+             */
+            code: "setup_required" | "workflow_review_required" | "waiting_for_demand" | "primary_has_capacity" | "primary_capacity_unverified" | "waiting_for_launch_gate" | "tenant_limit_reached" | "installation_slots_full" | "spend_guard_closed" | "cleanup_pending" | "cloudflare_capacity_unavailable" | "release_mismatch" | "connector_unavailable" | "eligible_for_overflow";
+            /** Label */
+            label: string;
+            /** Remedy */
+            remedy: string;
+            /** Next Eligible At */
+            next_eligible_at?: string | null;
+        };
         /** CloudflarePolicyUpdate */
         CloudflarePolicyUpdate: {
             /**
@@ -16706,11 +16863,77 @@ export interface components {
             /** Expected Revision */
             expected_revision: number;
             /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
+             * Action
+             * @constant
              */
             action: "policy";
             policy: components["schemas"]["CloudflareCapacityPolicy-Input"];
+        };
+        /** CloudflarePreflight */
+        CloudflarePreflight: {
+            /** Accounts */
+            accounts: components["schemas"]["CloudflareDiscoveryChoice"][] | null;
+            /** Zones */
+            zones?: components["schemas"]["CloudflareDiscoveryChoice"][] | null;
+            /** Account Id */
+            account_id?: string | null;
+            /** Zone Id */
+            zone_id?: string | null;
+            /** Zone Name */
+            zone_name?: string | null;
+            /** Workers Paid */
+            workers_paid?: ("verified" | "unverified" | "denied") | null;
+            /** Connector Channel */
+            connector_channel: ("compose" | "kustomize") | null;
+            /** Connector Ready */
+            connector_ready: boolean;
+            /**
+             * Primary
+             * @enum {string}
+             */
+            primary: "static" | "job" | "external" | "unknown";
+            /**
+             * Recommended Reachability
+             * @enum {string}
+             */
+            recommended_reachability: "existing_https_endpoint" | "managed_tunnel";
+            /**
+             * Reachability Mode
+             * @enum {string}
+             */
+            reachability_mode: "existing_https_endpoint" | "managed_tunnel";
+            /** Worker Ingress Origin */
+            worker_ingress_origin?: string | null;
+            /**
+             * Hostname Collision
+             * @default false
+             */
+            hostname_collision: boolean;
+            preview?: components["schemas"]["CloudflareActivationPreview"] | null;
+            /** Consent Version */
+            consent_version: string;
+            /** Consent Text */
+            consent_text: string;
+            /** Preflight Receipt */
+            preflight_receipt?: string | null;
+            /** Expires At */
+            expires_at?: string | null;
+        };
+        /** CloudflarePreflightRequest */
+        CloudflarePreflightRequest: {
+            /** Api Token */
+            api_token?: string | null;
+            /** Credential Ref */
+            credential_ref?: string | null;
+            /** Account Id */
+            account_id?: string | null;
+            /** Zone Id */
+            zone_id?: string | null;
+            /** Reachability Mode */
+            reachability_mode?: ("existing_https_endpoint" | "managed_tunnel") | null;
+            /** Worker Ingress Origin */
+            worker_ingress_origin?: string | null;
+            policy?: components["schemas"]["CloudflareCapacityPolicy-Input"] | null;
         };
         /** CloudflareReconcileAction */
         CloudflareReconcileAction: {
@@ -16727,6 +16950,21 @@ export interface components {
              * @default false
              */
             reset_release_fence: boolean;
+        };
+        /** CloudflareRecoveryDetails */
+        CloudflareRecoveryDetails: {
+            /** Code */
+            code: string;
+            /** Remedy */
+            remedy: string;
+            /** Resource Class */
+            resource_class?: string | null;
+            /** Check */
+            check?: string | null;
+            /** Observed Category */
+            observed_category?: string | null;
+            /** Expected Category */
+            expected_category?: string | null;
         };
         /** CloudflareSpendStatus */
         CloudflareSpendStatus: {
@@ -16760,11 +16998,22 @@ export interface components {
              */
             period_end: string;
             analytics?: components["schemas"]["CloudflareUsageAdvisory"] | null;
+            /**
+             * Settled Usd
+             * @description Estimated usage outside identifiable resource reservations.
+             */
+            settled_usd?: string | null;
+            /** Reserved Usd */
+            reserved_usd?: string | null;
+            /** Remaining Headroom Usd */
+            remaining_headroom_usd?: string | null;
         };
         /** CloudflareStageCredentialRequest */
         CloudflareStageCredentialRequest: {
             /** Account Id */
-            account_id: string;
+            account_id?: string | null;
+            /** Installation Id */
+            installation_id?: string | null;
             /**
              * Purpose
              * @enum {string}
@@ -37412,6 +37661,26 @@ export interface operations {
             };
         };
     };
+    "workflows.cloudflare_approval.list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CloudflareApprovalList"];
+                };
+            };
+        };
+    };
     get_workflow_usage_stats_api_workflows_usage_stats_get: {
         parameters: {
             query?: {
@@ -39170,7 +39439,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CloudflareConnectRequest"] | components["schemas"]["CloudflarePolicyUpdate"];
+                "application/json": components["schemas"]["CloudflarePolicyUpdate"];
             };
         };
         responses: {
@@ -39214,6 +39483,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CloudflareStagedCredential"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "capacity.cloudflare_preflight": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CloudflarePreflightRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CloudflarePreflight"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "capacity.cloudflare_activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CloudflareActivateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformJobAccepted"];
                 };
             };
             /** @description Validation Error */

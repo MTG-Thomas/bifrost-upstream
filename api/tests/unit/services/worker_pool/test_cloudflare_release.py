@@ -1,4 +1,5 @@
 import json
+from decimal import Decimal
 from email import policy as email_policy
 from email.parser import BytesParser
 from hashlib import sha256
@@ -8,23 +9,29 @@ from uuid import uuid4
 import httpx
 import pytest
 from pydantic import SecretStr
-from shared.models import CloudflareWorkersPolicy
-from src.services.worker_pool import cloudflare_release
+from scripts.test_cloudflare_fixture import _release
+from shared.models import CloudflareCapacityPolicy, CloudflareWorkersPolicy
+from src.services.worker_pool import cloudflare_policy, cloudflare_release
 from src.services.worker_pool.cloudflare_provisioning import (
+    ObservationCheck,
     ObservationPending,
+    ObservationSettling,
     ResourceIntent,
     ResourceTarget,
-    resume_creation,
+    observe_owned,
+    request_creation,
 )
 from src.services.worker_pool.cloudflare_release import (
     WorkersReleaseUnavailable,
     load_workers_release,
 )
 from src.services.worker_pool.cloudflare_workers_rest import (
+    OWNER_BINDING,
     WorkersDeployment,
     WorkersPaidUnverified,
     WorkersRestCleanup,
     WorkersRestProvisioner,
+    worker_owner_value,
 )
 
 
@@ -35,7 +42,7 @@ def release(tmp_path: Path, monkeypatch) -> Path:
         "source_revision": "a" * 40,
         "release_version": "1.0.0-rc.1",
         "release_sequence": 1,
-        "runtime_sha256": "fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5",
+        "runtime_sha256": cloudflare_release.QUALIFIED_RUNTIME_SHA256,
         "pyodide_version": "314.0.6",
         "compatibility_date": "2026-10-30",
         "compatibility_flags": [],
@@ -95,6 +102,80 @@ def test_release_loads_the_verified_bytes(release: Path) -> None:
     assert len(loaded.digest) == 64
     assert loaded.modules["launcher"]["launcher.mjs"] == (release / "launcher.mjs").read_bytes()
     assert loaded.modules["capacity"]["capacity.mjs"] == (release / "capacity.mjs").read_bytes()
+
+
+@pytest.mark.parametrize(("launchers", "slots", "lifetime", "expected"), [
+    (3, 4, 3600, "32.13"),
+    (3, 4, 120, "415.59"),
+    (1, 2, 3600, "17.61"),
+])
+def test_checked_in_meter_bounds_price_the_workers_presets(launchers, slots, lifetime, expected) -> None:
+    bounds = cloudflare_policy.release_meter_bounds(_release(lifetime_meters=True))
+    policy = CloudflareCapacityPolicy(
+        monthly_limit_usd=Decimal("500"),
+        workers=CloudflareWorkersPolicy(
+            launcher_cap=launchers, slots_per_launcher=slots, installation_slots=9,
+            max_lifetime_seconds=lifetime, work_kinds=frozenset({"workflow"}),
+        ),
+    )
+    assert cloudflare_policy._price_policy(policy, bounds)["fleet_envelope_usd"] == expected
+
+
+@pytest.mark.parametrize("lifetime_meters", [False, True])
+def test_suggested_policy_requires_verified_lifetime_meters(monkeypatch, lifetime_meters: bool) -> None:
+    loaded = _release(lifetime_meters=lifetime_meters)
+    monkeypatch.setattr(cloudflare_policy, "load_workers_release", lambda: loaded)
+    cloudflare_policy._qualified_workers_suggestion.cache_clear()
+    try:
+        suggestion = cloudflare_policy.suggested_cloudflare_policy()
+    finally:
+        cloudflare_policy._qualified_workers_suggestion.cache_clear()
+    if not lifetime_meters:
+        assert suggestion is None
+    else:
+        assert suggestion is not None
+        assert suggestion.monthly_limit_usd == 75
+        workers = suggestion.workers
+        assert (workers.launcher_cap, workers.slots_per_launcher, workers.installation_slots) == (3, 4, 9)
+        assert (workers.max_lifetime_seconds, workers.linger_seconds) == (3600, 90)
+
+
+def test_unreadable_activation_release_does_not_cache_an_empty_suggestion(monkeypatch) -> None:
+    release = _release(lifetime_meters=True)
+    attempts = iter((None, release))
+
+    def load():
+        artifact = next(attempts)
+        if artifact is None:
+            raise WorkersReleaseUnavailable("manifest missing")
+        return artifact
+
+    monkeypatch.setattr(cloudflare_policy, "load_workers_release", load)
+    cloudflare_policy._qualified_workers_suggestion.cache_clear()
+    try:
+        assert cloudflare_policy.suggested_cloudflare_policy() is None
+        suggestion = cloudflare_policy.suggested_cloudflare_policy()
+        assert suggestion is not None
+        assert cloudflare_policy.suggested_cloudflare_policy() is suggestion
+    finally:
+        cloudflare_policy._qualified_workers_suggestion.cache_clear()
+
+
+def test_workers_cleanup_margin_must_cover_every_allowance() -> None:
+    cloudflare_release.validate_workers_cleanup_margin(300)
+    with pytest.raises(WorkersReleaseUnavailable, match="cover drain, delete and clock skew"):
+        cloudflare_release.validate_workers_cleanup_margin(299)
+
+
+def test_workers_release_rejects_a_lifetime_meter_without_qualified_rates(release: Path) -> None:
+    manifest = release / "manifest.json"
+    data = json.loads(manifest.read_bytes())
+    data["workers"]["launcher"]["bindings"].append({
+        "name": "BIFROST_LAUNCHER_METERS_PER_SECOND", "type": "plain_text", "source": "max_lifetime_seconds",
+    })
+    manifest.write_text(json.dumps(data))
+    with pytest.raises(WorkersReleaseUnavailable, match="single literal binding"):
+        load_workers_release(release)
 
 
 def test_missing_manifest_read_is_not_cached(release: Path, monkeypatch) -> None:
@@ -233,8 +314,48 @@ async def test_paid_check_identifies_the_missing_entitlement() -> None:
             await WorkersRestCleanup(http).verify_workers_paid(account, SecretStr("synthetic-account-token"))
 
 
-@pytest.mark.parametrize("confirmed", [True, False])
-async def test_rest_upload_scopes_the_bearer_and_finalizes_the_verified_endpoint(release: Path, confirmed: bool) -> None:
+@pytest.mark.asyncio
+async def test_empty_deployment_history_for_exactly_owned_worker_is_settling() -> None:
+    target = ResourceTarget(uuid4(), "a" * 32, "workers", "worker_script", "bifrost-test")
+    intent = ResourceIntent(target, uuid4(), 1, "b" * 64)
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/settings"):
+            result = {"bindings": [{"type": "plain_text", "name": OWNER_BINDING, "text": worker_owner_value(intent)}]}
+        else:
+            assert request.url.path.endswith("/deployments")
+            result = {"deployments": []}
+        return httpx.Response(200, json={"success": True, "result": result})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+        with pytest.raises(ObservationSettling) as failure:
+            await WorkersRestCleanup(http).observe(api_token=SecretStr("fixture-token"), intent=intent)
+    assert failure.value.check is ObservationCheck.SCRIPT_DEPLOYMENT_PENDING
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("second_page", ["repeated_id", "short_total"])
+async def test_namespace_pagination_cannot_verify_absence_while_settling(second_page: str) -> None:
+    target = ResourceTarget(uuid4(), "a" * 32, "workers", "worker_script", "bifrost-test")
+    row = {"id": "1" * 32, "script": "another-fixture-script"}
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET" and request.url.path.endswith("/namespaces")
+        page = int(request.url.params["page"])
+        assert page in (1, 2)
+        rows = [row] if page == 1 or second_page == "repeated_id" else []
+        return httpx.Response(200, json={"success": True, "result": rows, "result_info": {
+            "page": page, "total_pages": 2, "total_count": 2, "count": len(rows),
+        }})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+        with pytest.raises(ObservationSettling) as failure:
+            await WorkersRestCleanup(http).verify_absent(api_token=SecretStr("fixture-token"), target=target)
+    assert failure.value.check is ObservationCheck.NAMESPACE_PAGINATION
+
+
+@pytest.mark.parametrize("readback", ["confirmed", "endpoint_mismatch", "missing_namespace", "unexpected_namespace"])
+async def test_rest_upload_scopes_the_bearer_and_finalizes_the_verified_endpoint(release: Path, readback: str) -> None:
     path = release / "manifest.json"
     manifest = json.loads(path.read_bytes())
     manifest["workers"]["capacity"]["bindings"] = [
@@ -279,7 +400,7 @@ async def test_rest_upload_scopes_the_bearer_and_finalizes_the_verified_endpoint
         elif request.method == "POST":
             mutations.append("POST")
             endpoint = json.loads(await request.aread())
-            result = {**endpoint, "previews_enabled": not confirmed}
+            result = {**endpoint, "previews_enabled": readback == "endpoint_mismatch"}
         elif request.url.path.endswith("/settings"):
             if not bindings:
                 return httpx.Response(404)
@@ -289,6 +410,10 @@ async def test_rest_upload_scopes_the_bearer_and_finalizes_the_verified_endpoint
         elif request.url.path.endswith("/namespaces"):
             result = [{"script": target.name, "class": name, "id": identity, "preview": False}
                       for name, identity in namespaces.items()]
+            if readback == "missing_namespace":
+                result.pop()
+            elif readback == "unexpected_namespace":
+                result[-1]["class"] = "Unexpected"
         elif request.url.path.endswith("/workers/subdomain"):
             result = {"subdomain": "test-account"}
         else:
@@ -307,14 +432,28 @@ async def test_rest_upload_scopes_the_bearer_and_finalizes_the_verified_endpoint
             gateway_name="bifrost-gateway",
         ))
         token = SecretStr("synthetic-management")
-        observed = await resume_creation(
+        await request_creation(
             adapter, api_token=token, scope_bearer=SecretStr("synthetic-bearer"), committed_intent=intent,
         )
-        assert observed.provider_version == version
-        if not confirmed:
-            with pytest.raises(ObservationPending, match="did not confirm the requested settings"):
+        observed = await observe_owned(adapter, api_token=token, intent=intent, recorded=None)
+        assert observed is not None and observed.provider_version == version
+        if readback == "endpoint_mismatch":
+            with pytest.raises(ObservationPending, match="did not confirm the requested settings") as failure:
                 await adapter.configure_endpoint(api_token=token, expected=observed)
+            assert failure.value.check is ObservationCheck.ENDPOINT_UPDATE
+            assert not isinstance(failure.value, ObservationSettling)
             assert endpoint_reads == 1
+            return
+        if readback in {"missing_namespace", "unexpected_namespace"}:
+            with pytest.raises(ObservationPending) as failure:
+                await adapter.configure_endpoint(api_token=token, expected=observed)
+            if readback == "missing_namespace":
+                assert isinstance(failure.value, ObservationSettling)
+                assert failure.value.check is ObservationCheck.NAMESPACE_EXPORTS_PENDING
+            else:
+                assert not isinstance(failure.value, ObservationSettling)
+                assert failure.value.check is ObservationCheck.NAMESPACE_EXPORTS_UNEXPECTED
+            assert mutations == ["PUT"]
             return
         configured = await adapter.configure_endpoint(api_token=token, expected=observed)
         assert configured.endpoint == "https://bifrost-capacity.test-account.workers.dev"

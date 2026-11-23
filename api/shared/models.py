@@ -71,6 +71,56 @@ class CloudflareSpendStatus(BaseModel):
     period_start: datetime
     period_end: datetime
     analytics: CloudflareUsageAdvisory | None = None
+    settled_usd: Decimal | None = Field(default=None, description="Estimated usage outside identifiable resource reservations.")
+    reserved_usd: Decimal | None = None
+    remaining_headroom_usd: Decimal | None = None
+
+
+CloudflarePlacementCode = Literal[
+    "setup_required", "workflow_review_required", "waiting_for_demand",
+    "primary_has_capacity", "primary_capacity_unverified", "waiting_for_launch_gate",
+    "tenant_limit_reached", "installation_slots_full", "spend_guard_closed",
+    "cleanup_pending", "cloudflare_capacity_unavailable", "release_mismatch",
+    "connector_unavailable", "eligible_for_overflow",
+]
+
+
+class CloudflareRecoveryDetails(BaseModel):
+    code: str
+    remedy: str
+    resource_class: str | None = None
+    check: str | None = None
+    observed_category: str | None = None
+    expected_category: str | None = None
+
+
+class CloudflarePlacementReason(BaseModel):
+    code: CloudflarePlacementCode
+    label: str
+    remedy: str
+    next_eligible_at: datetime | None = None
+
+
+class CloudflareLaneStatus(BaseModel):
+    lane: Literal["workers", "containers"]
+    eligible_queued: int
+    claimed: int
+    running: int
+    primary_fit: int | None = None
+    primary_saturated: bool | None = None
+    oldest_eligible_queue_age_seconds: float | None = None
+    launch_gate_seconds: float
+    reasons: list[CloudflarePlacementReason]
+
+
+class CloudflareDeploymentEvidence(BaseModel):
+    revision: int | None = None
+    connector_session: Literal["unobserved", "waiting_for_projection", "connected", "disconnected"] | None = None
+    connector_checked_at: datetime | None = None
+    connector_last_ready_at: datetime | None = None
+    dns_verified_at: datetime | None = None
+    ingress_verified_at: datetime | None = None
+    signed_canary_at: datetime | None = None
 
 
 CloudflareReachabilityMode = Literal["existing_https_endpoint", "managed_tunnel"]
@@ -79,10 +129,7 @@ CLOUDFLARE_ID_PATTERN = r"^[a-f0-9]{32}$"
 
 class CloudflareInstallationStatus(BaseModel):
     installation_id: UUID
-    account_id: str
-    worker_ingress_origin: str
     reachability_mode: CloudflareReachabilityMode = "existing_https_endpoint"
-    zone_id: str | None = None
     connector_token_version: int | None = None
     consent_version: str
     consent_at: datetime
@@ -103,7 +150,14 @@ class CloudflareCapacityStatus(BaseModel):
     consent_text: str
     installation: CloudflareInstallationStatus | None
     latest_job_id: UUID | None = None
-    managed_tunnel_available: bool = False
+    suggested_policy: CloudflareCapacityPolicy | None = None
+    observed_at: datetime | None = None
+    approved_workflow_count: int | None = None
+    lanes: list[CloudflareLaneStatus] = Field(default_factory=list)
+    placement_reasons: list[CloudflarePlacementReason] = Field(default_factory=list)
+    deployment: CloudflareDeploymentEvidence | None = None
+    recovery: CloudflareRecoveryDetails | None = None
+    disconnected_at: datetime | None = None
 
 
 class CloudflareCapacityAction(BaseModel):
@@ -134,9 +188,18 @@ class CloudflareAccountTokenReferenceRotation(CloudflareCapacityAction):
 class CloudflareStageCredentialRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
-    account_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    account_id: str | None = Field(default=None, pattern=CLOUDFLARE_ID_PATTERN)
+    installation_id: UUID | None = None
     purpose: Literal["connect", "rotate"]
     api_token: SecretStr = Field(min_length=16, max_length=512, json_schema_extra={"writeOnly": True})
+
+    @model_validator(mode="after")
+    def validate_target(self) -> CloudflareStageCredentialRequest:
+        if (self.account_id is None) == (self.installation_id is None):
+            raise ValueError("Specify exactly one Cloudflare credential target")
+        if self.purpose == "connect" and self.installation_id is not None:
+            raise ValueError("Connecting Cloudflare requires the account ID")
+        return self
 
 
 class CloudflareStagedCredential(BaseModel):
@@ -144,32 +207,71 @@ class CloudflareStagedCredential(BaseModel):
     expires_at: datetime
 
 
-class CloudflareConnectRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
-
-    action: Literal["connect"]
-    account_id: str = Field(pattern=r"^[a-f0-9]{32}$")
-    worker_ingress_origin: str = Field(max_length=255)
-    reachability_mode: CloudflareReachabilityMode = "existing_https_endpoint"
-    zone_id: str | None = Field(default=None, pattern=CLOUDFLARE_ID_PATTERN)
-    consent_version: str = Field(max_length=64)
-    consent: Literal[True]
-    api_token: SecretStr | None = Field(default=None, min_length=16, max_length=512, json_schema_extra={"writeOnly": True})
-    credential_ref: UUID | None = None
-    policy: CloudflareCapacityPolicy
-
-    @model_validator(mode="after")
-    def validate_connection(self) -> CloudflareConnectRequest:
-        if (self.api_token is None) == (self.credential_ref is None):
-            raise ValueError("Provide one Cloudflare credential")
-        if (self.reachability_mode == "managed_tunnel") != (self.zone_id is not None):
-            raise ValueError("Provide a DNS zone ID only for Managed Tunnel")
-        return self
-
-
 class CloudflarePolicyUpdate(CloudflareCapacityAction):
     action: Literal["policy"]
     policy: CloudflareCapacityPolicy
+
+
+class CloudflareCredentialInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    api_token: SecretStr | None = Field(default=None, min_length=16, max_length=512, json_schema_extra={"writeOnly": True})
+    credential_ref: UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_credential(self) -> CloudflareCredentialInput:
+        if (self.api_token is None) == (self.credential_ref is None):
+            raise ValueError("Provide one Cloudflare credential")
+        return self
+
+
+class CloudflarePreflightRequest(CloudflareCredentialInput):
+    account_id: str | None = Field(default=None, pattern=CLOUDFLARE_ID_PATTERN)
+    zone_id: str | None = Field(default=None, pattern=CLOUDFLARE_ID_PATTERN)
+    reachability_mode: CloudflareReachabilityMode | None = None
+    worker_ingress_origin: str | None = Field(default=None, max_length=255)
+    policy: CloudflareCapacityPolicy | None = None
+
+
+class CloudflareDiscoveryChoice(BaseModel):
+    id: str = Field(pattern=CLOUDFLARE_ID_PATTERN)
+    name: str = Field(min_length=1, max_length=255)
+
+
+class CloudflareActivationPreview(BaseModel):
+    policy: CloudflareCapacityPolicy
+    fleet_envelope_usd: Decimal
+    estimated_usage_min_usd: Decimal | None = None
+    estimated_usage_max_usd: Decimal | None = None
+    workers_paid_subscription_usd: Decimal
+
+
+class CloudflarePreflight(BaseModel):
+    accounts: list[CloudflareDiscoveryChoice] | None
+    zones: list[CloudflareDiscoveryChoice] | None = None
+    account_id: str | None = None
+    zone_id: str | None = None
+    zone_name: str | None = None
+    workers_paid: Literal["verified", "unverified", "denied"] | None = None
+    connector_channel: Literal["compose", "kustomize"] | None
+    connector_ready: bool
+    primary: Literal["static", "job", "external", "unknown"]
+    recommended_reachability: CloudflareReachabilityMode
+    reachability_mode: CloudflareReachabilityMode
+    worker_ingress_origin: str | None = None
+    hostname_collision: bool = False
+    preview: CloudflareActivationPreview | None = None
+    consent_version: str
+    consent_text: str
+    preflight_receipt: str | None = None
+    expires_at: datetime | None = None
+
+
+class CloudflareActivateRequest(CloudflareCredentialInput):
+    preflight_receipt: str = Field(min_length=1, max_length=8192)
+    consent_version: str = Field(max_length=64)
+    consent: Literal[True]
+    monthly_limit_usd: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
 
 
 class GitAppManifestRequest(BaseModel):
@@ -512,7 +614,8 @@ class CloudflareEngineInvocation(BaseModel):
     wall_ms: int | None = Field(default=None, strict=True, ge=0, le=2**53 - 1, exclude_if=lambda value: value is None)
 
 
-CLOUDFLARE_MAX_RECEIPT_ROUTES = 128
+CLOUDFLARE_LEGACY_RECEIPT_ROUTES = 128
+CLOUDFLARE_MAX_RECEIPT_ROUTES = 512
 
 
 class CloudflareLauncherUsage(CloudflareLauncherCounts):

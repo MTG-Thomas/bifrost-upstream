@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {LauncherCore} from './launcher-core.mjs';
 import {CLOUDFLARE_INCARNATION_ENDED, FragmentAssembler, envelope, fragment, parseEnvelope, signHello} from './protocol.mjs';
+import {createLauncherWorkflowRunner} from '../tenant-workers/launcher-host.mjs';
 
 const INCARNATION = '0e9d8c7b-6a59-4847-b6a5-948372615041';
 const LAUNCHER = '6f1c2d3e-4a5b-4c6d-8e7f-0a1b2c3d4e5f';
@@ -30,7 +31,7 @@ function workflow(suffix = '1') {
   };
 }
 
-function peer({data = new Map(), runHost, prepareHost, runSummary, runAgent, beforePut, onSend, meter, slots = 1,
+function peer({data = new Map(), runHost, prepareHost, runSummary, runAgent, beforePut, onSend, meter, slots = 1, deadlineMs,
   stopHost, tenantSlots = false} = {}) {
   let now = START;
   let order = 0;
@@ -44,7 +45,7 @@ function peer({data = new Map(), runHost, prepareHost, runSummary, runAgent, bef
   const entered = deferred();
   const assembler = new FragmentAssembler();
   const core = new LauncherCore({
-    identity: IDENTITY, secret: SECRET, clock: () => now, meter, slots, tenantSlots,
+    identity: IDENTITY, secret: SECRET, clock: () => now, deadlineMs, meter, slots, tenantSlots,
     newId: () => `id-${String(++order).padStart(24, '0')}`,
     storage: {
       get: async (key) => structuredClone(data.get(key)),
@@ -573,6 +574,28 @@ test('a lost ack keeps the same result until the matching ack', async () => {
   assert.equal(api.data.has('slot'), false);
 });
 
+test('a managed workflow retains only stage timestamps in its replayed terminal', async () => {
+  const timings = {engine_ready_at: START + 10, entry_at: START + 20};
+  const run = createLauncherWorkflowRunner(() => ({
+    run: async () => ({
+      output: {status: 'Success', result: 42},
+      timings: {engine_ready_at: timings.engine_ready_at, child: {entry_at: timings.entry_at, other: 'ignored'}},
+    }),
+  }));
+  const api = peer({tenantSlots: true, runHost: (route, context, signal) => run({
+    route, context, signal, now: () => START,
+  })});
+  await connect(api);
+  await api.command('workflow', {...workflow(), engine_slot: 0});
+  await api.finish();
+  const terminal = api.frames().at(-1);
+  assert.deepEqual(terminal.timings, timings);
+  assert.equal(terminal.result.timings, undefined);
+  await api.close();
+  await connect(api, 2);
+  assert.deepEqual(api.frames().at(-1), terminal);
+});
+
 test('a CPU limit terminal retains its reason, budget, and uncertainty across reconnect', async () => {
   const outcome = {attempt_state: 'uncertain', result: {success: false, error_type: 'CpuLimitExceeded',
     error: 'Stopped by Cloudflare: the executor exceeded its CPU time limit (cpu_budget_ms=10).'}};
@@ -657,6 +680,28 @@ test('launcher exhaustion preserves success and allows redial until the terminal
   assert.equal(await api.ack(terminal._event_id), 'terminal_ack');
   assert.equal(await api.core.canReconnect(), false);
   assert.equal(await api.core.isStopped(), true);
+});
+
+test('an incarnation deadline drains the accepted workflow and stops after its ACK', async () => {
+  const running = deferred();
+  const api = peer({deadlineMs: START + 1000, slots: 2, runHost: () => running.promise});
+  await connect(api);
+  await api.command('workflow', workflow());
+  await api.entered;
+  api.setClock(START + 1000);
+  await api.command('workflow', workflow('2'));
+  assert.equal(api.frames().at(-1).error_type, 'LauncherRetired');
+  api.setClock(START + 1001);
+  await api.command('workflow', workflow('3'));
+  assert.equal(api.frames().at(-1).error_type, 'LauncherRetired');
+  assert.equal(api.data.has(`seen:${workflow('2').route_id}`), false);
+  assert.equal(api.data.has(`seen:${workflow('3').route_id}`), false);
+  assert.equal(await api.core.isStopped(), false);
+  running.resolve(COMPLETED);
+  await api.finish();
+  await api.ack(api.frames().at(-1)._event_id);
+  assert.equal(await api.core.isStopped(), true);
+  assert.equal(await api.core.canReconnect(), false);
 });
 
 test('release completes while a stop RPC is still stalled', async () => {

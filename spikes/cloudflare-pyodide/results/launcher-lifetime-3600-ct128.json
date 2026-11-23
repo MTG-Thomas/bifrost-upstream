@@ -1,0 +1,5037 @@
+{
+  "spike": "562cbab9e",
+  "merge": "bb7f5f1989e3c06642562c657e0014adc6a695ea",
+  "launcher_and_harness_source": "51402c89de6e0e0d07c01eb14d3d146327053c32",
+  "environment": {
+    "host": "CT128",
+    "node": "26.13.1",
+    "workerd": "1.20261023.1",
+    "cloudflare_cf_fetch_enabled": false,
+    "hosted": false
+  },
+  "release": {
+    "worker_bundle_sha256": {
+      "capacity": "0805f8fe9ff4dc7f5c6db03714924dd334b5383576a0e3be79ee79885ddbd138",
+      "gateway": "6fb1025b11b308d3a628bed063cb5aa5d11f141819eb3ddd1c0b8153621847d5",
+      "launcher": "914d785160aaed01d8278e0190b5b1f46a6273c8614374930b4347f1e1abdac8"
+    },
+    "runtime_sha256": "fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5",
+    "qualification": "Local release inputs and unqualified launcher and capacity bytes. Requalification is required.",
+    "build_workers_inventory_check": {
+      "passed": 11,
+      "expected_failure": "Changed launcher-core.mjs hash requires a reviewed meter inventory."
+    }
+  },
+  "pricing": {
+    "launcher_cap": 3,
+    "slots_per_launcher": 4,
+    "installation_slots": 9,
+    "launcher_lifetime_seconds": 3600,
+    "tenant_host_linger_seconds": 90,
+    "cleanup_margin_seconds": 300,
+    "launcher_drain_seconds": 285,
+    "delete_allowance_seconds": 10,
+    "max_clock_skew_seconds": 5,
+    "fleet_envelope_usd": "32.13",
+    "suggested_limit_usd": "75.00"
+  },
+  "meter_caps_per_launcher_second": {
+    "sqlite_rows_written": 128,
+    "do_requests": 64,
+    "log_events": 64
+  },
+  "local_validation": {
+    "node_unit_passed": 66,
+    "control_120_passed": 2,
+    "soak_3600_passed": 2,
+    "provider_conformance_checks_per_run": 17,
+    "scope": "RSS and CPU cover the whole workerd process. The seal records total meters and up to 128 workflow route details."
+  },
+  "control_120": {
+    "summary": {
+      "workflow_outcomes": {
+        "completed": 7
+      },
+      "target_seconds": 120,
+      "retirement_offset_ms": 5,
+      "cleanup_seconds": 0.012000000000000455,
+      "hello_sequences": [
+        1,
+        2
+      ],
+      "cpu_ms": 16530,
+      "avg_workerd_cpu_ms_per_second": 137.75,
+      "peak_workerd_rss_kib": 761736,
+      "module_counts": [
+        479,
+        481
+      ],
+      "routes_with_invocation_details": 7,
+      "checkpoints": [
+        {
+          "at_seconds": 0.073,
+          "deadline_offset_ms": -119753,
+          "rss_kib": 217580,
+          "peak_rss_kib": 217580,
+          "cpu_ms": 0,
+          "meter": null,
+          "state": "running"
+        },
+        {
+          "at_seconds": 13.961,
+          "deadline_offset_ms": -105865,
+          "rss_kib": 761736,
+          "peak_rss_kib": 761736,
+          "cpu_ms": 16260,
+          "meter": {
+            "sqlite_rows_written": 126,
+            "do_requests": 12,
+            "log_events": 4,
+            "exhausted": null
+          },
+          "state": "running"
+        },
+        {
+          "at_seconds": 119.831,
+          "deadline_offset_ms": 5,
+          "rss_kib": 746032,
+          "peak_rss_kib": 761676,
+          "cpu_ms": 16530,
+          "meter": {
+            "sqlite_rows_written": 230,
+            "do_requests": 21,
+            "log_events": 7,
+            "exhausted": null
+          },
+          "state": "deleted"
+        }
+      ],
+      "meters": {
+        "sqlite_rows_written": {
+          "sealed": 230,
+          "cap": 15360,
+          "average_per_second": 1.9167,
+          "max_sample_interval_per_second": 1.9881
+        },
+        "do_requests": {
+          "sealed": 21,
+          "cap": 7680,
+          "average_per_second": 0.175,
+          "max_sample_interval_per_second": 0.1864
+        },
+        "log_events": {
+          "sealed": 7,
+          "cap": 7680,
+          "average_per_second": 0.0583,
+          "max_sample_interval_per_second": 0.0621
+        }
+      }
+    },
+    "node": "v26.13.1",
+    "target_seconds": 120,
+    "launcher_sha256": "914d785160aaed01d8278e0190b5b1f46a6273c8614374930b4347f1e1abdac8",
+    "process_memory_is_aggregate": true,
+    "samples": [
+      {
+        "at_seconds": 0.073,
+        "deadline_offset_ms": -119753,
+        "rss_kib": 217580,
+        "peak_rss_kib": 217580,
+        "cpu_ms": 0,
+        "meter": null,
+        "state": "running"
+      },
+      {
+        "at_seconds": 13.961,
+        "deadline_offset_ms": -105865,
+        "rss_kib": 761736,
+        "peak_rss_kib": 761736,
+        "cpu_ms": 16260,
+        "meter": {
+          "sqlite_rows_written": 126,
+          "do_requests": 12,
+          "log_events": 4,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 30.057,
+        "deadline_offset_ms": -89769,
+        "rss_kib": 746644,
+        "peak_rss_kib": 761676,
+        "cpu_ms": 16340,
+        "meter": {
+          "sqlite_rows_written": 158,
+          "do_requests": 15,
+          "log_events": 5,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 60.046,
+        "deadline_offset_ms": -59779,
+        "rss_kib": 744660,
+        "peak_rss_kib": 761676,
+        "cpu_ms": 16420,
+        "meter": {
+          "sqlite_rows_written": 190,
+          "do_requests": 18,
+          "log_events": 6,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 91.117,
+        "deadline_offset_ms": -28709,
+        "rss_kib": 747128,
+        "peak_rss_kib": 761676,
+        "cpu_ms": 16520,
+        "meter": {
+          "sqlite_rows_written": 222,
+          "do_requests": 21,
+          "log_events": 7,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 119.831,
+        "deadline_offset_ms": 5,
+        "rss_kib": 746032,
+        "peak_rss_kib": 761676,
+        "cpu_ms": 16530,
+        "meter": {
+          "sqlite_rows_written": 230,
+          "do_requests": 21,
+          "log_events": 7,
+          "exhausted": null
+        },
+        "state": "deleted"
+      }
+    ],
+    "workflows": [
+      {
+        "at_seconds": 13.935,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 9944
+          }
+        ]
+      },
+      {
+        "at_seconds": 13.951,
+        "slot": 1,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 2,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 6678
+          }
+        ]
+      },
+      {
+        "at_seconds": 13.951,
+        "slot": 2,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 3,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 3353
+          }
+        ]
+      },
+      {
+        "at_seconds": 13.955,
+        "slot": 3,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 4,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 113
+          }
+        ]
+      },
+      {
+        "at_seconds": 30.052,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 36
+          }
+        ]
+      },
+      {
+        "at_seconds": 60.042,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 28
+          }
+        ]
+      },
+      {
+        "at_seconds": 91.113,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 38
+          }
+        ]
+      }
+    ],
+    "hello_sequences": [
+      1,
+      2
+    ],
+    "cadence": {
+      "polls": 40,
+      "spacingSeconds": 2,
+      "elapsedSeconds": 80.25140271801502,
+      "reconnectObservations": 1
+    },
+    "cleanup_seconds": 0.012000000000000455,
+    "seal": {
+      "sqlite_rows_written": 230,
+      "do_requests": 21,
+      "log_events": 7,
+      "sqlite_database_bytes": 20480,
+      "exhausted": false,
+      "launcher_storage_cleared": true,
+      "ledger_receipt_pending": true
+    },
+    "route_invocations": {
+      "boot_cold": 4,
+      "workflow_warm": 7,
+      "boot_warm": 3
+    }
+  },
+  "soak_3600": {
+    "summary": {
+      "workflow_outcomes": {
+        "completed": 192
+      },
+      "target_seconds": 3600,
+      "retirement_offset_ms": 350,
+      "cleanup_seconds": 0.06299999999964712,
+      "hello_sequences": [
+        1,
+        2
+      ],
+      "cpu_ms": 29290,
+      "avg_workerd_cpu_ms_per_second": 8.1361,
+      "peak_workerd_rss_kib": 842296,
+      "module_counts": [
+        479,
+        481
+      ],
+      "routes_with_invocation_details": 128,
+      "checkpoints": [
+        {
+          "at_seconds": 0.053,
+          "deadline_offset_ms": -3599799,
+          "rss_kib": 214004,
+          "peak_rss_kib": 214004,
+          "cpu_ms": 10,
+          "meter": null,
+          "state": "running"
+        },
+        {
+          "at_seconds": 14.582,
+          "deadline_offset_ms": -3585270,
+          "rss_kib": 757816,
+          "peak_rss_kib": 757816,
+          "cpu_ms": 16950,
+          "meter": {
+            "sqlite_rows_written": 126,
+            "do_requests": 12,
+            "log_events": 4,
+            "exhausted": null
+          },
+          "state": "running"
+        },
+        {
+          "at_seconds": 900.156,
+          "deadline_offset_ms": -2699696,
+          "rss_kib": 761188,
+          "peak_rss_kib": 766560,
+          "cpu_ms": 20300,
+          "meter": {
+            "sqlite_rows_written": 1662,
+            "do_requests": 156,
+            "log_events": 52,
+            "exhausted": null
+          },
+          "state": "running"
+        },
+        {
+          "at_seconds": 1800.165,
+          "deadline_offset_ms": -1799687,
+          "rss_kib": 797264,
+          "peak_rss_kib": 797264,
+          "cpu_ms": 23240,
+          "meter": {
+            "sqlite_rows_written": 3198,
+            "do_requests": 300,
+            "log_events": 100,
+            "exhausted": null
+          },
+          "state": "running"
+        },
+        {
+          "at_seconds": 2700.165,
+          "deadline_offset_ms": -899687,
+          "rss_kib": 825688,
+          "peak_rss_kib": 825688,
+          "cpu_ms": 26310,
+          "meter": {
+            "sqlite_rows_written": 4694,
+            "do_requests": 444,
+            "log_events": 148,
+            "exhausted": null
+          },
+          "state": "running"
+        },
+        {
+          "at_seconds": 3600.202,
+          "deadline_offset_ms": 350,
+          "rss_kib": 825200,
+          "peak_rss_kib": 842296,
+          "cpu_ms": 29290,
+          "meter": {
+            "sqlite_rows_written": 6022,
+            "do_requests": 576,
+            "log_events": 192,
+            "exhausted": null
+          },
+          "state": "deleted"
+        }
+      ],
+      "meters": {
+        "sqlite_rows_written": {
+          "sealed": 6022,
+          "cap": 460800,
+          "average_per_second": 1.6728,
+          "max_sample_interval_per_second": 4.2734
+        },
+        "do_requests": {
+          "sealed": 576,
+          "cap": 230400,
+          "average_per_second": 0.16,
+          "max_sample_interval_per_second": 0.4006
+        },
+        "log_events": {
+          "sealed": 192,
+          "cap": 230400,
+          "average_per_second": 0.0533,
+          "max_sample_interval_per_second": 0.1335
+        }
+      }
+    },
+    "node": "v26.13.1",
+    "target_seconds": 3600,
+    "launcher_sha256": "914d785160aaed01d8278e0190b5b1f46a6273c8614374930b4347f1e1abdac8",
+    "process_memory_is_aggregate": true,
+    "samples": [
+      {
+        "at_seconds": 0.053,
+        "deadline_offset_ms": -3599799,
+        "rss_kib": 214004,
+        "peak_rss_kib": 214004,
+        "cpu_ms": 10,
+        "meter": null,
+        "state": "running"
+      },
+      {
+        "at_seconds": 14.582,
+        "deadline_offset_ms": -3585270,
+        "rss_kib": 757816,
+        "peak_rss_kib": 757816,
+        "cpu_ms": 16950,
+        "meter": {
+          "sqlite_rows_written": 126,
+          "do_requests": 12,
+          "log_events": 4,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 30.07,
+        "deadline_offset_ms": -3569782,
+        "rss_kib": 752076,
+        "peak_rss_kib": 757812,
+        "cpu_ms": 17040,
+        "meter": {
+          "sqlite_rows_written": 158,
+          "do_requests": 15,
+          "log_events": 5,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 60.058,
+        "deadline_offset_ms": -3539794,
+        "rss_kib": 753176,
+        "peak_rss_kib": 757812,
+        "cpu_ms": 17130,
+        "meter": {
+          "sqlite_rows_written": 190,
+          "do_requests": 18,
+          "log_events": 6,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 90.045,
+        "deadline_offset_ms": -3509806,
+        "rss_kib": 753764,
+        "peak_rss_kib": 757812,
+        "cpu_ms": 17200,
+        "meter": {
+          "sqlite_rows_written": 222,
+          "do_requests": 21,
+          "log_events": 7,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 120.058,
+        "deadline_offset_ms": -3479794,
+        "rss_kib": 755240,
+        "peak_rss_kib": 757812,
+        "cpu_ms": 17290,
+        "meter": {
+          "sqlite_rows_written": 254,
+          "do_requests": 24,
+          "log_events": 8,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 150.077,
+        "deadline_offset_ms": -3449775,
+        "rss_kib": 755068,
+        "peak_rss_kib": 757812,
+        "cpu_ms": 17420,
+        "meter": {
+          "sqlite_rows_written": 286,
+          "do_requests": 27,
+          "log_events": 9,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 180.192,
+        "deadline_offset_ms": -3419660,
+        "rss_kib": 757016,
+        "peak_rss_kib": 757812,
+        "cpu_ms": 17670,
+        "meter": {
+          "sqlite_rows_written": 414,
+          "do_requests": 39,
+          "log_events": 13,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 210.06,
+        "deadline_offset_ms": -3389792,
+        "rss_kib": 757256,
+        "peak_rss_kib": 757812,
+        "cpu_ms": 17760,
+        "meter": {
+          "sqlite_rows_written": 446,
+          "do_requests": 42,
+          "log_events": 14,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 240.043,
+        "deadline_offset_ms": -3359809,
+        "rss_kib": 757664,
+        "peak_rss_kib": 757812,
+        "cpu_ms": 17840,
+        "meter": {
+          "sqlite_rows_written": 478,
+          "do_requests": 45,
+          "log_events": 15,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 270.054,
+        "deadline_offset_ms": -3329798,
+        "rss_kib": 757984,
+        "peak_rss_kib": 757984,
+        "cpu_ms": 17940,
+        "meter": {
+          "sqlite_rows_written": 510,
+          "do_requests": 48,
+          "log_events": 16,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 300.048,
+        "deadline_offset_ms": -3299804,
+        "rss_kib": 758656,
+        "peak_rss_kib": 758656,
+        "cpu_ms": 18010,
+        "meter": {
+          "sqlite_rows_written": 542,
+          "do_requests": 51,
+          "log_events": 17,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 330.055,
+        "deadline_offset_ms": -3269797,
+        "rss_kib": 759628,
+        "peak_rss_kib": 759628,
+        "cpu_ms": 18100,
+        "meter": {
+          "sqlite_rows_written": 574,
+          "do_requests": 54,
+          "log_events": 18,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 360.174,
+        "deadline_offset_ms": -3239678,
+        "rss_kib": 762216,
+        "peak_rss_kib": 762216,
+        "cpu_ms": 18330,
+        "meter": {
+          "sqlite_rows_written": 702,
+          "do_requests": 66,
+          "log_events": 22,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 390.061,
+        "deadline_offset_ms": -3209791,
+        "rss_kib": 755876,
+        "peak_rss_kib": 762100,
+        "cpu_ms": 18420,
+        "meter": {
+          "sqlite_rows_written": 734,
+          "do_requests": 69,
+          "log_events": 23,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 420.046,
+        "deadline_offset_ms": -3179806,
+        "rss_kib": 756464,
+        "peak_rss_kib": 762100,
+        "cpu_ms": 18520,
+        "meter": {
+          "sqlite_rows_written": 766,
+          "do_requests": 72,
+          "log_events": 24,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 451.116,
+        "deadline_offset_ms": -3148736,
+        "rss_kib": 756636,
+        "peak_rss_kib": 762100,
+        "cpu_ms": 18610,
+        "meter": {
+          "sqlite_rows_written": 798,
+          "do_requests": 75,
+          "log_events": 25,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 480.048,
+        "deadline_offset_ms": -3119804,
+        "rss_kib": 756736,
+        "peak_rss_kib": 762100,
+        "cpu_ms": 18690,
+        "meter": {
+          "sqlite_rows_written": 830,
+          "do_requests": 78,
+          "log_events": 26,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 510.051,
+        "deadline_offset_ms": -3089801,
+        "rss_kib": 758040,
+        "peak_rss_kib": 762100,
+        "cpu_ms": 18780,
+        "meter": {
+          "sqlite_rows_written": 862,
+          "do_requests": 81,
+          "log_events": 27,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 540.157,
+        "deadline_offset_ms": -3059695,
+        "rss_kib": 760324,
+        "peak_rss_kib": 762100,
+        "cpu_ms": 18980,
+        "meter": {
+          "sqlite_rows_written": 990,
+          "do_requests": 93,
+          "log_events": 31,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 570.051,
+        "deadline_offset_ms": -3029800,
+        "rss_kib": 761948,
+        "peak_rss_kib": 762100,
+        "cpu_ms": 19060,
+        "meter": {
+          "sqlite_rows_written": 1022,
+          "do_requests": 96,
+          "log_events": 32,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 600.05,
+        "deadline_offset_ms": -2999802,
+        "rss_kib": 761728,
+        "peak_rss_kib": 762100,
+        "cpu_ms": 19140,
+        "meter": {
+          "sqlite_rows_written": 1054,
+          "do_requests": 99,
+          "log_events": 33,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 630.041,
+        "deadline_offset_ms": -2969811,
+        "rss_kib": 761904,
+        "peak_rss_kib": 762100,
+        "cpu_ms": 19220,
+        "meter": {
+          "sqlite_rows_written": 1086,
+          "do_requests": 102,
+          "log_events": 34,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 660.038,
+        "deadline_offset_ms": -2939814,
+        "rss_kib": 762272,
+        "peak_rss_kib": 762272,
+        "cpu_ms": 19280,
+        "meter": {
+          "sqlite_rows_written": 1118,
+          "do_requests": 105,
+          "log_events": 35,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 690.039,
+        "deadline_offset_ms": -2909813,
+        "rss_kib": 763268,
+        "peak_rss_kib": 763268,
+        "cpu_ms": 19350,
+        "meter": {
+          "sqlite_rows_written": 1150,
+          "do_requests": 108,
+          "log_events": 36,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 720.144,
+        "deadline_offset_ms": -2879708,
+        "rss_kib": 766296,
+        "peak_rss_kib": 766296,
+        "cpu_ms": 19550,
+        "meter": {
+          "sqlite_rows_written": 1278,
+          "do_requests": 120,
+          "log_events": 40,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 750.053,
+        "deadline_offset_ms": -2849799,
+        "rss_kib": 764244,
+        "peak_rss_kib": 766560,
+        "cpu_ms": 19640,
+        "meter": {
+          "sqlite_rows_written": 1310,
+          "do_requests": 123,
+          "log_events": 41,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 780.042,
+        "deadline_offset_ms": -2819810,
+        "rss_kib": 761492,
+        "peak_rss_kib": 766560,
+        "cpu_ms": 19710,
+        "meter": {
+          "sqlite_rows_written": 1342,
+          "do_requests": 126,
+          "log_events": 42,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 810.048,
+        "deadline_offset_ms": -2789804,
+        "rss_kib": 761044,
+        "peak_rss_kib": 766560,
+        "cpu_ms": 19780,
+        "meter": {
+          "sqlite_rows_written": 1374,
+          "do_requests": 129,
+          "log_events": 43,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 840.045,
+        "deadline_offset_ms": -2759807,
+        "rss_kib": 761764,
+        "peak_rss_kib": 766560,
+        "cpu_ms": 19870,
+        "meter": {
+          "sqlite_rows_written": 1406,
+          "do_requests": 132,
+          "log_events": 44,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 870.203,
+        "deadline_offset_ms": -2729649,
+        "rss_kib": 763340,
+        "peak_rss_kib": 766560,
+        "cpu_ms": 20110,
+        "meter": {
+          "sqlite_rows_written": 1534,
+          "do_requests": 144,
+          "log_events": 48,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 900.156,
+        "deadline_offset_ms": -2699696,
+        "rss_kib": 761188,
+        "peak_rss_kib": 766560,
+        "cpu_ms": 20300,
+        "meter": {
+          "sqlite_rows_written": 1662,
+          "do_requests": 156,
+          "log_events": 52,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 930.043,
+        "deadline_offset_ms": -2669809,
+        "rss_kib": 760672,
+        "peak_rss_kib": 766560,
+        "cpu_ms": 20370,
+        "meter": {
+          "sqlite_rows_written": 1694,
+          "do_requests": 159,
+          "log_events": 53,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 960.06,
+        "deadline_offset_ms": -2639792,
+        "rss_kib": 761332,
+        "peak_rss_kib": 766560,
+        "cpu_ms": 20470,
+        "meter": {
+          "sqlite_rows_written": 1726,
+          "do_requests": 162,
+          "log_events": 54,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 990.047,
+        "deadline_offset_ms": -2609805,
+        "rss_kib": 761140,
+        "peak_rss_kib": 766560,
+        "cpu_ms": 20550,
+        "meter": {
+          "sqlite_rows_written": 1758,
+          "do_requests": 165,
+          "log_events": 55,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1020.038,
+        "deadline_offset_ms": -2579814,
+        "rss_kib": 762068,
+        "peak_rss_kib": 766560,
+        "cpu_ms": 20620,
+        "meter": {
+          "sqlite_rows_written": 1790,
+          "do_requests": 168,
+          "log_events": 56,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1050.051,
+        "deadline_offset_ms": -2549801,
+        "rss_kib": 762352,
+        "peak_rss_kib": 766560,
+        "cpu_ms": 20700,
+        "meter": {
+          "sqlite_rows_written": 1822,
+          "do_requests": 171,
+          "log_events": 57,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1080.14,
+        "deadline_offset_ms": -2519711,
+        "rss_kib": 765008,
+        "peak_rss_kib": 766560,
+        "cpu_ms": 20880,
+        "meter": {
+          "sqlite_rows_written": 1950,
+          "do_requests": 183,
+          "log_events": 61,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1110.046,
+        "deadline_offset_ms": -2489806,
+        "rss_kib": 766356,
+        "peak_rss_kib": 766560,
+        "cpu_ms": 20950,
+        "meter": {
+          "sqlite_rows_written": 1982,
+          "do_requests": 186,
+          "log_events": 62,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1140.036,
+        "deadline_offset_ms": -2459816,
+        "rss_kib": 765404,
+        "peak_rss_kib": 766560,
+        "cpu_ms": 21020,
+        "meter": {
+          "sqlite_rows_written": 2014,
+          "do_requests": 189,
+          "log_events": 63,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1170.046,
+        "deadline_offset_ms": -2429806,
+        "rss_kib": 766080,
+        "peak_rss_kib": 766560,
+        "cpu_ms": 21100,
+        "meter": {
+          "sqlite_rows_written": 2046,
+          "do_requests": 192,
+          "log_events": 64,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1200.036,
+        "deadline_offset_ms": -2399816,
+        "rss_kib": 766796,
+        "peak_rss_kib": 766796,
+        "cpu_ms": 21160,
+        "meter": {
+          "sqlite_rows_written": 2078,
+          "do_requests": 195,
+          "log_events": 65,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1230.047,
+        "deadline_offset_ms": -2369805,
+        "rss_kib": 767624,
+        "peak_rss_kib": 767624,
+        "cpu_ms": 21240,
+        "meter": {
+          "sqlite_rows_written": 2110,
+          "do_requests": 198,
+          "log_events": 66,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1260.142,
+        "deadline_offset_ms": -2339710,
+        "rss_kib": 770048,
+        "peak_rss_kib": 770048,
+        "cpu_ms": 21420,
+        "meter": {
+          "sqlite_rows_written": 2238,
+          "do_requests": 210,
+          "log_events": 70,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1290.04,
+        "deadline_offset_ms": -2309812,
+        "rss_kib": 770532,
+        "peak_rss_kib": 770532,
+        "cpu_ms": 21500,
+        "meter": {
+          "sqlite_rows_written": 2270,
+          "do_requests": 213,
+          "log_events": 71,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1320.043,
+        "deadline_offset_ms": -2279809,
+        "rss_kib": 772264,
+        "peak_rss_kib": 772264,
+        "cpu_ms": 21570,
+        "meter": {
+          "sqlite_rows_written": 2302,
+          "do_requests": 216,
+          "log_events": 72,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1350.04,
+        "deadline_offset_ms": -2249812,
+        "rss_kib": 773352,
+        "peak_rss_kib": 773352,
+        "cpu_ms": 21640,
+        "meter": {
+          "sqlite_rows_written": 2334,
+          "do_requests": 219,
+          "log_events": 73,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1380.035,
+        "deadline_offset_ms": -2219817,
+        "rss_kib": 773888,
+        "peak_rss_kib": 773888,
+        "cpu_ms": 21700,
+        "meter": {
+          "sqlite_rows_written": 2366,
+          "do_requests": 222,
+          "log_events": 74,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1410.039,
+        "deadline_offset_ms": -2189812,
+        "rss_kib": 773880,
+        "peak_rss_kib": 773880,
+        "cpu_ms": 21760,
+        "meter": {
+          "sqlite_rows_written": 2398,
+          "do_requests": 225,
+          "log_events": 75,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1440.146,
+        "deadline_offset_ms": -2159706,
+        "rss_kib": 779080,
+        "peak_rss_kib": 779080,
+        "cpu_ms": 21940,
+        "meter": {
+          "sqlite_rows_written": 2526,
+          "do_requests": 237,
+          "log_events": 79,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1470.046,
+        "deadline_offset_ms": -2129806,
+        "rss_kib": 781264,
+        "peak_rss_kib": 781264,
+        "cpu_ms": 22010,
+        "meter": {
+          "sqlite_rows_written": 2558,
+          "do_requests": 240,
+          "log_events": 80,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1500.036,
+        "deadline_offset_ms": -2099816,
+        "rss_kib": 782284,
+        "peak_rss_kib": 782284,
+        "cpu_ms": 22080,
+        "meter": {
+          "sqlite_rows_written": 2590,
+          "do_requests": 243,
+          "log_events": 81,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1530.037,
+        "deadline_offset_ms": -2069814,
+        "rss_kib": 783292,
+        "peak_rss_kib": 783292,
+        "cpu_ms": 22150,
+        "meter": {
+          "sqlite_rows_written": 2622,
+          "do_requests": 246,
+          "log_events": 82,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1560.04,
+        "deadline_offset_ms": -2039812,
+        "rss_kib": 785152,
+        "peak_rss_kib": 785152,
+        "cpu_ms": 22210,
+        "meter": {
+          "sqlite_rows_written": 2654,
+          "do_requests": 249,
+          "log_events": 83,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1590.043,
+        "deadline_offset_ms": -2009808,
+        "rss_kib": 786072,
+        "peak_rss_kib": 786072,
+        "cpu_ms": 22290,
+        "meter": {
+          "sqlite_rows_written": 2686,
+          "do_requests": 252,
+          "log_events": 84,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1620.148,
+        "deadline_offset_ms": -1979704,
+        "rss_kib": 790404,
+        "peak_rss_kib": 790404,
+        "cpu_ms": 22470,
+        "meter": {
+          "sqlite_rows_written": 2814,
+          "do_requests": 264,
+          "log_events": 88,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1650.056,
+        "deadline_offset_ms": -1949796,
+        "rss_kib": 790912,
+        "peak_rss_kib": 790912,
+        "cpu_ms": 22550,
+        "meter": {
+          "sqlite_rows_written": 2846,
+          "do_requests": 267,
+          "log_events": 89,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1680.044,
+        "deadline_offset_ms": -1919808,
+        "rss_kib": 790744,
+        "peak_rss_kib": 791536,
+        "cpu_ms": 22630,
+        "meter": {
+          "sqlite_rows_written": 2878,
+          "do_requests": 270,
+          "log_events": 90,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1710.049,
+        "deadline_offset_ms": -1889802,
+        "rss_kib": 790628,
+        "peak_rss_kib": 791536,
+        "cpu_ms": 22720,
+        "meter": {
+          "sqlite_rows_written": 2910,
+          "do_requests": 273,
+          "log_events": 91,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1740.038,
+        "deadline_offset_ms": -1859813,
+        "rss_kib": 791024,
+        "peak_rss_kib": 791536,
+        "cpu_ms": 22790,
+        "meter": {
+          "sqlite_rows_written": 2942,
+          "do_requests": 276,
+          "log_events": 92,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1770.191,
+        "deadline_offset_ms": -1829661,
+        "rss_kib": 795500,
+        "peak_rss_kib": 795500,
+        "cpu_ms": 23030,
+        "meter": {
+          "sqlite_rows_written": 3070,
+          "do_requests": 288,
+          "log_events": 96,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1800.165,
+        "deadline_offset_ms": -1799687,
+        "rss_kib": 797264,
+        "peak_rss_kib": 797264,
+        "cpu_ms": 23240,
+        "meter": {
+          "sqlite_rows_written": 3198,
+          "do_requests": 300,
+          "log_events": 100,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1830.045,
+        "deadline_offset_ms": -1769806,
+        "rss_kib": 798400,
+        "peak_rss_kib": 798400,
+        "cpu_ms": 23310,
+        "meter": {
+          "sqlite_rows_written": 3230,
+          "do_requests": 303,
+          "log_events": 101,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1860.039,
+        "deadline_offset_ms": -1739813,
+        "rss_kib": 799216,
+        "peak_rss_kib": 799216,
+        "cpu_ms": 23380,
+        "meter": {
+          "sqlite_rows_written": 3262,
+          "do_requests": 306,
+          "log_events": 102,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1890.044,
+        "deadline_offset_ms": -1709808,
+        "rss_kib": 798740,
+        "peak_rss_kib": 799180,
+        "cpu_ms": 23460,
+        "meter": {
+          "sqlite_rows_written": 3294,
+          "do_requests": 309,
+          "log_events": 103,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1920.045,
+        "deadline_offset_ms": -1679807,
+        "rss_kib": 798256,
+        "peak_rss_kib": 799180,
+        "cpu_ms": 23530,
+        "meter": {
+          "sqlite_rows_written": 3326,
+          "do_requests": 312,
+          "log_events": 104,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1950.041,
+        "deadline_offset_ms": -1649811,
+        "rss_kib": 800040,
+        "peak_rss_kib": 800040,
+        "cpu_ms": 23590,
+        "meter": {
+          "sqlite_rows_written": 3358,
+          "do_requests": 315,
+          "log_events": 105,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 1980.173,
+        "deadline_offset_ms": -1619679,
+        "rss_kib": 805988,
+        "peak_rss_kib": 805988,
+        "cpu_ms": 23820,
+        "meter": {
+          "sqlite_rows_written": 3486,
+          "do_requests": 327,
+          "log_events": 109,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2010.045,
+        "deadline_offset_ms": -1589807,
+        "rss_kib": 805488,
+        "peak_rss_kib": 805944,
+        "cpu_ms": 23900,
+        "meter": {
+          "sqlite_rows_written": 3518,
+          "do_requests": 330,
+          "log_events": 110,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2040.066,
+        "deadline_offset_ms": -1559786,
+        "rss_kib": 805056,
+        "peak_rss_kib": 805944,
+        "cpu_ms": 24000,
+        "meter": {
+          "sqlite_rows_written": 3550,
+          "do_requests": 333,
+          "log_events": 111,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2070.056,
+        "deadline_offset_ms": -1529796,
+        "rss_kib": 805608,
+        "peak_rss_kib": 805944,
+        "cpu_ms": 24090,
+        "meter": {
+          "sqlite_rows_written": 3582,
+          "do_requests": 336,
+          "log_events": 112,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2100.043,
+        "deadline_offset_ms": -1499809,
+        "rss_kib": 806328,
+        "peak_rss_kib": 806328,
+        "cpu_ms": 24160,
+        "meter": {
+          "sqlite_rows_written": 3614,
+          "do_requests": 339,
+          "log_events": 113,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2130.048,
+        "deadline_offset_ms": -1469804,
+        "rss_kib": 807328,
+        "peak_rss_kib": 807328,
+        "cpu_ms": 24240,
+        "meter": {
+          "sqlite_rows_written": 3646,
+          "do_requests": 342,
+          "log_events": 114,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2160.151,
+        "deadline_offset_ms": -1439701,
+        "rss_kib": 811180,
+        "peak_rss_kib": 811180,
+        "cpu_ms": 24420,
+        "meter": {
+          "sqlite_rows_written": 3774,
+          "do_requests": 354,
+          "log_events": 118,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2190.053,
+        "deadline_offset_ms": -1409799,
+        "rss_kib": 812720,
+        "peak_rss_kib": 812720,
+        "cpu_ms": 24500,
+        "meter": {
+          "sqlite_rows_written": 3806,
+          "do_requests": 357,
+          "log_events": 119,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2220.049,
+        "deadline_offset_ms": -1379803,
+        "rss_kib": 810752,
+        "peak_rss_kib": 812584,
+        "cpu_ms": 24580,
+        "meter": {
+          "sqlite_rows_written": 3838,
+          "do_requests": 360,
+          "log_events": 120,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2250.047,
+        "deadline_offset_ms": -1349805,
+        "rss_kib": 809076,
+        "peak_rss_kib": 812584,
+        "cpu_ms": 24660,
+        "meter": {
+          "sqlite_rows_written": 3870,
+          "do_requests": 363,
+          "log_events": 121,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2280.044,
+        "deadline_offset_ms": -1319808,
+        "rss_kib": 810848,
+        "peak_rss_kib": 812584,
+        "cpu_ms": 24740,
+        "meter": {
+          "sqlite_rows_written": 3902,
+          "do_requests": 366,
+          "log_events": 122,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2310.045,
+        "deadline_offset_ms": -1289807,
+        "rss_kib": 811196,
+        "peak_rss_kib": 812584,
+        "cpu_ms": 24810,
+        "meter": {
+          "sqlite_rows_written": 3934,
+          "do_requests": 369,
+          "log_events": 123,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2340.157,
+        "deadline_offset_ms": -1259695,
+        "rss_kib": 816648,
+        "peak_rss_kib": 816648,
+        "cpu_ms": 25000,
+        "meter": {
+          "sqlite_rows_written": 4062,
+          "do_requests": 381,
+          "log_events": 127,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2370.054,
+        "deadline_offset_ms": -1229797,
+        "rss_kib": 816292,
+        "peak_rss_kib": 816292,
+        "cpu_ms": 25080,
+        "meter": {
+          "sqlite_rows_written": 4094,
+          "do_requests": 384,
+          "log_events": 128,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2400.041,
+        "deadline_offset_ms": -1199811,
+        "rss_kib": 816788,
+        "peak_rss_kib": 816788,
+        "cpu_ms": 25160,
+        "meter": {
+          "sqlite_rows_written": 4124,
+          "do_requests": 387,
+          "log_events": 129,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2430.041,
+        "deadline_offset_ms": -1169811,
+        "rss_kib": 817308,
+        "peak_rss_kib": 817308,
+        "cpu_ms": 25230,
+        "meter": {
+          "sqlite_rows_written": 4154,
+          "do_requests": 390,
+          "log_events": 130,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2460.056,
+        "deadline_offset_ms": -1139796,
+        "rss_kib": 818328,
+        "peak_rss_kib": 818328,
+        "cpu_ms": 25320,
+        "meter": {
+          "sqlite_rows_written": 4184,
+          "do_requests": 393,
+          "log_events": 131,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2490.042,
+        "deadline_offset_ms": -1109810,
+        "rss_kib": 817368,
+        "peak_rss_kib": 817836,
+        "cpu_ms": 25390,
+        "meter": {
+          "sqlite_rows_written": 4214,
+          "do_requests": 396,
+          "log_events": 132,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2520.162,
+        "deadline_offset_ms": -1079690,
+        "rss_kib": 820896,
+        "peak_rss_kib": 820896,
+        "cpu_ms": 25590,
+        "meter": {
+          "sqlite_rows_written": 4334,
+          "do_requests": 408,
+          "log_events": 136,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2550.057,
+        "deadline_offset_ms": -1049795,
+        "rss_kib": 821976,
+        "peak_rss_kib": 821976,
+        "cpu_ms": 25680,
+        "meter": {
+          "sqlite_rows_written": 4364,
+          "do_requests": 411,
+          "log_events": 137,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2580.038,
+        "deadline_offset_ms": -1019814,
+        "rss_kib": 822496,
+        "peak_rss_kib": 822496,
+        "cpu_ms": 25740,
+        "meter": {
+          "sqlite_rows_written": 4394,
+          "do_requests": 414,
+          "log_events": 138,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2610.049,
+        "deadline_offset_ms": -989803,
+        "rss_kib": 822872,
+        "peak_rss_kib": 822872,
+        "cpu_ms": 25830,
+        "meter": {
+          "sqlite_rows_written": 4424,
+          "do_requests": 417,
+          "log_events": 139,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2640.036,
+        "deadline_offset_ms": -959816,
+        "rss_kib": 823424,
+        "peak_rss_kib": 823424,
+        "cpu_ms": 25890,
+        "meter": {
+          "sqlite_rows_written": 4454,
+          "do_requests": 420,
+          "log_events": 140,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2670.166,
+        "deadline_offset_ms": -929685,
+        "rss_kib": 824688,
+        "peak_rss_kib": 824688,
+        "cpu_ms": 26110,
+        "meter": {
+          "sqlite_rows_written": 4574,
+          "do_requests": 432,
+          "log_events": 144,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2700.165,
+        "deadline_offset_ms": -899687,
+        "rss_kib": 825688,
+        "peak_rss_kib": 825688,
+        "cpu_ms": 26310,
+        "meter": {
+          "sqlite_rows_written": 4694,
+          "do_requests": 444,
+          "log_events": 148,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2730.036,
+        "deadline_offset_ms": -869816,
+        "rss_kib": 825612,
+        "peak_rss_kib": 825724,
+        "cpu_ms": 26380,
+        "meter": {
+          "sqlite_rows_written": 4724,
+          "do_requests": 447,
+          "log_events": 149,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2760.039,
+        "deadline_offset_ms": -839813,
+        "rss_kib": 826464,
+        "peak_rss_kib": 826464,
+        "cpu_ms": 26450,
+        "meter": {
+          "sqlite_rows_written": 4754,
+          "do_requests": 450,
+          "log_events": 150,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2790.045,
+        "deadline_offset_ms": -809807,
+        "rss_kib": 827012,
+        "peak_rss_kib": 827012,
+        "cpu_ms": 26520,
+        "meter": {
+          "sqlite_rows_written": 4784,
+          "do_requests": 453,
+          "log_events": 151,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2820.035,
+        "deadline_offset_ms": -779816,
+        "rss_kib": 828032,
+        "peak_rss_kib": 828032,
+        "cpu_ms": 26590,
+        "meter": {
+          "sqlite_rows_written": 4814,
+          "do_requests": 456,
+          "log_events": 152,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2850.049,
+        "deadline_offset_ms": -749803,
+        "rss_kib": 829528,
+        "peak_rss_kib": 829528,
+        "cpu_ms": 26670,
+        "meter": {
+          "sqlite_rows_written": 4844,
+          "do_requests": 459,
+          "log_events": 153,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2880.17,
+        "deadline_offset_ms": -719681,
+        "rss_kib": 833220,
+        "peak_rss_kib": 833220,
+        "cpu_ms": 26880,
+        "meter": {
+          "sqlite_rows_written": 4964,
+          "do_requests": 471,
+          "log_events": 157,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2910.056,
+        "deadline_offset_ms": -689795,
+        "rss_kib": 832036,
+        "peak_rss_kib": 833376,
+        "cpu_ms": 26970,
+        "meter": {
+          "sqlite_rows_written": 4994,
+          "do_requests": 474,
+          "log_events": 158,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2940.066,
+        "deadline_offset_ms": -659786,
+        "rss_kib": 832164,
+        "peak_rss_kib": 833376,
+        "cpu_ms": 27070,
+        "meter": {
+          "sqlite_rows_written": 5024,
+          "do_requests": 477,
+          "log_events": 159,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 2970.048,
+        "deadline_offset_ms": -629804,
+        "rss_kib": 833320,
+        "peak_rss_kib": 833376,
+        "cpu_ms": 27160,
+        "meter": {
+          "sqlite_rows_written": 5054,
+          "do_requests": 480,
+          "log_events": 160,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 3000.042,
+        "deadline_offset_ms": -599810,
+        "rss_kib": 833072,
+        "peak_rss_kib": 833376,
+        "cpu_ms": 27240,
+        "meter": {
+          "sqlite_rows_written": 5084,
+          "do_requests": 483,
+          "log_events": 161,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 3030.046,
+        "deadline_offset_ms": -569806,
+        "rss_kib": 834548,
+        "peak_rss_kib": 834548,
+        "cpu_ms": 27310,
+        "meter": {
+          "sqlite_rows_written": 5114,
+          "do_requests": 486,
+          "log_events": 162,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 3060.176,
+        "deadline_offset_ms": -539675,
+        "rss_kib": 837480,
+        "peak_rss_kib": 837480,
+        "cpu_ms": 27520,
+        "meter": {
+          "sqlite_rows_written": 5234,
+          "do_requests": 498,
+          "log_events": 166,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 3090.039,
+        "deadline_offset_ms": -509813,
+        "rss_kib": 837740,
+        "peak_rss_kib": 837740,
+        "cpu_ms": 27600,
+        "meter": {
+          "sqlite_rows_written": 5264,
+          "do_requests": 501,
+          "log_events": 167,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 3120.041,
+        "deadline_offset_ms": -479811,
+        "rss_kib": 836872,
+        "peak_rss_kib": 837860,
+        "cpu_ms": 27670,
+        "meter": {
+          "sqlite_rows_written": 5294,
+          "do_requests": 504,
+          "log_events": 168,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 3150.044,
+        "deadline_offset_ms": -449808,
+        "rss_kib": 838084,
+        "peak_rss_kib": 838084,
+        "cpu_ms": 27750,
+        "meter": {
+          "sqlite_rows_written": 5324,
+          "do_requests": 507,
+          "log_events": 169,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 3180.042,
+        "deadline_offset_ms": -419810,
+        "rss_kib": 834668,
+        "peak_rss_kib": 838500,
+        "cpu_ms": 27840,
+        "meter": {
+          "sqlite_rows_written": 5354,
+          "do_requests": 510,
+          "log_events": 170,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 3210.128,
+        "deadline_offset_ms": -389724,
+        "rss_kib": 837144,
+        "peak_rss_kib": 838500,
+        "cpu_ms": 27930,
+        "meter": {
+          "sqlite_rows_written": 5384,
+          "do_requests": 513,
+          "log_events": 171,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 3240.173,
+        "deadline_offset_ms": -359679,
+        "rss_kib": 840676,
+        "peak_rss_kib": 840676,
+        "cpu_ms": 28130,
+        "meter": {
+          "sqlite_rows_written": 5504,
+          "do_requests": 525,
+          "log_events": 175,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 3270.041,
+        "deadline_offset_ms": -329811,
+        "rss_kib": 840440,
+        "peak_rss_kib": 840900,
+        "cpu_ms": 28200,
+        "meter": {
+          "sqlite_rows_written": 5534,
+          "do_requests": 528,
+          "log_events": 176,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 3300.05,
+        "deadline_offset_ms": -299802,
+        "rss_kib": 839648,
+        "peak_rss_kib": 840968,
+        "cpu_ms": 28290,
+        "meter": {
+          "sqlite_rows_written": 5564,
+          "do_requests": 531,
+          "log_events": 177,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 3330.06,
+        "deadline_offset_ms": -269792,
+        "rss_kib": 838344,
+        "peak_rss_kib": 840968,
+        "cpu_ms": 28390,
+        "meter": {
+          "sqlite_rows_written": 5594,
+          "do_requests": 534,
+          "log_events": 178,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 3360.1,
+        "deadline_offset_ms": -239751,
+        "rss_kib": 838012,
+        "peak_rss_kib": 840968,
+        "cpu_ms": 28510,
+        "meter": {
+          "sqlite_rows_written": 5624,
+          "do_requests": 537,
+          "log_events": 179,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 3390.057,
+        "deadline_offset_ms": -209795,
+        "rss_kib": 839116,
+        "peak_rss_kib": 840968,
+        "cpu_ms": 28590,
+        "meter": {
+          "sqlite_rows_written": 5654,
+          "do_requests": 540,
+          "log_events": 180,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 3420.189,
+        "deadline_offset_ms": -179663,
+        "rss_kib": 839804,
+        "peak_rss_kib": 840968,
+        "cpu_ms": 28820,
+        "meter": {
+          "sqlite_rows_written": 5774,
+          "do_requests": 552,
+          "log_events": 184,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 3450.058,
+        "deadline_offset_ms": -149793,
+        "rss_kib": 839108,
+        "peak_rss_kib": 840968,
+        "cpu_ms": 28910,
+        "meter": {
+          "sqlite_rows_written": 5804,
+          "do_requests": 555,
+          "log_events": 185,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 3480.041,
+        "deadline_offset_ms": -119811,
+        "rss_kib": 839828,
+        "peak_rss_kib": 840968,
+        "cpu_ms": 28980,
+        "meter": {
+          "sqlite_rows_written": 5834,
+          "do_requests": 558,
+          "log_events": 186,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 3510.058,
+        "deadline_offset_ms": -89794,
+        "rss_kib": 839356,
+        "peak_rss_kib": 840968,
+        "cpu_ms": 29050,
+        "meter": {
+          "sqlite_rows_written": 5864,
+          "do_requests": 561,
+          "log_events": 187,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 3540.046,
+        "deadline_offset_ms": -59805,
+        "rss_kib": 839780,
+        "peak_rss_kib": 840968,
+        "cpu_ms": 29100,
+        "meter": {
+          "sqlite_rows_written": 5894,
+          "do_requests": 564,
+          "log_events": 188,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 3570.155,
+        "deadline_offset_ms": -29697,
+        "rss_kib": 842036,
+        "peak_rss_kib": 842296,
+        "cpu_ms": 29280,
+        "meter": {
+          "sqlite_rows_written": 6014,
+          "do_requests": 576,
+          "log_events": 192,
+          "exhausted": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 3600.202,
+        "deadline_offset_ms": 350,
+        "rss_kib": 825200,
+        "peak_rss_kib": 842296,
+        "cpu_ms": 29290,
+        "meter": {
+          "sqlite_rows_written": 6022,
+          "do_requests": 576,
+          "log_events": 192,
+          "exhausted": null
+        },
+        "state": "deleted"
+      }
+    ],
+    "workflows": [
+      {
+        "at_seconds": 14.561,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 10324
+          }
+        ]
+      },
+      {
+        "at_seconds": 14.572,
+        "slot": 1,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 2,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 7041
+          }
+        ]
+      },
+      {
+        "at_seconds": 14.571,
+        "slot": 2,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 3,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 3452
+          }
+        ]
+      },
+      {
+        "at_seconds": 14.577,
+        "slot": 3,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 4,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 101
+          }
+        ]
+      },
+      {
+        "at_seconds": 30.065,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 42
+          }
+        ]
+      },
+      {
+        "at_seconds": 60.05,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 33
+          }
+        ]
+      },
+      {
+        "at_seconds": 90.042,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 27
+          }
+        ]
+      },
+      {
+        "at_seconds": 120.055,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 34
+          }
+        ]
+      },
+      {
+        "at_seconds": 150.073,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 40
+          }
+        ]
+      },
+      {
+        "at_seconds": 180.17,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 147
+          }
+        ]
+      },
+      {
+        "at_seconds": 180.182,
+        "slot": 1,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 2,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 128
+          }
+        ]
+      },
+      {
+        "at_seconds": 180.182,
+        "slot": 2,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 3,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 90
+          }
+        ]
+      },
+      {
+        "at_seconds": 180.188,
+        "slot": 3,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 4,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 78
+          }
+        ]
+      },
+      {
+        "at_seconds": 210.056,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 35
+          }
+        ]
+      },
+      {
+        "at_seconds": 240.039,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 25
+          }
+        ]
+      },
+      {
+        "at_seconds": 270.05,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 32
+          }
+        ]
+      },
+      {
+        "at_seconds": 300.044,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 26
+          }
+        ]
+      },
+      {
+        "at_seconds": 330.051,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 34
+          }
+        ]
+      },
+      {
+        "at_seconds": 360.151,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 132
+          }
+        ]
+      },
+      {
+        "at_seconds": 360.159,
+        "slot": 1,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 2,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 117
+          }
+        ]
+      },
+      {
+        "at_seconds": 360.163,
+        "slot": 2,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 3,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 84
+          }
+        ]
+      },
+      {
+        "at_seconds": 360.169,
+        "slot": 3,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 4,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 70
+          }
+        ]
+      },
+      {
+        "at_seconds": 390.057,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 39
+          }
+        ]
+      },
+      {
+        "at_seconds": 420.042,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 28
+          }
+        ]
+      },
+      {
+        "at_seconds": 451.112,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 34
+          }
+        ]
+      },
+      {
+        "at_seconds": 480.045,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 27
+          }
+        ]
+      },
+      {
+        "at_seconds": 510.047,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 31
+          }
+        ]
+      },
+      {
+        "at_seconds": 540.138,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 119
+          }
+        ]
+      },
+      {
+        "at_seconds": 540.145,
+        "slot": 1,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 2,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 103
+          }
+        ]
+      },
+      {
+        "at_seconds": 540.153,
+        "slot": 2,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 3,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 82
+          }
+        ]
+      },
+      {
+        "at_seconds": 540.153,
+        "slot": 3,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 4,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 64
+          }
+        ]
+      },
+      {
+        "at_seconds": 570.048,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 33
+          }
+        ]
+      },
+      {
+        "at_seconds": 600.047,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 26
+          }
+        ]
+      },
+      {
+        "at_seconds": 630.038,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 24
+          }
+        ]
+      },
+      {
+        "at_seconds": 660.035,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 22
+          }
+        ]
+      },
+      {
+        "at_seconds": 690.036,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 23
+          }
+        ]
+      },
+      {
+        "at_seconds": 720.127,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 108
+          }
+        ]
+      },
+      {
+        "at_seconds": 720.133,
+        "slot": 1,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 2,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 98
+          }
+        ]
+      },
+      {
+        "at_seconds": 720.133,
+        "slot": 2,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 3,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 72
+          }
+        ]
+      },
+      {
+        "at_seconds": 720.141,
+        "slot": 3,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 4,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 61
+          }
+        ]
+      },
+      {
+        "at_seconds": 750.048,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 33
+          }
+        ]
+      },
+      {
+        "at_seconds": 780.04,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 24
+          }
+        ]
+      },
+      {
+        "at_seconds": 810.045,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 26
+          }
+        ]
+      },
+      {
+        "at_seconds": 840.041,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 26
+          }
+        ]
+      },
+      {
+        "at_seconds": 870.182,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 154
+          }
+        ]
+      },
+      {
+        "at_seconds": 870.193,
+        "slot": 1,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 2,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 124
+          }
+        ]
+      },
+      {
+        "at_seconds": 870.193,
+        "slot": 2,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 3,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 95
+          }
+        ]
+      },
+      {
+        "at_seconds": 870.2,
+        "slot": 3,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 4,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 71
+          }
+        ]
+      },
+      {
+        "at_seconds": 900.138,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 120
+          }
+        ]
+      },
+      {
+        "at_seconds": 900.143,
+        "slot": 1,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 2,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 103
+          }
+        ]
+      },
+      {
+        "at_seconds": 900.147,
+        "slot": 2,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 3,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 83
+          }
+        ]
+      },
+      {
+        "at_seconds": 900.152,
+        "slot": 3,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 4,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 70
+          }
+        ]
+      },
+      {
+        "at_seconds": 930.04,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 24
+          }
+        ]
+      },
+      {
+        "at_seconds": 960.056,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 33
+          }
+        ]
+      },
+      {
+        "at_seconds": 990.044,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 27
+          }
+        ]
+      },
+      {
+        "at_seconds": 1020.035,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 22
+          }
+        ]
+      },
+      {
+        "at_seconds": 1050.048,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 28
+          }
+        ]
+      },
+      {
+        "at_seconds": 1080.126,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 107
+          }
+        ]
+      },
+      {
+        "at_seconds": 1080.133,
+        "slot": 1,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 2,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 94
+          }
+        ]
+      },
+      {
+        "at_seconds": 1080.133,
+        "slot": 2,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 3,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 69
+          }
+        ]
+      },
+      {
+        "at_seconds": 1080.138,
+        "slot": 3,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 4,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 56
+          }
+        ]
+      },
+      {
+        "at_seconds": 1110.042,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 29
+          }
+        ]
+      },
+      {
+        "at_seconds": 1140.033,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 21
+          }
+        ]
+      },
+      {
+        "at_seconds": 1170.043,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 29
+          }
+        ]
+      },
+      {
+        "at_seconds": 1200.034,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 21
+          }
+        ]
+      },
+      {
+        "at_seconds": 1230.044,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 25
+          }
+        ]
+      },
+      {
+        "at_seconds": 1260.126,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 107
+          }
+        ]
+      },
+      {
+        "at_seconds": 1260.135,
+        "slot": 1,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 2,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 97
+          }
+        ]
+      },
+      {
+        "at_seconds": 1260.134,
+        "slot": 2,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 3,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 71
+          }
+        ]
+      },
+      {
+        "at_seconds": 1260.138,
+        "slot": 3,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 4,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 56
+          }
+        ]
+      },
+      {
+        "at_seconds": 1290.037,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 24
+          }
+        ]
+      },
+      {
+        "at_seconds": 1320.04,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 24
+          }
+        ]
+      },
+      {
+        "at_seconds": 1350.037,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 24
+          }
+        ]
+      },
+      {
+        "at_seconds": 1380.033,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 20
+          }
+        ]
+      },
+      {
+        "at_seconds": 1410.037,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 24
+          }
+        ]
+      },
+      {
+        "at_seconds": 1440.131,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 112
+          }
+        ]
+      },
+      {
+        "at_seconds": 1440.135,
+        "slot": 1,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 2,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 95
+          }
+        ]
+      },
+      {
+        "at_seconds": 1440.139,
+        "slot": 2,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 3,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 74
+          }
+        ]
+      },
+      {
+        "at_seconds": 1440.144,
+        "slot": 3,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 4,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 61
+          }
+        ]
+      },
+      {
+        "at_seconds": 1470.043,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 30
+          }
+        ]
+      },
+      {
+        "at_seconds": 1500.033,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 20
+          }
+        ]
+      },
+      {
+        "at_seconds": 1530.035,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 22
+          }
+        ]
+      },
+      {
+        "at_seconds": 1560.037,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 23
+          }
+        ]
+      },
+      {
+        "at_seconds": 1590.041,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 27
+          }
+        ]
+      },
+      {
+        "at_seconds": 1620.13,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 112
+          }
+        ]
+      },
+      {
+        "at_seconds": 1620.136,
+        "slot": 1,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 2,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 100
+          }
+        ]
+      },
+      {
+        "at_seconds": 1620.14,
+        "slot": 2,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 3,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 80
+          }
+        ]
+      },
+      {
+        "at_seconds": 1620.145,
+        "slot": 3,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 4,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 67
+          }
+        ]
+      },
+      {
+        "at_seconds": 1650.053,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 34
+          }
+        ]
+      },
+      {
+        "at_seconds": 1680.041,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 21
+          }
+        ]
+      },
+      {
+        "at_seconds": 1710.046,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 29
+          }
+        ]
+      },
+      {
+        "at_seconds": 1740.035,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 21
+          }
+        ]
+      },
+      {
+        "at_seconds": 1770.174,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 147
+          }
+        ]
+      },
+      {
+        "at_seconds": 1770.178,
+        "slot": 1,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 2,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 117
+          }
+        ]
+      },
+      {
+        "at_seconds": 1770.183,
+        "slot": 2,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 3,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 90
+          }
+        ]
+      },
+      {
+        "at_seconds": 1770.188,
+        "slot": 3,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 4,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 61
+          }
+        ]
+      },
+      {
+        "at_seconds": 1800.145,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 117
+          }
+        ]
+      },
+      {
+        "at_seconds": 1800.154,
+        "slot": 1,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 2,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 104
+          }
+        ]
+      },
+      {
+        "at_seconds": 1800.154,
+        "slot": 2,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 3,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 80
+          }
+        ]
+      },
+      {
+        "at_seconds": 1800.162,
+        "slot": 3,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 4,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 63
+          }
+        ]
+      },
+      {
+        "at_seconds": 1830.043,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 28
+          }
+        ]
+      },
+      {
+        "at_seconds": 1860.036,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 21
+          }
+        ]
+      },
+      {
+        "at_seconds": 1890.04,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 26
+          }
+        ]
+      },
+      {
+        "at_seconds": 1920.04,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 25
+          }
+        ]
+      },
+      {
+        "at_seconds": 1950.038,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 24
+          }
+        ]
+      },
+      {
+        "at_seconds": 1980.153,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 129
+          }
+        ]
+      },
+      {
+        "at_seconds": 1980.158,
+        "slot": 1,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 2,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 110
+          }
+        ]
+      },
+      {
+        "at_seconds": 1980.163,
+        "slot": 2,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 3,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 90
+          }
+        ]
+      },
+      {
+        "at_seconds": 1980.17,
+        "slot": 3,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 4,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 80
+          }
+        ]
+      },
+      {
+        "at_seconds": 2010.042,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 27
+          }
+        ]
+      },
+      {
+        "at_seconds": 2040.06,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 36
+          }
+        ]
+      },
+      {
+        "at_seconds": 2070.052,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 31
+          }
+        ]
+      },
+      {
+        "at_seconds": 2100.04,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 26
+          }
+        ]
+      },
+      {
+        "at_seconds": 2130.045,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 30
+          }
+        ]
+      },
+      {
+        "at_seconds": 2160.131,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 113
+          }
+        ]
+      },
+      {
+        "at_seconds": 2160.137,
+        "slot": 1,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 2,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 98
+          }
+        ]
+      },
+      {
+        "at_seconds": 2160.142,
+        "slot": 2,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 3,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 79
+          }
+        ]
+      },
+      {
+        "at_seconds": 2160.148,
+        "slot": 3,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 4,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 68
+          }
+        ]
+      },
+      {
+        "at_seconds": 2190.049,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 28
+          }
+        ]
+      },
+      {
+        "at_seconds": 2220.046,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 28
+          }
+        ]
+      },
+      {
+        "at_seconds": 2250.044,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 28
+          }
+        ]
+      },
+      {
+        "at_seconds": 2280.041,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 21
+          }
+        ]
+      },
+      {
+        "at_seconds": 2310.041,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 25
+          }
+        ]
+      },
+      {
+        "at_seconds": 2340.14,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 118
+          }
+        ]
+      },
+      {
+        "at_seconds": 2340.145,
+        "slot": 1,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 2,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 96
+          }
+        ]
+      },
+      {
+        "at_seconds": 2340.149,
+        "slot": 2,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 3,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 73
+          }
+        ]
+      },
+      {
+        "at_seconds": 2340.154,
+        "slot": 3,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 4,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 61
+          }
+        ]
+      },
+      {
+        "at_seconds": 2370.051,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": [
+          {
+            "identity": 1,
+            "kind": "workflow",
+            "cold": false,
+            "wall_ms": 30
+          }
+        ]
+      },
+      {
+        "at_seconds": 2400.038,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2430.038,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2460.053,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2490.039,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2520.143,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2520.147,
+        "slot": 1,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2520.151,
+        "slot": 2,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2520.158,
+        "slot": 3,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2550.054,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2580.034,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2610.046,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2640.033,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2670.141,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2670.16,
+        "slot": 1,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2670.16,
+        "slot": 2,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2670.164,
+        "slot": 3,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2700.147,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2700.152,
+        "slot": 1,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2700.157,
+        "slot": 2,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2700.162,
+        "slot": 3,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2730.033,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2760.037,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2790.042,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2820.033,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2850.046,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2880.147,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2880.158,
+        "slot": 1,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2880.158,
+        "slot": 2,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2880.166,
+        "slot": 3,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2910.053,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2940.061,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 2970.044,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3000.039,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3030.043,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3060.158,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3060.168,
+        "slot": 1,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3060.168,
+        "slot": 2,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3060.174,
+        "slot": 3,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3090.036,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3120.037,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3150.04,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3180.04,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3210.125,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3240.155,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3240.162,
+        "slot": 1,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3240.163,
+        "slot": 2,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3240.169,
+        "slot": 3,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3270.037,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3300.047,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3330.055,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3360.092,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3390.052,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3420.169,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3420.174,
+        "slot": 1,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3420.178,
+        "slot": 2,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3420.185,
+        "slot": 3,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3450.054,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3480.038,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3510.054,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3540.042,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3570.131,
+        "slot": 0,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3570.139,
+        "slot": 1,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3570.15,
+        "slot": 2,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 481,
+        "sdk": true,
+        "invocations": []
+      },
+      {
+        "at_seconds": 3570.146,
+        "slot": 3,
+        "state": "completed",
+        "success": true,
+        "error_type": null,
+        "module_count": 479,
+        "sdk": true,
+        "invocations": []
+      }
+    ],
+    "hello_sequences": [
+      1,
+      2
+    ],
+    "cadence": {
+      "polls": 1730,
+      "spacingSeconds": 2,
+      "elapsedSeconds": 3468.769261289388,
+      "reconnectObservations": 0
+    },
+    "cleanup_seconds": 0.06299999999964712,
+    "seal": {
+      "sqlite_rows_written": 6022,
+      "do_requests": 576,
+      "log_events": 192,
+      "sqlite_database_bytes": 98304,
+      "exhausted": false,
+      "launcher_storage_cleared": true,
+      "ledger_receipt_pending": true
+    },
+    "route_invocations": {
+      "boot_cold": 4,
+      "workflow_warm": 128,
+      "boot_warm": 124
+    }
+  }
+}

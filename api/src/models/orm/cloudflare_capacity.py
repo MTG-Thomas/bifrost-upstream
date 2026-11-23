@@ -117,6 +117,7 @@ class CloudflareInstallation(Base):
     retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     usage_incomplete_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     usage_advisory: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    deployment_evidence: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     api_token_purpose: Mapped[str] = mapped_column(String(16), server_default="account_token")
     api_token_scope: Mapped[str] = mapped_column(String(64), server_default="")
     api_token_version: Mapped[int | None]
@@ -234,6 +235,9 @@ class CloudflareWorkerReservation(Base):
     control_root_scope: Mapped[str] = mapped_column(String(64), server_default="")
     control_root_version: Mapped[int | None]
     canary_job_id: Mapped[UUID | None]
+    workers_lifetime_seconds: Mapped[int | None] = mapped_column(Integer)
+    workers_deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    workers_deadline_wire: Mapped[bool] = mapped_column(Boolean, server_default="false")
     canary_lease_token: Mapped[UUID | None]
     canary_sdk_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     canary_sdk_generation: Mapped[int | None] = mapped_column(Integer)
@@ -241,6 +245,7 @@ class CloudflareWorkerReservation(Base):
     cleanup_attempts: Mapped[int] = mapped_column(SmallInteger, server_default="0")
     cleanup_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cleanup_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    launch_timing: Mapped[dict[str, str] | None] = mapped_column(JSONB(none_as_null=True))
     container_tenant: Mapped[str | None] = mapped_column(String(36))
     container_release: Mapped[str | None] = mapped_column(String(64))
     container_envelope: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
@@ -345,6 +350,7 @@ class CloudflareDispatchMeter(Base):
     period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     tenant_id: Mapped[str] = mapped_column(String(32))
     workflow_cpu_ms: Mapped[int | None]
+    attempt_uncertain: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
 
 
 class CloudflareUsageActivity(Base):

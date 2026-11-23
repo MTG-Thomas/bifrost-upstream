@@ -13,6 +13,8 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {fileURLToPath} from 'node:url';
 import {envelope, fragment, FragmentAssembler, signHello} from '../cloudflare-launcher/protocol.mjs';
 import {capacityWorker} from '../e2e/capacity-miniflare.mjs';
+import {runLifetimeSoak} from './lifetime-soak.mjs';
+import {isolateSampler, pythonMemoryProbe} from './lifetime-memory.mjs';
 
 const {Miniflare} = createRequire(import.meta.resolve('wrangler'))('miniflare');
 const {WebSocketServer} = createRequire(import.meta.url)('ws');
@@ -77,11 +79,21 @@ let capacityCalls = 0;
 const hellos = new Map();
 const sockets = new Map();
 const canaries = new Map();
+let plannedReconnect;
 const upgrades = new WebSocketServer({noServer: true});
 const measuredBundle = process.env.BIFROST_QUALIFIED_CAPACITY_BUNDLE;
 const measuredLauncher = process.env.BIFROST_QUALIFIED_LAUNCHER_BUNDLE;
 const measuredGateway = process.env.BIFROST_QUALIFIED_GATEWAY_BUNDLE;
 const slotQualification = process.env.BIFROST_LOCAL_TENANT_SLOTS === 'true';
+const lifetimeSoak = process.env.BIFROST_LIFETIME_SOAK_RESULT;
+const soakSeconds = Number(process.env.BIFROST_LIFETIME_SOAK_SECONDS ?? 900);
+const memoryProbe = process.env.BIFROST_LIFETIME_MEMORY_PROBE === 'true';
+const meterBounds = JSON.parse(readFileSync(new URL(
+  '../../../../api/src/services/worker_pool/cloudflare_meter_bounds.json', import.meta.url,
+), 'utf8'));
+const lifetimeRates = Object.fromEntries(['do_requests', 'log_events', 'sqlite_rows_written'].map(
+  name => [name, Number(meterBounds.per_launcher_second[name])],
+));
 const launcherSlots = slotQualification ? 4 : measuredLauncher ? 2 : 1;
 const controllerPolls = Number(process.env.BIFROST_QUALIFIED_CONTROLLER_POLLS ?? 0);
 const controllerSource = new URL('../../../../api/src/services/pool_cadence.py', import.meta.url);
@@ -105,11 +117,19 @@ async function referenceAttempt(record, solution, slotCase) {
       .replace('from js import fetch', 'from js import fetch, globalThis\n    globalThis.slotFixture = case')
       .replace('"table_count": len(rows)', '"table_count": len(rows), "isolated": globalThis.slotFixture == case');
   }
+  if (slotCase?.soak) {
+    source = source.replace('import logging', 'import logging\nimport sys')
+      .replace('"table_count": len(rows)', '"table_count": len(rows), "module_count": len(sys.modules)');
+  }
   const sources = {[file_path]: source};
   if (solution) {
     source = source.replace('import logging', 'import logging\nfrom phase6_support.values import INSTALL_VALUE')
       .replace('"table_count": len(rows)', '"table_count": len(rows), "install_value": INSTALL_VALUE');
     Object.assign(sources, {[file_path]: source, 'phase6_support/values.py': 'INSTALL_VALUE = "solution"\n'});
+  }
+  if (slotCase?.soak && memoryProbe) {
+    const probe = pythonMemoryProbe({collect: process.env.BIFROST_LIFETIME_MEMORY_COLLECT === 'true'});
+    sources[file_path] = source = source.replace('    return {', `${probe}    return {"memory": memory, `);
   }
   const org = slotCase?.org ?? randomUUID();
   const solution_id = solution ? randomUUID() : null;
@@ -138,7 +158,37 @@ async function referenceAttempt(record, solution, slotCase) {
         [file, sha256(value)])), sources, packages: [], https_hosts: ['phase5-fixture.invalid'],
         cpu_budget_ms: 1_000, subrequest_allowance: 12, solution_id}},
   }});
-  const terminal = await result.promise;
+  let terminal;
+  try {
+    terminal = await result.promise;
+  } catch (error) {
+    if (!slotCase?.soak) throw error;
+    const {error_type} = JSON.parse(error.message);
+    if (error_type !== 'CloudflareLauncherMeterLimitExceeded') throw error;
+    return {state: 'not_started', success: false, error_type};
+  } finally {
+    record.replies.delete(command);
+    record.terminals.delete(route_id);
+  }
+  if (slotCase?.soak) {
+    const value = terminal.result?.result;
+    let timing;
+    if (terminal.result?.success === true) {
+      const {module_count, memory, ...output} = value;
+      assert.deepEqual(output, {
+        case: caseName, table_count: 0, isolated: true,
+        ...(solution ? {install_value: 'solution'} : {}),
+      });
+      assert.ok(Number.isSafeInteger(module_count) && module_count > 0);
+      const {engine_ready_at, entry_at} = terminal.timings ?? {};
+      assert.ok(Number.isSafeInteger(engine_ready_at) && engine_ready_at > 0);
+      assert.ok(Number.isSafeInteger(entry_at) && entry_at >= Math.max(now, engine_ready_at));
+      timing = {engine_ready_to_entry_ms: entry_at - engine_ready_at, offer_to_entry_ms: entry_at - now};
+    }
+    return {state: terminal.attempt_state, success: terminal.result?.success === true,
+      error_type: terminal.result?.error_type ?? null, route_id,
+      module_count: value?.module_count, ...(timing ? {timing} : {}), ...(memoryProbe ? {memory: value?.memory} : {})};
+  }
   if (slotCase?.cancel) return terminal;
   assert.equal(terminal.attempt_state, 'completed', JSON.stringify(terminal));
   assert.equal(terminal.result.success, true, JSON.stringify(terminal));
@@ -158,7 +208,9 @@ async function observeAtControllerCadence(path) {
   });
   observer.stdin.end(JSON.stringify(auth));
   const [receipt] = await Promise.all([buffer(observer.stdout), completion]);
-  console.info('controller-cadence', receipt.toString('utf8').trim());
+  const cadence = JSON.parse(receipt.toString('utf8'));
+  console.info('controller-cadence', JSON.stringify(cadence));
+  return cadence;
 }
 
 function request(path, method = 'GET', body, headers = auth) {
@@ -177,6 +229,7 @@ async function next(predicate) {
 
 const server = createServer(async (req, res) => {
   try {
+    const requestedAt = Date.now();
     const canary = canaries.get(req.url);
     if (canary) {
       assert.equal(req.method, 'GET');
@@ -229,7 +282,12 @@ const server = createServer(async (req, res) => {
     if (req.url.startsWith('/v1/')) capacityCalls++;
     const body = req.method === 'GET' ? undefined : await buffer(req);
     const response = await provider.fetch(base + req.url, {method: req.method, headers: req.headers, body});
-    res.writeHead(response.status, Object.fromEntries(response.headers));
+    const headers = Object.fromEntries(response.headers);
+    if (req.method === 'GET' && plannedReconnect?.path === req.url &&
+        requestedAt <= plannedReconnect.finished && Date.now() >= plannedReconnect.started) {
+      headers['X-Fixture-Planned-Reconnect'] = 'true';
+    }
+    res.writeHead(response.status, headers);
     res.end(Buffer.from(await response.arrayBuffer()));
   } catch {
     res.writeHead(502).end();
@@ -296,7 +354,7 @@ async function start() {
     }
     return fetch(new Request(${JSON.stringify(base)} + new URL(request.url).pathname, request));
   }};`;
-  mf = new Miniflare({cf: false, resourcePersistencePath: storage, workers: [
+  mf = new Miniflare({cf: false, ...(memoryProbe ? {inspectorPort: 0} : {}), resourcePersistencePath: storage, workers: [
     capacityWorker({...settings, bundle: measuredBundle, slots: launcherSlots}),
     {
       dev: {outboundService: {type: 'worker', worker: 'relay'}},
@@ -307,8 +365,11 @@ async function start() {
         env: {API_ORIGIN: {type: 'text', value: 'https://test-api.invalid'},
           BIFROST_TENANT_LINGER_SECONDS: {type: 'text', value: '90'},
           BIFROST_CLOUDFLARE_MANAGED: {type: 'text', value: 'true'}, ...(measuredLauncher ? {
+            ...(lifetimeSoak ? {BIFROST_LAUNCHER_METERS_PER_SECOND: {
+              type: 'text', value: JSON.stringify(lifetimeRates),
+            }} : {}),
             LOADER: {type: 'worker-loader'},
-            RUNTIME_SHA256: {type: 'text', value: 'fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5'},
+            RUNTIME_SHA256: {type: 'text', value: '11ade0a1ea1b117d577803cff87d1c3c4074d793df5bcb17a9f473923e55f254'},
             BIFROST_METER_ENGINE_CPU_MS: {type: 'text', value: '30000'},
             BIFROST_METER_BOOT_CPU_MS: {type: 'text', value: process.env.BIFROST_QUALIFIED_BOOT_CPU_MS ?? '30000'},
             BIFROST_METER_WARM_CPU_MS: {type: 'text', value: process.env.BIFROST_QUALIFIED_WARM_CPU_MS ?? '30000'},
@@ -362,10 +423,13 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
   const path = `workers/${id}`;
   const uid = randomBytes(16).toString('hex');
   const key = randomBytes(32).toString('hex');
+  const deadlineMs = lifetimeSoak ? Date.now() + soakSeconds * 1000 : undefined;
   const reservation = {worker_id: id, worker_version: settings.version,
     memory_limit_bytes: launcherSlots * 128 * 1024 ** 2,
-    max_lifetime_seconds: controllerPolls ? Math.ceil(controllerPolls * reconcileSeconds) + 120 : 60,
-    drain_grace_seconds: 5,
+    max_lifetime_seconds: lifetimeSoak ? soakSeconds :
+      controllerPolls ? Math.ceil(controllerPolls * reconcileSeconds) + 120 : 60,
+    drain_grace_seconds: lifetimeSoak ? 285 : 5,
+    ...(deadlineMs === undefined ? {} : {deadline_ms: deadlineMs}),
     resource_uid: uid, control_key: key};
   assert.equal((await request(path, 'PUT', reservation, {...auth, Authorization: `Bearer ${key}`})).status, 401);
   assert.equal((await request(path, 'PUT', reservation, {...auth, 'X-Bifrost-Capacity-Scope': 'foreign'})).status, 404);
@@ -391,6 +455,59 @@ test('prepare, start, signed hello, observe and delete use isolated workerd Work
   assert.equal(seen.inventory.payload.event, 'inventory');
   assert.equal((await (await request(path)).json()).state, 'running');
   let references = null;
+  if (lifetimeSoak) {
+    const tenant = randomUUID();
+    let record = seen;
+    const verifySession = async () => {
+      const records = hellos.get(id);
+      const previous = record.hello.hello;
+      plannedReconnect = {path: `/v1/${path}`, started: Date.now(), finished: Infinity};
+      try {
+        sockets.get(id).close(1012);
+        record = await next(() => records.find(item => item !== seen && item.inventory));
+      } finally {
+        plannedReconnect.finished = Date.now();
+      }
+      const {proof, ...hello} = record.hello.hello;
+      assert.equal((await signHello(key, hello)).proof, proof);
+      assert.equal(hello.incarnation_id, previous.incarnation_id);
+      assert.equal(hello.hello_sequence, previous.hello_sequence + 1);
+      assert.notEqual(hello.nonce, previous.nonce);
+      assert.ok(Math.abs(Date.now() / 1000 - hello.issued_at) < 10);
+      return hello.hello_sequence;
+    };
+    const run = async (ordinal, solution) => {
+      const name = randomUUID();
+      const held = {entered: Promise.withResolvers(), release: Promise.withResolvers(), sdk: false};
+      held.release.resolve();
+      heldSlots.set(name, held);
+      try {
+        const result = await referenceAttempt(record, solution, {ordinal, name, org: tenant, soak: true});
+        return {...result, sdk: held.sdk};
+      } finally {
+        heldSlots.delete(name);
+      }
+    };
+    await runLifetimeSoak({
+      result: lifetimeSoak, seconds: soakSeconds, deadlineMs, storage, run, verifySession, launcher: measuredLauncher,
+      cadence: controllerPolls ? () => observeAtControllerCadence(path) : undefined,
+      spacing: Number(process.env.BIFROST_LIFETIME_SOAK_SPACING_SECONDS ?? 30),
+      sampleIsolates: memoryProbe ? isolateSampler(await mf.getInspectorURL()) : undefined,
+      observe: async () => (await (await request(path)).json()).state,
+      settle: async () => {
+        await next(() => record.heartbeat?.occupied_routes?.length === 0 &&
+          record.heartbeat.received_sequence >= (record.terminalAckSequence ?? 0));
+        const stopped = await (await request(path, 'DELETE', {resource_uid})).json();
+        assert.equal(stopped.state, 'deleted');
+        await next(() => sockets.get(id).readyState === 3);
+        const compacted = await (await request(path, 'DELETE', {resource_uid, receipt_ack: true})).json();
+        assert.equal(compacted.state, 'deleted');
+        assert.equal(compacted.usage, undefined);
+        return stopped.usage;
+      },
+    });
+    return;
+  }
   if (slotQualification) {
     assert.equal(seen.inventory.payload.inventory.tenant_slot_protocol, 1);
     const org = randomUUID();

@@ -6,11 +6,14 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from uuid import UUID
 
+import httpx
 from sqlalchemy import select, text
 
 from src.config import get_settings
 from src.core.database import get_db_context
 from src.jobs.platform.kubernetes_client import (
+    KubernetesApiError,
+    KubernetesConfigurationError,
     KubernetesJobClient,
     in_cluster_namespace,
 )
@@ -19,6 +22,23 @@ from src.services.worker_pool.cloudflare_tunnel import active_connector_token
 
 COMPOSE_PATH = Path("/run/bifrost-tunnel/token")
 Projection = tuple[UUID | None, int | None, int | None]
+
+
+async def connector_channel_ready() -> bool:
+    channel = get_settings().cloudflare_tunnel_channel
+    if channel == "compose":
+        return COMPOSE_PATH.parent.is_mount() and os.access(COMPOSE_PATH.parent, os.W_OK)
+    if channel == "kustomize":
+        try:
+            client = KubernetesJobClient(namespace=in_cluster_namespace())
+            try:
+                await client.read_cloudflare_connector()
+            finally:
+                await client.close()
+        except (KubernetesApiError, KubernetesConfigurationError, httpx.HTTPError):
+            return False
+        return True
+    return False
 
 
 def _publish_file(path: Path, value: str) -> None:

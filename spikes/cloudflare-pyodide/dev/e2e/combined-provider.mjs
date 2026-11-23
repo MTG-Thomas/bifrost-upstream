@@ -13,9 +13,15 @@ const require = createRequire(new URL('../tenant-workers/package.json', import.m
 const {Miniflare} = createRequire(require.resolve('wrangler'))('miniflare');
 const {WebSocket, WebSocketServer} = require('ws');
 const config = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+const relayOnly = process.argv[3] === '--hosted-ingress-relay';
+if (relayOnly) {
+  assert.match(config.relayToken ?? '', /^[0-9a-f]{64}$/);
+  assert.ok(Number.isInteger(config.relayPort) && config.relayPort > 1023 && config.relayPort < 65536);
+}
+const initialTunnelVersion = config.initialTunnelConfig === 'default_404' ? 1 : 0;
 const account = 'a'.repeat(32);
 const zone = 'b'.repeat(32);
-const management = 'local-rehearsal-management-token';
+const management = relayOnly ? config.relayToken : 'local-rehearsal-management-token';
 const workers = new Map();
 const runtimes = new Map();
 const sockets = new Map();
@@ -23,6 +29,7 @@ const sdkCalls = new Map();
 const entered = new Set();
 const heldQueries = new Map();
 const executionByRoute = new Map();
+let connectionSequence = 0;
 const transport = new WebSocketServer({noServer: true});
 const witnessHeaders = ['x-bifrost-worker-ingress', 'x-bifrost-ingress-probe'];
 transport.on('headers', (headers, req) => {
@@ -38,9 +45,20 @@ const projectAddresses = new BlockList();
 const [networkAddress, prefix] = config.subnet.split('/');
 projectAddresses.addSubnet(networkAddress, Number(prefix), 'ipv4');
 let ingressHost;
+let lagNamespace;
 
 function event(kind, details = {}) {
   observations.push({kind, ...details});
+}
+
+function controlFrame(message) {
+  try {
+    return JSON.parse(message) ?? {};
+  } catch {
+    // The ingress owns protocol validation. A malformed client frame must
+    // never terminate the shared relay or expose its contents in trial logs.
+    return {};
+  }
 }
 
 function module(contents) {
@@ -103,12 +121,12 @@ function serveIngress(req, res) {
   const upstream = request({
     host: ingressHost, port: 8001, path: incoming.pathname + incoming.search,
     method: req.method, headers: {...relayHeaders(req.headers),
-      host: req.headers['x-rehearsal-host'] ?? req.headers.host},
+      host: relayOnly ? req.headers.host : req.headers['x-rehearsal-host'] ?? req.headers.host},
   }, (response) => {
     const call = sdkCalls.get(req.headers.authorization?.slice(7));
     if (call && incoming.pathname === '/api/sdk/tables/list' && response.statusCode === 200) {
       entered.add(call.execution);
-      if (++call.count === 2) {
+      if (++call.count === 2 && !relayOnly) {
         heldQueries.set(call.execution, () => {
           if (res.destroyed) return response.destroy();
           res.writeHead(response.statusCode, relayHeaders(response.headers));
@@ -128,22 +146,23 @@ function serveIngress(req, res) {
 
 function upgrade(req, socket, head) {
   if (!ingressHost || req.url !== '/api/worker-control') return socket.destroy();
-  const headers = {Host: req.headers['x-rehearsal-host'] ?? req.headers.host};
+  const headers = {Host: relayOnly ? req.headers.host : req.headers['x-rehearsal-host'] ?? req.headers.host};
   if (req.headers['x-bifrost-ingress-probe']) headers['x-bifrost-ingress-probe'] = req.headers['x-bifrost-ingress-probe'];
   const upstream = new WebSocket(`ws://${ingressHost}:8001${req.url}`, {headers});
   upstream.on('upgrade', (reply) => { req.ingressWitness = reply.headers; });
   upstream.on('error', () => socket.destroy());
   upstream.on('open', () => transport.handleUpgrade(req, socket, head, (worker) => {
     let identity;
+    const connection = ++connectionSequence;
     const terminate = new Map();
     worker.on('message', (message) => {
-      const frame = JSON.parse(message);
-      if (frame.event === 'hello') {
+      const frame = controlFrame(message);
+      if (frame.event === 'hello' && frame.hello?.incarnation_id) {
         identity = frame.hello.incarnation_id;
         if (identity) sockets.set(identity, worker);
-        event('hello', {worker: identity});
+        event('hello', {worker: identity, connection});
       } else if (frame.payload?.event === 'result') {
-        event('result', {worker: identity, id: frame.payload._event_id, route: frame.payload.route_id,
+        event('result', {worker: identity, connection, id: frame.payload._event_id, route: frame.payload.route_id,
           attempt: frame.payload.attempt_state});
       }
       const pending = terminate.get(frame.payload?.reply);
@@ -159,16 +178,18 @@ function upgrade(req, socket, head) {
       if (upstream.readyState === WebSocket.OPEN) upstream.send(message.toString());
     });
     upstream.on('message', (message) => {
-      const frame = JSON.parse(message);
-      if (frame.kind === 'ack') event('ack', {worker: identity, id: frame.payload.event_id});
-      if (frame.kind === 'command' && frame.payload.action === 'workflow') {
+      const frame = controlFrame(message);
+      if (frame.kind === 'ack' && frame.payload?.event_id) {
+        event('ack', {worker: identity, connection, id: frame.payload.event_id});
+      }
+      if (frame.kind === 'command' && frame.payload?.action === 'workflow') {
         const command = frame.payload.payload;
         sdkCalls.set(command.context.engine_token, {execution: command.execution_id, count: 0});
         executionByRoute.set(command.route_id, command.execution_id);
-        event('dispatch', {worker: identity, route: frame.payload.payload.route_id,
+        event('dispatch', {worker: identity, connection, route: frame.payload.payload.route_id,
           execution: frame.payload.payload.execution_id});
       }
-      if (frame.kind === 'command' && frame.payload.action === 'terminate') {
+      if (frame.kind === 'command' && frame.payload?.action === 'terminate') {
         const execution = executionByRoute.get(frame.payload.payload.route_id);
         if (heldQueries.has(execution)) terminate.set(frame.payload.id, execution);
       }
@@ -181,13 +202,15 @@ function upgrade(req, socket, head) {
       if (worker.readyState === WebSocket.OPEN) worker.close(valid);
     };
     worker.on('close', close);
+    worker.on('error', () => close(1012));
     upstream.on('close', close);
   }));
 }
 
 const relay = createServer(serveIngress);
-const edge = tlsServer({key: readFileSync(config.key), cert: readFileSync(config.cert)}, serveIngress);
-for (const server of [relay, edge]) server.on('upgrade', upgrade);
+const edge = relayOnly ? null : tlsServer({key: readFileSync(config.key), cert: readFileSync(config.cert)}, serveIngress);
+relay.on('upgrade', upgrade);
+edge?.on('upgrade', upgrade);
 
 async function provider(req, res) {
   const url = new URL(req.url, 'http://local.test');
@@ -202,7 +225,7 @@ async function provider(req, res) {
   const json = async () => JSON.parse(await buffer(req));
 
   const capacity = path.match(/^\/edge-capacity\/([a-z0-9-]+)(\/.*)$/);
-  if (capacity) {
+  if (!relayOnly && capacity) {
     const item = workers.get(capacity[1]);
     if (!item?.endpoint.enabled) return missing();
     const {worker} = await runtime(item);
@@ -223,6 +246,7 @@ async function provider(req, res) {
     ingressHost = host;
     return ok({});
   }
+  if (relayOnly) return missing();
   if (path === '/local/interrupt' && method === 'POST') {
     const {worker} = await json();
     assert.ok(sockets.get(worker));
@@ -253,6 +277,10 @@ async function provider(req, res) {
     return send(200, {data: {viewer: {accounts: [{workersInvocationsAdaptive: workerRows,
       durableObjectsInvocationsAdaptiveGroups: []}]}}});
   }
+  if (path === '/client/v4/accounts' && method === 'GET') return ok([{id: account, name: 'Rehearsal Account'}]);
+  if (path === '/client/v4/zones' && method === 'GET') return ok([
+    {id: zone, name: 'example.test', status: 'active', account: {id: account}},
+  ]);
   const relative = path.replace(`/client/v4/accounts/${account}`, '');
   if (relative === '') return ok({id: account});
   if (relative === '/entitlements') return ok(['workers.enabled', 'containers.enabled'].map((id) =>
@@ -260,7 +288,22 @@ async function provider(req, res) {
   if (relative === '/workers/subdomain') return ok({subdomain: 'rehearsal'});
   if (relative === '/workers/scripts') return ok([...workers.keys()].map((id) => ({id})));
   const namespaces = [...workers.values()].flatMap((item) => item.namespaces);
-  if (relative === '/workers/durable_objects/namespaces') return ok(namespaces);
+  if (relative === '/workers/durable_objects/namespaces') {
+    if (lagNamespace) {
+      const elapsedMs = Math.floor(performance.now() - lagNamespace.uploadedAt);
+      const revision = lagNamespace.revision;
+      if (elapsedMs < config.workerNamespaceLagMs) {
+        const stale = namespaces.filter(({id}) => id !== lagNamespace.id);
+        event('namespace-lag', {revision});
+        event('namespace-inventory', {ids: stale.map(({id}) => id)});
+        return ok(stale);
+      }
+      lagNamespace = undefined;
+      event('namespace-lag-cleared', {revision, elapsedMs});
+    }
+    event('namespace-inventory', {ids: namespaces.map(({id}) => id)});
+    return ok(namespaces);
+  }
   const objects = relative.match(/^\/workers\/durable_objects\/namespaces\/([^/]+)\/objects$/);
   if (objects) return namespaces.some(({id}) => id === objects[1]) ? ok([]) : missing();
   const script = relative.match(/^\/workers\/scripts\/([a-z0-9-]+)(?:\/(settings|deployments|subdomain))?$/);
@@ -278,7 +321,12 @@ async function provider(req, res) {
         endpoint: {enabled: false, previews_enabled: false},
         namespaces: Object.keys(meta.exports).map((exported) =>
           ({id: randomBytes(16).toString('hex'), script: name, class: exported}))});
-      event('upload', {revision: Number(owner.split(':')[2]), role: name.split('-').at(-1)});
+      const revision = Number(owner.split(':')[2]);
+      const role = name.split('-').at(-1);
+      if (config.workerNamespaceLagMs && role === 'capacity') {
+        lagNamespace = {id: workers.get(name).namespaces[0].id, revision, uploadedAt: performance.now()};
+      }
+      event('upload', {revision, role});
       return ok({id: name});
     }
     if (!item) return missing();
@@ -311,7 +359,11 @@ async function provider(req, res) {
       const body = await json();
       assert.ok(!tunnel || tunnel.record.deleted_at);
       tunnel = {record: {id: randomUUID(), name: body.name, account_tag: account, config_src: body.config_src,
-        created_at: new Date().toISOString(), deleted_at: null}, secret: body.tunnel_secret, sessions: new Set()};
+        created_at: new Date().toISOString(), deleted_at: null}, secret: body.tunnel_secret, sessions: new Set(),
+        version: initialTunnelVersion, config: null};
+      if (initialTunnelVersion === 1) {
+        tunnel.config = {ingress: [{service: 'http_status:404'}], 'warp-routing': {enabled: false}};
+      }
       return ok(tunnel.record);
     }
     return ok(tunnel && !tunnel.record.deleted_at ? [tunnel.record] : []);
@@ -328,8 +380,16 @@ async function provider(req, res) {
       return ok(tunnel.record);
     }
     if (suffix === '/configurations') {
-      if (method === 'PUT') tunnel.config = (await json()).config;
-      return tunnel.config ? ok({account_id: account, tunnel_id: tunnel.record.id, config: tunnel.config}) : missing();
+      if (method === 'PUT') {
+        tunnel.config = (await json()).config;
+        tunnel.version += 1;
+      }
+      if (method === 'GET' && tunnel.version === initialTunnelVersion) {
+        event('initial-tunnel-config', {shape: config.initialTunnelConfig});
+      }
+      if (tunnel.config === null && config.initialTunnelConfig === 'http_404') return missing();
+      return ok({tunnel_id: tunnel.record.id, created_at: tunnel.record.created_at, source: 'cloudflare',
+        version: tunnel.version, config: tunnel.config});
     }
     if (suffix === '/connections') {
       if (method === 'DELETE') {
@@ -369,9 +429,9 @@ const api = createServer((req, res) => provider(req, res).catch((error) => {
   res.writeHead(500).end();
 }));
 await Promise.all([
-  new Promise((resolve) => relay.listen(0, '127.0.0.1', resolve)),
-  new Promise((resolve) => edge.listen(config.edgePort, config.address, resolve)),
-  new Promise((resolve) => api.listen(config.providerPort, config.address, resolve)),
+  new Promise((resolve) => relay.listen(relayOnly ? config.relayPort : 0, '127.0.0.1', resolve)),
+  edge && new Promise((resolve) => edge.listen(config.edgePort, config.address, resolve)),
+  new Promise((resolve) => api.listen(config.providerPort, relayOnly ? '127.0.0.1' : config.address, resolve)),
 ]);
 writeFileSync(config.ready, 'ready\n');
 

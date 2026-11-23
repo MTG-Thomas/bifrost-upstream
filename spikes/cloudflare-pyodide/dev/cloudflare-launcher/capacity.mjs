@@ -78,6 +78,10 @@ export class WorkerLedger {
           const slots = await launcher(row).prepareManaged({
             incarnationId: row.worker_id, launcherId: row.worker_id, resourceUid: row.resource_uid,
             version: row.reservation.worker_version, memoryLimitBytes: row.reservation.memory_limit_bytes,
+            ...(row.reservation.deadline_ms === undefined ? {} : {
+              deadlineMs: row.reservation.deadline_ms, lifetimeSeconds: row.reservation.max_lifetime_seconds,
+              drainGraceMs: row.reservation.drain_grace_seconds * 1000,
+            }),
             secret: row.control_key,
           });
           const expected = row.reservation.memory_limit_bytes / SLOT_BYTES;

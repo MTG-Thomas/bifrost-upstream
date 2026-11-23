@@ -1,0 +1,1214 @@
+{
+  "requested_spike": "751a69e2f",
+  "merged_source": "28f5dbb2b3288d87b68d3f7df23cd28e6f067e22",
+  "runtime_source": "fcbdcc020a1fb7b7e946503306e2ad40d88820dc",
+  "initial_soak_harness_source": "ca2a3e04b0251a820ca4717c8955a7350c1de8e4",
+  "environment": {
+    "host": "CT128",
+    "node": "26.13.1",
+    "workerd": "1.20261023.1",
+    "cloudflare_cf_fetch_enabled": false,
+    "hosted": false
+  },
+  "release": {
+    "qualification": "Unqualified local bundles with unchanged pinned runtime. The release inventory and bundle pin require requalification.",
+    "runtime_sha256": "fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5",
+    "capacity_sha256": "d3957b08e4fbd9f4cc57f33f464997a4c6260ed6394160156c1ee75349dfe722",
+    "launcher_sha256": "cfde3ae6c54cee5326bf50ab78f90f7d7623fef28a75ff318ff1b5e1ed61f51b",
+    "gateway_sha256": "6fb1025b11b308d3a628bed063cb5aa5d11f141819eb3ddd1c0b8153621847d5",
+    "inventory_delta": {
+      "launcher": {
+        "spikes/cloudflare-pyodide/dev/cloudflare-launcher/launcher-core.mjs": {
+          "pinned": "7dfa90714dcc0ab00ac71924dfeb847c0e2561247a60c5b6a1dc3ff93cf921be",
+          "local": "84cf077131164ce2f68a33fbb91d165b1764c03042d968bee8224d51e3c5a850"
+        },
+        "spikes/cloudflare-pyodide/dev/cloudflare-launcher/launcher-do.mjs": {
+          "pinned": "00225484809abe03e66b5e9baeea5599c2f465d3891db1014753887c257b8279",
+          "local": "b1f204016fac9e873501323aa8d143d48f7fec9339ad88eb2f0f3fd6a5c6f080"
+        },
+        "spikes/cloudflare-pyodide/dev/cloudflare-launcher/launcher-meter.mjs": {
+          "pinned": "bfd044bfd5b0c30f1ee636c7e29377079f6dc0c83f6d9f2660efc4f86747451f",
+          "local": "149e2d0f20273d147cdeba909795f39353ca600416558bbd35fa8b7409dd9c48"
+        }
+      },
+      "capacity": {
+        "spikes/cloudflare-pyodide/dev/cloudflare-launcher/capacity-core.mjs": {
+          "pinned": "2062235c62014a7d7cdba894386e1eeeb941911e24d62f550a3e1b0b990e9e86",
+          "local": "08db004a3b7b2d130359c86c7aaddc3b241f6513b17a9a8ab44cb8e07af960ca"
+        },
+        "spikes/cloudflare-pyodide/dev/cloudflare-launcher/capacity.mjs": {
+          "pinned": "f78133b63a83ec9499c048e55bc606611d1f7ed82745701852c61dd12186c0ff",
+          "local": "70a2a894ab20c054aec952633b7fc51682fcf4429688f9dccf3e5569c3c76e53"
+        }
+      }
+    }
+  },
+  "pricing": {
+    "workers_launchers": 3,
+    "slots_per_launcher": 4,
+    "installation_slots": 9,
+    "envelope_usd_900_seconds": "68.50",
+    "envelope_usd_120_seconds": "415.59",
+    "owner_limit_usd": "75.00"
+  },
+  "incarnation_caps": {
+    "120": {
+      "sqlite_rows_written": 15360,
+      "do_requests": 7680,
+      "log_events": 7680
+    },
+    "900": {
+      "sqlite_rows_written": 115200,
+      "do_requests": 57600,
+      "log_events": 57600
+    }
+  },
+  "control_120": {
+    "node": "v26.13.1",
+    "target_seconds": 120,
+    "launcher_sha256": "cfde3ae6c54cee5326bf50ab78f90f7d7623fef28a75ff318ff1b5e1ed61f51b",
+    "process_memory_is_aggregate": true,
+    "samples": [
+      {
+        "at_seconds": 0.057,
+        "deadline_offset_ms": -119630,
+        "rss_kib": 211980,
+        "peak_rss_kib": 211980,
+        "cpu_ms": 10,
+        "meter": null,
+        "state": "running"
+      },
+      {
+        "at_seconds": 18.401,
+        "deadline_offset_ms": -101286,
+        "rss_kib": 762196,
+        "peak_rss_kib": 762196,
+        "cpu_ms": 19120,
+        "meter": {
+          "sqlite_rows_written": 126,
+          "do_requests": 12,
+          "log_events": 4,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 30.089,
+        "deadline_offset_ms": -89598,
+        "rss_kib": 756932,
+        "peak_rss_kib": 761948,
+        "cpu_ms": 19200,
+        "meter": {
+          "sqlite_rows_written": 158,
+          "do_requests": 15,
+          "log_events": 5,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 60.537,
+        "deadline_offset_ms": -59150,
+        "rss_kib": 743740,
+        "peak_rss_kib": 761948,
+        "cpu_ms": 19320,
+        "meter": {
+          "sqlite_rows_written": 190,
+          "do_requests": 18,
+          "log_events": 6,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 91.145,
+        "deadline_offset_ms": -28542,
+        "rss_kib": 746056,
+        "peak_rss_kib": 761948,
+        "cpu_ms": 19430,
+        "meter": {
+          "sqlite_rows_written": 222,
+          "do_requests": 21,
+          "log_events": 7,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 119.697,
+        "deadline_offset_ms": 10,
+        "rss_kib": 745688,
+        "peak_rss_kib": 761948,
+        "cpu_ms": 19450,
+        "meter": {
+          "sqlite_rows_written": 230,
+          "do_requests": 21,
+          "log_events": 7,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "deleted"
+      }
+    ],
+    "hello_sequences": [
+      1,
+      2
+    ],
+    "cadence": {
+      "polls": 40,
+      "spacingSeconds": 2,
+      "elapsedSeconds": 81.25982843525708
+    },
+    "cleanup_seconds": 0.02400000000000091,
+    "seal": {
+      "sqlite_rows_written": 230,
+      "do_requests": 21,
+      "log_events": 7,
+      "sqlite_database_bytes": 20480,
+      "exhausted": false,
+      "launcher_storage_cleared": true,
+      "ledger_receipt_pending": true
+    },
+    "route_invocations": {
+      "boot_cold": 4,
+      "workflow_warm": 7,
+      "boot_warm": 3
+    },
+    "workflows_completed": 7,
+    "module_counts": [
+      479,
+      481
+    ],
+    "result": "Passed 120-second deadline, 40 cadence observations, receipt, and provider conformance"
+  },
+  "initial_soak_900": {
+    "node": "v26.13.1",
+    "target_seconds": 900,
+    "launcher_sha256": "cfde3ae6c54cee5326bf50ab78f90f7d7623fef28a75ff318ff1b5e1ed61f51b",
+    "process_memory_is_aggregate": true,
+    "samples": [
+      {
+        "at_seconds": 0.084,
+        "deadline_offset_ms": -899736,
+        "rss_kib": 212252,
+        "peak_rss_kib": 212252,
+        "cpu_ms": 0,
+        "meter": null,
+        "state": "running"
+      },
+      {
+        "at_seconds": 16.655,
+        "deadline_offset_ms": -883165,
+        "rss_kib": 755716,
+        "peak_rss_kib": 755716,
+        "cpu_ms": 17400,
+        "meter": {
+          "sqlite_rows_written": 126,
+          "do_requests": 12,
+          "log_events": 4,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 30.068,
+        "deadline_offset_ms": -869752,
+        "rss_kib": 756584,
+        "peak_rss_kib": 756584,
+        "cpu_ms": 17470,
+        "meter": {
+          "sqlite_rows_written": 158,
+          "do_requests": 15,
+          "log_events": 5,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 60.053,
+        "deadline_offset_ms": -839768,
+        "rss_kib": 751276,
+        "peak_rss_kib": 756360,
+        "cpu_ms": 17550,
+        "meter": {
+          "sqlite_rows_written": 190,
+          "do_requests": 18,
+          "log_events": 6,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 90.068,
+        "deadline_offset_ms": -809752,
+        "rss_kib": 753260,
+        "peak_rss_kib": 756360,
+        "cpu_ms": 17640,
+        "meter": {
+          "sqlite_rows_written": 222,
+          "do_requests": 21,
+          "log_events": 7,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 120.069,
+        "deadline_offset_ms": -779751,
+        "rss_kib": 752768,
+        "peak_rss_kib": 756360,
+        "cpu_ms": 17730,
+        "meter": {
+          "sqlite_rows_written": 254,
+          "do_requests": 24,
+          "log_events": 8,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 150.074,
+        "deadline_offset_ms": -749746,
+        "rss_kib": 752864,
+        "peak_rss_kib": 756360,
+        "cpu_ms": 17820,
+        "meter": {
+          "sqlite_rows_written": 286,
+          "do_requests": 27,
+          "log_events": 9,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 180.192,
+        "deadline_offset_ms": -719628,
+        "rss_kib": 754152,
+        "peak_rss_kib": 756360,
+        "cpu_ms": 18060,
+        "meter": {
+          "sqlite_rows_written": 414,
+          "do_requests": 39,
+          "log_events": 13,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 210.043,
+        "deadline_offset_ms": -689778,
+        "rss_kib": 749792,
+        "peak_rss_kib": 756360,
+        "cpu_ms": 18150,
+        "meter": {
+          "sqlite_rows_written": 446,
+          "do_requests": 42,
+          "log_events": 14,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 240.048,
+        "deadline_offset_ms": -659772,
+        "rss_kib": 750808,
+        "peak_rss_kib": 756360,
+        "cpu_ms": 18220,
+        "meter": {
+          "sqlite_rows_written": 478,
+          "do_requests": 45,
+          "log_events": 15,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 270.061,
+        "deadline_offset_ms": -629759,
+        "rss_kib": 751168,
+        "peak_rss_kib": 756360,
+        "cpu_ms": 18320,
+        "meter": {
+          "sqlite_rows_written": 510,
+          "do_requests": 48,
+          "log_events": 16,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 300.065,
+        "deadline_offset_ms": -599755,
+        "rss_kib": 751848,
+        "peak_rss_kib": 756360,
+        "cpu_ms": 18410,
+        "meter": {
+          "sqlite_rows_written": 542,
+          "do_requests": 51,
+          "log_events": 17,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 330.052,
+        "deadline_offset_ms": -569768,
+        "rss_kib": 752436,
+        "peak_rss_kib": 756360,
+        "cpu_ms": 18500,
+        "meter": {
+          "sqlite_rows_written": 574,
+          "do_requests": 54,
+          "log_events": 18,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 360.179,
+        "deadline_offset_ms": -539641,
+        "rss_kib": 755552,
+        "peak_rss_kib": 756360,
+        "cpu_ms": 18710,
+        "meter": {
+          "sqlite_rows_written": 702,
+          "do_requests": 66,
+          "log_events": 22,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 390.051,
+        "deadline_offset_ms": -509769,
+        "rss_kib": 748628,
+        "peak_rss_kib": 756360,
+        "cpu_ms": 18790,
+        "meter": {
+          "sqlite_rows_written": 734,
+          "do_requests": 69,
+          "log_events": 23,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 420.065,
+        "deadline_offset_ms": -479755,
+        "rss_kib": 749044,
+        "peak_rss_kib": 756360,
+        "cpu_ms": 18870,
+        "meter": {
+          "sqlite_rows_written": 766,
+          "do_requests": 72,
+          "log_events": 24,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 451.073,
+        "deadline_offset_ms": -448747,
+        "rss_kib": 750400,
+        "peak_rss_kib": 756360,
+        "cpu_ms": 18960,
+        "meter": {
+          "sqlite_rows_written": 798,
+          "do_requests": 75,
+          "log_events": 25,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 480.051,
+        "deadline_offset_ms": -419769,
+        "rss_kib": 750052,
+        "peak_rss_kib": 756360,
+        "cpu_ms": 19020,
+        "meter": {
+          "sqlite_rows_written": 830,
+          "do_requests": 78,
+          "log_events": 26,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 510.048,
+        "deadline_offset_ms": -389772,
+        "rss_kib": 750648,
+        "peak_rss_kib": 756360,
+        "cpu_ms": 19070,
+        "meter": {
+          "sqlite_rows_written": 862,
+          "do_requests": 81,
+          "log_events": 27,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 540.228,
+        "deadline_offset_ms": -359592,
+        "rss_kib": 753296,
+        "peak_rss_kib": 756360,
+        "cpu_ms": 19330,
+        "meter": {
+          "sqlite_rows_written": 990,
+          "do_requests": 93,
+          "log_events": 31,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 570.058,
+        "deadline_offset_ms": -329762,
+        "rss_kib": 753012,
+        "peak_rss_kib": 756360,
+        "cpu_ms": 19390,
+        "meter": {
+          "sqlite_rows_written": 1022,
+          "do_requests": 96,
+          "log_events": 32,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 600.043,
+        "deadline_offset_ms": -299777,
+        "rss_kib": 753564,
+        "peak_rss_kib": 756360,
+        "cpu_ms": 19440,
+        "meter": {
+          "sqlite_rows_written": 1054,
+          "do_requests": 99,
+          "log_events": 33,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 630.042,
+        "deadline_offset_ms": -269778,
+        "rss_kib": 753580,
+        "peak_rss_kib": 756360,
+        "cpu_ms": 19490,
+        "meter": {
+          "sqlite_rows_written": 1086,
+          "do_requests": 102,
+          "log_events": 34,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 660.055,
+        "deadline_offset_ms": -239765,
+        "rss_kib": 751516,
+        "peak_rss_kib": 756360,
+        "cpu_ms": 19550,
+        "meter": {
+          "sqlite_rows_written": 1118,
+          "do_requests": 105,
+          "log_events": 35,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 690.043,
+        "deadline_offset_ms": -209778,
+        "rss_kib": 753000,
+        "peak_rss_kib": 756360,
+        "cpu_ms": 19600,
+        "meter": {
+          "sqlite_rows_written": 1150,
+          "do_requests": 108,
+          "log_events": 36,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 720.187,
+        "deadline_offset_ms": -179633,
+        "rss_kib": 757120,
+        "peak_rss_kib": 757120,
+        "cpu_ms": 19800,
+        "meter": {
+          "sqlite_rows_written": 1278,
+          "do_requests": 120,
+          "log_events": 40,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 750.058,
+        "deadline_offset_ms": -149763,
+        "rss_kib": 757808,
+        "peak_rss_kib": 757808,
+        "cpu_ms": 19870,
+        "meter": {
+          "sqlite_rows_written": 1310,
+          "do_requests": 123,
+          "log_events": 41,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 780.055,
+        "deadline_offset_ms": -119765,
+        "rss_kib": 757556,
+        "peak_rss_kib": 757792,
+        "cpu_ms": 19920,
+        "meter": {
+          "sqlite_rows_written": 1342,
+          "do_requests": 126,
+          "log_events": 42,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 810.075,
+        "deadline_offset_ms": -89745,
+        "rss_kib": 756808,
+        "peak_rss_kib": 757852,
+        "cpu_ms": 20000,
+        "meter": {
+          "sqlite_rows_written": 1374,
+          "do_requests": 129,
+          "log_events": 43,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 840.045,
+        "deadline_offset_ms": -59775,
+        "rss_kib": 755956,
+        "peak_rss_kib": 757852,
+        "cpu_ms": 20060,
+        "meter": {
+          "sqlite_rows_written": 1406,
+          "do_requests": 132,
+          "log_events": 44,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 870.158,
+        "deadline_offset_ms": -29662,
+        "rss_kib": 757596,
+        "peak_rss_kib": 757852,
+        "cpu_ms": 20230,
+        "meter": {
+          "sqlite_rows_written": 1534,
+          "do_requests": 144,
+          "log_events": 48,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 899.828,
+        "deadline_offset_ms": 7,
+        "rss_kib": 752360,
+        "peak_rss_kib": 757852,
+        "cpu_ms": 20250,
+        "meter": {
+          "sqlite_rows_written": 1542,
+          "do_requests": 144,
+          "log_events": 48,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "deleted"
+      }
+    ],
+    "hello_sequences": [
+      1,
+      2
+    ],
+    "cadence": {
+      "failed": true
+    },
+    "cleanup_seconds": 0.01599999999996271,
+    "seal": {
+      "sqlite_rows_written": 1542,
+      "do_requests": 144,
+      "log_events": 48,
+      "sqlite_database_bytes": 45056,
+      "exhausted": false,
+      "launcher_storage_cleared": true,
+      "ledger_receipt_pending": true
+    },
+    "route_invocations": {
+      "boot_cold": 4,
+      "workflow_warm": 48,
+      "boot_warm": 44
+    },
+    "workflows_completed": 48,
+    "module_counts": [
+      479,
+      481
+    ],
+    "result": "Runtime and conformance passed. Observer rejected the deliberately disconnected control window."
+  },
+  "corrected_soak_900": {
+    "node": "v26.13.1",
+    "target_seconds": 900,
+    "launcher_sha256": "cfde3ae6c54cee5326bf50ab78f90f7d7623fef28a75ff318ff1b5e1ed61f51b",
+    "process_memory_is_aggregate": true,
+    "samples": [
+      {
+        "at_seconds": 0.056,
+        "deadline_offset_ms": -899676,
+        "rss_kib": 208264,
+        "peak_rss_kib": 208264,
+        "cpu_ms": 0,
+        "meter": null,
+        "state": "running"
+      },
+      {
+        "at_seconds": 16.884,
+        "deadline_offset_ms": -882848,
+        "rss_kib": 747948,
+        "peak_rss_kib": 747948,
+        "cpu_ms": 18760,
+        "meter": {
+          "sqlite_rows_written": 126,
+          "do_requests": 12,
+          "log_events": 4,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 30.078,
+        "deadline_offset_ms": -869655,
+        "rss_kib": 742884,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 18850,
+        "meter": {
+          "sqlite_rows_written": 158,
+          "do_requests": 15,
+          "log_events": 5,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 60.146,
+        "deadline_offset_ms": -839586,
+        "rss_kib": 737128,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 18930,
+        "meter": {
+          "sqlite_rows_written": 190,
+          "do_requests": 18,
+          "log_events": 6,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 90.068,
+        "deadline_offset_ms": -809664,
+        "rss_kib": 739016,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 19030,
+        "meter": {
+          "sqlite_rows_written": 222,
+          "do_requests": 21,
+          "log_events": 7,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 120.063,
+        "deadline_offset_ms": -779669,
+        "rss_kib": 740432,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 19110,
+        "meter": {
+          "sqlite_rows_written": 254,
+          "do_requests": 24,
+          "log_events": 8,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 150.054,
+        "deadline_offset_ms": -749678,
+        "rss_kib": 740168,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 19190,
+        "meter": {
+          "sqlite_rows_written": 286,
+          "do_requests": 27,
+          "log_events": 9,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 180.169,
+        "deadline_offset_ms": -719563,
+        "rss_kib": 741820,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 19410,
+        "meter": {
+          "sqlite_rows_written": 414,
+          "do_requests": 39,
+          "log_events": 13,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 210.056,
+        "deadline_offset_ms": -689676,
+        "rss_kib": 738028,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 19500,
+        "meter": {
+          "sqlite_rows_written": 446,
+          "do_requests": 42,
+          "log_events": 14,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 240.045,
+        "deadline_offset_ms": -659688,
+        "rss_kib": 738520,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 19570,
+        "meter": {
+          "sqlite_rows_written": 478,
+          "do_requests": 45,
+          "log_events": 15,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 270.042,
+        "deadline_offset_ms": -629690,
+        "rss_kib": 737764,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 19660,
+        "meter": {
+          "sqlite_rows_written": 510,
+          "do_requests": 48,
+          "log_events": 16,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 300.048,
+        "deadline_offset_ms": -599684,
+        "rss_kib": 738184,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 19730,
+        "meter": {
+          "sqlite_rows_written": 542,
+          "do_requests": 51,
+          "log_events": 17,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 330.057,
+        "deadline_offset_ms": -569675,
+        "rss_kib": 739196,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 19820,
+        "meter": {
+          "sqlite_rows_written": 574,
+          "do_requests": 54,
+          "log_events": 18,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 360.193,
+        "deadline_offset_ms": -539540,
+        "rss_kib": 742260,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 20060,
+        "meter": {
+          "sqlite_rows_written": 702,
+          "do_requests": 66,
+          "log_events": 22,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 390.074,
+        "deadline_offset_ms": -509658,
+        "rss_kib": 741704,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 20160,
+        "meter": {
+          "sqlite_rows_written": 734,
+          "do_requests": 69,
+          "log_events": 23,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 420.059,
+        "deadline_offset_ms": -479673,
+        "rss_kib": 742264,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 20270,
+        "meter": {
+          "sqlite_rows_written": 766,
+          "do_requests": 72,
+          "log_events": 24,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 451.12,
+        "deadline_offset_ms": -448612,
+        "rss_kib": 743416,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 20360,
+        "meter": {
+          "sqlite_rows_written": 798,
+          "do_requests": 75,
+          "log_events": 25,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 480.078,
+        "deadline_offset_ms": -419654,
+        "rss_kib": 744392,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 20460,
+        "meter": {
+          "sqlite_rows_written": 830,
+          "do_requests": 78,
+          "log_events": 26,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 510.081,
+        "deadline_offset_ms": -389651,
+        "rss_kib": 743828,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 20570,
+        "meter": {
+          "sqlite_rows_written": 862,
+          "do_requests": 81,
+          "log_events": 27,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 540.232,
+        "deadline_offset_ms": -359500,
+        "rss_kib": 746996,
+        "peak_rss_kib": 747732,
+        "cpu_ms": 20850,
+        "meter": {
+          "sqlite_rows_written": 990,
+          "do_requests": 93,
+          "log_events": 31,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 570.082,
+        "deadline_offset_ms": -329650,
+        "rss_kib": 749492,
+        "peak_rss_kib": 749492,
+        "cpu_ms": 20960,
+        "meter": {
+          "sqlite_rows_written": 1022,
+          "do_requests": 96,
+          "log_events": 32,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 600.055,
+        "deadline_offset_ms": -299677,
+        "rss_kib": 750512,
+        "peak_rss_kib": 750512,
+        "cpu_ms": 21060,
+        "meter": {
+          "sqlite_rows_written": 1054,
+          "do_requests": 99,
+          "log_events": 33,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 630.076,
+        "deadline_offset_ms": -269656,
+        "rss_kib": 751708,
+        "peak_rss_kib": 751708,
+        "cpu_ms": 21160,
+        "meter": {
+          "sqlite_rows_written": 1086,
+          "do_requests": 102,
+          "log_events": 34,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 660.056,
+        "deadline_offset_ms": -239676,
+        "rss_kib": 752384,
+        "peak_rss_kib": 752384,
+        "cpu_ms": 21250,
+        "meter": {
+          "sqlite_rows_written": 1118,
+          "do_requests": 105,
+          "log_events": 35,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 690.058,
+        "deadline_offset_ms": -209674,
+        "rss_kib": 753252,
+        "peak_rss_kib": 753252,
+        "cpu_ms": 21350,
+        "meter": {
+          "sqlite_rows_written": 1150,
+          "do_requests": 108,
+          "log_events": 36,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 720.292,
+        "deadline_offset_ms": -179440,
+        "rss_kib": 756196,
+        "peak_rss_kib": 756196,
+        "cpu_ms": 21680,
+        "meter": {
+          "sqlite_rows_written": 1278,
+          "do_requests": 120,
+          "log_events": 40,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 750.046,
+        "deadline_offset_ms": -149686,
+        "rss_kib": 757724,
+        "peak_rss_kib": 757724,
+        "cpu_ms": 21780,
+        "meter": {
+          "sqlite_rows_written": 1310,
+          "do_requests": 123,
+          "log_events": 41,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 780.047,
+        "deadline_offset_ms": -119685,
+        "rss_kib": 754880,
+        "peak_rss_kib": 757476,
+        "cpu_ms": 21870,
+        "meter": {
+          "sqlite_rows_written": 1342,
+          "do_requests": 126,
+          "log_events": 42,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 810.076,
+        "deadline_offset_ms": -89656,
+        "rss_kib": 755060,
+        "peak_rss_kib": 757476,
+        "cpu_ms": 21990,
+        "meter": {
+          "sqlite_rows_written": 1374,
+          "do_requests": 129,
+          "log_events": 43,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 840.057,
+        "deadline_offset_ms": -59675,
+        "rss_kib": 755568,
+        "peak_rss_kib": 757476,
+        "cpu_ms": 22070,
+        "meter": {
+          "sqlite_rows_written": 1406,
+          "do_requests": 132,
+          "log_events": 44,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 870.222,
+        "deadline_offset_ms": -29510,
+        "rss_kib": 757816,
+        "peak_rss_kib": 757816,
+        "cpu_ms": 22330,
+        "meter": {
+          "sqlite_rows_written": 1534,
+          "do_requests": 144,
+          "log_events": 48,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "running"
+      },
+      {
+        "at_seconds": 899.749,
+        "deadline_offset_ms": 17,
+        "rss_kib": 752512,
+        "peak_rss_kib": 757476,
+        "cpu_ms": 22340,
+        "meter": {
+          "sqlite_rows_written": 1542,
+          "do_requests": 144,
+          "log_events": 48,
+          "persisted_exhaustion_marker": null
+        },
+        "state": "deleted"
+      }
+    ],
+    "hello_sequences": [
+      1,
+      2
+    ],
+    "cadence": {
+      "polls": 420,
+      "spacingSeconds": 2,
+      "elapsedSeconds": 842.6727384747937,
+      "reconnectObservations": 1
+    },
+    "cleanup_seconds": 0.013000000000033651,
+    "seal": {
+      "sqlite_rows_written": 1542,
+      "do_requests": 144,
+      "log_events": 48,
+      "sqlite_database_bytes": 45056,
+      "exhausted": false,
+      "launcher_storage_cleared": true,
+      "ledger_receipt_pending": true
+    },
+    "route_invocations": {
+      "boot_cold": 4,
+      "workflow_warm": 48,
+      "boot_warm": 44
+    },
+    "workflows_completed": 48,
+    "module_counts": [
+      479,
+      481
+    ],
+    "harness_source": "950c845c7c5940f24cbf8bd3584d4949e0d617b5",
+    "result": "Passed deadline retirement, sealed receipt, 420 observations including one deliberately interrupted control connection, and provider conformance."
+  },
+  "verification": [
+    {
+      "command": "./test.sh tests/e2e/platform/test_cloudflare_capacity_persistence.py",
+      "passed": 128
+    },
+    {
+      "command": "./test.sh tests/unit/services/worker_pool tests/unit/test_contract_version.py tests/unit/test_dto_flags.py tests/unit/test_access_list.py",
+      "passed": 548,
+      "by_target": {
+        "worker_pool": 395,
+        "contract_version": 2,
+        "dto_flags": 76,
+        "access_list": 75
+      }
+    },
+    {
+      "command": "node --test deploy/capacity/cloudflare/build-workers.test.mjs",
+      "passed": 11,
+      "expected_failure": "The meter inventory rejects the changed launcher-core.mjs hash."
+    },
+    {
+      "command": "node --test spikes/cloudflare-pyodide/dev/cloudflare-launcher/capacity.test.mjs spikes/cloudflare-pyodide/dev/cloudflare-launcher/launcher-core.test.mjs spikes/cloudflare-pyodide/dev/cloudflare-launcher/launcher-meter.test.mjs spikes/cloudflare-pyodide/dev/tenant-workers/launcher-host.test.mjs",
+      "passed": 65
+    },
+    {
+      "command": "node --test spikes/cloudflare-pyodide/dev/tenant-workers/capacity-workerd.test.mjs",
+      "120_seconds": {
+        "passed": 2,
+        "provider_conformance_checks": 17
+      },
+      "900_seconds_initial": {
+        "passed": 1,
+        "failed": 1,
+        "failure": "The cadence observer expected running during the deliberate reconnect."
+      },
+      "900_seconds_corrected": {
+        "passed": 2,
+        "provider_conformance_checks": 17
+      }
+    },
+    {
+      "command": "npm exec -- vitest run --pool=threads src/pages/settings/CloudflareCapacity.test.tsx",
+      "location": "client",
+      "passed": 18
+    },
+    {
+      "command": "./test.sh quality api",
+      "ruff": "passed",
+      "pyright": "passed",
+      "initial_failure": "Ruff found the merged combined-stack.py fixture's unused os import.",
+      "fix_source": "834759e8c474e150c19ab88f85bfe530f4b99de3"
+    },
+    {
+      "command": "npm --prefix client run tsc",
+      "passed": true
+    },
+    {
+      "command": "npm exec -- eslint src/pages/settings/CloudflareCapacity.tsx src/pages/settings/CloudflareCapacity.test.tsx",
+      "location": "client",
+      "passed": true
+    }
+  ],
+  "fleet_policy": "Preset B is the new-installation activation suggestion in this branch. Release requires meter requalification. The policy-save fleet-fit check still applies.",
+  "cleanup": "Verified absence of the owned CT128 Docker containers, volumes, network and build image tag. Removed the superseded archive and duplicate harness staging folder.",
+  "not_run": [
+    "Hosted Workers validation",
+    "Meter or bundle pin requalification",
+    "Broader backend or browser suites"
+  ]
+}

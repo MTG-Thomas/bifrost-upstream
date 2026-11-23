@@ -18,6 +18,7 @@ from src.jobs.platform.base import (
 )
 from src.models.orm.cloudflare_capacity import (
     CloudflareInstallation,
+    CloudflareUsageIncarnation,
     CloudflareWorkerReservation,
 )
 from src.models.orm.execution_workers import ExecutionWorker
@@ -28,16 +29,24 @@ from src.services.worker_ingress_probes import CanaryFailure, RuntimeCanary
 from src.services.worker_pool.cloudflare_admission import ManagedCloudflareScope
 from src.services.worker_pool.cloudflare_credentials import load_managed_control_key
 from src.services.worker_pool.cloudflare_policy import cloudflare_workers_remain
-from src.services.worker_pool.cloudflare_provisioning import ObservationPending
-from src.services.worker_pool.cloudflare_spend import compact_ledger_receipt, seal_launcher_meter
+from src.services.worker_pool.cloudflare_provisioning import (
+    ObservationCheck,
+    ObservationPending,
+    OwnershipResource,
+)
+from src.services.worker_pool.cloudflare_spend import (
+    compact_ledger_receipt,
+    seal_launcher_meter,
+)
 from src.services.worker_pool.cloudflare_workers_rest import WorkersDeployment
 from src.services.worker_pool.external_client import (
+    CapacityProtocolCheck,
     CapacityProtocolError,
     ExternalCapacityClient,
 )
 from src.worker.remote.protocol import (
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
-    WORKER_DRAIN_GRACE_SECONDS,
+    WORKERS_DEADLINE_DRAIN_SECONDS,
     cloudflare_slots,
 )
 
@@ -182,7 +191,7 @@ async def run_workers_canary(
     origin: str, client: ExternalCapacityClient, deployment: WorkersDeployment,
 ) -> RuntimeCanary:
     if origin != deployment.worker_ingress_origin:
-        raise CapacityProtocolError("The canary ingress origin changed")
+        raise CapacityProtocolError("The canary ingress origin changed", CapacityProtocolCheck.INGRESS_ORIGIN)
     profile = await client.profile()
     if (
         profile.scope != "workers" or profile.protocol_version != 2
@@ -192,7 +201,9 @@ async def run_workers_canary(
         or profile.max_lifetime_seconds != deployment.policy.max_lifetime_seconds
         or cloudflare_slots(profile.memory_limit_bytes) != deployment.policy.slots_per_launcher
     ):
-        raise CapacityProtocolError("The canary provider contract differs from the installed release")
+        raise CapacityProtocolError(
+            "The canary provider contract differs from the installed release", CapacityProtocolCheck.PROFILE_CONTRACT,
+        )
     worker_id, resource_uid = uuid4(), uuid4().hex
     async with get_db_context() as db:
         try:
@@ -215,20 +226,41 @@ async def run_workers_canary(
             memory_limit_bytes=profile.memory_limit_bytes, remote_launcher_id=worker_id,
         ))
         await db.flush()
-        pin = ManagedCloudflareScope(installation_id, "workers", revision).pin(worker_id, row.control_root_version)
+        lifetime = min(deployment.policy.max_lifetime_seconds, 120)
+        reserved_at = await db.scalar(select(func.clock_timestamp()))
+        assert reserved_at is not None
+        pin = ManagedCloudflareScope(installation_id, "workers", revision).pin(
+            worker_id, row.control_root_version, reserved_at=reserved_at, lifetime=lifetime,
+            deadline_wire=any(
+                binding.name == "BIFROST_LAUNCHER_METERS_PER_SECOND" and binding.type == "plain_text"
+                for binding in deployment.release.manifest.workers["launcher"].bindings
+            ),
+        )
         pin.canary_job_id = context.job_id
         pin.canary_lease_token = context.lease_token
         db.add(pin)
+        if pin.workers_deadline_wire:
+            await db.flush()
+            usage = await db.get(CloudflareUsageIncarnation, worker_id, with_for_update=True)
+            assert usage is not None and pin.workers_lifetime_seconds is not None
+            if usage.meter_bounds is not None and (rates := usage.meter_bounds.get("per_second_caps")) is not None:
+                usage.meter_bounds = {
+                    **usage.meter_bounds,
+                    "caps": {name: rate * pin.workers_lifetime_seconds for name, rate in rates.items()},
+                }
         key = await load_managed_control_key(db, pin, resource_uid)
 
     signed = scoped = False
+    verified_at = None
     failure = None
     try:
         await client.prepare(WorkerCapacityReservation(
             worker_id=worker_id, worker_version=profile.worker_version, memory_limit_bytes=profile.memory_limit_bytes,
-            max_lifetime_seconds=min(deployment.policy.max_lifetime_seconds, 120),
-            drain_grace_seconds=WORKER_DRAIN_GRACE_SECONDS,
-        ), "workers", managed_identity=(resource_uid, key))
+            max_lifetime_seconds=lifetime,
+            drain_grace_seconds=WORKERS_DEADLINE_DRAIN_SECONDS,
+        ), "workers", managed_identity=(resource_uid, key),
+            **({"managed_deadline": pin.workers_deadline_at} if pin.workers_deadline_wire else {}),
+        )
         async with get_db_context() as db:
             try:
                 await hold_lease(db, context.job_id, context.lease_token)
@@ -258,6 +290,7 @@ async def run_workers_canary(
                         and proof.canary_sdk_generation == proof.remote_session_generation
                     )
                     if scoped:
+                        verified_at = proof.canary_ack_at
                         failure = None
                         break
                     failure = _canary_session_failure(proof.result or {}, worker_id, proof.remote_session_generation)
@@ -271,5 +304,8 @@ async def run_workers_canary(
     finally:
         retired = await _retire_canary(client, worker_id, resource_uid)
     if not retired and signed and scoped:
-        raise ObservationPending("The runtime canary has no verified deletion receipt")
-    return RuntimeCanary(signed, scoped, failure)
+        raise ObservationPending(
+            "The runtime canary has no verified deletion receipt",
+            OwnershipResource.CANARY_LAUNCHER, ObservationCheck.CANARY_RETIREMENT,
+        )
+    return RuntimeCanary(signed, scoped, failure, verified_at)

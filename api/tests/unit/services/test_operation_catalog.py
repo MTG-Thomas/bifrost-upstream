@@ -1149,8 +1149,16 @@ WORKSPACE_FILE_OPERATIONS = {
 }
 
 CANONICAL_OPERATIONS = {
+    "capacity.cloudflare_preflight": (
+        "POST", "/api/capacity/cloudflare/preflight", ("capacity", "cloudflare", "preflight"),
+        "bifrost_cloudflare_preflight_validate", False,
+    ),
+    "capacity.cloudflare_activate": (
+        "POST", "/api/capacity/cloudflare/activate", ("capacity", "cloudflare", "activate"),
+        "bifrost_cloudflare_activate_execute", False,
+    ),
     "capacity.cloudflare_configure": (
-        "PATCH", "/api/capacity/cloudflare", ("capacity", "cloudflare", "connect"),
+        "PATCH", "/api/capacity/cloudflare", ("capacity", "cloudflare", "policy"),
         "bifrost_cloudflare_policy_update", False,
     ),
     "capacity.cloudflare_credential_stage": (
@@ -1192,6 +1200,12 @@ CANONICAL_OPERATIONS = {
     "users.defaults.update": (
         "PUT", "/api/base-role-defaults", ("users", "defaults", "set"),
         "bifrost_base_role_default_update", False,
+    ),
+    "workflows.cloudflare_approval.list": (
+        "GET",
+        "/api/workflows/cloudflare-approvals",
+        ("workflows", "cloudflare-approval", "list"),
+        "bifrost_workflow_cloudflare_approval_list",
     ),
     "workflows.cloudflare_approval.status": (
         "GET",

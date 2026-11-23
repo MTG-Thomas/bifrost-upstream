@@ -131,9 +131,11 @@
 | POST | `/api/branding/logo/{logo_type}` |
 | GET | `/api/capacity/cloudflare` |
 | PATCH | `/api/capacity/cloudflare` |
+| POST | `/api/capacity/cloudflare/activate` |
 | POST | `/api/capacity/cloudflare/credential` |
 | POST | `/api/capacity/cloudflare/disconnect` |
 | POST | `/api/capacity/cloudflare/enable` |
+| POST | `/api/capacity/cloudflare/preflight` |
 | POST | `/api/capacity/cloudflare/reconcile` |
 | POST | `/api/capacity/cloudflare/rotate` |
 | POST | `/api/capacity/cloudflare/scale-in` |
@@ -646,6 +648,7 @@
 | POST | `/api/workflow-keys` |
 | DELETE | `/api/workflow-keys/{workflow_id}` |
 | GET | `/api/workflows` |
+| GET | `/api/workflows/cloudflare-approvals` |
 | POST | `/api/workflows/execute` |
 | POST | `/api/workflows/executions/{execution_id}/cancel` |
 | GET | `/api/workflows/orphaned` |

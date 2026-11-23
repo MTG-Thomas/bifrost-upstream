@@ -18,7 +18,7 @@ import hashlib
 import sys
 from abc import abstractmethod
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from time import monotonic
 from typing import Any, Protocol
 
@@ -302,6 +302,12 @@ async def run_execution(
             from bifrost._execution_context import EventContext
             event_ctx = EventContext(**event_dict)
 
+        workflow_entry_at: int | None = None
+
+        def record_workflow_entry() -> None:
+            nonlocal workflow_entry_at
+            workflow_entry_at = int(datetime.now(UTC).timestamp() * 1000)
+
         # Build execution request
         request = ExecutionRequest(
             execution_id=execution_id,
@@ -334,6 +340,7 @@ async def run_execution(
             ),
             original_user_id=context_data.get("original_user_id"),
             broadcaster=None,  # Logs go to Redis Stream directly
+            on_workflow_entry=record_workflow_entry if context_data.get("_record_workflow_entry") is True else None,
             event=event_ctx,
             solution_id=context_data.get("solution_id"),  # install scope for SDK
             artifact_workspace_id=context_data.get("artifact_workspace_id"),
@@ -364,6 +371,7 @@ async def run_execution(
             "cached": exec_result.cached,
             "cache_expires_at": exec_result.cache_expires_at,
             "execution_context": exec_result.execution_context,
+            **({"workflow_entry_at": workflow_entry_at} if workflow_entry_at is not None else {}),
             "metrics": {
                 "peak_memory_bytes": metrics.peak_memory_bytes,
                 "peak_process_rss_bytes": metrics.peak_process_rss_bytes,

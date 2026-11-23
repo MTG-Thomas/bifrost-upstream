@@ -1,6 +1,7 @@
 """Adapter contract for a qualified Cloudflare provisioning backend."""
 
 from dataclasses import dataclass
+from enum import Enum, StrEnum
 from typing import Protocol
 from uuid import UUID
 
@@ -31,16 +32,147 @@ class ResourceObservation:
     provider_version: str
 
 
+class OwnershipResource(StrEnum):
+    UNKNOWN = "unknown"
+    WORKER_SCRIPT = "worker_script"
+    DURABLE_OBJECT_NAMESPACE = "durable_object_namespace"
+    WORKERS_RELEASE = "workers_release"
+    WORKERS_SCOPE = "workers_scope"
+    UPGRADE_REVISION = "upgrade_revision"
+    CONTAINER_APPLICATION = "container_application"
+    TUNNEL = "tunnel"
+    TUNNEL_INGRESS = "tunnel_ingress"
+    CONNECTOR_CREDENTIAL = "connector_credential"
+    DNS_ZONE = "dns_zone"
+    DNS_RECORD = "dns_record"
+    PRIVATE_ROUTE = "private_route"
+    ACCOUNT = "account"
+    WORKERS_ENDPOINT = "workers_endpoint"
+    CONNECTOR = "connector"
+    CANARY_LAUNCHER = "canary_launcher"
+
+
+class ObservationCheck(Enum):
+    UNCLASSIFIED = ("unclassified", "unknown", "unknown")
+    REST_REJECTED = ("rest_request", "rejected", "successful_response")
+    REST_JSON = ("response_envelope", "invalid_json", "json_object")
+    REST_RESULT = ("response_envelope", "unconfirmed_result", "successful_result")
+    SCRIPT_BINDINGS = ("script_bindings", "missing_or_invalid", "binding_inventory")
+    SCRIPT_DEPLOYMENT_PENDING = ("active_deployment", "empty", "single_full_version")
+    SCRIPT_UPLOAD_RESULT = ("upload_acknowledgement", "missing_or_different_identity", "matching_script_identity")
+    SCRIPT_UPLOAD_PENDING = ("upload_readback", "absent", "exact_uploaded_script")
+    SCRIPT_RECORDED_ABSENT = ("recorded_script", "absent", "exact_recorded_script")
+    SCRIPT_CHANGED_DURING_READBACK = ("script_readback", "absent", "exact_observed_script")
+    NAMESPACE_PAGE = ("namespace_inventory", "malformed_page", "valid_page")
+    NAMESPACE_IDENTITY = ("namespace_inventory", "invalid_identity", "valid_identity")
+    NAMESPACE_UNASSIGNED = ("namespace_assignment", "unassigned_without_receipt", "script_or_exact_receipt")
+    NAMESPACE_PAGINATION = ("namespace_inventory", "inconsistent_pages", "complete_snapshot")
+    NAMESPACE_LIMIT = ("namespace_inventory", "incomplete", "complete_snapshot")
+    NAMESPACE_EXPORTS_PENDING = ("namespace_exports", "missing_expected_classes", "exact_export_set")
+    NAMESPACE_EXPORTS_UNEXPECTED = ("namespace_exports", "unexpected_classes", "exact_export_set")
+    ENDPOINT_UPDATE = ("endpoint_update", "unconfirmed_settings", "requested_settings")
+    ACCOUNT_SUBDOMAIN = ("account_subdomain", "missing_or_invalid", "valid_subdomain")
+    SCOPE_ENDPOINT = ("deployment_endpoint", "missing", "confirmed_endpoint")
+    SCOPE_ABSENCE = ("scope_retirement", "missing_absence_receipt", "verified_absence")
+    TUNNEL_INVENTORY = ("exact_inventory", "malformed", "valid_inventory")
+    TUNNEL_ID = ("tunnel_identity", "missing_or_invalid", "valid_identity")
+    TUNNEL_VERSION = ("tunnel_version", "missing_or_invalid", "valid_creation_timestamp")
+    TUNNEL_CREATE = ("tunnel_create_readback", "absent", "exact_creation_receipt")
+    TUNNEL_ABSENT = ("recorded_tunnel", "absent", "exact_recorded_tunnel")
+    DNS_ID = ("dns_identity", "missing_or_invalid", "valid_identity")
+    DNS_VERSION = ("dns_version", "missing_or_invalid", "valid_revision")
+    DNS_CREATE = ("dns_create_readback", "absent", "exact_creation_receipt")
+    DNS_ABSENT = ("recorded_dns", "absent", "exact_recorded_dns")
+    CONNECTOR_INVENTORY = ("connector_inventory", "incomplete", "complete_inventory")
+    CONNECTOR_IDENTITY = ("connector_inventory", "malformed_identity", "valid_identity")
+    CONNECTOR_TOKEN = ("connector_token", "invalid", "valid_token")
+    PRIVATE_ROUTES = ("private_route_inventory", "unconfirmed", "confirmed_inventory")
+    CANARY_RETIREMENT = ("canary_retirement", "unverified", "exact_deletion_receipt")
+
+
+def verification_details(resource_class: str, detail: tuple[str, str, str]) -> dict[str, str]:
+    check, observed, expected = detail
+    return {
+        "resource_class": resource_class,
+        "check": check,
+        "observed_category": observed,
+        "expected_category": expected,
+    }
+
+
 class ObservationPending(Exception):
     """The adapter cannot establish current ownership or settle an earlier effect."""
+
+    def __init__(
+        self, message: str = "", resource: OwnershipResource = OwnershipResource.UNKNOWN,
+        check: ObservationCheck = ObservationCheck.UNCLASSIFIED,
+    ) -> None:
+        super().__init__(message)
+        self.resource = resource
+        self.check = check
+
+    def as_result(self) -> dict[str, str]:
+        return verification_details(self.resource.value, self.check.value)
+
+
+class ObservationSettling(ObservationPending):
+    """A bounded retry may re-read a provider observation under existing fences."""
 
 
 class DeletionSettling(ObservationPending):
     """An owned resource or its namespace is still visible during deletion."""
 
 
+class OwnershipCheck(Enum):
+    # Wire values are fixed categories. Provider values and exception text are never serialized.
+    UNCLASSIFIED = ("unclassified", "unknown", "unknown")
+    TARGET_CONTRACT = ("target_contract", "unsupported", "supported")
+    TARGET_BINDING = ("target_binding", "different", "matching")
+    FOREIGN_OCCUPANT = ("foreign_occupant", "owner_missing_or_different", "exact_owner")
+    TARGET_OCCUPIED = ("target_occupied", "present", "absent")
+    ACTIVE_VERSION = ("active_version", "missing_or_not_single_full_version", "single_full_version")
+    RECEIPT_MISMATCH = ("receipt_mismatch", "different", "exact_receipt")
+    RECEIPT_MISSING = ("receipt_missing", "missing", "exact_receipt")
+    REAPPEARED = ("reappeared", "present", "absent")
+    RELEASE_INTENT = ("release_intent", "incompatible", "matching_release")
+    JOURNAL_STATE = ("journal_state", "incompatible", "creating_or_receipted")
+    JOURNAL_INTENT = ("journal_intent", "missing", "present")
+    SCOPE_BEARER = ("scope_bearer", "unexpected_presence_or_absence", "capacity_only")
+    SLOT_POLICY = ("slot_policy", "above_release_limit", "supported")
+    SECRET_BINDING = ("secret_binding", "invalid", "supported")
+    DYNAMIC_BINDING = ("dynamic_binding", "invalid", "supported")
+    CROSS_SCRIPT_BINDING = ("cross_script_binding", "invalid", "supported")
+    DUPLICATE_BINDING = ("duplicate_binding", "multiple", "unique")
+    NAMESPACE_CLASS = ("namespace_class", "missing_or_invalid", "valid_class")
+    NAMESPACE_BINDINGS = ("namespace_bindings", "multiple", "one_per_class")
+    UPGRADE_FENCE = ("upgrade_fence", "not_owned", "owned_and_paused")
+    ZONE_IDENTITY = ("zone_identity", "missing_or_different", "matching")
+    ZONE_ACCOUNT = ("zone_account", "missing_or_different", "matching")
+    EXACT_INVENTORY = ("exact_inventory", "ambiguous", "single_page")
+    MULTIPLE_OCCUPANTS = ("multiple_occupants", "multiple", "at_most_one")
+    CONNECTOR_SECRET = ("connector_secret", "missing_or_different", "matching")
+    ADOPTION_CREDENTIAL = ("adoption_credential", "missing_or_different", "committed")
+    TUNNEL_METADATA = ("tunnel_metadata", "incompatible", "active_and_account_owned")
+    INGRESS_OCCUPIED = ("ingress_occupied", "already_configured", "empty_or_matching")
+    INGRESS_IDENTITY = ("ingress_identity", "different_or_missing", "approved_ingress")
+    INGRESS_CONFIG_OWNER = ("ingress_config_owner", "missing_or_different", "exact_owner")
+    PRIVATE_ROUTE = ("private_route", "present", "absent")
+    DNS_TARGET_MOVED = ("dns_target_moved", "different", "matching")
+
+
 class OwnershipConflict(Exception):
     """The provider returned an incompatible owner, resource ID or revision."""
+
+    def __init__(
+        self, message: str, resource: OwnershipResource = OwnershipResource.UNKNOWN,
+        check: OwnershipCheck = OwnershipCheck.UNCLASSIFIED,
+    ) -> None:
+        super().__init__(message)
+        self.resource = resource
+        self.check = check
+
+    def as_result(self) -> dict[str, object]:
+        return dict(verification_details(self.resource.value, self.check.value))
 
 
 class OwnedResourceCleanup(Protocol):
@@ -98,34 +230,33 @@ async def observe_owned(
 ) -> ResourceObservation | None:
     """Adopt only the exact journaled creation effect or a recorded resource."""
     observed = await adapter.observe(api_token=api_token, intent=intent)
-    if observed is not None and (
-        observed.intent != intent
-        or not observed.provider_id
-        or not observed.provider_version
-        or (recorded is not None and observed != recorded)
-    ):
-        raise OwnershipConflict("Cloudflare resource does not match its journal")
-    return observed
+    if observed is None:
+        return None
+    if observed.intent != intent:
+        check = OwnershipCheck.TARGET_BINDING
+    elif not observed.provider_id or not observed.provider_version:
+        check = OwnershipCheck.RECEIPT_MISSING
+    elif recorded is not None and observed != recorded:
+        check = OwnershipCheck.RECEIPT_MISMATCH
+    else:
+        return observed
+    resource = next((item for item in OwnershipResource if item.value == intent.target.kind), OwnershipResource.UNKNOWN)
+    raise OwnershipConflict("Cloudflare resource does not match its journal", resource, check)
 
 
-async def resume_creation(
+async def request_creation(
     adapter: ProvisioningAdapter,
     *,
     api_token: SecretStr,
     scope_bearer: SecretStr | None,
     committed_intent: ResourceIntent,
-) -> ResourceObservation:
-    """Resume a committed creation intent under the caller's mutation fence."""
+) -> None:
+    """Request creation once, or witness the exact earlier effect under its fence."""
     if scope_bearer is not None and committed_intent.target.kind != "worker_script":
         raise ValueError("A scope bearer can be installed only on a Worker script")
     observed = await observe_owned(adapter, api_token=api_token, intent=committed_intent, recorded=None)
-    if observed is not None:
-        return observed
-    await adapter.create(api_token=api_token, intent=committed_intent, scope_bearer=scope_bearer)
-    observed = await observe_owned(adapter, api_token=api_token, intent=committed_intent, recorded=None)
     if observed is None:
-        raise ObservationPending("Cloudflare creation has no confirmed resource")
-    return observed
+        await adapter.create(api_token=api_token, intent=committed_intent, scope_bearer=scope_bearer)
 
 
 async def resume_deletion(

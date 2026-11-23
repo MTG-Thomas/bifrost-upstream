@@ -374,3 +374,46 @@ measurement. The latency values above come from post-stop PostgreSQL and
 execution-log readback.
 
 See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-observable-gates.json).
+
+## Hosted Cold and Warm Workflows With Admission Boot
+
+Source `788ffc641` passed signed Enable and ran both workflows with
+24 MiB free on the primary. PostgreSQL supplied the queue timestamp.
+
+| Run | Queue to entry | Queue to completion |
+| --- | ---: | ---: |
+| Cold | 9.959 s | 10.032 s |
+| Warm | 0.582 s | 0.650 s |
+
+Both runs used slot 0 on the same launcher, with one dispatch and a
+terminal ACK per execution. Cold booked generation 0 and warm booked
+no new generation. The 90-second linger stayed enabled. A separate
+post-reuse query tried to reread the cold execution from the slot row
+after the row had been reassigned, and the run stopped at that gate.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-latency-reuse.json).
+
+### Hosted 2-Second Gate Attempt at `db39a3698`
+
+The policy configured the 2 s overflow gate. Enable stopped on
+`CF_OWNERSHIP_CONFLICT` before any launcher or workflow started. The
+configured age and prior local rehearsal provide context for this
+attempt. Hosted eligibility offset and cold and warm latency are
+unmeasured.
+
+See the [sanitized ownership-stop receipt](../../results/cloudflare-scaleout-combined-hosted-ownership-stop.json).
+
+### Hosted Preset B With the 2-Second Gate at `e7c59788c`
+
+On a fresh launcher and engine, the cold runtime recorded these
+queue-relative stages in milliseconds.
+
+| Gate | Decision | Start sent | Start accepted | Hello | Claim | Prepare | Dispatch | Engine ready | Runtime entry |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2,000 | 2,161 | 3,112 | 3,297 | 3,492 | 3,625 | 3,745 | 3,892 | 5,761 | 6,068 |
+
+The PostgreSQL entry-log and completion measurements were 6.380 s and
+6.486 s cold, and 0.678 s and 0.780 s warm. Both runs used slot 0 on the
+same launcher and received distinct terminal ACKs.
+
+See the [sanitized preset B receipt](../../results/cloudflare-scaleout-preset-b-hosted.json).

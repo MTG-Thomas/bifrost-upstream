@@ -71,6 +71,7 @@ from src.services.mcp_server.tools import (  # noqa: E402
 PARITY_HANDLERS: dict[str, set[str]] = {
     "base_role_defaults": {"bifrost_base_role_default_get", "bifrost_base_role_default_update"},
     "cloudflare_approval": {
+        "bifrost_workflow_cloudflare_approval_list",
         "bifrost_workflow_cloudflare_approval_status",
         "bifrost_workflow_cloudflare_approval_propose",
         "bifrost_workflow_cloudflare_approval_accept",
@@ -85,9 +86,10 @@ PARITY_HANDLERS: dict[str, set[str]] = {
     "code_editor": {"bifrost_file_search"},
     "code_execution": {"bifrost_execute_code"},
     "cloudflare_capacity": {
+        "bifrost_cloudflare_preflight_validate", "bifrost_cloudflare_activate_execute",
         "bifrost_cloudflare_capacity_get", "_submit", "bifrost_cloudflare_policy_update",
         "bifrost_cloudflare_worker_credential_replace",
-        "bifrost_cloudflare_connect_execute", "bifrost_cloudflare_account_token_replace",
+        "bifrost_cloudflare_account_token_replace",
     },
     "agents": {
         "bifrost_agent_list",

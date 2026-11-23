@@ -11,6 +11,7 @@ import contextlib
 import json
 import logging
 import time
+from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager, nullcontext
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -41,6 +42,7 @@ from src.models.orm.cloudflare_capacity import (
 from src.models.orm.execution_workers import ExecutionWorker
 from src.services.execution.template_process import TEMPLATE_START_TIMEOUT_SECONDS
 from src.services.memory_requests import AGENT_RUN_REQUEST_BYTES, MemoryBudget
+from src.services.pool_cadence import CLOUDFLARE_WORKERS_LAUNCH_AGE_SECONDS
 from src.services.worker_pool.claims import (
     PoolClaim,
     admit_external_worker,
@@ -49,7 +51,7 @@ from src.services.worker_pool.claims import (
     report_worker_handlers,
 )
 from src.services.worker_pool.cloudflare_admission import (
-    cloudflare_claim_allowed,
+    cloudflare_dispatch_started_at,
     scoped_cloudflare_claim_allowed,
 )
 from src.services.worker_pool.cloudflare_containers_policy import (
@@ -212,9 +214,12 @@ class Bridge:
             )
         self.declared_slots = lease.declared_slots
         self.meter_exhausted = False
+        self.launcher_retired = False
         self._reset_freshness()
         self.pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._preparations: dict[str, tuple[int, datetime]] = {}
+        self._workflow_timings: dict[str, dict[str, datetime]] = {}
+        self._session_ready_at: datetime | None = None
         self.jobs: dict[str, RemoteProcess] = {}
         self.platform_routes: dict[tuple[str, str], str] = {}
         self.pool: Any = None
@@ -319,18 +324,21 @@ class Bridge:
         execution_id: str | None = None, engine_slot: int | None = None, org_id: str | None = None,
         queue_warm_until: datetime | None = None,
         preparation_bookings: list[PreparationBooking] | None = None,
-    ) -> None:
+        timeout_seconds: int | None = None,
+    ) -> datetime | None:
         # Reserve under the current owner before emitting any frames. The
         # caller also fences the socket generation before sending secrets.
         lease = self.lease
         preparation = route_id.startswith("prepare:")
+        started_at = None
         with remote_owner_context(LeaseRef(lease)):
             async with get_db_context() as db:
-                if (
-                    engine_slot is not None and not preparation
-                    and not await cloudflare_claim_allowed(db, lease.worker_id)
-                ):
-                    raise CredentialRouteChanged("Cloudflare admission closed before dispatch")
+                if not preparation:
+                    assert timeout_seconds is not None
+                    started_at = await cloudflare_dispatch_started_at(db, lease.worker_id, timeout_seconds=timeout_seconds)
+                    if started_at is None:
+                        raise CredentialRouteChanged("Cloudflare admission closed before dispatch")
+                    deadline = started_at + timedelta(seconds=timeout_seconds)
                 if not await fence_remote_owner(db):
                     raise CredentialRouteChanged("Cloudflare ownership changed before dispatch")
                 queue_installation = None
@@ -360,12 +368,27 @@ class Bridge:
                     db, lease.worker_id, queue_installation,
                 ):
                     raise CredentialRouteChanged("Cloudflare preparation admission closed")
+        return started_at
 
     def _check_preparation_session(self, generation: int) -> None:
         if self.lease.session_generation != generation or not self.connected or not self.reconciliation_ready.is_set():
             raise CredentialRouteChanged("Cloudflare preparation session is no longer reconciled")
-        if self.freshness_age() > ADMISSION_FRESHNESS_SECONDS or self.meter_exhausted:
+        if self.freshness_age() > ADMISSION_FRESHNESS_SECONDS or self.meter_exhausted or self.launcher_retired:
             raise CredentialRouteChanged("Cloudflare preparation admission is no longer open")
+
+    def _stamp_workflow(self, route_id: str, **observations: datetime) -> None:
+        stages = self._workflow_timings.setdefault(route_id, {})
+        if self._session_ready_at is not None:
+            stages.setdefault("session_ready_at", self._session_ready_at)
+        for stage, at in observations.items():
+            stages.setdefault(stage, at)
+        # Refused dispatches can leave a preparation with no terminal to
+        # consume it. Bound these samples independently of route authority.
+        if len(self._workflow_timings) > 2 * max(1, self.declared_slots):
+            self._workflow_timings.pop(next(iter(self._workflow_timings)))
+
+    def take_workflow_timing(self, route_id: str) -> dict[str, datetime]:
+        return self._workflow_timings.pop(route_id, {})
 
     async def _send_preparation(
         self, request_id: str, payload: dict[str, Any], expected_generation: int | None,
@@ -423,6 +446,12 @@ class Bridge:
                         frame = frames[0].to_json()
                         send_started = True
                         await socket.send_text(frame)
+                        execution_id = payload.get("execution_id")
+                        if prepare_by is None and isinstance(execution_id, str):
+                            self._stamp_workflow(
+                                f"workflow:{execution_id}:{route_id.removeprefix('prepare:')}",
+                                prepare_sent_at=datetime.now(UTC),
+                            )
                 except (WebSocketDisconnect, OSError, RuntimeError):
                     return False
         except TimeoutError:
@@ -436,6 +465,7 @@ class Bridge:
     async def request(
         self, action: str, payload: dict[str, Any], *, expected_generation: int | None = None,
         authorization: AbstractAsyncContextManager[None] | None = None,
+        workflow_started: Callable[[datetime], None] | None = None,
     ) -> dict[str, Any]:
         """Send one acknowledged command to the launcher.
 
@@ -481,6 +511,8 @@ class Bridge:
                             raise CredentialRouteChanged("Opaque launcher heartbeat is stale")
                         if dispatch and self.meter_exhausted:
                             raise CredentialRouteChanged("Cloudflare launcher workload allowance ended")
+                        if dispatch and self.launcher_retired:
+                            raise CredentialRouteChanged("Cloudflare launcher incarnation lifetime ended")
                         socket = self.socket
                     elif authorization is not None:
                         socket = self.socket
@@ -499,19 +531,25 @@ class Bridge:
                                 raise CloudflareRevisionRejected("Cloudflare workflow exceeds the control payload limit")
                             raise ProtocolError("Cloudflare command exceeds the control payload limit")
                         if action == "workflow" and self.managed_cloudflare:
-                            deadline = payload.get("workflow_deadline")
                             workspace = payload["context"]["cloudflare_workspace"]
                             engine_slot = payload["engine_slot"]
                             org_id = payload["active_execution"].get("org_id")
                             tenant = _cloudflare_tenant_key(
                                 org_id, self.lease.worker_id, engine_slot,
                             )
-                            await self._reserve_cloudflare_usage(
-                                payload["route_id"], tenant, datetime.fromisoformat(deadline) if deadline else None,
+                            timeout_seconds = payload["timeout_seconds"]
+                            started_at = await self._reserve_cloudflare_usage(
+                                payload["route_id"], tenant, None,
                                 workflow_cpu_ms=workspace["cpu_budget_ms"], subrequests=workspace["subrequest_allowance"],
                                 execution_id=payload["execution_id"], engine_slot=engine_slot,
-                                org_id=org_id,
+                                org_id=org_id, timeout_seconds=timeout_seconds,
                             )
+                            assert started_at is not None
+                            deadline = (started_at + timedelta(seconds=timeout_seconds)).isoformat(timespec="milliseconds")
+                            payload["started_at"] = started_at.isoformat(timespec="milliseconds")
+                            payload["workflow_deadline"] = payload["context"]["workflow_deadline"] = deadline
+                            if workflow_started is not None:
+                                workflow_started(started_at)
                         sent = 0
                         send_deadline = loop.time() + _reply_timeout(action)
                         for frame in fragment(message):
@@ -540,6 +578,8 @@ class Bridge:
                                     raise OpaqueDispatchInterrupted("Opaque launcher socket was replaced during dispatch")
                             sent += 1
                         self._sequence += sent
+                        if action == "workflow" and self.managed_cloudflare:
+                            self._stamp_workflow(payload["route_id"], dispatch_sent_at=datetime.now(UTC))
             except OpaqueDispatchInterrupted:
                 raise
             except (WebSocketDisconnect, OSError, RuntimeError) as exc:
@@ -681,9 +721,13 @@ class Bridge:
             if future is not None and not future.done():
                 if "error" in event:
                     error_type = event.get("error_type")
-                    if (self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
-                            and error_type == "CloudflareLauncherMeterLimitExceeded"):
-                        self.meter_exhausted = True
+                    if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and error_type in (
+                        "CloudflareLauncherMeterLimitExceeded", "LauncherRetired",
+                    ):
+                        if error_type == "CloudflareLauncherMeterLimitExceeded":
+                            self.meter_exhausted = True
+                        else:
+                            self.launcher_retired = True
                         error = CredentialRouteChanged
                     else:
                         error = MemoryError if error_type == "MemoryError" else RuntimeError
@@ -853,6 +897,8 @@ class Bridge:
 
     async def reconciliation_complete(self) -> None:
         """Permit terminal replay only after canonical routes were restored."""
+        if self.managed_cloudflare:
+            self._session_ready_at = datetime.now(UTC)
         self.reconciliation_ready.set()
         deferred, self._deferred_terminal = self._deferred_terminal, []
         for event in deferred:
@@ -947,9 +993,16 @@ class Bridge:
                         async with get_db_context() as db:
                             if not await fence_remote_owner(db):
                                 raise ConnectionError("Remote API ownership was replaced before metering")
+                            uncertain_attempt = event.get("attempt_state") in ("stopped", "uncertain")
+                            route = event.get("route_id")
+                            uncertain_route = (
+                                route if uncertain_attempt and event.get("event") == "result" and isinstance(route, str)
+                                else None
+                            )
                             await record_launcher_terminal_meter(
                                 db, terminal_ref.lease.worker_id, event.get("usage"),
-                                uncertain=event.get("attempt_state") in ("stopped", "uncertain"),
+                                uncertain_route=uncertain_route,
+                                incarnation_uncertain=uncertain_attempt and uncertain_route is None,
                             )
                     if isinstance(event_id, str):
                         await self.acknowledge(event_id)
@@ -979,6 +1032,7 @@ class Bridge:
         self.lease = lease
         self.connected = True
         self._reset_freshness()
+        self._session_ready_at = None
         self.inventory = None
         self.inventory_ready.clear()
         self.reconciliation_ready.clear()
@@ -1157,6 +1211,13 @@ class ApiExecutor(PoolWorker):
 
     def _start(self, claim: PoolClaim) -> None:
         bridge = self.bridge
+        if claim.workflow_slot is not None and claim.cloudflare_claim_committed_at is not None:
+            bridge._stamp_workflow(
+                claim.workflow_slot.workflow_route(claim.subject_id),
+                queued_at=claim.queued_at,
+                gate_eligible_at=claim.queued_at + timedelta(seconds=CLOUDFLARE_WORKERS_LAUNCH_AGE_SECONDS),
+                claim_at=claim.cloudflare_claim_committed_at,
+            )
         preparations = []
         org_id = str(claim.tenant_id) if claim.tenant_id is not None else None
         if (
@@ -1244,6 +1305,9 @@ class ApiExecutor(PoolWorker):
             or self.bridge.pressure_ratio >= self.settings.memory_pressure_threshold
         )
 
+    def _uses_process_lifetime(self) -> bool:
+        return not self.bridge.managed_cloudflare and super()._uses_process_lifetime()
+
     def _claims_open(self) -> bool:
         """Closed from a reconnect until that socket's inventory is
         reconciled. The launcher takes its inventory before it reads any
@@ -1251,7 +1315,7 @@ class ApiExecutor(PoolWorker):
         reconciliation would fail its live child. Every claim (workflow and
         agent runs, services, platform jobs) passes ``Admission.claiming``."""
         if self.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE and (
-            self._lost or self.bridge.meter_exhausted or not self.bridge.connected
+            self._lost or self.bridge.meter_exhausted or self.bridge.launcher_retired or not self.bridge.connected
             or self.bridge.freshness_age() > ADMISSION_FRESHNESS_SECONDS
             or self.bridge.managed_cloudflare and (self.bridge.inventory or {}).get("tenant_slot_protocol") != 1
         ):

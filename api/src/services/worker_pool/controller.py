@@ -39,6 +39,7 @@ from shared.models import CloudflareWorkersPolicy, WorkerCapacityProfile
 from shared.solution_git_stage import SOLUTION_GIT_CAPABILITY, SOLUTION_UPDATE_CHECK_JOB
 from shared.version import get_version
 from sqlalchemy import and_, func, literal, select, text, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import Settings, get_settings
 from src.core.database import get_db_context
@@ -65,6 +66,7 @@ from src.services.memory_requests import (
     workflow_request_sql,
 )
 from src.services.pool_cadence import (
+    CLOUDFLARE_WORKERS_LAUNCH_AGE_SECONDS,
     POOL_RECONCILE_SPACING_SECONDS,
     POOL_RECONCILE_SWEEP_SECONDS,
 )
@@ -127,6 +129,7 @@ from src.worker.remote.protocol import (
 )
 
 logger = logging.getLogger(__name__)
+_LIMITED_HANDLERS = frozenset(handler for handler, _ in HANDLER_CONCURRENCY_LIMITS)
 
 # How long a lost worker's Job is kept under watch for deletion.
 LOST_JOB_CLEANUP = timedelta(hours=1)
@@ -376,6 +379,8 @@ class WorkerCapacityController(ABC):
                 return []
             managed_scope = self.managed_cloudflare_scope
             control_root_version = None
+            workers_policy = None
+            deadline_wire = False
             workflow_slots = None
             if managed_scope is not None:
                 control_root_version = await managed_scope.lock_admission(db)
@@ -385,63 +390,11 @@ class WorkerCapacityController(ABC):
                     CloudflareInstallation.id == managed_scope.installation_id,
                 ))
                 assert policy_data is not None
-                workflow_slots = await read_workflow_slot_admission(
-                    db, managed_scope.installation_id,
-                    CloudflareWorkersPolicy.model_validate(policy_data["limits"]["workers"]),
-                )
+                workers_policy = CloudflareWorkersPolicy.model_validate(policy_data["limits"]["workers"])
+                deadline_wire = "per_second_caps" in policy_data.get("meter_launcher", {})
+                workflow_slots = await read_workflow_slot_admission(db, managed_scope.installation_id, workers_policy)
             platform_job_ids = await pending_local_platform_job_ids(db, policy, _now())
-            waiting = (
-                await db.execute(
-                    select(
-                        WorkDispatch.id.label("id"),
-                        WorkDispatch.memory_request_bytes.label("memory_request_bytes"),
-                        WorkDispatch.created_at.label("created_at"),
-                        WorkDispatch.handler.label("handler"),
-                        WorkDispatch.handler_version,
-                        WorkDispatch.cloudflare_revision,
-                        Execution.organization_id.label("tenant_id"),
-                        literal(None).label("platform_job_type"),
-                    )
-                    .outerjoin(Execution, Execution.id == WorkDispatch.subject_id)
-                    .where(
-                        WorkDispatch.assigned_worker_id.is_(None),
-                        WorkDispatch.execution_lane == "normal",
-                        # Every advertised execution handler, including live
-                        # and backfill summaries, gains physical capacity.
-                        WorkDispatch.handler.in_(REMOTE_WORKER_HANDLER_NAMES),
-                    )
-                    .union_all(
-                        select(
-                            PlatformJob.id,
-                            PlatformJob.memory_required_bytes,
-                            PlatformJob.created_at,
-                            # Any physical worker runs local platform jobs.
-                            literal(None),
-                            literal(None),
-                            literal(None),
-                            literal(None),
-                            PlatformJob.job_type,
-                        ).where(
-                            PlatformJob.id.in_(platform_job_ids),
-                            PlatformJob.status == "queued",
-                            PlatformJob.execution_backend == "local",
-                            PlatformJob.available_at <= _now(),
-                        ),
-                        pending_service_statement(_now()).with_only_columns(
-                            ServiceDefinition.id,
-                            workflow_request_sql(Workflow),
-                            ServiceDefinition.updated_at,
-                            # Every physical executor supervises services.
-                            literal(None),
-                            literal(None),
-                            literal(None),
-                            literal(None),
-                            literal(None),
-                        ),
-                    )
-                    .order_by(text("created_at"))
-                )
-            ).all()
+            waiting = await waiting_capacity_rows(db, platform_job_ids, _now())
             # Managed resources share the worker ceiling across provider forms.
             # Only Linux workers participate in memory calibration and probes.
             workers = (
@@ -483,6 +436,11 @@ class WorkerCapacityController(ABC):
             if not cloudflare and not self.containers_mode:
                 await _publish_launchable(confirmed_largest, generation)
 
+            launch_cutoff = None
+            if managed_scope is not None:
+                database_now = await db.scalar(select(func.clock_timestamp()))
+                assert database_now is not None
+                launch_cutoff = database_now - timedelta(seconds=CLOUDFLARE_WORKERS_LAUNCH_AGE_SECONDS)
             waiting_requests = [
                 Request(
                     row.id, row.memory_request_bytes, row.handler, row.handler_version,
@@ -490,7 +448,7 @@ class WorkerCapacityController(ABC):
                     platform_job_type=row.platform_job_type,
                 )
                 for row in waiting
-                if managed_scope is None or row.created_at <= _now() - timedelta(seconds=SWEEP_SECONDS)
+                if launch_cutoff is None or row.created_at <= launch_cutoff
             ]
             requests = {request.id: request for request in waiting_requests}
             free: list[FreeBudget] = []
@@ -507,28 +465,13 @@ class WorkerCapacityController(ABC):
                 if worker.state == "draining" or worker.memory_pressured:
                     continue
                 # A worker launched for one dispatch holds it until it claims it.
-                held = 0
-                handler_slots = dict(HANDLER_CONCURRENCY_LIMITS)
-                if containers:
-                    handler_slots[SOLUTION_GIT_CAPABILITY] = 1
-                if worker.state not in ("reserved", "starting"):
-                    if worker.active_handler_counts is None:
-                        handler_slots = {handler: 0 for handler in handler_slots}
-                    else:
-                        handler_slots = {
-                            handler: max(0, limit - worker.active_handler_counts.get(handler, 0))
-                            for handler, limit in HANDLER_CONCURRENCY_LIMITS
-                        }
-                if worker.reserved_for_dispatch_id in requests:
-                    covered.add(worker.reserved_for_dispatch_id)
-                    reservation = requests[worker.reserved_for_dispatch_id]
-                    held, held_handler = reservation.bytes, reservation.handler
-                    if held_handler in handler_slots:
-                        handler_slots[held_handler] = max(0, handler_slots[held_handler] - 1)
-                if containers:
-                    # The pinned dispatch is already covered. Remaining
-                    # budget cannot be used for another workflow.
-                    handler_slots[CLOUDFLARE_WORKFLOW_HANDLER[0]] = 0
+                reservation = requests.get(worker.reserved_for_dispatch_id)
+                held = reservation.bytes if reservation else 0
+                if reservation:
+                    covered.add(reservation.id)
+                handler_slots = linux_handler_slots(
+                    worker, reservation.handler if reservation else None, containers=containers,
+                )
                 # A Job admitted but still starting its pool has not measured
                 # its budget yet; until it reports, count the one expected.
                 # A static executor counts only once ready and measured.
@@ -688,8 +631,21 @@ class WorkerCapacityController(ABC):
                 ]
                 if launched:
                     if managed_scope is not None and control_root_version is not None:
+                        assert workers_policy is not None
+                        decision_at = await db.scalar(select(func.clock_timestamp()))
                         await db.flush()
-                        db.add_all(managed_scope.pin(worker_id, control_root_version) for worker_id in launched)
+                        reserved_at = await db.scalar(select(func.clock_timestamp()))
+                        assert decision_at is not None and reserved_at is not None
+                        for worker_id in launched:
+                            pin = managed_scope.pin(
+                                worker_id, control_root_version, reserved_at=reserved_at,
+                                lifetime=workers_policy.max_lifetime_seconds, deadline_wire=deadline_wire,
+                            )
+                            pin.launch_timing = {
+                                "controller_decision_at": decision_at.isoformat(),
+                                "launcher_reserved_at": reserved_at.isoformat(),
+                            }
+                            db.add(pin)
                     await db.commit()
                 return launched
             # Fast Path capacity is a fixed exclusive reservation, not an
@@ -744,7 +700,6 @@ class WorkerCapacityController(ABC):
                 standard=0 if sizing.standard_limit_bytes in blocked_limits else plan.standard,
                 sized=[(identity, request) for identity, request in plan.sized
                        if (sizing.pod_limit_bytes(request) or sizing.largest_limit_bytes) not in blocked_limits],
-                container_dispatches=plan.container_dispatches,
             )
             if sizing.standard_limit_bytes in blocked_limits:
                 warm = 0
@@ -825,7 +780,7 @@ class WorkerCapacityController(ABC):
                 await db.commit()
                 return []
             launched: list[UUID] = []
-            for dispatch_id, request in plan.sized:
+            for _dispatch_id, request in plan.sized:
                 if len(launched) >= normal_room:
                     break
                 limit = sizing.pod_limit_bytes(request) or sizing.largest_limit_bytes
@@ -833,9 +788,6 @@ class WorkerCapacityController(ABC):
                     continue
                 if limit not in known_limits:
                     probing_limits.add(limit)
-                reserved_dispatch = dispatch_id if self.containers_mode and requests[dispatch_id].handler else None
-                if reserved_dispatch is not None and not await _lock_available_dispatch(db, reserved_dispatch):
-                    continue
                 launched.append(
                     self._reserve(
                         db,
@@ -844,25 +796,20 @@ class WorkerCapacityController(ABC):
                         # New workers claim through measured fit, including
                         # sized workers whose actual overhead differs.
                         environment=environment,
-                        reserved_for_dispatch_id=reserved_dispatch,
                     )
                 )
             standard_launches = plan.standard + warm
             if sizing.standard_limit_bytes not in known_limits:
                 standard_launches = min(1, standard_launches)
-            for index in range(standard_launches):
+            for _ in range(standard_launches):
                 if len(launched) >= normal_room:
                     break
-                reserved_dispatch = plan.container_dispatches[index] if plan.container_dispatches else None
-                if reserved_dispatch is not None and not await _lock_available_dispatch(db, reserved_dispatch):
-                    continue
                 launched.append(
                     self._reserve(
                         db,
                         resource_class="standard",
                         memory_limit_bytes=sizing.standard_limit_bytes,
                         environment=environment,
-                        reserved_for_dispatch_id=reserved_dispatch,
                     )
                 )
             for _ in range(fast_path_warm):
@@ -1056,7 +1003,6 @@ class WorkerCapacityController(ABC):
         memory_limit_bytes: int,
         environment: dict[str, Any],
         execution_lane: str = "normal",
-        reserved_for_dispatch_id: UUID | None = None,
     ) -> UUID:
         """A durable row for one Job, recording the limit it launches with:
         a later Worker memory change applies to new Jobs only."""
@@ -1078,7 +1024,6 @@ class WorkerCapacityController(ABC):
                 runtime_profile=self.runtime_profile,
                 remote_launcher_id=worker_id if cloudflare else None,
                 execution_lane=execution_lane,
-                reserved_for_dispatch_id=reserved_for_dispatch_id,
                 **self._binding_fields(worker_id),
             )
         )
@@ -1221,7 +1166,59 @@ class WorkerPoolController(WorkerCapacityController):
 class LaunchPlan:
     standard: int
     sized: list[tuple[UUID, int]]
-    container_dispatches: tuple[UUID | None, ...] = ()
+
+
+async def waiting_capacity_rows(db: AsyncSession, platform_job_ids: list[UUID], now: datetime):
+    return (await db.execute(
+        select(
+            WorkDispatch.id.label("id"),
+            WorkDispatch.memory_request_bytes.label("memory_request_bytes"),
+            WorkDispatch.created_at.label("created_at"),
+            WorkDispatch.handler.label("handler"),
+            WorkDispatch.handler_version,
+            WorkDispatch.cloudflare_revision,
+            Execution.organization_id.label("tenant_id"),
+            literal(None).label("platform_job_type"),
+        )
+        .outerjoin(Execution, Execution.id == WorkDispatch.subject_id)
+        .where(
+            WorkDispatch.assigned_worker_id.is_(None),
+            WorkDispatch.execution_lane == "normal",
+            # Every advertised execution handler, including live
+            # and backfill summaries, gains physical capacity.
+            WorkDispatch.handler.in_(REMOTE_WORKER_HANDLER_NAMES),
+        )
+        .union_all(
+            select(
+                PlatformJob.id,
+                PlatformJob.memory_required_bytes,
+                PlatformJob.created_at,
+                # Any physical worker runs local platform jobs.
+                literal(None),
+                literal(None),
+                literal(None),
+                literal(None),
+                PlatformJob.job_type,
+            ).where(
+                PlatformJob.id.in_(platform_job_ids),
+                PlatformJob.status == "queued",
+                PlatformJob.execution_backend == "local",
+                PlatformJob.available_at <= now,
+            ),
+            pending_service_statement(now).with_only_columns(
+                ServiceDefinition.id,
+                workflow_request_sql(Workflow),
+                ServiceDefinition.updated_at,
+                # Every physical executor supervises services.
+                literal(None),
+                literal(None),
+                literal(None),
+                literal(None),
+                literal(None),
+            ),
+        )
+        .order_by(text("created_at"))
+    )).all()
 
 
 @dataclass(frozen=True)
@@ -1262,6 +1259,44 @@ class FreeBudget:
 
     def fits(self, request: Request) -> bool:
         return request.bytes <= self.bytes and self.takes(request)
+
+
+def take_first_budget(
+    item: Request, budgets: list[FreeBudget], rooms: list[int], slots: list[dict[str, int]],
+    *, allow_cloudflare: bool = True,
+) -> FreeBudget | None:
+    for index, budget in enumerate(budgets):
+        if not allow_cloudflare and budget.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
+            continue
+        handler = (
+            SOLUTION_GIT_CAPABILITY
+            if budget.containers and item.platform_job_type == SOLUTION_UPDATE_CHECK_JOB else item.handler
+        )
+        remaining = slots[index]
+        available = None if handler is None else remaining.get(handler, 0 if handler in _LIMITED_HANDLERS else None)
+        if rooms[index] >= item.bytes and budget.takes(item) and (available is None or available > 0):
+            rooms[index] -= item.bytes
+            if handler is not None and available is not None:
+                remaining[handler] = available - 1
+            return budget
+    return None
+
+
+def linux_handler_slots(worker: ExecutionWorker, held_handler: str | None, *, containers: bool = False) -> dict[str, int]:
+    slots = dict(HANDLER_CONCURRENCY_LIMITS)
+    if containers:
+        slots[SOLUTION_GIT_CAPABILITY] = 1
+    if worker.state not in ("reserved", "starting"):
+        if worker.active_handler_counts is None:
+            slots = dict.fromkeys(slots, 0)
+        else:
+            slots = {
+                handler: max(0, limit - worker.active_handler_counts.get(handler, 0))
+                for handler, limit in HANDLER_CONCURRENCY_LIMITS
+            }
+    if held_handler is not None and held_handler in slots:
+        slots[held_handler] = max(0, slots[held_handler] - 1)
+    return slots
 
 
 def _cloudflare_budget(slots: int, *, used: int = 0, reserved_bytes: int = 0) -> FreeBudget:
@@ -1312,35 +1347,12 @@ def _plan_launches(
             workflow_slots.occupied[tenant_key(tenant_id)] += 1
 
     sized: list[tuple[UUID, int]] = []
-    container_dispatches: list[UUID | None] = []
     for item in waiting:
         dispatch_id, request = item.id, item.bytes
-        placed = False
-        for index, budget in enumerate(bins):
-            opaque = budget.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE
-            if opaque and not allows(item.tenant_id):
-                continue
-            remaining_slots = slots[index]
-            handler = (
-                SOLUTION_GIT_CAPABILITY
-                if budget.containers and item.platform_job_type == SOLUTION_UPDATE_CHECK_JOB
-                else item.handler
-            )
-            available_slots = (
-                None if handler is None else remaining_slots.get(handler, 0 if handler in limited else None)
-            )
-            if (
-                rooms[index] >= request and budget.takes(item)
-                and (available_slots is None or available_slots > 0)
-            ):
-                rooms[index] -= request
-                if handler is not None and available_slots is not None:
-                    remaining_slots[handler] = available_slots - 1
-                if opaque:
-                    occupy(item.tenant_id)
-                placed = True
-                break
-        if placed:
+        placed = take_first_budget(item, bins, rooms, slots, allow_cloudflare=allows(item.tenant_id))
+        if placed is not None:
+            if placed.runtime_profile == CLOUDFLARE_PYTHON_RUNTIME_PROFILE:
+                occupy(item.tenant_id)
             continue
         new_handlers = frozenset({CLOUDFLARE_WORKFLOW_HANDLER[0], SOLUTION_GIT_CAPABILITY}) if new_containers else frozenset(REMOTE_WORKER_HANDLER_NAMES)
         new_budget = FreeBudget(standard_budget, new_handlers, containers=new_containers)
@@ -1355,10 +1367,8 @@ def _plan_launches(
                 slots.append({handler: new_declared.handler_slots[handler] - 1})
             continue
         if cold:
-            if request > standard_budget:
-                return LaunchPlan(standard=0, sized=[(dispatch_id, request)])
-            pin = (dispatch_id if item.handler == CLOUDFLARE_WORKFLOW_HANDLER[0] else None,)
-            return LaunchPlan(standard=1, sized=[], container_dispatches=pin if new_containers else ())
+            return (LaunchPlan(standard=1, sized=[]) if request <= standard_budget
+                    else LaunchPlan(standard=0, sized=[(dispatch_id, request)]))
         if request > standard_budget:
             if request <= largest_budget or probe_largest:
                 sized.append((dispatch_id, request))
@@ -1367,19 +1377,11 @@ def _plan_launches(
         rooms.append(standard_budget - request)
         new_slots = dict(limited)
         if new_containers:
-            container_dispatches.append(dispatch_id if item.handler == CLOUDFLARE_WORKFLOW_HANDLER[0] else None)
             new_slots[SOLUTION_GIT_CAPABILITY] = int(item.platform_job_type != SOLUTION_UPDATE_CHECK_JOB)
-            new_slots[CLOUDFLARE_WORKFLOW_HANDLER[0]] = 0
         if item.handler in limited:
             new_slots[item.handler] -= 1
         slots.append(new_slots)
-    return LaunchPlan(standard=len(bins) - len(free), sized=sized, container_dispatches=tuple(container_dispatches))
-
-
-async def _lock_available_dispatch(db, dispatch_id: UUID) -> bool:
-    return await db.scalar(select(WorkDispatch.id).where(
-        WorkDispatch.id == dispatch_id, WorkDispatch.assigned_worker_id.is_(None),
-    ).with_for_update(skip_locked=True)) is not None
+    return LaunchPlan(standard=len(bins) - len(free), sized=sized)
 
 
 async def _publish_launchable(largest_budget: int | None, generation: int) -> None:

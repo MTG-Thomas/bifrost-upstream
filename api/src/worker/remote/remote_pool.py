@@ -14,7 +14,7 @@ import logging
 import os
 import re
 import time
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Protocol, TypeGuard, cast
 from uuid import UUID, uuid4
@@ -70,7 +70,8 @@ class ThinRemoteTransport(Protocol):
     admission: Admission | None
 
     async def request(
-        self, action: str, payload: dict[str, Any], *, expected_generation: int | None = None
+        self, action: str, payload: dict[str, Any], *, expected_generation: int | None = None,
+        workflow_started: Callable[[datetime], None] | None = None,
     ) -> dict[str, Any]:
         """Send an acknowledged physical-runner command, refused when
         ``expected_generation`` is no longer the session's."""
@@ -82,6 +83,10 @@ class ThinRemoteTransport(Protocol):
 
     def memory_request_bytes(self, key: str) -> int | None:
         """Return the canonical reservation for a running route."""
+        raise NotImplementedError
+
+    def take_workflow_timing(self, route_id: str) -> dict[str, datetime]:
+        """Return and forget the best-effort observations for a settled route."""
         raise NotImplementedError
 
     async def wait_for_opaque_terminals(
@@ -507,7 +512,7 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                             await self._attach_opaque_inventory_route(route_id, entry, execution, reservation, receipt)
                             await self._handle_opaque_terminal(event)
                         else:
-                            await self._settle_workflow_slot(route_id, receipt[1])
+                            await self._settle_workflow_slot(route_id, receipt[1], event.get("timings"))
                         await self.transport.acknowledge(receipt[0], reconciliation_lease=lease)
                     except Exception as exc:  # noqa: BLE001 - report all failed receipts after the batch
                         exc.add_note(f"Opaque terminal replay for {route_id}")
@@ -871,6 +876,7 @@ class ThinRemoteProcessPool(ProcessPoolManager):
         """
         validate_execution_context(context)
         opaque = self.runtime_profile != LINUX_RUNTIME_PROFILE
+        managed = opaque and getattr(self.transport, "managed_cloudflare", False) is True
         generation = credential_route.generation if credential_route is not None else None
         if opaque and generation is None:
             raise CredentialRouteChanged("Opaque dispatch requires a credential route generation")
@@ -915,8 +921,9 @@ class ThinRemoteProcessPool(ProcessPoolManager):
             if opaque and self._opaque_lost:
                 raise CredentialRouteChanged("Remote API ownership was lost before dispatch")
             started_at = dispatch_started_at or datetime.now(timezone.utc)
+            wire_precision = "milliseconds" if managed else "auto"
             context["workflow_deadline"] = (
-                (started_at + timedelta(seconds=timeout)).isoformat() if timeout > 0 else None
+                (started_at + timedelta(seconds=timeout)).isoformat(timespec=wire_precision) if timeout > 0 else None
             )
             execution = ExecutionInfo(
                 execution_id=execution_id,
@@ -950,6 +957,10 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                 context = {**context, "cloudflare_workspace": workspace.bundle}
                 if context.get("solution_id") is not None:
                     context["content_hash"] = workspace.entry_sha256
+
+            def workflow_started(database_started_at: datetime) -> None:
+                handle.started_at = execution.started_at = database_started_at
+
             try:
                 response = await self.transport.request(
                     "workflow",
@@ -959,7 +970,7 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                         "context": context,
                         "active_execution": dict(active_execution),
                         **({"engine_slot": workflow_slot.ordinal} if workflow_slot is not None else {}),
-                        "started_at": started_at.isoformat(),
+                        "started_at": started_at.isoformat(timespec=wire_precision),
                         "timeout_seconds": timeout,
                         "memory_request_bytes": (
                             handle.process.memory_request_bytes if opaque else self._request_bytes(execution_id)
@@ -970,6 +981,7 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                         ),
                     },
                     expected_generation=generation,
+                    **({"workflow_started": workflow_started} if managed else {}),
                 )
                 self._bind_workflow_handle(handle, response)
             except OpaqueDispatchInterrupted:
@@ -1149,7 +1161,15 @@ class ThinRemoteProcessPool(ProcessPoolManager):
             elif cancelling:
                 await self._handle_cancel_request(execution_id)
             elif deadline is not None:
-                await asyncio.sleep(max(0, (deadline - datetime.now(UTC)).total_seconds()))
+                if getattr(self.transport, "managed_cloudflare", False) is True:
+                    from src.core.database import get_liveness_db_context
+
+                    async with get_liveness_db_context() as db:
+                        now = await db.scalar(select(func.clock_timestamp()))
+                    assert now is not None
+                else:
+                    now = datetime.now(UTC)
+                await asyncio.sleep(max(0, (deadline - now).total_seconds()))
                 await self._request_terminate(
                     handle.id, error_type="TimeoutError", error="Workflow dispatch deadline exceeded",
                     grace_seconds=self.graceful_shutdown_seconds,
@@ -1389,7 +1409,7 @@ class ThinRemoteProcessPool(ProcessPoolManager):
             raise ValueError("Invalid opaque workflow terminal")
         handle = self._routes.get(route_id)
         if handle is None:
-            await self._settle_workflow_slot(route_id, state)
+            await self._settle_workflow_slot(route_id, state, event.get("timings"))
             return  # The fenced result may have already committed before ACK.
         previous = handle.process.terminal_receipt
         if previous is not None and previous != receipt:
@@ -1412,19 +1432,29 @@ class ThinRemoteProcessPool(ProcessPoolManager):
                 "error": f"Workflow may already have taken effect. {result.get('error') or ''}".strip(),
             }
         await self._handle_result(handle, result)
-        await self._settle_workflow_slot(route_id, state)
+        await self._settle_workflow_slot(route_id, state, event.get("timings"))
 
-    async def _settle_workflow_slot(self, route_id: str, state: str) -> None:
+    async def _settle_workflow_slot(self, route_id: str, state: str, timings: object = None) -> None:
         if not getattr(self.transport, "managed_cloudflare", False):
             return
         from src.core.database import get_db_context
+        from src.services.worker_pool.cloudflare_timing import (
+            record_transport_timing,
+            worker_terminal_timing,
+        )
         from src.worker.remote.fencing import fence_remote_owner
 
         _, execution_id, fence = route_id.split(":")
+        worker_id, subject_id, slot_fence = UUID(self.worker_id), UUID(execution_id), UUID(fence)
         async with get_db_context() as db:
             if not await fence_remote_owner(db, for_update=state == "uncertain"):
                 raise ConnectionError("Remote API ownership was replaced before slot settlement")
-            await settle_workflow_slot(db, UUID(self.worker_id), UUID(execution_id), UUID(fence), state)
+            await settle_workflow_slot(db, worker_id, subject_id, slot_fence, state)
+        stages = {**self.transport.take_workflow_timing(route_id), **worker_terminal_timing(timings)}
+        if stages:
+            await record_transport_timing(
+                execution_id=subject_id, worker_id=worker_id, slot_fence=slot_fence, **stages,
+            )
 
     @staticmethod
     def _valid_opaque_terminal_result(result: Any, state: str) -> TypeGuard[dict[str, Any]]:

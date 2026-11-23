@@ -3,15 +3,16 @@
 import asyncio
 import sys
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
 from pydantic import BaseModel
-
 from src.jobs.platform.base import (
     PlatformJobDefinition,
+    PlatformJobFailure,
     PlatformJobPolicy,
     PlatformJobRequiresAction,
 )
@@ -46,8 +47,8 @@ def _running_job(*, payload_version: int, payload: dict[str, object]) -> SimpleN
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("executor", list(PlatformJobExecutor))
-@pytest.mark.parametrize("status", ["succeeded", "requires_action"])
-async def test_enable_receipt_identifies_actual_executor(monkeypatch, executor, status) -> None:
+@pytest.mark.parametrize("failure_code", [None, "CF_WORKER_INGRESS_UNVERIFIED", "CF_OWNERSHIP_CONFLICT"])
+async def test_enable_receipt_identifies_actual_executor(monkeypatch, executor, failure_code) -> None:
     from src.jobs.platform import runner
     from src.jobs.platform.catalog import get_platform_job_metadata
 
@@ -60,10 +61,17 @@ async def test_enable_receipt_identifies_actual_executor(monkeypatch, executor, 
     async def db_context():
         yield db
 
+    result: dict[str, str | dict[str, str]] = {"code": failure_code} if failure_code else {"outcome": "enabled"}
+    if failure_code == "CF_OWNERSHIP_CONFLICT":
+        result["details"] = {
+            "resource_class": "worker_script", "check": "foreign_occupant",
+            "observed_category": "owner_missing_or_different", "expected_category": "exact_owner",
+        }
+
     async def handle(_context, _payload):
-        if status == "requires_action":
-            raise PlatformJobRequiresAction("Verify Ingress", {"code": "CF_WORKER_INGRESS_UNVERIFIED"})
-        return {"outcome": "enabled"}
+        if failure_code:
+            raise PlatformJobRequiresAction("Verify Cloudflare Deployment", result)
+        return result
 
     definition = PlatformJobDefinition(
         job_type=job.job_type, payload_version=1, payload_model=_Payload, handler=handle,
@@ -75,9 +83,66 @@ async def test_enable_receipt_identifies_actual_executor(monkeypatch, executor, 
     monkeypatch.setattr(runner, "finish_platform_job", finish)
 
     assert await run_claimed_platform_job(job.id, job.lease_token, executor=executor)
-    assert finish.await_args.kwargs["status"] == status
-    expected = {"outcome": "enabled"} if status == "succeeded" else {"code": "CF_WORKER_INGRESS_UNVERIFIED"}
-    assert finish.await_args.kwargs["result"] == {**expected, "execution_class": executor.value}
+    assert finish.await_args.kwargs["status"] == ("requires_action" if failure_code else "succeeded")
+    assert finish.await_args.kwargs["result"] == {**result, "execution_class": executor.value}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("attempt", "delay_seconds"), [(1, 15), (2, 45), (3, None), (1, 0)])
+async def test_runner_schedules_handler_failure_retries_and_fails_at_the_limit(
+    monkeypatch, attempt, delay_seconds,
+) -> None:
+    from src.jobs.platform import runner
+    from src.jobs.platform.catalog import get_platform_job_metadata
+    from src.services import platform_jobs
+
+    job = _running_job(payload_version=1, payload={"value": "ok"})
+    policy = PlatformJobPolicy(timeout_seconds=30, retry_on_failure=True)
+    if delay_seconds != 0:
+        job.job_type = "capacity.cloudflare_enable"
+        metadata = get_platform_job_metadata(job.job_type)
+        assert metadata is not None
+        policy = metadata.policy
+    now = datetime(2026, 11, 22, tzinfo=UTC)
+    job.attempt = attempt
+    job.max_attempts = policy.max_attempts
+    job.available_at = now - timedelta(minutes=1)
+    job.completed_at = None
+    job.revision = 1
+    db = AsyncMock()
+    db.execute.return_value = MagicMock(scalar_one_or_none=lambda: job)
+
+    @asynccontextmanager
+    async def db_context():
+        yield db
+
+    result = {"code": "CF_DEPLOYMENT_UNVERIFIED", "details": {"check": "namespace_exports"}}
+    handler = AsyncMock(side_effect=PlatformJobFailure(
+        "CF_DEPLOYMENT_UNVERIFIED", "Waiting for Deployment Readback", retryable=True, result=result,
+    ))
+    definition = PlatformJobDefinition(
+        job_type=job.job_type, payload_version=1, payload_model=_Payload, handler=handler, policy=policy,
+    )
+    publish = AsyncMock()
+    monkeypatch.setattr(runner, "get_db_context", db_context)
+    monkeypatch.setattr(runner, "get_platform_job_definition", lambda _: definition)
+    monkeypatch.setattr(platform_jobs, "get_db_context", db_context)
+    monkeypatch.setattr(platform_jobs, "_now", lambda: now)
+    monkeypatch.setattr(platform_jobs, "publish_platform_job_update", publish)
+
+    requeued = await run_claimed_platform_job(job.id, job.lease_token)
+
+    assert job.lease_token is None
+    assert job.result == result and job.error_code == "CF_DEPLOYMENT_UNVERIFIED"
+    if delay_seconds is None:
+        assert not requeued and job.status == "failed"
+        assert job.completed_at == now and not job.error_retryable
+        assert job.available_at == now - timedelta(minutes=1)
+    else:
+        assert requeued and job.status == "queued"
+        assert job.completed_at is None and job.error_retryable
+        assert job.available_at == now + timedelta(seconds=delay_seconds)
+    publish.assert_awaited_once_with(job)
 
 
 @pytest.mark.asyncio

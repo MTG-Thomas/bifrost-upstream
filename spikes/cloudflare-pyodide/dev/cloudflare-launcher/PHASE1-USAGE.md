@@ -458,6 +458,136 @@ two log events, yielding caps of 680, 60 and 20. The expected CPU inputs used
 for fleet pricing are unchanged. The three-launcher, nine-slot, 120-second fleet envelope remains
 $415.59. This sample covers the default lane with queue pre-warming disabled.
 
+#### Lifetime-Scaled Launcher Meters
+
+The next Workers bundle pins the admitted lifetime at reservation and limits
+its metered writes, requests and logs to the qualified per-second rate times
+the reserved lifetime. The fleet envelope already prices those units over
+the lifetime and cleanup allowance. The new launcher and capacity bytes
+require meter requalification before preset B can take effect.
+
+The 300-second cleanup allowance includes 285 seconds for drain, 10 seconds
+for the provider delete request, and five seconds for clock skew. The release
+loader checks that those allowances fit the qualified margin.
+
+The deletion receipt uses the priced rate of one workflow per launcher-second
+to size its route cap, with a minimum of 128 and a maximum of 512. The same
+cap applies separately to preparation routes. Routes beyond the cap retain
+their usage reservations.
+
+Preset B uses a 3,600-second lifetime and keeps the 90-second TenantHost linger.
+Physical launchers still retire under the worker pool's independent idle policy.
+Managed Workers compare the workflow timeout against the pinned deadline plus
+280 seconds on the database clock. This leaves room for an early launcher
+clock within the five-second allowance. Dispatch stops five seconds before
+the deadline and uses the database instant from the dispatch check as the
+workflow start. A launcher retirement reply closes new claims on that bridge.
+A fresh launcher can accept a workflow with the default 1,800-second timeout
+for about 2,080 seconds. Longer work that no longer fits and unbounded work
+stay available to the primary.
+
+Scale In and Upgrade close new admission immediately. An idle launcher can
+retire on the next reconciliation pass. An already running workflow can
+outlast a 10-minute upgrade drain attempt. The job reports `CF_DRAIN_TIMEOUT`
+and leaves admission closed pending verified retirement.
+
+During a rolling API deployment, a Workers pin missing its deadline is
+ineligible for new claims, prepares, and starts. The supervisor drains these
+pins, and old launchers retain their independent idle retirement. After every
+writer supplies deadlines and owners have drained or backfilled legacy Workers pins, add a
+validated conditional NOT NULL constraint for Workers deadline and lifetime
+columns. Containers share the reservation table and use their own timestamps.
+
+The [3,600 s CT128 receipt](../../results/launcher-lifetime-3600-ct128.json)
+records the hour-long soak and 120 s control, including cumulative CPU,
+process RSS, meter samples, and both seals. The
+[900 s CT128 receipt](../../results/launcher-lifetime-ct128-requalification.json)
+records the prior validation and the change in the meter inventory.
+
+The [CT128 isolate comparison](../../results/launcher-isolate-memory-ct128.json)
+reused one child for 210 of 219 workflows over 420 seconds. The original
+child reached 4.80 MB of live traced Python allocations, growing by about
+22.5 KB per attempt after warm-up. Module cache size, linecache and the
+logging handler count stayed flat after the workspace loaded. Collecting the
+oldest Python generation reclaimed more than 4,000 cyclic objects per sample.
+The allocations included compiled workspace code, HTTPX objects and
+attempt-local logging classes.
+
+The launcher now collects that generation every 32 real attempts per child.
+Over the same workload, live traced Python allocations stayed below 1.04 MB,
+and the hot child's WASM buffer stayed at 54.46 MB after warm-up. The largest
+engine sample reported 41.92 MB across the V8 heap, embedder and backing
+stores. Adding that peak to the WASM measurement gives a conservative
+96.38 MB local estimate because the counters can overlap. Extrapolating the
+original Python slope from its conservative peak would take about 1,400 more
+hot attempts to reach 128 MB.
+
+Both fixed runs completed without meter exhaustion. The 420-second run
+retired 5 ms after its pinned deadline and the seven-workflow 120-second
+control retired 22 ms after its deadline. Workerd used 30.23 CPU seconds in
+the instrumented fixed run, against 27.35 in the instrumented baseline.
+
+The shared workerd process still grew from 777 to 829 MiB in the fixed run.
+Its aggregate V8 heap capacity grew by about 23 MiB. SQLite stayed under
+0.28 MB for databases and 6.15 MB for WAL files. The profiler measures
+individual isolate counters and process RSS separately. Native pages outside
+those counters remain unattributed to individual isolates. The hosted pilot
+still needs a 3,600-second run with isolate memory and CPU measurements on
+the requalified bundle.
+
+### Lifetime and Runtime Timing Inventory Review
+
+The combined lifetime and timing release changes the following bundled inputs.
+The private gateway module and the remaining inventory inputs keep their existing
+classifications and digests.
+
+| Changed input | Charge-site review |
+| --- | --- |
+| `capacity-core.mjs` | Validates the absolute deadline and stores it in the existing reservation. Expired requests can exit before launcher RPCs or journal writes. Accepted requests keep their existing calls and row counts, with a larger stored row and additional validation CPU. |
+| `capacity.mjs` | Carries deadline, lifetime and drain grace on the existing preparation RPC. The request count stays the same. The payload grows and requires additional serialization CPU. |
+| `launcher-core.mjs` | The deadline can refuse preparation, dispatch and idle reconnect. The timing fields expand the existing terminal journal row and result frame. They add serialization CPU and stored bytes, with the same journal writes and log sites on the successful path. |
+| `launcher-do.mjs` | Scales the meter on enrollment and clamps existing alarm scheduling. The deadline or grace wake can run retirement cleanup earlier and can add an immediate alarm on a draining disconnect. Keep these DO requests, alarm storage operations and cleanup writes in launcher control and workload coverage. |
+| `launcher-meter.mjs` | Higher per-incarnation caps and up to 512 workflow plus 512 preparation entries allow additional existing route journal writes. Larger receipts increase storage and serialization CPU. Existing metered save and seal paths cover these operations. |
+| `generic-worker-code.mjs` | Full Python GC every 32 attempts adds CPU. The child reads the entry stamp from the result and returns it in the existing response. The route adds no storage access, subrequest or log site. |
+| `launcher-host.mjs` | Validates and forwards two timestamps on the existing terminal result. The extra work is CPU and a larger response payload. |
+| `tenant-api.mjs` | Records readiness in isolate memory and extends the existing child request and result. The generation write, Worker Loader calls, gateway subrequests and logging sites keep their existing call counts. |
+| Generated runtime | Recompiles the execution engine and worker modules with the optional workflow-entry callback. The callback reads the clock and returns one timestamp on the existing result. It adds CPU without a gateway request, storage access or log site. |
+
+The [CT128 measurement receipt](../../results/cloudflare-scaleout-meter-lifetime-timing.json)
+records the new bundle and the guarded local measurements. Across four
+CPU batches, the maximum capacity p99 rose from 10,367 to 11,152 μs and the
+exercise p99 rose from 67,154 to 71,399 μs. With the existing 10× margin and
+the higher p99 for each path, the capacity and exercise limits are 112 and
+714 ms. The aggregate launcher-second CPU bound is 62,245 ms.
+
+At 170 controller observations, the two-workflow seal recorded 68 SQLite
+writes, six DO requests and two log events. The legacy caps remain 680, 60
+and 20. The deadline-aware launcher uses the verified per-second binding
+multiplied by its admitted lifetime. The SDK limit continues to use the
+existing hosted SDK reference.
+
+The 128 SQLite writes, 64 DO requests and 64 log events per second are
+the priced fleet-envelope allowances used to set lifetime caps. The
+hour-long soak's highest observed interval rates were 4.27, 0.40 and
+0.13 per second, respectively. A tighter allowance based on those samples
+would require a separate meter requalification.
+
+The runtime rebuild started with the verified Phase 5b generated artifact
+at SHA-256 fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5.
+For each of src/services/execution/engine.py and
+src/services/execution/worker.py, the embedded source was compared with the
+file from df89f461c. CPython 3.14.4 then recompiled the baseline with
+py_compile using UNCHECKED_HASH, magic 2b0e0d0a and dfile set to
+/session/metadata/ plus the module path. Both baseline bytecode entries
+matched byte for byte. With the same settings, the sources from 9b4067d99
+and their recompiled __pycache__ entries replaced those four entries in
+the module map. All other values and the original key order were retained.
+The Node serializer emitted one LF-delimited JSON-encoded key and tagged
+value per line into the existing ES-module envelope, with the header
+"// Precompiled (sourceless-vendor), with recompiled execution timing modules."
+This produced the 22,020,012-byte artifact at SHA-256
+11ade0a1ea1b117d577803cff87d1c3c4074d793df5bcb17a9f473923e55f254.
+
 #### Hosted SDK Measurement
 
 The hosted reference used manifest
@@ -497,7 +627,7 @@ active boolean-true `containers.enabled` and `workers.enabled` allocations
 under a temporary token with **Account Settings Read alone**. For a Containers
 feature check, require `containers.enabled`, a boolean-true allocation and an
 empty deletion date. Cloudflare lists **Account Read** for this endpoint.
-`workers.enabled` establishes feature access. Connect and Enable require active boolean-true `containers.enabled` as evidence of Workers Paid. Account Settings Read alone is sufficient.
+`workers.enabled` establishes feature access. Preflight, activation and Enable require active boolean-true `containers.enabled` as evidence of Workers Paid. Account Settings Read alone is sufficient.
 [Account entitlements API](https://developers.cloudflare.com/api/resources/accounts/subresources/entitlements/methods/list/)
 
 The trial covered one Paid account with Containers access. Paid or Enterprise
@@ -616,3 +746,55 @@ for the exact owned resources in the observation window. The provider
 cost proxy and the spend ratio are unavailable.
 
 See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-observable-gates.json).
+
+## Hosted Meter Readback With Cold and Warm Reuse
+
+Source `788ffc641` matched the qualified bundle, bounds and both release
+manifests. The meter was $0 after Connect and $0.000202200 after Enable.
+At the post-latency stop it read $0.018559959 live for the run. Verified
+deletion settled the run at $0.007799626. The carry-in was $0.007517685,
+giving $0.015317311 settled cumulative and $0.026077645 at the largest
+observed cumulative read. The settled $0.007597426 after Enable combines
+the latency runs and stop-path teardown. The remaining workload items
+were unreached.
+
+The canary incarnation lasted 1.864 s and the workflow incarnation
+lasted 54.074 s. The run used the 120-second lifetime policy and
+90-second linger. Cloudflare returned empty exact-script and
+exact-namespace Analytics samples. The provider cost proxy and ratio
+are unavailable.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-latency-reuse.json).
+
+### Hosted Usage Check at `db39a3698`
+
+The two release digests and their pinned meter evidence verified. Enable
+stopped on `CF_OWNERSHIP_CONFLICT` before a launcher started. Bifrost
+settled $0.00 incremental, leaving the cumulative estimate at
+$0.015317311140185837. Exact-target Cloudflare Analytics returned no
+attributed Workers or Durable Object samples, so the provider cost proxy
+and spend ratio are unavailable.
+
+See the [sanitized ownership-stop receipt](../../results/cloudflare-scaleout-combined-hosted-ownership-stop.json).
+
+### Hosted Preset B Spend at `e7c59788c`
+
+The Existing HTTPS leg passed the nine-slot burst, isolated cancel and
+active Scale In. Its live estimate peaked at $2.02 above the
+$0.015317311140 opening estimate. Managed Enable stopped before a
+launcher started. The complete run settled at $0.061801362912
+incremental and $0.077118674052 including carry-in. All four
+incarnations sealed their meters before teardown, with zero unresolved
+incarnation or route flags at final readback.
+
+Attributed Workers Analytics returned 196 requests and 70,698 µs of
+CPU. Those rows imply a $0.00006021396 Workers-only proxy and a
+Bifrost-to-proxy ratio of 1,026.36. The Durable Object datasets returned
+no attributed rows. The proxy covers the sampled Workers charges.
+
+See the [sanitized preset B receipt](../../results/cloudflare-scaleout-preset-b-hosted.json).
+
+The [preset B calibration](../../results/cloudflare-scaleout-preset-b-spend-calibration.md)
+breaks out the recoverable ledger amounts, explains the incomplete
+Analytics denominator, and proposes a measured expectation alongside
+the existing admission envelope.

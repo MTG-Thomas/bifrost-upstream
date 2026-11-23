@@ -6,8 +6,10 @@ vi.mock("@/lib/api-client", () => ({
 }));
 
 import {
+	activateCloudflareCapacity,
 	configureCloudflareCapacity,
 	getCloudflareCapacity,
+	preflightCloudflareCapacity,
 	rotateCloudflareAccountToken,
 	startCloudflareAction,
 } from "./cloudflareCapacity";
@@ -27,6 +29,22 @@ describe("Cloudflare capacity service", () => {
 		mocks.get.mockResolvedValue({ data: status, response: { ok: true, status: 200 } });
 		await expect(getCloudflareCapacity()).resolves.toBe(status);
 		expect(mocks.get).toHaveBeenCalledWith("/api/capacity/cloudflare");
+	});
+
+	it("posts preflight and activation through their write-only contracts", async () => {
+		const body = { api_token: "synthetic-management-token" };
+		const preflight = { preflight_receipt: "opaque-receipt", consent_version: "cloudflare-consent" };
+		const activation = {
+			...body, ...preflight, consent: true as const, monthly_limit_usd: "75.00",
+		};
+		const accepted = { job_id: "job-id", status: "queued" };
+		mocks.post.mockResolvedValueOnce({ data: preflight }).mockResolvedValueOnce({ data: accepted });
+		await expect(preflightCloudflareCapacity(body)).resolves.toBe(preflight);
+		await expect(activateCloudflareCapacity(activation)).resolves.toBe(accepted);
+		expect(mocks.post.mock.calls).toEqual([
+			["/api/capacity/cloudflare/preflight", { body }],
+			["/api/capacity/cloudflare/activate", { body: activation }],
+		]);
 	});
 
 	it("preserves the response status on a failed capacity read", async () => {
@@ -98,12 +116,12 @@ describe("Cloudflare capacity service", () => {
 	);
 
 	it("preserves structured validation details without using the submitted input as the message", async () => {
-		const issue = { loc: ["body", "connect", "api_token"], msg: "Invalid token format.", input: "synthetic-secret", type: "value_error" };
-		mocks.patch.mockResolvedValue({ error: { detail: [issue] }, response: { status: 422 } });
-		await expect(configureCloudflareCapacity({ action: "connect" } as never)).rejects.toMatchObject({
+		const issue = { loc: ["body", "api_token"], msg: "Invalid token format.", input: "synthetic-secret", type: "value_error" };
+		mocks.post.mockResolvedValue({ error: { detail: [issue] }, response: { status: 422 } });
+		await expect(preflightCloudflareCapacity({ api_token: "synthetic-secret" })).rejects.toMatchObject({
 			errorCode: "ValidationError",
 			statusCode: 422,
-			message: "connect.api_token: Invalid token format.",
+			message: "api_token: Invalid token format.",
 			details: { validation_errors: [issue] },
 		});
 	});

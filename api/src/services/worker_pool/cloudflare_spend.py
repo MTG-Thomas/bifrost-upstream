@@ -12,7 +12,7 @@ from uuid import UUID
 
 from pydantic import ValidationError
 from shared.models import (
-    CLOUDFLARE_MAX_RECEIPT_ROUTES,
+    CLOUDFLARE_LEGACY_RECEIPT_ROUTES,
     CloudflareEngineInvocation,
     CloudflareLauncherUsage,
 )
@@ -353,7 +353,7 @@ def _has_settlement_bounds(bounds):
     )
 
 
-def _incarnation_cost_sql(installation: type[CloudflareInstallation], now):
+def _incarnation_cost_sql(installation: type[CloudflareInstallation], now, *, unsettled_only: bool = False):
     usage = CloudflareUsageIncarnation
     period = func.date_trunc("month", now, "UTC")
     seconds = func.extract("epoch", func.least(func.coalesce(usage.deleted_at, now), now)
@@ -408,7 +408,17 @@ def _incarnation_cost_sql(installation: type[CloudflareInstallation], now):
         owner.account_id == installation.account_id,
         or_(usage.deleted_at.is_(None), usage.deleted_at > period),
         usage.started_at <= now,
+        *((or_(usage.deleted_at.is_(None), usage.meter_uncertain,
+               (version == WORKERS_RATE_TABLE_VERSION) & ~func.coalesce(settled, False)),) if unsettled_only else ()),
     ).correlate(installation).scalar_subquery()
+
+
+def cloudflare_unsettled_resource_usage() -> ColumnElement[Decimal | None]:
+    """The guard's resource charges still backed by unverified retirement or receipts."""
+    now = func.statement_timestamp()
+    return _incarnation_cost_sql(CloudflareInstallation, now, unsettled_only=True) + container_account_usage(
+        now, unsettled_only=True,
+    )
 
 
 def _launcher_high_water(usage):
@@ -511,7 +521,8 @@ def _retained_storage_cost(installation: type[CloudflareInstallation], now):
 
 
 async def record_launcher_terminal_meter(
-    db: AsyncSession, worker_id: UUID, raw: object, *, uncertain: bool,
+    db: AsyncSession, worker_id: UUID, raw: object, *,
+    uncertain_route: str | None = None, incarnation_uncertain: bool = False,
 ) -> None:
     row = await db.get(CloudflareUsageIncarnation, worker_id, with_for_update=True)
     if row is None or row.deleted_at is not None:
@@ -523,7 +534,15 @@ async def record_launcher_terminal_meter(
     except ValidationError:
         row.meter_uncertain = True
         return
-    row.meter_uncertain |= uncertain
+    if incarnation_uncertain:
+        row.meter_uncertain = True
+    if uncertain_route is not None:
+        meter = CloudflareDispatchMeter
+        matched_route = await db.scalar(update(meter).where(
+            meter.worker_id == worker_id, meter.route_id == uncertain_route,
+        ).values(attempt_uncertain=True).returning(meter.route_id))
+        if matched_route is None:
+            row.meter_uncertain = True
     previous = row.meter_terminal or {}
     row.meter_terminal = {**previous, **{name: max(value, previous.get(name, 0)) for name, value in receipt.items()}}
 
@@ -547,9 +566,11 @@ async def seal_launcher_meter(db: AsyncSession, worker_id: UUID, receipt: Cloudf
         preparation = meter.route_id.startswith("prepare:")
         drift = False
         for route_kind, reported in ((~preparation, workflows), (preparation, len(receipt.routes) - workflows)):
+            # Receipts cap the routes they can witness. Sample at least the
+            # legacy cap, and cover every reported route on longer lifetimes.
             booked_routes = select(meter.route_id).where(
                 meter.worker_id == worker_id, route_kind,
-            ).limit(CLOUDFLARE_MAX_RECEIPT_ROUTES)
+            ).limit(max(CLOUDFLARE_LEGACY_RECEIPT_ROUTES, reported))
             booked = await db.scalar(select(func.count()).select_from(booked_routes.subquery()))
             assert booked is not None
             drift |= max(booked, reported) > 4 * max(2, min(booked, reported))
@@ -558,7 +579,7 @@ async def seal_launcher_meter(db: AsyncSession, worker_id: UUID, receipt: Cloudf
         row.meter_uncertain |= counter_drift
         if not row.meter_uncertain and receipt.routes:
             records = list(await db.scalars(select(meter).where(
-                meter.worker_id == worker_id, meter.route_id.in_(receipt.routes),
+                meter.worker_id == worker_id, meter.route_id.in_(receipt.routes), ~meter.attempt_uncertain,
             )))
             await _settle_foreground(db, row, receipt.routes, records)
     row.meter_final = counts

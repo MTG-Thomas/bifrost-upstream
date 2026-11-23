@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -503,7 +503,8 @@ async def checkpoint_platform_job(
 
 
 async def retry_platform_job_failure(
-    job_id: UUID, lease_token: UUID, failure: Any, *, enabled: bool
+    job_id: UUID, lease_token: UUID, failure: Any, *,
+    enabled: bool, retry_delay: tuple[timedelta, ...] = (),
 ) -> bool:
     """Requeue a retryable failure while retaining its handler checkpoint."""
     if not enabled or not failure.retryable:
@@ -530,7 +531,8 @@ async def retry_platform_job_failure(
         else:
             job.status = "queued"
             job.phase = "Retrying after recoverable failure"
-            job.available_at = _now()
+            delay = retry_delay[min(job.attempt, len(retry_delay)) - 1] if retry_delay else timedelta(0)
+            job.available_at = _now() + delay
             job.error_retryable = True
         job.result = failure.result
         job.error_code = failure.code

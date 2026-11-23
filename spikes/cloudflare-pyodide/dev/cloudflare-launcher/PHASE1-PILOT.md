@@ -2,6 +2,33 @@
 
 **November 20, 2026 UTC · Base `510ff121e`**
 
+## Hosted Follow-up Requiring Owner Approval
+
+- Run one managed launcher incarnation for 3,600 seconds under real approved
+  Workers load. Mix cold and warm loose and Solution workflows with overlapping
+  Provider and Global bursts. Record lifecycle timestamps, per-isolate memory,
+  CPU, Durable Object requests, SQLite writes, logs, and the sealed receipt at
+  retirement. Before the trial, qualify enforcement of the saved lifetime
+  and verify the release's per-incarnation meter covers the trial workload.
+  Confirm that idle retirement and an explicit upgrade drain release
+  capacity. Obtain separate owner approval before starting this hosted run.
+
+The original CT128 run stopped after 180 seconds when the four-slot launcher
+exhausted its usable SQLite journal budget. The deadline-aware local bundle
+completed 48 workflows and retired at the 900-second deadline with budget
+remaining. Preset B requires meter requalification before release.
+[Original result](../../results/launcher-lifetime-ct128.json) ·
+[Deadline-aware result](../../results/launcher-lifetime-ct128-requalification.json)
+
+The CT128 hour-long run completed 192 workflows with one signed reconnect
+and retired 350 ms after its pinned deadline. All launcher meters had
+headroom. The 120 s control also passed. Workerd RSS peaked at 823 MiB across
+the local process. A separate CT128 comparison isolated Python cycle
+retention and verified collection over 210 hot attempts. The hosted run
+will measure isolate peaks and CPU over the full hour.
+[3,600 s CT128 receipt](../../results/launcher-lifetime-3600-ct128.json)
+· [CT128 isolate comparison](../../results/launcher-isolate-memory-ct128.json)
+
 ## Usage-only limit
 
 The pilot used a previous conservative fleet projection. The monthly
@@ -593,6 +620,11 @@ both images as in item 1 and save each loader's release version and
 deployment digest in `.release-1.checked` and `.release-2.checked`.
 Check the host start condition before launching the stack.
 
+Use the verified release's preset B suggestion for both connections. The
+driver checks the $75 policy, three four-slot launchers, nine installation
+slots and 3,600-second deadline before activation. It records the fleet envelope
+and cold-path stage offsets from the persisted launcher and execution timings.
+
 ```sh
 python3 spikes/cloudflare-pyodide/dev/e2e/combined-stack.py "$PROJECT" "$IMAGE"
 node spikes/cloudflare-pyodide/dev/e2e/combined-provider.mjs .rehearsal/config.json &
@@ -621,16 +653,43 @@ gate and parser against fixture responses. Always remove the project
 containers, volumes, and internal network, and stop the local provider
 process when the rehearsal finishes or fails.
 
+#### Preset B Spend Stop
+
+The lifetime and runtime timing packages both passed the local release
+loader and advertised preset B. The rehearsal passed items 1–8, including
+Upgrade with one dispatch, the original claim, reconnect and terminal ACK.
+Item 9 stopped at a $0.73 Bifrost estimate against the existing $0.50 guard.
+The ledger showed eight retired incarnations, including one uncertain
+incarnation with a final receipt.
+
+At 9e3998067, a stopped workflow retained its launcher's full counter
+reserve. At 3,600 seconds the qualified SQLite write, DO request
+and log event caps reserve $0.6336 for one uncertain incarnation. The
+monthly fleet envelope is $32.13. The rehearsal verified Disconnect and
+found zero live ledger rows, three script and four namespace 404s, DNS
+absence, tunnel deletion and zero connector sessions after the spend stop.
+The earlier $0.50 trial budget was exceeded in this rehearsal. See the
+[settlement follow-up](../../results/cloudflare-scaleout-preset-b-followup.md)
+for the confirmed-stop fix, remaining reserves, and the cold-path timing trace.
+[CT128 measurement and rehearsal receipt](../../results/cloudflare-scaleout-meter-lifetime-timing.json)
+
 ### Hosted Run
+
+Run only the steps and checks exercised by the committed local rehearsal.
+Rehearse any new check locally and commit it to the harness before using
+it on hosted. Record an unexpected finding outside the rehearsed checks
+as a sanitized observation and continue. Stop on a rehearsed stop
+condition or a real spend, ownership, isolation, or teardown violation.
 
 The run needs explicit owner approval for the exact two release manifests,
 existing Workers Paid account, active zone, two dedicated origins, temporary
 grants, and a single disposable Compose project. Cap each deployment at three
 Workers scripts and three concurrent launcher incarnations, with zero Cloudflare
 Containers and zero model calls. Start with at least 8 GiB available and no
-other Bifrost test stack. Allow 25 minutes from the first connector start,
-with the last five minutes reserved for teardown. Build both release images
-and stage the approved no-effect fixtures before starting the clock.
+other Bifrost test stack. The approved preset B window is 30 minutes from
+the first connector start, with the last five minutes reserved for teardown.
+Build both release images and stage the approved no-effect fixtures before
+starting the clock.
 
 Use the two committed preparation revisions with distinct source SHAs and
 increasing SemVer precedence. Validate both release manifests, the meter
@@ -660,14 +719,34 @@ Use a dedicated route to worker ingress on port 8001. Use Account Settings
 Read, Workers Scripts Write and Account Analytics Read. For Managed Tunnel
 also grant Tunnel Write on the selected account and Zone Read and DNS Write
 on the selected zone only. Complete the first Disconnect and verify resource
-absence before connecting the second origin as a Managed Tunnel in the same
-Compose project. Managed Tunnel provisions its route
-during the first Enable. That job performs the full ingress probe after the
+absence before activating Managed Tunnel in the same Compose project.
+Managed Tunnel provisions its route in the Enable job queued by activation.
+That job performs the full ingress probe after the
 connector is ready. Run the operator command against the actual managed
 origin before the post-rotation Enable. If the initial Managed Tunnel job
 returns the retryable connector-readiness result, observe its existing job
 until the connector is healthy or the phase deadline arrives. Preserve its
 effect identities and avoid a second provisioning submission.
+
+Use CLI 1.4.3 or later. For each installation, stage the scoped token
+with `bifrost capacity cloudflare stage-credential --purpose connect --account-id "$ACCOUNT_ID"`.
+Keep the returned credential reference private. Pass it as
+`--credential-ref` to `bifrost capacity cloudflare activate` with the
+reviewed mode, origin or zone, and `--monthly-limit-usd`. The command
+preflights and prompts for consent before queuing Enable. Use
+`bifrost capacity cloudflare preflight` with the same reference for a
+separate preview when needed. For MCP, pass the staged reference to
+`bifrost_cloudflare_preflight_validate`, then pass that reference and the
+returned receipt and consent version to `bifrost_cloudflare_activate_execute`
+with explicit consent and the confirmed limit. The `connect` credential
+purpose is still used for initial activation.
+
+Preflight allows 10 requests per actor per minute. The API harness uses
+one activation preflight per installation, which leaves room for observing
+the two installations in one run. The worker ingress probe and capacity
+status reads are separate. Poll the one Enable job returned by activation
+until it settles. After Scale In or connector rotation on an existing
+installation, use Enable to resume that installation.
 
 Retain the sanitized `http_connections` array from the worker preflight
 and the Enable result. Use each result's own counts to report reuse.
@@ -675,35 +754,38 @@ and the Enable result. Use each result's own counts to report reuse.
 | Order | Action and required evidence | Incremental budget |
 | --- | --- | ---: |
 | 1 | Requalify and build both releases offline. Verify the three module digests, bounds hash, deployment digests and image/manifest pairs. Bind each hosted job to the appropriate release. | $0.00 |
-| 2 | Existing HTTPS Connect. Stage an expiring scoped token, record consent and the policy envelope, and verify admission is closed. From the sole worker replica, require the complete preflight to pass. Submit Enable once. Require `remote_launcher` (the Compose `worker` container that ran the preflight) and a passing signed hello, scoped SDK receipt and terminal ACK before admission opens. | $0.03 |
+| 2 | Existing HTTPS activation. Stage an expiring scoped token and review the read-only preflight and policy envelope. Confirm consent and activate once. The ingress listener starts after the installation exists. Require the returned Enable job to verify ingress, signed hello, scoped SDK receipt and terminal ACK on `remote_launcher` before admission opens. Then run the standalone worker ingress probe from the same worker container. | $0.03 |
 | 3 | Measure a cold approved loose workflow and a warm repeat on the same tenant, launcher and ordinal within linger. Record queue-to-entry and end-to-end latency, loader identity, generation, cold/warm flags and terminal receipts. Verify scoped SDK results for a Solution fixture in the burst. | $0.04 |
 | 4 | Hold four Provider and four Global executions simultaneously at a no-effect barrier. Offer a ninth execution to a different tenant with zero slots, then prove a tenth from a fourth tenant stays queued through two controller observations without a ticket or entry. Cancel one running execution mid-burst. Require confirmed stop and exact fence release, unchanged sibling fences, and admission of the waiting execution only after release. Open the barrier and collect the remaining terminal ACKs. | $0.14 |
 | 5 | Reconcile and verify the owned revision and canary without duplicate resources. Start one harmless hold, request Scale In, then let it finish. Verify admission and sends close, the original claim settles, launchers retire, and scripts remain. Disconnect, retain spend evidence, and verify the first installation's resource absence. | $0.04 |
-| 6 | Managed Tunnel Connect and Enable. Independently read back the exact CNAME, tunnel and connector session. Require `remote_launcher`, the signed canary and ingress refusal checks. Verify normalized ingress GET rules, empty origin-request fields and the actual disabled `warp-routing` echo. With the same Tunnel Write grant, list account `teamnet/routes` and verify no private IP route targets the tunnel. | $0.04 |
+| 6 | Managed Tunnel activation. Review the discovered zone and proposed hostname. Independently read back the exact CNAME, tunnel and connector session. Require `remote_launcher`, the signed canary and ingress refusal checks. Verify normalized ingress GET rules, empty origin-request fields and the actual disabled `warp-routing` echo. With the same Tunnel Write grant, list account `teamnet/routes` and verify no private IP route targets the tunnel. | $0.04 |
 | 7 | Scale In and rotate the connector token. Compare live session sets and require all prior session IDs absent and a replacement session present. With approved bounded tooling, check the old token cannot establish a session while keeping it out of the receipt. Run the worker preflight on the managed origin, Enable, and verify the signed canary on the same tunnel and CNAME. | $0.04 |
-| 8 | Upgrade once with one harmless held execution. Stage the newer compatible release. Require the admission and send fence, then interrupt only the old attempt's control connection. Release the hold and verify replay and terminal ACK under the original claim. Require old runtime retirement, exact script and namespace absence before any replacement upload, then provider readback and a signed canary before reopening. | $0.07 |
+| 8 | Upgrade once with one harmless held execution and an intact control connection. Require the admission and send fence, the original claim and one dispatch with a terminal ACK, and the durable old-revision absence checkpoint before replacement upload. Verify readback and the signed canary before reopening, then run a workflow on the replacement. The deliberate socket interruption and replay check is local-only. | $0.07 |
 | 9 | Capture the spend comparison. Scale In and Disconnect. Verify both installations' cleanup independently, including the replacement revision. Reserve for bounded cleanup and remaining observation. | $0.05 |
 | | **Cumulative estimate with $0.00 carried from the two failed combined attempts** | **$0.45** |
+
+During the local rehearsal, record the Workers lane reason codes and
+queue counts after the cold dispatch, the first burst dispatch, the
+tenth dispatch's launch gate, and the original Upgrade dispatch.
+Record the placement reason codes while Disconnect is in progress.
+These observations accompany the workflow, slot, and teardown evidence.
 | | Optional queue pre-warm with one extra parallel boot per tenant | **+$0.04** |
 
-Use three launchers with four seats each, nine installation slots, four per
-tenant, 120-second launcher lifetime, 90-second engine linger, and queue
-pre-warming disabled. Occupy or cap the primary with controlled local
-fixtures so it cannot consume the approved Workers dispatches. Confirm
-each admission witness is an actual Workers claim. Set the monthly policy
-at or above the $415.59 requalified fleet envelope with the owner's
-approval. That modeled monthly capacity value and the existing Paid
-subscription are separate from the trial cap. Use the packaged marginal
-rates without assumed free allowances. The table allocates live estimate
-headroom for at most 14 fixture attempts, canaries and their control and
-retirement operations. For scale, ten new engine identities are $0.020 at
-$0.002 each. Three full 120-second launcher lifetimes, even at the
-qualified per-second CPU ceiling, contribute about $0.045 in CPU. The
-remaining allocation covers temporary dispatch reserves, Durable Object
-duration and storage, logging, and lifecycle operations. These are planning
-allocations. Confirm the carry-in for the approved trial series and
-recalculate before provisioning if it differs from the table. Record the
-high-water live estimate and settled usage by phase.
+The next candidate uses the verified preset B suggestion with three
+four-slot launchers, nine installation slots, four per tenant, a 3,600-second
+launcher lifetime, 90-second engine linger and queue pre-warming disabled.
+The $75 monthly policy covers the $32.13 fleet envelope. The modeled monthly
+capacity value, Workers Paid subscription and trial limit are separate.
+
+The estimates in the table were calculated for the earlier 120-second
+policy and its $415.59 monthly fleet envelope. Obtain approval for a
+recalculated trial budget before provisioning preset B. The 30-minute
+trial proposal derives a $3.60 live-estimate target, $4.50 live abort,
+and $0.15 settled-spend target from the pinned rates and caps. Add
+account carry-in and check the remaining reserve before each phase.
+Record the high-water live estimate and settled usage by phase. Occupy
+or cap the primary with controlled fixtures and verify each admission
+witness is an actual Workers claim. [Preset B trial budget](../../results/cloudflare-scaleout-preset-b-followup.md#nine-item-trial-budget)
 
 ### Observe Each Gate Before Advancing
 
@@ -730,26 +812,28 @@ before the worker count when rehearsing on the test Compose stack.
 Use bounded read-only polling within each phase's deadline. Submit each
 operation once. Keep hold fixtures live until their required reads
 complete, and stop on a terminal failure, changed fence, or expired
-deadline. Apply the following ordering:
+rehearsed deadline. Managed Workers overflow uses a 2-second dispatch-age
+floor and a deadline wake. A similar hosted cold run is expected to enter
+in about 7–9 seconds under healthy conditions. Record the measured time
+to entry and treat that range as an expectation.
 
 | Gate | Required readback before advancing |
 | --- | --- |
-| Cold and warm | Use `executions.created_at` in PostgreSQL as the queue timestamp for latency. The execution detail response can leave `created_at` null. After the cold run becomes terminal, wait for its ACK and the released slot fence. Submit the repeat while that slot is still within linger. Verify the repeat's claim and loader identity after entry. |
-| Eight and ninth executions | Wait for a live gateway or launcher witness of entry and a sent, unreleased slot for all eight in the same occupancy window. Then offer the ninth. Wait for its entry and slot while confirming the original eight fences are still held. Read persisted entry logs after settlement because the runtime can batch them until the terminal receipt. |
-| Tenth waits | After its dispatch row appears, record the managed controller identified by `launched_by` on the held launchers. Its timestamp in Redis `bifrost:worker-pool:controllers` advances at pass start. Observe the first advance after enqueue and use the next two advances of that controller to mark two completed passes. Check the scope logs for reconciliation errors during both passes. At each completion, read the same nine active fences and the tenth's unassigned dispatch together, and verify the tenth has no claim, slot, or entry. Record the observations without controller IDs. |
+| Cold and warm | Use `executions.created_at` in PostgreSQL as the queue timestamp for latency. After each run settles, retain its released-slot snapshot before submitting another run. Match the terminal receipt and ACK to that execution's dispatch route and fence. Submit the warm repeat inside linger and use the two saved snapshots to verify reuse. |
+| Eight and ninth executions | Within 28 seconds of submitting the burst, capture eight sent, unreleased slots. From that read, allow up to 28 seconds for live gateway or launcher entry witnesses for those same eight fences. The latter window covers engine boot after dispatch, including serialized boots in one launcher. Then offer the ninth. Wait for its entry and slot while confirming the original eight fences are still held. Read persisted entry logs after settlement because the runtime can batch them until the terminal receipt. |
+| Tenth waits | After its dispatch row appears, use its PostgreSQL queue time plus 2 seconds as the first overflow-eligible instant. The timestamp in Redis `bifrost:worker-pool:controllers` advances when the controller identified by `launched_by` starts a pass. Observe its first advance at or after eligibility and use the next two advances to mark two completed eligible passes. Check the scope logs for reconciliation errors during both passes. At each completion, verify the same nine active fences and the tenth's unassigned dispatch, with no claim, slot, or entry. Record the observations without controller IDs. |
 | Isolated cancel | Use a fixture that can finish within the launcher's stop-confirmation window when the terminate command is observed. Wait for a confirmed `stopped` receipt, terminal cancellation, and exact slot fence release. A Cancelled run with an `uncertain` receipt still owns its fence. In the same slot read verify the other eight fences remain held. Compare the released fence timestamp with the tenth execution's claim and entry evidence. |
 | Active Scale In | Confirm the drain fixture has entered on Workers under a sent fence. Free the local primary if needed to run the platform job. After Scale In is accepted, wait for the admission and send fence while the original claim is still live. Then release the fixture or let its bounded hold finish. Verify its terminal ACK, the job result, retired launcher readback, and the three retained scripts. |
 | Managed Tunnel rotation | Capture live session identities before submission. After rotation, poll the exact tunnel until the pre-rotation set is absent and a replacement session is live. Check the old token and run the worker preflight only after that readback. |
-| Upgrade | Wait for the held execution's original claim and sent fence, then stage the replacement. Wait for the persisted admission and send fence before interrupting the old control connection. Verify terminal replay and ACK under the original claim, old runtime retirement, and provider absence before the first replacement upload. Wait for the replacement's signed canary and admission. |
+| Upgrade | Wait for the held execution's original claim and sent fence, then stage the replacement. Observe the persisted admission and send fence while the original claim is live. Keep its control connection intact. Verify one successful dispatch and terminal ACK, the durable absence checkpoint before replacement upload, signed replacement canary and readback before admission, and a successful workflow on the replacement. [Upgrade procedure](PHASE4-UPGRADE.md#uninterrupted-existing-https-upgrade) |
 
-Baseline pre-warm stays off. Drop the optional run first. Only add it if the
-original burst, rotation and upgrade have passed and the observed high-water
-plus remaining exposure and teardown still project below $0.50. If time or
-spend tightens, drop Upgrade next and defer the entire Managed Tunnel pass
-if it cannot be completed with cleanup headroom. Keep the original burst
-shape and teardown intact. Record any dropped item as unqualified. Defer
-Kubernetes, Containers, DNS failure injection, account-token replacement,
-and a deliberately failed upgrade canary to separately approved runs.
+Baseline pre-warm stays off for preset B. If time or spend tightens, drop
+Upgrade first and defer the entire Managed Tunnel pass if it cannot be
+completed with cleanup headroom. Keep the original burst shape and
+teardown intact. Record any dropped item as unqualified. Defer parallel
+pre-warm, Kubernetes, Containers, DNS failure injection, account-token
+replacement, and a deliberately failed upgrade canary to separately
+approved runs.
 
 Use the same UTC window and the exact script/namespace sets for the Bifrost
 estimate and independent Cloudflare Analytics. Record the raw aggregate
@@ -761,14 +845,16 @@ report the ratio unavailable. Preserve both run windows outside the stack so
 read-only Analytics readback can finish after cleanup within the approved
 window.
 
-Stop workload and begin teardown on failed preflight or canary, class
+For the rehearsed gates, stop workload and begin teardown on failed preflight or canary, class
 mismatch, unexpectedly open admission, cross-tenant access or release,
 unproven stop or slot release, unexpected grant or route drift, duplicate
 resource, unresolved receipt, or loss of spend visibility. Stop optional
-work if the next phase and cleanup would put the projection at $0.50.
-Close admission and abort all further workload at $1 cumulative observed
-or projected usage, at the teardown cutoff, or before exceeding an approved
-resource cap. Keep cleanup authorized through independent absence verification.
+work if the next phase and cleanup would reach the approved live target
+or settled target. For preset B, the incremental targets are $3.60 live
+and $0.15 settled. Close admission and abort all further workload at
+$4.50 incremental observed or projected live usage for preset B, at the
+teardown cutoff, or before exceeding an approved resource cap. Keep
+cleanup authorized through independent absence verification.
 Read back journaled identities after an uncertain result before deciding
 any cleanup action. Preserve sanitized job state and diagnostics before
 removing the stack.
@@ -778,8 +864,10 @@ absent installation, plus independent exact reads and inventory absence
 for all three scripts and four namespaces. Check no live launcher, held
 slot, pending cleanup effect, or staged credential remains. Check each
 owned DNS record gone through the provider and both authoritative DNS
-servers, zero live connector sessions, tunnel tombstone or exact absence,
-and empty local credential projection. Revoke temporary management tokens
+servers. If a stop preceded issuance of a DNS ID, use exact-name provider
+inventory and both authoritative servers to verify absence. Verify zero
+live connector sessions, tunnel tombstone or exact absence, and empty local
+credential projection. Revoke temporary management tokens
 and verify absence with independent authority. Finally verify zero
 project containers, networks, volumes and project images, and remove local
 connector processes, scratch files and secrets. Retain only sanitized
@@ -977,3 +1065,458 @@ releases its held read after the launcher accepts terminate. An earlier
 long sleep returned an uncertain stop and correctly retained its fence.
 The harness also corrected the Compose image pull option and made the
 connector stub detach its last session on projection withdrawal.
+
+### Managed Disconnect retirement fix
+
+The cleanup helper and retirement query used the same worker session and
+transaction. Cleanup set the tunnel row to `absent` in memory. With
+autoflush disabled, retirement still saw `deleting` in PostgreSQL and
+raised before the transaction could commit. The rollback left the same
+row to be retried even after the provider had deleted the tunnel.
+
+DNS and tunnel cleanup now report progress when they observe absence.
+The job commits each journal update before taking the next step and
+rechecks the job lease and installation revision before retirement. A
+runner lost after provider deletion can resume from the committed delete
+intent and verify the provider tombstone again. A successor after the
+absence commit can retire from the durable journal. Connector token
+withdrawal already waits for the projection receipt. Workers scripts
+already commit progress after verifying script and namespace absence.
+
+The original Phase 2 lifecycle test used autoflush and committed between
+direct cleanup helper calls. It never ran retirement in the transaction
+that marked the tunnel absent. The new regression runs the Disconnect
+job with fresh autoflush-disabled PostgreSQL sessions and checks both the
+provider tombstone and the retired installation. It returned
+`CF_CLEANUP_PENDING` on `0bbaa403e` and passed with this fix.
+
+The local rehearsal checks that the API, worker and connector are on
+internal IPv4 networks before each Connect. The API and worker must also
+load the fixture hooks under the service user. The persistence and
+browser fixtures block real Cloudflare endpoints at HTTPX's network
+transport and continue to accept in-process mock responses.
+
+The CT128 rerun passed all nine items with Miniflare/workerd, the Bifrost
+Compose services, and both pinned packages loaded in offline images.
+Removing the fixture hooks blocked Connect before the first API request.
+
+| Item | Verified on the rerun |
+| --- | --- |
+| 1. Releases | The Bifrost loader accepted both pinned packages with distinct deployment digests. |
+| 2. Existing HTTPS | Worker preflight passed 100 routes. Preflight and signed `remote_launcher` Enable each recorded eight completed TLS handshakes and 92 reused requests. |
+| 3. Hold and latency | The primary hold left 24 MiB free. Queue-to-entry was 10.454 s cold and 0.321 s warm. Queue-to-completion was 10.507 s and 0.335 s. Both runs used slot 0. |
+| 4. Burst and cancel | Four Provider and four Global runs overlapped. The third tenant used the ninth slot. The tenth waited across two controller passes and entered after a cancel released one fence while preserving eight sibling fences. |
+| 5. Reconcile, Scale In and first Disconnect | Reconcile preserved the deployment. Active Scale In drained the workflow. The first Disconnect retired the installation with three script and four namespace 404s. |
+| 6–7. Managed Tunnel and rotation | The route-list request returned HTTP 200 and `warp-routing.enabled` was `false`. Rotation evicted one old session. One replacement session connected and signed re-Enable passed. |
+| 8. Upgrade | The original claim drained, reconnected and received a terminal ACK after one dispatch. Three old scripts and four old namespaces returned 404. |
+| 9. Spend and final Disconnect | Spend readback was `ready` and parsed one synthetic Analytics sample. Disconnect retired the installation and cleared the live ledger, occupied slots and credential ciphertext. The final three script reads, four namespace reads and DNS read returned 404. The tunnel tombstone had zero live sessions. |
+
+The rehearsal project, fixture process, networks, volumes and image tags
+were removed and checked for absence. Cloudflare billing remains
+hosted-only.
+
+### Disconnect replay and mixed test isolation
+
+The job regression also covers DNS and tunnel intents in `creating`
+with old observations and no provider receipt. It runs Disconnect
+twice using fresh autoflush-disabled sessions. The first call commits
+both absence records and retires the installation. The replay returns
+`disconnected` after checking the lease and revision, without needing the
+erased management credential. Before the replay fix, both the recorded
+and unrecorded tunnel cases returned `CF_MANAGEMENT_CREDENTIAL` on the
+second call.
+
+Two worker-pool tests originally failed with
+`ValueError: not enough values to unpack (expected 1, got 0)` when
+`launch_for_demand()` returned an empty list.
+
+- `test_managed_prepare_uses_the_uid_committed_before_provider_io`
+- `test_cloudflare_reserves_only_approved_fitting_dispatches_before_hello`
+
+Both tests wrongly assumed there was no live claimer. A controlled
+mixed run traced each synthetic dispatch through insert, assignment to a
+live static Linux executor, and deletion before the fixture controller
+could reserve a worker. The worker-pool fixtures now use a private clone
+of the migrated PostgreSQL template and a separate Redis database for
+controller telemetry. API, worker and scheduler services stay live for
+the persistence E2E tests in the same invocation.
+
+## Hosted Cold and Warm Reuse Run
+
+The 2026-11-22 UTC run used spike `788ffc641`, the two pinned releases,
+and the 120-second launcher policy. CT128 started with 8 GiB available
+and no other running test stack.
+
+| Item | Result |
+| --- | --- |
+| 1. Releases | Passed. Both image loaders accepted the pinned manifests and distinct deployment digests. All 12 packaging tests passed. |
+| 2. Connect, preflight and Enable | Passed. Connect returned HTTP 200 with admission closed. The Compose worker passed 100 routes. Signed Enable reported `remote_launcher` and opened admission. Both checks recorded eight completed TLS handshakes and 92 reused requests per IPv4 address. Each of two IPv6 addresses recorded one TCP attempt and zero TLS starts. |
+| 3. Hold, cold and warm latency | The primary hold left 24 MiB free. Queue-to-entry was 9.959 s cold and 0.582 s warm. Queue-to-completion was 10.032 s and 0.650 s. Both used slot 0 on the same launcher. A post-latency harness gate then failed. |
+| 4. Burst and cancel | Unreached. This run did not qualify Provider and Global overlap, ninth-slot admission, tenth-run waiting, or isolated cancellation. |
+| 5. Reconcile and active Scale In | Unreached. The stop path submitted one Disconnect and verified retirement. |
+| 6–8. Managed Tunnel, rotation and Upgrade | Unreached. No Managed Tunnel token was created and the replacement image was never started. |
+| 9. Spend and teardown | The settled estimate was $0.007799626 for the run and $0.015317311 cumulative. The largest observed cumulative estimate was $0.026077645. Exact Analytics samples were empty. Teardown passed. |
+
+The hosted wrapper added a post-latency query for both execution IDs.
+The durable slot row tracks its current holder. Warm reuse had already
+replaced the cold execution ID, so the added lookup raised `KeyError:
+'cold'`. The rehearsed gate reads each released row before submitting
+the next execution. Preserve that per-run snapshot and join each terminal
+receipt and ACK by its route. The relay confirmed one dispatch and a
+terminal ACK for each execution, generation 0 booked for cold, and no
+new generation booking for warm. The run stopped at the failed gate.
+
+The canary incarnation lived 1.864 s. The shared cold and warm workflow
+incarnation lived 54.074 s. Disconnect returned three exact script and
+four exact namespace 404s, with no owned entries in either inventory.
+Product readback showed no current installation, live incarnation, held
+slot, staged credential, retained ciphertext or pending resource row.
+DNS and token exact reads returned 404. Both authoritative servers
+confirmed DNS absence and the tunnel tombstone had zero sessions.
+The owned Compose resources, processes, image tags, scratch and secret
+files were removed and checked for absence.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-latency-reuse.json).
+
+## Local Rehearsal With the 2-Second Overflow Gate
+
+On 2026-11-22 UTC, CT128 ran all nine items from
+`00a8d6d99f709fb2f031dfcf1fc885c4855d73b7`, the harness commit directly
+on `c932f55b3`. The archived source ran with real Bifrost API, worker,
+scheduler, PostgreSQL and Miniflare/workerd. Both service images passed
+the outbound guard, including the replacement at Upgrade. A control
+with missing fixture hooks blocked Connect before its first API request.
+
+| Item | Result | Observation |
+| --- | --- | --- |
+| 1. Releases | Rehearsed-pass | The loader accepted both pinned deployment digests, and all 12 offline Workers packaging tests passed. |
+| 2. Connect, preflight, Enable | Rehearsed-pass | The Compose worker passed 100 route checks. The signed Enable used `remote_launcher`. Both receipts showed 8 completed TLS handshakes and 92 reused requests on local IPv4. Cloudflare edge behavior remains hosted-only. |
+| 3. Primary hold and latency | Fixed and rehearsed-pass | PostgreSQL showed 24 MiB free and a 2.000 s cold overflow eligibility offset. Queue-to-entry and queue-to-completion were 9.799 s and 9.840 s cold, and 0.707 s and 0.730 s warm. Both executions had their own terminal ACK and reused the same launcher and slot 0. |
+| 4. Burst and cancel | Fixed and rehearsed-pass | Four Provider and four Global executions entered on eight unchanged fences, with full entry 9.306 s after the last dispatch read. The third tenant took the reserved ninth slot. The tenth remained unassigned through two completed eligible passes. Confirmed cancel released one fence and preserved the other eight before the tenth entered. The Solution run returned its scoped value. |
+| 5. Reconcile, active Scale In, first Disconnect | Rehearsed-pass | Reconcile retained the deployment. Active Scale In held the original fence through admission closure and kept all three scripts. Disconnect returned three script and four namespace 404s. |
+| 6. Managed Tunnel | Rehearsed-pass at provider boundary | The stub echoed `warp-routing.enabled = false`, returned HTTP 200 with an empty private-route list, and reported the expected proxied CNAME. Signed Enable passed. Live tunnel and Cloudflare grant behavior remain hosted-only. |
+| 7. Connector rotation | Rehearsed-pass at provider boundary | One old session was evicted, one replacement session appeared, and the old token was refused. The worker preflight and signed re-Enable passed. Cloudflare session eviction remains hosted-only. |
+| 8. Upgrade | Rehearsed-pass | The replacement fenced the original claim. The old launcher reconnected after the transport cut, replayed the terminal result under that claim, and received the ACK after one dispatch. Three old scripts and four old namespaces returned 404, with the old script deletions preceding replacement upload. |
+| 9. Spend, Disconnect, teardown | Rehearsed-pass | Spend readback was ready and ratio parsing used a synthetic Analytics sample. The real provider denominator remains hosted-only. Final Disconnect retired the installation with zero live ledger rows, three script and four namespace 404s, DNS 404, and zero tunnel sessions. The owned Compose resources, image tags, fixture processes and scratch were verified absent. |
+
+The earlier single 28-second burst wait mixed launcher allocation with
+engine entry. The timed trace showed one Global execution entering
+18.8 seconds after dispatch, after the submission-based deadline. The
+separate dispatch and entry windows in the runbook exercised the same
+fences successfully. Four loose workflow proposals and one Solution
+proposal were reviewed and accepted in the full rehearsal. There were
+no Cloudflare calls or resource changes.
+
+## Combined Hosted Run Stopped at Enable Ownership
+
+**November 22, 2026 UTC · Spike source `db39a369874e71274244fdc85f5f4436db4ef9de`**
+
+| Item | Result |
+| --- | --- |
+| 1. Release and meter | Passed. Twelve offline tests passed. The pinned bundle and meter bounds matched both packages. Both exact-source images loaded their distinct deployment digests. |
+| 2. Connect, preflight and Enable | Connect left admission closed. The Compose worker preflight passed all 100 route checks. Enable ran as `remote_launcher` and returned `requires_action / CF_OWNERSHIP_CONFLICT` after 8.116 s. The job exposed the generic ownership code, with no successful canary receipt or Enable connection counters. |
+| 3. Hold and latency | Unreached. The policy used a 2 s overflow gate and a 120 s launcher lifetime. No workflow entered, and there was no measured eligibility offset or cold or warm latency. |
+| 4. Burst and cancel | Unreached. No ninth or tenth admission and no cancellation were submitted. |
+| 5. Reconcile and active Scale In | Unreached. Disconnect ran through the stop path. |
+| 6. Managed Tunnel | Unreached. No Managed Tunnel installation or credential was created. |
+| 7. Connector rotation | Unreached. |
+| 8. Upgrade | Unreached. |
+| 9. Spend and teardown | Bifrost settled $0.00 incremental and $0.015317311140185837 cumulative. No launchers started. Analytics returned no attributed rows, so the spend ratio is unavailable. Teardown passed. |
+
+The preflight recorded eight TCP starts, eight completed TLS handshakes,
+and 92 reused requests per IPv4 address. It resolved two IPv4 addresses.
+Each of two IPv6 addresses recorded one TCP attempt and no TLS start.
+At the ownership stop, the journal held one present script and two
+creating intents. Enable was submitted once. The result does not expose
+which ownership predicate failed.
+
+Disconnect retired the installation and marked all three script intents
+absent. Independent exact reads returned 404 for all three script
+targets. The provider inventories contained no matching scripts or
+Durable Object namespaces. There were no recorded namespace IDs for
+exact reads. The ledger showed zero live incarnations, held slots,
+staged credentials, pending resource rows, or retained ciphertext.
+The temporary token and DNS record returned 404, both authoritative DNS
+servers confirmed absence, and the Existing HTTPS tunnel tombstone had
+zero sessions. The owned Compose stack, image tags, processes, scratch
+and secret files were removed and verified absent.
+
+See the [sanitized ownership-stop receipt](../../results/cloudflare-scaleout-combined-hosted-ownership-stop.json).
+
+### Local Investigation of the Enable Ownership Stop
+
+The retained result identified `remote_launcher` and
+`CF_OWNERSHIP_CONFLICT`. The original handler discarded the ownership
+exception. The retained logs and journal counts establish the phase
+but cannot identify the exact guard. Enable journals all three Workers,
+then provisions and commits each in gateway, launcher, capacity order.
+One present script and two creating intents place the stop at the
+launcher step, before capacity, scope activation, or the signed canary.
+The independent preflight had passed.
+
+| Ownership checks reachable from Enable | What each checks |
+| --- | --- |
+| Journal and release | Intent or receipt missing, invalid journal state, wrong release digest or target role, unsupported slot policy, and invalid or duplicate binding definitions. |
+| Workers effect and observation | Target contract, exact owner binding, a single full active version, exact effect and provider receipt, an occupied target before PUT, and a script reappearing during absence verification. Any write proof using exact observation shares those checks. A missing write proof itself has a separate error code. |
+| Durable Object namespaces | A production row's class must be valid and unique per script. Previously committed namespace IDs must match the new readback. Incomplete pagination and missing exports use deployment-observation errors. |
+| Workers scope and upgrade | Endpoint and bearer receipt, paused upgrade revision fence, and exact deployment receipts for upgrade inventory and cleanup. |
+| Managed Tunnel and DNS | Zone identity and account, unambiguous exact inventories, tunnel metadata and receipts, connector secret, tunnel ingress configuration and identity, private-route absence, and exact DNS body and identity. These checks require Managed Tunnel mode. |
+
+The hosted code diff since the previous passing run does not change
+Workers provisioning or receipt rules. Approval proposals and the
+shorter overflow gate govern workflow placement, after the failed
+provisioning step. Script names include the full per-installation UUID
+and deployment revision, and each ownership marker binds the creation
+effect. The namespace inventory matches its exact script name or
+recorded namespace IDs. A listed namespace for a different trial name
+alone cannot produce a duplicate class for this launcher. A record
+without script attribution can instead make inventory observation
+pending. Persistent foreign ownership is also inconsistent with a
+successful independently verified Disconnect. Transient readback
+differences and a provider response shape missing from the stub remain
+possible, with no retained evidence to choose between them.
+
+The persistence rehearsal stubs two production namespace rows of the
+same launcher class at the REST boundary. It reaches the original
+one-present/two-creating journal pattern, retains closed admission, and
+returns `durable_object_namespace / namespace_bindings / multiple /
+one_per_class`. This reproduces a provider response shape capable of
+the observed stop. The hosted predicate remains unknown. Future
+Enable receipts carry `result.details.resource_class`, `check`,
+`observed_category`, and `expected_category`. These fields contain
+only fixed categories.
+
+Keep the existing fences. Deletion already waits under an exact
+journaled deletion intent. Extend that behavior across installations
+only if a future receipt establishes that an exact resource from a
+retired installation is pending provider deletion. Any such wait
+should be bounded and read-only, require independently verified
+absence before progressing, and stop on missing ownership or a
+different receipt.
+
+CT128 passed all 130 persistence cases, 401 worker-pool unit cases,
+78 contract and DTO checks, 19 platform-job runner cases, and API
+quality. The Compose and Kustomize Upgrade cases now assert the
+`private_route` diagnostic and still verify that the prior deployment
+remains intact.
+
+## Hosted Preset B Run at `e7c59788c`
+
+**November 22, 2026 UTC.** Both pinned deployment digests loaded and
+all 13 offline packaging tests passed. CT128 started with 8 GiB available
+and no other test stack. Both connections accepted preset B's $32.13
+fleet envelope under the $75 monthly policy. The trial used three
+four-slot launchers, nine total slots, a 3,600-second launcher pin,
+a 2-second overflow gate, and zero queue pre-warming.
+
+| Item | Result | Live estimate | Post-retirement estimate |
+| --- | --- | ---: | ---: |
+| 1 | Both releases verified offline | $0 | $0 |
+| 2 | Existing HTTPS Connect, worker preflight, signed Enable | $0.000201 | $0.000201 |
+| 3 | Cold and warm executions settled and received terminal ACKs | $0.648278 | Pending |
+| 4 | Four Provider and four Global, reserved ninth slot, waiting tenth, isolated cancel | $2.006763 | Pending |
+| 5 | Reconcile, active Scale In, and first Disconnect | $0.061801 | $0.061801 |
+| 6 | Managed Connect passed. Enable stopped on the tunnel-ingress ownership gate | $0.061801 | $0.061801 |
+| 7 | Connector rotation unreached | — | — |
+| 8 | Upgrade unreached | — | — |
+| 9 | Meter readback and verified stop-path teardown | $0.061801 | $0.061801 |
+
+The checkpoints are cumulative trial increments above opening. Peak
+observed live spend was $2.02 against the $3.60 target and $4.50 hard
+abort. Final incremental spend was $0.061801362912 against the $0.15
+settled target. Adding $0.015317311140 carry-in brought the final account
+estimate to $0.077118674052.
+
+Existing HTTPS preflight and Enable each recorded eight completed TLS
+handshakes and 92 reused requests on each of two IPv4 addresses. Each of
+two IPv6 addresses attempted TCP once and started no TLS handshake.
+The 2-second gate preceded dispatch at 3.892 s, engine readiness at
+5.761 s, and runtime entry at 6.068 s. The entry-log measure was
+6.380 s cold and 0.678 s warm. The warm run reused the launcher and slot.
+All four incarnations retired before their pinned deadlines with sealed
+meters and zero unresolved incarnation or route flags at teardown. The
+rehearsed hosted telemetry returned no per-isolate memory readings.
+
+Managed Enable reported `tunnel_ingress / ingress_occupied /
+already_configured / empty_or_matching`. This category covers a
+configuration read that fails either the exact match or the empty
+version-zero check. Connect had left admission closed. The run stopped
+before the managed canary, independent warp-routing or route-list
+readback, connector rotation, or Upgrade.
+
+Workers Analytics returned 196 attributed requests and 70,698 µs of CPU,
+worth $0.00006021396 at the pinned marginal rates. Bifrost divided by
+this Workers-only proxy was 1,026.36. Durable Object Analytics returned
+zero rows, so the provider-wide spend ratio remains unavailable.
+
+Both Disconnects retired their installations. Existing HTTPS returned
+three script and four namespace 404s. The managed leg created no Worker
+intents. Both scoped tokens were revoked, and both tunnel tombstones had
+zero sessions. Managed DNS never received an ID. The first verifier
+assumed an ID, so teardown verified absence by exact target inventory
+and both authoritative DNS servers. Both installations' journals and
+ledger showed zero pending effects, held slots, live incarnations, or
+retained credentials. Owned containers, networks, volumes, image tags,
+processes, scratch and secret files were removed.
+
+See the [sanitized preset B receipt](../../results/cloudflare-scaleout-preset-b-hosted.json).
+
+### Managed-only Hosted Run at `a9226cb62`
+
+The November 22, 2026 UTC run reused the earlier trial zone and verified
+both pinned releases and the cloudflared checksum before Connect.
+All 13 offline packaging tests passed. Preset B Connect succeeded with
+admission closed. Enable stopped at the ingress ownership check before
+programming DNS or running the signed canary. The initial configuration
+response had version 0, no `account_id` field, and a non-object `config`
+value. The diagnostic retained keys and categories only.
+
+The opening Bifrost estimate from the previous closing receipt was
+$0.077118674. Connect, Enable and Disconnect added $0.00 to both the
+observed live and settled estimates. Rotation, the worker preflight,
+WARP and route-grant readback, and Upgrade did not run. No launcher
+started.
+
+Disconnect retired the installation. Independent checks found one
+deleted tunnel with zero sessions, no DNS record by exact inventory or
+either authoritative server, and no matching Worker script or namespace.
+The token returned 404 after revocation and was absent from inventory.
+The journal had zero pending effects and the ledger held no live
+incarnations, slots or credentials. The connector projection and all
+disposable local resources were removed.
+
+See the [sanitized Managed-only receipt](../../results/cloudflare-scaleout-managed-hosted-a922.json).
+
+### Managed Hosted Run 1 at `8712eb4c6`
+
+Both pinned release images and all 13 offline packaging checks passed.
+The same trial zone was verified from the prior operator record.
+Preset B Connect left admission closed. Both Enable jobs passed their
+signed canaries on `remote_launcher`. Cloudflare echoed disabled WARP
+routing, and the scoped route list returned HTTP 200 with zero private
+routes. The first successful Enable read back the approved configuration
+at version 1. The success result does not retain the initial shape.
+
+Rotation evicted one old session, explicitly refused its old token, and
+left one replacement session. Worker preflight passed 100 route checks.
+Preflight and both Enable receipts showed eight TLS handshakes and 92
+reused requests per IPv4 address. The two canaries lasted 2.189 s and
+1.793 s. Both meters sealed. Hosted Upgrade remains unqualified because
+the rehearsed exact control-socket interruption is a local fixture.
+
+Against the $0.077118674 opening estimate, live spend peaked at $0.02
+during initial Enable and again during rotation and re-Enable. The
+settled API readbacks rounded to $0.00. The ledger at final retirement
+settled at $0.000431967 incremental, with $0.077550641 cumulative.
+
+Disconnect succeeded. Independent readback confirmed six script and
+eight namespace 404s, exact DNS absence, a tunnel tombstone with zero
+sessions, an empty connector projection, and no live ledger rows or
+retained credentials. Namespace receipts map class names to provider
+IDs. Use the map values for exact reads. Both DNS authorities confirmed
+absence, the revoked scoped token returned 404, and all disposable
+local resources were removed.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-managed-hosted-8712.json).
+
+### Existing HTTPS Hosted Upgrade Run 2 at `6f021e7b9`
+
+The uninterrupted Upgrade procedure passed on CT128 with both pinned
+packages. The [Upgrade record](PHASE4-UPGRADE.md#existing-https-rehearsal-and-hosted-run-2-at-6f021e7b9)
+records the original ACK, provider retirement order, replacement canary
+and new execution.
+
+The hosted run on November 22, 2026 UTC verified both pins and the
+prior trial zone. Preset B Connect left admission closed. The worker
+preflight passed 100 routes, with eight handshakes and 92 reused requests
+on each IPv4 address. The two IPv6 addresses reached no TLS handshakes.
+Enable returned Action Required with `CF_DEPLOYMENT_UNVERIFIED` and
+execution class `remote_launcher`. No signed canary or launcher started.
+Upgrade was unrun and the trial proceeded to Disconnect.
+
+The opening cumulative estimate was $0.077550640967. The live API estimate
+read $0.00 through Connect, Enable and Disconnect. The final Bifrost
+ledger settled at $0.000000001707 incremental, bringing the cumulative
+estimate to $0.077550642674.
+
+Disconnect retired the installation. Independent listing and exact
+reads verified three script and two saved namespace 404s, the revoked
+token and DNS record 404s, and the tunnel tombstone with zero sessions.
+Both DNS authorities confirmed absence. No live ledger rows, held slots
+or retained credentials remained. The trial stack, relay, connector
+and private scratch were removed.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-hosted-upgrade-run2.json).
+
+### Existing HTTPS Hosted Upgrade Run 3 at `707937c27`
+
+The final approved run passed on November 22, 2026 UTC. Both release
+pins and all 14 offline packaging and relay tests passed. Preset B
+Connect left admission closed. The 100-route worker preflight and
+signed Enable each recorded eight completed TLS handshakes and 92
+reused requests per IPv4 address. The two IPv6 addresses produced no
+TLS handshakes. Enable and Upgrade each succeeded on attempt one.
+[Upgrade ordering and workflow results](PHASE4-UPGRADE.md#hosted-existing-https-upgrade-run-3-at-707937c27)
+
+| Phase | Observed Peak Live Estimate | Estimate at Phase End |
+| --- | ---: | ---: |
+| Offline | $0.00 | $0.00 |
+| Connect, preflight and Enable | $0.02 | $0.00 |
+| Upgrade, replacement workflow and Scale In | $0.65 | $0.01 |
+| Disconnect | $0.01 | $0.012847448 |
+
+API estimates round to cents and represent cumulative trial snapshots.
+The final phase-end figure uses the raw settled ledger. The opening
+estimate was $0.077550642674 and the final cumulative estimate was
+$0.090398090399. The run stayed below the $3.60 live target, $4.50 live
+abort and $0.15 settled target.
+
+| Revision | Incarnation | Actual Lifetime | Pinned Lifetime |
+| --- | --- | ---: | ---: |
+| 1 | Enable canary | 1.992 s | 120 s |
+| 1 | Workflow launcher | 72.839 s | 3,600 s |
+| 2 | Upgrade canary | 2.215 s | 120 s |
+| 2 | Workflow launcher | 12.458 s | 3,600 s |
+
+All four meters sealed with no uncertainty. Disconnect retired the
+installation. Independent listing and exact reads verified six script
+and eight namespace 404s using the saved namespace IDs, token and DNS
+404s, a tunnel tombstone with zero sessions, and DNS absence from both
+authorities. No live ledger rows, held slots or retained credentials
+remained. The CT128 stack, trial processes and private scratch were
+removed. The run and verified teardown took 305 seconds.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-hosted-upgrade-run3.json).
+
+### Combined Local Rehearsal With Single Activation
+
+CT128 passed all nine items at `97650ad8e` on spike `75ce33cb6`.
+The API and worker outbound guards passed. The stub served provider
+reads and writes, tunnel sessions, and the advisory analytics sample.
+
+| Item | Local result |
+| --- | --- |
+| 1 | Both pinned releases verified and 14 offline packaging and relay tests passed. |
+| 2 | Existing HTTPS credential staging and read-only preflight left the installation absent. One activation queued signed Enable, followed by the 100-route worker probe. |
+| 3 | Cold and warm queue-to-entry took 6.443 s and 0.552 s with both terminal ACKs and reuse of the same slot. |
+| 4 | Four Provider and four Global workflows overlapped. The ninth used the reserved slot, and the tenth remained queued through two controller observations. Cancel released one slot and preserved eight sibling fences. The tenth entered only after release. |
+| 5 | Reconcile retained the three owned scripts. Active Scale In drained the original claim. First Disconnect verified three script and four namespace 404s. |
+| 6 | Managed Tunnel preflight and activation passed. The fixture returned version zero, disabled WARP routing, and an empty private-route inventory. |
+| 7 | Rotation evicted one old session and refused its token. The replacement session, worker probe and signed re-Enable passed. |
+| 8 | Uninterrupted Upgrade retained one original dispatch and terminal ACK. Old absences were verified before replacement upload. Replacement readback followed the checkpoint by 145 ms. The signed canary and the replacement workflow passed. |
+| 9 | The local meter read $0.08 from the synthetic fixture with nine retired and zero uncertain incarnations. Final Disconnect verified 12 script and 16 namespace 404s cumulatively, a tunnel tombstone, no live sessions and no live ledger rows. CT128 teardown left no trial containers, volumes, networks or scratch. |
+
+The Workers lane reported `waiting_for_launch_gate` at cold dispatch
+and at the original Upgrade dispatch, each with one eligible queued
+workflow and none running. The first burst snapshot reported
+`waiting_for_demand` with no eligible work left queued at that instant.
+The tenth showed `installation_slots_full` with nine running and one
+queued. Both Disconnects showed `cleanup_pending` and `setup_required`
+at placement level, plus `waiting_for_demand` in the Workers lane.
+
+The first rehearsal found the standalone ingress probe still ran before
+activation opened the dedicated listener. The second found that the
+Upgrade ordering assertion counted deletes from the first installation.
+The probe now runs after Enable, and the ordering assertion uses only
+events observed after the Upgrade window opens.
+[Sanitized local rehearsal receipt](../../results/cloudflare-scaleout-combined-local-activation.json)

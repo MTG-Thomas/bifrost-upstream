@@ -33,7 +33,10 @@ from src.models.orm.cloudflare_capacity import (
 from src.models.orm.execution_workers import ExecutionWorker
 from src.models.orm.executions import Execution
 from src.models.orm.work_dispatches import WorkDispatch
-from src.services.worker_pool.eligibility import cloudflare_dispatch_sql
+from src.services.worker_pool.eligibility import (
+    cloudflare_dispatch_sql,
+    managed_workflow_fits,
+)
 
 PREPARE_SECONDS = 20
 
@@ -281,6 +284,7 @@ async def stage_queue_preparations(
     # Their dispatch and execution are rechecked before Loader authorization.
     eligible = (
         cloudflare_dispatch_sql(), WorkDispatch.assigned_worker_id.is_(None), Execution.status == ExecutionStatus.PENDING,
+        managed_workflow_fits(worker_id),
     )
     queue = select(WorkDispatch.id, Execution.id, WorkDispatch.created_at).join(
         Execution, Execution.id == WorkDispatch.subject_id,

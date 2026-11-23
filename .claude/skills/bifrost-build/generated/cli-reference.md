@@ -655,10 +655,11 @@ Options:
   --help  Show this message and exit.
 
 Commands:
-  connect           Validate an account token and connect Cloudflare.
+  activate          Run preflight, review the route, and provision...
   disconnect        Drain Cloudflare workers and remove verified owned...
   enable            Provision and verify Cloudflare Workers capacity.
   policy            Update the current Cloudflare capacity policy.
+  preflight         Discover Cloudflare prerequisites and price the...
   reconcile         Verify or repair the current Cloudflare Workers...
   rotate            Validate and replace the Cloudflare account API token.
   rotate-bearer     Retire the previous Workers deployment and stage a...
@@ -670,20 +671,24 @@ Commands:
   upgrade           Apply the Workers release packaged with Bifrost.
 ```
 
-#### `capacity cloudflare connect`
+#### `capacity cloudflare activate`
 
 ```
-Usage: capacity cloudflare connect [OPTIONS]
+Usage: capacity cloudflare activate [OPTIONS]
 
-  Validate an account token and connect Cloudflare.
+  Run preflight, review the route, and provision Cloudflare Workers.
 
 Options:
-  --account-id TEXT               [required]
-  --worker-ingress-origin TEXT    [required]
+  --account-id TEXT
+  --zone-id TEXT
   --reachability-mode [existing_https_endpoint|managed_tunnel]
-  --zone-id TEXT                  Cloudflare DNS zone ID for Managed Tunnel.
-  --policy FILENAME               Cloudflare capacity policy JSON file.
-                                  [required]
+  --worker-ingress-origin TEXT
+  --credential-ref UUID
+  --policy FILENAME               Advanced capacity policy JSON file.
+  --monthly-limit-usd TEXT        Confirmed monthly estimated usage limit in
+                                  USD.  [required]
+  --wait                          Wait for completion through the platform
+                                  job.
   --json                          Emit JSON instead of human-readable output.
   --help                          Show this message and exit.
 ```
@@ -732,6 +737,24 @@ Options:
                                [required]
   --json                       Emit JSON instead of human-readable output.
   --help                       Show this message and exit.
+```
+
+#### `capacity cloudflare preflight`
+
+```
+Usage: capacity cloudflare preflight [OPTIONS]
+
+  Discover Cloudflare prerequisites and price the capacity policy.
+
+Options:
+  --account-id TEXT
+  --zone-id TEXT
+  --reachability-mode [existing_https_endpoint|managed_tunnel]
+  --worker-ingress-origin TEXT
+  --credential-ref UUID
+  --policy FILENAME               Advanced capacity policy JSON file.
+  --json                          Emit JSON instead of human-readable output.
+  --help                          Show this message and exit.
 ```
 
 #### `capacity cloudflare reconcile`
@@ -836,7 +859,8 @@ Usage: capacity cloudflare stage-credential [OPTIONS]
   Enter a Cloudflare token for a one-time MCP credential reference.
 
 Options:
-  --account-id TEXT           [required]
+  --account-id TEXT           Account ID for connecting Cloudflare.
+  --installation-id UUID      Installation ID for rotating a connected token.
   --purpose [connect|rotate]  [required]
   --json                      Emit JSON instead of human-readable output.
   --help                      Show this message and exit.
@@ -3662,6 +3686,7 @@ Options:
 
 Commands:
   accept   Accept only the supplied reviewed digest.
+  list     List workflow approval states and counts in your authorized...
   propose  Generate a review with source pins, budgets and diagnostics.
   revoke   Revoke the current approval.
   status   Read approval status for a workflow.
@@ -3683,6 +3708,18 @@ Options:
   --help                          Show this message and exit.
 ```
 
+#### `workflows cloudflare-approval list`
+
+```
+Usage: workflows cloudflare-approval list [OPTIONS]
+
+  List workflow approval states and counts in your authorized scope.
+
+Options:
+  --json  Emit JSON instead of human-readable output.
+  --help  Show this message and exit.
+```
+
 #### `workflows cloudflare-approval propose`
 
 ```
@@ -3691,8 +3728,8 @@ Usage: workflows cloudflare-approval propose [OPTIONS] REF
   Generate a review with source pins, budgets and diagnostics.
 
 Options:
-  --subrequest-allowance INTEGER  subrequest_allowance  [required]
-  --cpu-budget-ms INTEGER         cpu_budget_ms  [required]
+  --subrequest-allowance INTEGER  subrequest_allowance
+  --cpu-budget-ms INTEGER         cpu_budget_ms
   --https-hosts TEXT              https_hosts (repeat for multiple).
   --json                          Emit JSON instead of human-readable output.
   --help                          Show this message and exit.

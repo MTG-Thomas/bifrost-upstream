@@ -1,0 +1,163 @@
+{
+  "recorded_on_utc": "2026-11-22",
+  "source_commit": "6f021e7b90065894ecdab0e93689b975fbbbb36f",
+  "releases": [
+    {
+      "version": "0.1.0-requal.1",
+      "deployment_digest": "7ca412f5f9d9b8c16fe30499a3a35d394a9106931f2a876f49c2acd78107e077"
+    },
+    {
+      "version": "0.1.0-requal.2",
+      "deployment_digest": "e2cc8c851eb9c50512f63ff78c3d898e66d4c2d06eb7e3dce5ed991d41871948"
+    }
+  ],
+  "policy": {
+    "preset": "B",
+    "launchers": 3,
+    "slots_per_launcher": 4,
+    "installation_slots": 9,
+    "launcher_lifetime_seconds": 3600,
+    "overflow_gate_seconds": 2,
+    "queue_prewarm": false
+  },
+  "local_rehearsal": {
+    "status": "passed",
+    "mode": "existing_https",
+    "provider_boundary": "isolated_miniflare_workerd",
+    "release_build_tests_passed": 13,
+    "ingress_relay_tests_passed": 1,
+    "primary_hold_initial_and_replacement_free_mib": 24,
+    "socket_cut": false,
+    "replay_in_scope": false,
+    "preflight": {
+      "checks": 100,
+      "connections": [
+        {
+          "address_family": "ipv4",
+          "tcp_connects_started": 8,
+          "tls_handshakes_started": 8,
+          "tls_handshakes_completed": 8,
+          "reused_requests": 92
+        }
+      ],
+      "failure": null
+    },
+    "enable": {
+      "class": "remote_launcher",
+      "connections": [
+        {
+          "address_family": "ipv4",
+          "tcp_connects_started": 8,
+          "tls_handshakes_started": 8,
+          "tls_handshakes_completed": 8,
+          "reused_requests": 92
+        }
+      ]
+    },
+    "upgrade": {
+      "original_claim": true,
+      "dispatch_count": 1,
+      "terminal_ack": true,
+      "old_workers_404": 3,
+      "old_namespaces_404": 4,
+      "admission_fenced": true,
+      "same_control_connection": true,
+      "successor_scheduler_lease": true,
+      "worker_rebound_to_successor": true,
+      "old_absence_checkpoint_before_replacement": true,
+      "first_replacement_observation_after_checkpoint_ms": 136,
+      "replacement_signed_canary": true,
+      "replacement_execution": true,
+      "old_inventory_verified_before_first_upload": true
+    },
+    "spend_readback": {
+      "estimated_usd": "0.01",
+      "limit_usd": "0.50",
+      "within_limit": true,
+      "ledger": {
+        "retired": 4,
+        "uncertain": 0,
+        "uncertain_with_final_receipt": 0
+      }
+    },
+    "disconnect": {
+      "workers_404": 6,
+      "namespaces_404": 8,
+      "live_ledger_rows": 0
+    }
+  },
+  "hosted_run": {
+    "approval_run": 2,
+    "mode": "existing_https",
+    "status": "stopped_at_enable",
+    "offline_pins": "passed",
+    "exact_prior_zone_verified": true,
+    "connect": {
+      "status": "passed",
+      "admission_open": false
+    },
+    "preflight": {
+      "status": "passed",
+      "execution_class": "remote_launcher",
+      "route_checks": 100,
+      "ipv4": {
+        "addresses": 2,
+        "tcp_connects_started_per_address": 8,
+        "tls_handshakes_started_per_address": 8,
+        "tls_handshakes_completed_per_address": 8,
+        "reused_requests_per_address": 92
+      },
+      "ipv6": {
+        "addresses": 2,
+        "tcp_connects_started_per_address": 1,
+        "tls_handshakes_started_per_address": 0,
+        "tls_handshakes_completed_per_address": 0,
+        "reused_requests_per_address": 0
+      }
+    },
+    "enable": {
+      "status": "requires_action",
+      "code": "CF_DEPLOYMENT_UNVERIFIED",
+      "phase": "Verify Cloudflare Deployment",
+      "execution_class": "remote_launcher",
+      "failed_provider_readback_check": null,
+      "signed_canary_started": false
+    },
+    "upgrade": {
+      "status": "unrun",
+      "reason": "initial_enable_gate_failed"
+    },
+    "incarnations": [],
+    "spend_usd": {
+      "opening_cumulative_estimate": "0.0775506409673600327135802489405184",
+      "live_target": "3.60",
+      "live_abort": "4.50",
+      "settled_target": "0.15",
+      "connect_enable_peak_live_api": "0",
+      "upgrade_peak_live_api": null,
+      "disconnect_peak_live_api": "0",
+      "final_settled_ledger_incremental": "0.00000000170657947530864197540000000000000000",
+      "final_cumulative_estimate": "0.0775506426739395080222222243405184"
+    },
+    "teardown": {
+      "status": "verified",
+      "installation_retired": true,
+      "workers_404": 3,
+      "namespaces_404": 2,
+      "journal_absent": 3,
+      "live_ledger_rows": 0,
+      "token_404": true,
+      "tunnel_tombstone": true,
+      "connector_sessions": 0,
+      "dns_404": true,
+      "authoritative_dns_servers": 2,
+      "held_slots": 0,
+      "retained_credentials": 0,
+      "ct128_containers": 0,
+      "ct128_networks": 0,
+      "ct128_volumes": 0,
+      "ct128_relay_and_connector": 0,
+      "private_scratch_and_secret_transfers_removed": true
+    }
+  }
+}

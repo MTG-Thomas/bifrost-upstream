@@ -102,6 +102,7 @@ from src.models.contracts.workflows import (  # noqa: E402
 
 from src.models.contracts.cloudflare_approval import (  # noqa: E402
     CloudflareApprovalAccept,
+    CloudflareApprovalList,
     CloudflareApprovalOptions,
     CloudflareApprovalState,
 )
@@ -121,6 +122,7 @@ _COMMAND_DTOS: list[type] = [
     CloudflareApprovalOptions,
     CloudflareApprovalAccept,
     CloudflareApprovalState,
+    CloudflareApprovalList,
     BaseRoleDefaultsResponse,
     BaseRoleDefaultsUpdate,
     OrganizationCreate,
@@ -466,7 +468,15 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Managed Tunnel fields and the connector rotation option are additive.
     # Omitted reachability still selects Existing HTTPS Endpoint.
     # Queue pre-warming is opt-in. Existing clients can omit the cap.
-    "01f4f0d2d8759e73b172ae151e3a91e2cb45a547989f567b3c3d7dde9c79184d"
+    # Optional Cloudflare Workers activation suggestion.
+    # Long-lived launcher receipts can include more routes.
+    # Capacity CLI status forwards the raw JSON; placement evidence is additive
+    # and provider identifiers are redacted from the status response.
+    # Compatible: old account-ID staging requests still work and new clients can
+    # stage by installation ID. Gate seconds remain a JSON number for readers.
+    # CLI-breaking: retiring Cloudflare PATCH connect removes a request sent by
+    # older CLIs. The replacement preflight and activate ship with 1.4.3.
+    "c66fffac3ac49f3abbd58e625c5a7399bc362d15440b1b892430a2845a68a286"
 )
 
 

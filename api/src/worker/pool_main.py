@@ -479,6 +479,9 @@ class PoolWorker:
             },
         )
 
+    def _uses_process_lifetime(self) -> bool:
+        return not self.static
+
     async def _claim_loop(self) -> None:
         started = time.monotonic()
         last_activity = time.monotonic()
@@ -505,7 +508,7 @@ class PoolWorker:
                     # Part of the warm minimum: stay ready and look again later.
                     last_activity = time.monotonic()
                 if (
-                    not self.static
+                    self._uses_process_lifetime()
                     and time.monotonic() - started >= self.settings.pool_max_lifetime_seconds
                 ):
                     await begin_drain(self.incarnation_id, "max_lifetime")

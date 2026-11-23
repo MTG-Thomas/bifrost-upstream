@@ -194,3 +194,36 @@ run and isolated cancellation were not reached. Teardown showed zero
 held workflow slots.
 
 See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-observable-gates.json).
+
+## Hosted Cold and Warm Slot Reuse
+
+The run from `788ffc641` completed cold and warm workflows in slot 0
+on one launcher. The hosted wrapper stopped when a post-reuse query
+looked for the cold execution ID in the current slot row. The transport
+witness confirmed one dispatch and a terminal ACK for each execution.
+The burst, reserved ninth slot, waiting tenth execution and isolated
+cancellation remain unqualified on hosted. Disconnect verified zero
+held slots.
+
+See the [sanitized run receipt](../../results/cloudflare-scaleout-combined-hosted-latency-reuse.json).
+
+### Hosted Slot Qualification at `db39a3698`
+
+The worker preflight passed. Enable stopped on `CF_OWNERSHIP_CONFLICT`
+before admitting a workflow. The burst, reserved ninth slot, waiting
+tenth, and isolated cancellation remain unqualified on hosted.
+Disconnect verified zero held slots and live launcher incarnations.
+
+See the [sanitized ownership-stop receipt](../../results/cloudflare-scaleout-combined-hosted-ownership-stop.json).
+
+### Hosted Preset B Burst at `e7c59788c`
+
+Four Provider and four Global executions held distinct slots at the
+same time. All eight had entered 7.134 s after the last dispatch read.
+The third tenant took the reserved ninth slot, and the tenth remained
+unassigned through two eligible passes. A confirmed cancel released
+one fence and left the other eight unchanged. The tenth entered after
+release. The scoped Solution fixture returned its expected value.
+Reconcile, active Scale In and Disconnect verified retirement.
+
+See the [sanitized preset B receipt](../../results/cloudflare-scaleout-preset-b-hosted.json).

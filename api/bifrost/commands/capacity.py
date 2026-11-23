@@ -1,7 +1,9 @@
 """Operate platform capacity through the authenticated REST API."""
 
 import json
+from decimal import Decimal
 from typing import Any, TextIO
+from uuid import UUID
 
 import click
 from pydantic import ValidationError
@@ -9,7 +11,9 @@ from pydantic import ValidationError
 from bifrost.client import BifrostClient
 from bifrost.contracts.cloudflare_capacity import (
     CloudflareAccountTokenRotation,
+    CloudflareActivateRequest,
     CloudflareCapacityAction,
+    CloudflarePreflightRequest,
     CloudflareReconcileAction,
 )
 from bifrost.dto_flags import build_cli_flags
@@ -80,52 +84,112 @@ def _read_policy(policy: TextIO) -> dict[str, Any]:
     return value
 
 
+def _preflight_options(command):
+    for option in reversed((
+        click.option("--account-id"),
+        click.option("--zone-id"),
+        click.option("--reachability-mode", type=click.Choice(["existing_https_endpoint", "managed_tunnel"])),
+        click.option("--worker-ingress-origin"),
+        click.option("--credential-ref", type=click.UUID),
+        click.option("--policy", type=click.File("r", encoding="utf-8"), help="Advanced capacity policy JSON file."),
+    )):
+        command = option(command)
+    return command
+
+
+def _preflight_body(policy: TextIO | None, credential_ref: UUID | None, fields: dict[str, Any]) -> CloudflarePreflightRequest:
+    return CloudflarePreflightRequest(
+        **fields, credential_ref=credential_ref, policy=_read_policy(policy) if policy else None,
+        api_token=None if credential_ref else click.prompt("Cloudflare API Token", hide_input=True),
+    )
+
+
+@cloudflare_group.command("preflight")
+@_preflight_options
+@click.pass_context
+@pass_resolver
+@run_async
+async def preflight(
+    ctx: click.Context, policy: TextIO | None, credential_ref: UUID | None,
+    *, client: BifrostClient, resolver: RefResolver, **fields: Any,
+) -> None:
+    """Discover Cloudflare prerequisites and price the capacity policy."""
+    body = _preflight_body(policy, credential_ref, fields)
+    response = await client.post(f"{_PATH}/preflight", json=body.request_body())
+    response.raise_for_status()
+    output_result(response.json(), ctx=ctx)
+
+
+@cloudflare_group.command("activate")
+@_preflight_options
+@click.option("--monthly-limit-usd", required=True, help="Confirmed monthly estimated usage limit in USD.")
+@click.option("--wait", is_flag=True, help="Wait for completion through the platform job.")
+@click.pass_context
+@pass_resolver
+@run_async
+async def activate(
+    ctx: click.Context, policy: TextIO | None, credential_ref: UUID | None, monthly_limit_usd: str,
+    wait: bool, *, client: BifrostClient, resolver: RefResolver, **fields: Any,
+) -> None:
+    """Run preflight, review the route, and provision Cloudflare Workers."""
+    request = _preflight_body(policy, credential_ref, fields)
+    response = await client.post(f"{_PATH}/preflight", json=request.request_body())
+    response.raise_for_status()
+    plan = response.json()
+    if not plan["preflight_receipt"]:
+        output_result(plan, ctx=ctx)
+        raise click.ClickException("Preflight needs input. Review the account, reachability, and zone shown above.")
+    try:
+        body = CloudflareActivateRequest.model_validate({
+            "preflight_receipt": plan["preflight_receipt"], "credential_ref": credential_ref,
+            "monthly_limit_usd": monthly_limit_usd, "consent": True, "consent_version": plan["consent_version"],
+        })
+    except ValidationError:
+        raise click.UsageError("Enter a positive monthly limit in USD with up to two decimal places.") from None
+    envelope = Decimal(plan["preview"]["fleet_envelope_usd"])
+    if body.monthly_limit_usd < envelope:
+        raise click.UsageError(f"The monthly limit must be at least {envelope} USD for this fleet.")
+    account = next(
+        (item["name"] for item in plan["accounts"] or [] if item["id"] == plan["account_id"]),
+        plan["account_id"],
+    )
+    mode = "Managed Tunnel" if plan["reachability_mode"] == "managed_tunnel" else "Existing HTTPS Endpoint"
+    click.echo(f"Account: {account} ({plan['account_id']})", err=True)
+    if plan["zone_id"]:
+        click.echo(f"DNS Zone: {plan['zone_name']} ({plan['zone_id']})", err=True)
+    click.echo(f"Reachability: {mode}", err=True)
+    click.echo(f"HTTPS Origin: {plan['worker_ingress_origin']}", err=True)
+    click.echo(f"Monthly Usage Limit: {body.monthly_limit_usd:.2f} USD", err=True)
+    click.echo(plan["consent_text"], err=True)
+    click.confirm("Accept the reviewed Cloudflare route and scale out", abort=True)
+    data = body.model_dump(mode="json", exclude_none=True)
+    if request.api_token is not None:
+        data["api_token"] = request.api_token.get_secret_value()
+    response = await client.post(f"{_PATH}/activate", json=data)
+    response.raise_for_status()
+    accepted = response.json()
+    result = await poll_platform_job(client, accepted["job_id"], label="Scale Out with Cloudflare") if wait else accepted
+    output_result(result, ctx=ctx)
+
+
 @cloudflare_group.command("stage-credential")
-@click.option("--account-id", required=True)
+@click.option("--account-id", help="Account ID for connecting Cloudflare.")
+@click.option("--installation-id", type=click.UUID, help="Installation ID for rotating a connected token.")
 @click.option("--purpose", type=click.Choice(["connect", "rotate"]), required=True)
 @click.pass_context
 @pass_resolver
 @run_async
 async def stage_credential(
-    ctx: click.Context, account_id: str, purpose: str, *, client: BifrostClient, resolver: RefResolver,
+    ctx: click.Context, account_id: str | None, installation_id: UUID | None, purpose: str,
+    *, client: BifrostClient, resolver: RefResolver,
 ) -> None:
     """Enter a Cloudflare token for a one-time MCP credential reference."""
+    if (account_id is None) == (installation_id is None) or (purpose == "connect" and account_id is None):
+        raise click.UsageError("Provide --account-id for connect or --installation-id for rotate.")
+    target = {"installation_id": str(installation_id)} if installation_id is not None else {"account_id": account_id}
     response = await client.post(f"{_PATH}/credential", json={
-        "account_id": account_id, "purpose": purpose,
+        **target, "purpose": purpose,
         "api_token": click.prompt("Cloudflare API Token", hide_input=True),
-    })
-    response.raise_for_status()
-    output_result(response.json(), ctx=ctx)
-
-
-@cloudflare_group.command("connect")
-@click.option("--account-id", required=True)
-@click.option("--worker-ingress-origin", required=True)
-@click.option("--reachability-mode", type=click.Choice(["existing_https_endpoint", "managed_tunnel"]), default="existing_https_endpoint")
-@click.option("--zone-id", help="Cloudflare DNS zone ID for Managed Tunnel.")
-@click.option("--policy", type=click.File("r", encoding="utf-8"), required=True, help="Cloudflare capacity policy JSON file.")
-@click.pass_context
-@pass_resolver
-@run_async
-async def connect(
-    ctx: click.Context, account_id: str, worker_ingress_origin: str, policy: TextIO,
-    reachability_mode: str, zone_id: str | None, *,
-    client: BifrostClient, resolver: RefResolver,
-) -> None:
-    """Validate an account token and connect Cloudflare."""
-    if (reachability_mode == "managed_tunnel") != (zone_id is not None):
-        raise click.UsageError("Provide --zone-id only for --reachability-mode managed_tunnel.")
-    limits = _read_policy(policy)
-    current = await client.get(_PATH)
-    current.raise_for_status()
-    consent = current.json()
-    click.echo(consent["consent_text"], err=True)
-    click.confirm("Accept the current Cloudflare consent", abort=True)
-    response = await client.patch(_PATH, json={
-        "action": "connect", "account_id": account_id, "worker_ingress_origin": worker_ingress_origin,
-        "reachability_mode": reachability_mode, "zone_id": zone_id,
-        "consent_version": consent["consent_text_version"], "consent": True,
-        "api_token": click.prompt("Cloudflare API Token", hide_input=True), "policy": limits,
     })
     response.raise_for_status()
     output_result(response.json(), ctx=ctx)

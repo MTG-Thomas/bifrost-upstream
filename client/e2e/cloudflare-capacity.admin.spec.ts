@@ -1,6 +1,6 @@
 import { expect, test } from "./fixtures/api-fixture";
 
-test("a platform operator enables and reconciles Cloudflare capacity", async ({ page }) => {
+test("a platform operator activates and reconciles Cloudflare capacity", async ({ page }) => {
 	const origin = "https://workers.browser-fixture.test";
 	const token = "browser-fixture-cloudflare-token";
 	await page.goto("/settings/ai");
@@ -9,39 +9,54 @@ test("a platform operator enables and reconciles Cloudflare capacity", async ({ 
 	await expect(page.getByRole("heading", { name: "Scale Out with Cloudflare" })).toBeVisible();
 	const setup = page.getByRole("button", { name: "Set Up Cloudflare" });
 	await setup.click();
-	const account = page.getByRole("textbox", { name: "Cloudflare Account ID" });
-	await expect(account).toBeFocused();
-	await expect(page.getByRole("group", { name: "Connection" })).toBeVisible();
-	await expect(page.getByRole("group", { name: "Spending" })).toBeVisible();
-	await expect(page.getByRole("group", { name: "Advanced Policy" })).toBeVisible();
-	await expect(page.getByRole("spinbutton", { name: "Monthly Estimated Usage Limit" })).toHaveAccessibleDescription("USD/month");
-	await page.getByRole("button", { name: "Connect Cloudflare" }).click();
+	const form = page.getByRole("form", { name: "Cloudflare Setup" });
+	const tokenField = form.getByLabel("Cloudflare API Token");
+	await expect(tokenField).toBeFocused();
 	const summary = page.getByRole("region", { name: "Cloudflare Settings Error" });
+	await form.getByRole("button", { name: "Run Preflight" }).click();
 	await expect(summary).toBeFocused();
-	await expect(summary.getByRole("button", { name: /^Cloudflare Account ID:/ })).toBeVisible();
-	await expect(summary.getByRole("button", { name: /^Existing HTTPS Endpoint:/ })).toBeVisible();
-	await expect(summary.getByRole("button", { name: /^Cloudflare API Token:/ })).toBeVisible();
-	await expect(account).toHaveAttribute("aria-invalid", "true");
-	await account.fill("f".repeat(32));
-	await page.getByLabel("Existing HTTPS Endpoint").fill(origin);
-	const tokenField = page.getByLabel("Cloudflare API Token");
-	await expect(tokenField).toHaveAttribute("type", "password");
+	await expect(tokenField).toHaveAttribute("aria-invalid", "true");
+	await summary.getByRole("button", { name: /^Cloudflare API Token:/ }).click();
+	await expect(tokenField).toBeFocused();
 	await tokenField.fill(token);
-	await page.getByRole("checkbox", { name: "Accept Cloudflare Terms" }).check();
+	await form.getByRole("button", { name: "Run Preflight" }).click();
+	await expect(form.getByText("Cloudflare Account: Browser Fixture Account")).toBeVisible();
+	await form.getByLabel("Existing HTTPS Endpoint").fill(origin);
+	const preflight = page.waitForResponse((response) => response.url().endsWith("/api/capacity/cloudflare/preflight"));
+	await form.getByRole("button", { name: "Check Cloudflare Setup" }).click();
+	const reviewed = await preflight;
+	expect(reviewed.status()).toBe(200);
+	expect(await reviewed.text()).not.toContain(token);
+	await expect(form.getByText("About $2–$7/month")).toBeVisible();
+	await expect(form.getByText("32.13 USD/month")).toBeVisible();
+	const limit = form.getByLabel("Monthly Estimated Usage Limit");
+	await expect(limit).toHaveValue("75.00");
+	await limit.fill("32.12");
+	await form.getByRole("button", { name: "Scale Out with Cloudflare" }).click();
+	await expect(summary).toBeFocused();
+	await expect(limit).toHaveAttribute("aria-invalid", "true");
+	await summary.getByRole("button", { name: /^Monthly Estimated Usage Limit:/ }).click();
+	await expect(limit).toBeFocused();
+	await limit.fill("75.00");
+	await form.getByRole("checkbox", { name: "Confirm Monthly Usage Limit" }).check();
+	await form.getByRole("checkbox", { name: "Accept Cloudflare Terms" }).check();
 
-	const connect = page.waitForResponse((response) =>
-		response.url().endsWith("/api/capacity/cloudflare") && response.request().method() === "PATCH",
+	const activate = page.waitForResponse((response) => response.url().endsWith("/api/capacity/cloudflare/activate"));
+	const admitted = page.waitForResponse(async (response) =>
+		response.url().endsWith("/api/capacity/cloudflare") &&
+		response.request().method() === "GET" &&
+		response.ok() &&
+		(await response.json()).installation?.admission_open === true,
 	);
-	await page.getByRole("button", { name: "Connect Cloudflare" }).click();
-	const connected = await connect;
-	expect(connected.status()).toBe(200);
-	expect(await connected.text()).not.toContain(token);
-	await expect(page.getByText(origin, { exact: true })).toBeVisible();
-	await expect(page.getByText("Ready to Enable", { exact: true })).toBeVisible();
-	await expect(page.getByRole("button", { name: "Enable", exact: true })).toBeFocused();
-	await expect(page.getByText("Estimated Fleet Usage")).toBeVisible();
-	await expect(page.getByText("Estimated Bifrost Usage This UTC Month")).toBeVisible();
-	await expect(page.getByText("Workers Paid Subscription (Billed by Cloudflare)")).toBeVisible();
+	await form.getByRole("button", { name: "Scale Out with Cloudflare" }).click();
+	const queued = await activate;
+	expect(queued.status()).toBe(202);
+	expect(queued.headers().location).toBe(`/api/platform-jobs/${(await queued.json()).job_id}`);
+	await expect(page.getByRole("region", { name: "Cloudflare Job Status" })).toBeVisible();
+	await admitted;
+	await expect(page.getByText("Enabled", { exact: true })).toBeVisible();
+	await expect(page.getByText("Observed Deployment Revision", { exact: true })).toBeVisible();
+	await expect(page.getByText("Workflow Review Required", { exact: true })).toBeVisible();
 
 	await page.getByRole("button", { name: "Rotate API Token", exact: true }).click();
 	const rotation = page.getByRole("dialog", { name: "Rotate Cloudflare API Token" });
@@ -50,22 +65,8 @@ test("a platform operator enables and reconciles Cloudflare capacity", async ({ 
 	await rotation.getByRole("button", { name: "Rotate API Token", exact: true }).click();
 	expect((await rotated).status()).toBe(202);
 	const jobStatus = page.getByRole("region", { name: "Cloudflare Job Status" });
-	await expect(jobStatus).toBeFocused();
 	await expect(jobStatus.getByText("CF_MANAGEMENT_CREDENTIAL")).toBeVisible();
 	await expect(jobStatus).toBeFocused();
-
-	const enable = page.waitForResponse((response) => response.url().endsWith("/api/capacity/cloudflare/enable"));
-	const admitted = page.waitForResponse(async (response) =>
-		response.url().endsWith("/api/capacity/cloudflare") &&
-		response.request().method() === "GET" &&
-		response.ok() &&
-		(await response.json()).installation?.admission_open === true,
-	);
-	await page.getByRole("button", { name: "Enable", exact: true }).click();
-	expect((await enable).status()).toBe(202);
-	await admitted;
-	await expect(page.getByText("Enabled", { exact: true })).toBeVisible();
-	await expect(page.getByText("Deployed Revision", { exact: true })).toBeVisible();
 
 	await expect(page.getByRole("button", { name: "Upgrade Cloudflare" })).toBeDisabled();
 	const reconcile = page.waitForResponse((response) => response.url().endsWith("/api/capacity/cloudflare/reconcile"));
@@ -85,4 +86,8 @@ test("a platform operator enables and reconciles Cloudflare capacity", async ({ 
 	await retired;
 	await expect(page.getByRole("status").filter({ hasText: "Cloudflare was disconnected." })).toBeVisible();
 	await expect(setup).toBeFocused();
+	await page.goto("/settings/ai");
+	await page.getByRole("button", { name: "Capacity", exact: true }).click();
+	await page.getByRole("button", { name: "Scale Out with Cloudflare", exact: true }).click();
+	await expect(page.getByRole("status").filter({ hasText: "Cloudflare was disconnected." })).toBeVisible();
 });

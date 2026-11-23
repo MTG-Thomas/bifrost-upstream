@@ -285,8 +285,8 @@ class KubernetesJobClient:
         containers = response.json().get("spec", {}).get("containers") or []
         return containers[0] if containers else None
 
-    async def publish_cloudflare_connector(self, token: str, *, fence: str) -> None:
-        """Update only the connector Secret preinstalled by the component."""
+    async def read_cloudflare_connector(self) -> tuple[str, dict[str, Any]]:
+        """Read and verify the Secret preinstalled by the connector component."""
         namespace = quote(self.namespace, safe="")
         path = f"/api/v1/namespaces/{namespace}/secrets/bifrost-cloudflare-connector"
         response = await self._request("GET", path, expected={200})
@@ -299,6 +299,12 @@ class KubernetesJobClient:
             or set(current.get("data", {})) - {"token"}
         ):
             raise KubernetesApiError("GET", path, 409)
+        return path, current
+
+    async def publish_cloudflare_connector(self, token: str, *, fence: str) -> None:
+        """Update only the connector Secret preinstalled by the component."""
+        path, current = await self.read_cloudflare_connector()
+        metadata = current["metadata"]
         data = {"token": base64.b64encode(token.encode("ascii")).decode("ascii")}
         fence_key = "bifrost.gobifrost.com/connector-fence"
         if current.get("data", {}) != data or metadata.get("annotations", {}).get(fence_key) != fence:

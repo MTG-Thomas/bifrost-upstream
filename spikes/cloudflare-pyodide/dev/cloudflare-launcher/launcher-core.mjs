@@ -114,13 +114,14 @@ export class LauncherCore {
   #cleanupRetryAt = 0;
   #cleanupDelayMs = 2000;
 
-  constructor({identity, secret, clock, storage, send, runHost, prepareHost, stopHost, runSummary, runAgent,
+  constructor({identity, secret, clock, deadlineMs = Infinity, storage, send, runHost, prepareHost, stopHost, runSummary, runAgent,
     runCapacityCanary, background, meter, slots = 1, tenantSlots = false, newId = newNonce}) {
     this.#slots = Array(slots).fill(null);
     this.identity = identity;
     this.tenantSlots = tenantSlots;
     this.secret = secret;
     this.clock = clock;
+    this.deadlineMs = deadlineMs;
     this.storage = storage;
     this.send = send;
     this.runHost = runHost;
@@ -138,6 +139,10 @@ export class LauncherCore {
     return this.#released || this.#control?.state === 'retired';
   }
 
+  get draining() {
+    return this.clock() >= this.deadlineMs;
+  }
+
   status() {
     return this.#control?.state ?? 'starting';
   }
@@ -145,14 +150,14 @@ export class LauncherCore {
   canReconnect() {
     return this.#serialize(async () => {
       await this.#load();
-      return !this.retired && (!this.meter?.exhausted || this.#slots.some(Boolean));
+      return !this.retired && (!(this.draining || this.meter?.exhausted) || this.#slots.some(Boolean));
     });
   }
 
   isStopped() {
     return this.#serialize(async () => {
       await this.#load();
-      return this.retired || Boolean(this.meter?.exhausted && this.#slots.every(slot => !slot));
+      return this.retired || Boolean((this.draining || this.meter?.exhausted) && this.#slots.every(slot => !slot));
     });
   }
 
@@ -231,7 +236,7 @@ export class LauncherCore {
     return this.#serialize(async () => {
       if (this.#released) return null;
       await this.#load();
-      if (this.retired || this.#session || (this.meter?.exhausted && !this.#slots.some(Boolean))) return null;
+      if (this.retired || this.#session || ((this.draining || this.meter?.exhausted) && !this.#slots.some(Boolean))) return null;
       const helloSequence = this.#control.helloSequence + 1;
       if (!Number.isSafeInteger(helloSequence)) throw new ProtocolError('hello sequence exhausted');
       await this.#saveControl({...this.#control, helloSequence});
@@ -445,7 +450,8 @@ export class LauncherCore {
           return;
         }
         const remaining = queuePrewarm ? Math.min(19_000, prepare_by - this.clock()) : 19_000;
-        if (this.retired || remaining <= 0 || this.meter?.exhausted || this.#preparations.size >= this.#slots.length) {
+        if (this.retired || this.draining || remaining <= 0 || this.meter?.exhausted ||
+            this.#preparations.size >= this.#slots.length) {
           this.meter?.recordRoute(route_id, []);
           accept({});
           return;
@@ -531,6 +537,10 @@ export class LauncherCore {
     const routeKey = `seen:${payload.route_id}`;
     if (this.#acknowledged.has(payload.route_id) || await this.storage.get(routeKey)) {
       throw new ProtocolError('execution route already seen');
+    }
+    if (this.draining) {
+      refuse('LauncherRetired', 'The incarnation lifetime ended');
+      return;
     }
     const route = makeRoute(payload, this.newId(), this.clock());
     if (!route) {
@@ -685,11 +695,12 @@ export class LauncherCore {
     await this.#journalTerminal(index, route, outcome);
   }
 
-  async #journalTerminal(index, route, {attempt_state, result, invocations}) {
+  async #journalTerminal(index, route, {attempt_state, result, invocations, timings}) {
     const event = route.kind === 'workflow' ? 'result' : route.kind === 'agent_run' ? 'cloudflare_agent_result' : 'summary_result';
     if (this.meter?.log()) console.info('launcher_workload_terminal', route.kind, attempt_state);
     const terminal = {event, route_id: route.route_id, runtime_handle: route.runtime_handle,
       _event_id: this.newId(), attempt_state, result};
+    if (this.tenantSlots && route.kind === 'workflow' && timings) terminal.timings = timings;
     if (this.meter) terminal.usage = this.meter.snapshot();
     await this.#saveSlot(index, {route, state: 'terminal', terminal, ...(invocations ? {invocations} : {})});
     this.#emitCurrent(terminal);

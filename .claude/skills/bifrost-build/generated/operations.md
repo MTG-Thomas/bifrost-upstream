@@ -7,7 +7,9 @@ caller's own items.
 
 | Intent | CLI | MCP | Scope |
 |---|---|---|---|
-| `capacity.cloudflare_configure` | `bifrost capacity cloudflare connect` | `bifrost_cloudflare_policy_update` | `platform.readwrite` |
+| `capacity.cloudflare_preflight` | `bifrost capacity cloudflare preflight` | `bifrost_cloudflare_preflight_validate` | `platform.readwrite` |
+| `capacity.cloudflare_activate` | `bifrost capacity cloudflare activate` | `bifrost_cloudflare_activate_execute` | `platform.readwrite` |
+| `capacity.cloudflare_configure` | `bifrost capacity cloudflare policy` | `bifrost_cloudflare_policy_update` | `platform.readwrite` |
 | `capacity.cloudflare_credential_stage` | `bifrost capacity cloudflare stage-credential` | — | `platform.readwrite` |
 | `capacity.cloudflare_status` | `bifrost capacity cloudflare status` | `bifrost_cloudflare_capacity_get` | `platform.read` |
 | `capacity.cloudflare_scale_in` | `bifrost capacity cloudflare scale-in` | `bifrost_cloudflare_scale_in_execute` | `platform.readwrite` |
@@ -45,6 +47,7 @@ caller's own items.
 | `apps.validate` | `bifrost apps validate` | `bifrost_app_validate` | `apps.readbasic` |
 | `apps.publish` | `bifrost apps publish` | `bifrost_app_publish` | `apps.publish` |
 | `platform.jobs.get` | `bifrost platform-jobs get` | `bifrost_platform_job_get` | `platformjobs.read.all` (only for other people's items) |
+| `workflows.cloudflare_approval.list` | `bifrost workflows cloudflare-approval list` | `bifrost_workflow_cloudflare_approval_list` | `workflows.read`, `platform.readwrite` |
 | `workflows.cloudflare_approval.status` | `bifrost workflows cloudflare-approval status` | `bifrost_workflow_cloudflare_approval_status` | `workflows.read`, `platform.readwrite` |
 | `workflows.cloudflare_approval.propose` | `bifrost workflows cloudflare-approval propose` | `bifrost_workflow_cloudflare_approval_propose` | `platform.readwrite` |
 | `workflows.cloudflare_approval.accept` | `bifrost workflows cloudflare-approval accept` | `bifrost_workflow_cloudflare_approval_accept` | `platform.readwrite` |

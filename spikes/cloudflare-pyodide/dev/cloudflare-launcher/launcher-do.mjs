@@ -5,7 +5,7 @@ import {LauncherCore} from './launcher-core.mjs';
 import {runAgentLoop} from './agent-loop.mjs';
 import {agentStreamEvents} from './agent-provider.mjs';
 import {MAX_WORKFLOW_SLOTS, SLOT_BYTES} from './protocol.mjs';
-import {launcherMeter, METER_ERROR, STORAGE_CHUNK} from './launcher-meter.mjs';
+import {incarnationMeterBinding, launcherMeter, METER_ERROR, STORAGE_CHUNK} from './launcher-meter.mjs';
 
 const DIAL_TIMEOUT_MS = 10_000;
 const ALARM_WATCHDOG_MS = 15_000;
@@ -22,7 +22,7 @@ function readSettings(env) {
   return enrollmentSettings({incarnationId, launcherId, resourceUid, version, secret}, env);
 }
 
-function enrollmentSettings({incarnationId, launcherId, resourceUid, version, secret,
+function enrollmentSettings({incarnationId, launcherId, resourceUid, version, secret, deadlineMs, lifetimeSeconds, drainGraceMs,
   memoryLimitBytes = SLOT_BYTES}, env) {
   const slots = memoryLimitBytes / SLOT_BYTES;
   if (!/^[0-9a-f]{64}$/.test(secret ?? '') || !UUID.test(incarnationId ?? '') ||
@@ -32,7 +32,13 @@ function enrollmentSettings({incarnationId, launcherId, resourceUid, version, se
   const origin = new URL(env.API_ORIGIN);
   if (origin.protocol !== 'https:' || origin.pathname !== '/' || origin.username || origin.password ||
       origin.search || origin.hash) throw new Error('Cloudflare launcher requires a fixed HTTPS API origin');
+  if (deadlineMs !== undefined && (!Number.isSafeInteger(deadlineMs) || deadlineMs <= 0 ||
+      !Number.isSafeInteger(lifetimeSeconds) || lifetimeSeconds < 60 || lifetimeSeconds > 604800 ||
+      !Number.isSafeInteger(drainGraceMs) || drainGraceMs < 0 || drainGraceMs > 300_000)) {
+    throw new Error('Invalid launcher lifetime');
+  }
   return {identity: {incarnationId, launcherId, resourceUid, version, hostname: `cf-${launcherId}`}, secret, slots,
+    deadlineMs, drainGraceMs,
     controlUrl: new URL('/api/worker-control', origin).href, publicUrl: origin.origin};
 }
 
@@ -138,8 +144,12 @@ export class CloudflareLauncher extends DurableObject {
   }
 
   #initializeMeter() {
-    this.#meter = launcherMeter(this.ctx.storage.sql, this.env.BIFROST_LAUNCHER_METERS, {
+    const lifetime = this.#fact?.enrollment?.lifetimeSeconds;
+    const binding = lifetime === undefined ? this.env.BIFROST_LAUNCHER_METERS :
+      incarnationMeterBinding(this.env.BIFROST_LAUNCHER_METERS_PER_SECOND, lifetime);
+    this.#meter = launcherMeter(this.ctx.storage.sql, binding, {
       settle: this.env.BIFROST_METER_RECEIPTS === 'true',
+      lifetimeSeconds: lifetime,
     });
   }
 
@@ -315,6 +325,7 @@ export class CloudflareLauncher extends DurableObject {
     return this.#serialize(async () => {
       const fact = this.#binding(resourceUid);
       if (!fact || !['prepared', 'accepted'].includes(fact.state)) throw new Error('Launcher cannot start');
+      if (this.#core.draining) throw new Error('Launcher reservation expired');
       if (fact.state === 'prepared') {
         // Set the wake before committing acceptance. A reset after the wake
         // cannot dial until the durable state says this start was accepted.
@@ -383,11 +394,18 @@ export class CloudflareLauncher extends DurableObject {
     // A close schedules an earlier retry. Only the current alarm opens sockets.
     const core = this.#core;
     if (!core || core.retired) return;
+    const {deadlineMs, drainGraceMs} = this.#settings;
+    const now = Date.now();
+    if (core.draining && (await core.isStopped() || now >= deadlineMs + drainGraceMs)) {
+      await this.releaseManaged(this.#fact.resourceUid);
+      return;
+    }
     if (!await core.canReconnect()) {
       await this.ctx.storage.deleteAlarm();
       return;
     }
-    await this.ctx.storage.setAlarm(Date.now() + ALARM_WATCHDOG_MS);
+    const nextDeadline = core.draining ? deadlineMs + drainGraceMs : deadlineMs;
+    await this.ctx.storage.setAlarm(Math.min(now + ALARM_WATCHDOG_MS, nextDeadline ?? Infinity));
     if (this.#connection) return;
     const dial = await core.beginDial();
     if (!dial || this.#core !== core || core.retired) {
@@ -461,11 +479,18 @@ export class CloudflareLauncher extends DurableObject {
     await core.closed(connection.session, code);
     console.info('launcher_control_closed', code ?? null, core.retired);
     if (ws?.readyState === WebSocket.OPEN) ws.close(1000, 'launcher control closed');
-    if (this.#fact?.state === 'deleted' || !await core.canReconnect()) {
+    if (this.#fact?.state === 'deleted') {
       await this.ctx.storage.deleteAlarm();
       return;
     }
-    await this.ctx.storage.setAlarm(Date.now() + this.#backoff);
+    if (!await core.canReconnect()) {
+      if (core.draining) await this.ctx.storage.setAlarm(Date.now());
+      else await this.ctx.storage.deleteAlarm();
+      return;
+    }
+    const deadline = this.#settings?.deadlineMs ?? Infinity;
+    const next = core.draining ? deadline + this.#settings.drainGraceMs : deadline;
+    await this.ctx.storage.setAlarm(Math.min(Date.now() + this.#backoff, next));
     this.#backoff = Math.min(this.#backoff * 2, MAX_BACKOFF_MS);
   }
 }

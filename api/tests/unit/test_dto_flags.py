@@ -289,3 +289,17 @@ def test_required_flags_are_actually_enforced_by_click() -> None:
 ])
 def test_cloudflare_approval_cli_fields_match_server(server, cli):
     assert set(server.model_fields) == set(cli.model_fields)
+
+
+def test_cloudflare_activation_cli_and_mcp_request_fields_match_server():
+    from inspect import signature
+    from bifrost.contracts import cloudflare_capacity as cli
+    from shared import models
+    from src.services.mcp_server.tools import cloudflare_capacity as mcp
+
+    for server, mirror, tool in (
+        (models.CloudflarePreflightRequest, cli.CloudflarePreflightRequest, mcp.bifrost_cloudflare_preflight_validate),
+        (models.CloudflareActivateRequest, cli.CloudflareActivateRequest, mcp.bifrost_cloudflare_activate_execute),
+    ):
+        assert set(server.model_fields) == set(mirror.model_fields)
+        assert set(signature(tool).parameters) - {"context"} == set(server.model_fields) - {"api_token"}

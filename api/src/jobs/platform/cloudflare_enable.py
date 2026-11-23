@@ -68,12 +68,16 @@ from src.services.worker_pool.cloudflare_policy import (
 )
 from src.services.worker_pool.cloudflare_provisioning import (
     DeletionSettling,
+    ObservationCheck,
     ObservationPending,
+    ObservationSettling,
+    OwnershipCheck,
     OwnershipConflict,
+    OwnershipResource,
     ProvisioningAdapter,
     ResourceObservation,
     observe_owned,
-    resume_creation,
+    request_creation,
 )
 from src.services.worker_pool.cloudflare_release import (
     WorkersRelease,
@@ -95,6 +99,7 @@ from src.services.worker_pool.cloudflare_workers_rest import (
     WorkersRestProvisioner,
 )
 from src.services.worker_pool.external_client import (
+    CapacityProtocolCheck,
     CapacityProtocolError,
     ExternalCapacityClient,
 )
@@ -148,31 +153,48 @@ async def _journal(
             )
             db.add(resource)
         elif resource.state not in ("creating", "present") or resource.artifact_digest != deployment.release.digest:
-            raise OwnershipConflict("The current deployment intent is incompatible with the release")
+            raise OwnershipConflict(
+                "The current deployment intent is incompatible with the release",
+                OwnershipResource.WORKER_SCRIPT, OwnershipCheck.RELEASE_INTENT,
+            )
         identifiers.append(resource.id)
     return bearer, tuple(identifiers)
 
 
 async def _install_script(
     adapter: WorkersProvisioner, resource: CloudflareOwnedResource, *,
-    token: SecretStr, bearer: SecretStr | None,
+    token: SecretStr,
 ) -> ConfiguredWorkersScript:
     intent = _resource_intent(resource)
-    if resource.state == "creating":
-        observed = await resume_creation(adapter, api_token=token, scope_bearer=bearer, committed_intent=intent)
-    elif resource.state == "present" and resource.provider_id and resource.provider_version:
+    recorded = None
+    if resource.provider_id and resource.provider_version:
         recorded = ResourceObservation(intent, resource.provider_id, resource.provider_version)
-        observed = await observe_owned(adapter, api_token=token, intent=intent, recorded=recorded)
-        if observed is None:
-            raise ObservationPending("The recorded Worker is absent")
-    else:
-        raise OwnershipConflict("The Worker journal cannot be created in its current state")
-    endpoint = await adapter.configure_endpoint(api_token=token, expected=observed)
-    if resource.namespace_ids and resource.namespace_ids != endpoint.namespaces:
-        raise OwnershipConflict("Cloudflare namespace identity changed")
-    resource.state = "present"
+    if resource.state != "creating" and (resource.state != "present" or recorded is None):
+        raise OwnershipConflict(
+            "The Worker journal cannot be created in its current state",
+            OwnershipResource.WORKER_SCRIPT, OwnershipCheck.JOURNAL_STATE,
+        )
+    observed = await observe_owned(adapter, api_token=token, intent=intent, recorded=recorded)
+    if observed is None:
+        if recorded is None:
+            raise ObservationSettling(
+                "The acknowledged Worker upload is not yet visible",
+                OwnershipResource.WORKER_SCRIPT, ObservationCheck.SCRIPT_UPLOAD_PENDING,
+            )
+        raise ObservationPending(
+            "The recorded Worker is absent",
+            OwnershipResource.WORKER_SCRIPT, ObservationCheck.SCRIPT_RECORDED_ABSENT,
+        )
+    # Keep the exact version for a successor attempt even if namespaces have not settled.
     resource.provider_id = observed.provider_id
     resource.provider_version = observed.provider_version
+    endpoint = await adapter.configure_endpoint(api_token=token, expected=observed)
+    if resource.namespace_ids and resource.namespace_ids != endpoint.namespaces:
+        raise OwnershipConflict(
+            "Cloudflare namespace identity changed",
+            OwnershipResource.DURABLE_OBJECT_NAMESPACE, OwnershipCheck.RECEIPT_MISMATCH,
+        )
+    resource.state = "present"
     resource.namespace_ids = endpoint.namespaces
     resource.observed_at = datetime.now(UTC)
     return endpoint
@@ -279,7 +301,7 @@ async def _settle_enable(
     capacity_endpoint = None
     for identifier in identifiers:
         # An upload is an unconditional PUT. Keep the revision/effect fence
-        # until its bounded response and receipt commit, so Disconnect cannot
+        # until its bounded response commits, so Disconnect cannot
         # verify absence and tombstone an intent that can still be uploaded.
         async with get_db_context() as db:
             row = await _locked_current(db, context, payload)
@@ -287,16 +309,43 @@ async def _settle_enable(
                 return {"outcome": "superseded"}
             resource = await db.get(CloudflareOwnedResource, identifier, with_for_update=True)
             if resource is None:
-                raise OwnershipConflict("The Worker intent disappeared")
+                raise OwnershipConflict(
+                    "The Worker intent disappeared",
+                    OwnershipResource.WORKER_SCRIPT, OwnershipCheck.JOURNAL_INTENT,
+                )
             is_capacity = resource.target_name == deployment.capacity_name
-            result = await _install_script(
-                adapter, resource, token=await _management_token(db, row),
-                bearer=bearer if is_capacity else None,
-            )
-            if is_capacity:
-                capacity_endpoint = result.endpoint
+            if resource.state == "creating" and resource.provider_details.get("upload_acknowledged") is not True:
+                await request_creation(
+                    adapter, api_token=await _management_token(db, row),
+                    scope_bearer=bearer if is_capacity else None, committed_intent=_resource_intent(resource),
+                )
+                resource.provider_details = {**resource.provider_details, "upload_acknowledged": True}
+
+        pending_readback = None
+        async with get_db_context() as db:
+            row = await _locked_current(db, context, payload)
+            if row is None:
+                return {"outcome": "superseded"}
+            resource = await db.get(CloudflareOwnedResource, identifier, with_for_update=True)
+            if resource is None:
+                raise OwnershipConflict(
+                    "The Worker intent disappeared",
+                    OwnershipResource.WORKER_SCRIPT, OwnershipCheck.JOURNAL_INTENT,
+                )
+            try:
+                result = await _install_script(adapter, resource, token=await _management_token(db, row))
+            except ObservationSettling as exc:
+                pending_readback = exc
+            else:
+                if is_capacity:
+                    capacity_endpoint = result.endpoint
+        if pending_readback is not None:
+            raise pending_readback
     if capacity_endpoint is None:
-        raise ObservationPending("Cloudflare capacity has no confirmed public endpoint")
+        raise ObservationPending(
+            "Cloudflare capacity has no confirmed public endpoint",
+            OwnershipResource.WORKERS_SCOPE, ObservationCheck.SCOPE_ENDPOINT,
+        )
 
     await context.report("Checking Worker Ingress")
     capacity_cpu_ms = release.manifest.meter_bounds.qualification.expected_cpu_ms["capacity"]
@@ -319,12 +368,16 @@ async def _settle_enable(
                 gateway_required=True,
             ))
         elif scope.endpoint != capacity_endpoint or scope.bearer_version != payload.revision:
-            raise OwnershipConflict("Cloudflare scope differs from the verified deployment")
+            raise OwnershipConflict(
+                "Cloudflare scope differs from the verified deployment",
+                OwnershipResource.WORKERS_SCOPE, OwnershipCheck.RECEIPT_MISMATCH,
+            )
 
     async def canary(origin: str):
         return await run_workers_canary(context, payload.installation_id, payload.revision, origin, client, deployment)
 
     ingress = await probe_worker_ingress(installation, runtime_canary=canary)
+    probe_completed_at = datetime.now(UTC)
     if not ingress.ready:
         failure = ingress.failure
         abbreviations = {"ack", "dns", "http", "sdk", "tls"}
@@ -354,6 +407,14 @@ async def _settle_enable(
                 await _inventory_snapshot(db, row.id, revision=payload.revision),
             )
         await _require_budget(db, row)
+        row.deployment_evidence = {
+            **(row.deployment_evidence or {}),
+            "revision": payload.revision,
+            "ingress_verified_at": (ingress.verified_at or probe_completed_at).isoformat(),
+            "signed_canary_at": (
+                (ingress.runtime_canary.verified_at if ingress.runtime_canary else None) or probe_completed_at
+            ).isoformat(),
+        }
         row.admitted_revision = payload.revision
         row.deployed_revision = payload.revision
         floor = workers_release_floor(row)
@@ -377,7 +438,10 @@ async def _drain_previous_revision(
             if row is None:
                 return False
             if upgrading and (row.upgrade_release is None or row.admitted_revision is not None):
-                raise OwnershipConflict("Cloudflare upgrade no longer owns the paused revision")
+                raise OwnershipConflict(
+                    "Cloudflare upgrade no longer owns the paused revision",
+                    OwnershipResource.UPGRADE_REVISION, OwnershipCheck.UPGRADE_FENCE,
+                )
             if row.upgrade_drained_at is not None:
                 return True
             workers_remain = await cloudflare_workers_remain(db, row.id, before_revision=payload.revision)
@@ -413,9 +477,17 @@ async def _drain_previous_revision(
 async def _require_budget(db: AsyncSession, row: CloudflareInstallation) -> None:
     cost = await db.scalar(select(cloudflare_estimated_usage()).where(CloudflareInstallation.id == row.id))
     if cost is None:
-        raise PlatformJobRequiresAction("Verify Cloudflare Spend", {"code": "CF_SPEND_UNVERIFIED"})
+        raise PlatformJobRequiresAction("Verify Cloudflare Spend", {
+            "code": "CF_SPEND_UNVERIFIED",
+            "details": {"resource_class": "spend_guard", "check": "monthly_usage",
+                        "observed_category": "ledger_unavailable", "expected_category": "under_limit"},
+        })
     if cost >= CloudflareCapacityPolicy.model_validate(row.policy["limits"]).monthly_limit_usd:
-        raise PlatformJobRequiresAction("Cloudflare Budget Reached", {"code": "CF_BUDGET_REACHED"})
+        raise PlatformJobRequiresAction("Cloudflare Budget Reached", {
+            "code": "CF_BUDGET_REACHED",
+            "details": {"resource_class": "spend_guard", "check": "monthly_usage",
+                        "observed_category": "limit_reached", "expected_category": "under_limit"},
+        })
 
 
 async def _enable(
@@ -433,17 +505,38 @@ async def _enable(
         raise PlatformJobRequiresAction(str(exc), {"code": "CF_WORKERS_PAID_UNVERIFIED"}) from None
     except ValueError as exc:
         raise PlatformJobRequiresAction("Verify Cloudflare Connection Configuration", {"code": "CF_CONNECTION_INVALID"}) from exc
-    except OwnershipConflict:
-        raise PlatformJobRequiresAction("Verify Cloudflare Ownership", {"code": "CF_OWNERSHIP_CONFLICT"}) from None
-    except (ObservationPending, CapacityProtocolError):
-        raise PlatformJobRequiresAction("Verify Cloudflare Deployment", {"code": "CF_DEPLOYMENT_UNVERIFIED"}) from None
+    except OwnershipConflict as exc:
+        raise PlatformJobRequiresAction(
+            "Verify Cloudflare Ownership", {"code": "CF_OWNERSHIP_CONFLICT", "details": exc.as_result()},
+        ) from None
+    except ObservationSettling as exc:
+        code = "CF_DEPLOYMENT_UNVERIFIED"
+        raise PlatformJobFailure(
+            code, "Waiting for Cloudflare Deployment Readback", retryable=True,
+            result={"code": code, "details": exc.as_result()},
+        ) from None
+    except (ObservationPending, CapacityProtocolError) as exc:
+        raise PlatformJobRequiresAction(
+            "Verify Cloudflare Deployment", {"code": "CF_DEPLOYMENT_UNVERIFIED", "details": exc.as_result()},
+        ) from None
     except CloudflareManagementDenied:
         raise PlatformJobRequiresAction("Reconnect Cloudflare", {"code": "CF_MANAGEMENT_CREDENTIAL"}) from None
     except httpx.HTTPStatusError as exc:
         status = exc.response.status_code
         if status in (408, 429) or status >= 500:
             raise PlatformJobFailure("CF_PROVIDER_UNAVAILABLE", "Cloudflare Is Temporarily Unavailable", retryable=True) from None
-        raise PlatformJobRequiresAction("Verify Cloudflare Deployment", {"code": "CF_DEPLOYMENT_UNVERIFIED"}) from None
+        if exc.request.url.path.endswith("/capabilities"):
+            check = CapacityProtocolCheck.PROFILE_HTTP
+        elif exc.request.url.path.endswith("/start"):
+            check = CapacityProtocolCheck.START_HTTP
+        elif exc.request.url.path.endswith("/prepare"):
+            check = CapacityProtocolCheck.PREPARE_HTTP
+        else:
+            check = CapacityProtocolCheck.UNCLASSIFIED
+        raise PlatformJobRequiresAction("Verify Cloudflare Deployment", {
+            "code": "CF_DEPLOYMENT_UNVERIFIED",
+            "details": CapacityProtocolError("Capacity endpoint rejected the request", check).as_result(),
+        }) from None
     except (CloudflareRestUnavailable, httpx.TransportError):
         raise PlatformJobFailure("CF_PROVIDER_UNAVAILABLE", "Cloudflare Is Temporarily Unavailable", retryable=True) from None
 

@@ -10,7 +10,7 @@ import {bundleWorker} from '../../../../deploy/capacity/cloudflare/build-workers
 
 const runtime = await readFile(process.env.BIFROST_RUNTIME ?? new URL('../runtime/generated-runtime.mjs', import.meta.url));
 assert.equal(createHash('sha256').update(runtime).digest('hex'),
-  'fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5');
+  '11ade0a1ea1b117d577803cff87d1c3c4074d793df5bcb17a9f473923e55f254');
 const directory = await mkdtemp(join(tmpdir(), 'bifrost-tenant-slots-'));
 after(() => rm(directory, {recursive: true, force: true}));
 for (const role of ['launcher', 'gateway']) {

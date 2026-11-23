@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.exc import IntegrityError, NoResultFound, OperationalError
 
+from src.core.exceptions import StructuredRequestRefusal
 from src.models.contracts.common import ErrorResponse
 
 logger = logging.getLogger(__name__)
@@ -150,6 +151,13 @@ def register_exception_handlers(app: FastAPI) -> None:
                 error="validation_error",
                 message=str(exc),
             ).model_dump(),
+        )
+
+    @app.exception_handler(StructuredRequestRefusal)
+    async def structured_refusal_handler(request: Request, exc: StructuredRequestRefusal) -> JSONResponse:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=ErrorResponse(error=exc.code, message=str(exc), details=exc.details).model_dump(),
         )
 
     @app.exception_handler(asyncio.TimeoutError)

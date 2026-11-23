@@ -7,6 +7,7 @@ it to admit and describe jobs without importing a payload model or handler.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from types import MappingProxyType
 
 from src.jobs.platform.policy import PlatformJobPolicy
@@ -47,6 +48,9 @@ def _metadata(
     )
 
 
+_CLOUDFLARE_RETRY_DELAY = (timedelta(seconds=15), timedelta(seconds=45))
+
+
 _METADATA = MappingProxyType(
     {
         item.job_type: item
@@ -58,6 +62,7 @@ _METADATA = MappingProxyType(
                 PlatformJobPolicy(
                     15 * 60, max_attempts=3, min_memory_headroom_mb=128, retry_on_failure=True,
                     record_execution_class=True,
+                    retry_delay=_CLOUDFLARE_RETRY_DELAY,
                 ),
             ),
             _metadata(
@@ -70,7 +75,10 @@ _METADATA = MappingProxyType(
                 "capacity.cloudflare_reconcile",
                 "src.jobs.platform.cloudflare_capacity",
                 "CLOUDFLARE_RECONCILE_DEFINITION",
-                PlatformJobPolicy(15 * 60, max_attempts=3, min_memory_headroom_mb=128, retry_on_failure=True),
+                PlatformJobPolicy(
+                    15 * 60, max_attempts=3, min_memory_headroom_mb=128, retry_on_failure=True,
+                    retry_delay=_CLOUDFLARE_RETRY_DELAY,
+                ),
                 payload_version=2,
             ),
             _metadata(

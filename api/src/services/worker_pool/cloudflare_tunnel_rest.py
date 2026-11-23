@@ -15,16 +15,107 @@ from pydantic import SecretStr
 
 from src.services.worker_pool.cloudflare_provisioning import (
     DeletionSettling,
+    ObservationCheck,
     ObservationPending,
+    OwnershipCheck,
     OwnershipConflict,
+    OwnershipResource,
     ResourceIntent,
     ResourceObservation,
 )
 from src.services.worker_pool.cloudflare_workers_rest import WorkersRestCleanup
 
+_INGRESS_CONFIG_KEYS = {"ingress", "originRequest", "warp-routing"}
+_INGRESS_RULE_KEYS = {"service", "hostname", "path", "originRequest"}
 
-class IngressMismatch(OwnershipConflict):
+
+def _shape_keys(value: Any, known: set[str]) -> list[str] | None:
+    if not isinstance(value, dict):
+        return None
+    # Provider-controlled keys can contain identifiers too.
+    keys = set(value)
+    return sorted(keys & known) + (["other"] if keys - known else [])
+
+
+def _service_kind(rule: Any) -> str:
+    if not isinstance(rule, dict):
+        return "invalid_rule"
+    service = rule.get("service")
+    if service is None:
+        return "missing"
+    if not isinstance(service, str):
+        return "invalid"
+    if service == "http_status:404":
+        return "http_status_404"
+    for prefix, kind in (
+        ("http_status:", "http_status_other"), ("http://", "http_origin"),
+        ("https://", "https_origin"), ("tcp://", "tcp_origin"), ("unix:", "unix_socket"),
+    ):
+        if service.startswith(prefix):
+            return kind
+    return "other"
+
+
+class TunnelIngressConflict(OwnershipConflict):
+    def __init__(self, message: str, check: OwnershipCheck, current: Any) -> None:
+        super().__init__(message, OwnershipResource.TUNNEL_INGRESS, check)
+        config = current.get("config") if isinstance(current, dict) else None
+        version = current.get("version") if isinstance(current, dict) else None
+        rules = config.get("ingress") if isinstance(config, dict) else None
+        warp = config.get("warp-routing") if isinstance(config, dict) else None
+        self.shape = {
+            "version": version if type(version) is int else None,
+            "response_keys": _shape_keys(current, {"account_id", "tunnel_id", "version", "config", "created_at", "source"}),
+            "config_keys": _shape_keys(config, _INGRESS_CONFIG_KEYS),
+            "warp_routing_keys": _shape_keys(warp, {"enabled"}),
+            "rule_count": len(rules) if isinstance(rules, list) else None,
+            "rules": [
+                {"keys": _shape_keys(rule, _INGRESS_RULE_KEYS), "service_kind": _service_kind(rule)}
+                for rule in rules
+            ] if isinstance(rules, list) else None,
+        }
+
+    def as_result(self) -> dict[str, object]:
+        return {**super().as_result(), "ingress_shape": self.shape}
+
+
+class IngressMismatch(TunnelIngressConflict):
     """The owned tunnel no longer has its approved ingress."""
+
+
+def _is_default_ingress(current: dict[str, Any]) -> bool:
+    config = current.get("config")
+    if not isinstance(config, dict):
+        return False
+    if set(config) - _INGRESS_CONFIG_KEYS or config.get("originRequest") not in (None, {}):
+        return False
+    warp = config.get("warp-routing")
+    if warp not in (None, {}) and (
+        not isinstance(warp, dict) or set(warp) != {"enabled"} or warp["enabled"] is not False
+    ):
+        return False
+    rules = config.get("ingress")
+    if not isinstance(rules, list) or len(rules) != 1 or not isinstance(rules[0], dict):
+        return False
+    rule = rules[0]
+    return (
+        set(rule) <= _INGRESS_RULE_KEYS
+        and rule.get("service") == "http_status:404"
+        and rule.get("hostname") in (None, "")
+        and rule.get("path") in (None, "")
+        and rule.get("originRequest") in (None, {})
+    )
+
+
+def _is_remotely_managed(item: dict[str, Any]) -> bool:
+    return item.get("config_src", "cloudflare" if item.get("remote_config") is True else None) == "cloudflare"
+
+
+def _connector_id(item: dict[str, Any]) -> str:
+    if "id" in item:
+        return str(UUID(item["id"]))
+    connector, = {str(UUID(conn["client_id"])) for conn in item.get("conns", []) if "client_id" in conn}
+    return connector
 
 
 def connector_secret(token: str, account_id: str, tunnel_id: str) -> str:
@@ -36,7 +127,10 @@ def connector_secret(token: str, account_id: str, tunnel_id: str) -> str:
                 return value
     except (ValueError, TypeError, KeyError, binascii.Error):
         pass
-    raise OwnershipConflict("Cloudflare returned a different connector credential")
+    raise OwnershipConflict(
+        "Cloudflare returned a different connector credential",
+        OwnershipResource.CONNECTOR_CREDENTIAL, OwnershipCheck.CONNECTOR_SECRET,
+    )
 
 
 def dedicated_hostname(origin: str) -> str:
@@ -65,16 +159,38 @@ class TunnelRest(WorkersRestCleanup):
         result = await self._request_resource(self.token, method, path, **kwargs)
         return result["result"] if result is not None else None
 
-    async def verify_zone(self) -> None:
+    async def active_zone_name(self) -> str:
         zone = await self._result("GET", f"zones/{self.zone_id}")
         if not isinstance(zone, dict) or zone.get("id") != self.zone_id:
-            raise OwnershipConflict("Cloudflare zone identity did not match")
+            raise OwnershipConflict(
+                "Cloudflare zone identity did not match",
+                OwnershipResource.DNS_ZONE, OwnershipCheck.ZONE_IDENTITY,
+            )
         account = zone.get("account")
         name = zone.get("name")
         if not isinstance(account, dict) or account.get("id") != self.account_id:
-            raise OwnershipConflict("Cloudflare zone belongs to a different account")
-        if not isinstance(name, str) or not self.hostname.endswith("." + name) or zone.get("status") != "active":
+            raise OwnershipConflict(
+                "Cloudflare zone belongs to a different account",
+                OwnershipResource.DNS_ZONE, OwnershipCheck.ZONE_ACCOUNT,
+            )
+        if not isinstance(name, str) or zone.get("status") != "active":
+            raise ValueError("Managed Tunnel requires an active DNS zone")
+        return name
+
+    async def verify_zone(self) -> None:
+        if not self.hostname.endswith("." + await self.active_zone_name()):
             raise ValueError("Managed Tunnel requires a dedicated hostname in the selected active DNS zone")
+
+    async def require_unused_hostname(self) -> None:
+        item = await self._find(
+            self.records, {"name.exact": self.hostname}, self.hostname,
+            resource=OwnershipResource.DNS_RECORD,
+        )
+        if item is not None:
+            raise OwnershipConflict(
+                "The proposed Cloudflare hostname is already in use",
+                OwnershipResource.DNS_RECORD, OwnershipCheck.TARGET_OCCUPIED,
+            )
 
     async def connectors(self, tunnel_id: str) -> frozenset[str]:
         payload = await self._request_resource(self.token, "GET", f"{self.tunnels}/{tunnel_id}/connections")
@@ -83,61 +199,90 @@ class TunnelRest(WorkersRestCleanup):
         if not isinstance(items, list) or (
             isinstance(info, dict) and info.get("total_count", len(items)) != len(items)
         ):
-            raise ObservationPending("Cloudflare connector inventory is incomplete")
+            raise ObservationPending(
+                "Cloudflare connector inventory is incomplete",
+                OwnershipResource.CONNECTOR, ObservationCheck.CONNECTOR_INVENTORY,
+            )
         try:
-            return frozenset(str(UUID(item["id"])) for item in items)
+            return frozenset(_connector_id(item) for item in items)
         except (KeyError, TypeError, ValueError, AttributeError):
-            raise ObservationPending("Cloudflare connector inventory is malformed") from None
+            raise ObservationPending(
+                "Cloudflare connector inventory is malformed",
+                OwnershipResource.CONNECTOR, ObservationCheck.CONNECTOR_IDENTITY,
+            ) from None
 
     async def _find(
         self, path: str, params: dict[str, int | str], name: str,
-        *, matches_body: Callable[[dict[str, Any]], bool] | None = None,
+        *, resource: OwnershipResource, matches_body: Callable[[dict[str, Any]], bool] | None = None,
     ) -> dict[str, Any] | None:
         payload = await self._request_resource(self.token, "GET", path, params={**params, "per_page": 20})
         items = payload["result"] if payload else None
         if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
-            raise ObservationPending("Cloudflare returned an invalid inventory")
+            raise ObservationPending(
+                "Cloudflare returned an invalid inventory", resource, ObservationCheck.TUNNEL_INVENTORY,
+            )
         info = payload.get("result_info") if payload else None
         if len(items) >= 20 or (isinstance(info, dict) and info.get("total_pages", 1) not in (0, 1)):
-            raise OwnershipConflict("Cloudflare exact-target inventory is ambiguous")
+            raise OwnershipConflict("Cloudflare exact-target inventory is ambiguous", resource, OwnershipCheck.EXACT_INVENTORY)
         matches = [
             item for item in items if item.get("name") == name and (matches_body is None or matches_body(item))
         ]
         if len(matches) > 1:
-            raise OwnershipConflict("Cloudflare exact target has multiple occupants")
+            raise OwnershipConflict("Cloudflare exact target has multiple occupants", resource, OwnershipCheck.MULTIPLE_OCCUPANTS)
         return matches[0] if matches else None
 
     async def tunnel(
         self, intent: ResourceIntent, recorded: ResourceObservation | None, *, secret: SecretStr | None = None,
     ) -> ResourceObservation | None:
         name = intent.target.name
-        item = await self._find(self.tunnels, {"name": name, "is_deleted": "false"}, name)
+        item = await self._find(
+            self.tunnels, {"name": name, "is_deleted": "false"}, name, resource=OwnershipResource.TUNNEL,
+        )
         if item is None:
             if recorded is not None:
                 exact = await self._result("GET", f"{self.tunnels}/{recorded.provider_id}", allow_missing=True)
                 if exact is not None and (
                     not isinstance(exact, dict) or exact.get("id") != recorded.provider_id
                     or exact.get("name") != name or not exact.get("deleted_at")
+                    or exact.get("account_tag", self.account_id) != self.account_id
                 ):
-                    raise OwnershipConflict("Cloudflare tunnel changed outside its journal")
+                    raise OwnershipConflict(
+                        "Cloudflare tunnel changed outside its journal",
+                        OwnershipResource.TUNNEL, OwnershipCheck.RECEIPT_MISMATCH,
+                    )
             return None
         try:
             tunnel_id = str(UUID(item["id"]))
         except (KeyError, TypeError, ValueError, AttributeError):
-            raise ObservationPending("Cloudflare tunnel has no resource ID") from None
+            raise ObservationPending(
+                "Cloudflare tunnel has no resource ID",
+                OwnershipResource.TUNNEL, ObservationCheck.TUNNEL_ID,
+            ) from None
         created = item.get("created_at")
-        if item.get("account_tag") != self.account_id or item.get("config_src") != "cloudflare" or item.get("deleted_at"):
-            raise OwnershipConflict("Cloudflare tunnel differs from its journal")
+        if item.get("account_tag", self.account_id) != self.account_id or not _is_remotely_managed(item) or item.get("deleted_at"):
+            raise OwnershipConflict(
+                "Cloudflare tunnel differs from its journal",
+                OwnershipResource.TUNNEL, OwnershipCheck.TUNNEL_METADATA,
+            )
         if not isinstance(created, str) or not created or len(created) > 255:
-            raise ObservationPending("Cloudflare tunnel has no creation timestamp")
+            raise ObservationPending(
+                "Cloudflare tunnel has no creation timestamp",
+                OwnershipResource.TUNNEL, ObservationCheck.TUNNEL_VERSION,
+            )
         observed = ResourceObservation(intent, tunnel_id, created)
         if recorded is not None:
             if observed != recorded:
-                raise OwnershipConflict("Cloudflare tunnel differs from its journal")
+                raise OwnershipConflict(
+                    "Cloudflare tunnel differs from its journal",
+                    OwnershipResource.TUNNEL, OwnershipCheck.RECEIPT_MISMATCH,
+                )
         elif secret is None or not compare_digest(
             await self.secret(tunnel_id), secret.get_secret_value(),
         ):
-            raise OwnershipConflict("Cloudflare tunnel does not match the committed creation credential")
+            raise OwnershipConflict(
+                "Cloudflare tunnel does not match the committed creation credential",
+                OwnershipResource.CONNECTOR_CREDENTIAL, OwnershipCheck.ADOPTION_CREDENTIAL,
+            )
         return observed
 
     async def create_tunnel(self, intent: ResourceIntent, secret: SecretStr) -> ResourceObservation:
@@ -149,13 +294,19 @@ class TunnelRest(WorkersRestCleanup):
             })
             observed = await self.tunnel(intent, None, secret=secret)
         if observed is None:
-            raise ObservationPending("Cloudflare tunnel creation has not settled")
+            raise ObservationPending(
+                "Cloudflare tunnel creation has not settled",
+                OwnershipResource.TUNNEL, ObservationCheck.TUNNEL_CREATE,
+            )
         return observed
 
     async def connector_token(self, tunnel_id: str) -> SecretStr:
         token = await self._result("GET", f"{self.tunnels}/{tunnel_id}/token")
         if not isinstance(token, str) or len(token) > 4096:
-            raise ObservationPending("Cloudflare returned an invalid connector token")
+            raise ObservationPending(
+                "Cloudflare returned an invalid connector token",
+                OwnershipResource.CONNECTOR_CREDENTIAL, ObservationCheck.CONNECTOR_TOKEN,
+            )
         connector_secret(token, self.account_id, tunnel_id)
         return SecretStr(token)
 
@@ -171,20 +322,32 @@ class TunnelRest(WorkersRestCleanup):
             "config": {"ingress": desired, "warp-routing": {"enabled": False}},
         })
 
-    async def configure_ingress(self, tunnel: ResourceObservation, origin: str) -> None:
+    async def configure_ingress(
+        self, tunnel: ResourceObservation, origin: str, *, allow_unconfigured: bool = False,
+    ) -> None:
         path = f"{self.tunnels}/{tunnel.provider_id}/configurations"
         desired = self.ingress(origin)
         current = await self._result("GET", path, allow_missing=True)
         if current is not None and self._matches_ingress(current, tunnel.provider_id, desired):
             return
-        if current is not None and (
-            not isinstance(current, dict) or current.get("tunnel_id") != tunnel.provider_id
-            or current.get("account_id") != self.account_id or current.get("version") != 0
-            or current.get("config") not in ({}, None)
+        if not allow_unconfigured or (
+            current is not None and (
+                not self._config_identity(current, tunnel.provider_id)
+                or not (
+                    (type(current.get("version")) is int and current["version"] == 0 and current.get("config") in ({}, None))
+                    or _is_default_ingress(current)
+                )
+            )
         ):
-            raise OwnershipConflict("Cloudflare tunnel already has a different ingress configuration")
+            raise TunnelIngressConflict(
+                "Cloudflare tunnel already has a different ingress configuration",
+                OwnershipCheck.INGRESS_OCCUPIED, current,
+            )
         if await self.tunnel(tunnel.intent, tunnel) is None:
-            raise ObservationPending("The recorded Cloudflare tunnel is absent")
+            raise ObservationPending(
+                "The recorded Cloudflare tunnel is absent",
+                OwnershipResource.TUNNEL, ObservationCheck.TUNNEL_ABSENT,
+            )
         await self._put_ingress(path, desired)
         await self.verify_ingress(tunnel, origin)
 
@@ -210,51 +373,81 @@ class TunnelRest(WorkersRestCleanup):
         )
 
     def _config_identity(self, current: Any, tunnel_id: str) -> bool:
-        return (isinstance(current, dict) and current.get("tunnel_id") == tunnel_id
-                and current.get("account_id") == self.account_id)
+        # The account and tunnel are already selected by the scoped request.
+        return (
+            isinstance(current, dict)
+            and current.get("tunnel_id", tunnel_id) == tunnel_id
+            and current.get("account_id", self.account_id) == self.account_id
+        )
 
     async def verify_ingress(self, tunnel: ResourceObservation, origin: str) -> None:
         current = await self._result("GET", f"{self.tunnels}/{tunnel.provider_id}/configurations", allow_missing=True)
         if not self._matches_ingress(current, tunnel.provider_id, self.ingress(origin)):
-            raise IngressMismatch("Cloudflare tunnel ingress differs from the approved route")
+            raise IngressMismatch(
+                "Cloudflare tunnel ingress differs from the approved route",
+                OwnershipCheck.INGRESS_IDENTITY, current,
+            )
 
     async def verify_private_routes(self, tunnel_id: str) -> None:
-        rows = await self._result(
-            "GET", f"accounts/{self.account_id}/teamnet/routes",
+        payload = await self._request_resource(
+            self.token, "GET", f"accounts/{self.account_id}/teamnet/routes",
             params={"tunnel_id": tunnel_id, "is_deleted": "false"},
         )
+        rows = payload["result"] if payload else None
+        info = payload.get("result_info") if payload else None
         if not isinstance(rows, list) or any(
-            not isinstance(row, dict) or row.get("tunnel_id") != tunnel_id for row in rows
-        ):
-            raise ObservationPending("Cloudflare private-network route inventory could not be confirmed")
+            not isinstance(row, dict) or row.get("tunnel_id", tunnel_id) != tunnel_id for row in rows
+        ) or (not rows and isinstance(info, dict) and info.get("total_count", 0) != 0):
+            raise ObservationPending(
+                "Cloudflare private-network route inventory could not be confirmed",
+                OwnershipResource.PRIVATE_ROUTE, ObservationCheck.PRIVATE_ROUTES,
+            )
         if rows:
-            raise OwnershipConflict("Cloudflare private-network routes target the managed tunnel")
+            raise OwnershipConflict(
+                "Cloudflare private-network routes target the managed tunnel",
+                OwnershipResource.PRIVATE_ROUTE, OwnershipCheck.PRIVATE_ROUTE,
+            )
 
     async def write_ingress(
         self, tunnel: ResourceObservation, origin: str, *, repair: bool = False, prove_write: bool = False,
     ) -> None:
         exact = await self._result("GET", f"{self.tunnels}/{tunnel.provider_id}", allow_missing=True)
         if exact is None:
-            raise ObservationPending("The recorded Cloudflare tunnel is absent")
+            raise ObservationPending(
+                "The recorded Cloudflare tunnel is absent",
+                OwnershipResource.TUNNEL, ObservationCheck.TUNNEL_ABSENT,
+            )
         if not isinstance(exact, dict) or any(
             exact.get(key) != value for key, value in {
-                "id": tunnel.provider_id, "name": tunnel.intent.target.name, "account_tag": self.account_id,
-                "created_at": tunnel.provider_version, "config_src": "cloudflare",
+                "id": tunnel.provider_id, "name": tunnel.intent.target.name,
+                "created_at": tunnel.provider_version,
             }.items()
-        ) or exact.get("deleted_at"):
-            raise OwnershipConflict("Cloudflare tunnel differs from its journal")
+        ) or (
+            exact.get("account_tag", self.account_id) != self.account_id
+            or not _is_remotely_managed(exact) or exact.get("deleted_at")
+        ):
+            raise OwnershipConflict(
+                "Cloudflare tunnel differs from its journal",
+                OwnershipResource.TUNNEL, OwnershipCheck.RECEIPT_MISMATCH,
+            )
         path = f"{self.tunnels}/{tunnel.provider_id}/configurations"
         current = await self._result("GET", path, allow_missing=True)
         desired = self.ingress(origin)
         matches = self._matches_ingress(current, tunnel.provider_id, desired)
         if repair:
             if current is not None and not self._config_identity(current, tunnel.provider_id):
-                raise OwnershipConflict("Cloudflare tunnel configuration identity changed")
+                raise TunnelIngressConflict(
+                    "Cloudflare tunnel configuration identity changed",
+                    OwnershipCheck.INGRESS_CONFIG_OWNER, current,
+                )
             if matches and not prove_write:
                 return
         else:
             if not matches:
-                raise IngressMismatch("Cloudflare tunnel ingress differs from the approved route")
+                raise IngressMismatch(
+                    "Cloudflare tunnel ingress differs from the approved route",
+                    OwnershipCheck.INGRESS_IDENTITY, current,
+                )
         await self._put_ingress(path, desired)
         await self.verify_ingress(tunnel, origin)
 
@@ -276,38 +469,63 @@ class TunnelRest(WorkersRestCleanup):
 
         item = await self._find(
             self.records, {"name.exact": intent.target.name}, intent.target.name,
+            resource=OwnershipResource.DNS_RECORD,
             matches_body=matches_body if ignore_foreign else None,
         )
         if item is None or (ignore_foreign and recorded is not None and item.get("id") != recorded.provider_id):
             if recorded is not None and await self._result(
                 "GET", f"{self.records}/{recorded.provider_id}", allow_missing=True,
             ) is not None:
-                raise OwnershipConflict("The recorded Cloudflare DNS record moved")
+                raise OwnershipConflict(
+                    "The recorded Cloudflare DNS record moved",
+                    OwnershipResource.DNS_RECORD, OwnershipCheck.DNS_TARGET_MOVED,
+                )
             return None
         identity, version = item.get("id"), item.get("modified_on")
         if not matches_body(item):
-            raise OwnershipConflict("The dedicated Cloudflare hostname already has a different DNS record")
+            raise OwnershipConflict(
+                "The dedicated Cloudflare hostname already has a different DNS record",
+                OwnershipResource.DNS_RECORD, OwnershipCheck.FOREIGN_OCCUPANT,
+            )
         if not isinstance(identity, str) or not re.fullmatch(r"[a-f0-9]{32}", identity):
-            raise ObservationPending("Cloudflare DNS record has no resource ID")
+            raise ObservationPending(
+                "Cloudflare DNS record has no resource ID",
+                OwnershipResource.DNS_RECORD, ObservationCheck.DNS_ID,
+            )
         if not isinstance(version, str) or not version or len(version) > 255:
-            raise ObservationPending("Cloudflare DNS record has no revision")
+            raise ObservationPending(
+                "Cloudflare DNS record has no revision",
+                OwnershipResource.DNS_RECORD, ObservationCheck.DNS_VERSION,
+            )
         observed = ResourceObservation(intent, identity, version)
         # A same-body permissions probe can advance modified_on even if its response is lost.
         if recorded is not None and observed.provider_id != recorded.provider_id:
-            raise OwnershipConflict("Cloudflare DNS record differs from its journal")
+            raise OwnershipConflict(
+                "Cloudflare DNS record differs from its journal",
+                OwnershipResource.DNS_RECORD, OwnershipCheck.RECEIPT_MISMATCH,
+            )
         return observed
 
     async def verify_dns_write(self, record: ResourceObservation, tunnel_id: str) -> None:
         if await self.dns(record.intent, record, tunnel_id) is None:
-            raise ObservationPending("The recorded Cloudflare DNS record is absent")
+            raise ObservationPending(
+                "The recorded Cloudflare DNS record is absent",
+                OwnershipResource.DNS_RECORD, ObservationCheck.DNS_ABSENT,
+            )
         await self._result("PATCH", f"{self.records}/{record.provider_id}",
                            json_body=self.record_body(record.intent, tunnel_id))
         if await self.dns(record.intent, record, tunnel_id) is None:
-            raise ObservationPending("The recorded Cloudflare DNS record is absent")
+            raise ObservationPending(
+                "The recorded Cloudflare DNS record is absent",
+                OwnershipResource.DNS_RECORD, ObservationCheck.DNS_ABSENT,
+            )
 
     async def evict_connectors(self, tunnel: ResourceObservation, previous: set[str]) -> None:
         if await self.tunnel(tunnel.intent, tunnel) is None:
-            raise ObservationPending("The recorded Cloudflare tunnel is absent")
+            raise ObservationPending(
+                "The recorded Cloudflare tunnel is absent",
+                OwnershipResource.TUNNEL, ObservationCheck.TUNNEL_ABSENT,
+            )
         path = f"{self.tunnels}/{tunnel.provider_id}/connections"
         for connector in sorted(await self.connectors(tunnel.provider_id) & previous):
             await self._result("DELETE", path, params={"client_id": connector}, allow_missing=True)
@@ -315,13 +533,19 @@ class TunnelRest(WorkersRestCleanup):
     async def create_dns(self, intent: ResourceIntent, tunnel: ResourceObservation) -> ResourceObservation:
         await self.verify_zone()
         if await self.tunnel(tunnel.intent, tunnel) is None:
-            raise ObservationPending("The recorded Cloudflare tunnel is absent")
+            raise ObservationPending(
+                "The recorded Cloudflare tunnel is absent",
+                OwnershipResource.TUNNEL, ObservationCheck.TUNNEL_ABSENT,
+            )
         observed = await self.dns(intent, None, tunnel.provider_id)
         if observed is None:
             await self._result("POST", self.records, json_body=self.record_body(intent, tunnel.provider_id))
             observed = await self.dns(intent, None, tunnel.provider_id)
         if observed is None:
-            raise ObservationPending("Cloudflare DNS creation has not settled")
+            raise ObservationPending(
+                "Cloudflare DNS creation has not settled",
+                OwnershipResource.DNS_RECORD, ObservationCheck.DNS_CREATE,
+            )
         return observed
 
     async def remove_dns(self, record: ResourceObservation, tunnel_id: str) -> None:
@@ -341,7 +565,10 @@ class TunnelRest(WorkersRestCleanup):
 
     async def rotate(self, tunnel: ResourceObservation, current: SecretStr, replacement: SecretStr) -> SecretStr:
         if await self.tunnel(tunnel.intent, tunnel) is None:
-            raise ObservationPending("The recorded Cloudflare tunnel is absent")
+            raise ObservationPending(
+                "The recorded Cloudflare tunnel is absent",
+                OwnershipResource.TUNNEL, ObservationCheck.TUNNEL_ABSENT,
+            )
         token = await self.connector_token(tunnel.provider_id)
         old = current.get_secret_value()
         new = replacement.get_secret_value()

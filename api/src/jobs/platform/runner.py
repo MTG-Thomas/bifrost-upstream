@@ -10,9 +10,9 @@ from typing import TypedDict
 from uuid import UUID
 
 from pydantic import ValidationError
+from shared.app_build_errors import APP_BUILD_JOB_TYPES, app_build_memory_message
 from sqlalchemy import select
 
-from shared.app_build_errors import APP_BUILD_JOB_TYPES, app_build_memory_message
 from src.core.database import close_db, get_db_context, init_db
 from src.jobs.platform.base import (
     PlatformJobCancelled,
@@ -177,7 +177,10 @@ async def run_claimed_platform_job(
                 job_id, lease_token, status="failed", error_code=exc.code,
                 error_message=exc.message, result=exc.result,
             )
-        return await retry_platform_job_failure(job_id, lease_token, exc, enabled=definition.policy.retry_on_failure)
+        return await retry_platform_job_failure(
+            job_id, lease_token, exc,
+            enabled=definition.policy.retry_on_failure, retry_delay=definition.policy.retry_delay,
+        )
     except PlatformJobRequiresAction as exc:
         return await finish(
             job_id,

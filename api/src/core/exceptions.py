@@ -4,6 +4,18 @@ Core Exceptions
 Custom exceptions for the Bifrost platform.
 """
 
+from typing import Any
+
+
+class StructuredRequestRefusal(ValueError):
+    """A request rejection with operator-safe field and recovery details."""
+
+    def __init__(self, code: str, message: str, details: dict[str, Any], *, status_code: int = 422) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = details
+        self.status_code = status_code
+
 
 class AccessDeniedError(Exception):
     """

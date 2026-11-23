@@ -628,6 +628,275 @@ Options:
   --help                          Show this message and exit.
 ```
 
+## `capacity`
+
+```
+Usage: capacity [OPTIONS] COMMAND [ARGS]...
+
+  Manage platform worker capacity.
+
+Options:
+  --json  Emit JSON instead of human-readable output.
+  --help  Show this message and exit.
+
+Commands:
+  cloudflare  Read and manage Cloudflare capacity.
+```
+
+### `capacity cloudflare`
+
+```
+Usage: capacity cloudflare [OPTIONS] COMMAND [ARGS]...
+
+  Read and manage Cloudflare capacity.
+
+Options:
+  --json  Emit JSON instead of human-readable output.
+  --help  Show this message and exit.
+
+Commands:
+  activate          Run preflight, review the route, and provision...
+  disconnect        Drain Cloudflare workers and remove verified owned...
+  enable            Provision and verify Cloudflare Workers capacity.
+  policy            Update the current Cloudflare capacity policy.
+  preflight         Discover Cloudflare prerequisites and price the...
+  reconcile         Verify or repair the current Cloudflare Workers...
+  rotate            Validate and replace the Cloudflare account API token.
+  rotate-bearer     Retire the previous Workers deployment and stage a...
+  rotate-connector  Rotate the Managed Tunnel connector token after Scale...
+  rotate-root       Rotate the derivation root after Scale In.
+  scale-in          Drain Cloudflare workers and retain the connection.
+  stage-credential  Enter a Cloudflare token for a one-time MCP...
+  status            Show the current Cloudflare connection and capacity...
+  upgrade           Apply the Workers release packaged with Bifrost.
+```
+
+#### `capacity cloudflare activate`
+
+```
+Usage: capacity cloudflare activate [OPTIONS]
+
+  Run preflight, review the route, and provision Cloudflare Workers.
+
+Options:
+  --account-id TEXT
+  --zone-id TEXT
+  --reachability-mode [existing_https_endpoint|managed_tunnel]
+  --worker-ingress-origin TEXT
+  --credential-ref UUID
+  --policy FILENAME               Advanced capacity policy JSON file.
+  --monthly-limit-usd TEXT        Confirmed monthly estimated usage limit in
+                                  USD.  [required]
+  --wait                          Wait for completion through the platform
+                                  job.
+  --json                          Emit JSON instead of human-readable output.
+  --help                          Show this message and exit.
+```
+
+#### `capacity cloudflare disconnect`
+
+```
+Usage: capacity cloudflare disconnect [OPTIONS]
+
+  Drain Cloudflare workers and remove verified owned capacity.
+
+Options:
+  --wait                       Wait for completion through the platform job.
+  --installation-id TEXT       installation_id (UUID).  [required]
+  --expected-revision INTEGER  expected_revision  [required]
+  --json                       Emit JSON instead of human-readable output.
+  --help                       Show this message and exit.
+```
+
+#### `capacity cloudflare enable`
+
+```
+Usage: capacity cloudflare enable [OPTIONS]
+
+  Provision and verify Cloudflare Workers capacity.
+
+Options:
+  --wait                       Wait for completion through the platform job.
+  --installation-id TEXT       installation_id (UUID).  [required]
+  --expected-revision INTEGER  expected_revision  [required]
+  --json                       Emit JSON instead of human-readable output.
+  --help                       Show this message and exit.
+```
+
+#### `capacity cloudflare policy`
+
+```
+Usage: capacity cloudflare policy [OPTIONS]
+
+  Update the current Cloudflare capacity policy.
+
+Options:
+  --installation-id TEXT       installation_id (UUID).  [required]
+  --expected-revision INTEGER  expected_revision  [required]
+  --policy FILENAME            Cloudflare capacity policy JSON file.
+                               [required]
+  --json                       Emit JSON instead of human-readable output.
+  --help                       Show this message and exit.
+```
+
+#### `capacity cloudflare preflight`
+
+```
+Usage: capacity cloudflare preflight [OPTIONS]
+
+  Discover Cloudflare prerequisites and price the capacity policy.
+
+Options:
+  --account-id TEXT
+  --zone-id TEXT
+  --reachability-mode [existing_https_endpoint|managed_tunnel]
+  --worker-ingress-origin TEXT
+  --credential-ref UUID
+  --policy FILENAME               Advanced capacity policy JSON file.
+  --json                          Emit JSON instead of human-readable output.
+  --help                          Show this message and exit.
+```
+
+#### `capacity cloudflare reconcile`
+
+```
+Usage: capacity cloudflare reconcile [OPTIONS]
+
+  Verify or repair the current Cloudflare Workers deployment.
+
+Options:
+  --wait                          Wait for completion through the platform
+                                  job.
+  --installation-id TEXT          installation_id (UUID).  [required]
+  --expected-revision INTEGER     expected_revision  [required]
+  --reset-release-fence / --no-reset-release-fence
+                                  reset_release_fence (tri-state; omit to
+                                  leave unchanged).
+  --json                          Emit JSON instead of human-readable output.
+  --help                          Show this message and exit.
+```
+
+#### `capacity cloudflare rotate`
+
+```
+Usage: capacity cloudflare rotate [OPTIONS]
+
+  Validate and replace the Cloudflare account API token.
+
+Options:
+  --wait                       Wait for completion through the platform job.
+  --installation-id TEXT       installation_id (UUID).  [required]
+  --expected-revision INTEGER  expected_revision  [required]
+  --json                       Emit JSON instead of human-readable output.
+  --help                       Show this message and exit.
+```
+
+#### `capacity cloudflare rotate-bearer`
+
+```
+Usage: capacity cloudflare rotate-bearer [OPTIONS]
+
+  Retire the previous Workers deployment and stage a new bearer.
+
+Options:
+  --wait                       Wait for completion through the platform job.
+  --installation-id TEXT       installation_id (UUID).  [required]
+  --expected-revision INTEGER  expected_revision  [required]
+  --json                       Emit JSON instead of human-readable output.
+  --help                       Show this message and exit.
+```
+
+#### `capacity cloudflare rotate-connector`
+
+```
+Usage: capacity cloudflare rotate-connector [OPTIONS]
+
+  Rotate the Managed Tunnel connector token after Scale In.
+
+Options:
+  --wait                       Wait for completion through the platform job.
+  --installation-id TEXT       installation_id (UUID).  [required]
+  --expected-revision INTEGER  expected_revision  [required]
+  --json                       Emit JSON instead of human-readable output.
+  --help                       Show this message and exit.
+```
+
+#### `capacity cloudflare rotate-root`
+
+```
+Usage: capacity cloudflare rotate-root [OPTIONS]
+
+  Rotate the derivation root after Scale In.
+
+Options:
+  --wait                       Wait for completion through the platform job.
+  --installation-id TEXT       installation_id (UUID).  [required]
+  --expected-revision INTEGER  expected_revision  [required]
+  --json                       Emit JSON instead of human-readable output.
+  --help                       Show this message and exit.
+```
+
+#### `capacity cloudflare scale-in`
+
+```
+Usage: capacity cloudflare scale-in [OPTIONS]
+
+  Drain Cloudflare workers and retain the connection.
+
+Options:
+  --wait                       Wait for completion through the platform job.
+  --installation-id TEXT       installation_id (UUID).  [required]
+  --expected-revision INTEGER  expected_revision  [required]
+  --json                       Emit JSON instead of human-readable output.
+  --help                       Show this message and exit.
+```
+
+#### `capacity cloudflare stage-credential`
+
+```
+Usage: capacity cloudflare stage-credential [OPTIONS]
+
+  Enter a Cloudflare token for a one-time MCP credential reference.
+
+Options:
+  --account-id TEXT           Account ID for connecting Cloudflare.
+  --installation-id UUID      Installation ID for rotating a connected token.
+  --purpose [connect|rotate]  [required]
+  --json                      Emit JSON instead of human-readable output.
+  --help                      Show this message and exit.
+```
+
+#### `capacity cloudflare status`
+
+```
+Usage: capacity cloudflare status [OPTIONS]
+
+  Show the current Cloudflare connection and capacity policy.
+
+Options:
+  --json  Emit JSON instead of human-readable output.
+  --help  Show this message and exit.
+```
+
+#### `capacity cloudflare upgrade`
+
+```
+Usage: capacity cloudflare upgrade [OPTIONS]
+
+  Apply the Workers release packaged with Bifrost.
+
+Options:
+  --wait                          Wait for completion through the platform
+                                  job.
+  --installation-id TEXT          installation_id (UUID).  [required]
+  --expected-revision INTEGER     expected_revision  [required]
+  --reset-release-fence / --no-reset-release-fence
+                                  reset_release_fence (tri-state; omit to
+                                  leave unchanged).
+  --json                          Emit JSON instead of human-readable output.
+  --help                          Show this message and exit.
+```
+
 ## `claims`
 
 ```
@@ -3385,20 +3654,124 @@ Options:
   --help  Show this message and exit.
 
 Commands:
-  convert          Analyze, review and convert workflow permissions.
-  delete           Delete a workflow by removing its function from the...
-  execute          Execute a registered workflow remotely and stream logs...
-  get              Get a single workflow by UUID, name, or ``path::func``...
-  grant            Grant the identity a workflow runs as what Recommended...
-  grant-role       Grant a role access to a workflow.
-  list             List all workflows visible to the caller.
-  list-orphaned    List all orphaned workflows (backing file deleted or...
-  recommendations  Show what the identity a workflow runs as would also...
-  register         Register a decorated function from an existing...
-  remap            Move references from one workflow ID to another active...
-  replace          Repoint an orphaned workflow to a new file location.
-  revoke-role      Revoke a role's access from a workflow.
-  update           Update a workflow's editable properties.
+  cloudflare-approval  Review Cloudflare workflow eligibility and approval.
+  cloudflare-report    Opt in to an offline Workers report for a...
+  convert              Analyze, review and convert workflow permissions.
+  delete               Delete a workflow by removing its function from...
+  execute              Execute a registered workflow remotely and stream...
+  get                  Get a single workflow by UUID, name, or...
+  grant                Grant the identity a workflow runs as what...
+  grant-role           Grant a role access to a workflow.
+  list                 List all workflows visible to the caller.
+  list-orphaned        List all orphaned workflows (backing file deleted...
+  recommendations      Show what the identity a workflow runs as would...
+  register             Register a decorated function from an existing...
+  remap                Move references from one workflow ID to another...
+  replace              Repoint an orphaned workflow to a new file location.
+  revoke-role          Revoke a role's access from a workflow.
+  update               Update a workflow's editable properties.
+  validate             Validate workspace PATH or proposed content from a...
+```
+
+### `workflows cloudflare-approval`
+
+```
+Usage: workflows cloudflare-approval [OPTIONS] COMMAND [ARGS]...
+
+  Review Cloudflare workflow eligibility and approval.
+
+Options:
+  --json  Emit JSON instead of human-readable output.
+  --help  Show this message and exit.
+
+Commands:
+  accept   Accept only the supplied reviewed digest.
+  list     List workflow approval states and counts in your authorized...
+  propose  Generate a review with source pins, budgets and diagnostics.
+  revoke   Revoke the current approval.
+  status   Read approval status for a workflow.
+```
+
+#### `workflows cloudflare-approval accept`
+
+```
+Usage: workflows cloudflare-approval accept [OPTIONS] REF
+
+  Accept only the supplied reviewed digest. Repeat the reviewed options.
+
+Options:
+  --subrequest-allowance INTEGER  subrequest_allowance  [required]
+  --cpu-budget-ms INTEGER         cpu_budget_ms  [required]
+  --https-hosts TEXT              https_hosts (repeat for multiple).
+  --review-sha256 TEXT            review_sha256  [required]
+  --json                          Emit JSON instead of human-readable output.
+  --help                          Show this message and exit.
+```
+
+#### `workflows cloudflare-approval list`
+
+```
+Usage: workflows cloudflare-approval list [OPTIONS]
+
+  List workflow approval states and counts in your authorized scope.
+
+Options:
+  --json  Emit JSON instead of human-readable output.
+  --help  Show this message and exit.
+```
+
+#### `workflows cloudflare-approval propose`
+
+```
+Usage: workflows cloudflare-approval propose [OPTIONS] REF
+
+  Generate a review with source pins, budgets and diagnostics.
+
+Options:
+  --subrequest-allowance INTEGER  subrequest_allowance
+  --cpu-budget-ms INTEGER         cpu_budget_ms
+  --https-hosts TEXT              https_hosts (repeat for multiple).
+  --json                          Emit JSON instead of human-readable output.
+  --help                          Show this message and exit.
+```
+
+#### `workflows cloudflare-approval revoke`
+
+```
+Usage: workflows cloudflare-approval revoke [OPTIONS] REF
+
+  Revoke the current approval.
+
+Options:
+  --json  Emit JSON instead of human-readable output.
+  --help  Show this message and exit.
+```
+
+#### `workflows cloudflare-approval status`
+
+```
+Usage: workflows cloudflare-approval status [OPTIONS] REF
+
+  Read approval status for a workflow.
+
+Options:
+  --json  Emit JSON instead of human-readable output.
+  --help  Show this message and exit.
+```
+
+### `workflows cloudflare-report`
+
+```
+Usage: workflows cloudflare-report [OPTIONS] [WORKSPACE]
+
+  Opt in to an offline Workers report for a workspace or a tree of Solutions.
+
+Options:
+  --allowance INTEGER RANGE  [default: 50; 0<=x<=50]
+  --cpu INTEGER RANGE        [default: 1000; 1<=x<=9007199254740991]
+  --aggregate-only           Print rule IDs and affected artifact counts only.
+  --json                     Emit JSON instead of human-readable output.
+  --help                     Show this message and exit.
 ```
 
 ### `workflows convert`
@@ -3769,6 +4142,23 @@ Options:
   --public-endpoint / --no-public-endpoint
                                   public_endpoint (tri-state; omit to leave
                                   unchanged).
+  --json                          Emit JSON instead of human-readable output.
+  --help                          Show this message and exit.
+```
+
+### `workflows validate`
+
+```
+Usage: workflows validate [OPTIONS] PATH
+
+  Validate workspace PATH or proposed content from a local file.
+
+Options:
+  --from-file FILE
+  --execution-lane [auto|normal|fast_path]
+  --inline                        Check placement for an inline execution.
+  --artifact-workspace            Check placement for a run with an artifact
+                                  workspace.
   --json                          Emit JSON instead of human-readable output.
   --help                          Show this message and exit.
 ```

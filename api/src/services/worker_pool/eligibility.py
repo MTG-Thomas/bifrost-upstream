@@ -1,5 +1,6 @@
 """Runtime eligibility for dispatch claims and capacity planning."""
 
+from datetime import datetime, timedelta
 from typing import cast
 from uuid import UUID
 
@@ -10,16 +11,53 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from src.models.enums import LIVE_EXECUTION_STATUSES
 from src.models.orm.agent_runs import AgentRun
+from src.models.orm.cloudflare_capacity import CloudflareWorkerReservation
 from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
 from src.models.orm.executions import Execution
 from src.models.orm.work_dispatches import WorkDispatch
+from src.models.orm.workflows import Workflow
 from src.services.work_dispatch import WAKE_AGENT_RUN, WAKE_AGENT_SUMMARY, WAKE_WORKFLOW
 from src.worker.remote.protocol import (
     CLOUDFLARE_DEV_BUDGET_BYTES,
     CLOUDFLARE_PYTHON_RUNTIME_PROFILE,
     CLOUDFLARE_WORKFLOW_HANDLER,
     LINUX_RUNTIME_PROFILE,
+    WORKERS_DEADLINE_DISPATCH_SECONDS,
+    WORKERS_DEADLINE_DRAIN_SECONDS,
+    WORKERS_DEADLINE_SKEW_SECONDS,
 )
+
+WORKERS_CLAIM_DRAIN_SECONDS = WORKERS_DEADLINE_DRAIN_SECONDS - WORKERS_DEADLINE_SKEW_SECONDS
+
+
+def dispatch_timeout_seconds() -> ColumnElement[int]:
+    # Mirror the consumer's selection of frozen metadata or the current
+    # workflow. An unknown timeout cannot reserve managed Workers capacity.
+    workflow_timeout = select(Workflow.timeout_seconds).join(Execution, Execution.workflow_id == Workflow.id).where(
+        Execution.id == WorkDispatch.subject_id,
+    ).correlate(WorkDispatch).scalar_subquery()
+    return func.coalesce(WorkDispatch.message["dispatch_metadata"]["timeout_seconds"].as_integer(), workflow_timeout)
+
+
+def timeout_fits_workers_deadline(
+    timeout_seconds: ColumnElement[int] | int, *, now: ColumnElement[datetime] | None = None,
+) -> ColumnElement[bool]:
+    # Allow for a launcher clock that reaches its stop time before the DB clock.
+    return and_(
+        timeout_seconds > 0,
+        (func.clock_timestamp() if now is None else now) + func.make_interval(0, 0, 0, 0, 0, 0, timeout_seconds)
+        <= CloudflareWorkerReservation.workers_deadline_at + timedelta(seconds=WORKERS_CLAIM_DRAIN_SECONDS),
+    )
+
+
+def managed_workflow_fits(worker_id: UUID) -> ColumnElement[bool]:
+    pin = CloudflareWorkerReservation
+    return exists(select(pin.worker_id).where(
+        pin.worker_id == worker_id,
+        pin.workers_lifetime_seconds.is_not(None),
+        pin.workers_deadline_at > func.clock_timestamp() + timedelta(seconds=WORKERS_DEADLINE_DISPATCH_SECONDS),
+        timeout_fits_workers_deadline(dispatch_timeout_seconds()),
+    ).correlate(WorkDispatch))
 
 
 def cloudflare_dispatch_sql() -> ColumnElement[bool]:
