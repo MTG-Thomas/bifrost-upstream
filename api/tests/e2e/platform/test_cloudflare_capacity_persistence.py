@@ -1007,7 +1007,10 @@ async def test_enable_retracts_workers_admission_without_container_readiness(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("create_failure", ["lost-ack", "list", 400, 401, 403, 429, "ambiguous-absent", "ack-readback"])
+@pytest.mark.parametrize("create_failure", [
+    "lost-ack", "list", 400, 401, 403, 409, 429, "ambiguous-absent", "ack-readback", "ack-absent",
+    "late-400", "late-403-enable", "late-403-disconnect", "late-409", "late-429",
+])
 async def test_container_application_effect_survives_provisioning_failures(
     db_session, installation, monkeypatch, create_failure,
 ) -> None:
@@ -1015,7 +1018,6 @@ async def test_container_application_effect_survives_provisioning_failures(
     from src.services.worker_pool.cloudflare_workers_rest import (
         OWNER_BINDING,
         CloudflareManagementDenied,
-        CloudflareRestObservation,
         worker_owner_value,
     )
 
@@ -1059,7 +1061,9 @@ async def test_container_application_effect_survives_provisioning_failures(
     placement_state = "running"
     observed_namespace = "e" * 32
     writes: list[str] = []
-    fault = create_failure
+    late = isinstance(create_failure, str) and create_failure.startswith("late-")
+    listed = not late
+    fault = "lost-ack" if late else create_failure
     provider_id = str(uuid4())
     application = {
         "id": provider_id, "name": name, "account_id": installation.account_id,
@@ -1067,7 +1071,7 @@ async def test_container_application_effect_survives_provisioning_failures(
     }
 
     def provider(request):
-        nonlocal present, launcher_present, fault
+        nonlocal present, launcher_present, listed, fault
         path = request.url.path
         if path.endswith("/workers/durable_objects/namespaces"):
             result = [{
@@ -1095,7 +1099,8 @@ async def test_container_application_effect_survives_provisioning_failures(
                 }]}
             return httpx.Response(200, json={"success": True, "result": result})
         if request.method == "POST":
-            assert path.endswith("/containers/applications") and not present
+            assert path.endswith("/containers/applications")
+            assert not present or (late and isinstance(fault, int) and not listed)
             assert json.loads(request.content) == {
                 key: application[key] for key in ("name", "scheduling_policy", "durable_objects")
             }
@@ -1107,6 +1112,8 @@ async def test_container_application_effect_survives_provisioning_failures(
                 present = fault == "lost-ack"
                 fault = None
                 raise httpx.ReadTimeout("lost create acknowledgement", request=request)
+            if fault == "ack-absent":
+                listed = False
             present = True
             return httpx.Response(200, json={"success": True, "result": application})
         if request.method == "DELETE":
@@ -1119,14 +1126,14 @@ async def test_container_application_effect_survives_provisioning_failures(
             if fault == "list" or (fault == "ack-readback" and present):
                 fault = None
                 return httpx.Response(503)
-            result = [application] if present else []
+            result = [application] if present and listed else []
         elif path.endswith(f"/{provider_id}/instances-v2"):
             result = [{
                 "application_id": provider_id, "id": "f" * 64, "status": {"state": placement_state},
             }]
         else:
             assert path.endswith(f"/applications/{provider_id}")
-            if not present:
+            if not present or not listed:
                 return httpx.Response(404)
             result = application
         return httpx.Response(200, json={"success": True, "result": result})
@@ -1144,7 +1151,8 @@ async def test_container_application_effect_survives_provisioning_failures(
         assert not writes
         observed_namespace = namespace
         failure = {
-            400: CloudflareRestObservation, 401: CloudflareManagementDenied, 403: CloudflareManagementDenied,
+            400: ObservationSettling, 401: CloudflareManagementDenied, 403: CloudflareManagementDenied,
+            409: ObservationSettling, "ack-absent": ObservationSettling,
         }.get(create_failure, CloudflareRestUnavailable)
         with pytest.raises(failure):
             await enable_job._settle_enable(job_context, payload, http, workers_release)
@@ -1153,30 +1161,6 @@ async def test_container_application_effect_survives_provisioning_failures(
             CloudflareOwnedResource.installation_id == installation.id,
             CloudflareOwnedResource.kind == "container_application",
         ))
-        if create_failure == "list":
-            assert journal is None and not writes
-        else:
-            assert journal is not None and writes == ["POST"]
-            if isinstance(create_failure, int):
-                assert journal.provider_details.get("creation_sent") is not True
-            else:
-                assert journal.provider_details.get("creation_sent") is True
-                assert (journal.provider_id == provider_id) == (create_failure == "ack-readback")
-            if create_failure == "ambiguous-absent":
-                with pytest.raises(ObservationSettling) as waiting:
-                    await enable_job._settle_enable(job_context, payload, http, workers_release)
-                assert waiting.value.check is ObservationCheck.CONTAINER_CREATE
-                assert writes == ["POST"]
-                assert journal.observed_at is not None
-                journal.observed_at -= lifecycle_job.CREATE_SETTLEMENT_WINDOW
-                await db_session.flush()
-        for _ in range(2):
-            with pytest.raises(PlatformJobRequiresAction) as held:
-                await enable_job._settle_enable(job_context, payload, http, workers_release)
-            assert held.value.result["code"] == "CF_CONTAINERS_UNVERIFIED"
-        await db_session.refresh(installation)
-        assert installation.admitted_revision is None
-
         async def cleanup():
             async with transaction() as session:
                 row = await session.get(CloudflareInstallation, installation.id)
@@ -1185,10 +1169,58 @@ async def test_container_application_effect_survives_provisioning_failures(
                     session, row, adapter, container_adapter=adapter,
                 )
 
+        if create_failure == "list":
+            assert journal is None and not writes
+        else:
+            assert journal is not None and writes == ["POST"]
+            assert (journal.provider_details.get("creation_sent") is True) == (create_failure not in (401, 403))
+            assert (journal.provider_id == provider_id) == (create_failure in ("ack-readback", "ack-absent"))
+            if create_failure == "ack-absent":
+                with pytest.raises(ObservationPending, match="recorded Container application is absent"):
+                    await enable_job._settle_enable(job_context, payload, http, workers_release)
+                assert writes == ["POST"]
+                listed = True
+            if create_failure in (400, 409, 429, "ambiguous-absent") or late:
+                # Age of the send alone does not establish a settled absence.
+                assert journal.observed_at is not None
+                journal.observed_at -= lifecycle_job.CREATE_SETTLEMENT_WINDOW
+                await db_session.flush()
+                with pytest.raises(ObservationSettling) as waiting:
+                    await enable_job._settle_enable(job_context, payload, http, workers_release)
+                assert waiting.value.check is ObservationCheck.CONTAINER_CREATE
+                assert writes == ["POST"]
+                await db_session.refresh(journal)
+                assert journal.observed_at is not None and journal.provider_details["creation_empty_observed"]
+                journal.observed_at -= lifecycle_job.CREATE_SETTLEMENT_WINDOW
+                await db_session.flush()
+            if late:
+                fault = int(create_failure.split("-")[1])
+                retry_failure = ({400: ObservationSettling, 403: CloudflareManagementDenied, 409: ObservationSettling}
+                                 .get(fault, CloudflareRestUnavailable))
+                with pytest.raises(retry_failure):
+                    await enable_job._settle_enable(job_context, payload, http, workers_release)
+                await db_session.refresh(journal)
+                assert journal.provider_details["creation_ambiguous"] is True
+                assert (journal.provider_details.get("creation_sent") is True) == ("403" not in create_failure)
+                assert writes == ["POST", "POST"]
+                # A fresh post-attempt empty read cannot discard the prior send.
+                assert await cleanup() == "settling"
+                listed = True
+
+        if create_failure != "late-403-disconnect":
+            for _ in range(2):
+                with pytest.raises(PlatformJobRequiresAction) as held:
+                    await enable_job._settle_enable(job_context, payload, http, workers_release)
+                assert held.value.result["code"] == "CF_CONTAINERS_UNVERIFIED"
+            await db_session.refresh(installation)
+            assert installation.admitted_revision is None
+
         assert await cleanup() == "progressed"
         with pytest.raises(lifecycle_job.DeletionSettling):
             await cleanup()
-        expected_posts = ["POST"] * (2 if isinstance(create_failure, int) or create_failure == "ambiguous-absent" else 1)
+        expected_posts = ["POST"] * (
+            2 if isinstance(create_failure, int) or create_failure == "ambiguous-absent" or late else 1
+        )
         assert writes == expected_posts
         placement_state = "stopped"
         with pytest.raises(CloudflareRestUnavailable):
@@ -2260,7 +2292,7 @@ async def test_disconnect_resumes_owned_script_delete_until_namespace_absence(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("operation", ["disconnect", "upgrade"])
+@pytest.mark.parametrize("operation", ["disconnect", "upgrade", "reenable"])
 async def test_joint_cleanup_waits_for_container_absence_before_deleting_workers(
     db_session, installation, monkeypatch, lifecycle_audit_actor, operation,
 ) -> None:
@@ -2358,8 +2390,15 @@ async def test_joint_cleanup_waits_for_container_absence_before_deleting_workers
             assert await lifecycle_job._settle_disable(context, payload, cleanup, tunnel_http=http) == {"outcome": "disconnected"}
         else:
             payload = enable_job.CloudflareEnablePayload(installation_id=installation.id, revision=2)
+            if operation == "reenable":
+                with pytest.raises(PlatformJobFailure) as waiting:
+                    await enable_job._drain_previous_revision(
+                        context, payload, cleanup, upgrading=False, container_adapter=ContainersRest(http),
+                    )
+                assert waiting.value.code == "CF_CLEANUP_SETTLING" and waiting.value.retryable
+                await wait_for_readback(0)
             assert await enable_job._drain_previous_revision(
-                context, payload, cleanup, upgrading=True, container_adapter=ContainersRest(http),
+                context, payload, cleanup, upgrading=operation == "upgrade", container_adapter=ContainersRest(http),
             )
     assert written == ["application", "capacity", "launcher", "containers"]
     for resource in [app, *scripts]:
@@ -2369,18 +2408,24 @@ async def test_joint_cleanup_waits_for_container_absence_before_deleting_workers
     if operation == "disconnect":
         assert installation.retired_at is not None
         assert installation.containers_ready_revision is None and installation.containers_release_digest is None
-    else:
+    elif operation == "upgrade":
         assert installation.upgrade_drained_at is not None
+    else:
+        assert installation.deployed_revision is None
 
 
 @pytest.mark.asyncio
-async def test_cleanup_confirms_absence_without_a_sent_container_create(db_session, installation) -> None:
+@pytest.mark.parametrize("ambiguous", [False, True])
+async def test_cleanup_confirms_container_create_absence(db_session, installation, ambiguous) -> None:
     from src.services.worker_pool.cloudflare_containers_rest import ContainersRest
 
     app = app_journal(installation, "c" * 64, datetime.now(UTC))
     app.namespace_ids = {"ContainerLauncher": app.provider_version}
     app.provider_id = app.provider_version = app.observed_at = None
     app.state = "creating"
+    if ambiguous:
+        app.observed_at = datetime.now(UTC) - lifecycle_job.CREATE_SETTLEMENT_WINDOW
+        app.provider_details = {"creation_ambiguous": True}
     db_session.add(app)
     await db_session.flush()
 
@@ -2390,6 +2435,11 @@ async def test_cleanup_confirms_absence_without_a_sent_container_create(db_sessi
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as http:
         adapter = ContainersRest(http)
+        if ambiguous:
+            assert await lifecycle_job._cleanup_one(db_session, installation, adapter, container_adapter=adapter) == "settling"
+            assert app.state == "creating" and app.observed_at is not None
+            app.observed_at -= lifecycle_job.CREATE_SETTLEMENT_WINDOW
+            await db_session.flush()
         assert await lifecycle_job._cleanup_one(db_session, installation, adapter, container_adapter=adapter) == "progressed"
     assert app.state == "absent" and app.observed_at is not None
 

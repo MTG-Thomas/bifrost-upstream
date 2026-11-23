@@ -63,6 +63,13 @@ digest mapping before enabling starts. Bind the pinned image under
 `ctx.container.images` reference and named `instance` to
 `ctx.container.start()`. The DO policy is a hosted qualification dependency.
 Keep the scope closed if the supported API, bindings or permissions fail.
+An unconfirmed application create remains recorded across later rejected
+attempts. Reconcile it by the exact account, name and namespace, or wait for
+two complete empty inventory reads at least a minute apart before another
+attempt. An acknowledged application ID permanently binds its create
+effect. If both exact-name and ID readbacks are absent, Enable calls for
+operator verification. Disconnect can retire that effect after verifying
+absence, clearing the way for a fresh installation.
 [Application create API](https://developers.cloudflare.com/api/resources/containers/subresources/applications/methods/create/) ·
 [Scheduling policies](https://developers.cloudflare.com/containers/configuration/scheduling-policy/) ·
 [Durable Object Container API](https://developers.cloudflare.com/containers/api/durable-object-container/)

@@ -30,9 +30,7 @@ from src.services.worker_pool.cloudflare_provisioning import (
     observe_owned,
 )
 from src.services.worker_pool.cloudflare_workers_rest import (
-    CloudflareManagementDenied,
     CloudflareRestObservation,
-    CloudflareRestUnavailable,
     WorkersRestCleanup,
 )
 
@@ -58,14 +56,6 @@ def _name(intent: ResourceIntent, kind: str) -> str:
         raise OwnershipConflict("Container target does not match its installation and revision",
                                 OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.TARGET_BINDING)
     return name
-
-
-class ContainerApplicationCreateRejected(Exception):
-    """The POST was rejected before an application could be created."""
-
-    def __init__(self, failure: CloudflareManagementDenied | CloudflareRestObservation | CloudflareRestUnavailable) -> None:
-        super().__init__("Cloudflare rejected Container application creation")
-        self.failure = failure
 
 
 class ContainersRest(WorkersRestCleanup):
@@ -224,11 +214,13 @@ class ContainersRest(WorkersRestCleanup):
                 "name": name, "scheduling_policy": "durable_object",
                 "durable_objects": {"namespace_id": namespace},
             })
-        except (CloudflareManagementDenied, CloudflareRestObservation, CloudflareRestUnavailable) as exc:
-            if isinstance(exc, CloudflareManagementDenied) or exc.status_code in (400, 429):
-                raise ContainerApplicationCreateRejected(exc) from None
-            if exc.status_code == 409:
-                raise ObservationSettling("Waiting to read back the occupied Container name",
+        except CloudflareRestObservation as exc:
+            # The OpenAPI schema describes 400 as a general input or limit
+            # error and supplies no duplicate-name discriminator. Resolve
+            # validation and conflict responses by exact inventory.
+            # https://developers.cloudflare.com/api/resources/containers/subresources/applications/methods/create/
+            if exc.status_code in (400, 409):
+                raise ObservationSettling("Waiting to read back the Container application name",
                                           OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_CREATE) from None
             raise
         assert result is not None

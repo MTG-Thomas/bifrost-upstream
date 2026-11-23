@@ -272,6 +272,24 @@ async def _cleanup_one(
     return "progressed"
 
 
+def _container_create_may_exist(resource: CloudflareOwnedResource) -> bool:
+    return (
+        resource.provider_id is not None
+        or resource.provider_details.get("creation_sent") is True
+        or resource.provider_details.get("creation_ambiguous") is True
+    )
+
+
+def _container_create_absence_settled(resource: CloudflareOwnedResource, now: datetime) -> bool:
+    # The first complete empty read after a possible send starts the clock.
+    # A preflight read or the age of the send cannot substitute for it.
+    if resource.observed_at is None or resource.provider_details.get("creation_empty_observed") is not True:
+        resource.observed_at = now
+        resource.provider_details = {**resource.provider_details, "creation_empty_observed": True}
+        return False
+    return now - resource.observed_at >= CREATE_SETTLEMENT_WINDOW
+
+
 async def _cleanup_container_application(
     adapter: ContainersRest, token: SecretStr, resource: CloudflareOwnedResource, intent: ResourceIntent,
 ) -> Literal["progressed", "settling"]:
@@ -284,14 +302,11 @@ async def _cleanup_container_application(
     )
     now = datetime.now(UTC)
     if resource.state == "creating":
-        sent = resource.provider_details.get("creation_sent") is True
+        may_exist = _container_create_may_exist(resource)
         if observed is None:
-            if sent and resource.observed_at is None:
-                resource.observed_at = now
-                return "progressed"
-            if sent and resource.observed_at is not None and now - resource.observed_at < CREATE_SETTLEMENT_WINDOW:
+            if may_exist and not _container_create_absence_settled(resource, now):
                 return "settling"
-        elif not sent:
+        elif not may_exist:
             raise OwnershipConflict("Container name is occupied before its creation effect",
                                     OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.TARGET_OCCUPIED)
         else:

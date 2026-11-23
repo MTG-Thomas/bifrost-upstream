@@ -21,11 +21,12 @@ from src.jobs.platform.base import (
     define_platform_job,
 )
 from src.jobs.platform.cloudflare_capacity import (
-    CREATE_SETTLEMENT_WINDOW,
     DRAIN_DEADLINE,
     RELEASE_FENCE_REMEDY,
     _cleanup_one,
     _cleanup_stranded_workflow_slots,
+    _container_create_absence_settled,
+    _container_create_may_exist,
     _drain_timeout_action,
     _hold_installation_lease,
     _inventory_snapshot,
@@ -60,7 +61,7 @@ from src.services.worker_pool.cloudflare_containers_release import (
     VerifiedContainerRelease,
     load_containers_release,
 )
-from src.services.worker_pool.cloudflare_containers_rest import ContainerApplicationCreateRejected, ContainersRest
+from src.services.worker_pool.cloudflare_containers_rest import ContainersRest
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
     open_credential,
@@ -562,34 +563,34 @@ async def _provision_container_application(
                                     OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.JOURNAL_STATE)
         intent = _resource_intent(application)
         observed = await adapter.observe_application(token, intent, namespace, recorded_id=application.provider_id)
-        sent = application.provider_details.get("creation_sent") is True
+        may_exist = _container_create_may_exist(application)
         if observed is not None:
-            if application.state == "creating" and not sent:
+            if application.state == "creating" and not may_exist:
                 raise OwnershipConflict("Container application was occupied before creation",
                                         OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.TARGET_OCCUPIED)
             _record_container_application(application, observed)
             return True
         if application.state == "present" or application.provider_id is not None:
+            # An acknowledged ID permanently binds this effect. Disconnect
+            # can prove its absence and retire it before a new deployment.
             raise ObservationPending("The recorded Container application is absent",
                                      OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_CREATE)
         now = datetime.now(UTC)
-        if sent:
-            absent_since = application.observed_at
-            if absent_since is None:
-                # Legacy attempts have no dated preflight observation.
-                application.observed_at = now
-                await db.commit()
-            if absent_since is None or now - absent_since < CREATE_SETTLEMENT_WINDOW:
-                raise ObservationSettling("Waiting for the earlier Container application create",
-                                          OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_CREATE)
+        if may_exist and not _container_create_absence_settled(application, now):
+            await db.commit()
+            raise ObservationSettling("Waiting for the earlier Container application create",
+                                      OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_CREATE)
         # Provider inventory and the launcher fence have both been checked.
         # An expired attempt may retry only at the same account-unique name.
         application_id = application.id
         api_token_version = row.api_token_version
         attempt = uuid4().hex
-        application.provider_details = {
-            **application.provider_details, "creation_sent": True, "creation_attempt": attempt,
-        }
+        details = {key: value for key, value in application.provider_details.items() if key != "creation_empty_observed"}
+        if may_exist:
+            # A definitive rejection of this attempt cannot resolve a
+            # previous send that may still surface in the exact inventory.
+            details["creation_ambiguous"] = True
+        application.provider_details = {**details, "creation_sent": True, "creation_attempt": attempt}
         application.observed_at = now
 
     failure: Exception | None = None
@@ -608,13 +609,16 @@ async def _provision_container_application(
                                     OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.JOURNAL_STATE)
         try:
             receipt = await adapter.create_application(token, intent, namespace)
-        except ContainerApplicationCreateRejected as exc:
+        except CloudflareManagementDenied as exc:
             application.provider_details = {
                 key: value for key, value in application.provider_details.items()
                 if key not in ("creation_sent", "creation_attempt")
             }
             application.observed_at = None
-            failure = exc.failure
+            failure = exc
+        except (CloudflareRestUnavailable, ObservationPending, OwnershipConflict) as exc:
+            application.provider_details = {**application.provider_details, "creation_ambiguous": True}
+            failure = exc
         else:
             # Keep the acknowledged ID even if its independent readback lags.
             # An API retry must observe this ID and cannot re-arm the POST.
@@ -678,7 +682,7 @@ async def _drain_previous_revision(
             if result == "progressed":
                 continue
             if not upgrading:
-                if workers_remain and result == "settling":
+                if result == "settling":
                     raise PlatformJobFailure("CF_CLEANUP_SETTLING", "Verifying Prior Cloudflare Deletion", retryable=True)
                 if workers_remain:
                     raise PlatformJobRequiresAction("Wait for Cloudflare Workers to Retire", {"code": "CF_PRIOR_WORKERS_LIVE"})
