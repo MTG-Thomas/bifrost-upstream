@@ -227,6 +227,8 @@ async def load_containers_release(http: httpx.AsyncClient, workers: WorkersRelea
         except httpx.RequestError:
             raise ContainersReleaseFetchError("The matched Cloudflare Linux release could not be fetched") from None
         except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                raise ContainersReleaseFetchError("The matched Cloudflare Linux release has not been published") from None
             if exc.response.status_code in (408, 429) or exc.response.status_code >= 500:
                 raise ContainersReleaseFetchError("The matched Cloudflare Linux release could not be fetched") from None
             raise ContainersReleaseUnavailable("The matched Cloudflare Linux release is unavailable") from None

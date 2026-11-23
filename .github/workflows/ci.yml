@@ -816,6 +816,8 @@ jobs:
     runs-on: ubuntu-latest
     name: Build API Image
     outputs:
+      digest: ${{ steps.build-api.outputs.digest }}
+      release-tags: ${{ steps.meta.outputs.tags }}
       containers-release: ${{ steps.containers-release.outputs.available }}
     permissions:
       contents: read
@@ -946,8 +948,7 @@ jobs:
           context: .
           file: ./api/Dockerfile
           platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.API_IMAGE }},push-by-digest=true,name-canonical=true,push=true
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             BIFROST_VERSION=${{ steps.version.outputs.version }}
@@ -1000,6 +1001,9 @@ jobs:
     needs: [test-unit, test-e2e-gate, lint]
     runs-on: ubuntu-latest
     name: Build Client Image
+    outputs:
+      digest: ${{ steps.build-client.outputs.digest }}
+      release-tags: ${{ steps.meta.outputs.tags }}
     permissions:
       contents: read
       packages: write
@@ -1054,8 +1058,7 @@ jobs:
           file: ./client/Dockerfile
           target: production
           platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.CLIENT_IMAGE }},push-by-digest=true,name-canonical=true,push=true
           labels: ${{ steps.meta.outputs.labels }}
           build-args: VITE_BIFROST_VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
@@ -1201,3 +1204,68 @@ jobs:
           prerelease: ${{ steps.get_version.outputs.prerelease == 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify the published Cloudflare Linux release bytes
+        if: needs.build-api.outputs.containers-release == '1'
+        run: |
+          set -euo pipefail
+          downloaded=$(mktemp -d)
+          trap 'rm -rf "$downloaded"' EXIT
+          for name in manifest.json manifest.sigstore.json container-registry.mjs; do
+            asset="cloudflare-containers-$name"
+            curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+              --output "$downloaded/$asset" "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$asset"
+            cmp "$RUNNER_TEMP/containers-release/$name" "$downloaded/$asset"
+          done
+
+  promote-release-images:
+    if: >-
+      always() &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.build-api.result == 'success' &&
+      needs.build-client.result == 'success' &&
+      needs.create-release.result == 'success'
+    needs: [build-api, build-client, create-release]
+    runs-on: ubuntu-latest
+    name: Promote Release Images
+    permissions:
+      packages: write
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote and verify the signed image digests
+        env:
+          API_DIGEST: ${{ needs.build-api.outputs.digest }}
+          API_TAGS: ${{ needs.build-api.outputs.release-tags }}
+          CLIENT_DIGEST: ${{ needs.build-client.outputs.digest }}
+          CLIENT_TAGS: ${{ needs.build-client.outputs.release-tags }}
+        run: |
+          set -euo pipefail
+          promote() {
+            local image="$1" digest="$2" tags="$3" tag actual
+            local -a args=()
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ && -n "$tags" ]]
+            while IFS= read -r tag; do
+              [[ "$tag" == "$image:"* ]]
+              args+=(--tag "$tag")
+            done <<< "$tags"
+            docker buildx imagetools create --prefer-index=false "${args[@]}" "$image@$digest"
+            while IFS= read -r tag; do
+              actual=$(docker buildx imagetools inspect "$tag" --format '{{ .Manifest.Digest }}')
+              if [[ "$actual" != "$digest" ]]; then
+                echo "::error::$tag resolved to $actual instead of $digest"
+                return 1
+              fi
+            done <<< "$tags"
+          }
+          promote "$REGISTRY/$API_IMAGE" "$API_DIGEST" "$API_TAGS"
+          promote "$REGISTRY/$CLIENT_IMAGE" "$CLIENT_DIGEST" "$CLIENT_TAGS"

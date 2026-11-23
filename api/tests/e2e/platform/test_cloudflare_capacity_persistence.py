@@ -1205,20 +1205,33 @@ async def test_container_application_effect_survives_provisioning_failures(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scenario", ["fetch", "signature", "wrong_digest", "ready", "readiness_lost"])
-async def test_opted_in_enable_admits_only_the_verified_revision(db_session, installation, monkeypatch, scenario) -> None:
+@pytest.mark.parametrize("scenario", [
+    "fetch", "unpublished", "signature", "wrong_digest", "missing_readiness", "ready", "readiness_lost",
+])
+async def test_opted_in_enable_admits_only_the_verified_revision(
+    db_session, installation, monkeypatch, scenario, tmp_path,
+) -> None:
+    from src.services.worker_pool import cloudflare_containers_release
     from src.services.worker_pool.cloudflare_containers_release import ContainersReleaseFetchError, ContainersReleaseUnavailable
 
     revision = installation.desired_revision
     release, _, _ = make_release()
     installation.desired_state = "enabled"
     installation.containers_policy = {"enabled": True}
-    installation.containers_ready_revision = revision
-    installation.containers_release_digest = release.digest
-    if scenario in ("fetch", "signature", "wrong_digest"):
+    installation.containers_ready_revision = None if scenario == "missing_readiness" else revision
+    installation.containers_release_digest = None if scenario == "missing_readiness" else release.digest
+    if scenario in ("fetch", "unpublished", "signature", "wrong_digest"):
         installation.admitted_revision = revision
     now = datetime.now(UTC)
     app = app_journal(installation, release.digest, now)
+    if scenario == "missing_readiness":
+        db_session.add(CloudflareOwnedResource(
+            installation_id=installation.id, account_id=installation.account_id,
+            scope="containers", kind="worker_script", target_name=f"bifrost-{installation.id.hex}-r{revision}-containers",
+            desired_revision=revision, artifact_digest=release.digest, effect_id=uuid4(),
+            state="present", provider_id=str(uuid4()), provider_version=str(uuid4()),
+            namespace_ids={"ContainerLauncher": "b" * 32}, observed_at=now,
+        ))
     db_session.add(seal_credential(
         CredentialRef(installation.id, installation.account_id, "scope_bearer", "containers", revision),
         SecretStr("synthetic-container-scope-bearer-key"), actor=str(OPERATOR_ID), now=now,
@@ -1262,6 +1275,20 @@ async def test_opted_in_enable_admits_only_the_verified_revision(db_session, ins
     }.get(scenario))
     if scenario == "wrong_digest":
         loader.return_value = replace(release, digest="f" * 64)
+    if scenario == "unpublished":
+        trust = tmp_path / "linux-release-signer"
+        trust.write_text(
+            "https://github.com/example/bifrost/.github/workflows/ci.yml@refs/tags/v1.0.0\n", encoding="ascii",
+        )
+        monkeypatch.setattr(cloudflare_containers_release, "_SIGNER_FILE", trust)
+        loader = AsyncMock(wraps=cloudflare_containers_release.load_containers_release)
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        assert scenario == "unpublished" and request.method == "GET"
+        assert str(request.url) == (
+            "https://github.com/example/bifrost/releases/download/v1.0.0/cloudflare-containers-manifest.json"
+        )
+        return httpx.Response(404)
 
     workers_deployments = {}
 
@@ -1289,12 +1316,12 @@ async def test_opted_in_enable_admits_only_the_verified_revision(db_session, ins
 
     payload = enable_job.CloudflareEnablePayload(installation_id=installation.id, revision=revision)
     running = PlatformJobContext(uuid4(), uuid4(), None, str(OPERATOR_ID), "", "")
-    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: pytest.fail("unexpected provider request"))) as http:
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
         if scenario == "ready":
             assert await enable_job._settle_enable(running, payload, http, workers_release) == {
                 "outcome": "enabled", "http_connections": [],
             }
-        elif scenario == "fetch":
+        elif scenario in ("fetch", "unpublished"):
             with pytest.raises(PlatformJobFailure) as exc:
                 await enable_job._settle_enable(running, payload, http, workers_release, repair_tunnel_ingress=True)
             assert exc.value.code == "CF_CONTAINERS_RELEASE_FETCH" and exc.value.retryable
@@ -1302,17 +1329,23 @@ async def test_opted_in_enable_admits_only_the_verified_revision(db_session, ins
             with pytest.raises(PlatformJobRequiresAction) as exc:
                 await enable_job._settle_enable(running, payload, http, workers_release)
             assert exc.value.result["code"] == (
-                "CF_CONTAINERS_UNVERIFIED" if scenario == "readiness_lost" else "CF_CONTAINERS_RELEASE_UNAVAILABLE"
+                "CF_CONTAINERS_UNVERIFIED"
+                if scenario in ("missing_readiness", "readiness_lost")
+                else "CF_CONTAINERS_RELEASE_UNAVAILABLE"
             )
         loader.assert_awaited_once_with(http, workers_release)
     await db_session.refresh(installation)
-    assert installation.admitted_revision == (revision if scenario in ("ready", "fetch") else None)
+    assert installation.admitted_revision == (revision if scenario in ("ready", "fetch", "unpublished") else None)
     if scenario in ("ready", "readiness_lost"):
         provision.assert_awaited_once()
         assert provisioner.create.await_count == 3
     else:
-        paid.assert_not_awaited()
-        provision.assert_not_awaited()
+        provisioner.create.assert_not_awaited()
+        if scenario == "missing_readiness":
+            provision.assert_awaited_once()
+        else:
+            paid.assert_not_awaited()
+            provision.assert_not_awaited()
 
 
 @pytest.mark.asyncio

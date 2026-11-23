@@ -190,9 +190,10 @@ async def test_load_matched_release_follows_only_github_asset_redirects(tmp_path
 @pytest.mark.parametrize(("status", "error"), [
     (None, ContainersReleaseFetchError),
     (503, ContainersReleaseFetchError),
-    (404, ContainersReleaseUnavailable),
+    (404, ContainersReleaseFetchError),
+    (403, ContainersReleaseUnavailable),
 ])
-async def test_release_fetch_distinguishes_transport_from_missing_assets(tmp_path, monkeypatch, status, error):
+async def test_release_fetch_distinguishes_settling_from_terminal_errors(tmp_path, monkeypatch, status, error):
     trust = tmp_path / "linux-release-signer"
     trust.write_text("https://github.com/example/bifrost/.github/workflows/ci.yml@refs/tags/v1.0.0\n", encoding="ascii")
     monkeypatch.setattr("src.services.worker_pool.cloudflare_containers_release._SIGNER_FILE", trust)
