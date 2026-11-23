@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: bifrost-local
+resources:
+  - ../local
+components:
+  - ../cloudflare-tunnel
+images:
+  - name: ghcr.io/gobifrost/bifrost-api
+    newName: bifrost-api
+    newTag: kind-local
+patches:
+  - target:
+      kind: ConfigMap
+      name: bifrost-local-config
+    patch: |-
+      - op: add
+        path: /data/BIFROST_CLOUDFLARE_TUNNEL_CHANNEL
+        value: kustomize

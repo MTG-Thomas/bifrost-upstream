@@ -495,7 +495,7 @@ class WorkerCapacityController(ABC):
             )).all() if cloudflare_workers else []
             managed_cloudflare_ids = set(await db.scalars(select(CloudflareWorkerReservation.worker_id).where(
                 CloudflareWorkerReservation.worker_id.in_([worker.id for worker in cloudflare_workers]),
-            ))) if cloudflare_workers and policy.warm_workers else set()
+            ))) if cloudflare_workers else set()
             active_counts = Counter(row.worker_id for row in active_claims)
             prewarm_dispatches = await released_prewarm_dispatches(
                 db, [worker.id for worker in cloudflare_workers],
@@ -551,7 +551,10 @@ class WorkerCapacityController(ABC):
                 # Give Linux-only work first use of any remaining Linux budget.
                 needed.sort(key=new_declared.fits)
             jobs = sum(1 for worker in workers if worker.form in MANAGED_WORKER_FORMS)
-            room = policy.max_workers if managed_scope is not None else max(0, policy.max_workers - jobs)
+            # DB-managed Workers have their own ceiling. Their live rows use
+            # primary capacity only through an explicitly shared ceiling.
+            primary_jobs = jobs if self.dual_capacity else jobs - len(managed_cloudflare_ids)
+            room = policy.max_workers if managed_scope is not None else max(0, policy.max_workers - primary_jobs)
             shared_cap = await db.scalar(
                 select(CloudflareInstallation.policy["limits"]["shared_managed_worker_cap"].as_integer())
                 .where(
@@ -559,6 +562,7 @@ class WorkerCapacityController(ABC):
                     CloudflareInstallation.admitted_revision.is_not(None),
                 )
             )
+            shared_room: int | None = None
             if shared_cap is not None:
                 pins = set((await db.scalars(
                     select(CloudflareWorkerReservation.worker_id)
@@ -570,7 +574,7 @@ class WorkerCapacityController(ABC):
                 if managed_scope is not None:
                     room = shared_room
                 elif not self.dual_capacity:
-                    room = min(shared_room, max(0, policy.max_workers - jobs + pinned_live))
+                    room = min(shared_room, room)
             scope_room = room
             if profile is not None and (cloudflare or self.dual_capacity):
                 scope_counts = await self._external_scope_counts(db, profile, peer)
@@ -712,6 +716,7 @@ class WorkerCapacityController(ABC):
                 normal_live = [
                     worker for worker in workers
                     if worker.form in MANAGED_WORKER_FORMS
+                    and worker.id not in managed_cloudflare_ids
                     and worker.execution_lane == "normal"
                     and worker.state != "draining"
                 ]
@@ -736,7 +741,8 @@ class WorkerCapacityController(ABC):
                     await db.commit()
                     return []
             fill_linux_floor = self.dual_capacity and warm > 0
-            if jobs >= policy.max_workers and (plan.sized or plan.standard or fill_linux_floor):
+            at_ceiling = primary_jobs >= policy.max_workers or (shared_cap is not None and room == 0)
+            if at_ceiling and (plan.sized or plan.standard or fill_linux_floor):
                 # An idle undersized worker may yield the warm minimum, but it
                 # still occupies its slot until the canonical owner retires it.
                 owned = set((await db.scalars(select(ExecutionWorker.id).where(self._managed_scope(), ExecutionWorker.state == "ready"))).all())
@@ -748,9 +754,7 @@ class WorkerCapacityController(ABC):
                          and not worker.reserved_for_dispatch_id
                          and worker.memory_budget_bytes is not None]
                 for worker_id, budget in (() if self.containers_mode else idle_declared.items()):
-                    # Retain legacy behavior for a manually enrolled row in
-                    # the Linux controller's own scope.
-                    if worker_id in owned:
+                    if worker_id in owned or (shared_room != 0 and worker_id in managed_cloudflare_ids):
                         continue
                     if fill_linux_floor or not any(
                         request.tenant_id not in active_tenants and budget.fits(request) for request in needed

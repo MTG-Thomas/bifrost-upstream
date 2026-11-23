@@ -164,6 +164,7 @@ from src.services.worker_pool.cloudflare_workers_rest import (
     WorkersRestProvisioner,
     worker_owner_value,
 )
+from src.services.worker_pool.manifest import WorkerJobSpec
 from src.services.worker_pool.recovery import end_runs_of_lost_worker
 from src.worker.remote.fencing import LeaseRef, fence_remote_owner, remote_owner_context
 from src.worker.remote.host import ApiExecutor, Bridge, _cloudflare_tenant_key
@@ -2087,9 +2088,15 @@ async def test_supervisor_reserves_and_retires_without_restarting(supervisor_dat
         heartbeat_at=datetime.now(UTC), supported_handlers=["workflow.execute"],
         memory_budget_bytes=128 * 2**20, memory_reserved_bytes=128 * 2**20,
     )
-    db_session.add(primary_worker)
+    operator = User(email="job-placement@example.test")
+    db_session.add_all((primary_worker, operator))
+    await db_session.flush()
+    caller = _platform_operator(operator.id)
+    run = Execution(workflow_name="fixture", executed_by_name="fixture", executed_by=operator.id)
+    db_session.add(run)
+    await db_session.flush()
     dispatch = WorkDispatch(
-        family="workflow", handler="workflow.execute", handler_version=1, subject_id=uuid4(),
+        family="workflow", handler="workflow.execute", handler_version=1, subject_id=run.id,
         message={}, payload={}, cloudflare_revision="c" * 64, memory_request_bytes=64 * 2**20,
         created_at=datetime.now(UTC) - timedelta(minutes=1),
     )
@@ -2166,7 +2173,25 @@ async def test_supervisor_reserves_and_retires_without_restarting(supervisor_dat
                 "limits": {**installation.policy["limits"], "shared_managed_worker_cap": None},
             }
         await db_session.flush()
-        if primary == "static":
+        if primary == "job":
+            static_executor = ExecutionWorker(
+                form="static", state="ready", heartbeat_at=datetime.now(UTC),
+                supported_handlers=["workflow.execute"], memory_budget_bytes=128 * 2**20,
+            )
+            db_session.add(static_executor)
+            await db_session.flush()
+            await sweep()
+            assert not writes
+            lanes = await cloudflare_status.overflow_status(
+                db_session, caller, installation,
+                CloudflareCapacityPolicy.model_validate(installation.policy["limits"]),
+                now=datetime.now(UTC), approvals=1, blockers=[],
+            )
+            assert lanes[0].primary_saturated is True
+            assert lanes[0].primary_fit == 1
+            assert [reason.code for reason in lanes[0].reasons] == ["primary_has_capacity"]
+            static_executor.memory_reserved_bytes = 128 * 2**20
+        elif primary == "static":
             await sweep()
             assert not writes
             primary_worker.memory_reserved_bytes = 128 * 2**20
@@ -2174,6 +2199,15 @@ async def test_supervisor_reserves_and_retires_without_restarting(supervisor_dat
         assert queued_at is not None
         dispatch.created_at = queued_at
         await db_session.flush()
+        if primary == "job":
+            lanes = await cloudflare_status.overflow_status(
+                db_session, caller, installation,
+                CloudflareCapacityPolicy.model_validate(installation.policy["limits"]),
+                now=queued_at, approvals=1, blockers=[],
+            )
+            reason, = lanes[0].reasons
+            assert reason.code == "waiting_for_launch_gate"
+            assert reason.next_eligible_at == queued_at + timedelta(seconds=2)
         # Exercise the real supervisor without Redis hints for each primary form.
         reconcile_scope = cloudflare_supervisor._reconcile_scope
 
@@ -2205,6 +2239,27 @@ async def test_supervisor_reserves_and_retires_without_restarting(supervisor_dat
             timing["controller_decision_at"] <= timing["launcher_reserved_at"] <=
             timing["launcher_start_sent_at"] <= timing["launcher_start_accepted_at"]
         )
+        if primary == "job":
+            # An existing Workers launcher must leave the Job ceiling intact
+            # unless the operator configured a shared ceiling.
+            primary_worker.state = "retired"
+            dispatch.cloudflare_revision = None  # Linux-only demand.
+            spec = WorkerJobSpec(namespace="test", image="api:test", env_from=(), service_account="default")
+            async with httpx.AsyncClient(base_url="https://kube.example.test") as kube:
+                primary_controller = controller.WorkerPoolController(
+                    KubernetesJobClient(settings, http_client=kube, namespace="test"), settings, spec,
+                )
+                policy = await controller.load_kubernetes_policy(db_session)
+                for shared_cap in (1, None):
+                    installation.policy = {
+                        **installation.policy,
+                        "limits": {**installation.policy["limits"], "shared_managed_worker_cap": shared_cap},
+                    }
+                    await db_session.flush()
+                    launched = await primary_controller.launch_for_demand(policy)
+                    assert len(launched) == (1 if shared_cap is None else 0)
+                replacement = await db_session.get(ExecutionWorker, launched[0])
+                assert replacement is not None and replacement.form == "job" and replacement.state == "reserved"
         db_session.add(CloudflareWorkflowSlot(
             installation_id=installation.id, tenant="platform", ordinal=0, worker_id=worker_id,
             execution_id=uuid4(), dispatch_id=uuid4(), fence=uuid4(), sent=True,

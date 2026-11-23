@@ -335,11 +335,16 @@ async def overflow_status(
     saturated = None
     covered: set[UUID] = set()
     if primary is not None:
+        cohort = (ExecutionWorker.form == primary.form) & (ExecutionWorker.capacity_scope == primary.scope)
+        if primary.form == "job":
+            cohort = cohort | (ExecutionWorker.form == "static")
         workers = list(await db.scalars(select(ExecutionWorker).where(
             ExecutionWorker.runtime_profile == LINUX_RUNTIME_PROFILE,
-            ExecutionWorker.form == primary.form, ExecutionWorker.capacity_scope == primary.scope,
+            cohort,
             ExecutionWorker.state.in_(("reserved", "starting", "ready", "draining")),
         )))
+        # The managed cohort determines saturation. Static launchers in the
+        # same install can still claim workflow demand and cover Linux fit.
         state = primary.capacity_state(workers, now)
         saturated = state == "saturated"
         if cause in (None, "unhealthy", "below_ceiling"):

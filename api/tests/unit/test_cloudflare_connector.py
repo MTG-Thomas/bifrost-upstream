@@ -5,6 +5,7 @@ import base64
 import json
 import sys
 from contextlib import asynccontextmanager, suppress
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
@@ -12,6 +13,7 @@ import pytest
 from cryptography.fernet import InvalidToken
 from src.jobs.platform.kubernetes_client import KubernetesApiError, KubernetesJobClient
 from src.services import worker_ingress
+from src.services.worker_pool import cloudflare_connector_channel
 from src.services.worker_pool.cloudflare_connector_channel import _publish_file
 from src.services.worker_pool.cloudflare_provisioning import OwnershipConflict
 from src.services.worker_pool.cloudflare_tunnel_rest import connector_secret
@@ -118,6 +120,46 @@ async def test_kubernetes_projection_refuses_a_foreign_secret(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("mutable", "can_patch"), [(True, True), (True, False), (False, True)])
+async def test_kubernetes_preflight_checks_the_exact_mutable_secret(monkeypatch, mutable, can_patch):
+    requests = []
+    secret_path = "/api/v1/namespaces/test/secrets/bifrost-cloudflare-connector"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
+        if request.method == "GET":
+            assert request.url.path == secret_path
+            return httpx.Response(200, json={
+                "metadata": {
+                    "name": "bifrost-cloudflare-connector", "namespace": "test", "resourceVersion": "13",
+                    "labels": {"app.kubernetes.io/component": "cloudflare-connector"},
+                },
+                "type": "Opaque",
+                "immutable": not mutable,
+            })
+        assert json.loads(request.content)["spec"]["resourceAttributes"] == {
+            "namespace": "test", "verb": "patch", "group": "", "resource": "secrets",
+            "name": "bifrost-cloudflare-connector",
+        }
+        return httpx.Response(201, json={"status": {"allowed": can_patch}})
+
+    monkeypatch.setattr(KubernetesJobClient, "_read_token", lambda _: "fixture-service-account")
+    monkeypatch.setattr(cloudflare_connector_channel, "get_settings", lambda: SimpleNamespace(
+        cloudflare_tunnel_channel="kustomize",
+    ))
+    monkeypatch.setattr(cloudflare_connector_channel, "in_cluster_namespace", lambda: "test")
+    async with httpx.AsyncClient(base_url="https://kube.example.test", transport=httpx.MockTransport(handler)) as http:
+        monkeypatch.setattr(cloudflare_connector_channel, "KubernetesJobClient", lambda *, namespace: (
+            KubernetesJobClient(http_client=http, namespace=namespace)
+        ))
+        assert await cloudflare_connector_channel.connector_channel_ready() is (mutable and can_patch)
+    expected = [("GET", secret_path)]
+    if mutable:
+        expected.append(("POST", "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews"))
+    assert requests == expected
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("layout", ["compose", "kustomize"])
 async def test_supervisor_restarts_and_stops_child_on_token_projection(monkeypatch, tmp_path, layout):
     token = tmp_path / "token"
@@ -144,10 +186,12 @@ async def test_supervisor_restarts_and_stops_child_on_token_projection(monkeypat
     if layout == "kustomize":
         token.symlink_to("..data/token")
     monkeypatch.setattr(cloudflare_connector, "launch", launch)
-    project(1, "Zmlyc3Q=")
     supervisor = asyncio.create_task(cloudflare_connector.supervise(token))
     try:
         async with asyncio.timeout(5):
+            await asyncio.sleep(0)  # Start the dormant watcher before publishing.
+            assert launches.empty()
+            project(1, "Zmlyc3Q=")
             first = await launches.get()
             project(2, "c2Vjb25k")
             second = await launches.get()
