@@ -20,38 +20,28 @@ const policy = await readFile("/fixture-routes.json", "utf8");
 const guest = `
 import asyncio
 import ssl
-import sys
 import httpx
 import websockets
 
-checkpoint = 10
 async def exercise():
-    global checkpoint
     origin = "${origin}"
     trust = ssl.create_default_context(cafile="/etc/cloudflare/certs/cloudflare-containers-ca.crt")
     async with websockets.connect("wss://ingress.example.test/api/worker-control", ssl=trust) as ws:
         await ws.send("fixture-frame")
         assert await ws.recv() == "fixture-frame"
-    checkpoint = 11
     async with httpx.AsyncClient(verify=trust, trust_env=False, follow_redirects=False) as client:
         path = "/api/sdk/capacity-canary/00000000-0000-0000-0000-000000000001"
         response = await client.get(origin + path)
         assert response.status_code == 204 and response.headers["x-bifrost-worker-ingress"] == "v1; allowed"
-        checkpoint = 12
         response = await client.get(origin + path, headers={"Host": "untrusted.example.test"})
         assert response.status_code == 403 and response.headers["x-bifrost-container-relay-rejection"] == "origin"
-        checkpoint = 13
         response = await client.get(origin + "/unapproved")
         assert response.status_code == 403 and response.headers["x-bifrost-container-relay-rejection"] == "route"
-        checkpoint = 14
         response = await client.get(origin + path, headers={"X-Bifrost-Canary-Redirect": "1"})
         assert response.status_code == 403 and response.headers["x-bifrost-container-relay-rejection"] == "redirect"
         assert "location" not in response.headers
 
-try:
-    asyncio.run(exercise())
-except Exception:
-    sys.exit(checkpoint)
+asyncio.run(exercise())
 `;
 const source = registry + scopeBundle.replace("export default {", "const scopeControl = {") + `
 export class Fixture extends DurableObject {
@@ -72,11 +62,14 @@ export class Fixture extends DurableObject {
         await container.interceptOutboundHttps("ingress.example.test", this.ctx.exports.ContainerIngress({
             props: { uid, instance },
         }));
-        container.start({ image: container.images.local, enableInternet: false,
-            entrypoint: ["/usr/local/bin/python", "-c", ${JSON.stringify(guest)}] });
+        container.start({ image: container.images.local, enableInternet: false, entrypoint: ["/bin/sleep", "infinity"] });
         try {
-            await container.monitor();
-            return await registry.meteredEgress(uid, instance);
+            const process = await container.exec(["/usr/local/bin/python", "-c", ${JSON.stringify(guest)}]);
+            const output = await process.output();
+            return {
+                exitCode: output.exitCode, stderr: new TextDecoder().decode(output.stderr),
+                metered: await registry.meteredEgress(uid, instance),
+            };
         } finally {
             if (container.running) await container.destroy();
         }
@@ -85,7 +78,7 @@ export class Fixture extends DurableObject {
 export default {
     async fetch(request, env) {
         if (new URL(request.url).pathname !== "/fixture") return scopeControl.fetch(request, env);
-        return new Response(null, { status: await env.FIXTURE.getByName("native").run() ? 204 : 409 });
+        return Response.json(await env.FIXTURE.getByName("native").run());
     }
 };
 `;
@@ -136,7 +129,9 @@ const mf = new Miniflare({
 });
 try {
     const worker = await mf.getWorker(scope);
-    assert.equal((await worker.fetch("https://scope.example.test/fixture")).status, 204);
+    const result = await (await worker.fetch("https://scope.example.test/fixture")).json();
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.equal(result.metered, true);
     console.log("Native Container HTTPS, WebSocket and rejection witnesses passed");
 } finally {
     await mf.dispose();
