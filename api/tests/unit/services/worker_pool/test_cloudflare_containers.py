@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
+from hmac import digest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -13,7 +14,8 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from pydantic import SecretStr, ValidationError
 from src.models.orm.execution_workers import ExecutionWorker
 from src.services.worker_pool import cloudflare_containers_rest
@@ -694,15 +696,22 @@ async def test_container_control_signs_each_route_for_the_incarnation(operation)
         assert "authorization" not in request.headers and scope_secret.encode() not in request.content
         headers = request.headers
         key = headers["x-bifrost-incarnation-key"]
-        certificate = json.dumps([pin["installation"], pin["revision"], pin["worker"], pin["uid"], key],
+        expires = int(headers["x-bifrost-incarnation-expires"])
+        nonce = headers["x-bifrost-request-nonce"]
+        assert expires == now + 60_000 and len(nonce) == 32
+        certificate = json.dumps([sorted(pin.items()), key, expires],
                                  separators=(",", ":")).encode()
         Ed25519PublicKey.from_public_bytes(bytes.fromhex(container_scope_public_key(scope_secret))).verify(
             bytes.fromhex(headers["x-bifrost-incarnation-certificate"]), b"bifrost.containers.incarnation.v1\0" + certificate,
         )
-        message = json.dumps([path, now, sha256(request.content).hexdigest()], separators=(",", ":")).encode()
-        Ed25519PublicKey.from_public_bytes(bytes.fromhex(key)).verify(
-            bytes.fromhex(headers["x-bifrost-request-signature"]), b"bifrost.containers.request.v1\0" + message,
-        )
+        message = b"bifrost.containers.request.v1\0" + json.dumps(
+            [path, now, expires, nonce, sha256(request.content).hexdigest()], separators=(",", ":"),
+        ).encode()
+        public = Ed25519PublicKey.from_public_bytes(bytes.fromhex(key))
+        public.verify(bytes.fromhex(headers["x-bifrost-request-signature"]), message)
+        guest_key = Ed25519PrivateKey.from_private_bytes(digest(control_key.encode(), b"bifrost.containers.request.v1\0", "sha256"))
+        with pytest.raises(InvalidSignature):
+            public.verify(guest_key.sign(message), message)
         assert (control_key.encode() in request.content) == (operation != "stop")
         return httpx.Response(200, json={"status": "pending"})
 

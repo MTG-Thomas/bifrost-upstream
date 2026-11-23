@@ -39,6 +39,10 @@ export class ContainerScopeRegistry extends DurableObject {
         return this.registry.meteredEgress(uid, instance);
     }
 
+    consumeControlNonce(nonce, requestTime) {
+        return this.registry.consumeControlNonce(nonce, requestTime);
+    }
+
     async fetch(request) {
         // Only the bound egress Worker can invoke this fetch path. Use the
         // fetch transport so a WebSocket upgrade can cross the DO boundary.
@@ -124,7 +128,9 @@ export class ContainerLauncher extends DurableObject {
 
 export default {
     fetch(request, env) {
-        return dispatchContainerControl(request, env, async (operation, data) => {
+        const registry = () => env.CONTAINER_REGISTRY.getByName("scope");
+        return dispatchContainerControl(request, env, (nonce, time) => registry().consumeControlNonce(nonce, time),
+            async (operation, data) => {
             const { pin, nonce, control_key: controlKey } = data;
             if (operation === "/v1/egress-probe" &&
                 (pin.tenant !== "qualification-canary" || !/^[A-Za-z0-9_-]{43}$/.test(nonce)
@@ -133,7 +139,6 @@ export default {
             }
             const id = env.CONTAINER_INSTANCE.idFromName(pin.uid);
             const actor = () => env.CONTAINER_INSTANCE.get(id);
-            const registry = () => env.CONTAINER_REGISTRY.getByName("scope");
             const instance = id.toString();
             const uid = pin.uid;
             switch (operation) {

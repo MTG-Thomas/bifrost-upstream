@@ -61,7 +61,7 @@ function reserve(scope, pin, now = pin.reservedAt) {
 }
 
 test("the Container transport only dispatches a fresh, certified incarnation request", async (t) => {
-    const { db, pin } = fixture();
+    const { db, pin, registry } = fixture();
     t.after(() => db.close());
     const scope = generateKeyPairSync("ed25519");
     const incarnation = generateKeyPairSync("ed25519");
@@ -76,17 +76,22 @@ test("the Container transport only dispatches a fresh, certified incarnation req
     const body = JSON.stringify({ pin: reservation });
     const signValue = (identity, domain, value) =>
         sign(null, Buffer.from(domain + JSON.stringify(value)), identity.privateKey).toString("hex");
-    const certificate = signValue(scope, "bifrost.containers.incarnation.v1\0",
-        [reservation.installation, reservation.revision, reservation.worker, reservation.uid, key]);
     const path = "/v1/stop";
     const now = Date.now();
-    const headers = time => ({
+    const nonce = "4".repeat(32);
+    const expires = now + 60_000;
+    const certificate = signValue(scope, "bifrost.containers.incarnation.v1\0",
+        [Object.entries(reservation).sort(([a], [b]) => a < b ? -1 : Number(a > b)), key, expires]);
+    const headers = (time, content = body, signingKey = incarnation, expiry = expires) => ({
         "X-Bifrost-Incarnation-Key": key,
         "X-Bifrost-Incarnation-Certificate": certificate,
+        "X-Bifrost-Incarnation-Expires": String(expiry),
         "X-Bifrost-Request-Time": String(time),
-        "X-Bifrost-Request-Signature": signValue(incarnation, "bifrost.containers.request.v1\0",
-            [path, time, createHash("sha256").update(body).digest("hex")]),
+        "X-Bifrost-Request-Nonce": nonce,
+        "X-Bifrost-Request-Signature": signValue(signingKey, "bifrost.containers.request.v1\0",
+            [path, time, expiry, nonce, createHash("sha256").update(content).digest("hex")]),
     });
+    const changed = JSON.stringify({ pin: { ...reservation, deadline: reservation.deadline + 1 } });
     const request = (pathname, options) => new Request("https://containers.example.test" + pathname, options);
     let calls = 0;
     const invoke = (operation, data) => {
@@ -95,19 +100,21 @@ test("the Container transport only dispatches a fresh, certified incarnation req
         calls++;
         return new Response(null, { status: 202 });
     };
-    assert.equal((await dispatchContainerControl(request("/"), env, invoke)).status, 404);
+    const dispatch = input => dispatchContainerControl(input, env, (n, stamp) => registry().consumeControlNonce(n, stamp), invoke);
+    assert.equal((await dispatch(request("/"))).status, 404);
     for (const [route, content, h] of [
         [path, body, {}],
         ["/v1/start", body, headers(now)],
         [path, body + " ", headers(now)],
-        [path, body, headers(now - 60_000)],
+        [path, body, headers(now - 60_000, body, incarnation, now)],
+        [path, body, headers(now, body, generateKeyPairSync("ed25519"))],
+        [path, changed, headers(now, changed)],
     ]) {
-        assert.equal((await dispatchContainerControl(request(route, { method: "POST", headers: h, body: content }),
-            env, invoke)).status, 403);
+        assert.equal((await dispatch(request(route, { method: "POST", headers: h, body: content }))).status, 403);
     }
     assert.equal(calls, 0);
-    assert.equal((await dispatchContainerControl(request(path, { method: "POST", headers: headers(now), body }),
-        env, invoke)).status, 202);
+    assert.equal((await dispatch(request(path, { method: "POST", headers: headers(now), body }))).status, 202);
+    assert.equal((await dispatch(request(path, { method: "POST", headers: headers(now), body }))).status, 403);
     assert.equal(calls, 1);
 });
 

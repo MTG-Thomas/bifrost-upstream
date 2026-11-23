@@ -56,6 +56,20 @@ export class ScopeRegistry {
             ingress INTEGER NOT NULL DEFAULT 0, outbound INTEGER NOT NULL DEFAULT 0,
             relay_blocked INTEGER NOT NULL DEFAULT 0
         )`);
+        this.sql.exec("CREATE TABLE IF NOT EXISTS control_nonces (nonce TEXT PRIMARY KEY, expires INTEGER NOT NULL)");
+    }
+
+    consumeControlNonce(nonce, requestTime) {
+        const now = Date.now();
+        if (!UID.test(nonce) || !Number.isSafeInteger(requestTime)
+            || Math.abs(now - requestTime) > CONTROL_REQUEST_CLOCK_WINDOW) return false;
+        return this.storage.transactionSync(() => {
+            this.sql.exec("DELETE FROM control_nonces WHERE expires < ?", now);
+            if (this.sql.exec("SELECT count(*) AS count FROM control_nonces").one().count >= 4096
+                || this.sql.exec("SELECT nonce FROM control_nonces WHERE nonce = ?", nonce).toArray().length) return false;
+            this.sql.exec("INSERT INTO control_nonces VALUES (?, ?)", nonce, requestTime + CONTROL_REQUEST_CLOCK_WINDOW);
+            return true;
+        });
     }
 
     reserve(pin) {
@@ -360,7 +374,7 @@ async function readControlBody(request) {
 
 // Authentication happens before a request can address a stateful actor. Only
 // public verification material is installed in the Worker.
-export async function dispatchContainerControl(request, env, invoke) {
+export async function dispatchContainerControl(request, env, consumeNonce, invoke) {
     const url = new URL(request.url);
     if (request.method !== "POST" || url.search || !CONTROL_REQUEST_ROUTES.has(url.pathname)) {
         return new Response(null, { status: 404 });
@@ -371,9 +385,13 @@ export async function dispatchContainerControl(request, env, invoke) {
     const certificate = request.headers.get("X-Bifrost-Incarnation-Certificate");
     const signature = request.headers.get("X-Bifrost-Request-Signature");
     const time = request.headers.get("X-Bifrost-Request-Time");
+    const expires = request.headers.get("X-Bifrost-Incarnation-Expires");
+    const nonce = request.headers.get("X-Bifrost-Request-Nonce");
     if (!/^[a-f0-9]{64}$/.test(root) || !/^[a-f0-9]{64}$/.test(publicKey)
         || !/^[a-f0-9]{128}$/.test(certificate) || !/^[a-f0-9]{128}$/.test(signature)
-        || !/^[0-9]{13}$/.test(time) || Math.abs(Date.now() - Number(time)) > CONTROL_REQUEST_CLOCK_WINDOW) {
+        || !UID.test(nonce) || !/^[0-9]{13}$/.test(time) || !/^[0-9]{13}$/.test(expires)
+        || Number(expires) !== Number(time) + 60_000 || Date.now() >= Number(expires)
+        || Math.abs(Date.now() - Number(time)) > CONTROL_REQUEST_CLOCK_WINDOW) {
         return denied();
     }
     let data;
@@ -381,18 +399,20 @@ export async function dispatchContainerControl(request, env, invoke) {
         const body = await readControlBody(request);
         if (!body) return denied();
         const digest = hex(new Uint8Array(await crypto.subtle.digest("SHA-256", body)));
-        const message = JSON.stringify([url.pathname, Number(time), digest]);
+        const message = JSON.stringify([url.pathname, Number(time), Number(expires), nonce, digest]);
         if (!await verifySignature(publicKey, signature, REQUEST_DOMAIN + message)) return denied();
         data = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
         const pin = data.pin;
         if (pin?.installation !== env.CONTAINERS_INSTALLATION
             || pin?.revision !== Number(env.CONTAINERS_REVISION)
             || !UUID.test(pin?.worker) || !UID.test(pin?.uid)) return denied();
-        const binding = JSON.stringify([pin.installation, pin.revision, pin.worker, pin.uid, publicKey]);
+        const binding = JSON.stringify([Object.entries(pin).sort(([a], [b]) => a < b ? -1 : Number(a > b)),
+            publicKey, Number(expires)]);
         if (!await verifySignature(root, certificate, CERTIFICATE_DOMAIN + binding)) return denied();
     } catch {
         return denied();
     }
+    if (await consumeNonce(nonce, Number(time)) !== true) return denied();
     return await invoke(url.pathname, data);
 }
 
