@@ -51,6 +51,7 @@ from src.services.work_dispatch import (
 )
 from src.services.worker_ingress_probes import probe_worker_ingress
 from src.services.worker_pool import cloudflare_tunnel
+from src.services.worker_pool.cloudflare_admission import joint_container_readiness
 from src.services.worker_pool.cloudflare_canary import run_workers_canary
 from src.services.worker_pool.cloudflare_credentials import (
     CredentialRef,
@@ -208,6 +209,18 @@ async def _settle_enable(
         row = await _locked_current(db, context, payload)
         if row is None:
             return {"outcome": "superseded"}
+        joint_ready = await db.scalar(select(joint_container_readiness(payload.revision)).where(
+            CloudflareInstallation.id == row.id,
+        ))
+        if joint_ready is not True:
+            if row.admitted_revision is not None:
+                row.admitted_revision = None
+                wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
+                # Commit the closure before returning the operator action.
+                await db.commit()
+            raise PlatformJobRequiresAction("Verify Cloudflare Containers Readiness", {
+                "code": "CF_CONTAINERS_UNVERIFIED",
+            })
         upgrading = row.upgrade_release is not None
         order = WorkersReleaseOrder(release.manifest.release_version, release.manifest.release_sequence)
         if code := workers_release_error(row, release.digest, order):
@@ -401,6 +414,12 @@ async def _settle_enable(
         row = await _locked_current(db, context, payload)
         if row is None:
             return {"outcome": "superseded"}
+        if await db.scalar(select(joint_container_readiness(payload.revision)).where(
+            CloudflareInstallation.id == row.id,
+        )) is not True:
+            raise PlatformJobRequiresAction("Verify Cloudflare Containers Readiness", {
+                "code": "CF_CONTAINERS_UNVERIFIED",
+            })
         if upgrading:
             await _observe_inventory(
                 cleanup_adapter, await _management_token(db, row),

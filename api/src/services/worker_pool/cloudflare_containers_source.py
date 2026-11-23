@@ -14,7 +14,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.orm.cloudflare_approvals import CloudflareApproval
 from src.models.orm.cloudflare_capacity import CloudflareWorkerReservation
-from src.config import get_settings
 from src.models.orm.execution_workers import ExecutionWorker, ExecutionWorkerClaim
 from src.models.orm.solutions import Solution
 from src.models.orm.workflows import Workflow
@@ -51,7 +50,7 @@ async def container_workflow_assignment(db: AsyncSession, execution_id: UUID) ->
     ).order_by(claim.claimed_at.desc(), claim.id.desc()).limit(1))).one_or_none()
     if assigned is not None:
         scope, reservation, live = assigned
-        if scope is not None and scope in (CONTAINERS_SCOPE, getattr(get_settings(), "cloudflare_containers_scope", None)):
+        if scope == CONTAINERS_SCOPE:
             return ContainerAssignment(reservation, live is True)
         if reservation is not None and (reservation.scope == CONTAINERS_SCOPE or reservation.container_reserved_at):
             return ContainerAssignment(reservation, live is True)

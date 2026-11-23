@@ -243,7 +243,10 @@ async def _container_scope_cooldown(
     )
     closed_at = await db.scalar(select(pin.container_stopped_at).where(
         *scope, pin.container_stopped_at.is_not(None),
-        pin.container_envelope["settled_absent"].as_boolean().is_(True),
+        or_(
+            pin.container_envelope["settled_absent"].as_boolean().is_(True),
+            pin.container_envelope["allocation_refused"].as_boolean().is_(True),
+        ),
     ).order_by(pin.container_stopped_at.desc()).limit(1))
     if closed_at is None:
         return None

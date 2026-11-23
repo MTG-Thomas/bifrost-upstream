@@ -50,6 +50,7 @@ class VoidContainerStart:
     instance_id: str
     start_deadline_ms: int
     voided_at_ms: int
+    allocation_refused: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,10 +102,12 @@ async def settle_container_stop(
     instance = envelope.get("provider_instance_id")
     void = isinstance(closure, VoidContainerStart)
     absent = isinstance(closure, AbsentContainerStart)
+    refused = isinstance(closure, VoidContainerStart) and closure.allocation_refused
     if pin.container_stopped_at is not None:
         if (
             instance != closure.instance_id or bool(envelope.get("voided_unstarted")) != void
             or bool(envelope.get("settled_absent")) != absent
+            or bool(envelope.get("allocation_refused")) != refused
         ):
             raise ObservationPending("Container stop replay does not match the settled reservation")
         return
@@ -134,10 +137,11 @@ async def settle_container_stop(
             when = datetime.fromtimestamp(closed_at_ms / 1000, UTC)
             now = await db.scalar(select(func.clock_timestamp()))
             if (
-                now is None or deadline.tzinfo is None or not pin.container_reserved_at < deadline <= now
+                now is None or deadline.tzinfo is None or not pin.container_reserved_at < deadline
                 or type(closure.start_deadline_ms) is not int or type(closed_at_ms) is not int
                 or closure.start_deadline_ms != int(deadline.timestamp() * 1000)
-                or closed_at_ms < closure.start_deadline_ms or when > now
+                or closed_at_ms < int(pin.container_reserved_at.timestamp() * 1000) or when > now
+                or refused != (closed_at_ms < closure.start_deadline_ms)
                 or (
                     isinstance(closure, AbsentContainerStart) and (
                         type(closure.authorized_at_ms) is not int
@@ -150,12 +154,14 @@ async def settle_container_stop(
                 raise ValueError
         except (KeyError, OSError, TypeError, ValueError, OverflowError):
             raise ObservationPending("Container absence does not witness its expired start deadline") from None
+        when = max(when, pin.container_reserved_at)
         if await db.scalar(select(exists().where(ExecutionWorkerClaim.worker_id == worker.id))):
             raise ObservationPending("An unstarted Container cannot own a claim")
         await rest.observe_no_placement(token, closure.application, closure.instance_id)
         pin.container_envelope = {
             **envelope, "provider_instance_id": closure.instance_id,
             ("voided_unstarted" if void else "settled_absent"): True,
+            **({"allocation_refused": True} if refused else {}),
         }
         pin.container_stopped_at = when
         worker.state = "retired"

@@ -10,7 +10,7 @@ from decimal import Decimal
 from pathlib import Path
 from time import perf_counter
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 from uuid import UUID, uuid4
 
 import httpx
@@ -974,6 +974,38 @@ async def test_canary_proof_requires_current_lease_worker_generation_and_revisio
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("readback", ["ambiguous_namespaces", "invisible_upload"])
+async def test_enable_retracts_workers_admission_without_container_readiness(
+    db_session, installation, monkeypatch,
+) -> None:
+    installation.desired_state = "enabled"
+    installation.admitted_revision = installation.desired_revision
+    installation.containers_policy = container_policy().model_copy(update={"enabled": True}).model_dump(mode="json")
+    await db_session.flush()
+    connection = await db_session.connection()
+
+    @asynccontextmanager
+    async def context():
+        async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as session:
+            yield session
+
+    async def locked_current(session, _context, payload):
+        return await session.get(CloudflareInstallation, payload.installation_id, with_for_update=True)
+
+    def unexpected_provider_request(_request):
+        pytest.fail("Enable contacted the provider without joint readiness")
+
+    monkeypatch.setattr(enable_job, "get_db_context", context)
+    monkeypatch.setattr(enable_job, "_locked_current", locked_current)
+    payload = enable_job.CloudflareEnablePayload(installation_id=installation.id, revision=installation.desired_revision)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(unexpected_provider_request)) as http:
+        with pytest.raises(PlatformJobRequiresAction) as blocked:
+            await enable_job._settle_enable(MagicMock(), payload, http, MagicMock())
+    assert blocked.value.result["code"] == "CF_CONTAINERS_UNVERIFIED"
+    await db_session.refresh(installation)
+    assert installation.admitted_revision is None
+
+
+@pytest.mark.asyncio
 async def test_enable_keeps_admission_closed_on_unverified_readback(
     db_session: AsyncSession, installation: CloudflareInstallation, monkeypatch, readback,
 ) -> None:
@@ -2811,8 +2843,8 @@ async def test_managed_container_ownership_fences_live_sessions(db_session, inst
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("fenced", [False, True], ids=["void", "fenced-absent"])
-async def test_disconnect_preserves_unresolved_container_cleanup(db_session, installation, monkeypatch, fenced) -> None:
+@pytest.mark.parametrize("closure_kind", ["void", "fenced-absent", "allocation-refused"])
+async def test_disconnect_preserves_unresolved_container_cleanup(db_session, installation, monkeypatch, closure_kind) -> None:
     from src.services.worker_pool.cloudflare_containers_admission import (
         ContainerAdmissionRefused,
         _container_scope_cooldown,
@@ -2915,10 +2947,15 @@ async def test_disconnect_preserves_unresolved_container_cleanup(db_session, ins
     app = ResourceObservation(
         ResourceIntent(target, journal.effect_id, 1, release.digest), journal.provider_id, journal.provider_version,
     )
+    fenced = closure_kind == "fenced-absent"
+    refused = closure_kind == "allocation-refused"
     when = int(deadline.timestamp() * 1000)
     receipt = (
         AbsentContainerStart(app, worker, uid, actor, when, when - 1000, int((now - timedelta(seconds=1)).timestamp() * 1000))
-        if fenced else VoidContainerStart(app, worker, uid, actor, when, when + 1000)
+        if fenced else VoidContainerStart(
+            app, worker, uid, actor, when, when - 1000 if refused else when + 1000,
+            allocation_refused=refused,
+        )
     )
     placements = [{"id": actor}]
     available = True

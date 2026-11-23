@@ -150,6 +150,24 @@ test("an expired unstarted seat is voided after a reset and can never start", (t
     assert.equal(registry().reserve(missing).status, "retired");
 });
 
+test("an allocation refusal is durable and cannot cross the start fence", async (t) => {
+    const { db, registry, pin } = fixture(1);
+    t.after(() => db.close());
+    const first = pin();
+    const rejected = pin();
+    const instance = "b".repeat(64);
+    assert.equal(registry().reserve(first).status, "reserved");
+    const receipt = registry().reserveForStart(rejected, instance, rejected.reservedAt);
+    assert.deepEqual(receipt, {
+        status: "allocation-refused", uid: rejected.uid, instance,
+        startDeadline: rejected.startDeadline, voidedAt: rejected.reservedAt,
+    });
+    assert.equal(registry().voidUnstarted(first, "d".repeat(64), first.startDeadline).status, "void");
+    assert.deepEqual(registry().reserve(rejected), receipt);
+    assert.equal(registry().authorizeStart(rejected.uid, instance, rejected.reservedAt, rejected.deadline).status, "closed");
+    assert.equal(registry().reserve(pin()).status, "reserved");
+});
+
 test("the instance lifecycle pins the intercept and launch options, then stops at the durable deadline", async (t) => {
     const { db, registry, pin } = fixture(1);
     t.after(() => db.close());
@@ -243,7 +261,7 @@ test("a registry authorization survives a local deadline advance; a throwing sta
             destroy() { assert.fail("No running placement to destroy"); },
         },
     }, {
-        reserve: (binding) => scope.reserve(binding),
+        reserveForStart: (...args) => scope.reserveForStart(...args),
         async authorizeStart(...args) {
             const result = scope.authorizeStart(...args);
             t.mock.timers.setTime(slot.startDeadline + 1);

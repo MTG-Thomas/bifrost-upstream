@@ -5,16 +5,18 @@ from datetime import datetime, timedelta
 from typing import Literal
 from uuid import UUID
 
-from sqlalchemy import and_, exists, false, func, or_, select
+from sqlalchemy import SQLColumnExpression, and_, exists, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
 from src.models.orm.cloudflare_capacity import (
     CloudflareCapacityScope,
     CloudflareInstallation,
+    CloudflareOwnedResource,
     CloudflareWorkerReservation,
 )
 from src.models.orm.execution_workers import ExecutionWorker
+from src.services.worker_pool.cloudflare_containers_policy import CONTAINERS_SCOPE
 from src.services.worker_pool.cloudflare_release import installed_workers_release_digest
 from src.services.worker_pool.cloudflare_spend import cloudflare_usage_within_limit
 from src.services.worker_pool.eligibility import timeout_fits_workers_deadline
@@ -71,24 +73,40 @@ class ManagedCloudflareScope:
         )
 
 
+def joint_container_readiness(revision: SQLColumnExpression[int | None] | int) -> ColumnElement[bool]:
+    """Bind joint admission to a ready scope and its owned application."""
+    scope_ready = exists(select(CloudflareCapacityScope.installation_id).where(
+        CloudflareCapacityScope.installation_id == CloudflareInstallation.id,
+        CloudflareCapacityScope.scope == CONTAINERS_SCOPE,
+        CloudflareCapacityScope.deployment_revision == revision,
+    ).correlate(CloudflareInstallation))
+    application_ready = exists(select(CloudflareOwnedResource.id).where(
+        CloudflareOwnedResource.installation_id == CloudflareInstallation.id,
+        CloudflareOwnedResource.account_id == CloudflareInstallation.account_id,
+        CloudflareOwnedResource.scope == CONTAINERS_SCOPE,
+        CloudflareOwnedResource.kind == "container_application",
+        CloudflareOwnedResource.deployment_revision == revision,
+        CloudflareOwnedResource.artifact_digest == CloudflareInstallation.containers_release_digest,
+        CloudflareOwnedResource.state == "present",
+        CloudflareOwnedResource.provider_id.is_not(None),
+        CloudflareOwnedResource.provider_version.is_not(None),
+        CloudflareOwnedResource.observed_at.is_not(None),
+    ).correlate(CloudflareInstallation))
+    return or_(
+        ~CloudflareInstallation.containers_policy.has_key("enabled"),
+        CloudflareInstallation.containers_policy["enabled"].as_boolean().is_(False),
+        and_(CloudflareInstallation.containers_ready_revision == revision, scope_ready, application_ready),
+    )
+
+
 def workers_release_matches() -> ColumnElement[bool]:
     release = installed_workers_release_digest()
     if release is None:
         return false()
-    containers_ready = exists(select(CloudflareCapacityScope.installation_id).where(
-        CloudflareCapacityScope.installation_id == CloudflareInstallation.id,
-        CloudflareCapacityScope.scope == "containers",
-        CloudflareCapacityScope.deployment_revision == CloudflareInstallation.admitted_revision,
-    ).correlate(CloudflareInstallation))
     return and_(
         CloudflareInstallation.upgrade_release.is_(None),
         CloudflareInstallation.policy["bounds_release"].astext == release,
-        or_(
-            ~CloudflareInstallation.containers_policy.has_key("enabled"),
-            CloudflareInstallation.containers_policy["enabled"].as_boolean().is_(False),
-            (CloudflareInstallation.containers_ready_revision == CloudflareInstallation.admitted_revision)
-            & containers_ready,
-        ),
+        joint_container_readiness(CloudflareInstallation.admitted_revision),
     )
 
 

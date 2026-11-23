@@ -56,6 +56,13 @@ export class ScopeRegistry {
         return this.#storeReservation(pin);
     }
 
+    reserveForStart(pin, instance, now) {
+        if (!/^[a-f0-9]{64}$/.test(instance) || !Number.isSafeInteger(now)) return { status: "invalid" };
+        if (now < pin.reservedAt) return { status: "closed" };
+        if (now >= pin.startDeadline) return this.reserve(pin);
+        return this.#storeReservation(pin, { instance, now, onlyWhenFull: true });
+    }
+
     // Accept the immutable API pin even if the controller crashed before prepare.
     // A void tombstone occupies no seat and denies all later prepare/start replays.
     voidUnstarted(pin, instance, now) {
@@ -64,7 +71,7 @@ export class ScopeRegistry {
         return this.#storeReservation(pin, { instance, now });
     }
 
-    #storeReservation(pin, tombstone = null) {
+    #storeReservation(pin, observation = null) {
         const { reservedAt, startDeadline, deadline, seconds, ingressBytes, outboundBytes } = pin;
         if (pin.installation !== this.installation || pin.revision !== this.revision
             || pin.image !== this.image || pin.instance !== "standard-1"
@@ -91,29 +98,39 @@ export class ScopeRegistry {
             ).toArray();
             if (matching.length) {
                 if (matching.length !== 1 || matching[0].binding !== binding) return { status: "conflict" };
-                if (tombstone === null) return { status: matching[0].state };
-                if (matching[0].void_instance !== null && matching[0].void_instance !== tombstone.instance) {
+                const recorded = matching[0];
+                if (recorded.voided_at !== null && recorded.voided_at < startDeadline) {
+                    if (observation && observation.instance !== recorded.void_instance) return { status: "conflict" };
+                    return {
+                        status: "allocation-refused", uid: pin.uid, instance: recorded.void_instance,
+                        startDeadline, voidedAt: recorded.voided_at,
+                    };
+                }
+                if (observation === null || observation.onlyWhenFull) return { status: recorded.state };
+                if (recorded.void_instance !== null && recorded.void_instance !== observation.instance) {
                     return { status: "conflict" };
                 }
                 if (this.sql.exec("SELECT uid FROM start_fences WHERE uid = ?", pin.uid).toArray().length) {
                     return { status: "conflict" };
                 }
-                if (matching[0].voided_at === null) {
+                if (recorded.voided_at === null) {
                     this.sql.exec(
                         "UPDATE reservations SET state = 'retired', voided_at = ?, void_instance = ? WHERE uid = ?",
-                        tombstone.now, tombstone.instance, pin.uid,
+                        observation.now, observation.instance, pin.uid,
                     );
                 }
                 return {
-                    status: "void", uid: pin.uid, instance: tombstone.instance, startDeadline,
-                    voidedAt: matching[0].voided_at ?? tombstone.now,
+                    status: "void", uid: pin.uid, instance: observation.instance, startDeadline,
+                    voidedAt: recorded.voided_at ?? observation.now,
                 };
             }
             const { total, tenant } = this.sql.exec(
                 "SELECT count(*) AS total, count(CASE WHEN tenant = ? THEN 1 END) AS tenant "
                 + "FROM reservations WHERE state <> 'retired'", pin.tenant,
             ).one();
-            if (tombstone === null && (total >= this.cap || tenant >= 1)) return { status: "full" };
+            const full = total >= this.cap || tenant >= 1;
+            if (observation === null && full) return { status: "full" };
+            const tombstone = observation && (!observation.onlyWhenFull || full) ? observation : null;
             this.sql.exec(
                 "INSERT INTO reservations (worker, uid, tenant, binding, state, "
                 + "reserved_at, start_deadline, deadline, ingress_limit, outbound_limit, voided_at, void_instance) "
@@ -123,7 +140,8 @@ export class ScopeRegistry {
                 tombstone?.now ?? null, tombstone?.instance ?? null,
             );
             return tombstone === null ? { status: "reserved" } : {
-                status: "void", uid: pin.uid, instance: tombstone.instance, startDeadline, voidedAt: tombstone.now,
+                status: tombstone.onlyWhenFull ? "allocation-refused" : "void",
+                uid: pin.uid, instance: tombstone.instance, startDeadline, voidedAt: tombstone.now,
             };
         });
     }
@@ -289,7 +307,7 @@ export class ContainerInstanceLifecycle {
             return { status: "invalid" };
         }
         return this.ctx.blockConcurrencyWhile(async () => {
-            const prepared = await this.registry.reserve(pin);
+            const prepared = await this.registry.reserveForStart(pin, this.instance, Date.now());
             if (prepared.status !== "reserved") return prepared;
             const ticket = await this.ctx.storage.get("start-ticket");
             if (ticket && (ticket.uid !== pin.uid || ticket.deadline !== pin.deadline)) return { status: "conflict" };
