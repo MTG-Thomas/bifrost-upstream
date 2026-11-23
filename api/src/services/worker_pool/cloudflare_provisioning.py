@@ -89,7 +89,7 @@ class ObservationCheck(Enum):
     PRIVATE_ROUTES = ("private_route_inventory", "unconfirmed", "confirmed_inventory")
     CANARY_RETIREMENT = ("canary_retirement", "unverified", "exact_deletion_receipt")
     CONTAINER_INVENTORY = ("container_inventory", "incomplete", "complete_inventory")
-    CONTAINER_PLACEMENTS = ("container_placements", "present", "empty_inventory")
+    CONTAINER_PLACEMENTS = ("container_placements", "live_or_unverified", "no_live_placements")
     CONTAINER_CREATE = ("container_create_readback", "absent", "exact_creation_receipt")
 
 

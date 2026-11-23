@@ -1048,6 +1048,7 @@ async def test_container_application_effect_survives_lost_create_and_delete_repl
     )
     present = False
     launcher_present = True
+    placement_state = "running"
     observed_namespace = "e" * 32
     writes: list[str] = []
     provider_id = str(uuid4())
@@ -1101,7 +1102,9 @@ async def test_container_application_effect_survives_lost_create_and_delete_repl
             assert request.url.params["name"] == name
             result = [application] if present else []
         elif path.endswith(f"/{provider_id}/instances-v2"):
-            result = []
+            result = [{
+                "application_id": provider_id, "id": "f" * 64, "status": {"state": placement_state},
+            }]
         else:
             assert path.endswith(f"/applications/{provider_id}")
             if not present:
@@ -1139,6 +1142,10 @@ async def test_container_application_effect_survives_lost_create_and_delete_repl
                 )
 
         assert await cleanup() == "progressed"
+        with pytest.raises(lifecycle_job.DeletionSettling):
+            await cleanup()
+        assert writes == ["POST"]
+        placement_state = "stopped"
         with pytest.raises(CloudflareRestUnavailable):
             await cleanup()
         assert await cleanup() == "progressed"

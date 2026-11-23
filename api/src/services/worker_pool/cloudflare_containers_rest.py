@@ -167,8 +167,14 @@ class ContainersRest(WorkersRestCleanup):
             return
         account = intent.target.account_id
         path = f"containers/applications/{expected.provider_id}"
-        if await self._inventory(token, account, f"{path}/instances-v2"):
-            raise DeletionSettling("Container application still has placements",
+        placements = await self._inventory(token, account, f"{path}/instances-v2")
+        if any(
+            row.get("application_id") != expected.provider_id
+            or not isinstance(row.get("status"), dict)
+            or row["status"].get("state") not in ("stopped", "inactive")
+            for row in placements
+        ):
+            raise DeletionSettling("Container application still has live or unverified placements",
                                    OwnershipResource.CONTAINER_APPLICATION, ObservationCheck.CONTAINER_PLACEMENTS)
         await self._request(token, account, "DELETE", path, allow_missing=True)
         if await self.observe_application(token, intent, expected.provider_version, recorded_id=expected.provider_id):
