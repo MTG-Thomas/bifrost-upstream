@@ -199,7 +199,7 @@ async def record_canary_failure(worker_id: UUID, generation: int, failure: Canar
             }
 
 
-def _canary_session_failure(checkpoint: dict, worker_id: UUID, generation: int) -> CanaryFailure | None:
+def canary_session_failure(checkpoint: dict, worker_id: UUID, generation: int) -> CanaryFailure | None:
     record = checkpoint.get("canary_failure")
     if isinstance(record, dict) and record.get("worker_id") == str(worker_id) and record.get("generation") == generation:
         return CanaryFailure.from_result(record.get("reason"))
@@ -355,7 +355,7 @@ async def run_workers_canary(
                         verified_at = proof.canary_ack_at
                         failure = None
                         break
-                    failure = _canary_session_failure(proof.result or {}, worker_id, proof.remote_session_generation)
+                    failure = canary_session_failure(proof.result or {}, worker_id, proof.remote_session_generation)
                     if failure is not None and (failure.stage, failure.error_class) not in {
                         ("launcher", "connection_lost"), ("proof", "unavailable"),
                     }:

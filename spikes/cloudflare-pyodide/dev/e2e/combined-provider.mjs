@@ -215,6 +215,9 @@ function serveIngress(req, res) {
     method: req.method, headers: {...relayHeaders(req.headers),
       host: relayOnly ? req.headers.host : req.headers['x-rehearsal-host'] ?? req.headers.host},
   }, (response) => {
+    if (incoming.pathname.startsWith('/api/sdk/capacity-canary/')) {
+      event('canary-sdk', {status: response.statusCode, redirect: req.headers['x-bifrost-canary-redirect'] === '1'});
+    }
     const call = sdkCalls.get(req.headers.authorization?.slice(7));
     if (call && incoming.pathname === '/api/sdk/tables/list' && response.statusCode === 200) {
       entered.add(call.execution);
@@ -247,6 +250,7 @@ function upgrade(req, socket, head) {
     let identity;
     const connection = ++connectionSequence;
     const terminate = new Map();
+    const challenges = new Set();
     worker.on('message', (message) => {
       const frame = controlFrame(message);
       if (frame.event === 'hello' && frame.hello?.incarnation_id) {
@@ -256,6 +260,13 @@ function upgrade(req, socket, head) {
       } else if (frame.payload?.event === 'result') {
         event('result', {worker: identity, connection, id: frame.payload._event_id, route: frame.payload.route_id,
           attempt: frame.payload.attempt_state});
+      }
+      if (challenges.delete(frame.payload?.reply)) {
+        const denied = frame.payload.result?.denied;
+        event('canary-reply', {
+          passedChecks: Array.isArray(denied) ? denied.length : 0,
+          failed: Boolean(frame.payload.error_type),
+        });
       }
       const pending = terminate.get(frame.payload?.reply);
       if (pending && frame.payload.result?.received) {
@@ -280,6 +291,10 @@ function upgrade(req, socket, head) {
         executionByRoute.set(command.route_id, command.execution_id);
         event('dispatch', {worker: identity, connection, route: frame.payload.payload.route_id,
           execution: frame.payload.payload.execution_id});
+      }
+      if (frame.kind === 'command' && frame.payload?.action === 'capacity_canary') {
+        challenges.add(frame.payload.id);
+        event('canary-command', {worker: identity});
       }
       if (frame.kind === 'command' && frame.payload?.action === 'terminate') {
         const execution = executionByRoute.get(frame.payload.payload.route_id);

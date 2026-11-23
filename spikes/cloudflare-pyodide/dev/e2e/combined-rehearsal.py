@@ -850,6 +850,9 @@ class ContainerRehearsal(Rehearsal):
                   AND canary_job_id IS NOT NULL AND container_stopped_at IS NOT NULL""")
             assert canaries == 2
             evidence("container-scale-out", {"revision": revision, "canaries_settled": canaries})
+        except (AssertionError, RuntimeError, TimeoutError):
+            evidence("container-provider-observations", {"observations": self.provider("/local/evidence")})
+            raise
         finally:
             try:
                 self.release_primary()

@@ -56,10 +56,10 @@ from src.services.work_dispatch import (
     WAKE_CLOUDFLARE_CAPACITY,
     wake_pool_workers_after_commit,
 )
-from src.services.worker_ingress_probes import probe_worker_ingress
+from src.services.worker_ingress_probes import CanaryFailure, probe_worker_ingress
 from src.services.worker_pool import cloudflare_tunnel
 from src.services.worker_pool.cloudflare_admission import joint_container_readiness
-from src.services.worker_pool.cloudflare_canary import CANARY_DEADLINE_SECONDS, run_workers_canary
+from src.services.worker_pool.cloudflare_canary import CANARY_DEADLINE_SECONDS, canary_session_failure, run_workers_canary
 from src.services.worker_pool.cloudflare_containers_admission import reserve_container_canary
 from src.services.worker_pool.cloudflare_containers_control import reconcile_container_stop
 from src.services.worker_pool.cloudflare_containers_egress import (
@@ -599,6 +599,7 @@ async def _qualify_container_revision(
             )
         raise PlatformJobRequiresAction("Verify Cloudflare Containers Readiness", {"code": "CF_CONTAINERS_UNVERIFIED"})
     verified = None
+    failure = None
     try:
         async with timeout(CANARY_DEADLINE_SECONDS):
             while verified is None:
@@ -607,10 +608,24 @@ async def _qualify_container_revision(
                         db, http, installation_id=payload.installation_id, revision=payload.revision,
                         release_digest=release.digest, origin=origin, probe_worker_id=reserved.worker_id,
                     )
+                    if verified is None:
+                        witness = (await db.execute(select(
+                            ExecutionWorker.remote_session_generation, PlatformJob.result,
+                        ).select_from(ExecutionWorker).join(PlatformJob, PlatformJob.id == context.job_id).where(
+                            ExecutionWorker.id == reserved.worker_id,
+                            PlatformJob.lease_token == context.lease_token,
+                        ))).one_or_none()
+                        if witness is not None:
+                            failure = canary_session_failure(witness.result or {}, reserved.worker_id,
+                                                             witness.remote_session_generation)
+                            if failure is not None and (failure.stage, failure.error_class) not in {
+                                ("launcher", "connection_lost"), ("proof", "unavailable"),
+                            }:
+                                break
                 if verified is None:
                     await sleep(0.5)
     except TimeoutError:
-        pass
+        failure = failure or CanaryFailure("ack", "timeout")
     finally:
         retired = False
         try:
@@ -625,7 +640,10 @@ async def _qualify_container_revision(
                         installation.containers_release_digest = None
                         wake_pool_workers_after_commit(db, WAKE_CLOUDFLARE_CAPACITY)
     if verified is None:
-        raise PlatformJobRequiresAction("Verify Cloudflare Containers Readiness", {"code": "CF_CONTAINERS_UNVERIFIED"})
+        raise PlatformJobRequiresAction("Verify Cloudflare Containers Readiness", {
+            "code": "CF_CONTAINERS_UNVERIFIED",
+            **({"canary_failure": failure.as_result()} if failure is not None else {}),
+        })
 
     async with get_db_context() as db:
         installation = await _locked_current(db, context, payload)
