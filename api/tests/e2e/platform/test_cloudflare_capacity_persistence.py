@@ -1009,19 +1009,21 @@ async def test_container_application_effect_survives_lost_create_and_delete_repl
     db_session, installation, monkeypatch,
 ) -> None:
     from src.services.worker_pool.cloudflare_containers_rest import ContainersRest
+    from src.services.worker_pool.cloudflare_workers_rest import OWNER_BINDING, worker_owner_value
 
     release, _, _ = make_release()
     installation.desired_state = "enabled"
     installation.containers_policy = {"enabled": True}
     namespace = "b" * 32
     name = f"bifrost-{installation.id.hex}-r1"
-    db_session.add(CloudflareOwnedResource(
+    launcher = CloudflareOwnedResource(
         id=uuid4(), installation_id=installation.id, account_id=installation.account_id,
         scope="containers", kind="worker_script", target_name=f"{name}-containers",
         desired_revision=1, artifact_digest=release.digest, effect_id=uuid4(),
-        state="present", provider_id="c" * 32, provider_version="d" * 32,
+        state="present", provider_id=str(uuid4()), provider_version=str(uuid4()),
         namespace_ids={"ContainerLauncher": namespace}, observed_at=datetime.now(UTC),
-    ))
+    )
+    db_session.add(launcher)
     await db_session.flush()
     connection = await db_session.connection()
 
@@ -1037,6 +1039,8 @@ async def test_container_application_effect_survives_lost_create_and_delete_repl
     monkeypatch.setattr(enable_job, "get_db_context", transaction)
     monkeypatch.setattr(enable_job, "_locked_current", locked_current)
     present = False
+    launcher_present = True
+    observed_namespace = "e" * 32
     writes: list[str] = []
     provider_id = str(uuid4())
     application = {
@@ -1045,8 +1049,33 @@ async def test_container_application_effect_survives_lost_create_and_delete_repl
     }
 
     def provider(request):
-        nonlocal present
+        nonlocal present, launcher_present
         path = request.url.path
+        if path.endswith("/workers/durable_objects/namespaces"):
+            result = [{
+                "id": observed_namespace, "class": "ContainerLauncher", "script": launcher.target_name,
+            }] if launcher_present else []
+            return httpx.Response(200, json={"success": True, "result": result})
+        if "/workers/scripts/" in path:
+            if not launcher_present:
+                return httpx.Response(404)
+            if request.method == "DELETE":
+                assert not present, "The application must retire before its namespace"
+                launcher_present = False
+                writes.append("DELETE script")
+                return httpx.Response(204)
+            if path.endswith("/settings"):
+                result = {"bindings": [{
+                    "name": OWNER_BINDING, "type": "plain_text",
+                    "text": worker_owner_value(lifecycle_job._resource_intent(launcher)),
+                }]}
+            else:
+                assert path.endswith("/deployments")
+                result = {"deployments": [{
+                    "id": launcher.provider_id,
+                    "versions": [{"version_id": launcher.provider_version, "percentage": 100}],
+                }]}
+            return httpx.Response(200, json={"success": True, "result": result})
         if request.method == "POST":
             assert path.endswith("/containers/applications") and not present
             assert json.loads(request.content) == {
@@ -1075,6 +1104,14 @@ async def test_container_application_effect_survives_lost_create_and_delete_repl
     payload = enable_job.CloudflareEnablePayload(installation_id=installation.id, revision=1)
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
         adapter = ContainersRest(http)
+        with pytest.raises(OwnershipConflict) as wrong_namespace:
+            await enable_job._provision_container_application(MagicMock(), payload, adapter, release)
+        assert wrong_namespace.value.as_result() == {
+            "resource_class": "durable_object_namespace", "check": "receipt_mismatch",
+            "observed_category": "different", "expected_category": "exact_receipt",
+        }
+        assert not writes
+        observed_namespace = namespace
         with pytest.raises(CloudflareRestUnavailable):
             await enable_job._provision_container_application(MagicMock(), payload, adapter, release)
         assert await enable_job._provision_container_application(MagicMock(), payload, adapter, release)
@@ -1091,8 +1128,10 @@ async def test_container_application_effect_survives_lost_create_and_delete_repl
         with pytest.raises(CloudflareRestUnavailable):
             await cleanup()
         assert await cleanup() == "progressed"
+        assert await cleanup() == "progressed"
+        assert await cleanup() == "progressed"
         assert await cleanup() == "complete"
-    assert writes == ["POST", "DELETE"]
+    assert writes == ["POST", "DELETE", "DELETE script"]
     assert await db_session.scalar(select(CloudflareOwnedResource.state).where(
         CloudflareOwnedResource.installation_id == installation.id,
         CloudflareOwnedResource.kind == "container_application",

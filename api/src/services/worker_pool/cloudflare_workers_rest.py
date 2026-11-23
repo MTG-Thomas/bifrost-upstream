@@ -51,8 +51,12 @@ class CloudflareRestUnavailable(Exception):
 
 
 def _script_path(target: ResourceTarget) -> str:
+    container_script = (
+        target.scope == "containers"
+        and re.fullmatch(rf"bifrost-{target.installation_id.hex}-r[1-9][0-9]*-containers", target.name)
+    )
     if (
-        target.kind != "worker_script" or target.scope != "workers"
+        target.kind != "worker_script" or (target.scope != "workers" and not container_script)
         or not _ACCOUNT_ID.fullmatch(target.account_id)
         or not re.fullmatch(r"[a-z0-9-]{1,63}", target.name)
     ):

@@ -486,7 +486,9 @@ async def _settle_enable(
     return {"outcome": "enabled", "http_connections": ingress.http_connections_as_result()}
 
 
-async def _container_launcher_namespace(db: AsyncSession, row: CloudflareInstallation) -> tuple[str, str] | None:
+async def _container_launcher_namespace(
+    db: AsyncSession, row: CloudflareInstallation,
+) -> tuple[str, ResourceObservation] | None:
     resource = CloudflareOwnedResource
     launcher = await db.scalar(select(resource).where(
         resource.installation_id == row.id,
@@ -500,8 +502,12 @@ async def _container_launcher_namespace(db: AsyncSession, row: CloudflareInstall
         resource.provider_version.is_not(None),
         resource.observed_at.is_not(None),
     ))
-    namespace = launcher.namespace_ids.get("ContainerLauncher") if launcher else None
-    return (namespace, launcher.artifact_digest) if namespace and launcher else None
+    if launcher is None or launcher.provider_id is None or launcher.provider_version is None:
+        return None
+    namespace = launcher.namespace_ids.get("ContainerLauncher")
+    if namespace is None:
+        return None
+    return namespace, ResourceObservation(_resource_intent(launcher), launcher.provider_id, launcher.provider_version)
 
 
 async def _provision_container_application(
@@ -513,10 +519,12 @@ async def _provision_container_application(
         if row is None:
             return False
         binding = await _container_launcher_namespace(db, row)
-        if binding is None or binding[1] != release.digest:
+        if binding is None or binding[1].intent.artifact_digest != release.digest:
             raise OwnershipConflict("Container launcher differs from the verified release",
                                     OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.RELEASE_INTENT)
-        namespace = binding[0]
+        namespace, launcher = binding
+        token = await _management_token(db, row)
+        await adapter.verify_launcher_namespace(token, launcher, namespace)
         resource = CloudflareOwnedResource
         name = f"bifrost-{row.id.hex}-r{row.desired_revision}"
         application = await db.scalar(select(resource).where(
@@ -542,7 +550,6 @@ async def _provision_container_application(
         application_id = application.id
         send = application.state == "creating" and application.provider_details.get("creation_sent") is not True
         if send:
-            token = await _management_token(db, row)
             if await adapter.observe_application(token, intent, namespace) is not None:
                 raise OwnershipConflict("Container application was occupied before creation",
                                         OwnershipResource.CONTAINER_APPLICATION, OwnershipCheck.TARGET_OCCUPIED)

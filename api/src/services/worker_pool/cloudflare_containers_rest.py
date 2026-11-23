@@ -27,6 +27,7 @@ from src.services.worker_pool.cloudflare_provisioning import (
     OwnershipResource,
     ResourceIntent,
     ResourceObservation,
+    observe_owned,
 )
 from src.services.worker_pool.cloudflare_workers_rest import WorkersRestCleanup
 
@@ -54,6 +55,25 @@ def _name(intent: ResourceIntent, kind: str) -> str:
 
 
 class ContainersRest(WorkersRestCleanup):
+    async def verify_launcher_namespace(
+        self, token: SecretStr, expected: ResourceObservation, namespace: str,
+    ) -> None:
+        if not _HEX32.fullmatch(namespace):
+            raise OwnershipConflict("Invalid Container launcher namespace",
+                                    OwnershipResource.DURABLE_OBJECT_NAMESPACE, OwnershipCheck.NAMESPACE_CLASS)
+        if await observe_owned(self, api_token=token, intent=expected.intent, recorded=expected) is None:
+            raise ObservationSettling("The owned Container launcher is absent",
+                                      OwnershipResource.WORKER_SCRIPT, ObservationCheck.SCRIPT_RECORDED_ABSENT)
+        namespaces = await self._script_namespaces(token, expected.intent.target, namespace_ids=frozenset({namespace}))
+        launchers = [row for row in namespaces if row.get("class") == "ContainerLauncher" or row["id"] == namespace]
+        if (
+            len(launchers) != 1 or launchers[0]["id"] != namespace
+            or launchers[0].get("class") != "ContainerLauncher"
+            or launchers[0].get("script") != expected.intent.target.name
+        ):
+            raise OwnershipConflict("Container launcher namespace differs from the deployment receipt",
+                                    OwnershipResource.DURABLE_OBJECT_NAMESPACE, OwnershipCheck.RECEIPT_MISMATCH)
+
     async def _inventory(
         self, token: SecretStr, account: str, path: str, **filters: str,
     ) -> list[dict[str, Any]]:

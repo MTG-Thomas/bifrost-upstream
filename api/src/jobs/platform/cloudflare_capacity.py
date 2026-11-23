@@ -199,15 +199,13 @@ async def _cleanup_one(
     # Newer generations first, then withdraw the capacity entry point before
     # retiring launcher and runtime dependencies. Workers scripts implicitly
     # own their namespaces. The adapter checks for those before recording absence.
+    containers = (CloudflareOwnedResource.scope == "containers") & (
+        CloudflareOwnedResource.kind.in_(("container_application", "worker_script"))
+    )
     query = select(CloudflareOwnedResource).where(
         CloudflareOwnedResource.installation_id == row.id,
         CloudflareOwnedResource.state != "absent",
-        (
-            (CloudflareOwnedResource.scope == "containers") & (CloudflareOwnedResource.kind == "container_application")
-            if containers_only else
-            (CloudflareOwnedResource.scope == "workers")
-            | ((CloudflareOwnedResource.scope == "containers") & (CloudflareOwnedResource.kind == "container_application"))
-        ),
+        containers if containers_only else (CloudflareOwnedResource.scope == "workers") | containers,
     )
     if before_revision is not None:
         query = query.where(CloudflareOwnedResource.desired_revision < before_revision)
@@ -512,6 +510,10 @@ async def _settle_disable(
                 if cleanup == "complete":
                     if payload.action == "disconnect":
                         await _retire(db, row, payload)
+                    else:
+                        await _remove_verified_scopes(db, row, scope="containers")
+                        row.containers_ready_revision = None
+                        row.containers_release_digest = None
                     await emit_audit(
                         db, "capacity.cloudflare_retired" if payload.action == "disconnect" else "capacity.cloudflare_scaled_in",
                         resource_type="cloudflare_installation", resource_id=row.id,
@@ -587,11 +589,13 @@ async def _require_legacy_cleanup(db: AsyncSession) -> None:
 
 
 async def _remove_verified_scopes(
-    db: AsyncSession, row: CloudflareInstallation, *, before_revision: int | None = None,
+    db: AsyncSession, row: CloudflareInstallation, *, before_revision: int | None = None, scope: str | None = None,
 ) -> None:
     scopes = [CloudflareCapacityScope.installation_id == row.id]
     if before_revision is not None:
         scopes.append(CloudflareCapacityScope.deployment_revision < before_revision)
+    if scope is not None:
+        scopes.append(CloudflareCapacityScope.scope == scope)
     unverified_scope = await db.scalar(select(CloudflareCapacityScope.scope).where(
         *scopes,
         ~select(CloudflareOwnedResource.id).where(
@@ -599,7 +603,10 @@ async def _remove_verified_scopes(
             CloudflareOwnedResource.scope == CloudflareCapacityScope.scope,
             CloudflareOwnedResource.desired_revision == CloudflareCapacityScope.deployment_revision,
             CloudflareOwnedResource.kind == "worker_script",
-            CloudflareOwnedResource.target_name.endswith("-capacity"),
+            CloudflareOwnedResource.target_name.endswith(case(
+                (CloudflareCapacityScope.scope == "containers", "-containers"),
+                else_="-capacity",
+            )),
             CloudflareOwnedResource.state == "absent",
             CloudflareOwnedResource.observed_at.is_not(None),
         ).correlate(CloudflareCapacityScope).exists(),
