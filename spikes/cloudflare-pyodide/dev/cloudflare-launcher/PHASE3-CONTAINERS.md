@@ -387,7 +387,9 @@ steady state. The first release has no independent per-lane repair.
 Scale In drains both lanes to zero compute and retains provisioned resources,
 historical evidence, meter history and ingress. Invalidate current Container
 readiness and require verified stop before reporting completion. Each Container registry keeps at most 1,024 reservation
-rows and 1,024 corresponding start fences. On the next reservation or void
+rows and 1,024 corresponding start fences. A separate table holds at most
+4,096 signed control nonces and prunes them when their request window expires.
+On the next reservation or void
 request it prunes settled receipts and unstarted pins whose absolute deadline
 has passed. Unsettled start fences retain their seats until settlement. At
 the record limit, the registry refuses a new pin without issuing an allocation
@@ -469,6 +471,9 @@ The incarnation signs the control route, timestamp and exact request body.
 Start and egress challenges carry only that incarnation's bootstrap control
 key. Stop carries its signature and identity. The Worker validates the
 certificate and request before addressing the incarnation's Durable Object.
+The request signing key derives from private API scope material. Its
+60-second certificate binds the entire reservation pin. The scope registry
+consumes a signed nonce before the action, including across registry resets.
 The egress challenge starts the fenced qualification actor. Its launch
 receipt alone cannot establish readiness. The scope observes bytes in both
 directions in the active start fence. The API separately verifies the signed
