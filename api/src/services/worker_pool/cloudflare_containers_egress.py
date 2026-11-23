@@ -38,6 +38,7 @@ _MINT = object()
 # A brief cache lets the planner reuse a successful probe within one
 # reconciliation window. A provider version change invalidates it immediately.
 EGRESS_PROOF_MAX_AGE = timedelta(hours=1)
+PENDING_PROOF_MIN_REMAINING = timedelta(minutes=15)
 
 
 class ContainerEgressMismatch(Exception):
@@ -172,8 +173,11 @@ def read_verified_egress(installation: CloudflareInstallation, now: datetime) ->
 
 
 def read_pending_qualification(installation: CloudflareInstallation, now: datetime) -> VerifiedEgress | None:
-    """Read a fresh proof whose canary still needs independently verified retirement."""
-    return _read_egress_proof(installation, now, PENDING_QUALIFICATION_KEY, installation.desired_revision)
+    """Read a proof with enough lifetime left to admit after verified retirement."""
+    proof = _read_egress_proof(installation, now, PENDING_QUALIFICATION_KEY, installation.desired_revision)
+    if proof is not None and proof.observed_at + EGRESS_PROOF_MAX_AGE - now >= PENDING_PROOF_MIN_REMAINING:
+        return proof
+    return None
 
 
 def current_container_application(installation: CloudflareInstallation, revision: int, release_digest: str):

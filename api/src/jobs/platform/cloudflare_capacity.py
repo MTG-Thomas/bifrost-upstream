@@ -54,6 +54,7 @@ from src.services.worker_pool import cloudflare_tunnel
 from src.services.worker_pool.cloudflare_containers_admission import LINUX_REVIEW_VERSION
 from src.services.worker_pool.cloudflare_containers_egress import (
     QUALIFICATION_BACKOFF_CODE,
+    current_container_application,
     read_egress_refresh,
     read_pending_qualification,
     read_verified_egress,
@@ -1567,8 +1568,19 @@ async def schedule_cloudflare_reconcile(db: AsyncSession, *, now: datetime) -> N
         return
     if installation.admitted_revision is None:
         retry = read_egress_refresh(installation, qualification=True)
-        if retry is not None and retry.retry_at > now and read_pending_qualification(installation, now) is None:
-            return
+        if retry is not None and retry.retry_at > now:
+            pending = read_pending_qualification(installation, now)
+            # A Container application is journaled under its verified release
+            # digest and the revision of the selected Workers bundle. Enable
+            # still verifies the signed assets before it can reuse the proof.
+            target_release = installation.upgrade_release or installation.policy.get("bounds_release")
+            if pending is None or not target_release or target_release != installed_workers_release_digest():
+                return
+            app = (await db.execute(current_container_application(
+                installation, installation.desired_revision, pending.release_digest,
+            ))).one_or_none()
+            if app != (pending.provider_id, pending.provider_version):
+                return
     if latest is not None and latest.status != "succeeded":
         code = (latest.result or {}).get("code") if latest.status == "requires_action" else latest.error_code
         if (

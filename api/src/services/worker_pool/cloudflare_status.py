@@ -166,7 +166,10 @@ def recovery_for_job(job: PlatformJob | None) -> CloudflareRecoveryDetails | Non
         "CF_PRIOR_WORKERS_LIVE": PLACEMENT["cleanup_pending"][1],
         "CF_PROVIDER_UNAVAILABLE": PLACEMENT["cloudflare_capacity_unavailable"][1],
         "CF_CONTAINERS_UNVERIFIED": PLACEMENT["container_readiness_unverified"][1],
-        "CF_CONTAINERS_CLEANUP_PENDING": PLACEMENT["cleanup_pending"][1],
+        "CF_CONTAINERS_CLEANUP_PENDING": (
+            "Retry Enable promptly, within an hour of verification, to reuse the verified Container proof "
+            "if it has at least 15 minutes left. Scale In invalidates that proof."
+        ),
         QUALIFICATION_BACKOFF_CODE: "Retry this capacity action after the Container qualification backoff.",
         "CF_CONTAINERS_RELEASE_UNAVAILABLE": PLACEMENT["release_mismatch"][1],
         "CF_TUNNEL_VERIFICATION_CHANGED": TUNNEL_VERIFICATION_CHANGED_REMEDY,

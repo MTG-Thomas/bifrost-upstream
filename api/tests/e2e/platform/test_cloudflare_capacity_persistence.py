@@ -1294,7 +1294,10 @@ async def test_container_application_effect_survives_provisioning_failures(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("canary_result", ["missing", "failed", "ready", "retire-timeout", "refresh-failure"])
+@pytest.mark.parametrize("canary_result", [
+    "missing", "failed", "ready", "retire-timeout", "refresh-failure",
+    "pending-wrong-digest", "pending-expired", "pending-near-expiry",
+])
 async def test_cold_enable_prepares_image_and_deploys_container_application(
     db_session, installation, monkeypatch, tmp_path, canary_result,
 ) -> None:
@@ -1304,7 +1307,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
     from src.worker.remote.protocol import nonce_digest
 
     canary_started = canary_result != "missing"
-    canary_ready = canary_result in ("ready", "retire-timeout", "refresh-failure")
+    canary_ready = canary_result not in ("missing", "failed")
     container, image, config = make_release()
     manifest = container.manifest
     workers = SimpleNamespace(digest=manifest.workers_release_digest, manifest=SimpleNamespace(
@@ -1557,7 +1560,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
         if canary_result == "refresh-failure":
             enable_job.record_egress_refresh_failure(installation, datetime.now(UTC))
             await db_session.flush()
-        if canary_result == "retire-timeout":
+        if canary_result == "retire-timeout" or canary_result.startswith("pending-"):
             with monkeypatch.context() as cleanup:
                 cleanup.setattr(enable_job, "reconcile_container_stop", AsyncMock(side_effect=PlatformJobFailure(
                     "CF_CONTAINERS_CLEANUP_PENDING", "Fixture timeout", retryable=True,
@@ -1569,6 +1572,25 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
             assert installation.admitted_revision is installation.containers_ready_revision is None
             assert enable_job.read_pending_qualification(installation, datetime.now(UTC)) is not None
             assert events == ["copy", "prepare", "launcher", "application", "canary"]
+            if canary_result.startswith("pending-"):
+                proof = dict(installation.deployment_evidence[enable_job.PENDING_QUALIFICATION_KEY])
+                if canary_result == "pending-wrong-digest":
+                    proof["release_digest"] = "d" * 64
+                else:
+                    age = 61 if canary_result == "pending-expired" else 46
+                    proof["observed_at"] = (datetime.now(UTC) - timedelta(minutes=age)).isoformat()
+                installation.deployment_evidence = {
+                    **installation.deployment_evidence, enable_job.PENDING_QUALIFICATION_KEY: proof,
+                }
+                await db_session.flush()
+                with pytest.raises(PlatformJobRequiresAction) as deferred:
+                    await enable_job._settle_enable(context, payload, http, workers)
+                assert deferred.value.result["code"] == enable_job.QUALIFICATION_BACKOFF_CODE
+                await db_session.refresh(installation)
+                assert installation.admitted_revision is installation.containers_ready_revision is None
+                assert provisioner.create.await_count == 0
+                assert events == ["copy", "prepare", "launcher", "application", "canary"]
+                return
         for _ in range(1 if canary_result == "failed" else 2):
             if canary_ready:
                 assert (await enable_job._settle_enable(context, payload, http, workers))["outcome"] == "enabled"
@@ -5423,6 +5445,55 @@ async def test_upgrade_scheduler_only_requeues_self_healing_actions(
     else:
         await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=now + timedelta(days=1))
         assert await db_session.scalar(count) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("matching_digest", [True, False])
+async def test_qualification_backoff_bypass_requires_the_installed_application(
+    db_session, installation, monkeypatch, matching_digest,
+):
+    from src.services.worker_pool.cloudflare_containers_egress import (
+        PENDING_QUALIFICATION_KEY,
+        record_egress_refresh_failure,
+    )
+
+    now = datetime.now(UTC)
+    workers_digest = "a" * 64
+    application_digest = "b" * 64
+    monkeypatch.setattr(lifecycle_job, "installed_workers_release_digest", lambda: workers_digest)
+    installation.desired_state = "enabled"
+    installation.deployed_revision = installation.desired_revision
+    installation.policy = {**installation.policy, "bounds_release": workers_digest}
+    installation.deployment_evidence = {PENDING_QUALIFICATION_KEY: {
+        "installation_id": str(installation.id),
+        "revision": installation.desired_revision,
+        "origin": installation.worker_ingress_origin,
+        "release_digest": application_digest if matching_digest else "c" * 64,
+        "provider_id": "fixture-app",
+        "provider_version": "1",
+        "observed_at": now.isoformat(),
+    }}
+    record_egress_refresh_failure(installation, now, qualification=True)
+    db_session.add(CloudflareOwnedResource(
+        id=uuid4(), effect_id=uuid4(), installation_id=installation.id, account_id=installation.account_id,
+        kind="container_application", scope="containers", artifact_digest=application_digest, state="present",
+        target_name=f"bifrost-{installation.id.hex}-r{installation.desired_revision}",
+        desired_revision=installation.desired_revision, provider_id="fixture-app", provider_version="1",
+        observed_at=now,
+    ))
+    completed = now - timedelta(minutes=6)
+    db_session.add(PlatformJob(
+        id=uuid4(), job_type=lifecycle_job.RECONCILE_JOB, title="Fixture Reconcile", status="failed",
+        requested_by_user_id=str(OPERATOR_ID), requested_by_email="operator@example.test", requested_by_name="Operator",
+        resource_id=str(installation.id), payload={"revision": installation.desired_revision},
+        error_code="CF_CONTAINERS_CLEANUP_PENDING", completed_at=completed, created_at=completed,
+    ))
+    await db_session.flush()
+    await lifecycle_job.schedule_cloudflare_reconcile(db_session, now=now)
+    assert await db_session.scalar(select(func.count()).select_from(PlatformJob).where(
+        PlatformJob.job_type == lifecycle_job.RECONCILE_JOB,
+        PlatformJob.resource_id == str(installation.id), PlatformJob.status.in_(("queued", "running")),
+    )) == int(matching_digest)
 
 
 @pytest.mark.asyncio

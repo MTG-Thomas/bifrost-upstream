@@ -36,6 +36,12 @@ def test_qualification_backoff_recovery_includes_the_retry_time():
     assert recovery is not None and recovery.remedy == f"Retry this capacity action at or after {retry_at}."
 
 
+def test_qualification_cleanup_recovery_preserves_the_pending_proof():
+    recovery = recovery_for_job(PlatformJob(status="failed", error_code="CF_CONTAINERS_CLEANUP_PENDING"))
+    assert recovery is not None
+    assert "Retry Enable" in recovery.remedy and "within an hour" in recovery.remedy
+    assert "Scale In invalidates" in recovery.remedy
+
 def test_container_refresh_failure_backs_off_and_surfaces_persistent_failure():
     installation = SimpleNamespace(desired_revision=3, deployment_evidence={})
     now = NOW

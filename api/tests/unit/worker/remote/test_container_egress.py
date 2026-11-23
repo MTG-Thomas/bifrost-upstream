@@ -20,6 +20,7 @@ from src.worker.remote.container_egress import (
     ("rate-limited", "relay"), ("relay-unavailable", "relay"), ("socket-unavailable", "relay"),
     ("disallowed-route", "relay"), ("disallowed-route", "transient"),
     (None, 408), (None, 429), (None, 502), (None, 503),
+    ("redirect", "forwarded-302"), ("redirect", "forwarded-200"),
 ])
 async def test_egress_canary_only_records_observed_denials(monkeypatch, failure, redirect):
     origin, alternate = "https://ingress.example.test", "https://scope.example.test"
@@ -53,6 +54,12 @@ async def test_egress_canary_only_records_observed_denials(monkeypatch, failure,
         if "x-bifrost-canary-redirect" in request.headers:
             if isinstance(redirect, int):
                 return httpx.Response(redirect, headers={"x-bifrost-container-relay-forwarded": "1"})
+            if redirect == "forwarded-302":
+                return httpx.Response(302, headers={
+                    "x-bifrost-container-relay-forwarded": "1", "location": "https://wrong-host.invalid/",
+                })
+            if redirect == "forwarded-200":
+                return httpx.Response(200, headers={"x-bifrost-container-relay-forwarded": "1"})
             if redirect == "transient":
                 return httpx.Response(502)
             if redirect == "unmarked":
