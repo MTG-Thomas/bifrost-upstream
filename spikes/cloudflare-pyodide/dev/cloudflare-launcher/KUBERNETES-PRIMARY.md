@@ -49,8 +49,11 @@ does not switch to the build class when the isolation setting is enabled.
 [Job catalog](../../../../api/src/jobs/platform/catalog.py#L58) · [Runner receipt](../../../../api/src/jobs/platform/runner.py#L81)
 
 The production component assumes compatible DNS resolution and NetworkPolicy
-enforcement. For NodeLocal DNS, the consuming overlay must allow the actual
-resolver destination. Confirm TCP/UDP 7844 to the configured edge addresses
+enforcement. Kubernetes API discovery and readback can establish that a
+NetworkPolicy object exists, but cannot determine whether the installed CNI
+enforces it. Use a selected pod and an unselected control to verify that
+disallowed traffic is blocked. For NodeLocal DNS, the consuming overlay
+must allow the actual resolver destination. Confirm TCP/UDP 7844 to the configured edge addresses
 and TCP 8001 to the ingress Service on the installed CNI. The provisioned
 connector receives the tunnel token file. Workers receives scoped credentials
 and derived incarnation keys. Bifrost platform secrets stay on Bifrost.
@@ -297,3 +300,59 @@ bridge, and two trial image references were absent. The source, fixtures,
 local bundle copy, kubeconfig, and Kind binary were removed. Only the
 rehearsal evidence was retained. Both runs used the isolated local provider
 with zero hosted Cloudflare requests or model calls.
+
+### Connector NetworkPolicy qualification
+
+Kind v0.24.0 shipped kindnet with a bundled `kube-network-policies`
+controller. On the pinned Kubernetes v1.31.0 node image it started the
+controller and synchronized nftables rules. Kindnet
+`v20240813-c6f155d6` had manifest digest
+`sha256:e59a687ca28ae274a2fc92f1e2f5f1c739f353178a43a23aafc71adb802ed166`.
+[Kind v0.24.0 release](https://github.com/kubernetes-sigs/kind/releases/tag/v0.24.0)
+
+The connector used the rendered component policy. Listening fixtures used
+the rendered Service selectors and target ports. An unselected pod in the
+same namespace reached all 22 targets. The node had no IPv4 or IPv6 default
+route. A route inside the disposable node sent the allowed edge address and
+a separate test address to a local listener.
+
+| Connector destination | NetworkPolicy result | Unselected control |
+| --- | --- | --- |
+| Cluster DNS via Service and direct endpoint, TCP and UDP 53 | Reachable | Reachable |
+| Worker ingress via Service and direct endpoint, TCP 8001 | Reachable | Reachable |
+| Local Cloudflare edge fixture, TCP and UDP 7844 | Reachable | Reachable |
+| Edge fixture on TCP 443 and arbitrary destination on TCP 443 and TCP/UDP 7844 | Blocked | Reachable |
+| Bifrost main API, Postgres, Redis and SeaweedFS, each via Service and direct endpoint | Blocked | Reachable |
+| Kubernetes API via Service and same-node control-plane endpoint | Reachable | Reachable |
+
+Standard NetworkPolicy exempts traffic to the node running the connector.
+In this single-node layout, the Kubernetes API Service also led to that
+node. A temporary node-local firewall rule scoped to the connector's
+source address blocked both API paths. The same rule left edge and worker
+ingress reachable from the connector and left both API paths reachable
+from the control pod. The rule was removed after the check. Deployments
+that require this boundary need a host firewall or CNI-specific host policy.
+The portable component retains the connector's token-free ServiceAccount
+configuration. The probe verified the token was absent and an uncredentialed
+Kubernetes API request returned HTTP 403. [Kubernetes NetworkPolicy scope](https://kubernetes.io/docs/concepts/services-networking/network-policies/#the-two-sorts-of-pod-isolation)
+
+
+With the shipped policy still applied, the full Bifrost replay used one
+Kubernetes Job worker and the offline Miniflare provider. The connector's
+local cloudflared stand-in attached through the allowed edge route on TCP
+7844 without an additional connector NetworkPolicy. The actual API pod
+still reached Postgres, Redis, SeaweedFS, the Kubernetes API, and the local
+provider. All four PlatformJobs succeeded on attempt one.
+
+| Live action | Time | Readback |
+| --- | ---: | --- |
+| Enable | 60.7 s | One attached connector session and a successful `remote_launcher` canary |
+| Scale In | 2.7 s | Admission closed and no live usage rows remained |
+| Rotate connector token | 73.0 s | The Secret advanced, one old session was evicted, one replacement attached, and the old token returned HTTP 403 |
+| Disconnect | 66.0 s | The Secret was empty, sessions and tunnel DNS were absent, the tunnel was deleted, and three scripts and four namespaces returned HTTP 404 |
+
+The namespace, connector, edge fixture, and Kind node were removed. The
+verification checked the node volume containing the imported and bundled CNI
+images, the test image references, and the disposable bridge. The kubeconfig,
+Kind binary, and fixture files were removed. No separate CNI image pulls,
+hosted Cloudflare requests, or model calls were needed.
