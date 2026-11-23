@@ -1,0 +1,687 @@
+{
+  "spike_source": "f6cf00b94a328900055bad9857656ddbec40940d",
+  "rehearsed_commit": "f6cf00b94a328900055bad9857656ddbec40940d",
+  "status": "passed",
+  "scope": "local_provider_fixture",
+  "offline_tests_passed": 16,
+  "baseline_receipt": {
+    "recorded_at": "d41755718",
+    "rehearsed_commit": "97650ad8e19417589b852ec83e4e62793d2dfd62"
+  },
+  "provider_isolation": {
+    "internal_ipv4_bridge": true,
+    "default_route": false,
+    "pyodide_offline_probe_passed": true,
+    "containers_enabled": false
+  },
+  "release_pair": [
+    {
+      "version": "0.0.0-rc.1",
+      "deployment_digest": "b5fa425b477b75492a755c36ff600dcab61205d8de65176505f90d6ca854d002"
+    },
+    {
+      "version": "0.0.0-rc.2",
+      "deployment_digest": "5d0731fc747aca1b834db28449fc2c4c04227bcd50dc945d08af74a00b2425c3"
+    }
+  ],
+  "comparison": {
+    "timings": {
+      "d41755718": {
+        "cold_queue_to_entry_ms": 6443,
+        "warm_queue_to_entry_ms": 552,
+        "managed_enable_attempt_seconds": null,
+        "connector_rotation_attempt_seconds": null,
+        "existing_disconnect_attempt_seconds": null,
+        "managed_disconnect_attempt_seconds": null
+      },
+      "f6cf00b94": {
+        "cold_queue_to_entry_ms": 6936,
+        "warm_queue_to_entry_ms": 344,
+        "managed_enable_attempt_seconds": 9.126,
+        "connector_rotation_attempt_seconds": 7.435,
+        "existing_disconnect_attempt_seconds": 2.104,
+        "managed_disconnect_attempt_seconds": 4.361
+      }
+    },
+    "baseline_reason_codes": [
+      {
+        "stage": "capacity-status",
+        "checkpoint": "cold-dispatch",
+        "placement": [],
+        "workers": [
+          "waiting_for_launch_gate"
+        ],
+        "eligible_queued": 1,
+        "running": 0
+      },
+      {
+        "stage": "capacity-status",
+        "checkpoint": "burst-first-dispatch",
+        "placement": [],
+        "workers": [
+          "waiting_for_demand"
+        ],
+        "eligible_queued": 0,
+        "running": 0
+      },
+      {
+        "stage": "capacity-status",
+        "checkpoint": "tenth-dispatch-after-launch-gate",
+        "placement": [],
+        "workers": [
+          "installation_slots_full"
+        ],
+        "eligible_queued": 1,
+        "running": 9
+      },
+      {
+        "stage": "capacity-status",
+        "checkpoint": "disconnect-requested",
+        "placement": [
+          "cleanup_pending",
+          "setup_required"
+        ],
+        "workers": [
+          "cleanup_pending",
+          "setup_required",
+          "waiting_for_demand"
+        ],
+        "eligible_queued": 0,
+        "running": 0
+      },
+      {
+        "stage": "capacity-status",
+        "checkpoint": "upgrade-original-dispatch",
+        "placement": [],
+        "workers": [
+          "waiting_for_launch_gate"
+        ],
+        "eligible_queued": 1,
+        "running": 0
+      },
+      {
+        "stage": "capacity-status",
+        "checkpoint": "disconnect-requested",
+        "placement": [
+          "cleanup_pending",
+          "setup_required"
+        ],
+        "workers": [
+          "cleanup_pending",
+          "setup_required",
+          "waiting_for_demand"
+        ],
+        "eligible_queued": 0,
+        "running": 0
+      }
+    ],
+    "candidate_reason_codes": [
+      {
+        "stage": "capacity-status",
+        "checkpoint": "cold-dispatch",
+        "placement": [],
+        "workers": [
+          "waiting_for_launch_gate"
+        ],
+        "eligible_queued": 1,
+        "running": 0
+      },
+      {
+        "stage": "capacity-status",
+        "checkpoint": "burst-first-dispatch",
+        "placement": [],
+        "workers": [
+          "waiting_for_demand"
+        ],
+        "eligible_queued": 0,
+        "running": 0
+      },
+      {
+        "stage": "capacity-status",
+        "checkpoint": "tenth-dispatch-after-launch-gate",
+        "placement": [],
+        "workers": [
+          "installation_slots_full"
+        ],
+        "eligible_queued": 1,
+        "running": 9
+      },
+      {
+        "stage": "capacity-status",
+        "checkpoint": "disconnect-requested",
+        "placement": [
+          "cleanup_pending",
+          "setup_required"
+        ],
+        "workers": [
+          "cleanup_pending",
+          "setup_required",
+          "waiting_for_demand"
+        ],
+        "eligible_queued": 0,
+        "running": 0
+      },
+      {
+        "stage": "capacity-status",
+        "checkpoint": "upgrade-original-dispatch",
+        "placement": [],
+        "workers": [
+          "waiting_for_launch_gate"
+        ],
+        "eligible_queued": 1,
+        "running": 0
+      },
+      {
+        "stage": "capacity-status",
+        "checkpoint": "disconnect-requested",
+        "placement": [
+          "cleanup_pending",
+          "setup_required"
+        ],
+        "workers": [
+          "cleanup_pending",
+          "setup_required",
+          "waiting_for_demand"
+        ],
+        "eligible_queued": 0,
+        "running": 0
+      }
+    ]
+  },
+  "events": [
+    {
+      "stage": "isolation",
+      "internal_networks": true,
+      "api_worker_hooks_verified": true
+    },
+    {
+      "stage": "approvals",
+      "accepted_loose": 4,
+      "accepted_solution": 1
+    },
+    {
+      "stage": "isolation",
+      "internal_networks": true,
+      "api_worker_hooks_verified": true
+    },
+    {
+      "stage": "policy",
+      "mode": "existing",
+      "lifetime_seconds": 3600,
+      "fleet_envelope_usd": "32.13"
+    },
+    {
+      "stage": "job-timing",
+      "host_mode": "existing",
+      "outcome": "enabled",
+      "seconds": 4.752,
+      "attempt": 1,
+      "status": "succeeded",
+      "job_seconds": 4.237,
+      "attempt_seconds": 4.226,
+      "phase": "Completed",
+      "code": null
+    },
+    {
+      "stage": "enable",
+      "class": "remote_launcher",
+      "connections": [
+        {
+          "address_family": "ipv4",
+          "tcp_connects_started": 8,
+          "tls_handshakes_started": 8,
+          "tls_handshakes_completed": 8,
+          "reused_requests": 92
+        }
+      ]
+    },
+    {
+      "stage": "preflight",
+      "checks": 100,
+      "connections": [
+        {
+          "address_family": "ipv4",
+          "tcp_connects_started": 8,
+          "tls_handshakes_started": 8,
+          "tls_handshakes_completed": 8,
+          "reused_requests": 92
+        }
+      ],
+      "failure": null
+    },
+    {
+      "stage": "capacity-status",
+      "checkpoint": "cold-dispatch",
+      "placement": [],
+      "workers": [
+        "waiting_for_launch_gate"
+      ],
+      "eligible_queued": 1,
+      "running": 0
+    },
+    {
+      "stage": "latency",
+      "cold_queue_to_stage_ms": {
+        "gate": 2000,
+        "decision": 2129,
+        "launcher_start": 2301,
+        "launcher_accepted": 2310,
+        "hello": 2346,
+        "claim": 2452,
+        "prepare": 2596,
+        "engine_ready": 6772,
+        "dispatch": 2732,
+        "entry": 6852
+      },
+      "cold": {
+        "queue_to_entry_ms": 6936,
+        "queue_to_completion_ms": 6956,
+        "ordinal": 0,
+        "terminal_ack": true
+      },
+      "warm": {
+        "queue_to_entry_ms": 344,
+        "queue_to_completion_ms": 360,
+        "ordinal": 0,
+        "terminal_ack": true
+      }
+    },
+    {
+      "stage": "capacity-status",
+      "checkpoint": "burst-first-dispatch",
+      "placement": [],
+      "workers": [
+        "waiting_for_demand"
+      ],
+      "eligible_queued": 0,
+      "running": 0
+    },
+    {
+      "stage": "capacity-status",
+      "checkpoint": "tenth-dispatch-after-launch-gate",
+      "placement": [],
+      "workers": [
+        "installation_slots_full"
+      ],
+      "eligible_queued": 1,
+      "running": 9
+    },
+    {
+      "stage": "burst",
+      "provider": 4,
+      "global": 4,
+      "reserved": 1,
+      "queued_observations": 2,
+      "cancel_unchanged_fences": 8,
+      "scoped_solution": true,
+      "last_dispatch_read_to_full_entry_ms": 11849
+    },
+    {
+      "stage": "job-timing",
+      "host_mode": "existing",
+      "outcome": "verified",
+      "seconds": 2.386,
+      "attempt": 1,
+      "status": "succeeded",
+      "job_seconds": 2.195,
+      "attempt_seconds": 2.179,
+      "phase": "Completed",
+      "code": null
+    },
+    {
+      "stage": "job-timing",
+      "host_mode": "existing",
+      "outcome": "scaled_in",
+      "seconds": 2.671,
+      "attempt": 1,
+      "status": "succeeded",
+      "job_seconds": 32.38,
+      "attempt_seconds": 32.365,
+      "phase": "Completed",
+      "code": null
+    },
+    {
+      "stage": "reconcile-and-scale-in",
+      "active_drain": true,
+      "scripts_retained": 3
+    },
+    {
+      "stage": "capacity-status",
+      "checkpoint": "disconnect-requested",
+      "placement": [
+        "cleanup_pending",
+        "setup_required"
+      ],
+      "workers": [
+        "cleanup_pending",
+        "setup_required",
+        "waiting_for_demand"
+      ],
+      "eligible_queued": 0,
+      "running": 0
+    },
+    {
+      "stage": "disconnect-job",
+      "status": "running",
+      "attempt": 1,
+      "phase": "Starting",
+      "code": null,
+      "elapsed_seconds": 0.007
+    },
+    {
+      "stage": "disconnect-job",
+      "status": "running",
+      "attempt": 1,
+      "phase": "Draining Cloudflare Capacity",
+      "code": null,
+      "elapsed_seconds": 1.852
+    },
+    {
+      "stage": "disconnect-job",
+      "status": "succeeded",
+      "attempt": 1,
+      "phase": "Completed",
+      "code": null,
+      "elapsed_seconds": 2.267
+    },
+    {
+      "stage": "job-timing",
+      "host_mode": "existing",
+      "outcome": "disconnected",
+      "seconds": 2.267,
+      "attempt": 1,
+      "status": "succeeded",
+      "job_seconds": 2.166,
+      "attempt_seconds": 2.104,
+      "phase": "Completed",
+      "code": null
+    },
+    {
+      "stage": "disconnect",
+      "workers_404": 3,
+      "namespaces_404": 4,
+      "live_ledger_rows": 0
+    },
+    {
+      "stage": "isolation",
+      "internal_networks": true,
+      "api_worker_hooks_verified": true
+    },
+    {
+      "stage": "policy",
+      "mode": "managed",
+      "lifetime_seconds": 3600,
+      "fleet_envelope_usd": "32.13"
+    },
+    {
+      "stage": "job-timing",
+      "host_mode": "managed",
+      "outcome": "enabled",
+      "seconds": 9.259,
+      "attempt": 1,
+      "status": "succeeded",
+      "job_seconds": 9.136,
+      "attempt_seconds": 9.126,
+      "phase": "Completed",
+      "code": null
+    },
+    {
+      "stage": "enable",
+      "class": "remote_launcher",
+      "connections": [
+        {
+          "address_family": "ipv4",
+          "tcp_connects_started": 8,
+          "tls_handshakes_started": 8,
+          "tls_handshakes_completed": 8,
+          "reused_requests": 92
+        }
+      ]
+    },
+    {
+      "stage": "job-timing",
+      "host_mode": "managed",
+      "outcome": "scaled_in",
+      "seconds": 2.496,
+      "attempt": 1,
+      "status": "succeeded",
+      "job_seconds": 2.425,
+      "attempt_seconds": 2.406,
+      "phase": "Completed",
+      "code": null
+    },
+    {
+      "stage": "job-timing",
+      "host_mode": "managed",
+      "outcome": "rotated",
+      "seconds": 7.623,
+      "attempt": 1,
+      "status": "succeeded",
+      "job_seconds": 7.455,
+      "attempt_seconds": 7.435,
+      "phase": "Completed",
+      "code": null
+    },
+    {
+      "stage": "preflight",
+      "checks": 100,
+      "connections": [
+        {
+          "address_family": "ipv4",
+          "tcp_connects_started": 8,
+          "tls_handshakes_started": 8,
+          "tls_handshakes_completed": 8,
+          "reused_requests": 92
+        }
+      ],
+      "failure": null
+    },
+    {
+      "stage": "job-timing",
+      "host_mode": "managed",
+      "outcome": "enabled",
+      "seconds": 5.222,
+      "attempt": 1,
+      "status": "succeeded",
+      "job_seconds": 5.075,
+      "attempt_seconds": 5.061,
+      "phase": "Completed",
+      "code": null
+    },
+    {
+      "stage": "enable",
+      "class": "remote_launcher",
+      "connections": [
+        {
+          "address_family": "ipv4",
+          "tcp_connects_started": 8,
+          "tls_handshakes_started": 8,
+          "tls_handshakes_completed": 8,
+          "reused_requests": 92
+        }
+      ]
+    },
+    {
+      "stage": "managed",
+      "initial_config": "version_zero",
+      "warp_routing_enabled": false,
+      "route_list_http": 200,
+      "previous_sessions_evicted": 1,
+      "replacement_sessions": 1
+    },
+    {
+      "stage": "capacity-status",
+      "checkpoint": "upgrade-original-dispatch",
+      "placement": [],
+      "workers": [
+        "waiting_for_launch_gate"
+      ],
+      "eligible_queued": 1,
+      "running": 0
+    },
+    {
+      "stage": "isolation",
+      "internal_networks": true,
+      "api_worker_hooks_verified": true
+    },
+    {
+      "stage": "job-timing",
+      "host_mode": "managed",
+      "outcome": "enabled",
+      "seconds": 2.007,
+      "attempt": 1,
+      "status": "succeeded",
+      "job_seconds": 34.244,
+      "attempt_seconds": 25.389,
+      "phase": "Completed",
+      "code": null
+    },
+    {
+      "stage": "isolation",
+      "internal_networks": true,
+      "api_worker_hooks_verified": true
+    },
+    {
+      "stage": "upgrade",
+      "original_claim": true,
+      "dispatch_count": 1,
+      "terminal_ack": true,
+      "old_workers_404": 3,
+      "old_namespaces_404": 4,
+      "admission_fenced": true,
+      "same_control_connection": true,
+      "successor_scheduler_lease": true,
+      "worker_rebound_to_successor": true,
+      "old_absence_checkpoint_before_replacement": true,
+      "first_replacement_observation_after_checkpoint_ms": 198,
+      "replacement_signed_canary": true,
+      "replacement_execution": true
+    },
+    {
+      "stage": "job-timing",
+      "host_mode": "managed",
+      "outcome": "scaled_in",
+      "seconds": 2.909,
+      "attempt": 1,
+      "status": "succeeded",
+      "job_seconds": 2.708,
+      "attempt_seconds": 2.695,
+      "phase": "Completed",
+      "code": null
+    },
+    {
+      "stage": "meter_guard",
+      "estimated_usd": "0.08",
+      "limit_usd": "0.50",
+      "within_limit": true,
+      "ledger": {
+        "retired": 9,
+        "uncertain": 0,
+        "uncertain_with_final_receipt": 0
+      }
+    },
+    {
+      "stage": "meter",
+      "state": "ready",
+      "synthetic_provider_samples": 1,
+      "workers_only_test_ratio": "2.5E+5"
+    },
+    {
+      "stage": "capacity-status",
+      "checkpoint": "disconnect-requested",
+      "placement": [
+        "cleanup_pending",
+        "setup_required"
+      ],
+      "workers": [
+        "cleanup_pending",
+        "setup_required",
+        "waiting_for_demand"
+      ],
+      "eligible_queued": 0,
+      "running": 0
+    },
+    {
+      "stage": "disconnect-job",
+      "status": "running",
+      "attempt": 1,
+      "phase": "Starting",
+      "code": null,
+      "elapsed_seconds": 0.005
+    },
+    {
+      "stage": "disconnect-job",
+      "status": "running",
+      "attempt": 1,
+      "phase": "Draining Cloudflare Capacity",
+      "code": null,
+      "elapsed_seconds": 2.062
+    },
+    {
+      "stage": "disconnect-job",
+      "status": "running",
+      "attempt": 1,
+      "phase": "Verifying Cloudflare Deletion",
+      "code": null,
+      "elapsed_seconds": 2.268
+    },
+    {
+      "stage": "disconnect-job",
+      "status": "succeeded",
+      "attempt": 1,
+      "phase": "Completed",
+      "code": null,
+      "elapsed_seconds": 4.321
+    },
+    {
+      "stage": "job-timing",
+      "host_mode": "managed",
+      "outcome": "disconnected",
+      "seconds": 4.321,
+      "attempt": 1,
+      "status": "succeeded",
+      "job_seconds": 4.378,
+      "attempt_seconds": 4.361,
+      "phase": "Completed",
+      "code": null
+    },
+    {
+      "stage": "disconnect",
+      "workers_404": 12,
+      "namespaces_404": 16,
+      "live_ledger_rows": 0
+    },
+    {
+      "stage": "managed-teardown",
+      "tunnel_deleted": true,
+      "sessions": 0
+    },
+    {
+      "stage": "ct128-teardown",
+      "containers": 0,
+      "networks": 0,
+      "volumes": 0,
+      "provider_containers": 0,
+      "image_tags": 0,
+      "scratch_removed": true
+    }
+  ],
+  "setup_dispositions": [
+    {
+      "failure": "legacy_docker_builder_rejected_copy_chmod",
+      "remedy": "verified Buildx binary in a private Docker config"
+    },
+    {
+      "failure": "workerd_system_ca_bundle_missing",
+      "remedy": "read-only system CA mount, verified with networking disabled"
+    },
+    {
+      "failure": "workerd_python_bundle_cache_miss",
+      "remedy": "use the SHA-256-verified local Pyodide bundle and explicit workerd cache flag; verified with a Python request and networking disabled"
+    },
+    {
+      "failure": "static_address_rejected_on_auto_subnet",
+      "remedy": "read Docker-assigned provider address and keep the provider on the internal bridge"
+    }
+  ]
+}
