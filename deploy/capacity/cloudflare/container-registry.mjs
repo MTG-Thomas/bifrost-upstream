@@ -56,19 +56,21 @@ export class ScopeRegistry {
         )`);
     }
 
-    reserve(pin, now = Date.now()) {
-        return this.#storeReservation(pin, now);
+    reserve(pin) {
+        return this.#storeReservation(pin, Date.now());
     }
 
-    reserveForStart(pin, instance, now) {
-        if (!/^[a-f0-9]{64}$/.test(instance) || !Number.isSafeInteger(now)) return { status: "invalid" };
-        if (now >= pin.startDeadline) return this.reserve(pin, now);
+    reserveForStart(pin, instance) {
+        const now = Date.now();
+        if (!/^[a-f0-9]{64}$/.test(instance)) return { status: "invalid" };
+        if (now >= pin.startDeadline) return this.#storeReservation(pin, now);
         return this.#storeReservation(pin, now, { instance, onlyWhenFull: true });
     }
 
     // Accept the immutable API pin even if the controller crashed before prepare.
     // A void tombstone occupies no seat and denies all later prepare/start replays.
-    voidUnstarted(pin, instance, now) {
+    voidUnstarted(pin, instance) {
+        const now = Date.now();
         if (!/^[a-f0-9]{64}$/.test(instance)) return { status: "invalid" };
         if (!Number.isSafeInteger(now) || now < pin.startDeadline) return { status: "pending" };
         return this.#storeReservation(pin, now, { instance, onlyWhenFull: false });
@@ -346,7 +348,7 @@ export class ContainerInstanceLifecycle {
             return { status: "invalid" };
         }
         return this.ctx.blockConcurrencyWhile(async () => {
-            const prepared = await this.registry.reserveForStart(pin, this.instance, Date.now());
+            const prepared = await this.registry.reserveForStart(pin, this.instance);
             if (prepared.status !== "reserved") return prepared;
             const ticket = await this.ctx.storage.get("start-ticket");
             if (ticket && (ticket.uid !== pin.uid || ticket.deadline !== pin.deadline)) return { status: "conflict" };

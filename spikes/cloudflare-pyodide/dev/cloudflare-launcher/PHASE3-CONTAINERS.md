@@ -443,11 +443,21 @@ only. Joint admission still requires a signed runtime canary. Disconnect
 removes the application and launcher before removing the digest-checked tag.
 [Cloudflare image management](https://developers.cloudflare.com/containers/guides/image-management/)
 
-Scale In preserves the revision of a fully admitted deployment. It closes
-admission immediately, and Enable can reopen that revision only after the
-Scale In job and its worker drain finish. This preserves the exact image,
-application, launcher, and readiness binding for unchanged configuration.
-Disconnect and a paused cutover still advance the revision.
+The revision increment fences stale jobs and provider effects when Scale In
+interrupts a cutover or pauses a deployment that has not reached admission.
+Disconnect also advances it. Scale In can retain the generation when the
+desired, deployed, and admitted revisions agree and no cutover is pending.
+Scale In clears admission immediately. Enable checks the active Scale In job
+and durable worker reservations before reopening the retained revision.
+
+The drain requires retirement of the previous worker incarnations, including
+settlement of Container reservations. Their enrollment and start fences stay
+closed after re-enable. A replacement has a new worker ID and resource UID and
+receives a key derived for that incarnation and scope. A previous launcher's
+key cannot enroll the replacement even when the script version is reused.
+Enable still verifies the retained release digest, exact application, and
+scope. Joint readiness remains bound to that revision and digest, and a
+configuration or release cutover cannot inherit it.
 
 Hosted qualification needs explicit approval of the disposable account lane,
 installation, grants, time window and spend bounds, with an independent

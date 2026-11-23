@@ -1190,25 +1190,19 @@ async def test_container_application_effect_survives_provisioning_failures(
                     await enable_job._settle_enable(job_context, payload, http, workers_release)
                 assert writes == ["POST"]
                 listed = True
-            if create_failure == "ambiguous-absent":
-                # The application is genuinely absent. The next Enable
-                # attempt must wait for two committed reads a window apart.
-                window = timedelta(milliseconds=100)
-                monkeypatch.setattr(lifecycle_job, "CREATE_SETTLEMENT_WINDOW", window)
-                monkeypatch.setattr(enable_job, "CREATE_SETTLEMENT_WINDOW", window)
+            window = timedelta(milliseconds=100)
+            monkeypatch.setattr(lifecycle_job, "CREATE_SETTLEMENT_WINDOW", window)
+            monkeypatch.setattr(enable_job, "CREATE_SETTLEMENT_WINDOW", window)
             if create_failure in (400, 409, 429) or late:
                 # Age of the send alone does not establish a settled absence.
                 assert journal.observed_at is not None
-                journal.observed_at -= lifecycle_job.CREATE_SETTLEMENT_WINDOW
-                await db_session.flush()
+                await asyncio.sleep(window.total_seconds())
                 with pytest.raises(ObservationSettling) as waiting:
                     await enable_job._provision_container_application(job_context, payload, adapter, release)
                 assert waiting.value.check is ObservationCheck.CONTAINER_CREATE
                 assert writes == ["POST"]
                 await db_session.refresh(journal)
                 assert journal.observed_at is not None and journal.provider_details["creation_empty_observed"]
-                journal.observed_at -= lifecycle_job.CREATE_SETTLEMENT_WINDOW
-                await db_session.flush()
             if late:
                 fault = int(create_failure.split("-")[1])
                 retry_failure = ({400: ObservationSettling, 403: CloudflareManagementDenied, 409: ObservationSettling}

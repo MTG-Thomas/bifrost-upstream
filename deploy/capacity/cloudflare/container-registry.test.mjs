@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import test from "node:test";
-import { ContainerInstanceLifecycle, forwardContainerHttp, relayControlSockets, ScopeRegistry } from "./container-registry.mjs";
+import test, { mock } from "node:test";
+import launcher, { ContainerInstanceLifecycle, forwardContainerHttp, relayControlSockets, ScopeRegistry } from "./container-registry.mjs";
 
 const policy = JSON.parse(readFileSync(new URL("../../../api/src/services/worker_ingress_routes.json", import.meta.url)));
 
@@ -47,9 +47,38 @@ function fixture(cap = 2, byteCap = 100) {
     };
 }
 
-function reserve(scope, pin, now = pin.reservedAt) {
-    return scope.reserve(pin, now);
+function withClock(now, operation) {
+    const clock = mock.method(Date, "now", () => now);
+    try {
+        return operation();
+    } finally {
+        clock.mock.restore();
+    }
 }
+
+function reserve(scope, pin, now = pin.reservedAt) {
+    return withClock(now, () => scope.reserve(pin));
+}
+
+test("the provisioning-only launcher rejects requests before a control route is installed", () => {
+    assert.equal(launcher.fetch(new Request("https://containers.example.test/")).status, 404);
+});
+
+test("caller timestamps cannot prune reservations or void a seat early", (t) => {
+    const { db, registry, pin } = fixture(1);
+    t.after(() => db.close());
+    const first = pin();
+    const next = pin();
+    const scope = registry();
+    const actor = "b".repeat(64);
+    withClock(first.reservedAt, () => {
+        assert.equal(scope.reserve(first).status, "reserved");
+        assert.equal(scope.reserve(next, first.deadline).status, "full");
+        assert.equal(scope.reserveForStart(next, actor, first.deadline).status, "allocation-refused");
+        assert.equal(scope.voidUnstarted(first, actor, first.deadline).status, "pending");
+        assert.equal(scope.reserve(first).status, "reserved");
+    });
+});
 
 test("a lost reply replays its original reservation across registry reset", () => {
     const { db, registry, pin } = fixture();
@@ -76,9 +105,9 @@ test("a prepared reservation tolerates a bounded lag in the actor clock", (t) =>
     const withinSkew = 7000;
     const scope = registry();
     assert.equal(reserve(scope, request).status, "reserved");
-    assert.equal(scope.reserveForStart(request, instance, tooEarly).status, "closed");
+    assert.equal(withClock(tooEarly, () => scope.reserveForStart(request, instance)).status, "closed");
     assert.equal(scope.authorizeStart(request.uid, instance, tooEarly, request.deadline).status, "conflict");
-    assert.equal(scope.reserveForStart(request, instance, withinSkew).status, "reserved");
+    assert.equal(withClock(withinSkew, () => scope.reserveForStart(request, instance)).status, "reserved");
     assert.equal(scope.authorizeStart(request.uid, instance, withinSkew, request.deadline).status, "authorized");
     assert.equal(scope.chargeRelay(request.uid, instance, "ingress", 10, withinSkew), true);
     assert.equal(scope.chargeRelay(request.uid, instance, "ingress", 10, request.deadline), false);
@@ -167,16 +196,16 @@ test("an expired unstarted seat is voided after a reset and can never start", (t
     const instance = "b".repeat(64);
     assert.equal(reserve(registry(), first).status, "reserved");
     assert.equal(reserve(registry(), next).status, "full");
-    assert.equal(registry().voidUnstarted(first, instance, first.startDeadline - 1).status, "pending");
+    assert.equal(withClock(first.startDeadline - 1, () => registry().voidUnstarted(first, instance)).status, "pending");
     const receipt = { status: "void", uid: first.uid, instance, startDeadline: first.startDeadline, voidedAt: first.startDeadline };
-    assert.deepEqual(registry().voidUnstarted(first, instance, first.startDeadline), receipt);
-    assert.deepEqual(registry().voidUnstarted(first, instance, first.startDeadline + 1), receipt);
-    assert.equal(registry().voidUnstarted(first, "f".repeat(64), first.startDeadline + 1).status, "conflict");
+    assert.deepEqual(withClock(first.startDeadline, () => registry().voidUnstarted(first, instance)), receipt);
+    assert.deepEqual(withClock(first.startDeadline + 1, () => registry().voidUnstarted(first, instance)), receipt);
+    assert.equal(withClock(first.startDeadline + 1, () => registry().voidUnstarted(first, "f".repeat(64))).status, "conflict");
     assert.equal(registry().authorizeStart(first.uid, instance, first.reservedAt, first.deadline).status, "closed");
     assert.equal(reserve(registry(), next).status, "reserved");
     assert.equal(registry().authorizeStart(next.uid, instance, next.reservedAt, next.deadline).status, "authorized");
-    assert.equal(registry().voidUnstarted(next, instance, next.startDeadline).status, "conflict");
-    assert.equal(registry().voidUnstarted(missing, "d".repeat(64), missing.startDeadline).status, "void");
+    assert.equal(withClock(next.startDeadline, () => registry().voidUnstarted(next, instance)).status, "conflict");
+    assert.equal(withClock(missing.startDeadline, () => registry().voidUnstarted(missing, "d".repeat(64))).status, "void");
     assert.equal(reserve(registry(), missing).status, "retired");
 });
 
@@ -187,12 +216,12 @@ test("an allocation refusal is durable and cannot cross the start fence", async 
     const rejected = pin();
     const instance = "b".repeat(64);
     assert.equal(reserve(registry(), first).status, "reserved");
-    const receipt = registry().reserveForStart(rejected, instance, rejected.reservedAt);
+    const receipt = withClock(rejected.reservedAt, () => registry().reserveForStart(rejected, instance));
     assert.deepEqual(receipt, {
         status: "allocation-refused", uid: rejected.uid, instance,
         startDeadline: rejected.startDeadline, voidedAt: rejected.reservedAt,
     });
-    assert.equal(registry().voidUnstarted(first, "d".repeat(64), first.startDeadline).status, "void");
+    assert.equal(withClock(first.startDeadline, () => registry().voidUnstarted(first, "d".repeat(64))).status, "void");
     assert.deepEqual(reserve(registry(), rejected), receipt);
     assert.equal(registry().authorizeStart(rejected.uid, instance, rejected.reservedAt, rejected.deadline).status, "closed");
     assert.equal(reserve(registry(), pin()).status, "reserved");
@@ -221,22 +250,22 @@ test("registry prunes expired receipts across idle cycles and keeps unresolved s
         assert.equal(reserve(scope, expiredUnstarted).status, "reserved");
         assert.equal(reserve(scope, settled).status, "reserved");
         assert.equal(scope.authorizeStart(settled.uid, actor, settled.reservedAt, settled.deadline).status, "authorized");
-        assert.equal(scope.reserveForStart(denied, actor, denied.reservedAt).status, "allocation-refused");
+        assert.equal(withClock(denied.reservedAt, () => scope.reserveForStart(denied, actor)).status, "allocation-refused");
         const start = settled.reservedAt + 1;
         assert.equal(scope.observeStart(settled.uid, actor, start).status, "observed");
         const receipt = scope.closeStart(settled.uid, actor, start + 1);
         assert.equal(scope.retire(settled.uid, actor, receipt.closedAt).status, "retired");
         assert.equal(reserve(scope, settled, settled.deadline - 1).status, "retired");
         assert.equal(reserve(scope, settled, settled.deadline).status, "closed");
-        assert.equal(scope.reserveForStart(denied, actor, settled.deadline).status, "closed");
+        assert.equal(withClock(settled.deadline, () => scope.reserveForStart(denied, actor)).status, "closed");
         assert.equal(scope.authorizeStart(settled.uid, actor, settled.deadline, settled.deadline).status, "closed");
         const recovered = {
             status: "void", uid: expiredUnstarted.uid, instance: actor,
             startDeadline: expiredUnstarted.startDeadline, voidedAt: expiredUnstarted.deadline,
         };
-        assert.deepEqual(scope.voidUnstarted(expiredUnstarted, actor, settled.deadline), recovered);
-        assert.deepEqual(scope.voidUnstarted(expiredUnstarted, actor, settled.deadline + 1000), recovered);
-        assert.equal(scope.voidUnstarted(unresolved, actor, settled.deadline).status, "conflict");
+        assert.deepEqual(withClock(settled.deadline, () => scope.voidUnstarted(expiredUnstarted, actor)), recovered);
+        assert.deepEqual(withClock(settled.deadline + 1000, () => scope.voidUnstarted(expiredUnstarted, actor)), recovered);
+        assert.equal(withClock(settled.deadline, () => scope.voidUnstarted(unresolved, actor)).status, "conflict");
         assert.equal(count("reservations"), 1);
         assert.equal(count("start_fences"), 1);
     }
@@ -251,18 +280,18 @@ test("the registry limits recent receipts without dropping a live fence", (t) =>
     assert.equal(reserve(scope, first).status, "reserved");
     assert.equal(scope.authorizeStart(first.uid, actor, first.reservedAt, first.deadline).status, "authorized");
     const rejected = pin();
-    const receipt = scope.reserveForStart(rejected, actor, rejected.reservedAt);
+    const receipt = withClock(rejected.reservedAt, () => scope.reserveForStart(rejected, actor));
     assert.equal(receipt.status, "allocation-refused");
     for (let index = 2; index < 1024; index++) {
         const pending = pin();
-        assert.equal(scope.reserveForStart(pending, actor, pending.reservedAt).status, "allocation-refused");
+        assert.equal(withClock(pending.reservedAt, () => scope.reserveForStart(pending, actor)).status, "allocation-refused");
     }
     const overflow = pin();
-    assert.equal(scope.reserveForStart(overflow, actor, overflow.reservedAt).status, "receipt-limit");
+    assert.equal(withClock(overflow.reservedAt, () => scope.reserveForStart(overflow, actor)).status, "receipt-limit");
     assert.deepEqual(reserve(scope, rejected), receipt);
-    assert.equal(scope.voidUnstarted(overflow, actor, overflow.startDeadline).status, "pending");
+    assert.equal(withClock(overflow.startDeadline, () => scope.voidUnstarted(overflow, actor)).status, "pending");
     assert.equal(db.prepare("SELECT count(*) AS count FROM reservations").get().count, 1024);
-    assert.equal(scope.voidUnstarted(overflow, actor, overflow.deadline).status, "void");
+    assert.equal(withClock(overflow.deadline, () => scope.voidUnstarted(overflow, actor)).status, "void");
     assert.equal(db.prepare("SELECT count(*) AS count FROM reservations").get().count, 1);
     assert.equal(db.prepare("SELECT count(*) AS count FROM start_fences").get().count, 1);
 });
