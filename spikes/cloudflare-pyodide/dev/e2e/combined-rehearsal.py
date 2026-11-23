@@ -966,6 +966,9 @@ async def qualification_container(case: str, hold: int):
 
         try:
             wait("Container SDK request in flight", lambda: execution in self.provider("/local/held-reads"))
+            # The fixture primary dials the original Compose service name.
+            # Release its hold before retiring that API. The Container keeps its claim.
+            self.release_primary()
             dispatch, = [row for row in self.provider("/local/evidence")
                          if row["kind"] == "dispatch" and row["execution"] == execution]
             worker = str(UUID(dispatch["worker"]))
