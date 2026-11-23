@@ -57,6 +57,10 @@ HOOKS = {
     "src.services.worker_ingress_probes": ingress_transport,
     "src.services.worker_pool.cloudflare_workers_rest": rest_transport,
 }
+if os.getenv("REHEARSAL_CONTAINERS") == "1":
+    from containers_fixture import HOOKS as container_hooks
+
+    HOOKS.update(container_hooks)
 
 
 class FixtureLoader(importlib.abc.Loader):

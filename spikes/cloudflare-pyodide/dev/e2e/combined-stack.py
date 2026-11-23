@@ -22,7 +22,40 @@ def ports(count):
             listener.close()
 
 
-def prepare(root, project, image, *, initial_tunnel_config, lag_worker_namespace):
+def container_fixture(image):
+    linux, = json.loads(subprocess.check_output(["docker", "image", "inspect", image]))
+    proxy_ref = (
+        "cloudflare/proxy-everything@sha256:"
+        "0ef6716c52430096900b150d84a3302057d6cd2319dae7987128c85d0733e3c8"
+    )
+    proxy, = json.loads(subprocess.check_output(["docker", "image", "inspect", proxy_ref]))
+    runtime = linux["Config"]
+    if (
+        (linux["Os"], linux["Architecture"], runtime["User"]) != ("linux", "amd64", "0:0")
+        or runtime["Entrypoint"] != ["/usr/local/bin/python", "-m", "src.worker.remote.container_entrypoint"]
+        or "BIFROST_BAKED_WHEELS_ONLY=1" not in runtime["Env"]
+        or re.fullmatch("[a-f0-9]{40}", (runtime["Labels"] or {}).get("org.opencontainers.image.revision", "")) is None
+    ):
+        raise ValueError("Use the matched local Dockerfile.containers release image")
+    # Docker's local image ID fixes the runnable image. The synthetic
+    # OCI document is the digest exposed by the local registry boundary.
+    oci_config = json.dumps({
+        "os": linux["Os"], "architecture": linux["Architecture"], "config": runtime,
+    }, sort_keys=True, separators=(",", ":"))
+    oci_manifest = json.dumps({
+        "schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "config": {"digest": "sha256:" + sha256(oci_config.encode()).hexdigest()},
+        "layers": [{"digest": layer} for layer in linux["RootFS"]["Layers"]],
+    }, sort_keys=True, separators=(",", ":"))
+    return {
+        "image": image, "imageId": linux["Id"], "proxyId": proxy["Id"],
+        "digest": "sha256:" + sha256(oci_manifest.encode()).hexdigest(),
+        "config": oci_config, "manifest": oci_manifest,
+    }
+
+
+def prepare(root, project, image, *, initial_tunnel_config, lag_worker_namespace, containers_image):
+    containers = container_fixture(containers_image) if containers_image is not None else None
     fixture = root / ".rehearsal"
     fixture.mkdir(mode=0o755)
     site = root / "spikes/cloudflare-pyodide/dev/e2e/combined-site"
@@ -50,6 +83,14 @@ def prepare(root, project, image, *, initial_tunnel_config, lag_worker_namespace
         "initialTunnelConfig": initial_tunnel_config,
         "workerNamespaceLagMs": 10_000 if lag_worker_namespace else 0,
     }
+    if containers is not None:
+        # The alternate raw-TCP challenge has a real local listener. Fail
+        # before activation if the private bridge address is occupied.
+        with socket.socket() as listener:
+            listener.bind((address, 443))
+        proxy_alias = project + "-containers-proxy:local"
+        subprocess.run(["docker", "tag", containers["proxyId"], proxy_alias], check=True)
+        cfg["containers"] = {**containers, "proxy": proxy_alias}
     (fixture / "config.json").write_text(json.dumps(cfg))
     (fixture / "connector.json").write_text(json.dumps({"base": f"http://{address}:{provider}/local/tunnel-"}))
     (fixture / "cloudflared").write_text("""#!/usr/local/bin/python
@@ -103,6 +144,10 @@ signal.pause()
       - ./.rehearsal/edge.pem:/rehearsal/edge.pem:ro
       - ./spikes/cloudflare-pyodide/dev/e2e/combined-site:/rehearsal-site:ro
 """
+    if containers_image is not None:
+        stub_env += '      REHEARSAL_CONTAINERS: "1"\n'
+        mounts += "      - ./.rehearsal/config.json:/rehearsal/containers.json:ro\n"
+        mounts += ("      - ./deploy/capacity/cloudflare:/rehearsal-container-bundle:ro\n")
     overlay = f"""services:
   api:
     pull_policy: never
@@ -139,6 +184,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("project")
     parser.add_argument("image")
+    parser.add_argument("--containers-image", help="Use a locally built, matched Dockerfile.containers image")
     parser.add_argument("--lag-worker-namespace", action="store_true")
     variants = parser.add_mutually_exclusive_group()
     variants.add_argument("--missing-tunnel-config", dest="initial_tunnel_config", action="store_const", const="http_404",
@@ -151,4 +197,4 @@ if __name__ == "__main__":
     if not root.name.startswith("combined-local-") or root.stat().st_mode & 0o077:
         parser.error("Use a fresh private combined-local-* archive")
     prepare(root, args.project, args.image, initial_tunnel_config=args.initial_tunnel_config,
-            lag_worker_namespace=args.lag_worker_namespace)
+            lag_worker_namespace=args.lag_worker_namespace, containers_image=args.containers_image)

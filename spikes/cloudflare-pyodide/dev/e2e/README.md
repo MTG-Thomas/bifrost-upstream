@@ -62,6 +62,56 @@ The verified run used archive `7e1f7c846` on CT128, project
 `/opt/bifrost-tests/phase5-7e1f7c846/.phase5-run.log`. The runtime digest was
 `fd03ddf5bd8e87a4b11941678b526455f118eb7913b31a0a0be473521cd7f0d5`.
 
+## Local one-button Containers rehearsal
+
+Use a fresh private `combined-local-*` archive on CT128 and the local
+release and Compose setup in [the combined Workers rehearsal](../cloudflare-launcher/PHASE1-PILOT.md).
+Use Node 26 and Buildx 0.21.3. Confirm the host is idle and has at least
+8 GB available before starting the stack.
+
+Build the Linux child from the same local API image and label it with
+the source revision in that image's Workers release manifest. The pinned
+outbound proxy image must be present in the local Docker daemon.
+
+```sh
+npm ci --prefix deploy/capacity/cloudflare/registry-toolchain
+docker buildx build --load --pull=false --network=none \
+  --build-arg "BIFROST_API_IMAGE=$IMAGE:release-1" \
+  --label "org.opencontainers.image.revision=$RELEASE_SOURCE_REVISION" \
+  -f deploy/capacity/cloudflare/Dockerfile.containers \
+  -t "$LINUX_IMAGE" deploy/capacity/cloudflare
+python3 spikes/cloudflare-pyodide/dev/e2e/combined-stack.py "$PROJECT" "$IMAGE" \
+  --containers-image "$LINUX_IMAGE"
+node spikes/cloudflare-pyodide/dev/e2e/combined-provider.mjs .rehearsal/config.json &
+provider_pid=$!
+# After .rehearsal/ready is written:
+docker compose -p "$PROJECT" -f rehearsal-compose.yml -f rehearsal-overlay.yml \
+  up -d --pull never api worker cloudflare-connector
+# After the API and worker are healthy:
+python3 spikes/cloudflare-pyodide/dev/e2e/combined-rehearsal.py --containers-only
+```
+
+This rehearsal starts with empty script, registry and application
+inventories. The local fixture supplies the pilot opt-in before Activate
+enqueues Enable and pins one Linux workflow through the private review
+model. The release and OCI tool fixture checks the exact package inputs
+and records the registry mutations locally. Pinned Miniflare runs the
+uploaded registry, checks signed start and stop requests, and uses Docker
+to run the paired Linux image through the exact worker ingress. Docker
+placement readback is separate from the registry response.
+
+The driver requires a successful native import, a subprocess result and an
+SDK request on a Container worker. It waits for idle settlement, verifies
+that Scale In retains the provisioned resources, then checks re-enablement
+with the same revision and a fresh settled canary. Disconnect must remove
+the scripts, namespaces, application and registry tag.
+
+The rehearsal uses synthetic OCI and signature inputs and a local provider.
+It exercises neither public registry access nor hosted provider qualification.
+After the run, remove only the rehearsal's Compose project and network and
+the local proxy alias `$PROJECT-containers-proxy:local`. Stop the provider
+process even when the driver fails.
+
 ## Autonomous agent qualification
 
 Use a fresh `agentrun-<sha>` archive and the same loopback debug stack as

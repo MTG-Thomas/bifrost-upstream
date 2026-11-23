@@ -1,5 +1,6 @@
 // Local Cloudflare REST stand-in. The uploaded Workers run in real workerd.
 import assert from 'node:assert/strict';
+import {execFileSync} from 'node:child_process';
 import {randomBytes, randomUUID} from 'node:crypto';
 import {readFileSync, writeFileSync} from 'node:fs';
 import {createServer, request} from 'node:http';
@@ -24,6 +25,9 @@ const zone = 'b'.repeat(32);
 const management = relayOnly ? config.relayToken : 'local-rehearsal-management-token';
 const workers = new Map();
 const runtimes = new Map();
+const applications = new Map();
+const images = new Map();
+const placements = new Map();
 const sockets = new Map();
 const sdkCalls = new Map();
 const entered = new Set();
@@ -65,54 +69,140 @@ function module(contents) {
   return {type: 'esm', contents};
 }
 
+function binding(input, worker) {
+  const {type, text, class_name, script_name, service} = input;
+  const spec = {
+    plain_text: () => ({type: 'text', value: text}),
+    secret_text: () => ({type: 'text', value: text}),
+    durable_object_namespace: () => ({type: 'durable-object', worker: script_name ?? worker, exportName: class_name}),
+    worker_loader: () => ({type: 'worker-loader'}),
+    service: () => ({type: 'worker', worker: service}),
+  };
+  assert.ok(spec[type], 'Unexpected uploaded binding type');
+  return spec[type]();
+}
+
+function outboundRelay(origin) {
+  return {config: {name: 'relay', compatibilityDate: '2026-10-30',
+    manifest: {mainModule: 'relay.mjs', modules: {'relay.mjs': module(`
+      export default {fetch(request) {
+        const url = new URL(request.url);
+        if (url.origin !== ${JSON.stringify(origin)}) return new Response('Local fixture only', {status: 403});
+        const next = new Request('http://127.0.0.1:${relay.address().port}' + url.pathname + url.search, request);
+        next.headers.set('x-rehearsal-host', url.host);
+        return fetch(next);
+      }};
+    `)}}}};
+}
+
+function workerConfig({name, meta, modules}) {
+  return {
+    dev: {outboundService: {type: 'worker', worker: 'relay'}},
+    config: {
+      name, compatibilityDate: meta.compatibility_date, compatibilityFlags: meta.compatibility_flags,
+      exports: meta.exports, manifest: {mainModule: meta.main_module, modules},
+      env: Object.fromEntries(meta.bindings.map((value) => [value.name, binding(value, name)])),
+    },
+  };
+}
+
+function containerRuntime(item) {
+  assert.ok(config.containers);
+  for (const [name, id] of [['image', 'imageId'], ['proxy', 'proxyId']]) {
+    assert.equal(execFileSync('docker', ['image', 'inspect', '--format', '{{.Id}}', config.containers[name]],
+      {encoding: 'utf8'}).trim(), config.containers[id]);
+  }
+  const {config: worker, dev} = workerConfig(item);
+  const image = worker.env.CONTAINERS_PREPARED_IMAGE.value;
+  const uploaded = item.meta.containers.find(({class_name}) => class_name === 'ContainerLauncher');
+  assert.deepEqual(uploaded?.images, {'bifrost-linux': image});
+  assert.equal(image.split('@')[1], config.containers.digest);
+  // Replace only the local scheduler boundary. The uploaded module digest
+  // and production pin stay intact; Docker runs the inspected local image.
+  worker.exports = {...worker.exports, ContainerLauncher: {
+    type: 'durable-object', storage: 'sqlite', container: {images: [{name: 'bifrost-linux', image: config.containers.image}]},
+  }};
+  const contents = item.modules[item.meta.main_module].contents;
+  const boundary = 'return new ContainerInstanceLifecycle(this.ctx, registry, {';
+  assert.equal(contents.split(boundary).length, 2);
+  const local = contents.replace(boundary, `
+        const native = this.ctx.container;
+        const ctx = {
+            id: this.ctx.id, storage: this.ctx.storage, blockConcurrencyWhile: this.ctx.blockConcurrencyWhile.bind(this.ctx),
+            container: {
+                get running() { return native.running; },
+                images: {"bifrost-linux": this.env.CONTAINERS_PREPARED_IMAGE},
+                start: ({image, ...options}) => {
+                    if (image !== this.env.CONTAINERS_PREPARED_IMAGE || options.enableInternet !== false) {
+                        throw new Error("Unpinned local Docker start");
+                    }
+                    native.start({...options, image: native.images["bifrost-linux"]});
+                },
+                destroy: native.destroy.bind(native),
+                interceptOutboundHttps: native.interceptOutboundHttps.bind(native),
+                setInactivityTimeout: native.setInactivityTimeout.bind(native),
+            },
+        };
+        return new ContainerInstanceLifecycle(ctx, registry, {
+  `);
+  worker.manifest.modules = {[item.meta.main_module]: module(local)};
+  const nativeRequire = createRequire(new URL('../../../../deploy/capacity/cloudflare/registry-toolchain/package.json', import.meta.url));
+  const {Miniflare: ContainerMiniflare} = nativeRequire('miniflare');
+  return new ContainerMiniflare({cf: false, workers: [
+    {dev, config: worker}, outboundRelay(worker.env.CONTAINERS_ORIGIN.value),
+  ], containerEngine: {localDocker: {
+    socketPath: 'unix:///run/docker.sock', containerEgressInterceptorImage: config.containers.proxy,
+  }}});
+}
+
 function runtime(capacity) {
   const current = runtimes.get(capacity.name);
   if (current) return current;
+  if (capacity.meta.containers?.length) {
+    const mf = containerRuntime(capacity);
+    const value = mf.getWorker(capacity.name).then((worker) => ({mf, worker}));
+    runtimes.set(capacity.name, value);
+    return value;
+  }
   const owner = capacity.owner.split(':')[0];
   const revision = capacity.owner.split(':')[2];
   const cohort = [...workers.values()].filter((item) =>
-    item.owner.startsWith(owner + ':') && item.owner.split(':')[2] === revision);
+    !item.meta.containers?.length && item.owner.startsWith(owner + ':') && item.owner.split(':')[2] === revision);
   assert.equal(cohort.length, 3);
   const origins = [...new Set(cohort.flatMap(({meta}) =>
     meta.bindings.filter(({name}) => name === 'API_ORIGIN').map(({text}) => text)))];
   assert.equal(origins.length, 1);
-  const mf = new Miniflare({cf: false, workers: [
-    ...cohort.map(({name, meta, modules}) => ({
-      dev: {outboundService: {type: 'worker', worker: 'relay'}},
-      config: {
-        name, compatibilityDate: meta.compatibility_date,
-        compatibilityFlags: meta.compatibility_flags, exports: meta.exports,
-        manifest: {mainModule: meta.main_module, modules},
-        env: Object.fromEntries(meta.bindings.map((binding) => {
-          const {name: key, type, text, class_name, script_name, service} = binding;
-          const spec = {
-            plain_text: () => ({type: 'text', value: text}),
-            secret_text: () => ({type: 'text', value: text}),
-            durable_object_namespace: () => ({
-              type: 'durable-object', worker: script_name ?? name, exportName: class_name,
-            }),
-            worker_loader: () => ({type: 'worker-loader'}),
-            service: () => ({type: 'worker', worker: service}),
-          };
-          assert.ok(spec[type], 'Unexpected uploaded binding type');
-          return [key, spec[type]()];
-        })),
-      },
-    })),
-    {config: {name: 'relay', compatibilityDate: '2026-10-30',
-      manifest: {mainModule: 'relay.mjs', modules: {'relay.mjs': module(`
-        export default {fetch(request) {
-          const url = new URL(request.url);
-          if (url.origin !== ${JSON.stringify(origins[0])}) return new Response('Local fixture only', {status: 403});
-          const next = new Request('http://127.0.0.1:${relay.address().port}' + url.pathname + url.search, request);
-          next.headers.set('x-rehearsal-host', url.host);
-          return fetch(next);
-        }};
-      `)}}}},
-  ]});
+  const mf = new Miniflare({cf: false, workers: [...cohort.map(workerConfig), outboundRelay(origins[0])]});
   const value = mf.getWorker(capacity.name).then((worker) => ({mf, worker}));
   runtimes.set(capacity.name, value);
   return value;
+}
+
+function placementInventory(application) {
+  const records = [...placements.values()].filter((entry) => entry.application === application.id);
+  if (!records.length) return [];
+  const ids = execFileSync('docker', ['ps', '-aq', '--filter', 'ancestor=' + config.containers.imageId],
+    {encoding: 'utf8'}).trim().split(/\s+/).filter(Boolean);
+  const native = ids.length ? JSON.parse(execFileSync('docker', ['inspect', ...ids], {encoding: 'utf8'})) : [];
+  return records.flatMap((record) => {
+    const candidates = native.filter(({Config, Image}) =>
+      Image === config.containers.imageId && Config.Env.includes('BIFROST_WORKER_RESOURCE_UID=' + record.uid));
+    assert.ok(candidates.length <= 1, 'The provider started one UID more than once');
+    const [guest] = candidates;
+    if (guest) {
+      assert.ok(!guest.Config.Env.some((value) =>
+        /^(BIFROST_SECRET_KEY|BIFROST_WORKER_CAPACITY_TOKEN|BIFROST_DATABASE_URL)=/.test(value)));
+      if (Date.parse(guest.State.StartedAt) > 0) record.startedAt ??= guest.State.StartedAt;
+      if (!guest.State.Running && Date.parse(guest.State.FinishedAt) > 0) record.stoppedAt ??= guest.State.FinishedAt;
+    } else if (record.startedAt) {
+      record.stoppedAt ??= new Date().toISOString();
+    }
+    if (!record.startedAt || Date.parse(record.startedAt) <= 0) return [];
+    return [{
+      id: record.actor, application_id: application.id, image: record.image, started_at: record.startedAt,
+      status: {state: record.stoppedAt ? 'stopped' : 'active', updated_at: record.stoppedAt ?? record.startedAt},
+    }];
+  });
 }
 
 function serveIngress(req, res) {
@@ -230,10 +320,31 @@ async function provider(req, res) {
     if (!item?.endpoint.enabled) return missing();
     const {worker} = await runtime(item);
     const body = ['GET', 'HEAD'].includes(method) ? undefined : await buffer(req);
+    const container = item.meta.containers?.length;
+    const application = container && [...applications.values()].find((value) => value.script === item.name);
+    if (container) {
+      assert.ok(application && req.headers.authorization === undefined);
+      placementInventory(application);
+    }
     const response = await worker.fetch('https://capacity.test' + capacity[2] + url.search,
       {method, body, headers: relayHeaders(req.headers)});
+    const output = Buffer.from(await response.arrayBuffer());
+    if (container && response.ok && ['/v1/start', '/v1/egress-probe'].includes(capacity[2])) {
+      const {instance} = JSON.parse(output);
+      const {pin} = JSON.parse(body);
+      if (instance) {
+        assert.match(instance, /^[0-9a-f]{64}$/);
+        assert.match(pin.uid, /^[0-9a-f]{32}$/);
+        const record = placements.get(instance);
+        if (record) assert.equal(record.uid, pin.uid);
+        else placements.set(instance, {
+          application: application.id, actor: instance, uid: pin.uid,
+          image: item.meta.bindings.find(({name}) => name === 'CONTAINERS_PREPARED_IMAGE').text,
+        });
+      }
+    }
     res.writeHead(response.status, relayHeaders(Object.fromEntries(response.headers)));
-    return res.end(Buffer.from(await response.arrayBuffer()));
+    return res.end(output);
   }
 
   if (req.headers.authorization !== 'Bearer ' + management) return send(403, {success: false});
@@ -287,6 +398,88 @@ async function provider(req, res) {
     ({id, deleted_date: '', allocation: {type: 'bool', value: true}})));
   if (relative === '/workers/subdomain') return ok({subdomain: 'rehearsal'});
   if (relative === '/workers/scripts') return ok([...workers.keys()].map((id) => ({id})));
+  if (config.containers) {
+    const name = 'bifrost-[0-9a-f]{32}-r[1-9][0-9]*';
+    const image = path.match(new RegExp('^/local/containers-registry/(' + name + ')$'));
+    if (path === '/local/containers-registry' && method === 'GET') {
+      return ok([...images.entries()].map(([repository, digest]) => ({repository, digest})));
+    }
+    if (image) {
+      const [, repository] = image;
+      if (method === 'POST') {
+        const {digest} = await json();
+        assert.equal(digest, config.containers.digest);
+        assert.ok(!images.has(repository));
+        images.set(repository, digest);
+        event('container-image-copy', {repository});
+      } else if (method === 'DELETE') {
+        assert.ok(![...applications.values()].some((entry) => entry.name === repository));
+        assert.ok(!workers.has(repository + '-containers'));
+        assert.ok(images.delete(repository));
+        event('container-image-delete', {repository});
+      }
+      return ok(images.get(repository) ?? null);
+    }
+    if (relative === '/containers/registries/registry.cloudflare.com/credentials' && method === 'POST') {
+      const {permissions, expiration_minutes: expires} = await json();
+      assert.deepEqual(permissions, permissions.includes('push') ? ['pull', 'push'] : ['pull']);
+      assert.equal(expires, 15);
+      return ok({account_id: account, registry_host: 'registry.cloudflare.com', username: 'fixture', password: 'fixture'});
+    }
+    if (relative === '/containers/image-preparations' && method === 'POST') {
+      const {image: digestReference} = await json();
+      const target = digestReference.match(new RegExp('^registry\\.cloudflare\\.com/' + account + '/(' + name + ')@(.+)$'));
+      assert.ok(target && images.get(target[1]) === target[2]);
+      return ok({image: digestReference, status: 'ready'});
+    }
+    const inventory = (entry) => {
+      const {script, ...app} = entry;
+      const active = placementInventory(entry).filter(({status}) => status.state === 'active');
+      return {...app, health: {instances: {active: active.length, starting: 0}}};
+    };
+    if (relative === '/containers/applications') {
+      if (method === 'GET') {
+        const filter = url.searchParams.get('name');
+        return ok([...applications.values()].filter((entry) => filter === null || filter === entry.name).map(inventory));
+      }
+      if (method === 'POST') {
+        const body = await json();
+        assert.match(body.name, new RegExp('^' + name + '$'));
+        assert.equal(body.scheduling_policy, 'durable_object');
+        assert.ok(![...applications.values()].some((entry) => entry.name === body.name));
+        assert.ok(images.has(body.name));
+        const script = body.name + '-containers';
+        const launcher = workers.get(script)?.namespaces.find((entry) => entry.class === 'ContainerLauncher');
+        assert.equal(launcher?.id, body.durable_objects.namespace_id);
+        const app = {id: randomBytes(16).toString('hex'), account_id: account, ...body, script};
+        applications.set(app.id, app);
+        event('container-application-create', {id: app.id});
+        return ok(inventory(app));
+      }
+    }
+    const application = relative.match(/^\/containers\/applications\/([a-f0-9]{32})(?:\/(instances-v2|instances\/([a-f0-9]{64})))?$/);
+    if (application) {
+      const [, id, instances, actor] = application;
+      const app = applications.get(id);
+      if (!app) return missing();
+      if (instances) {
+        const observed = placementInventory(app);
+        if (actor) {
+          const record = observed.find((entry) => entry.id === actor);
+          return record ? ok(record) : missing();
+        }
+        const state = url.searchParams.get('state');
+        return ok(observed.filter((entry) => state === null || entry.status.state === state));
+      }
+      if (method === 'DELETE') {
+        assert.ok(!placementInventory(app).some((entry) => entry.status.state === 'active'));
+        applications.delete(id);
+        event('container-application-delete', {id});
+        return ok(null);
+      }
+      return ok(inventory(app));
+    }
+  }
   const namespaces = [...workers.values()].flatMap((item) => item.namespaces);
   if (relative === '/workers/durable_objects/namespaces') {
     if (lagNamespace) {
@@ -319,7 +512,8 @@ async function provider(req, res) {
       const owner = meta.bindings.find(({name: key}) => key === 'BIFROST_CAPACITY_OWNER').text;
       workers.set(name, {name, meta, modules, owner, deployment: randomUUID(), version: randomUUID(),
         endpoint: {enabled: false, previews_enabled: false},
-        namespaces: Object.keys(meta.exports).map((exported) =>
+        namespaces: Object.entries(meta.exports)
+          .filter(([, value]) => !meta.containers?.length || value.type === 'durable-object').map(([exported]) =>
           ({id: randomBytes(16).toString('hex'), script: name, class: exported}))});
       const revision = Number(owner.split(':')[2]);
       const role = name.split('-').at(-1);
@@ -339,6 +533,7 @@ async function provider(req, res) {
       return ok(item.endpoint);
     }
     if (!child && method === 'DELETE') {
+      assert.ok(![...applications.values()].some((entry) => entry.script === name));
       const active = await runtimes.get(name);
       if (active) await active.mf.dispose();
       runtimes.delete(name);
@@ -428,10 +623,14 @@ const api = createServer((req, res) => provider(req, res).catch((error) => {
   console.error(error.name, error.message);
   res.writeHead(500).end();
 }));
+// The challenge deliberately dials this known-reachable private address
+// from the API before checking that a raw socket in the guest is denied.
+const alternate = config.containers && createServer((_req, res) => res.writeHead(204).end());
 await Promise.all([
   new Promise((resolve) => relay.listen(relayOnly ? config.relayPort : 0, '127.0.0.1', resolve)),
   edge && new Promise((resolve) => edge.listen(config.edgePort, config.address, resolve)),
   new Promise((resolve) => api.listen(config.providerPort, relayOnly ? '127.0.0.1' : config.address, resolve)),
+  alternate && new Promise((resolve) => alternate.listen(443, config.address, resolve)),
 ]);
 writeFileSync(config.ready, 'ready\n');
 

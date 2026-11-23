@@ -127,6 +127,17 @@ if (API != f"http://{address}:{os.environ['REHEARSAL_PROVIDER_PORT']}/client/v4"
     raise SystemExit("Local Cloudflare fixture hooks are missing")
 if asyncio.run(_public_addresses("existing.example.test")) != (address,):
     raise SystemExit("Ingress probe is outside the local fixture")
+if os.getenv("REHEARSAL_CONTAINERS") == "1":
+    from src.services.worker_pool.cloudflare_activation import create_cloudflare_installation
+    from src.services.worker_pool.cloudflare_canary import asyncio as cloudflare_asyncio
+    from src.services.worker_pool.cloudflare_containers_release import load_containers_release, run_oci_tool
+    if (
+        create_cloudflare_installation.__name__ != "create_opted_in"
+        or load_containers_release.__name__ != "local_release"
+        or run_oci_tool.__name__ != "local_tool"
+        or type(cloudflare_asyncio).__name__ != "LocalAsyncio"
+    ):
+        raise SystemExit("Local Containers fixture hooks are missing")
 if any(row.split()[1] == "00000000" for row in Path("/proc/net/route").read_text().splitlines()[1:]):
     raise SystemExit("The rehearsal container has a default route")
 """], check=False, timeout=15)
@@ -800,6 +811,109 @@ async def {name}(case: str, hold: int):
 """
 
 
+class ContainerRehearsal(Rehearsal):
+    def run(self):
+        assert "containers" in self.cfg and "managementToken" not in self.cfg
+        apps_path = "/client/v4/accounts/" + self.account + "/containers/applications"
+        images_path = "/local/containers-registry"
+        assert not self.scripts() and self.provider(apps_path) == [] and self.provider(images_path) == []
+        self.review_activation("existing")
+        # Confirm a monthly limit that covers the two standard-1 reservations.
+        self.activation_request["monthly_limit_usd"] = "1000"
+        try:
+            self.enable()
+            installation = self.install()
+            installation_id = str(UUID(installation["installation_id"]))
+            revision = installation["desired_revision"]
+            scripts = self.scripts()
+            application, = self.provider(apps_path)
+            image, = self.provider(images_path)
+            assert len(scripts) == 4 and image["repository"] == application["name"]
+            assert application["name"] + "-containers" in scripts
+            app_path = apps_path + "/" + application["id"]
+            self.container_workflow(installation_id)
+            assert self.provider(app_path)["health"]["instances"] == {"active": 0, "starting": 0}
+
+            self.completed(self.job("scale-in"), "scaled_in")
+            assert not self.install()["admission_open"]
+            assert self.install()["desired_revision"] == revision
+            assert self.scripts() == scripts
+            assert self.provider(images_path) == [image] and self.provider(apps_path) == [application]
+            evidence("container-scale-in", {"revision": revision, "retained_scripts": len(scripts)})
+
+            self.enable()
+            assert self.install()["desired_revision"] == revision
+            assert self.scripts() == scripts and self.provider(images_path) == [image]
+            assert self.provider(app_path)["id"] == application["id"]
+            canaries = self.sql(f"""SELECT count(*) FROM cloudflare_worker_reservations
+                WHERE installation_id='{installation_id}' AND scope='containers'
+                  AND canary_job_id IS NOT NULL AND container_stopped_at IS NOT NULL""")
+            assert canaries == 2
+            evidence("container-scale-out", {"revision": revision, "canaries_settled": canaries})
+        finally:
+            try:
+                self.release_primary()
+            finally:
+                if self.install() is not None:
+                    self.disconnect()
+        self.provider(app_path, status=404)
+        assert self.provider(apps_path) == [] and self.provider(images_path) == [] and not self.scripts()
+        evidence("container-disconnect", {"applications": 0, "images": 0, "scripts": 0})
+
+    def container_workflow(self, installation_id):
+        provider, = [org for org in self.send("/api/organizations", method="GET") if org["is_provider"]]
+        self.tenants["linux"] = provider["id"]
+        source = """import _ssl
+import subprocess
+import sys
+from bifrost import tables, workflow
+
+@workflow(name="qualification_container")
+async def qualification_container(case: str, hold: int):
+    tables_visible = await tables.list()
+    captured = subprocess.check_output([sys.executable, "-c", "print('linux-child')"], text=True).strip()
+    return {"case": case, "child": captured, "native": _ssl.OPENSSL_VERSION, "table_count": len(tables_visible)}
+"""
+        workflow = self.register("qualification_container", source, provider["id"], 96, timeout=30)
+        self.workflows["linux"] = workflow
+        subprocess.run(self.compose + [
+            "exec", "-T", "--user", "1000:1000", "api", "python", "/rehearsal-site/containers_fixture.py",
+            installation_id, str(UUID(workflow)),
+        ], check=True)
+        self.primary_hold()
+        execution = self.submit("container-overflow", "linux")
+
+        def witness():
+            row = self.sql(f"""SELECT coalesce((SELECT json_build_object(
+                'status', e.status, 'result', e.result, 'worker', w.id,
+                'stopped', r.container_stopped_at, 'deleted', w.capacity_resource_deleted_at,
+                'provider_started', r.container_envelope->>'observed_started_at')
+                FROM executions e JOIN cloudflare_worker_reservations r
+                  ON r.container_envelope->>'execution_id'=e.id::text
+                JOIN execution_workers w ON w.id=r.worker_id
+                WHERE e.id='{execution}' AND r.scope='containers'), 'null')""")
+            if row and row["status"] not in {"Pending", "Queued", "Running", "Cancelling"}:
+                return row
+            return None
+
+        try:
+            terminal = wait("native Container workflow", witness)
+            assert terminal["status"] == "Success"
+            assert terminal["result"]["case"] == "container-overflow"
+            assert terminal["result"]["child"] == "linux-child" and terminal["result"]["native"].startswith("OpenSSL")
+            evidence("container-overflow", {"execution": execution, "worker": terminal["worker"], "child_exit": 0})
+        finally:
+            self.release_primary()
+
+        def retired():
+            row = witness()
+            return row if row and row["stopped"] and row["deleted"] and row["provider_started"] else None
+
+        settled = wait("Container idle stop and retirement", retired, 120 + 30)
+        assert settled["worker"] == terminal["worker"]
+        evidence("container-idle-stop", {"worker": settled["worker"], "placement_settled": True})
+
+
 class HostedUpgrade(Rehearsal):
     """Control a dedicated, already provisioned Existing HTTPS trial."""
 
@@ -917,10 +1031,14 @@ def main():
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--managed-only", action="store_true", help="Rehearse items 6–9 on a fresh stack")
     modes.add_argument("--upgrade-only", action="store_true", help="Rehearse uninterrupted Upgrade with Existing HTTPS")
+    modes.add_argument("--containers-only", action="store_true", help="Rehearse the opted-in local Container journey")
     modes.add_argument("--hosted-upgrade-config", type=Path, help="Run the rehearsed Upgrade against a dedicated hosted ingress")
     args = parser.parse_args()
     if args.hosted_upgrade_config:
         HostedUpgrade(args.hosted_upgrade_config).run()
+        return
+    if args.containers_only:
+        ContainerRehearsal().run()
         return
     trial = Rehearsal()
     if args.upgrade_only:
