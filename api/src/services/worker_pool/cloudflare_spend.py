@@ -147,7 +147,12 @@ MANAGED_CLEANUP_WINDOW = timedelta(hours=24)
 
 
 def managed_cleanup_exhausted():
-    return CloudflareWorkerReservation.cleanup_started_at <= func.statement_timestamp() - MANAGED_CLEANUP_WINDOW
+    pin = CloudflareWorkerReservation
+    # Containers use this timestamp for the drain grace and remain tracked
+    # by their absolute deadline until independent stop settlement.
+    return pin.container_reserved_at.is_(None) & (
+        pin.cleanup_started_at <= func.statement_timestamp() - MANAGED_CLEANUP_WINDOW
+    )
 
 
 def managed_worker_stop_unverified():

@@ -33,7 +33,7 @@ from shared.models import (
     CloudflareStageCredentialRequest,
     CloudflareWorkersPolicy,
 )
-from sqlalchemy import delete, func, insert, literal, select, text, update
+from sqlalchemy import delete, event, func, insert, literal, select, text, update
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -1433,8 +1433,7 @@ async def test_cold_enable_prepares_image_and_deploys_container_application(
                 await db_session.flush()
                 events.append("canary")
                 return httpx.Response(200, json={
-                    "nonce": body["nonce"], "worker_id": str(canary_id), "application_id": application["id"],
-                    "provider_version": namespace, "origin": installation.worker_ingress_origin,
+                    "nonce": body["nonce"], "worker_id": str(canary_id), "origin": installation.worker_ingress_origin,
                     "revision": 1, "release_digest": digest,
                 })
             assert "control_key" not in body
@@ -3069,7 +3068,7 @@ async def test_disconnect_resumes_owned_script_delete_until_namespace_absence(
 async def test_joint_cleanup_waits_for_container_absence_before_deleting_workers(
     db_session, installation, monkeypatch, lifecycle_audit_actor, operation,
 ) -> None:
-    from src.services.worker_pool.cloudflare_containers_rest import ContainersRest
+    from src.services.worker_pool.cloudflare_containers_rest import ContainerRegistry, ContainersRest
 
     app = app_journal(installation, "c" * 64, datetime.now(UTC))
     app.namespace_ids = {"ContainerLauncher": app.provider_version}
@@ -3082,7 +3081,16 @@ async def test_joint_cleanup_waits_for_container_absence_before_deleting_workers
         )
         for scope, suffix in (("workers", "launcher"), ("containers", "containers"), ("workers", "capacity"))
     ]
-    db_session.add_all([app, *scripts])
+    digest = "sha256:" + "a" * 64
+    image = CloudflareOwnedResource(
+        id=uuid4(), installation_id=installation.id, account_id=installation.account_id,
+        scope="containers", kind="container_image", target_name=app.target_name, desired_revision=1,
+        artifact_digest=app.artifact_digest, effect_id=uuid4(), state="present",
+        provider_id=app.target_name, provider_version=digest,
+        observed_at=datetime.now(UTC) - lifecycle_job.CREATE_SETTLEMENT_WINDOW,
+        provider_details={"image_digest": digest, "creation_empty_observed": True},
+    )
+    db_session.add_all([app, image, *scripts])
     installation.desired_revision = 2
     installation.desired_state = "disconnected" if operation == "disconnect" else "enabled"
     installation.upgrade_release = "d" * 64 if operation == "upgrade" else None
@@ -3091,11 +3099,36 @@ async def test_joint_cleanup_waits_for_container_absence_before_deleting_workers
     await db_session.flush()
     connection = await db_session.connection()
 
+    image_state = image.state
+    locks = []
+
+    def capture_lock(_connection, _cursor, statement, *_args):
+        if "FOR UPDATE" in statement:
+            locks.append(statement)
+
     @asynccontextmanager
     async def transaction():
-        async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as db:
-            yield db
-            await db.commit()
+        nonlocal image_state
+        locks.clear()
+        event.listen(connection.sync_connection, "before_cursor_execute", capture_lock)
+        try:
+            async with AsyncSession(bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint") as db:
+                yield db
+                state = await db.scalar(select(CloudflareOwnedResource.state).where(CloudflareOwnedResource.id == image.id))
+                await db.commit()
+                image_state = state
+        finally:
+            event.remove(connection.sync_connection, "before_cursor_execute", capture_lock)
+
+    async def delete_image(_self, _token, intent, expected):
+        assert intent == lifecycle_job._resource_intent(image) and expected == digest
+        assert image_state == "deleting"
+        assert any("FROM cloudflare_owned_resources" in statement for statement in locks)
+        assert all("FROM cloudflare_installations" not in statement for statement in locks)
+        written.append("image")
+        return False
+
+    monkeypatch.setattr(ContainerRegistry, "delete", delete_image)
 
     written = []
     present = {resource.target_name for resource in scripts}
@@ -3174,8 +3207,8 @@ async def test_joint_cleanup_waits_for_container_absence_before_deleting_workers
             assert await enable_job._drain_previous_revision(
                 context, payload, cleanup, upgrading=operation == "upgrade", container_adapter=ContainersRest(http),
             )
-    assert written == ["application", "capacity", "launcher", "containers"]
-    for resource in [app, *scripts]:
+    assert written == ["application", "capacity", "launcher", "containers", "image"]
+    for resource in [app, image, *scripts]:
         await db_session.refresh(resource)
         assert resource.state == "absent" and resource.observed_at is not None
     await db_session.refresh(installation)
@@ -3186,6 +3219,29 @@ async def test_joint_cleanup_waits_for_container_absence_before_deleting_workers
         assert installation.upgrade_drained_at is not None
     else:
         assert installation.deployed_revision is None
+
+
+@pytest.mark.asyncio
+async def test_container_drain_clock_does_not_exhaust_workers_cleanup_window(db_session, installation) -> None:
+    now = datetime.now(UTC)
+    workers, containers = uuid4(), uuid4()
+    db_session.add_all(ExecutionWorker(id=worker_id, form="external", state="draining", resource_class="standard")
+                       for worker_id in (workers, containers))
+    await db_session.flush()
+    db_session.add_all(CloudflareWorkerReservation(
+        worker_id=worker_id, installation_id=installation.id, scope=scope,
+        deployment_revision=1, control_root_version=1,
+        cleanup_started_at=now - timedelta(hours=25),
+        container_tenant="platform" if scope == "containers" else None,
+        container_release="c" * 64 if scope == "containers" else None,
+        container_envelope={} if scope == "containers" else None,
+        container_reserved_at=now if scope == "containers" else None,
+    ) for worker_id, scope in ((workers, "workers"), (containers, "containers")))
+    await db_session.flush()
+    assert list(await db_session.scalars(select(CloudflareWorkerReservation.worker_id).where(
+        CloudflareWorkerReservation.worker_id.in_((workers, containers)),
+        cloudflare_spend.managed_cleanup_exhausted(),
+    ))) == [workers]
 
 
 @pytest.mark.asyncio
@@ -4013,7 +4069,7 @@ async def create_installation(
     "stale-hash", "missing-pin", "solution-generation", "solution-version", "solution-outbound",
     "cross-org", "wrong-approval-owner", "tenant-owned-global-approval",
     "stale-egress", "different-provider-version", "overdue-account", "overdue-other-account",
-    "cold-canary", "stopped-unconfirmed", "scheduler-refusal", "scheduler-claim",
+    "cold-canary", "stopped-unconfirmed", "scheduler-refusal", "scheduler-claim", "scheduler-grace-expired",
 ])
 async def test_container_reservation_rejects_unreviewed_source_and_scope(
     db_session, installation, reason, monkeypatch,
@@ -4166,8 +4222,7 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
             }
             await db.flush()
             return httpx.Response(200, json={
-                "nonce": nonce, "worker_id": str(worker.id), "application_id": application.provider_id,
-                "provider_version": application.provider_version, "origin": origin,
+                "nonce": nonce, "worker_id": str(worker.id), "origin": origin,
                 "revision": 1, "release_digest": release.digest,
             })
 
@@ -4179,7 +4234,7 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
         assert admission["verified_egress"] is not None
         installation.admitted_revision = installation.containers_ready_revision = 1
         installation.containers_release_digest = release.digest
-    elif reason in ("scheduler-refusal", "scheduler-claim"):
+    elif reason in ("scheduler-refusal", "scheduler-claim", "scheduler-grace-expired"):
         from src.config import get_settings
         from src.services.worker_pool import claims, cloudflare_containers_control, cloudflare_supervisor
         from src.services.worker_pool.cloudflare_admission import ManagedCloudflareScope
@@ -4267,6 +4322,11 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
         if not refuse:
             worker.state = "draining"
             worker.active_runs = 1
+            if reason == "scheduler-grace-expired":
+                execution.status = ExecutionStatus.RUNNING
+                pin.cleanup_started_at = datetime.now(UTC) - timedelta(
+                    seconds=cloudflare_supervisor.WORKER_DRAIN_GRACE_SECONDS + 1,
+                )
             await db.flush()
             settlement = AsyncMock(return_value=True)
             monkeypatch.setattr(cloudflare_supervisor, "reconcile_container_stop", settlement)
@@ -4274,6 +4334,9 @@ async def test_container_reservation_rejects_unreviewed_source_and_scope(
                 await cloudflare_supervisor._reconcile_containers(
                     binding, get_settings(), http, uuid4(), {binding: release}, kubernetes=False,
                 )
+                if reason == "scheduler-grace-expired":
+                    assert settlement.await_count == 1 and settlement.await_args.args[-1] == worker.id
+                    return
                 settlement.assert_not_awaited()
                 await db.refresh(pin)
                 assert pin.cleanup_started_at is not None

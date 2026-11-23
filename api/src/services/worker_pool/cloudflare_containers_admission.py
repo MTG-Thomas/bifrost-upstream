@@ -258,6 +258,7 @@ class _ContainerCapacity:
     workers: list[ExecutionWorker]
     seats: WorkflowSlotAdmission
     container_tenants: frozenset[str | None]
+    live_containers: int
     shared_seats_remaining: int | None
 
 
@@ -343,7 +344,8 @@ async def _lock_container_capacity(
     if seats.full:
         return None
     return _ContainerCapacity(
-        installation, scope, containers, policy.monthly_limit_usd, now, workers, seats, frozenset(live), shared_seats_remaining,
+        installation, scope, containers, policy.monthly_limit_usd, now, workers, seats, frozenset(live), len(live),
+        shared_seats_remaining,
     )
 
 
@@ -447,7 +449,7 @@ async def reserve_container(
 
 async def reserve_container_canary(
     db: AsyncSession, *, installation_id: UUID, controller_id: UUID, release: VerifiedContainerRelease,
-    job_id: UUID, lease_token: UUID, refresh: bool = False,
+    job_id: UUID, lease_token: UUID, refresh_primary: PrimaryPool | None = None,
 ) -> CloudflareWorkerReservation | ContainerAdmissionRefused | None:
     """Book one bounded synthetic launch under the current qualification job."""
     job_revision = await db.scalar(select(PlatformJob.payload["revision"].as_integer()).where(
@@ -466,19 +468,24 @@ async def reserve_container_canary(
         or QUALIFICATION_CANARY_TENANT in capacity.container_tenants
     ):
         return None
-    if refresh:
+    if refresh_primary is not None:
         if (
-            len(capacity.container_tenants) + 1 >= capacity.limits.installation_instances
+            capacity.live_containers + 1 >= capacity.limits.installation_instances
             or capacity.seats.occupied.total() + 1 >= capacity.seats.policy.installation_slots
             or capacity.shared_seats_remaining == 1
         ):
             return None
-        if not any(eligible_linux_review(
-            dispatch=dispatch, execution=execution, workflow=workflow, approval=approval,
-            installation=capacity.installation, policy=capacity.limits, release=release,
-        ) is not None for dispatch, execution, workflow, approval in (
-            await db.execute(_container_queue(capacity, release))
-        ).tuples()):
+        linux = [worker for worker in capacity.workers if worker.runtime_profile == LINUX_RUNTIME_PROFILE]
+        fitting_overflow = 0
+        for dispatch, execution, workflow, approval in (await db.execute(_container_queue(capacity, release))).tuples():
+            if primary_has_no_fit(refresh_primary, linux, capacity.now, dispatch.memory_request_bytes) and eligible_linux_review(
+                dispatch=dispatch, execution=execution, workflow=workflow, approval=approval,
+                installation=capacity.installation, policy=capacity.limits, release=release,
+            ) is not None:
+                fitting_overflow += 1
+                if fitting_overflow == capacity.limits.queue_depth:
+                    break
+        if fitting_overflow < capacity.limits.queue_depth:
             return None
     if (await db.execute(current_container_application(
         capacity.installation, capacity.scope.deployment_revision, release.digest,

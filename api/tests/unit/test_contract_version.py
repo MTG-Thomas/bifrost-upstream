@@ -480,7 +480,8 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Older CLI clients print the JSON unchanged. Fingerprint only.
     # Admission-closure drains add a distinct placement reason to raw status JSON.
     # The same status includes Container readiness, egress, cooldown and receipt reasons.
-    "c85dd7e7beaac592299d65a457fc0ff6611d271b9e0cc1121f7a7af0ad2d7527"
+    # Failed Container egress refresh adds an additive Capacity placement reason.
+    "23a19bbfa74be51194f4d8a1f2821fdad58fc3dedcadaf129489bbd95989a024"
 )
 
 

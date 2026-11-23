@@ -47,7 +47,7 @@ from src.services.worker_pool.cloudflare_admission import (
     read_managed_worker_occupancy,
 )
 from src.services.worker_pool.cloudflare_containers_admission import LINUX_REVIEW_VERSION, linux_source_current_sql
-from src.services.worker_pool.cloudflare_containers_egress import read_verified_egress
+from src.services.worker_pool.cloudflare_containers_egress import read_egress_refresh, read_verified_egress
 from src.services.worker_pool.cloudflare_containers_policy import ContainersPolicy
 from src.services.worker_pool.cloudflare_provisioning import ObservationCheck, OwnershipCheck, OwnershipResource
 from src.services.worker_pool.cloudflare_slots import read_workflow_slot_admission, tenant_key
@@ -115,8 +115,12 @@ PLACEMENT: dict[CloudflarePlacementCode, tuple[str, str]] = {
         "Container Readiness Unverified", "Qualify the exact Linux release and worker ingress through Enable or Reconcile.",
     ),
     "container_egress_stale": (
-        "Container Egress Refresh Pending",
+        "Waiting to Refresh Container Egress",
         "Reconcile checks the Container worker ingress when eligible work is queued and a spare slot is available.",
+    ),
+    "container_egress_refresh_failed": (
+        "Container Egress Refresh Failed",
+        "Wait for the next automatic refresh of the Container worker ingress.",
     ),
     "container_allocation_cooldown": (
         "Container Allocation Cooling Down", "The primary can claim handed-back work while the Container lane settles.",
@@ -546,7 +550,7 @@ async def overflow_status(
             if installation.containers_ready_revision != installation.desired_revision:
                 lane_blockers.append(reason("container_readiness_unverified"))
             elif read_verified_egress(installation, now) is None:
-                lane_blockers.append(reason("container_egress_stale"))
+                lane_blockers.append(_container_refresh_reason(installation, now))
             observed_issue = await _container_controller_reason(installation)
             if observed_issue is not None and not any(item.code == observed_issue.code for item in lane_blockers):
                 lane_blockers.append(observed_issue)
@@ -557,3 +561,16 @@ async def overflow_status(
             reasons=lane_reasons(observation, now=now, gate_seconds=gate, approvals=approvals, blockers=lane_blockers),
         ))
     return statuses
+
+
+def _container_refresh_reason(installation: CloudflareInstallation, now: datetime) -> CloudflarePlacementReason:
+    refresh = read_egress_refresh(installation)
+    if refresh is None:
+        return reason("container_egress_stale")
+    failure = reason("container_egress_refresh_failed", refresh.retry_at if refresh.retry_at > now else None)
+    if refresh.failures >= 3:
+        failure.remedy = (
+            "Check the worker ingress route and Container canary logs. "
+            "Reconcile retries when the backoff ends and eligible demand has headroom."
+        )
+    return failure

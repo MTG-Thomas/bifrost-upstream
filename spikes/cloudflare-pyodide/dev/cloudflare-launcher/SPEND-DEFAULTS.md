@@ -30,11 +30,13 @@ Workers ranges vary the unit costs at fixed workflow counts and cold share. The 
 At one refresh per hour for 31 days of eligible demand, with a modeled
 45 seconds of billed residence per canary, Container refresh adds about
 `744 × 45 × $0.00002056 = $0.69` in compute plus egress and control.
-Reconcile uses its normal five-minute schedule while proof is pending. If
-every attempt starts a canary and never succeeds, the same model gives
-about $8.26 in compute before the account spend guard, with no starts when
-eligible demand or spare seats are absent. The ledger still holds the full
-bounded envelope until independent stop evidence arrives.
+Reconcile checks on its normal five-minute schedule and backs off failed
+canary starts for 5, 10, 20, 40, then 60 minutes. A continuously failing
+lane settles at at most one start an hour after the initial failures, or
+about $0.69 per 31 days of compute at the same 45-second assumption.
+Reconcile starts a canary only if eligible work cannot fit on the primary
+and a spare seat is available. The ledger holds the full bounded envelope
+until independent stop evidence arrives.
 
 ## Owner Options
 

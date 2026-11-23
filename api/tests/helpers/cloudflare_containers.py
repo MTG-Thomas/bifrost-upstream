@@ -85,7 +85,7 @@ def successful_probe(
     return ContainerEgressObservation(
         installation_id, revision, digest, origin, APP_ID, APP_VERSION, observed_at or datetime.now(UTC),
         ProbeReport(
-            nonce="fixture", worker_id=uuid4(), application_id=APP_ID, provider_version=APP_VERSION,
+            nonce="fixture", worker_id=uuid4(),
             origin=origin, revision=revision, release_digest=digest,
         ),
         True, CONTAINER_EGRESS_DENIALS,

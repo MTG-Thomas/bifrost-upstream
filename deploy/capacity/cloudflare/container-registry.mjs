@@ -334,6 +334,8 @@ export class ScopeRegistry {
 }
 
 const CERTIFICATE_DOMAIN = "bifrost.containers.incarnation.v1\0";
+// Keep in sync with cloudflare_containers_auth.CERTIFICATE_LIFETIME_MS.
+const CERTIFICATE_LIFETIME_MS = 60_000;
 const REQUEST_DOMAIN = "bifrost.containers.request.v1\0";
 const CONTROL_REQUEST_ROUTES = new Set([
     "/v1/start", "/v1/stop", "/v1/egress-probe", "/v1/void", "/v1/observe-start",
@@ -390,7 +392,7 @@ export async function dispatchContainerControl(request, env, consumeNonce, invok
     if (!/^[a-f0-9]{64}$/.test(root) || !/^[a-f0-9]{64}$/.test(publicKey)
         || !/^[a-f0-9]{128}$/.test(certificate) || !/^[a-f0-9]{128}$/.test(signature)
         || !UID.test(nonce) || !/^[0-9]{13}$/.test(time) || !/^[0-9]{13}$/.test(expires)
-        || Number(expires) !== Number(time) + 60_000 || Date.now() >= Number(expires)
+        || Number(expires) !== Number(time) + CERTIFICATE_LIFETIME_MS || Date.now() >= Number(expires)
         || Math.abs(Date.now() - Number(time)) > CONTROL_REQUEST_CLOCK_WINDOW) {
         return denied();
     }
@@ -704,12 +706,15 @@ export async function forwardContainerHttp(registry, uid, instance, request, ori
     ]);
     if (remaining <= 0) return local(429);
     const signal = AbortSignal.timeout(remaining);
+    const forwardedHeader = "x-bifrost-container-relay-forwarded";
     try {
         const response = await fetchUpstream(url, {
             method: request.method, headers, body: meterBody(request.body, sendBody, signal),
             redirect: "manual", signal, duplex: "half",
         });
-        if (!received(byteSize(response.headers, `HTTP/1.1 ${response.status}\r\n`))) {
+        // The relay owns this response marker. Count it even if the response
+        // later turns out to be a redirect and the header is withheld.
+        if (!received(byteSize(response.headers, `HTTP/1.1 ${response.status}\r\n`) + forwardedHeader.length + 5)) {
             await response.body?.cancel();
             return local(429);
         }
@@ -720,6 +725,7 @@ export async function forwardContainerHttp(registry, uid, instance, request, ori
         const reply = outboundHeaders(response.headers, [
             "content-type", "content-disposition", "retry-after", ...(canary ? ["x-bifrost-worker-ingress"] : []),
         ]);
+        reply.set(forwardedHeader, "1");
         return new Response(meterBody(response.body, received, signal), { status: response.status, headers: reply });
     } catch {
         return local(502);

@@ -19,6 +19,7 @@ from src.worker.remote.container_egress import (
     (None, "relay"), (None, "ingress"), ("alternate-origin", "relay"), ("raw-tcp", "relay"),
     ("redirect", "unmarked"), ("redirect", "leaked-location"),
     ("rate-limited", "relay"), ("relay-unavailable", "relay"), ("socket-unavailable", "relay"),
+    ("disallowed-route", "relay"), ("disallowed-route", "transient"),
 ])
 async def test_egress_canary_only_records_observed_denials(monkeypatch, failure, redirect):
     origin, alternate = "https://ingress.example.test", "https://scope.example.test"
@@ -43,11 +44,15 @@ async def test_egress_canary_only_records_observed_denials(monkeypatch, failure,
             assert request.headers.get("authorization") is None
             if failure in ("rate-limited", "relay-unavailable"):
                 return httpx.Response(429 if failure == "rate-limited" else 502)
+            if failure == "disallowed-route":
+                return httpx.Response(503, headers={"x-bifrost-container-relay-forwarded": "1"})
             return httpx.Response(403, headers={CONTAINER_RELAY_REJECTION: "route"})
         assert request.url.path == f"/api/sdk/capacity-canary/{worker}"
         assert request.headers["authorization"] == f"Bearer {proof}"
         assert request.headers["x-bifrost-canary-generation"] == "2"
         if "x-bifrost-canary-redirect" in request.headers:
+            if redirect == "transient":
+                return httpx.Response(502)
             if redirect == "unmarked":
                 return httpx.Response(404)
             if redirect == "leaked-location":
@@ -66,4 +71,5 @@ async def test_egress_canary_only_records_observed_denials(monkeypatch, failure,
     }.get(failure)
     with pytest.raises(transient) if transient is not None else nullcontext():
         observed = await run_container_egress_checks(origin, alternate, address, worker, 2, proof)
-        assert set(observed) == (CONTAINER_EGRESS_DENIALS - {failure})
+        missing = {failure} | ({"redirect"} if redirect == "transient" else set())
+        assert set(observed) == (CONTAINER_EGRESS_DENIALS - missing)

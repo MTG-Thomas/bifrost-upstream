@@ -686,6 +686,16 @@ test("HTTP interception refuses redirects and stops streaming an oversized respo
     const redirect = await visit(async () => Response.redirect("https://elsewhere.example.test/"));
     assert.equal(redirect.status, 403);
     assert.equal(redirect.headers.get("location"), null);
+    assert.equal(redirect.headers.get("x-bifrost-container-relay-forwarded"), null);
+    const upstreamFailure = await visit(async () => new Response(null, {
+        status: 503, headers: { "x-bifrost-container-relay-rejection": "route" },
+    }));
+    assert.equal(upstreamFailure.status, 503);
+    assert.equal(upstreamFailure.headers.get("x-bifrost-container-relay-forwarded"), "1");
+    assert.equal(upstreamFailure.headers.get("x-bifrost-container-relay-rejection"), null);
+    const relayFailure = await visit(async () => { throw new Error("upstream unavailable"); });
+    assert.equal(relayFailure.status, 502);
+    assert.equal(relayFailure.headers.get("x-bifrost-container-relay-forwarded"), null);
     const large = await visit(async () => new Response("x".repeat(4097)));
     await assert.rejects(large.text(), /budget exhausted/);
     assert.equal(scope.relayDeadline(slot.uid, instance), null);

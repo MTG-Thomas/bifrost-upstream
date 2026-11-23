@@ -52,7 +52,7 @@ from src.services.work_dispatch import (
 )
 from src.services.worker_pool import cloudflare_tunnel
 from src.services.worker_pool.cloudflare_containers_admission import LINUX_REVIEW_VERSION
-from src.services.worker_pool.cloudflare_containers_egress import read_verified_egress
+from src.services.worker_pool.cloudflare_containers_egress import read_egress_refresh, read_verified_egress
 from src.services.worker_pool.cloudflare_containers_release import ContainersReleaseUnavailable
 from src.services.worker_pool.cloudflare_containers_rest import ContainerRegistry, ContainersRest
 from src.services.worker_pool.cloudflare_credentials import (
@@ -1090,9 +1090,12 @@ async def _reconcile(context: PlatformJobContext, parsed: BaseModel) -> dict[str
         if release is None or order is None or release != target:
             raise PlatformJobRequiresAction("Install the Matched Workers Release", {"code": "CF_RELEASE_MISMATCH"})
         provision = row.admitted_revision is None
+        now = datetime.now(UTC)
+        retry = read_egress_refresh(row)
         refresh = (
             not provision and row.containers_policy.get("enabled") is True
-            and read_verified_egress(row, datetime.now(UTC)) is None
+            and read_verified_egress(row, now) is None
+            and (retry is None or retry.retry_at <= now)
             and await db.scalar(select(WorkDispatch.id).join(
                 Execution, Execution.id == WorkDispatch.subject_id,
             ).join(CloudflareApproval, CloudflareApproval.workflow_id == Execution.workflow_id).where(

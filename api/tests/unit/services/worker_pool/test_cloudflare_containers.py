@@ -1,5 +1,6 @@
 """Release, provider readback and placement checks without Cloudflare calls."""
 
+import asyncio
 import json
 from asyncio import gather
 from collections import Counter
@@ -378,7 +379,7 @@ def test_linux_review_digest_distinguishes_replacement_and_reacceptance() -> Non
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("change", [
-    {"provider_version": "f" * 32}, {"origin": "https://other.example.test"},
+    {"origin": "https://other.example.test"},
     {"revision": 3}, {"release_digest": "c" * 64},
     {"signed_control_round_trip": False}, {"denied": frozenset()},
 ])
@@ -450,7 +451,7 @@ async def test_owned_egress_probe_challenges_scope_and_requires_api_witness(case
             return httpx.Response(307, headers={"location": "https://unrelated.example.test"})
         return httpx.Response(200, json={
             "nonce": "stale" if case == "wrong-nonce" else body["nonce"], "worker_id": str(worker),
-            "application_id": APP_ID, "provider_version": APP_VERSION, "origin": origin,
+            "origin": origin,
             "revision": 1, "release_digest": digest,
         })
 
@@ -473,14 +474,14 @@ async def test_owned_egress_probe_challenges_scope_and_requires_api_witness(case
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("outcome", ["transient", "mismatch", "verified", "no-spare-seat"])
+@pytest.mark.parametrize("outcome", ["transient", "mismatch", "verified", "retire-pending", "no-spare-seat", "backoff"])
 async def test_refresh_changes_admission_only_on_conflicting_evidence(monkeypatch, outcome):
     release, _, _ = make_release()
     installation_id = uuid4()
     origin = "https://worker.example.test"
     proof = await verified_egress(installation_id, 1, release.digest, origin)
     row = SimpleNamespace(
-        id=installation_id, account_id=ACCOUNT, worker_ingress_origin=origin, deployment_evidence={},
+        id=installation_id, account_id=ACCOUNT, worker_ingress_origin=origin, deployment_evidence={}, desired_revision=1,
         admitted_revision=1, containers_ready_revision=1, containers_release_digest=release.digest,
     )
     db = AsyncMock()
@@ -500,27 +501,76 @@ async def test_refresh_changes_admission_only_on_conflicting_evidence(monkeypatc
     reserve = AsyncMock(return_value=None if outcome == "no-spare-seat" else CloudflareWorkerReservation(worker_id=uuid4()))
     monkeypatch.setattr(cloudflare_enable, "reserve_container_canary", reserve)
     monkeypatch.setattr(cloudflare_enable, "reconcile_container_stop", AsyncMock(return_value=True))
-    verify = AsyncMock(return_value=proof if outcome == "verified" else None)
+    if outcome == "retire-pending":
+        async def pending_stop(*args):
+            raise cloudflare_enable.PlatformJobFailure("CF_CONTAINERS_CLEANUP_PENDING", "fixture")
+
+        monkeypatch.setattr(cloudflare_enable, "reconcile_container_stop", pending_stop)
+    verify = AsyncMock(return_value=proof if outcome in ("verified", "retire-pending") else None)
     if outcome == "mismatch":
-        verify.side_effect = ContainerEgressMismatch("fixture mismatch")
+        from src.services.worker_pool import cloudflare_canary
+        from src.worker.remote.host import RemoteControlHost
+
+        worker_id = reserve.return_value.worker_id
+        observation = successful_probe(installation_id, 1, release.digest, origin)
+        partial = sorted(observation.denied - {"raw-tcp"})
+        record = AsyncMock(return_value=True)
+        sdk_proof = AsyncMock(return_value="fixture-proof")
+        failure = AsyncMock()
+        monkeypatch.setattr(cloudflare_canary, "record_container_network_denials", record)
+        monkeypatch.setattr(cloudflare_canary, "cloudflare_sdk_canary_proof", sdk_proof)
+        monkeypatch.setattr(cloudflare_canary, "record_canary_failure", failure)
+        monkeypatch.setattr(cloudflare_canary, "container_probe_target", AsyncMock(
+            return_value=("https://scope.example.test", "192.0.2.10"),
+        ))
+        ready = asyncio.Event()
+        ready.set()
+        bridge = SimpleNamespace(containers=True, reconciliation_ready=ready, request=AsyncMock(
+            return_value={"denied": partial},
+        ))
+        session = SimpleNamespace(
+            bridge=bridge, lease=SimpleNamespace(worker_id=worker_id, session_generation=1),
+            reconciliation_tasks=set(),
+        )
+        RemoteControlHost()._start_capacity_canary(session)
+        await asyncio.gather(*session.reconciliation_tasks)
+        record.assert_awaited_once_with(worker_id, 1, partial)
+        sdk_proof.assert_awaited_with(worker_id, 1, acknowledged=True)
+        failure.assert_not_awaited()
+        monkeypatch.setattr(
+            "src.services.worker_pool.cloudflare_containers_egress._probe_container_egress",
+            AsyncMock(return_value=replace(observation, denied=frozenset(record.await_args.args[2]))),
+        )
+        verify.side_effect = verify_container_egress
     monkeypatch.setattr(cloudflare_enable, "verify_container_egress", verify)
     if outcome == "transient":
         db.execute.return_value = Mock(one_or_none=Mock(return_value=SimpleNamespace(result={}, remote_session_generation=1)))
 
+    if outcome == "backoff":
+        cloudflare_enable.record_egress_refresh_failure(row, datetime.now(UTC))
+    if outcome in ("verified", "retire-pending"):
+        cloudflare_enable.record_egress_refresh_failure(row, datetime.now(UTC) - timedelta(hours=2))
     payload = cloudflare_enable.CloudflareEnablePayload(installation_id=installation_id, revision=1)
     context = PlatformJobContext(uuid4(), uuid4(), None, str(uuid4()), "", "")
     with pytest.raises(PlatformJobRequiresAction) if outcome == "mismatch" else nullcontext():
-        result = await cloudflare_enable._qualify_container_revision(context, payload, None, None, TOKEN, release, refresh=True)
-        assert result is (True if outcome == "verified" else None)
+        result = await cloudflare_enable._qualify_container_revision(
+            context, payload, None, None, TOKEN, release, refresh_primary=PrimaryPool("static"),
+        )
+        assert result == {"verified": True, "retire-pending": True, "transient": "failed", "backoff": "backoff"}.get(outcome)
     assert row.admitted_revision == row.containers_ready_revision == (None if outcome == "mismatch" else 1)
     assert row.containers_release_digest == (None if outcome == "mismatch" else release.digest)
-    assert bool(row.deployment_evidence) == (outcome == "verified")
-    assert reserve.await_args.kwargs["refresh"] is True
-    assert verify.await_count == (0 if outcome == "no-spare-seat" else 1)
+    assert ("container_egress" in row.deployment_evidence) == (outcome in ("verified", "retire-pending"))
+    refresh = cloudflare_enable.read_egress_refresh(row)
+    if outcome in ("transient", "backoff"):
+        assert refresh is not None and refresh.failures == 1 and refresh.retry_at > datetime.now(UTC)
+    else:
+        assert refresh is None
+    assert reserve.await_count == int(outcome != "backoff")
+    assert verify.await_count == int(outcome not in ("no-spare-seat", "backoff"))
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("blocker", [None, "no-demand", "last-instance", "last-workflow-seat", "last-shared-seat"])
+@pytest.mark.parametrize("blocker", [None, "no-demand", "primary-fit", "last-instance", "last-workflow-seat", "last-shared-seat", "duplicate-tenant"])
 async def test_refresh_canary_leaves_user_headroom(monkeypatch, blocker):
     release, _, _ = make_release()
     installation = SimpleNamespace(id=uuid4(), account_id=ACCOUNT)
@@ -529,25 +579,29 @@ async def test_refresh_canary_leaves_user_headroom(monkeypatch, blocker):
         policy=SimpleNamespace(installation_slots=2),
     )
     capacity = cloudflare_containers_admission._ContainerCapacity(
-        installation, SimpleNamespace(deployment_revision=1), policy(), Decimal(100), datetime.now(UTC), [], seats,
-        frozenset({"tenant"}) if blocker == "last-instance" else frozenset(),
+        installation, SimpleNamespace(deployment_revision=1),
+        policy().model_copy(update={"installation_instances": 3}) if blocker == "duplicate-tenant" else policy(),
+        Decimal(100), datetime.now(UTC), [], seats,
+        frozenset({"tenant"}) if blocker in ("last-instance", "duplicate-tenant") else frozenset(),
+        2 if blocker == "duplicate-tenant" else int(blocker == "last-instance"),
         1 if blocker == "last-shared-seat" else 2,
     )
     db = AsyncMock()
     db.scalar.return_value = 1
     db.execute.return_value = Mock(
         one_or_none=Mock(return_value=(APP_ID, APP_VERSION)),
-        tuples=Mock(return_value=[] if blocker == "no-demand" else [(object(), object(), object(), object())]),
+        tuples=Mock(return_value=[] if blocker == "no-demand" else [(SimpleNamespace(memory_request_bytes=100), object(), object(), object())]),
     )
     monkeypatch.setattr(cloudflare_containers_admission, "_lock_container_capacity", AsyncMock(return_value=capacity))
     monkeypatch.setattr(cloudflare_containers_admission, "_container_queue", Mock())
     monkeypatch.setattr(cloudflare_containers_admission, "eligible_linux_review", Mock(return_value=object()))
+    monkeypatch.setattr(cloudflare_containers_admission, "primary_has_no_fit", Mock(return_value=blocker != "primary-fit"))
     reservation = CloudflareWorkerReservation(worker_id=uuid4())
     create = AsyncMock(return_value=reservation)
     monkeypatch.setattr(cloudflare_containers_admission, "_create_container_reservation", create)
     result = await cloudflare_containers_admission.reserve_container_canary(
         db, installation_id=installation.id, controller_id=uuid4(), release=release,
-        job_id=uuid4(), lease_token=uuid4(), refresh=True,
+        job_id=uuid4(), lease_token=uuid4(), refresh_primary=PrimaryPool("static"),
     )
     assert result is (reservation if blocker is None else None)
     assert create.await_count == int(blocker is None)

@@ -85,6 +85,7 @@ CloudflarePlacementCode = Literal[
     "primary_limited_by_cloudflare_drain",
     "container_readiness_unverified", "container_egress_stale", "container_allocation_cooldown",
     "container_receipt_limit",
+    "container_egress_refresh_failed",
 ]
 
 

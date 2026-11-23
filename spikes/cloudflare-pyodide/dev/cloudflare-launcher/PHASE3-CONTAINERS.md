@@ -488,9 +488,14 @@ hello, the scoped SDK receipt and all five network denials from the same
 control session. Enable and Upgrade settle the canary before admitting the
 joint revision. A later Container placement requires proof within one hour
 and an exact match with the current application's provider receipt.
-Reconcile can renew it only for eligible demand and with a spare seat beyond
-the one needed by user work. A transient renewal failure pauses Container
-placement until the next reconciliation. Conflicting evidence closes both lanes.
+Reconcile renews proof only for eligible demand the primary cannot fit and
+with a spare seat beyond the one needed by user work. A transient failure
+pauses new Container placement. Success resets the failure history. Failures
+back off for 5, 10, 20, 40, then 60 minutes, with later attempts one hour apart.
+Capacity distinguishes waiting for demand or headroom from failed refresh and
+shows an operator remedy after three failures. Conflicting evidence closes
+admission in both lanes. Running Containers finish their single current
+workflow, then drain and retire under their existing lifetime and drain bounds.
 A policy with a one-instance ceiling has no spare seat for automatic
 refresh. Scale In followed by Enable runs qualification with the revision
 drained.

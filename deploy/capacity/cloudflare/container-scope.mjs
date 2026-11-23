@@ -148,8 +148,7 @@ export default {
                     if (started.status !== "pending" && started.status !== "observed") return Response.json(started);
                     if (!await registry().meteredEgress(uid, instance)) return Response.json(started);
                     return Response.json({
-                        nonce, worker_id: pin.worker, application_id: data.application_id,
-                        provider_version: data.provider_version, origin: env.CONTAINERS_ORIGIN,
+                        nonce, worker_id: pin.worker, origin: env.CONTAINERS_ORIGIN,
                         revision: Number(env.CONTAINERS_REVISION), release_digest: env.CONTAINERS_RELEASE,
                     });
                 }

@@ -12,6 +12,7 @@ from src.models.orm.platform_jobs import PlatformJob
 from src.services.kubernetes_execution import KubernetesPolicy
 from src.services.worker_pool import cloudflare_status
 from src.services.worker_pool.cloudflare_admission import ManagedCloudflareScope
+from src.services.worker_pool.cloudflare_containers_egress import read_egress_refresh, record_egress_refresh_failure
 from src.services.worker_pool.cloudflare_status import (
     PlacementObservation,
     lane_reasons,
@@ -24,6 +25,26 @@ from src.services.worker_pool.sizing import JobSizing
 
 NOW = datetime(2026, 11, 22, tzinfo=UTC)
 SIZING = JobSizing.of(KubernetesPolicy(), 0.85, 256 * 2**20)
+
+
+def test_container_refresh_failure_backs_off_and_surfaces_persistent_failure():
+    installation = SimpleNamespace(desired_revision=3, deployment_evidence={})
+    now = NOW
+    waiting = cloudflare_status._container_refresh_reason(installation, now)
+    assert waiting.code == "container_egress_stale"
+    assert waiting.next_eligible_at is None
+    for failures, minutes in enumerate((5, 10, 20, 40, 60, 60), 1):
+        record_egress_refresh_failure(installation, now)
+        refresh = read_egress_refresh(installation)
+        assert refresh is not None and refresh.failures == failures
+        assert refresh.retry_at == now + timedelta(minutes=minutes)
+        notice = cloudflare_status._container_refresh_reason(installation, now)
+        assert notice.code == "container_egress_refresh_failed"
+        assert notice.next_eligible_at == refresh.retry_at
+        assert ("Check the worker ingress route" in notice.remedy) == (failures >= 3)
+        now = refresh.retry_at
+    installation.desired_revision += 1
+    assert cloudflare_status._container_refresh_reason(installation, now).code == "container_egress_stale"
 
 
 @pytest.mark.asyncio

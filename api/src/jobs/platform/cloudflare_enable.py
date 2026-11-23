@@ -4,7 +4,7 @@ import secrets
 from asyncio import sleep, timeout
 from datetime import UTC, datetime
 from time import monotonic
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 from uuid import UUID, uuid4
 
 import httpx
@@ -13,6 +13,7 @@ from shared.models import CloudflareCapacityPolicy
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.config import get_settings
 from src.core.database import get_db_context
 from src.jobs.platform.base import (
     PlatformJobContext,
@@ -53,6 +54,7 @@ from src.models.orm.platform_jobs import PlatformJob
 from src.services.audit import emit_audit
 from src.services.authorization.enforce import Caller, require_operation
 from src.services.authorization.evaluator import GLOBAL
+from src.services.kubernetes_control import may_manage_jobs
 from src.services.platform_jobs import enqueue_platform_job, find_active_platform_job
 from src.services.work_dispatch import (
     WAKE_CLOUDFLARE_CAPACITY,
@@ -60,14 +62,16 @@ from src.services.work_dispatch import (
 )
 from src.services.worker_ingress_probes import CanaryFailure, probe_worker_ingress
 from src.services.worker_pool import cloudflare_tunnel
-from src.services.worker_pool.cloudflare_admission import joint_container_readiness
+from src.services.worker_pool.cloudflare_admission import PrimaryPool, joint_container_readiness
 from src.services.worker_pool.cloudflare_canary import CANARY_DEADLINE_SECONDS, canary_session_failure, run_workers_canary
 from src.services.worker_pool.cloudflare_containers_admission import reserve_container_canary
 from src.services.worker_pool.cloudflare_containers_control import reconcile_container_stop
 from src.services.worker_pool.cloudflare_containers_egress import (
     ContainerEgressMismatch,
     current_container_application,
+    read_egress_refresh,
     read_verified_egress,
+    record_egress_refresh_failure,
     verify_container_egress,
 )
 from src.services.worker_pool.cloudflare_containers_policy import CONTAINERS_SCOPE, ContainersPolicy
@@ -318,12 +322,23 @@ async def _settle_enable(
         if not already_admitted:
             await _require_legacy_cleanup(db)
     if refresh and container_release is not None:
+        from src.services.worker_pool.cloudflare_supervisor import _primary_pool
+
+        settings = get_settings()
+        primary, _ = await _primary_pool(
+            settings, http, kubernetes=await may_manage_jobs(settings),
+            shared_cap=CloudflareCapacityPolicy.model_validate(installation.policy["limits"]).shared_managed_worker_cap,
+        )
+        if primary is None:
+            return {"outcome": "container_egress_refresh_pending"}
         await context.report("Checking Cloudflare Container Ingress")
         outcome = await _qualify_container_revision(
-            context, payload, http, container_adapter, management_token, container_release, refresh=True,
+            context, payload, http, container_adapter, management_token, container_release, refresh_primary=primary,
         )
         if outcome is None:
             return {"outcome": "container_egress_refresh_pending"}
+        if outcome in ("failed", "backoff"):
+            return {"outcome": "container_egress_refresh_" + outcome}
         return {"outcome": "enabled" if outcome else "superseded"}
     if installation.reachability_mode == "managed_tunnel":
         await context.report("Provisioning Managed Tunnel")
@@ -548,12 +563,19 @@ async def _settle_enable(
 async def _qualify_container_revision(
     context: PlatformJobContext, payload: CloudflareEnablePayload, http: httpx.AsyncClient,
     adapter: ContainersRest, management_token: SecretStr, release: VerifiedContainerRelease,
-    *, refresh: bool = False,
-) -> bool | None:
+    *, refresh_primary: PrimaryPool | None = None,
+) -> bool | Literal["failed", "backoff"] | None:
+    refresh = refresh_primary is not None
     async with get_db_context() as db:
         installation = await _locked_current(db, context, payload)
         if installation is None:
             return False
+        if refresh:
+            if installation.admitted_revision != payload.revision:
+                return False
+            retry = read_egress_refresh(installation)
+            if retry is not None and retry.retry_at > datetime.now(UTC):
+                return "backoff"
         if not refresh and installation.containers_release_digest == release.digest and await db.scalar(
             select(joint_container_readiness(payload.revision)).where(CloudflareInstallation.id == installation.id),
         ):
@@ -581,7 +603,7 @@ async def _qualify_container_revision(
                     try:
                         if await reconcile_container_stop(http, adapter, management_token, worker_id):
                             return
-                    except ObservationPending:
+                    except (ObservationPending, CloudflareRestUnavailable, httpx.TransportError):
                         pass
                     await sleep(1)
         except TimeoutError:
@@ -594,7 +616,7 @@ async def _qualify_container_revision(
     async with get_db_context() as db:
         reserved = await reserve_container_canary(
             db, installation_id=payload.installation_id, controller_id=context.job_id,
-            job_id=context.job_id, lease_token=context.lease_token, release=release, refresh=refresh,
+            job_id=context.job_id, lease_token=context.lease_token, release=release, refresh_primary=refresh_primary,
         )
     if not isinstance(reserved, CloudflareWorkerReservation):
         if refresh:
@@ -644,10 +666,14 @@ async def _qualify_container_revision(
         except PlatformJobFailure:
             if not refresh or mismatch:
                 raise
-            verified = None
     if verified is None:
         if refresh and not mismatch:
-            return None
+            async with get_db_context() as db:
+                installation = await _locked_current(db, context, payload)
+                if installation is None or installation.admitted_revision != payload.revision:
+                    return False
+                record_egress_refresh_failure(installation, datetime.now(UTC))
+            return "failed"
         raise PlatformJobRequiresAction("Verify Cloudflare Containers Readiness", {
             "code": "CF_CONTAINERS_UNVERIFIED",
             **({"canary_failure": failure.as_result()} if failure is not None else {}),
@@ -672,9 +698,9 @@ async def _qualify_container_revision(
         else:
             installation.containers_ready_revision = payload.revision
             installation.containers_release_digest = release.digest
-            installation.deployment_evidence = {
-                **(installation.deployment_evidence or {}), "container_egress": verified.as_record(),
-            }
+            evidence = dict(installation.deployment_evidence or {})
+            evidence.pop("container_egress_refresh", None)
+            installation.deployment_evidence = {**evidence, "container_egress": verified.as_record()}
             return True
     raise PlatformJobRequiresAction("Verify Cloudflare Containers Readiness", {"code": "CF_CONTAINERS_UNVERIFIED"})
 

@@ -9,6 +9,7 @@ from uuid import UUID
 import httpx
 
 CONTAINER_RELAY_REJECTION = "x-bifrost-container-relay-rejection"
+_RELAY_FORWARDED = "x-bifrost-container-relay-forwarded"
 CONTAINER_EGRESS_DENIALS = frozenset({"alternate-origin", "wrong-host", "raw-tcp", "disallowed-route", "redirect"})
 # The exact TLS intercept can accept a TCP handshake at 443 before seeing
 # SNI. Probe another Cloudflare edge port and verify it is reachable from
@@ -44,18 +45,26 @@ async def run_container_egress_checks(
 
         async def denied(url: str, reason: str, headers: dict[str, str] | None = None) -> bool:
             async with client.stream("GET", url, headers=headers) as response:
+                if response.status_code == 403 and response.headers.get(CONTAINER_RELAY_REJECTION) == reason:
+                    return True
+                if response.headers.get(_RELAY_FORWARDED) == "1":
+                    return False
                 require_probe_response(response)
-                return response.status_code == 403 and response.headers.get(CONTAINER_RELAY_REJECTION) == reason
+                return False
 
         async def redirect_denied() -> bool:
             async with client.stream("GET", route, headers={**auth, "X-Bifrost-Canary-Redirect": "1"}) as response:
-                require_probe_response(response)
                 # The dedicated ingress can suppress the redirect before it
                 # reaches the relay. Both guards return their own marker.
-                return "location" not in response.headers and (
+                if "location" not in response.headers and (
                     (response.status_code == 403 and response.headers.get(CONTAINER_RELAY_REJECTION) == "redirect")
                     or (response.status_code == 404 and response.headers.get("x-bifrost-worker-ingress") == "v1; denied")
-                )
+                ):
+                    return True
+                if response.headers.get(_RELAY_FORWARDED) == "1":
+                    return False
+                require_probe_response(response)
+                return False
 
         async def connect_denied(target: str, port: int) -> bool:
             # A successful TCP connection is enough to fail the challenge.
@@ -83,9 +92,14 @@ async def run_container_egress_checks(
             denied(route, "origin", {"Host": "wrong-host.invalid"}),
             denied(f"{origin}/__bifrost_canary_denied__", "route"),
             redirect_denied(),
+            return_exceptions=True,
         )
+    if False not in results:
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
     return [
         name for name, observed in zip(
             ("alternate-origin", "raw-tcp", "wrong-host", "disallowed-route", "redirect"), results, strict=True,
-        ) if observed
+        ) if observed is True
     ]

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from uuid import UUID
 
 import httpx
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -59,9 +59,34 @@ class ProbeReport(BaseModel):
     worker_id: UUID
     revision: int
     release_digest: str
-    application_id: str
-    provider_version: str
     origin: str
+
+
+class ContainerEgressRefresh(BaseModel):
+    revision: int
+    failures: int = Field(ge=1)
+    retry_at: AwareDatetime
+
+
+def read_egress_refresh(installation: CloudflareInstallation) -> ContainerEgressRefresh | None:
+    evidence = (installation.deployment_evidence or {}).get("container_egress_refresh")
+    if evidence is None:
+        return None
+    try:
+        refresh = ContainerEgressRefresh.model_validate(evidence)
+    except ValidationError:
+        return None
+    return refresh if refresh.revision == installation.desired_revision else None
+
+
+def record_egress_refresh_failure(installation: CloudflareInstallation, now: datetime) -> None:
+    previous = read_egress_refresh(installation)
+    failures = previous.failures + 1 if previous else 1
+    delay = min(timedelta(minutes=5 * 2 ** min(failures - 1, 4)), EGRESS_PROOF_MAX_AGE)
+    refresh = ContainerEgressRefresh(revision=installation.desired_revision, failures=failures, retry_at=now + delay)
+    installation.deployment_evidence = {
+        **(installation.deployment_evidence or {}), "container_egress_refresh": refresh.model_dump(mode="json"),
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,10 +215,7 @@ async def _probe_container_egress(
         payload = await request_container_control(
             http, scope.endpoint, token, control_key, operation="egress-probe", pin=provider_pin,
             now_ms=int(observed_at.timestamp() * 1000),
-            payload={
-                "nonce": nonce, "origin": origin, "release_digest": release_digest,
-                "application_id": app.provider_id, "provider_version": app.provider_version,
-            },
+            payload={"nonce": nonce, "origin": origin, "release_digest": release_digest},
         )
         report = ProbeReport.model_validate_json(payload, strict=True)
     except (httpx.HTTPError, ValueError):
@@ -238,9 +260,7 @@ async def verify_container_egress(
         return None
     report = observation.report
     if (
-        report.application_id != observation.provider_id
-        or report.provider_version != observation.provider_version
-        or report.origin != observation.origin
+        report.origin != observation.origin
         or report.revision != revision or report.release_digest != release_digest
     ):
         raise ContainerEgressMismatch("Container probe application or origin changed")
